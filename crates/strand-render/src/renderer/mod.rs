@@ -311,6 +311,8 @@ pub struct Renderer {
     timer: Option<std::sync::mpsc::Sender<Option<Instant>>>,
     /// The due time last sent to `timer`.
     timer_due: Option<Instant>,
+    /// (M4) Per-surface clocks: nodes reading time each surface drew.
+    clocks: crate::clock::Clocks,
 }
 
 /// How long the pointer rests on a node before its `tooltip` shows.
@@ -388,6 +390,7 @@ impl Renderer {
             timer: None,
             timer_due: None,
             waker,
+            clocks: crate::clock::Clocks::default(),
         }
     }
 
@@ -395,6 +398,34 @@ impl Renderer {
     /// (10 s; tests shorten it).
     pub fn set_paint_cache_idle(&mut self, idle: Duration) {
         self.raster.set_idle_free(idle);
+    }
+
+    /// (M4) The offscreen group cache: bytes kept, groups drawn so far,
+    /// and groups kept (`crate::offscreen`).
+    pub fn offscreen_cache(&self) -> (usize, u64, usize) {
+        let o = self.raster.offscreen();
+        (o.bytes(), o.builds(), o.len())
+    }
+
+    /// (M4) Makes `node` a CPU raster node drawn by `source` at its rate
+    /// (`None` makes it an ordinary node again). The seam S-effects'
+    /// particles, grain, graphs and spectrum draw through; tests use it
+    /// directly.
+    #[doc(hidden)]
+    pub fn set_raster_source(
+        &mut self,
+        node: NodeId,
+        source: Option<std::sync::Arc<dyn crate::offscreen::RasterSource>>,
+    ) {
+        self.extras.rasters.set(node, source);
+        for s in self.surfaces.values_mut() {
+            s.mark_dirty();
+        }
+    }
+
+    /// (M4) Pixmaps the raster nodes drew so far, and their bytes kept.
+    pub fn raster_nodes(&self) -> (u64, usize) {
+        (self.extras.rasters.builds(), self.extras.rasters.bytes())
     }
 
     /// Decodes images and icons inline with icons from `theme` (offline
@@ -454,6 +485,24 @@ impl Renderer {
             for s in self.surfaces.values_mut() {
                 s.mark_dirty();
             }
+        }
+    }
+
+    /// (M4) Draws `node`'s subtree through `effects` (an empty list
+    /// removes them): a group layer whose damage grows by their reach
+    /// (`crate::layers`). The seam S-effects' prop parsing (`filter:`,
+    /// `blend:`, `mask:`) replaces; tests use it directly.
+    #[doc(hidden)]
+    pub fn set_layer_effects(&mut self, node: NodeId, effects: Vec<strand_scene::Effect>) {
+        let tree = &self.tree;
+        self.extras.effects.retain(|id, _| tree.get(*id).is_some());
+        if effects.is_empty() {
+            self.extras.effects.remove(&node);
+        } else {
+            self.extras.effects.insert(node, effects.into());
+        }
+        for s in self.surfaces.values_mut() {
+            s.mark_dirty();
         }
     }
 
@@ -579,6 +628,13 @@ impl Renderer {
             Some(PropValue::Bool(true))
         );
         let on = self.reduced_motion || token;
+        if on != self.anim.reduced() {
+            // Time signals stop at `t = 0` (or run again): every surface
+            // flattens afresh (one frame each).
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
         if on && !self.anim.reduced() {
             // Springs in flight snap at the next frame: sizes too, which
             // only a layout pass lets go of.

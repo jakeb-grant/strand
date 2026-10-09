@@ -56,9 +56,9 @@ pub struct Program {
     /// shared incremental view (`let shown = notifications.popups
     /// .filter(…).take(5)`), which a `for` over it and `shown.len` follow.
     pub let_chains: BTreeMap<DefId, Chain>,
-    /// Warnings found while lowering: a read of a time signal (`t`,
-    /// `wave(…)`, `noise(…)`), which does not animate until the renderer
-    /// evaluates time-bound values (M4); one per name, at its first use.
+    /// Warnings found while lowering, reported as boot-tick notices.
+    /// (Until M4 a read of a time signal was one; time-bound values now
+    /// travel to render symbolically, so lowering finds none today.)
     pub warnings: Vec<crate::diagnostic::Diagnostic>,
     /// Each chunk's syntactic read set, by chunk id (lambdas and called
     /// `fn`s included): what the instantiator declares with
@@ -465,7 +465,6 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         let_values: BTreeMap::new(),
         elem: None,
         let_exprs: BTreeMap::new(),
-        time_warned: BTreeSet::new(),
         frame: 0,
         whole_async_call: false,
     };
@@ -540,8 +539,6 @@ pub(crate) struct Lowerer<'a> {
     elem: Option<&'a crate::schema::ElementSchema>,
     /// Every `let`'s value, for chains through `let`s.
     let_exprs: BTreeMap<DefId, &'a hir::Expr>,
-    /// Time signals already warned about.
-    time_warned: BTreeSet<&'static str>,
     /// Inside a handler, timer, `fn` or lambda body (its locals live in
     /// the VM's frame, not in a scope): an async service call there is
     /// fetched in place ([`Op::FetchMethod`]) instead of a scope's load
@@ -1190,28 +1187,6 @@ impl Lowerer<'_> {
             }
             _ => None,
         }
-    }
-
-    /// Warn once per name about a time signal read (see
-    /// [`Program::warnings`]).
-    pub(crate) fn note_time(&mut self, name: &str, span: Span) {
-        let (name, what): (&'static str, &str) = match name {
-            "t" => ("t", "`t` reads 0"),
-            "wave" => ("wave", "`wave(…)` reads 0"),
-            "noise" => ("noise", "`noise(…)` is computed once, not per frame"),
-            _ => return,
-        };
-        if !self.time_warned.insert(name) {
-            return;
-        }
-        self.out.warnings.push(
-            crate::diagnostic::Diagnostic::warning(
-                "lower::time_signal",
-                format!("{what} for now: time-bound values do not animate yet"),
-            )
-            .with_label_in(self.file, span, "frozen")
-            .with_help("the renderer animates `t`, `wave` and `noise` from M4"),
-        );
     }
 
     pub(crate) fn add_chunk(&mut self, c: Chunk) -> ChunkId {

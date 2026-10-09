@@ -154,6 +154,11 @@ pub(crate) struct Animator {
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
+    /// (M4) When each node that reads time appeared ([`crate::time`]).
+    times: crate::time::NodeTimes,
+    /// (M4) Half a frame of the surface being drawn: how early a capped
+    /// clock's tick counts as reached ([`crate::clock`]).
+    slack: Duration,
 }
 
 impl Animator {
@@ -177,6 +182,42 @@ impl Animator {
     /// Something drawn since [`Animator::begin`] is still moving.
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    /// (M4) Half a frame of the surface about to be drawn (see
+    /// [`crate::clock`]).
+    pub fn set_slack(&mut self, slack: Duration) {
+        self.slack = slack;
+    }
+
+    /// (M4) The time context of `id` in the frame being drawn: its own
+    /// `t` since it was first drawn, in whole ticks of `rate` when capped,
+    /// frozen at `t = 0` under `reduced_motion` or in a frame with no
+    /// clock. Also when the clock next ticks (`None`: every frame).
+    pub fn time_of(
+        &mut self,
+        id: NodeId,
+        rate: crate::clock::Rate,
+    ) -> (strand_scene::TimeContext, Option<Duration>) {
+        let frozen = self.snapping();
+        let period = match rate {
+            crate::clock::Rate::Refresh => None,
+            crate::clock::Rate::Every(p) => Some(p),
+        };
+        // Read only: the clock starts once the node is drawn
+        // ([`Animator::start_clock`]), so a node hidden at first counts
+        // `t` from when it shows. Unstarted, it reads as starting now.
+        self.times
+            .context(id, self.time, false, frozen, period, self.slack)
+    }
+
+    /// (M4) `id` is drawn (or hidden only by something that follows
+    /// time) in the frame being drawn: its clock starts here if this
+    /// frame will be painted and the clocks are not frozen.
+    pub fn start_clock(&mut self, id: NodeId) {
+        if self.commit && !self.snapping() {
+            self.times.begin(id, self.time);
+        }
     }
 
     /// Everything snaps: `reduced_motion`, or a frame at time zero (no
@@ -266,6 +307,7 @@ impl Animator {
 
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
+        self.times.forget(id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
@@ -316,6 +358,7 @@ impl Animator {
 
     /// Drops the state of nodes `keep` rejects (gone from the tree).
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        self.times.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));

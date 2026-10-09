@@ -1880,3 +1880,565 @@ fn the_midnight_tick_damages_only_the_centred_clock() {
     eprintln!("worst midnight tick: {worst} px²");
     assert!(worst <= 2 * 2000, "{worst}");
 }
+
+// ---- (M4) Time signals and per-node clocks ---------------------------
+
+const T0: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `rotate: t * 90deg`: a time-bound value as logic sends it.
+fn spin(deg_per_s: f32) -> PropValue {
+    PropValue::Token(TokenExpr::Binary {
+        op: BinOp::Mul,
+        lhs: Box::new(TokenExpr::Time),
+        rhs: Box::new(TokenExpr::value(num(deg_per_s))),
+    })
+}
+
+/// A 200×40 bar: a static square on the left, and a square whose
+/// `rotate` follows `t` on the right (the props of the second given).
+fn timed_bar(props: Vec<(Prop, PropValue)>) -> (SceneDiff, NodeId, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let still = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#a6e3a1")),
+        ],
+    );
+    let mut own = vec![
+        (Prop::X, num(150.0)),
+        (Prop::Y, num(10.0)),
+        (Prop::Size, num(20.0)),
+        (Prop::Bg, color("#f38ba8")),
+    ];
+    own.extend(props);
+    let timed = b.node(NodeKind::Box, Some(root), own);
+    (b.diff, still, timed)
+}
+
+/// The frame `k` refreshes after `T0` at `hz`.
+fn at_hz(hz: u32, k: u32) -> std::time::Duration {
+    T0 + std::time::Duration::from_nanos(1_000_000_000 * k as u64 / hz as u64)
+}
+
+/// design.md: a time signal repaints only its node, only while visible.
+/// The node is evaluated at its own `t` every frame (from its first
+/// painted frame), the surface wants every frame while it is drawn, and
+/// each frame's damage stays on the node; the partial repaint equals a
+/// full one. A quarter second in, the square is turned 22.5° (ref
+/// `time_rotate.png`).
+#[test]
+fn a_time_signal_node_damages_only_itself() {
+    let (diff, _, timed) = timed_bar(vec![(Prop::Rotate, spin(90.0))]);
+    let mut r = renderer();
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(BAR, root);
+    let mut buf = Buffer::new(200, 40, Scale::ONE);
+    buf.paint_at(&mut r, BAR, 0, T0);
+    let node = drawn_box(&r, timed, (150.0, 10.0), 6);
+    for k in 1..=15 {
+        assert!(r.wants_frame(BAR), "frame {k}: the clock runs");
+        let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        assert!(!d.is_empty(), "frame {k} repaints the node");
+        for rect in d.rects() {
+            assert!(
+                node.contains_rect(*rect),
+                "frame {k}: damage {rect:?} outside the node {node:?}"
+            );
+        }
+    }
+    // 15 frames at 60 Hz: t = 0.25 s, 22.5°.
+    assert_matches_ref("time_rotate", &buf, 0);
+    // The same frame painted afresh: partial repaints add up exactly.
+    let (diff, _, _) = timed_bar(vec![(Prop::Rotate, PropValue::Angle(22.5))]);
+    let mut full_r = renderer();
+    full_r.apply(diff);
+    full_r.attach_surface(BAR, full_r.tree().roots()[0]);
+    let mut full = Buffer::new(200, 40, Scale::ONE);
+    full.paint(&mut full_r, BAR, 0);
+    assert!(buf.pixels == full.pixels, "partial differs from full");
+}
+
+/// The box `id` is drawn in at 1× (its laid-out box moved by its `x`,
+/// `y`), grown by `m` pixels.
+fn drawn_box(r: &Renderer, id: NodeId, (x, y): (f32, f32), m: i32) -> Rect {
+    let b = r.boxes(BAR).unwrap().rects[&id];
+    let (x0, y0) = ((b.x + x).floor() as i32 - m, (b.y + y).floor() as i32 - m);
+    let (x1, y1) = (
+        (b.x + x + b.w).ceil() as i32 + m,
+        (b.y + y + b.h).ceil() as i32 + m,
+    );
+    Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)
+}
+
+/// `0.5 + 0.5 * wave(1s)`: an opacity that follows time.
+fn pulse() -> PropValue {
+    PropValue::Token(TokenExpr::Binary {
+        op: BinOp::Add,
+        lhs: Box::new(TokenExpr::value(num(0.5))),
+        rhs: Box::new(TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(TokenExpr::value(num(0.5))),
+            rhs: Box::new(TokenExpr::Wave {
+                period: std::time::Duration::from_secs(1),
+                phase: Box::new(TokenExpr::value(num(0.0))),
+            }),
+        }),
+    })
+}
+
+/// A renderer drawing `diff` on `BAR`, its first frame painted at `T0`.
+fn clocked(diff: SceneDiff) -> (Renderer, Buffer) {
+    let mut r = renderer();
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(BAR, root);
+    let mut buf = Buffer::new(200, 40, Scale::ONE);
+    buf.paint_at(&mut r, BAR, 0, T0);
+    (r, buf)
+}
+
+/// design.md: a hidden node's clock stops. Nodes reading time that
+/// nothing shows (opacity 0, scale 0, under a hidden ancestor, all they
+/// draw outside their parent's clip) ask for no frame and no wake; an
+/// opacity that is 0 now but follows time keeps its clock (it comes
+/// back), and so does a node outside the clip whose `x` follows time.
+#[test]
+fn hidden_time_nodes_request_no_frames() {
+    let hidden = |extra: Option<Vec<(Prop, PropValue)>>| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let sq = |x: f32, more: Vec<(Prop, PropValue)>| {
+            let mut p = vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(20.0)),
+                (Prop::Bg, color("#f38ba8")),
+            ];
+            p.extend(more);
+            p
+        };
+        b.node(
+            NodeKind::Box,
+            Some(root),
+            sq(
+                10.0,
+                vec![(Prop::Rotate, spin(90.0)), (Prop::Opacity, num(0.0))],
+            ),
+        );
+        b.node(
+            NodeKind::Box,
+            Some(root),
+            sq(
+                40.0,
+                vec![(Prop::Rotate, spin(90.0)), (Prop::Scale, num(0.0))],
+            ),
+        );
+        let gone = b.node(
+            NodeKind::Box,
+            Some(root),
+            sq(70.0, vec![(Prop::Opacity, num(0.0))]),
+        );
+        b.node(
+            NodeKind::Box,
+            Some(gone),
+            sq(0.0, vec![(Prop::Rotate, spin(90.0))]),
+        );
+        // A clipping box with a pulsing child drawn wholly outside it.
+        let clip = b.node(
+            NodeKind::Box,
+            Some(root),
+            sq(100.0, vec![(Prop::Clip, PropValue::Bool(true))]),
+        );
+        b.node(
+            NodeKind::Box,
+            Some(clip),
+            sq(60.0, vec![(Prop::Opacity, pulse())]),
+        );
+        if let Some(extra) = extra {
+            let mut p = vec![
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(20.0)),
+                (Prop::Bg, color("#f38ba8")),
+            ];
+            p.extend(extra);
+            b.node(NodeKind::Box, Some(clip), p);
+        }
+        b.diff
+    };
+    let (mut r, mut buf) = clocked(hidden(None));
+    assert!(!r.wants_frame(BAR), "no hidden clock asks for a frame");
+    assert_eq!(r.next_wake(), None, "nor for a wake");
+    buf.paint_at(&mut r, BAR, 1, at_hz(60, 1));
+    assert!(!r.wants_frame(BAR) && r.next_wake().is_none());
+
+    // An opacity of `wave(1s)` is 0 at `t = 0`, and comes back.
+    let wave = PropValue::Token(TokenExpr::Wave {
+        period: std::time::Duration::from_secs(1),
+        phase: Box::new(TokenExpr::value(num(0.0))),
+    });
+    let (mut r, mut buf) = clocked(hidden(Some(vec![(Prop::Opacity, wave)])));
+    assert!(
+        r.wants_frame(BAR),
+        "a hiding opacity that follows time keeps its clock"
+    );
+    let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, 15));
+    assert!(!d.is_empty(), "it shows a quarter second in");
+
+    // Outside the clip, but its `x` follows time: it may come in.
+    let (r, _) = clocked(hidden(Some(vec![
+        (Prop::Rotate, spin(90.0)),
+        (
+            Prop::X,
+            PropValue::Token(TokenExpr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(TokenExpr::value(num(60.0))),
+                rhs: Box::new(TokenExpr::Time),
+            }),
+        ),
+    ])));
+    assert!(r.wants_frame(BAR), "moving in: its clock runs");
+}
+
+/// design.md: an idle shell does zero work. A built-in `effect` that
+/// reads no time and has no raster source draws nothing that changes
+/// (nothing draws the built-in effects yet: S-effects), so it has no
+/// clock: the surface asks for no frame and no wake.
+#[test]
+fn effect_nodes_without_time_or_a_source_stay_idle() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    for (i, style) in ["lightning", "sparks", "ripple", "aurora", "shimmer"]
+        .into_iter()
+        .enumerate()
+    {
+        b.node(
+            NodeKind::Effect,
+            Some(root),
+            vec![
+                (Prop::X, num(10.0 + 30.0 * i as f32)),
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(20.0)),
+                (Prop::Style, PropValue::Keyword(style.into())),
+            ],
+        );
+    }
+    let (mut r, mut buf) = clocked(b.diff);
+    let mut k = 1;
+    while r.wants_frame(BAR) {
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        k += 1;
+        assert!(k < 5, "the first frame settles: no clock runs");
+    }
+    assert_eq!(r.next_wake(), None, "no wake either");
+}
+
+/// `effect shimmer` (30 fps cap) turning with `t`, and a square turning
+/// at refresh, on a fake 60 Hz and 144 Hz output.
+fn shimmer_bar(capped: bool) -> (SceneDiff, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut props = vec![
+        (Prop::X, num(150.0)),
+        (Prop::Y, num(10.0)),
+        (Prop::Size, num(20.0)),
+        (Prop::Bg, color("#f38ba8")),
+        (Prop::Rotate, spin(90.0)),
+    ];
+    if capped {
+        props.push((Prop::Style, PropValue::Keyword("shimmer".into())));
+    }
+    let kind = if capped {
+        NodeKind::Effect
+    } else {
+        NodeKind::Box
+    };
+    let id = b.node(kind, Some(root), props);
+    (b.diff, id)
+}
+
+/// Runs a host loop for half a second of `hz` refreshes from `T0`: a
+/// frame each refresh the renderer wants one; otherwise the loop sleeps
+/// until [`Renderer::next_wake`], runs `update`, and the frame it then
+/// asks for lands on the first refresh after the wake. Returns the
+/// presentation times of every frame painted. Each must draw something:
+/// a frame the renderer asks for between a capped clock's ticks has
+/// empty damage, and fails here rather than going uncounted.
+fn host_loop(r: &mut Renderer, buf: &mut Buffer, hz: u32) -> Vec<std::time::Duration> {
+    use std::time::{Duration, Instant};
+    let end = T0 + Duration::from_millis(500);
+    let mut drawn = Vec::new();
+    let (mut k, mut last, mut at) = (1, T0, Instant::now());
+    while at_hz(hz, k) < end {
+        if r.wants_frame(BAR) {
+            last = at_hz(hz, k);
+            at = Instant::now();
+            let damage = buf.paint_at(r, BAR, 1, last);
+            assert!(!damage.is_empty(), "frame at {last:?} painted nothing");
+            drawn.push(last);
+            k += 1;
+            continue;
+        }
+        let wake = r
+            .next_wake()
+            .expect("a capped clock between ticks waits on a wake");
+        std::thread::sleep(wake.saturating_duration_since(Instant::now()));
+        r.update();
+        assert!(r.wants_frame(BAR), "woken for the tick");
+        let due = last + wake.saturating_duration_since(at);
+        while at_hz(hz, k) <= due {
+            k += 1;
+        }
+    }
+    drawn
+}
+
+/// design.md: per-node clocks with frame caps. A refresh clock draws
+/// every frame of a 60 Hz and a 144 Hz output; `effect shimmer` draws at
+/// 30 fps on both, asking for no frame between its ticks (the loop
+/// sleeps until `next_wake`), each tick a whole period of `t` on.
+#[test]
+fn capped_clocks_paint_at_their_rate() {
+    use std::time::Duration;
+    for hz in [60, 144] {
+        let (diff, _) = shimmer_bar(false);
+        let (mut r, mut buf) = clocked(diff);
+        let drawn = host_loop(&mut r, &mut buf, hz);
+        let frames = (hz / 2 - 1) as usize;
+        assert_eq!(
+            drawn.len(),
+            frames,
+            "{hz} Hz: a refresh clock draws every frame"
+        );
+
+        let (diff, id) = shimmer_bar(true);
+        let (mut r, mut buf) = clocked(diff);
+        let drawn = host_loop(&mut r, &mut buf, hz);
+        assert!(
+            (14..=15).contains(&drawn.len()),
+            "{hz} Hz: 30 fps for half a second, drew {}: {drawn:?}",
+            drawn.len()
+        );
+        let tick = Duration::from_nanos(1_000_000_000 / 30);
+        let frame = Duration::from_nanos(1_000_000_000 / hz as u64);
+        for w in std::iter::once(T0)
+            .chain(drawn.iter().copied())
+            .collect::<Vec<_>>()
+            .windows(2)
+        {
+            let gap = w[1] - w[0];
+            assert!(
+                gap + frame > tick && gap < tick + frame,
+                "{hz} Hz: a tick {gap:?} after the last"
+            );
+        }
+        // The last frame shows the `t` of the tick nearest it, not the
+        // frame's: the same pixels as the square turned by whole ticks.
+        let last = *drawn.last().unwrap();
+        let ticks = ((last - T0).as_secs_f64() / tick.as_secs_f64()).round() as f32;
+        let mut still = renderer();
+        let (diff, _) = shimmer_bar(true);
+        still.apply(diff);
+        still.apply({
+            let mut d = SceneDiff::new();
+            d.set(id, Prop::Rotate, PropValue::Angle(90.0 * ticks / 30.0));
+            d
+        });
+        still.attach_surface(BAR, still.tree().roots()[0]);
+        let mut full = Buffer::new(200, 40, Scale::ONE);
+        full.paint(&mut still, BAR, 0);
+        assert!(buf.pixels == full.pixels, "{hz} Hz: drawn at tick {ticks}");
+    }
+}
+
+/// design.md: "The frame loop stops when every clock is idle." A
+/// surface with a refresh clock and a capped one wants frames, then
+/// waits on wakes once the refresh one is removed, then neither once the
+/// capped one is hidden; `reduced_motion` stops every clock too.
+#[test]
+fn all_idle_clocks_stop_the_frame_loop() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let fast = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#a6e3a1")),
+            (Prop::Rotate, spin(90.0)),
+        ],
+    );
+    let slow = b.node(
+        NodeKind::Effect,
+        Some(root),
+        vec![
+            (Prop::X, num(150.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#f38ba8")),
+            (Prop::Rotate, spin(90.0)),
+            (Prop::Style, PropValue::Keyword("shimmer".into())),
+        ],
+    );
+    let (mut r, mut buf) = clocked(b.diff);
+    assert!(r.wants_frame(BAR), "a refresh clock runs");
+    buf.paint_at(&mut r, BAR, 1, at_hz(60, 1));
+    assert!(r.wants_frame(BAR));
+
+    // The refresh clock goes: the capped one waits on a wake.
+    let mut d = SceneDiff::new();
+    d.remove(fast);
+    assert!(r.apply(d).is_empty());
+    let mut k = 2;
+    while r.wants_frame(BAR) {
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        k += 1;
+        assert!(k < 20, "the removal settles");
+    }
+    assert!(r.next_wake().is_some(), "the capped clock still runs");
+
+    // Hidden: nothing runs, no frame and no wake.
+    let mut d = SceneDiff::new();
+    d.set(slow, Prop::Opacity, num(0.0));
+    assert!(r.apply(d).is_empty());
+    while r.wants_frame(BAR) {
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        k += 1;
+        assert!(k < 40, "hiding settles");
+    }
+    assert_eq!(r.next_wake(), None, "every clock idle: the loop stops");
+
+    // Shown again under `reduced_motion`: frozen, so still idle.
+    r.set_reduced_motion(true);
+    let mut d = SceneDiff::new();
+    d.set(slow, Prop::Opacity, num(1.0));
+    assert!(r.apply(d).is_empty());
+    while r.wants_frame(BAR) {
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        k += 1;
+        assert!(k < 60, "a frozen clock settles");
+    }
+    assert_eq!(r.next_wake(), None, "frozen clocks are idle");
+    r.set_reduced_motion(false);
+    assert!(r.wants_frame(BAR), "motion back: the clock runs again");
+}
+
+/// The bar of [`timed_bar`] painted afresh with its timed square turned
+/// `deg` degrees, for comparing a clocked frame against.
+fn turned(deg: f32) -> Buffer {
+    let (diff, _, _) = timed_bar(vec![(Prop::Rotate, PropValue::Angle(deg))]);
+    let mut r = renderer();
+    r.apply(diff);
+    r.attach_surface(BAR, r.tree().roots()[0]);
+    let mut full = Buffer::new(200, 40, Scale::ONE);
+    full.paint(&mut r, BAR, 0);
+    full
+}
+
+/// A global token that reads time (`$spin: t * 90deg` in a token set),
+/// read through another token (`$turn: $spin`) or through an override
+/// (`set { $local: $spin }`), makes its reader frame-driven at the
+/// reader's own `t`, as a time value written on the node does; the table
+/// stays frozen for every token that does not read time.
+#[test]
+fn global_tokens_that_read_time_drive_their_readers() {
+    let mut table = TokenTable::default();
+    table.insert("ok", color("#f38ba8"));
+    table.insert("spin", spin(90.0));
+    table.insert_derived("turn", TokenExpr::path("spin"));
+    table.insert_derived("ok.dim", TokenExpr::path("ok"));
+    let paths = table.time_paths();
+    assert!(
+        paths.contains("spin") && paths.contains("turn"),
+        "{paths:?}"
+    );
+    assert!(!paths.contains("ok") && !paths.contains("ok.dim"));
+
+    let (mut diff, _, timed) = timed_bar(vec![(
+        Prop::Rotate,
+        PropValue::Token(TokenExpr::path("turn")),
+    )]);
+    diff.set_tokens(table.clone(), Transition::Instant);
+    let (mut r, mut buf) = clocked(diff);
+    let node = drawn_box(&r, timed, (150.0, 10.0), 6);
+    for k in 1..=15 {
+        assert!(
+            r.wants_frame(BAR),
+            "frame {k}: the token's reader has a clock"
+        );
+        let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        assert!(!d.is_empty(), "frame {k} repaints the reader");
+        for rect in d.rects() {
+            assert!(node.contains_rect(*rect), "frame {k}: {rect:?}");
+        }
+    }
+    // 15 frames at 60 Hz: t = 0.25 s, 22.5°.
+    assert!(buf.pixels == turned(22.5).pixels, "drawn at its own t");
+
+    // Through an override of the same table: the subtree reads time.
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut local = TokenTable::default();
+    local.insert_derived("local", TokenExpr::path("spin"));
+    let group = b.node(
+        NodeKind::Stack,
+        Some(root),
+        vec![(Prop::Tokens, PropValue::Tokens(Box::new(local)))],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(group),
+        vec![
+            (Prop::X, num(150.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, PropValue::Token(TokenExpr::path("ok.dim"))),
+            (Prop::Rotate, PropValue::Token(TokenExpr::path("local"))),
+        ],
+    );
+    b.diff.set_tokens(table, Transition::Instant);
+    let (mut r, mut buf) = clocked(b.diff);
+    let still = buf.pixels.clone();
+    for k in 1..=15 {
+        assert!(r.wants_frame(BAR), "frame {k}: the override reads time");
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+    }
+    assert!(buf.pixels != still, "the square turned");
+}
+
+/// decisions.md (m4-runtime-w1, F1): `t` counts from the first committed
+/// frame that drew the node. A time-reading node hidden by `opacity: 0`
+/// draws nothing and starts no clock; shown a second later, it reads
+/// `t = 0` there and a quarter second on (`t * 36deg`: 9°), not the time
+/// since its first hidden frame.
+#[test]
+fn a_hidden_node_starts_its_clock_when_it_shows() {
+    let (diff, _, timed) = timed_bar(vec![(Prop::Rotate, spin(36.0)), (Prop::Opacity, num(0.0))]);
+    let (mut r, mut buf) = clocked(diff);
+    assert!(!r.wants_frame(BAR), "hidden: no clock");
+    let shown = T0 + std::time::Duration::from_secs(1);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: timed,
+        prop: Prop::Opacity,
+        value: num(1.0),
+        transition: Transition::Instant,
+    });
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, BAR, 1, shown);
+    assert!(buf.pixels == turned(0.0).pixels, "t = 0 when it shows");
+    buf.paint_at(
+        &mut r,
+        BAR,
+        1,
+        shown + std::time::Duration::from_millis(250),
+    );
+    assert!(buf.pixels == turned(9.0).pixels, "t = 0.25 s: 9°");
+}

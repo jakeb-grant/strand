@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::color::{Color, MIN_CONTRAST, Oklch};
 use crate::protocol::{Length, Paint, Prop, PropClass, PropValue, Transition};
@@ -71,6 +71,8 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    /// `%`: the remainder, with the sign of the left side (as the VM's).
+    Rem,
 }
 
 /// A token expression, evaluated by the render thread against the current
@@ -215,44 +217,37 @@ impl TokenExpr {
     /// (M4) True if the expression reads time: `t`, any `wave(…)`, or a
     /// `noise(x)` whose `x` does. A prop holding one is frame-driven:
     /// its node repaints each frame of its clock while visible, and only
-    /// it. `index` and `count` alone are fixed per letter.
+    /// it. `index` and `count` alone are fixed per letter. A token
+    /// reference does not count: see [`TokenExpr::reads_time_with`].
     pub fn reads_time(&self) -> bool {
+        self.reads_time_with(&|_| false)
+    }
+
+    /// (M4) [`TokenExpr::reads_time`], counting a reference `$path` as
+    /// reading time when `timed(path)` holds (a global token such as
+    /// `$pulse: 8 * wave(2s)`: [`TokenTable::time_reads`]).
+    pub fn reads_time_with(&self, timed: &dyn Fn(&str) -> bool) -> bool {
+        let any = |e: &TokenExpr| e.reads_time_with(timed);
         match self {
             TokenExpr::Time | TokenExpr::Wave { .. } => true,
-            TokenExpr::Noise(x) => x.reads_time(),
-            TokenExpr::Index | TokenExpr::Count | TokenExpr::Ref(_) | TokenExpr::Channel(_) => {
-                false
-            }
-            TokenExpr::Value(v) => v.reads_time(),
-            TokenExpr::Method { receiver, args, .. } => {
-                receiver.reads_time() || args.iter().any(TokenExpr::reads_time)
-            }
+            TokenExpr::Noise(x) => any(x),
+            TokenExpr::Ref(path) => timed(path),
+            TokenExpr::Index | TokenExpr::Count | TokenExpr::Channel(_) => false,
+            TokenExpr::Value(v) => v.reads_time_with(timed),
+            TokenExpr::Method { receiver, args, .. } => any(receiver) || args.iter().any(any),
             TokenExpr::OklchFrom {
                 base,
                 l,
                 c,
                 h,
                 alpha,
-            } => {
-                base.reads_time()
-                    || [l, c, h, alpha]
-                        .into_iter()
-                        .flatten()
-                        .any(|e| e.reads_time())
-            }
-            TokenExpr::Binary { lhs, rhs, .. } => lhs.reads_time() || rhs.reads_time(),
+            } => any(base) || [l, c, h, alpha].into_iter().flatten().any(|e| any(e)),
+            TokenExpr::Binary { lhs, rhs, .. } => any(lhs) || any(rhs),
             TokenExpr::Template {
                 value,
                 colors,
                 numbers,
-            } => {
-                value.reads_time()
-                    || colors
-                        .iter()
-                        .chain(numbers)
-                        .flatten()
-                        .any(TokenExpr::reads_time)
-            }
+            } => value.reads_time_with(timed) || colors.iter().chain(numbers).flatten().any(any),
         }
     }
 
@@ -302,7 +297,16 @@ pub struct TokenTable {
 /// solving contrast per use. A clone of the table does not carry it,
 /// and it never makes two tables differ.
 #[derive(Default)]
-struct Frozen(Option<HashMap<String, PropValue>>);
+struct Frozen(Option<Kept>);
+
+/// What [`TokenTable::freeze`] keeps.
+struct Kept {
+    /// Every token that does not read time, evaluated.
+    values: HashMap<String, PropValue>,
+    /// (M4) The tokens that read time ([`TokenTable::time_paths`]): each
+    /// is evaluated where it is read, at the reader's time.
+    timed: HashSet<String>,
+}
 
 impl Clone for Frozen {
     fn clone(&self) -> Self {
@@ -319,7 +323,12 @@ impl PartialEq for Frozen {
 impl std::fmt::Debug for Frozen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
-            Some(m) => write!(f, "Frozen({} tokens)", m.len()),
+            Some(k) => write!(
+                f,
+                "Frozen({} tokens, {} timed)",
+                k.values.len(),
+                k.timed.len()
+            ),
             None => f.write_str("Frozen(none)"),
         }
     }
@@ -383,15 +392,23 @@ impl TokenTable {
     /// Writing to [`TokenTable::tokens`], [`TokenTable::derived`] or
     /// [`TokenTable::contrast`] directly afterwards leaves stale values:
     /// freeze again (or [`TokenTable::thaw`]). The `insert` methods thaw.
+    ///
+    /// (M4) A token that reads time, directly or through another
+    /// ([`TokenTable::time_paths`]), is not kept: it is evaluated where
+    /// it is read, so `$pulse: 8 * wave(2s)` follows each reader's clock.
     pub fn freeze(&mut self) {
         self.frozen = Frozen(None);
-        let mut out = HashMap::with_capacity(self.tokens.len() + self.derived.len());
+        let timed = self.time_paths();
+        let mut values = HashMap::with_capacity(self.tokens.len() + self.derived.len());
         for path in self.tokens.keys().chain(self.derived.keys()) {
+            if timed.contains(path) {
+                continue;
+            }
             if let Some(v) = self.lookup(path) {
-                out.insert(path.clone(), v);
+                values.insert(path.clone(), v);
             }
         }
-        self.frozen = Frozen(Some(out));
+        self.frozen = Frozen(Some(Kept { values, timed }));
     }
 
     /// Drops what [`TokenTable::freeze`] kept: lookups evaluate again.
@@ -414,6 +431,62 @@ impl TokenTable {
     /// Evaluates an expression.
     pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
         TokenScope::new(&[self]).eval(e)
+    }
+
+    /// (M4) True if an entry reads time (`set { $spin: t * 20deg }`):
+    /// every node in its scope is frame-driven.
+    pub fn reads_time(&self) -> bool {
+        self.reads_time_with(&|_| false)
+    }
+
+    /// (M4) [`TokenTable::reads_time`], counting a reference `$path` as
+    /// reading time when `timed(path)` holds (an override `set { $glow:
+    /// $pulse }` of a global `$pulse` that reads time).
+    pub fn reads_time_with(&self, timed: &dyn Fn(&str) -> bool) -> bool {
+        self.tokens.values().any(|v| v.reads_time_with(timed))
+            || self.derived.values().any(|e| e.reads_time_with(timed))
+    }
+
+    /// (M4) Every path of this table whose token reads time, directly
+    /// (`pulse: 8 * wave(2s)`) or through other tokens of the table
+    /// (`glow: $pulse * 2`).
+    pub fn time_paths(&self) -> HashSet<String> {
+        let mut timed = HashSet::new();
+        if !self.reads_time() {
+            return timed;
+        }
+        // To a fixed point: each round adds the tokens that read one
+        // found so far; a round that adds none ends it.
+        loop {
+            let found: Vec<String> = {
+                let known = |p: &str| timed.contains(p);
+                let plain = self
+                    .tokens
+                    .iter()
+                    .filter(|(p, v)| !timed.contains(*p) && v.reads_time_with(&known))
+                    .map(|(p, _)| p);
+                let derived = self
+                    .derived
+                    .iter()
+                    .filter(|(p, e)| !timed.contains(*p) && e.reads_time_with(&known))
+                    .map(|(p, _)| p);
+                plain.chain(derived).cloned().collect()
+            };
+            if found.is_empty() {
+                return timed;
+            }
+            timed.extend(found);
+        }
+    }
+
+    /// (M4) True if the token at `path` reads time
+    /// ([`TokenTable::time_paths`]). A frozen table answers from what it
+    /// kept; otherwise the table is walked, so render asks a frozen one.
+    pub fn time_reads(&self, path: &str) -> bool {
+        match &self.frozen.0 {
+            Some(kept) => kept.timed.contains(path),
+            None => self.time_paths().contains(path),
+        }
     }
 }
 
@@ -699,11 +772,13 @@ impl<'a> TokenScope<'a> {
         // The global scope of a frozen table reads the kept values (not
         // while the guard evaluates a pair's backgrounds: those are read
         // unguarded, one level).
+        // A token that reads time is evaluated here, at this scope's time.
         if let [only] = self.levels
             && budget.guarding.get()
             && let Some(kept) = &only.frozen.0
+            && !kept.timed.contains(path)
         {
-            return kept.get(path).cloned();
+            return kept.values.get(path).cloned();
         }
         for (i, table) in self.levels.iter().enumerate().rev() {
             // Overrides see their parent scope; global derived tokens see
@@ -854,6 +929,7 @@ impl<'a> TokenScope<'a> {
                     BinOp::Sub => a - b,
                     BinOp::Mul => a * b,
                     BinOp::Div => a / b,
+                    BinOp::Rem => a % b,
                 };
                 v.is_finite().then_some(PropValue::Number(v))
             }
@@ -1805,6 +1881,47 @@ mod tests {
             Transition::Instant
         );
         assert_eq!(s.transition(&spring, Prop::Width), spring);
+    }
+
+    /// (M4) A token that reads time, directly or through another, is
+    /// not kept by a freeze: each lookup evaluates it at the asking
+    /// scope's time, while the tokens it reads that do not read time
+    /// stay kept. References count through `reads_time_with`.
+    #[test]
+    fn a_frozen_table_evaluates_time_tokens_at_the_readers_time() {
+        let mut t = TokenTable::default();
+        t.insert("base", PropValue::Number(10.0));
+        t.insert_derived(
+            "spin",
+            TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Time),
+                rhs: Box::new(TokenExpr::path("base")),
+            },
+        );
+        t.insert_derived("turn", TokenExpr::path("spin"));
+        t.insert_derived("twice", TokenExpr::path("base"));
+        let timed: HashSet<String> = ["spin", "turn"].map(String::from).into();
+        assert_eq!(t.time_paths(), timed);
+        assert!(t.time_reads("turn") && !t.time_reads("twice"));
+        t.freeze();
+        assert!(t.time_reads("turn") && !t.time_reads("base"));
+        let at = |s: f32| {
+            TokenScope::new(&[&t])
+                .with_time(Some(TimeContext::at(s)))
+                .lookup("turn")
+        };
+        assert_eq!(at(0.0), Some(PropValue::Number(0.0)));
+        assert_eq!(at(2.0), Some(PropValue::Number(20.0)));
+        assert_eq!(t.lookup("twice"), Some(PropValue::Number(10.0)));
+        assert_eq!(last_token_steps(), 1, "kept");
+        let reader = PropValue::Token(TokenExpr::path("turn"));
+        assert!(!reader.reads_time());
+        assert!(reader.reads_time_with(&|p| t.time_reads(p)));
+        let mut over = TokenTable::default();
+        over.insert_derived("local", TokenExpr::path("turn"));
+        assert!(!over.reads_time() && over.reads_time_with(&|p| t.time_reads(p)));
+        assert!(TokenTable::default().time_paths().is_empty());
     }
 
     /// A frozen table answers every lookup of its global scope with the

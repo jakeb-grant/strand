@@ -41,6 +41,16 @@ impl<'a> Flattener<'a> {
         self.out.items.push(DisplayItem { item, bounds });
     }
 
+    /// (M4) `id` is drawn, or hidden only by something that follows
+    /// time: its clock (if it has one) runs from this frame, and the
+    /// surface keeps it.
+    fn run_clock(&mut self, id: strand_scene::NodeId, clock: Option<crate::clock::Clock>) {
+        if clock.is_some() {
+            self.anim.start_clock(id);
+        }
+        self.out.clocks.extend(clock);
+    }
+
     /// Pushes a group marker; returns its index so a push marker's bounds
     /// can be set to its group's once known.
     pub(super) fn marker(&mut self, item: Item) -> usize {
@@ -65,7 +75,21 @@ impl<'a> Flattener<'a> {
         if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
             tokens.push(t);
         }
-        let scope = TokenScope::new(&tokens);
+        // Time-bound props (M4) are evaluated at this node's own time.
+        let global = &self.tree.tokens;
+        let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
+        let timed = timed_scope || crate::time::reads_time(node, global);
+        // Its clock: the rate its time props and its own animation run at.
+        let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
+        let (time, next) = match rate {
+            Some(rate) => {
+                let (cx, next) = self.anim.time_of(node.id, rate);
+                (Some(cx), next)
+            }
+            None => (None, None),
+        };
+        let clock = rate.map(|_| crate::clock::Clock { next });
+        let scope = TokenScope::new(&tokens).with_time(time);
         let mut props: Vec<(Prop, Cow<'a, PropValue>)> = node
             .props
             .iter()
@@ -288,8 +312,18 @@ impl<'a> Flattener<'a> {
 
         let phys = self.scale.snap_rect(rect);
         let frame = kurbo_rect(phys);
+        // A hidden node's clock stops (its subtree is not visited, so
+        // theirs do too), unless what hides it follows time.
+        let follows = |p: Prop| {
+            node.get(p).is_some_and(|v| {
+                v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
+            })
+        };
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
+            if follows(Prop::Opacity) {
+                self.run_clock(node.id, clock);
+            }
             return Rect::default();
         }
 
@@ -297,6 +331,9 @@ impl<'a> Flattener<'a> {
         // under a transform, and its damage is the transformed bounds.
         let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
         if zoom <= 0.0 {
+            if follows(Prop::Scale) {
+                self.run_clock(node.id, clock);
+            }
             return Rect::default();
         }
         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
@@ -320,6 +357,24 @@ impl<'a> Flattener<'a> {
         let mut ink = Rect::default();
 
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
+        // (M4) Group effects: a layer around the node and its subtree,
+        // whose damage grows by their reach.
+        let effects = self.extras.effects.get(&node.id).cloned();
+        let own_reach = effects
+            .as_deref()
+            .map_or(0, |e| crate::layers::reach_px(e, self.scale.as_f32()));
+        let reach = inh.reach.saturating_add(own_reach);
+        if let Some(e) = &effects {
+            crate::layers::hash_effects(&mut sig, e);
+        }
+        let layer_group = effects.map(|effects| {
+            self.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
+                effects,
+                frame,
+                scale: self.scale.as_f32(),
+                xform: self.xform,
+            })))
+        });
         // Widgets' default radius: `$radius.md` for buttons and segmented
         // controls, a pill for meters.
         let default_radius = match node.kind {
@@ -406,6 +461,7 @@ impl<'a> Flattener<'a> {
         {
             if root
                 && opacity >= 1.0
+                && layer_group.is_none()
                 && saved == self.xform
                 && self.xform == kurbo::Affine::IDENTITY
                 && opaque_paint(&paint)
@@ -422,6 +478,35 @@ impl<'a> Flattener<'a> {
                     shape,
                     paint,
                     frame,
+                },
+                phys,
+                &mut sig,
+                &mut ink,
+            );
+        }
+        // (M4) A CPU raster node's pixels at its clock's tick, over its
+        // background.
+        if has_area
+            && let Some((key, pixmap)) = self.extras.rasters.pixmap(
+                node.id,
+                frame.width().round() as u32,
+                frame.height().round() as u32,
+                self.scale.as_f32(),
+                time.unwrap_or_default(),
+            )
+        {
+            let rect = kurbo::Rect::new(
+                frame.x0.round(),
+                frame.y0.round(),
+                frame.x0.round() + pixmap.width() as f64,
+                frame.y0.round() + pixmap.height() as f64,
+            );
+            self.push(
+                Item::Raster {
+                    node: node.id,
+                    key,
+                    pixmap,
+                    rect,
                 },
                 phys,
                 &mut sig,
@@ -592,7 +677,13 @@ impl<'a> Flattener<'a> {
             );
         }
 
-        let bounds = ink.intersect(inh.clip).unwrap_or_default();
+        let mut bounds = ink.intersect(inh.clip).unwrap_or_default();
+        if reach > 0 && !bounds.is_empty() {
+            bounds = bounds
+                .inflate(reach)
+                .intersect(self.surface)
+                .unwrap_or_default();
+        }
         self.out.records.insert(
             node.id,
             NodeRecord {
@@ -651,6 +742,11 @@ impl<'a> Flattener<'a> {
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
+        if let Some(i) = layer_group
+            && let Item::PushLayer(l) = &self.out.items[i].item
+        {
+            crate::layers::hash_effects(&mut ctx, &l.effects);
+        }
         let mut child_clip = inh.clip;
         let mut clip_group = None;
         if clips {
@@ -669,6 +765,8 @@ impl<'a> Flattener<'a> {
             clip: child_clip,
             offset,
             inert,
+            timed: timed_scope,
+            reach,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
@@ -688,6 +786,24 @@ impl<'a> Flattener<'a> {
             self.marker(Item::PopClip);
         }
         let subtree = bounds.union(children);
+        if let Some(i) = layer_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(Item::PopLayer);
+        }
+        // Drawn: its clock runs, unless all it draws is outside the clip
+        // and nothing that places it follows time (it stays out). A
+        // built-in `effect` draws in its box (it has a clock only when it
+        // reads time or has a raster source: `clock::rate`).
+        let moves = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotate, Prop::Shadow]
+            .into_iter()
+            .any(follows);
+        let effect = node.kind == NodeKind::Effect
+            && map_rect(self.xform, phys)
+                .intersect(inh.clip)
+                .is_some_and(|r| !r.is_empty());
+        if !subtree.is_empty() || moves || effect {
+            self.run_clock(node.id, clock);
+        }
         if let Some(i) = opacity_group {
             self.out.items[i].bounds = subtree;
             self.marker(Item::PopOpacity);

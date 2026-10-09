@@ -414,6 +414,7 @@ pub fn show_expr(e: &TokenExpr) -> String {
                 strand_scene::BinOp::Sub => "-",
                 strand_scene::BinOp::Mul => "*",
                 strand_scene::BinOp::Div => "/",
+                strand_scene::BinOp::Rem => "%",
             };
             format!("({} {o} {})", show_expr(lhs), show_expr(rhs))
         }

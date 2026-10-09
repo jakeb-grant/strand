@@ -163,11 +163,14 @@ impl Painter for Renderer {
         self.process_finished();
         self.release_holds();
         self.arm_timer();
-        // The frame loop stops (no surface wants another frame): the
-        // paint cache's entries none of its frames used are idle, and go
-        // now rather than at a wake of their own (design.md: "freed when
-        // idle"; the M0 gate: no wakeup between ticks).
-        if !self.surfaces.keys().any(|s| self.wants(*s)) {
+        // The frame loop stops (no surface wants another frame, and no
+        // capped clock waits on a wake for its next tick): the paint
+        // cache's entries none of its frames used are idle, and go now
+        // rather than at a wake of their own (design.md: "freed when
+        // idle"; the M0 gate: no wakeup between ticks). Between a capped
+        // clock's ticks the loop has not stopped, so nothing the tick
+        // left alone is freed (`IDLE_FREE` still applies).
+        if !self.surfaces.keys().any(|s| self.wants(*s)) && self.clocks.next_wake().is_none() {
             self.raster.trim_unused_since(burst);
             self.burst = None;
         }
@@ -206,6 +209,8 @@ impl Renderer {
             return Damage::new();
         };
         s.time = target.time;
+        self.clocks.frame(surface, target.time, Instant::now());
+        self.anim.set_slack(self.clocks.slack(surface));
         self.glide_origin(surface, target.size, target.scale);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
@@ -242,10 +247,14 @@ impl Renderer {
         // pose a time-zero preview could not play: a surface just
         // attached, a node just created).
         let pending = self.anim.busy(&self.tree, root) || swapping;
-        let cached = if s.animating || pending {
+        // A node reading time repaints every frame of its clock.
+        let ticking = self.clocks.running(surface);
+        let cached = if s.animating || pending || ticking {
             None
         } else {
-            s.cache.take()
+            // A scene with time-bound nodes was evaluated at another
+            // frame's time (or a preview's): never reused.
+            s.cache.take().filter(|f| f.clocks.is_empty())
         };
         let prev = s.painted_time;
         let fresh = cached.is_none();
@@ -258,6 +267,15 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        if fresh {
+            // Its clocks run while it draws them: not frozen (reduced
+            // motion, a frame with no clock), and not after it detached.
+            let frozen = self.anim.reduced() || target.time.is_zero();
+            let clocks: &[crate::clock::Clock] = if frozen { &[] } else { &f.clocks };
+            self.clocks.drawn(surface, clocks);
+            let surfaces = &self.surfaces;
+            self.clocks.retain(|s| surfaces.contains_key(&s));
+        }
         // A theme crossfade on this surface paints every frame in full,
         // over the old frame taken before the first one is drawn.
         self.take_snapshot(surface, target);
@@ -374,6 +392,6 @@ impl Renderer {
             && self
                 .surfaces
                 .get(&surface)
-                .is_some_and(|s| s.dirty || !s.valid || s.animating)
+                .is_some_and(|s| s.dirty || !s.valid || s.animating || self.clocks.wants(surface))
     }
 }

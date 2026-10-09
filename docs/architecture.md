@@ -550,7 +550,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   derived inside the subtree. `TokenTable::freeze()` evaluates every
   token of a table once in its own scope and keeps the values; a lookup
   in a scope whose global table is frozen (and an override's right-hand
-  side reading it) reads them. Render freezes the tree's table when a
+  side reading it) reads them, except a token that reads time
+  (`TokenTable::time_paths`, through other tokens too), which each
+  lookup evaluates at the asking scope's time. Render freezes the tree's table when a
   `SetTokens` lands and in each frame a swap moves the roots; a clone is
   not frozen, equality ignores it, `insert`s thaw it, and a direct write
   to its pub fields needs a `freeze()` again (or `thaw()`). `enter`/`exit` are props whose
@@ -842,14 +844,31 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     (`strand_scene::tokens::noise`). A prop holding a time leaf is
     frame-driven (`PropValue::reads_time`, `TokenExpr::reads_time`;
     `noise(x)` only when `x` reads `t`): its node repaints each frame of
-    its clock while visible, and only it.
+    its clock while visible, and only it. So is a prop or override that
+    references a global token reading time (`$pulse: 8 * wave(2s)` in a
+    token set): render asks `reads_time_with(&|p|
+    global.time_reads(p))`.
   - **Per-node clocks with frame caps.** A node that reads time or plays
     frames (an animated image at its own rate, `grain` at 12 fps,
     `shimmer` at 30, others at refresh) has a clock; a clock that is not
     due by the next frame leaves `wants_frame` false and puts its due
     instant into `Renderer::next_wake()`, so the surface needs no new
     call. Hidden nodes' clocks stop, and the frame loop stops when every
-    clock is idle.
+    clock is idle. Built (m4-runtime F2): `strand-render`'s `clock.rs`
+    holds the rate table (`clock::rate`; S-effects adds `grain`, GIF and
+    raster-node rates there) and each surface's clocks from its last
+    fresh frame. A capped clock reads `t` in whole ticks, a tick reached
+    half a frame early, so it repaints only on ticks; between them the
+    surface wants the next frame only if that frame is the one nearest a
+    tick, and otherwise `next_wake` is half a frame before the tick
+    (mapped through the surface's last frame), after which `update` makes
+    `wants_frame` true. The frame period is the shortest gap between the
+    surface's frames, at most 1/60 s. A node is hidden, so it has no
+    clock, when it is not laid out, when its opacity or scale is 0, when
+    it is under a hidden ancestor, or when all it draws is outside the
+    clip. The first two count only while the hiding prop does not
+    follow time. The clip counts only while nothing that places the node
+    (`x`, `y`, `scale`, `rotate`, `shadow`) follows time.
   - **Shader uniforms.** A node's `u_*` props travel as one
     `Prop::Uniforms` holding `PropValue::Uniforms(Vec<(String,
     PropValue)>)`, sorted by name as written (`u_speed`). Each entry
@@ -876,14 +895,35 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     see "`strand-gpu`"). `Effect::reach(scale) -> Insets` is how far it
     spreads damage in logical pixels on a surface at `scale`: three
     standard deviations for a blur, a bundled pass's own (its uniforms
-    are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains `Item::Layer { effects, bounds,
-    items }`, a group whose damage grows by its effects' reach, lowered by
-    each backend its own way (vello_cpu `push_layer`; masks always on the
-    CPU), and `Item::Raster { node, bounds }`, a CPU raster node
-    (particles, grain, graphs, spectrum, animated image frames) drawn into
-    a cached pixmap at its clock's rate. Cached offscreen groups (glows,
+    are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains a layer group,
+    `Item::PushLayer(Arc<layers::Layer { effects, frame, scale, xform }>)` …
+    `Item::PopLayer` (markers like its clip, opacity and transform
+    groups, the push carrying the group's bounds; built: m4-runtime F3),
+    whose bounds and whose nodes' damage grow by its effects' reach,
+    lowered by each backend its own way (vello_cpu: one cell's
+    `push_layer` with the opacities multiplied, the last blend and a
+    cell-sized mask of `fade`/`radial`; masks always on the CPU;
+    `strand-render`'s `layers.rs`). Until S-effects builds `Effect`s
+    from props, `Renderer::set_layer_effects(node, effects)` (hidden)
+    attaches them. The display list also gains `Item::Raster`, a CPU
+    raster node (particles, grain, graphs, spectrum, animated image
+    frames) drawn into a cached pixmap at its clock's rate (its fields
+    below). Cached offscreen groups (glows,
     filtered subtrees, glass sources) redraw only when their children
-    change, in a second 4 MB budget freed when idle. The props keep
+    change, in a second 4 MB budget freed when idle. Built (m4-runtime
+    F4, `strand-render`'s `offscreen.rs`):
+    - A layer with `Blur` or `ColorMatrix` (`Layer::cell_local` false) is
+      drawn whole into a pixmap of its bounds, filtered there, and drawn
+      into each cell as an image under the layer's cell-local part. The
+      pixmap is keyed by the hash of what the group draws
+      (`OFFSCREEN_BYTES`, LRU; a group over the budget is drawn uncached;
+      freed with the paint cache's idle rules).
+    - The raster node is `Item::Raster { node, key, pixmap, rect }`
+      (`key` hashes size, scale and `TimeContext`; `rect` is its box in
+      physical pixels). A
+      `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
+      is attached through the hidden `Renderer::set_raster_source` seam.
+      Its pixmap is redrawn only when its tick or size changes. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the
@@ -1633,23 +1673,26 @@ Public interfaces other crates and later stages build on:
   block that binds locals and around each `for`, whose `IterNext` drops
   the previous iteration's locals, so a loop keeps a frame of constant
   size; a lambda captures only its free locals (`lower::Lambda::free`).
-- **Time-bound values (M4 plan, not built yet).** `t`, `wave(…)` and
-  `noise(…)` read 0 (`noise` once) on the logic thread today, with one
-  `lower::time_signal` warning per name (`Program::warnings`, reported
-  as boot-tick notices). They are to travel like tokens: `Value` gains a
-  symbolic variant holding a `strand_scene::TokenExpr` with the time
-  leaves (`Time`, `Wave`, `Noise`, `Index`, `Count`: `strand-scene`, "M4
-  vocabulary"; the warning goes), so `t * 20deg` or `10 * wave(2s)`
-  stays an expression; arithmetic on it builds the tree as
-  `builtins::binary` already does for `TokenExpr`, and `convert` maps it
-  to `PropValue::Token` (a `Template` with numeric slots when it sits
-  inside a composite value), which render evaluates per frame (`t` per
-  node, from its appearance; a reload that keeps the node keeps its `t`,
-  a remount restarts it). A prop holding one is a frame-driven prop
-  for render's frame scheduling; nothing else in the emitter changes.
-  `noise(x)` is a time value only when `x` is. A time-bound value
-  reaching logic (a handler, a comparison, `match`) is an error value,
-  as a token in arithmetic without numbers is now.
+- **Time-bound values** (m4-runtime F1). `t`, `wave(…)`,
+  `noise(…)` and a `letters` letter's `index` and `count` (bound at
+  mount by `builtins::scope_value`) travel like tokens: `Value::Time`
+  holds a `strand_scene::TokenExpr` with time leaves (`Time`, `Wave`,
+  `Noise`, `Index`, `Count`: `strand-scene`, "M4 vocabulary"), so
+  `t * 20deg` or `index * 0.1` stays an expression (`Value::symbolic`
+  picks `Time` or `Token` by `TokenExpr::reads_time`, and
+  `Value::symbolic_from` keeps `Time` when an operand was); arithmetic builds the tree as
+  `builtins::binary` does for tokens (`%` is `BinOp::Rem`), colour
+  methods on one stay symbolic, and `convert` maps it to
+  `PropValue::Token`, or to a `Template` slot inside a composite value
+  (numbers in `PropValue::numbers_mut` order). Render evaluates it per
+  node per frame (`strand-render`'s `time.rs`). `noise(x)` is a time
+  value only when `x` is; of a constant it is `strand_scene::tokens::
+  noise`. A time-bound value reaching logic is an error value
+  (`vm::value::time_in_logic`): a comparison, `!`, `&&`/`||`, a
+  condition, `match`, an index, a computing builtin (`join`, `pct`,
+  `min`, …), a service method or action argument, or a handler storing
+  it (`tests/vm.rs::time_values_in_handlers_are_error_values`). The old
+  `lower::time_signal` warning is gone.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
   - `declare(rt, &lower::CustomService, types)`: a no-code service the

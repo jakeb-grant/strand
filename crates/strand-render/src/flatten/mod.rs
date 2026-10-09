@@ -26,6 +26,8 @@ mod paint;
 mod text;
 mod widget;
 
+pub(crate) use hash::hash_item;
+
 pub use paint::BLUR_TINT;
 use paint::{cover, kurbo_rect};
 use text::sane_font;
@@ -55,6 +57,19 @@ pub enum Item {
     /// surface's origin): `scale` and `rotate` about the node's centre.
     PushTransform(kurbo::Affine),
     PopTransform,
+    /// (M4) Draws the group through its node's effects
+    /// ([`crate::layers`]): its bounds include their reach.
+    PushLayer(Arc<crate::layers::Layer>),
+    PopLayer,
+    /// (M4) A CPU raster node's pixels ([`crate::offscreen::RasterNodes`])
+    /// filling `rect`, drawn at its clock's rate; `key` names the tick
+    /// and size they were drawn at.
+    Raster {
+        node: NodeId,
+        key: u64,
+        pixmap: Arc<vello_cpu::Pixmap>,
+        rect: kurbo::Rect,
+    },
     /// A blurred rounded rect, clipped to outside the casting box.
     Shadow {
         rect: kurbo::Rect,
@@ -161,6 +176,10 @@ pub struct Flattened {
     /// surface: their rounded boxes in buffer pixels, with the radius
     /// (the blur ladder's first rung, M4).
     pub blur: Vec<BlurRegion>,
+    /// (M4) The clocks of drawn, visible nodes that read time (`t`,
+    /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
+    /// they repaint on every tick of their clock while drawn.
+    pub(crate) clocks: Vec<crate::clock::Clock>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -249,6 +268,12 @@ struct Inherited<'a> {
     offset: (f32, f32),
     /// Inside a subtree playing its exit pose: drawn, never hit.
     inert: bool,
+    /// (M4) A `tokens` override in scope reads time: every node under it
+    /// is evaluated at its own time.
+    timed: bool,
+    /// (M4) How far the effect layers around this node spread its
+    /// pixels, physical: its damage grows by it.
+    reach: u32,
 }
 
 /// What flattening reads besides the tree, layout and springs.
@@ -262,6 +287,11 @@ pub struct Extras {
     pub widgets: crate::widgets::Widgets,
     /// Decoded `image` and `icon` pixels.
     pub images: crate::image::ImageStore,
+    /// (M4) Group effects per node ([`crate::layers`]), until S-effects
+    /// builds them from props.
+    pub effects: crate::layers::NodeEffects,
+    /// (M4) CPU raster nodes' sources and pixmaps.
+    pub rasters: crate::offscreen::RasterNodes,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -305,6 +335,8 @@ pub fn flatten(
         clip: full,
         offset: (0.0, 0.0),
         inert: false,
+        timed: false,
+        reach: 0,
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.
@@ -351,9 +383,14 @@ fn map_rect(a: kurbo::Affine, r: Rect) -> Rect {
 /// Applies a node's inherited props (`tokens`, `color`, `font`, `weight`)
 /// to `inh`, as its children see them.
 fn inherit<'a>(node: &'a Node, inh: &mut Inherited<'a>) {
+    if let Some(global) = inh.tokens.first() {
+        inh.timed |= crate::time::overrides_read_time(node, global);
+    }
     if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
         inh.tokens.push(t);
     }
+    // A nested surface's ancestors are read at rest (`t = 0`): their
+    // own clocks belong to the surface that draws them.
     let scope = TokenScope::new(&inh.tokens);
     let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
     if let Some(PropValue::Color(c)) = get(Prop::Color).as_deref() {

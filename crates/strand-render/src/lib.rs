@@ -17,20 +17,26 @@
 
 mod anim;
 mod cache;
+mod clock;
 mod flatten;
 pub mod image;
 pub mod input;
+mod layers;
 mod layout;
 mod markup;
+mod offscreen;
 mod raster;
 mod renderer;
+mod time;
 mod tree;
 pub mod widgets;
 
 pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
+pub use clock::Rate;
 pub use flatten::BLUR_TINT;
 pub use input::{Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};
 pub use layout::{Boxes, CH_EM, LIST_ROW_ESTIMATE, MAX_CONTENT_SIZE, RootSize, ScrollState};
+pub use offscreen::{OFFSCREEN_BYTES, RasterSource};
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT, QUERY_WAIT,
     RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,

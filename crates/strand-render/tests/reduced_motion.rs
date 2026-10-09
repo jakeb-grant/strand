@@ -51,9 +51,13 @@ struct Shell {
 
 impl Shell {
     fn new(reduced: bool) -> Shell {
+        Self::with(SHELL, reduced)
+    }
+
+    fn with(shell: &str, reduced: bool) -> Shell {
         let mut map = SourceMap::new();
         map.add("theme.strand".to_string(), THEME.to_string());
-        map.add("shell.strand".to_string(), SHELL.to_string());
+        map.add("shell.strand".to_string(), shell.to_string());
         let compiled = strand_compiler::compile(&map);
         assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
         let program = Arc::new(lower::lower(
@@ -150,4 +154,82 @@ fn a_diff_carries_the_desktops_reduced_motion() {
     assert!(r.reduced_motion());
     r.apply(diff(false));
     assert!(!r.reduced_motion());
+}
+
+/// A box whose `x` follows `40 * wave(1s)`.
+const TIMED: &str = "// shell.strand
+panel P {
+  width: 100; height: 40; open: true; bg: #1e1e2e
+  row {
+    box { width: 20; height: 20; bg: #ff0000; x: 40 * wave(1s) }
+  }
+}
+";
+
+/// Where the red box's left edge is on row 10.
+fn red_left(buf: &Buffer) -> Option<u32> {
+    (0..100).find(|x| {
+        let p = buf.px(*x, 10);
+        p[2] > 200 && p[1] < 50
+    })
+}
+
+/// design.md: `reduced_motion` turns off time signals. Every time leaf
+/// reads `t = 0` (`TimeContext::frozen`): the box stays where `wave`
+/// starts, the surface asks for no frames, and later frames repaint
+/// nothing. Turned on while the signal runs, it stops at once at its
+/// `t = 0` value; turned off, the clock runs again from where it would
+/// be.
+#[test]
+fn time_signals_freeze() {
+    // Moving: it wants a frame every refresh and half a period in the
+    // box is 40 px right.
+    let mut moving = Shell::with(TIMED, false);
+    assert_eq!(red_left(&moving.buf), Some(0), "wave(1s) starts at 0");
+    for k in 1..=30 {
+        assert!(moving.r.wants_frame(SurfaceId(1)), "frame {k}");
+        moving
+            .buf
+            .paint_at(&mut moving.r, SurfaceId(1), 1, frame(k));
+    }
+    let at = red_left(&moving.buf).expect("drawn");
+    assert!((39..=41).contains(&at), "half a period in: {at}");
+
+    // Reduced: frozen at `t = 0`.
+    let mut still = Shell::with(TIMED, true);
+    assert!(still.r.reduced_motion());
+    assert!(!still.r.wants_frame(SurfaceId(1)), "no clock runs");
+    let d = still.buf.paint_at(&mut still.r, SurfaceId(1), 1, frame(30));
+    assert!(d.is_empty(), "nothing moves: {d:?}");
+    assert_eq!(red_left(&still.buf), Some(0));
+
+    // Turned on live: the next frame shows `t = 0` and the loop stops.
+    moving
+        .host
+        .set(&moving.rt, "system.reduced_motion", Value::Bool(true))
+        .unwrap();
+    assert!(moving.r.apply(moving.inst.flush().diff).is_empty());
+    assert!(moving.r.reduced_motion());
+    assert!(moving.r.wants_frame(SurfaceId(1)), "one frame to stop");
+    moving
+        .buf
+        .paint_at(&mut moving.r, SurfaceId(1), 1, frame(31));
+    assert_eq!(red_left(&moving.buf), Some(0), "frozen at t = 0");
+    assert!(!moving.r.wants_frame(SurfaceId(1)), "the loop stopped");
+    assert_eq!(moving.r.next_wake(), None, "and nothing wakes it");
+
+    // Off again: the clock was kept, so a quarter period later (t =
+    // 0.75 s from the node's appearance) the box is 20 px right.
+    moving
+        .host
+        .set(&moving.rt, "system.reduced_motion", Value::Bool(false))
+        .unwrap();
+    assert!(moving.r.apply(moving.inst.flush().diff).is_empty());
+    assert!(moving.r.wants_frame(SurfaceId(1)));
+    moving
+        .buf
+        .paint_at(&mut moving.r, SurfaceId(1), 1, frame(45));
+    let at = red_left(&moving.buf).expect("drawn");
+    assert!((19..=21).contains(&at), "t = 0.75 s: {at}");
+    assert!(moving.r.wants_frame(SurfaceId(1)), "running again");
 }

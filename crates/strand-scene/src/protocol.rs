@@ -624,14 +624,22 @@ impl PropValue {
     /// anywhere inside the value: the node reading it is frame-driven
     /// while visible. See [`TokenExpr::reads_time`].
     pub fn reads_time(&self) -> bool {
+        self.reads_time_with(&|_| false)
+    }
+
+    /// (M4) [`PropValue::reads_time`], counting a token reference as
+    /// reading time when `timed` says its path does
+    /// ([`crate::TokenExpr::reads_time_with`]).
+    pub fn reads_time_with(&self, timed: &dyn Fn(&str) -> bool) -> bool {
+        let any = |v: &PropValue| v.reads_time_with(timed);
         match self {
-            PropValue::Token(e) => e.reads_time(),
-            PropValue::List(items) | PropValue::Call { args: items, .. } => {
-                items.iter().any(PropValue::reads_time)
-            }
-            PropValue::Pose(props) => props.iter().any(|(_, v)| v.reads_time()),
-            PropValue::Uniforms(entries) => entries.iter().any(|(_, v)| v.reads_time()),
-            PropValue::Keyframes(k) => k.stop_values().any(PropValue::reads_time),
+            PropValue::Token(e) => e.reads_time_with(timed),
+            PropValue::List(items) | PropValue::Call { args: items, .. } => items.iter().any(any),
+            PropValue::Pose(props) => props.iter().any(|(_, v)| any(v)),
+            PropValue::Uniforms(entries) => entries.iter().any(|(_, v)| any(v)),
+            PropValue::Keyframes(k) => k.stop_values().any(any),
+            // Plain values; a `tokens` override is asked through
+            // `TokenTable::reads_time_with`.
             _ => false,
         }
     }
