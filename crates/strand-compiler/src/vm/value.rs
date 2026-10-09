@@ -218,10 +218,10 @@ pub enum Value {
     Node(Rc<NodeState>),
     /// A token reference or expression, resolved by the render thread.
     Token(Rc<TokenExpr>),
-    /// (M4) A time-bound value (`t`, `wave(…)`, `noise(t)` and
-    /// arithmetic on them, tokens included): a [`TokenExpr`] that reads
-    /// time ([`TokenExpr::reads_time`]), evaluated by the render thread
-    /// per node per frame. It only flows into props: reaching logic (a
+    /// (M4) A time-bound value (`t`, `wave(…)`, `noise(t)`, a `letters`
+    /// letter's `index` and `count`, and arithmetic on them, tokens
+    /// included): a [`TokenExpr`] over time leaves, evaluated by the
+    /// render thread per node per frame (per letter). It only flows into props: reaching logic (a
     /// comparison, a condition, `match`, a store, a call that computes,
     /// text) is an error value ([`time_in_logic`]).
     Time(Rc<TokenExpr>),
@@ -318,7 +318,14 @@ impl Value {
     /// A symbolic value: [`Value::Time`] when `e` reads time, else
     /// [`Value::Token`].
     pub fn symbolic(e: TokenExpr) -> Self {
-        if e.reads_time() {
+        Value::symbolic_from(e, false)
+    }
+
+    /// A symbolic value built from operands of which one is time-bound
+    /// (`time`): it stays [`Value::Time`] even if `e` reads no `t`, so a
+    /// `letters` letter's `index * 0.1` stays render's to evaluate.
+    pub fn symbolic_from(e: TokenExpr, time: bool) -> Self {
+        if time || e.reads_time() {
             Value::Time(Rc::new(e))
         } else {
             Value::Token(Rc::new(e))

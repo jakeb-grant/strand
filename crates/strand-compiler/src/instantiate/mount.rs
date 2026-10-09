@@ -1164,7 +1164,10 @@ impl Ctx {
         self.note_node(key.clone(), id, kind, state.clone());
         for &l in &e.scope {
             if env.local(l).is_none() {
-                let m = rt.memo(|_| Ok(Value::int(0)));
+                // A letter's `index`/`count` is render's (per letter).
+                let name = self.vm.prog.local(l).name.as_str();
+                let v = crate::vm::builtins::scope_value(kind, name).unwrap_or(Value::int(0));
+                let m = rt.memo(move |_| Ok(v.clone()));
                 let _ = rt.reads_from(m.id(), &[]);
                 env.bind_local(l, Slot::Memo(m));
             }

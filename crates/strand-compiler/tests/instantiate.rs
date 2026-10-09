@@ -3536,3 +3536,65 @@ fn time_values_convert_to_token_time_leaves() {
         "wave(1s) is 1 at half a period: {c:?}"
     );
 }
+
+/// design.md "Effects": `letters { y: 2 * wave(1s, phase: index * 0.1) }`.
+/// A letter's `index` and `count` are time leaves (`TokenExpr::Index`,
+/// `TokenExpr::Count`) render evaluates per letter, not values logic
+/// fixes for the whole node: arithmetic on them stays symbolic, and the
+/// same prop resolves differently for each letter.
+#[test]
+fn letters_index_and_count_stay_time_leaves() {
+    use strand_scene::{TimeContext, TokenExpr, TokenScope, TokenTable};
+    let src = "bar B {\n  letters { y: 2 * wave(1s, phase: index * 0.1); x: index * 8; opacity: (index + 1) / count }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let letters = shell.scene.of_kind(NodeKind::Letters);
+    assert_eq!(letters.len(), 1, "{}", shell.scene.render());
+    let prop = |p: Prop| {
+        shell
+            .scene
+            .prop(letters[0], p)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {p:?}: {}", shell.scene.render()))
+    };
+    // `x: index * 8`: the expression, `index` a leaf.
+    assert_eq!(
+        prop(Prop::X),
+        PropValue::Token(TokenExpr::Binary {
+            op: strand_scene::BinOp::Mul,
+            lhs: Box::new(TokenExpr::Index),
+            rhs: Box::new(TokenExpr::value(PropValue::Number(8.0))),
+        })
+    );
+    let table = TokenTable::default();
+    let levels = [&table];
+    let at = |cx: TimeContext, v: &PropValue| {
+        TokenScope::new(&levels)
+            .with_time(Some(cx))
+            .resolve(v)
+            .map(|c| c.into_owned())
+    };
+    let letter = |index: u32| TimeContext {
+        t: 0.25,
+        index,
+        count: 4,
+    };
+    assert_eq!(at(letter(3), &prop(Prop::X)), Some(PropValue::Number(24.0)));
+    assert_eq!(
+        at(letter(1), &prop(Prop::Opacity)),
+        Some(PropValue::Number(0.5))
+    );
+    // The phase is per letter: a quarter period in, letter 0 reads
+    // wave = 0.5 (y = 1), so does letter 5 (phase 0.5, the falling
+    // side), and letter 2 (phase 0.2) is near the top (y ≈ 1.95).
+    let y = |i: u32| match at(letter(i), &prop(Prop::Y)) {
+        Some(PropValue::Number(n)) => n,
+        other => panic!("{other:?}"),
+    };
+    assert!((y(0) - 1.0).abs() < 1e-5, "{}", y(0));
+    assert!((y(5) - 1.0).abs() < 1e-5, "{}", y(5));
+    assert!((y(2) - y(0)).abs() > 0.5, "{} vs {}", y(2), y(0));
+}

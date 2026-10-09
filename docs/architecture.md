@@ -1665,12 +1665,14 @@ Public interfaces other crates and later stages build on:
   block that binds locals and around each `for`, whose `IterNext` drops
   the previous iteration's locals, so a loop keeps a frame of constant
   size; a lambda captures only its free locals (`lower::Lambda::free`).
-- **Time-bound values** (m4-runtime F1). `t`, `wave(…)` and
-  `noise(…)` travel like tokens: `Value::Time` holds a
-  `strand_scene::TokenExpr` with time leaves (`Time`, `Wave`, `Noise`,
-  `Index`, `Count`: `strand-scene`, "M4 vocabulary"), so `t * 20deg` or
-  `10 * wave(2s)` stays an expression (`Value::symbolic` picks `Time` or
-  `Token` by `TokenExpr::reads_time`); arithmetic builds the tree as
+- **Time-bound values** (m4-runtime F1). `t`, `wave(…)`,
+  `noise(…)` and a `letters` letter's `index` and `count` (bound at
+  mount by `builtins::scope_value`) travel like tokens: `Value::Time`
+  holds a `strand_scene::TokenExpr` with time leaves (`Time`, `Wave`,
+  `Noise`, `Index`, `Count`: `strand-scene`, "M4 vocabulary"), so
+  `t * 20deg` or `index * 0.1` stays an expression (`Value::symbolic`
+  picks `Time` or `Token` by `TokenExpr::reads_time`, and
+  `Value::symbolic_from` keeps `Time` when an operand was); arithmetic builds the tree as
   `builtins::binary` does for tokens (`%` is `BinOp::Rem`), colour
   methods on one stay symbolic, and `convert` maps it to
   `PropValue::Token`, or to a `Template` slot inside a composite value

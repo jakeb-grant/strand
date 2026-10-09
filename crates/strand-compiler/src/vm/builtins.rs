@@ -27,6 +27,19 @@ pub(crate) fn value(name: &str) -> Value {
     }
 }
 
+/// (M4) The value of a name `kind` brings into scope, when render gives
+/// it per node (per letter): a `letters` block's `index` and `count` are
+/// time leaves ([`Value::Time`]), since every letter of the one node
+/// reads its own. `None`: the name is a logic value (a bar's `screen`).
+pub(crate) fn scope_value(kind: strand_scene::NodeKind, name: &str) -> Option<Value> {
+    let leaf = match (kind, name) {
+        (strand_scene::NodeKind::Letters, "index") => TokenExpr::Index,
+        (strand_scene::NodeKind::Letters, "count") => TokenExpr::Count,
+        _ => return None,
+    };
+    Some(Value::Time(Rc::new(leaf)))
+}
+
 /// The default value of a type: what an unset service field or a missing
 /// record argument holds.
 pub fn default_of(types: &TypeTable, ty: &Ty) -> Value {
@@ -212,16 +225,25 @@ pub(crate) fn index(base: &Value, index: &Value) -> Value {
 // ---------------------------------------------------------------------------
 // Operators
 
+/// `-e` of a symbolic value, time-bound if `e` was.
+fn negate(e: &TokenExpr, time: bool) -> Value {
+    Value::symbolic_from(
+        TokenExpr::Binary {
+            op: BinOp::Sub,
+            lhs: Box::new(TokenExpr::value(strand_scene::PropValue::Number(0.0))),
+            rhs: Box::new(e.clone()),
+        },
+        time,
+    )
+}
+
 pub(crate) fn unary(op: UnaryOp, v: Value) -> Result<Value, Error> {
     Ok(match (op, v) {
         (UnaryOp::Not, v) if v.has_time() => return Err(time_in_logic("in a condition")),
         (UnaryOp::Not, v) => Value::Bool(!v.truthy()),
         (UnaryOp::Neg, Value::Num(n, u)) => Value::Num(-n, u),
-        (UnaryOp::Neg, Value::Token(t) | Value::Time(t)) => Value::symbolic(TokenExpr::Binary {
-            op: BinOp::Sub,
-            lhs: Box::new(TokenExpr::value(strand_scene::PropValue::Number(0.0))),
-            rhs: Box::new((*t).clone()),
-        }),
+        (UnaryOp::Neg, Value::Token(t)) => negate(&t, false),
+        (UnaryOp::Neg, Value::Time(t)) => negate(&t, true),
         (UnaryOp::Neg, Value::Null) => Value::Null,
         (UnaryOp::Neg, _) => return Err(fail("`-` needs a number")),
         (UnaryOp::Await, v) => v,
@@ -302,11 +324,14 @@ pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error>
                     Div => BinOp::Div,
                     _ => BinOp::Rem,
                 };
-                return Ok(Value::symbolic(TokenExpr::Binary {
-                    op,
-                    lhs: Box::new(l),
-                    rhs: Box::new(r),
-                }));
+                return Ok(Value::symbolic_from(
+                    TokenExpr::Binary {
+                        op,
+                        lhs: Box::new(l),
+                        rhs: Box::new(r),
+                    },
+                    a.has_time() || b.has_time(),
+                ));
             }
             let (Value::Num(x, u), Value::Num(y, v)) = (a, b) else {
                 if a.is_null() || b.is_null() {
@@ -589,7 +614,7 @@ pub(crate) fn call(
                             return Ok(Value::Color(c));
                         }
                     }
-                    Value::symbolic(e)
+                    Value::symbolic_from(e, timed)
                 } else {
                     Value::Null
                 }
@@ -644,7 +669,7 @@ pub(crate) fn call(
         }
         "noise" => match args.get(0) {
             Some(x @ (Value::Time(_) | Value::Token(_))) => match token_of(x) {
-                Some(e) => Value::symbolic(TokenExpr::Noise(Box::new(e))),
+                Some(e) => Value::symbolic_from(TokenExpr::Noise(Box::new(e)), x.has_time()),
                 None => Value::Null,
             },
             _ => Value::float(strand_scene::tokens::noise(num(0).unwrap_or(0.0) as f32) as f64),
@@ -796,7 +821,8 @@ fn color_method(recv: &Value, name: &str, args: &Args) -> Result<Value, Error> {
             .flatten()
             .map(|a| token_of(a).ok_or_else(|| fail(format!("`{name}` needs colours and numbers"))))
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(Value::symbolic(receiver.call(method, targs)));
+        let time = recv.has_time() || args.params.iter().flatten().any(Value::has_time);
+        return Ok(Value::symbolic_from(receiver.call(method, targs), time));
     }
     let Value::Color(c) = recv else {
         return Ok(Value::Null);

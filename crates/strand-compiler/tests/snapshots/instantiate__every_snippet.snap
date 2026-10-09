@@ -53,7 +53,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     box inner_shadow=template(0 2 6 0 #000000 <- $shadow) rim=[top, $fg.alpha(0.15)]
     box grain=0.04
     text fill=template(linear(90deg, #000000, #000000) <- $accent, $tertiary) text="x" text_stroke=template(1, #000000 <- $bg)
-    letters y=(2 * wave(1000ms, phase: 0))
+    letters y=(2 * wave(1000ms, phase: (index * 0.1)))
     popup scrim=$shadow.alpha(0.3)
     box filter=grayscale(1)
     box filter=saturate(1.3)
