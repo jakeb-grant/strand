@@ -246,7 +246,10 @@ connection (`Services::spawn_task`, crate-private), and feeds
 main thread's callback) and has `switched` redraw icons as an
 `index.theme` change does. `strand-introspect` reads an object's properties from its
 D-Bus introspection (`properties_on(conn, name, path)` async,
-`properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
+`properties(&Bus, name, path)` blocking with a 2 s bound over one
+connection per bus kept for the process (on a current-thread runtime
+with no thread of its own, so an idle connection costs no wakeup; made
+again when it breaks or hangs), `parse(xml)`,
 `default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),
 `properties` blocking, `properties_or_ask` answering from what it
 remembers and asking on a thread of its own): what `from dbus` services
