@@ -19,7 +19,8 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status: v0.1, M3 complete.** M3's exit gates are met (see
+**Status: v0.1, M3 complete.** Work is paused after M3; open decisions and deferred items are in
+[`docs/handoff.md`](docs/handoff.md). M3's exit gates are met (see
 [`docs/m3-report.md`](docs/m3-report.md)): every builtin service but
 `auth` (M4, the lock screen) is real. The portal, cpu, memory, battery
 (UPower), brightness (logind), network (NetworkManager), Bluetooth
