@@ -22,15 +22,21 @@
 //! `j/clients` get the same mapping, so a re-read after a
 //! `windowtitlev2` does not change a title back (a spurious `Update`).
 //!
-//! Actions are `dispatch` requests in one of two dialects. Before 0.55
-//! (hyprlang configs) a dispatcher and its argument (`dispatch workspace
-//! 3`); with a Lua config (0.55 on, the only kind from 0.56) the request's
-//! argument is evaluated as `return hl.dispatch(<argument>)`, so it must
-//! be a dispatcher object (`dispatch hl.dsp.focus({ workspace = "3" })`)
-//! and the classic form is answered `error: [string "return
-//! hl.dispatch(workspace 3)"]:1: ')' expected near '3'`. The adapter sends
-//! the classic form until Hyprland answers with that Lua error, then the
-//! Lua form for the rest of the connection (decisions.md, wave4-exit-ci).
+//! Actions are `dispatch` requests in one of two dialects. Before 0.55,
+//! and on 0.55 with a hyprlang config, a dispatcher and its argument
+//! (`dispatch workspace 3`); with a Lua config (0.55 on, the only kind
+//! from 0.56) the request's argument is evaluated as `return
+//! hl.dispatch(<argument>)`, so it must be a dispatcher object (`dispatch
+//! hl.dsp.focus({ workspace = "3" })`). Each dialect's Hyprland refuses
+//! the other's form in its own words: a Lua Hyprland answers a classic
+//! form with the Lua parser's error (`error: [string "return
+//! hl.dispatch(workspace 3)"]:1: ')' expected near '3'`), a classic one
+//! answers a Lua form `Invalid dispatcher` (the dispatcher name it reads
+//! is `hl.dsp.focus({`; `dispatchRequest` in `src/debug/HyprCtl.cpp`,
+//! 0.54.3 and 0.56.2 alike). The adapter sends the Lua form first and,
+//! when Hyprland refuses it that way, the classic form, keeping whichever
+//! was understood for the rest of the connection (decisions.md,
+//! wave4-exit-ci and laptop-resilience).
 //! `win.maximize()` and `win.fullscreen()` are Hyprland's own fullscreen
 //! toggles (modes 1 and 0): `hl.dsp.window.fullscreen({ mode = …, window
 //! = … })` in Lua; the classic `fullscreen` dispatcher acts on the focused
@@ -40,6 +46,15 @@
 //! `j/clients` reports each window's `stableId`, the same `{:x}` string
 //! Hyprland sends as its `ext-foreign-toplevel-list-v1` identifier
 //! (`src/protocols/ForeignToplevel.cpp`), so windows join the protocol.
+//!
+//! A reply the adapter cannot read (not JSON, or without a field it needs:
+//! an address, an id, a name), eight lines in a row that are no event (no
+//! `>>`), or an action every Hyprland has (focus, close) refused in both
+//! dialects degrade the adapter (`understood`; a later action refused in
+//! both is only rejected, `understood::tells_syntax`): the protocols
+//! serve until Hyprland is understood again,
+//! and the diagnostic names Hyprland's version (`j/version`, read then).
+//! An event name it does not know is ignored, as before.
 
 use std::collections::HashSet;
 use std::io;
@@ -54,6 +69,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, next_line, too_long};
 use super::model::{Window, WmState, Workspace};
+use super::understood::{self, Degradation, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 /// How long one request may take; Hyprland answers synchronously.
@@ -63,45 +79,52 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// (`src/managers/EventManager.cpp`, `data.substr(0, 1024)`).
 const EVENT_DATA_CAP: usize = 1024;
 
+// The fields the adapter needs are required: a reply without one (a
+// renamed field in a newer Hyprland) is not understood, instead of read
+// as empty (`understood`). The rest default.
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
 pub(crate) struct WsRef {
     pub id: i64,
+    #[serde(default)]
     pub name: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
 pub(crate) struct Monitor {
+    #[serde(default)]
     pub id: i64,
     pub name: String,
     pub focused: bool,
     #[serde(rename = "activeWorkspace")]
     pub active_workspace: WsRef,
+    #[serde(default)]
     pub disabled: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
 pub(crate) struct HWorkspace {
     pub id: i64,
     pub name: String,
+    #[serde(default)]
     pub monitor: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
 pub(crate) struct Client {
     pub address: String,
     pub mapped: bool,
     pub workspace: WsRef,
+    #[serde(default)]
     pub class: String,
+    #[serde(default)]
     pub title: String,
     /// A bool before Hyprland 0.42, a mode number (0 = none) since.
+    #[serde(default)]
     pub fullscreen: serde_json::Value,
     /// The `ext-foreign-toplevel-list-v1` identifier (`{:x}` of the
     /// window's stable id); empty before Hyprland reported it.
-    #[serde(rename = "stableId")]
+    #[serde(rename = "stableId", default)]
     pub stable_id: String,
 }
 
@@ -400,9 +423,14 @@ impl State {
         }
     }
 
-    /// The `dispatch` request for an action, in the classic dialect or,
-    /// with `lua`, as a Lua dispatcher object (see the module docs).
-    pub(crate) fn dispatch_for(&self, action: &WmAction, lua: bool) -> Result<String, WmError> {
+    /// The `dispatch` request for an action in `dialect` (see the module
+    /// docs).
+    pub(crate) fn dispatch_for(
+        &self,
+        action: &WmAction,
+        dialect: Dialect,
+    ) -> Result<String, WmError> {
+        let lua = dialect == Dialect::Lua;
         match action {
             WmAction::FocusWorkspace(id) => {
                 let ws = self
@@ -502,36 +530,75 @@ pub(crate) async fn request(path: &Path, command: &str) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Hyprland did not answer"))?
 }
 
-async fn request_json<T: for<'de> Deserialize<'de>>(path: &Path, command: &str) -> io::Result<T> {
+/// A state request's reply. No answer at all (Hyprland closed the
+/// connection, as it does when it goes away) is a lost socket.
+async fn request_text(path: &Path, command: &str) -> Result<String, SessionEnd> {
     let text = request(path, command).await?;
-    parse_reply(command, &text)
+    if text.is_empty() {
+        return Err(SessionEnd::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("Hyprland closed {command} without an answer"),
+        )));
+    }
+    Ok(text)
 }
 
-/// The JSON reply `text` to `command`.
-fn parse_reply<T: for<'de> Deserialize<'de>>(command: &str, text: &str) -> io::Result<T> {
+/// The JSON reply `text` to `command`, or what was not understood.
+fn parse_reply<T: for<'de> Deserialize<'de>>(command: &str, text: &str) -> Result<T, String> {
     serde_json::from_str(text).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "{command}: {e}: {}",
-                text.chars().take(200).collect::<String>()
-            ),
+        format!(
+            "the reply to {command} ({e}: `{}`)",
+            understood::excerpt(text)
         )
     })
 }
 
-/// Reads the whole state.
-async fn query(requests: &Path, state: &mut State) -> io::Result<()> {
-    let monitors = request_json(requests, "j/monitors").await?;
-    let workspaces = request_json(requests, "j/workspaces").await?;
-    let clients = request_json(requests, "j/clients").await?;
-    // `{}` when no window has focus.
-    let active: Client = request_json(requests, "j/activewindow").await?;
-    state.replace(monitors, workspaces, clients, Some(active));
+/// `j/activewindow`'s reply: `{}` when no window has focus.
+fn parse_active(text: &str) -> Result<Option<Client>, String> {
+    let value: serde_json::Value = parse_reply("j/activewindow", text)?;
+    if value.as_object().is_some_and(|o| o.is_empty()) {
+        return Ok(None);
+    }
+    parse_reply("j/activewindow", text).map(Some)
+}
+
+/// Reads the whole state. A reply that is not the JSON expected (or
+/// lacks a field the adapter needs) is not understood.
+async fn query(requests: &Path, state: &mut State) -> Result<(), SessionEnd> {
+    let read = |command: &'static str| request_text(requests, command);
+    let monitors = parse_reply("j/monitors", &read("j/monitors").await?);
+    let monitors = monitors.map_err(SessionEnd::reply)?;
+    let workspaces = parse_reply("j/workspaces", &read("j/workspaces").await?);
+    let workspaces = workspaces.map_err(SessionEnd::reply)?;
+    let clients = parse_reply("j/clients", &read("j/clients").await?);
+    let clients = clients.map_err(SessionEnd::reply)?;
+    let active = parse_active(&read("j/activewindow").await?).map_err(SessionEnd::reply)?;
+    state.replace(monitors, workspaces, clients, active);
     Ok(())
 }
 
-/// The adapter: connects, reads, follows events; reconnects with backoff.
+/// The version Hyprland reports (`j/version`'s `version`, else its
+/// `tag` without the `v`), for a diagnostic; `None` when it does not say.
+async fn version(requests: &Path) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Version {
+        #[serde(default)]
+        version: String,
+        #[serde(default)]
+        tag: String,
+    }
+    let text = request(requests, "j/version").await.ok()?;
+    let v: Version = serde_json::from_str(&text).ok()?;
+    let v = if v.version.is_empty() {
+        v.tag.trim_start_matches('v').to_string()
+    } else {
+        v.version
+    };
+    (!v.is_empty()).then_some(v)
+}
+
+/// The adapter: connects, reads, follows events; reconnects with backoff,
+/// and degrades (`understood`) while Hyprland is not understood.
 pub(crate) async fn run(
     requests: PathBuf,
     events: PathBuf,
@@ -540,12 +607,30 @@ pub(crate) async fn run(
 ) {
     let mut backoff = Backoff::new();
     let mut state = State::default();
+    let mut degradation = Degradation::default();
     loop {
-        match session(&requests, &events, &tx, &mut cmds, &mut state, &mut backoff).await {
+        let end = session(
+            &requests,
+            &events,
+            &tx,
+            &mut cmds,
+            &mut state,
+            &mut backoff,
+            &mut degradation,
+        )
+        .await;
+        let msg = match end {
             Ok(()) => return,
-            Err(e) => log::warn!("Hyprland IPC: {e}; reconnecting"),
-        }
-        if tx.send(AdapterMsg::Connected(false)).is_err() {
+            Err(SessionEnd::Io(e)) => {
+                log::warn!("Hyprland IPC: {e}; reconnecting");
+                Some(AdapterMsg::Connected(false))
+            }
+            Err(SessionEnd::NotUnderstood(n)) => {
+                let v = version(&requests).await;
+                degradation.ended("Hyprland", n, v)
+            }
+        };
+        if msg.is_some_and(|m| tx.send(m).is_err()) {
             return;
         }
         backoff.wait(&mut cmds).await;
@@ -560,31 +645,44 @@ async fn session(
     cmds: &mut UnboundedReceiver<Cmd>,
     state: &mut State,
     backoff: &mut Backoff,
-) -> io::Result<()> {
+    degradation: &mut Degradation,
+) -> Result<(), SessionEnd> {
     // Subscribe first, so nothing between the read and the stream is lost.
     let stream = UnixStream::connect(events).await?;
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     query(requests, state).await?;
-    backoff.connected();
-    if tx.send(AdapterMsg::Connected(true)).is_err()
-        || tx.send(AdapterMsg::State(state.snapshot())).is_err()
-    {
+    // Actions this Hyprland refused in both dialects stay refused until
+    // it reports another version.
+    degradation.check_refusal(version(requests)).await?;
+    // After a stream that was not understood, up only once this one
+    // carried an event (`understood::Degradation`).
+    let mut up = !degradation.on_probation();
+    if up && !degradation.come_up(tx, backoff, state.snapshot()) {
         return Ok(());
     }
     let mut cmds_open = true;
-    // The dispatch dialect: classic until Hyprland answers in Lua.
-    let mut lua = false;
+    // The dispatch dialect: Lua until Hyprland refuses it.
+    let mut dialect = Dialect::Lua;
+    let mut strikes = Strikes::default();
     loop {
         tokio::select! {
             line = next_line(&mut reader, &mut buf) => {
                 let Some(line) = line? else {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "event socket closed"));
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "event socket closed").into());
                 };
                 let mut requery = false;
                 let mut changed = false;
                 let mut reloads = 0;
-                let mut handle = |line: &[u8]| {
+                let mut handle = |line: &[u8]| -> Result<(), SessionEnd> {
+                    // Every event is `EVENT>>DATA`; a line without `>>`
+                    // is none (`understood`): re-read, and count it.
+                    if !line.windows(2).any(|w| w == b">>") {
+                        strikes.garbage("Hyprland", line)?;
+                        requery = true;
+                        return Ok(());
+                    }
+                    strikes.event();
                     match state.apply_line(line) {
                         Effect::None => {}
                         Effect::Changed => changed = true,
@@ -594,21 +692,30 @@ async fn session(
                             reloads += 1;
                         }
                     }
+                    Ok(())
                 };
-                handle(&line);
+                handle(&line)?;
                 // The rest of a burst that is already here.
                 while let Some(next) =
                     futures_lite::future::poll_once(next_line(&mut reader, &mut buf)).await
                 {
                     match next? {
-                        Some(l) => handle(&l),
+                        Some(l) => handle(&l)?,
                         None => break,
                     }
                 }
                 if requery {
                     query(requests, state).await?;
                 }
-                if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                if !up {
+                    if !strikes.seen_event() {
+                        continue;
+                    }
+                    up = true;
+                    if !degradation.come_up(tx, backoff, state.snapshot()) {
+                        return Ok(());
+                    }
+                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
                     return Ok(());
                 }
                 for _ in 0..reloads {
@@ -618,14 +725,20 @@ async fn session(
                 }
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
-                Some((action, reply)) => {
-                    let mut result = dispatch(requests, state, &action, lua).await;
-                    if !lua && matches!(&result, Err(WmError::Rejected(r)) if wants_lua(r)) {
-                        lua = true;
-                        result = dispatch(requests, state, &action, lua).await;
+                // Not up: the services act through the protocols.
+                Some((_, reply)) if !up => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Err(WmError::NotConnected));
                     }
+                }
+                Some((action, reply)) => {
+                    let (result, refused_both) =
+                        dispatch_either(requests, state, &action, &mut dialect).await;
                     if let Some(r) = reply {
                         let _ = r.send(result);
+                    }
+                    if let Some(what) = refused_both {
+                        return Err(SessionEnd::actions(what));
                     }
                 }
                 None => cmds_open = false,
@@ -634,14 +747,60 @@ async fn session(
     }
 }
 
-/// Sends `action` as a `dispatch` request in the dialect `lua` says.
+/// Sends `action` in `dialect`; when Hyprland refuses that dialect's form
+/// ([`refuses_dialect`]), in the other one, which becomes the
+/// connection's when it is understood. The second value says what was
+/// refused when both were (`understood`).
+async fn dispatch_either(
+    requests: &Path,
+    state: &State,
+    action: &WmAction,
+    dialect: &mut Dialect,
+) -> (Result<(), WmError>, Option<String>) {
+    let first = dispatch(requests, state, action, *dialect).await;
+    let Err(WmError::Rejected(first_reply)) = &first else {
+        return (first, None);
+    };
+    if !refuses_dialect(first_reply) {
+        return (first, None);
+    }
+    let other = dialect.other();
+    let second = dispatch(requests, state, action, other).await;
+    match &second {
+        // A later action (a fullscreen form) this Hyprland may not have:
+        // that action's failure, in the connection's dialect
+        // (`understood::tells_syntax`).
+        Err(WmError::Rejected(second_reply))
+            if refuses_dialect(second_reply) && !understood::tells_syntax(action) =>
+        {
+            (first, None)
+        }
+        Err(WmError::Rejected(second_reply)) if refuses_dialect(second_reply) => {
+            let form = |d: Dialect| state.dispatch_for(action, d).unwrap_or_default();
+            let what = format!(
+                "the dispatch syntax of both dialects (`{}` answered `{}`; `{}` answered `{}`)",
+                understood::excerpt(&form(*dialect)),
+                understood::excerpt(first_reply),
+                understood::excerpt(&form(other)),
+                understood::excerpt(second_reply),
+            );
+            (second, Some(what))
+        }
+        _ => {
+            *dialect = other;
+            (second, None)
+        }
+    }
+}
+
+/// Sends `action` as a `dispatch` request in `dialect`.
 async fn dispatch(
     requests: &Path,
     state: &State,
     action: &WmAction,
-    lua: bool,
+    dialect: Dialect,
 ) -> Result<(), WmError> {
-    let req = state.dispatch_for(action, lua)?;
+    let req = state.dispatch_for(action, dialect)?;
     match request(requests, &req).await {
         Ok(r) => dispatch_reply(&r),
         Err(e) => Err(WmError::Io(e.to_string())),
@@ -669,9 +828,48 @@ fn dispatch_reply(reply: &str) -> Result<(), WmError> {
 }
 
 /// Whether a dispatch was refused because Hyprland evaluates dispatches
-/// as Lua (a Lua config): `error: [string "return hl.dispatch(…)"]:1: …`.
+/// as Lua (a Lua config): `error: [string "return hl.dispatch(…)"]:1: …`,
+/// Lua's own error for the chunk Hyprland made of the request (it could
+/// not parse or run it).
 fn wants_lua(reply: &str) -> bool {
     reply.starts_with("error") && reply.contains("hl.dispatch(")
+}
+
+/// Whether a dispatch was refused because Hyprland reads it as a classic
+/// dispatcher and its argument (before 0.55, or a hyprlang config): a Lua
+/// form's first word (`hl.dsp.focus({`) names no dispatcher, which
+/// `dispatchRequest` (`src/debug/HyprCtl.cpp`, 0.54.3 to 0.56.2) answers
+/// `Invalid dispatcher`.
+fn wants_classic(reply: &str) -> bool {
+    reply.trim() == "Invalid dispatcher"
+}
+
+/// Whether `reply` refuses the dialect a dispatch was sent in rather than
+/// the action: one of its commands' replies (a batch has one per command)
+/// says Hyprland reads requests in the other dialect.
+fn refuses_dialect(reply: &str) -> bool {
+    reply
+        .split("\n\n\n")
+        .any(|r| wants_lua(r.trim()) || wants_classic(r))
+}
+
+/// The two `dispatch` dialects (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    /// A dispatcher object, `hl.dsp.focus({ workspace = "3" })`: a Lua
+    /// config (0.55 on; the only kind from 0.56).
+    Lua,
+    /// A dispatcher and its argument, `workspace 3`: a hyprlang config.
+    Classic,
+}
+
+impl Dialect {
+    fn other(self) -> Self {
+        match self {
+            Self::Lua => Self::Classic,
+            Self::Classic => Self::Lua,
+        }
+    }
 }
 
 /// `s` as a Lua string literal.
@@ -859,20 +1057,21 @@ mod tests {
     fn dispatches_name_the_target() {
         let s = state();
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(2), false).unwrap(),
+            s.dispatch_for(&WmAction::FocusWorkspace(2), Dialect::Classic)
+                .unwrap(),
             "dispatch workspace 2"
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), false)
+            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), Dialect::Classic)
                 .unwrap(),
             "dispatch focuswindow address:0xa1"
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(9), false),
+            s.dispatch_for(&WmAction::FocusWorkspace(9), Dialect::Classic),
             Err(WmError::UnknownWorkspace(9))
         );
         assert!(matches!(
-            s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into()), false),
+            s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into()), Dialect::Classic),
             Err(WmError::Unsupported(_))
         ));
     }
@@ -883,16 +1082,17 @@ mod tests {
     fn lua_dispatches_are_dispatcher_objects() {
         let s = state();
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(2), true).unwrap(),
+            s.dispatch_for(&WmAction::FocusWorkspace(2), Dialect::Lua)
+                .unwrap(),
             r#"dispatch hl.dsp.focus({ workspace = "2" })"#
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), true)
+            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), Dialect::Lua)
                 .unwrap(),
             r#"dispatch hl.dsp.focus({ window = "address:0xa1" })"#
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::CloseWindow("0xa1".into()), true)
+            s.dispatch_for(&WmAction::CloseWindow("0xa1".into()), Dialect::Lua)
                 .unwrap(),
             r#"dispatch hl.dsp.window.close({ window = "address:0xa1" })"#
         );
@@ -903,6 +1103,38 @@ mod tests {
         ));
         assert!(!wants_lua("No such window found"));
         assert!(!wants_lua("ok"));
+    }
+
+    /// Each dialect's Hyprland refuses the other's form in its own words;
+    /// those replies, and only those, send the dispatch again in the other
+    /// dialect. An action's own failure does not.
+    #[test]
+    fn dialect_refusals_are_told_from_failed_actions() {
+        // Hyprland 0.54.3 (and 0.55/0.56 with a hyprlang config) to a Lua
+        // form: `dispatchRequest` finds no dispatcher `hl.dsp.focus({`.
+        assert!(refuses_dialect("Invalid dispatcher"));
+        assert!(refuses_dialect("Invalid dispatcher\n"));
+        // Hyprland 0.56.2 with a Lua config to a classic form, with the
+        // note it appends when the argument has no `(`.
+        assert!(refuses_dialect(
+            "error: [string \"return hl.dispatch(workspace 3)\"]:1: ')' expected near '3'\n\n \
+             → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might \
+             need to be updated."
+        ));
+        // A batch refused command by command, or in its second command
+        // only (a classic Hyprland without that dispatcher).
+        assert!(refuses_dialect("ok\n\n\nInvalid dispatcher"));
+        for failed in [
+            "No such window found",
+            "ok",
+            "",
+            "error: no window",
+            "false",
+        ] {
+            assert!(!refuses_dialect(failed), "{failed:?}");
+        }
+        assert_eq!(Dialect::Lua.other(), Dialect::Classic);
+        assert_eq!(Dialect::Classic.other(), Dialect::Lua);
     }
 
     /// A dispatch succeeds only on `ok`, the one success reply seen from
@@ -941,24 +1173,24 @@ mod tests {
         let max = WmAction::MaximizeWindow("0xa1".into());
         let full = WmAction::FullscreenWindow("0xa1".into());
         assert_eq!(
-            s.dispatch_for(&max, true).unwrap(),
+            s.dispatch_for(&max, Dialect::Lua).unwrap(),
             r#"dispatch hl.dsp.window.fullscreen({ mode = "maximized", window = "address:0xa1" })"#
         );
         assert_eq!(
-            s.dispatch_for(&full, true).unwrap(),
+            s.dispatch_for(&full, Dialect::Lua).unwrap(),
             r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0xa1" })"#
         );
         assert_eq!(
-            s.dispatch_for(&max, false).unwrap(),
+            s.dispatch_for(&max, Dialect::Classic).unwrap(),
             "[[BATCH]]dispatch focuswindow address:0xa1;dispatch fullscreen 1"
         );
         assert_eq!(
-            s.dispatch_for(&full, false).unwrap(),
+            s.dispatch_for(&full, Dialect::Classic).unwrap(),
             "[[BATCH]]dispatch focuswindow address:0xa1;dispatch fullscreen 0"
         );
-        for lua in [false, true] {
+        for dialect in [Dialect::Classic, Dialect::Lua] {
             assert_eq!(
-                s.dispatch_for(&WmAction::MaximizeWindow("0xb2".into()), lua),
+                s.dispatch_for(&WmAction::MaximizeWindow("0xb2".into()), dialect),
                 Err(WmError::UnknownWindow("0xb2".into()))
             );
         }
@@ -969,6 +1201,37 @@ mod tests {
              near 'address:0xa1'\n\n\nerror: [string \"return hl.dispatch(fullscreen 1)\"]:1: \
              ')' expected near '1'"
         ));
+    }
+
+    /// A reply of another shape is not understood, naming the request and
+    /// what is wrong; a missing field the adapter needs counts, one it
+    /// does not need stays optional.
+    #[test]
+    fn replies_of_another_shape_are_not_understood() {
+        let e = parse_reply::<Vec<Client>>(
+            "j/clients",
+            r#"[{"addr": "0x1", "mapped": true, "workspace": {"id": 1}}]"#,
+        )
+        .unwrap_err();
+        assert!(
+            e.starts_with("the reply to j/clients (missing field `address`"),
+            "{e}"
+        );
+        let e = parse_reply::<Vec<Monitor>>("j/monitors", "unknown request").unwrap_err();
+        assert!(e.contains("`unknown request`"), "{e}");
+        let e = parse_reply::<Vec<HWorkspace>>("j/workspaces", r#"{"workspaces": []}"#);
+        assert!(e.is_err());
+        let e = parse_reply::<Vec<HWorkspace>>("j/workspaces", r#"[{"id": "1", "name": "1"}]"#);
+        assert!(e.is_err(), "an id of another type");
+        let c: Vec<Client> = parse_reply(
+            "j/clients",
+            r#"[{"address": "0x1", "mapped": true, "workspace": {"id": 1}}]"#,
+        )
+        .unwrap();
+        assert_eq!(c[0].title, "", "optional fields default");
+        assert_eq!(parse_active("{}"), Ok(None));
+        assert!(parse_active("[]").is_err());
+        assert!(parse_active(r#"{"title": "x"}"#).is_err());
     }
 
     /// `j/clients`' `fullscreen` is the internal mode: 0 none, 1 maximized,
@@ -1009,7 +1272,7 @@ mod tests {
             parse_reply("j/monitors", &read("monitors")).unwrap(),
             parse_reply("j/workspaces", &read("workspaces")).unwrap(),
             parse_reply("j/clients", &read("clients")).unwrap(),
-            Some(parse_reply::<Client>("j/activewindow", &read("activewindow")).unwrap()),
+            parse_active(&read("activewindow")).unwrap(),
         );
         s
     }

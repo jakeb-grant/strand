@@ -1014,6 +1014,7 @@ impl<S: Service> Member for ClientInner<S> {
                     }
                     self.resolve();
                 }
+                Envelope::Warning(m) => self.diagnose(rt, &m, false),
                 Envelope::Ready => {
                     // Ready without a notice (raised before readiness):
                     // the last notice no longer holds.

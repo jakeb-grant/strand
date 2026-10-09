@@ -15,6 +15,16 @@
 //! the whole tree, for as long as that window lives; here the title shows
 //! U+FFFD where its bad bytes were. Frames are bounded
 //! ([`MAX_MESSAGE`]); the event reader is cancel safe.
+//!
+//! A reply the adapter cannot decode (or bytes that are no i3-ipc frame),
+//! eight event payloads in a row that are no JSON, or a command for an
+//! action every sway has (focus, kill, workspace) that sway does not know
+//! (`Unknown/invalid command`, [`refuses_syntax`]) degrade the adapter
+//! (`understood`), naming sway's version (`get_version`); a later
+//! action's unknown command, and any other `parse_error` (sway's
+//! `CMD_INVALID`, which states such as no outputs also return), are only
+//! rejected (`understood::tells_syntax`). An event of a type it does not know is
+//! ignored; one it cannot decode is followed by a re-read, as before.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,6 +41,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, too_long};
 use super::model::{Window, WmState, Workspace};
+use super::understood::{self, Degradation, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 /// sway's scratchpad workspace.
@@ -78,15 +89,17 @@ impl Conn {
         })
     }
 
-    /// The next frame: its type and payload. Cancel safe.
-    async fn frame(&mut self) -> io::Result<(u32, Vec<u8>)> {
+    /// The next frame: its type and payload. Cancel safe. Bytes that are
+    /// no i3-ipc frame are not understood (nothing after them can be
+    /// read); a frame over [`MAX_MESSAGE`] is an I/O error.
+    async fn frame(&mut self) -> Result<(u32, Vec<u8>), SessionEnd> {
         loop {
             if self.buf.len() >= HEADER {
                 if &self.buf[..6] != MAGIC {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "not an i3-ipc frame",
-                    ));
+                    return Err(SessionEnd::reply(format!(
+                        "its framing (`{}` where an i3-ipc header belongs)",
+                        understood::excerpt(&String::from_utf8_lossy(&self.buf[..HEADER]))
+                    )));
                 }
                 let word = |at: usize| {
                     let mut b = [0u8; 4];
@@ -96,7 +109,7 @@ impl Conn {
                 let len = word(6) as usize;
                 let ty = word(10);
                 if len > MAX_MESSAGE {
-                    return Err(too_long());
+                    return Err(too_long().into());
                 }
                 if self.buf.len() >= HEADER + len {
                     let payload = self.buf[HEADER..HEADER + len].to_vec();
@@ -106,7 +119,7 @@ impl Conn {
             }
             let avail = self.reader.fill_buf().await?;
             if avail.is_empty() {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "sway closed"));
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "sway closed").into());
             }
             let n = avail.len();
             self.buf.extend_from_slice(avail);
@@ -114,22 +127,28 @@ impl Conn {
         }
     }
 
-    /// One request and its reply.
+    /// One request and its reply; a reply of another type or shape is not
+    /// understood.
     async fn request<T: DeserializeOwned>(
         &mut self,
         ty: CommandType,
         payload: &str,
-    ) -> io::Result<T> {
+    ) -> Result<T, SessionEnd> {
         let run = async {
             self.write.write_all(&ty.encode_with(payload)).await?;
             let (got, reply) = self.frame().await?;
             if got != u32::from(ty) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("sway answered {got} to {ty:?}"),
-                ));
+                return Err(SessionEnd::reply(format!(
+                    "the reply to {ty:?} (a reply of type {got})"
+                )));
             }
-            decode(reply)
+            let text = String::from_utf8_lossy(&reply).into_owned();
+            decode(reply).map_err(|e| {
+                SessionEnd::reply(format!(
+                    "the reply to {ty:?} ({e}: `{}`)",
+                    understood::excerpt(&text)
+                ))
+            })
         };
         tokio::time::timeout(REQUEST_TIMEOUT, run)
             .await
@@ -279,25 +298,54 @@ impl State {
     }
 }
 
-async fn query(conn: &mut Conn, state: &mut State) -> io::Result<()> {
+/// Whether a command's error says sway does not know the command at all.
+/// sway sets `parse_error` for every `CMD_INVALID` result, and `focus`,
+/// `kill` and `workspace` return one for states too (no outputs
+/// connected, `Expected workspace number`, `There is no previous
+/// workspace`), so only `execute_command`'s unknown-command reply
+/// (`Unknown/invalid command '…'`) tells that the syntax is not sway's
+/// (sway 1.10 `sway/commands.c`; decisions.md, laptop-resilience).
+fn refuses_syntax(error: &str) -> bool {
+    error.trim_start().starts_with("Unknown/invalid command")
+}
+
+async fn query(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
     state.workspaces = conn.request(CommandType::GetWorkspaces, "").await?;
     let tree: Node = conn.request(CommandType::GetTree, "").await?;
     state.set_tree(&tree);
     Ok(())
 }
 
+/// The version sway reports (`get_version`'s `human_readable`), for a
+/// diagnostic.
+async fn version(socket: &Path) -> Option<String> {
+    let mut conn = Conn::connect(socket).await.ok()?;
+    let v: swayipc_types::Version = conn.request(CommandType::GetVersion, "").await.ok()?;
+    (!v.human_readable.is_empty()).then_some(v.human_readable)
+}
+
+/// The adapter: connects, reads, follows events; reconnects with backoff,
+/// and degrades (`understood`) while sway is not understood.
 pub(crate) async fn run(
     socket: PathBuf,
     tx: UnboundedSender<AdapterMsg>,
     mut cmds: UnboundedReceiver<Cmd>,
 ) {
     let mut backoff = Backoff::new();
+    let mut degradation = Degradation::default();
     loop {
-        match session(&socket, &tx, &mut cmds, &mut backoff).await {
+        let msg = match session(&socket, &tx, &mut cmds, &mut backoff, &mut degradation).await {
             Ok(()) => return,
-            Err(e) => log::warn!("sway IPC: {e}; reconnecting"),
-        }
-        if tx.send(AdapterMsg::Connected(false)).is_err() {
+            Err(SessionEnd::Io(e)) => {
+                log::warn!("sway IPC: {e}; reconnecting");
+                Some(AdapterMsg::Connected(false))
+            }
+            Err(SessionEnd::NotUnderstood(n)) => {
+                let v = version(&socket).await;
+                degradation.ended("sway", n, v)
+            }
+        };
+        if msg.is_some_and(|m| tx.send(m).is_err()) {
             return;
         }
         backoff.wait(&mut cmds).await;
@@ -335,12 +383,37 @@ fn effect(state: &mut State, event: Event) -> Effect {
     }
 }
 
+/// What an event frame is to the adapter (`understood`).
+enum Decoded {
+    Event(Event),
+    /// An event type this adapter does not know: ignored.
+    Unknown,
+    /// JSON this version of swayipc-types cannot decode (a new change
+    /// kind, a field of another type): read again.
+    Reread(String),
+    /// No JSON at all: read again, and counted.
+    Garbage,
+}
+
+fn decode_event(ty: u32, payload: Vec<u8>) -> Decoded {
+    let payload = lossy(payload);
+    if serde_json::from_slice::<serde::de::IgnoredAny>(&payload).is_err() {
+        return Decoded::Garbage;
+    }
+    match Event::decode((ty, payload)) {
+        Ok(ev) => Decoded::Event(ev),
+        Err(swayipc_types::Error::UnimplementedEvent(..)) => Decoded::Unknown,
+        Err(e) => Decoded::Reread(e.to_string()),
+    }
+}
+
 async fn session(
     socket: &Path,
     tx: &UnboundedSender<AdapterMsg>,
     cmds: &mut UnboundedReceiver<Cmd>,
     backoff: &mut Backoff,
-) -> io::Result<()> {
+    degradation: &mut Degradation,
+) -> Result<(), SessionEnd> {
     let mut events = Conn::connect(socket).await?;
     let subscribed: Success = events
         .request(
@@ -349,18 +422,24 @@ async fn session(
         )
         .await?;
     if !subscribed.success {
-        return Err(io::Error::other("sway refused the subscription"));
+        return Err(SessionEnd::reply(
+            "the subscription to workspace, window and shutdown events (refused)",
+        ));
     }
     let mut conn = Conn::connect(socket).await?;
     let mut state = State::default();
     query(&mut conn, &mut state).await?;
-    backoff.connected();
-    if tx.send(AdapterMsg::Connected(true)).is_err()
-        || tx.send(AdapterMsg::State(state.snapshot())).is_err()
-    {
+    // Actions this sway refused stay refused until it reports another
+    // version.
+    degradation.check_refusal(version(socket)).await?;
+    // After a stream that was not understood, up only once this one
+    // carried an event (`understood::Degradation`).
+    let mut up = !degradation.on_probation();
+    if up && !degradation.come_up(tx, backoff, state.snapshot()) {
         return Ok(());
     }
     let mut cmds_open = true;
+    let mut strikes = Strikes::default();
     loop {
         tokio::select! {
             event = events.frame() => {
@@ -371,33 +450,51 @@ async fn session(
                 let mut pending = Some(event);
                 while let Some(event) = pending.take() {
                     let (ty, payload) = event?;
-                    match Event::decode((ty, lossy(payload))) {
-                        Err(e) => {
-                            // An event this version cannot decode: re-read.
-                            log::warn!("sway IPC: {e}");
+                    let sample = payload.clone();
+                    match decode_event(ty, payload) {
+                        Decoded::Garbage => {
+                            strikes.garbage("sway", &sample)?;
                             requery = true;
                         }
-                        Ok(ev) => match effect(&mut state, ev) {
-                            Effect::None => {}
-                            Effect::Changed => changed = true,
-                            Effect::Requery => requery = true,
-                            Effect::Reloaded => {
-                                reloads += 1;
-                                requery = true;
+                        Decoded::Unknown => strikes.event(),
+                        Decoded::Reread(e) => {
+                            // An event this version cannot decode: re-read.
+                            log::warn!("sway IPC: {e}");
+                            strikes.event();
+                            requery = true;
+                        }
+                        Decoded::Event(ev) => {
+                            strikes.event();
+                            match effect(&mut state, ev) {
+                                Effect::None => {}
+                                Effect::Changed => changed = true,
+                                Effect::Requery => requery = true,
+                                Effect::Reloaded => {
+                                    reloads += 1;
+                                    requery = true;
+                                }
+                                Effect::Shutdown => shutdown = true,
                             }
-                            Effect::Shutdown => shutdown = true,
-                        },
+                        }
                     }
                     // The rest of a burst that is already here.
                     pending = futures_lite::future::poll_once(events.frame()).await;
                 }
                 if shutdown {
-                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "sway is shutting down"));
+                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "sway is shutting down").into());
                 }
                 if requery {
                     query(&mut conn, &mut state).await?;
                 }
-                if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                if !up {
+                    if !strikes.seen_event() {
+                        continue;
+                    }
+                    up = true;
+                    if !degradation.come_up(tx, backoff, state.snapshot()) {
+                        return Ok(());
+                    }
+                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
                     return Ok(());
                 }
                 for _ in 0..reloads {
@@ -407,7 +504,14 @@ async fn session(
                 }
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
+                // Not up: the services act through the protocols.
+                Some((_, reply)) if !up => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Err(WmError::NotConnected));
+                    }
+                }
                 Some((action, reply)) => {
+                    let mut refused_syntax = None;
                     let result = match state.command_for(&action) {
                         Ok(c) => match conn
                             .request::<Vec<CommandOutcome>>(CommandType::RunCommand, &c)
@@ -417,7 +521,26 @@ async fn session(
                                 .into_iter()
                                 .map(CommandOutcome::decode)
                                 .find_map(Result::err)
-                                .map_or(Ok(()), |e| Err(WmError::Rejected(e.to_string()))),
+                                .map_or(Ok(()), |e| {
+                                    // sway does not know the command. For
+                                    // an action every sway has, its syntax
+                                    // is not sway's (any more); a later
+                                    // one is only rejected
+                                    // (`understood::tells_syntax`). Any
+                                    // other `parse_error` is the action's
+                                    // own failure ([`refuses_syntax`]).
+                                    if let swayipc_types::Error::CommandParse(m) = &e
+                                        && refuses_syntax(m)
+                                        && understood::tells_syntax(&action)
+                                    {
+                                        refused_syntax = Some(format!(
+                                            "the command syntax (`{}` answered `{}`)",
+                                            understood::excerpt(&c),
+                                            understood::excerpt(m)
+                                        ));
+                                    }
+                                    Err(WmError::Rejected(e.to_string()))
+                                }),
                             Err(e) => {
                                 if let Some(r) = reply {
                                     let _ = r.send(Err(WmError::Io(e.to_string())));
@@ -430,6 +553,9 @@ async fn session(
                     if let Some(r) = reply {
                         let _ = r.send(result);
                     }
+                    if let Some(what) = refused_syntax {
+                        return Err(SessionEnd::actions(what));
+                    }
                 }
                 None => cmds_open = false,
             },
@@ -440,6 +566,23 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only sway's unknown-command reply refuses the syntax; the
+    /// `CMD_INVALID` replies its `focus`, `kill` and `workspace` give for
+    /// a state (sway 1.10) do not.
+    #[test]
+    fn only_an_unknown_command_refuses_the_syntax() {
+        assert!(refuses_syntax("Unknown/invalid command 'focus'"));
+        assert!(refuses_syntax("Unknown/invalid command 'workspace'"));
+        for state in [
+            "Can't run this command while there's no outputs connected.",
+            "Expected workspace number",
+            "There is no previous workspace",
+            "No matching node.",
+        ] {
+            assert!(!refuses_syntax(state), "{state}");
+        }
+    }
 
     /// A `get_tree` reply (captured from sway 1.9) whose window title is
     /// Latin-1 decodes, with U+FFFD for the bad byte.
@@ -527,9 +670,9 @@ mod tests {
         huge.extend_from_slice(&u32::MAX.to_ne_bytes());
         huge.extend_from_slice(&4u32.to_ne_bytes());
         bw.write_all(&huge).await.unwrap();
-        assert_eq!(
-            conn.frame().await.unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert!(matches!(
+            conn.frame().await,
+            Err(SessionEnd::Io(e)) if e.kind() == io::ErrorKind::InvalidData
+        ));
     }
 }
