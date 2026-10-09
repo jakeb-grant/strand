@@ -360,26 +360,17 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
 
 - A second output on Hyprland, niri and sway is not checked live (see
   the matrix).
-- `strand-watch` wakes its thread once for each name made or removed in
-  any ancestor of a watched directory (up to `/`): on a desktop, every
-  atomic save in `~` or `~/.config`. No logic wake or frame follows, but
-  the idle test has to tell these wakes apart (Idle wakeups). Whether
-  the ancestor watches above the config root's parent are needed is the
-  `strand-watch` owner's call.
-- The token clause of the M1 latency bench has under 0.2 ms of p95
-  headroom on this machine and fails about two runs in three here (CI
-  passes it). The size opt-levels are not the cause (measured above:
-  `strand` at opt-level 3 fails as often and costs the bar ~2.1 MB);
-  the ~19 ms headless token reload is the path to profile (M1 owners).
-- The owner's confirmation of the ~27 release opt-level overrides
-  (`[profile.release.package]`, decisions.md wave4-exitMemory and
-  wave4-exitReport review r2). The memory targets and ceilings
-  themselves are owner-confirmed (decisions.md wave4-core, commit
-  607bd10) and no longer open.
-- The strand-render owner's acknowledgement of the layout default this
-  step added: an `image` or `icon` sized in absolute lengths defaults to
-  `shrink: 0` (a percentage size still gives way); decisions.md
-  wave3-pixels `shrink` note and wave4-exitReport reviews r1 and r2.
+- Answered since (2026-10-08, decisions.md laptop-decisions; handoff.md):
+  the four owner decisions this report left open. The ancestor watches
+  now stop below `$HOME` (outside it, at the mount's root), so atomic
+  saves in `~` no longer wake `strand-watch` through one. The latency gate keeps
+  its 35 ms budget and 50 rounds; the cloud container is no longer the
+  reference machine, and the laptop passed three runs with a per-stage
+  profile recorded. The ~27 release opt-level overrides are signed off,
+  with the caveat that the memory figures need the workspace's release
+  profile (README). The `shrink: 0` default for an absolutely sized
+  `image` or `icon` is acknowledged and written into design.md's
+  layout section.
 - Closed since: wave 3's strand-text change that stopped faux bold at
   weight 500 (CSS `font-synthesis-weight`) was left for its owner's
   sign-off; it is reviewed and kept (decisions.md wave4-core, carried
