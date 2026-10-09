@@ -2162,7 +2162,8 @@ fn grab(output: Option<&str>, dir: &std::path::Path) -> Option<Img> {
 /// the capabilities the surface manager reports are the registry's (the
 /// background effect only where it is offered); where the compositor
 /// blurs, a panel's rounded blur region is sent; a panel's scrim dims a
-/// wallpaper surface beneath it and not the panel; and on Hyprland the layer rules
+/// wallpaper surface beneath it and not the panel, and so does a scrim on
+/// a panel's popup (neither the panel nor the popup); and on Hyprland the layer rules
 /// `strand compositor-rules` prints evaluate without errors.
 #[test]
 fn surfaces_meet_the_live_compositor() {
@@ -2350,7 +2351,88 @@ fn surfaces_meet_the_live_compositor() {
             .arg(PathBuf::from(shots).join(format!("matrix-{kind}-surfaces-scrim.png")))
             .status();
     }
-    for node in [PANEL, WALL] {
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Removed);
+    mgr.state_mut().host_mut().blur.clear();
+
+    // `panel Host { anchor: top_right; 300 × 200; popup { scrim: black
+    // 30 % } }`: the popup's scrim goes on the layer below the panel (which
+    // rises to `overlay` for it), so on a compositor that stacks the newer
+    // of two surfaces on one layer on top the scrim still dims neither.
+    const HOST: NodeId = NodeId::new(10, 0);
+    const MENU: NodeId = NodeId::new(11, 0);
+    let host: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Host".into())),
+        (Prop::Anchor, PropValue::Keyword("top_right".into())),
+        (Prop::Width, PropValue::Number(300.0)),
+        (Prop::Height, PropValue::Number(200.0)),
+    ]
+    .into_iter()
+    .collect();
+    mgr.state_mut().apply_surface_change(
+        HOST,
+        SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| host.get(&p))),
+    );
+    let mut menu = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&PropValue>);
+    menu.name = Some("Menu".into());
+    menu.parent = Some(HOST);
+    menu.anchor_rect = Some(strand_scene::LogicalRect::new(100.0, 150.0, 60.0, 20.0));
+    menu.width = Some(200.0);
+    menu.height = Some(120.0);
+    menu.scrim = Some(Color::new(0.0, 0.0, 0.0, 0.3));
+    mgr.state_mut()
+        .apply_surface_change(MENU, SurfaceChange::Created(menu));
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == MENU && i.stats.commits > 0 && i.scrim.is_some())
+        })
+        .expect("dispatch");
+    assert!(
+        ok,
+        "{kind}: the panel's popup and its scrim: {:?}",
+        mgr.state().surfaces()
+    );
+    let host_id = mgr.state().surfaces_of(HOST)[0];
+    assert_eq!(
+        mgr.state().surface(host_id).and_then(|i| i.layer),
+        Some(strand_scene::Layer::Overlay),
+        "{kind}: the panel rises for its popup's scrim"
+    );
+    // The popup opens below its anchor, past the panel's bottom edge.
+    let (hx, hy) = (ow - 150, 60);
+    let (mx, my) = (ow - 170, 260);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        let (got, panel, popup) = (img.px(sx, sy), img.px(hx, hy), img.px(mx, my));
+        let blue = [0x20, 0x60, 0xe0];
+        if dist(got, want) <= 9 && dist(panel, blue) <= 9 && dist(popup, blue) <= 9 {
+            eprintln!(
+                "matrix: {kind}: a popup's scrim dims {base:?} to {got:?}; \
+                 the panel is {panel:?}, the popup {popup:?}"
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                let mut cmd = Command::new("grim");
+                if let Some(o) = &output {
+                    cmd.args(["-o", o]);
+                }
+                let _ = cmd
+                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-popup-scrim-failed.png")))
+                    .status();
+            }
+            panic!(
+                "{kind}: a popup's scrim: the desktop at ({sx}, {sy}) is {got:?} (want {want:?}); \
+                 the panel at ({hx}, {hy}) is {panel:?}; the popup at ({mx}, {my}) is {popup:?}"
+            );
+        }
+    }
+    for node in [MENU, HOST, WALL] {
         mgr.state_mut()
             .apply_surface_change(node, SurfaceChange::Removed);
     }

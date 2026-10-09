@@ -30,8 +30,9 @@ use strand_scene::Color;
 /// shm), on the layer below the panel's (see [`Under::of_layer`]). A
 /// surface with a scrim and no click-away gets only the primary one,
 /// with an empty input region (clicks pass through; a popup's own grab
-/// closes it); a popup's goes on its root layer surface's layer and
-/// output (popups stack above layer surfaces).
+/// closes it); a popup's goes on its root layer surface's output, below
+/// it ([`crate::placement::popup_scrim_layer`]; popups stack above layer
+/// surfaces).
 pub(super) struct Catcher {
     pub(super) layer: LayerSurface,
     /// The layer it was made on (fixed at creation).

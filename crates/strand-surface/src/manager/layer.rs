@@ -15,7 +15,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.reconfigure_popups(node);
             return;
         }
-        let new = layer_config(spec);
+        let new = self.layer_config_of(node, spec);
         let under = wants_under(spec);
         // The layer its catcher goes on: one below the surface's with a
         // scrim, else the surface's own.
@@ -131,7 +131,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         placement: Placement,
         global: Option<u32>,
     ) {
-        let mut config = match layer_config(spec) {
+        let mut config = match self.layer_config_of(node, spec) {
             Ok(c) => c,
             Err(PlacementError::AutoSize(_) | PlacementError::NotLayerSurface(_)) => return,
         };

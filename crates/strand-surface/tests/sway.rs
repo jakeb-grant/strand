@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use strand_scene::{
-    Damage, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
+    Damage, Insets, Layer, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
 };
 use strand_surface::{ButtonState, Config, FakeClock, InputEvent, MAX_BUFFERS, Request};
 
@@ -2043,7 +2043,11 @@ fn sway_reports_its_capabilities() {
 /// box keeps its colour: sway 1.9 stacks the older of two layer surfaces
 /// on one layer on top, so the scrim is on the layer below the panel's)
 /// and not over the bar; a popup's goes on its bar's layer and output,
-/// under the popup. Taking a scrim away undims.
+/// under the popup. Taking a scrim away undims. A popup of a panel puts
+/// its scrim on the layer below the panel, which rises to `overlay` for
+/// it, so the scrim dims neither the panel nor the popup (sway 1.9 would
+/// show the panel above a scrim on its own layer anyway; the matrix runs
+/// the compositors that would not).
 #[test]
 fn scrims_dim_beneath_panels_and_popups() {
     let Some(sway) = Sway::start("scrims_dim_beneath_panels_and_popups") else {
@@ -2134,4 +2138,68 @@ fn scrims_dim_beneath_panels_and_popups() {
     );
     assert_eq!(shot.rgb(130, 100), BLUE, "the popup is above its scrim");
     assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+    let bar_popup = mgr.state().surfaces_of(POPUP)[0];
+    assert_eq!(
+        mgr.state().surface(bar_popup).unwrap().under_layer,
+        Some(Layer::Top),
+        "beside the bar, outside its exclusive zone"
+    );
+
+    // A popup of the panel (no scrim of its own) with a scrim.
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Removed);
+    let mut popup =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    popup.name = Some("Menu".into());
+    popup.parent = Some(PANEL);
+    popup.anchor_rect = Some(LogicalRect::new(100.0, 200.0, 60.0, 20.0));
+    popup.width = Some(200.0);
+    popup.height = Some(120.0);
+    popup.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == POPUP && i.scrim.is_some() && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let panel = mgr.state().surfaces_of(PANEL)[0];
+    let menu = mgr.state().surfaces_of(POPUP)[0];
+    assert_eq!(
+        mgr.state().surface(panel).unwrap().layer,
+        Some(Layer::Overlay),
+        "the panel rises for its popup's scrim"
+    );
+    assert_eq!(
+        mgr.state().surface(menu).unwrap().under_layer,
+        Some(Layer::Top),
+        "the scrim below the panel"
+    );
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(1720, 100), BLUE, "the panel is above the scrim");
+    assert_eq!(shot.rgb(1650, 340), BLUE, "the popup is above the scrim");
+    assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+
+    // The popup goes: the panel goes back to `top`, undimmed.
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Removed);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == PANEL && i.layer == Some(Layer::Top) && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    assert_eq!(sway.grim("HEADLESS-1").rgb(500, 600), bg);
 }

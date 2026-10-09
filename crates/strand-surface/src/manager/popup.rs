@@ -287,8 +287,8 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// Gives popup `id` the scrim `spec` asks for (or takes it away, or
     /// recolours it): a scrim-only catcher on its root layer surface's
-    /// layer and output, which takes no clicks (the popup's grab closes
-    /// it).
+    /// output, on the layer [`popup_scrim_layer`] picks, which takes no
+    /// clicks (the popup's grab closes it).
     pub(super) fn sync_popup_scrim(&mut self, id: SurfaceId, spec: &SurfaceSpec) {
         let want = wants_scrim(spec);
         match (want, self.under_of(id)) {
@@ -303,7 +303,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                     return;
                 };
                 let under = Under {
-                    layer: root.config.layer,
+                    layer: popup_scrim_layer(&root.config),
                     namespace: s.config.namespace.clone(),
                     clicks: false,
                     scrim: Some(c),

@@ -70,7 +70,8 @@ use crate::clock::{FrameClock, Presentation, PresentationClock};
 use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
 use crate::placement::{
-    LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config, popup_config,
+    LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config_with, popup_config,
+    popup_scrim_layer,
 };
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 use strand_scene::{KeyInput, Modifiers};
@@ -373,6 +374,10 @@ pub struct SurfaceInfo {
     /// A scrim in this colour is mapped under it (on its root layer
     /// surface's output, for a popup).
     pub scrim: Option<strand_scene::Color>,
+    /// The layer it is on (`None` for a popup).
+    pub layer: Option<Layer>,
+    /// The layer its click-away catcher or scrim is on.
+    pub under_layer: Option<Layer>,
     pub stats: Stats,
 }
 
@@ -566,6 +571,8 @@ impl Surface {
             input_region: self.input_region,
             click_away: false,
             scrim: None,
+            layer: matches!(self.role, Role::Layer(_)).then_some(self.config.layer),
+            under_layer: None,
             stats: self.stats,
         }
     }
@@ -974,6 +981,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             .and_then(|v| v.iter().find(|c| c.primary && c.buffer.is_some()));
         info.click_away = primary.is_some_and(|c| c.clicks);
         info.scrim = primary.and_then(|c| c.scrim);
+        info.under_layer = primary.map(|c| c.on_layer);
         Some(info)
     }
 
@@ -1060,6 +1068,20 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// Applies a change reported by `Renderer::take_surface_changes`.
     pub fn apply_surface_change(&mut self, node: NodeId, change: SurfaceChange) {
+        // A popup's scrim coming or going can move the layer surface it
+        // is nested in (`placement::layer_config_with`): that one is
+        // made again afterwards, and the popup nests in it once it maps.
+        let old = self.specs.get(&node);
+        let had = old.is_some_and(nested_scrim_of);
+        let (has, parent) = match &change {
+            SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. } => {
+                (nested_scrim_of(spec), spec.parent)
+            }
+            SurfaceChange::Removed => (false, old.and_then(|s| s.parent)),
+        };
+        let moved = (had != has)
+            .then(|| parent.and_then(|p| self.root_node(p)))
+            .flatten();
         match change {
             SurfaceChange::Created(spec) => {
                 self.specs.insert(node, spec);
@@ -1080,6 +1102,41 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.ids.retain(|(n, _), _| *n != node);
             }
         }
+        if let Some(root) = moved {
+            self.reconfigure(root);
+            self.reconcile(root);
+        }
+    }
+
+    /// The layer-surface node `node` is nested in (itself for one):
+    /// `None` when its chain of parents is broken.
+    fn root_node(&self, mut node: NodeId) -> Option<NodeId> {
+        for _ in 0..64 {
+            let spec = self.specs.get(&node)?;
+            if spec.kind != NodeKind::Popup {
+                return Some(node);
+            }
+            node = spec.parent?;
+        }
+        None
+    }
+
+    /// True if a popup nested in layer-surface node `node` declares a
+    /// scrim (open or not, so opening it does not move `node`).
+    fn has_nested_scrim(&self, node: NodeId) -> bool {
+        self.specs
+            .values()
+            .any(|s| nested_scrim_of(s) && s.parent.and_then(|p| self.root_node(p)) == Some(node))
+    }
+
+    /// The layer-surface state for `node` with `spec`, raised for a
+    /// popup's scrim nested in it.
+    fn layer_config_of(
+        &self,
+        node: NodeId,
+        spec: &SurfaceSpec,
+    ) -> Result<LayerConfig, PlacementError> {
+        layer_config_with(spec, self.has_nested_scrim(node))
     }
 
     /// The layer that layer surface `id` is on (`None` for a popup).
@@ -1181,7 +1238,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.reconcile_popup(node, &spec);
             return;
         }
-        let mapped = match layer_config(&spec) {
+        let mapped = match self.layer_config_of(node, &spec) {
             Ok(_) => spec.open,
             Err(e @ PlacementError::NotLayerSurface(_)) => {
                 log::debug!("{}: {e}", spec.namespace());
@@ -1281,4 +1338,9 @@ mod hook_tests {
         }
         assert_eq!(host.surface_pose(SurfaceId(1)), None);
     }
+}
+
+/// A popup that declares a scrim.
+fn nested_scrim_of(spec: &SurfaceSpec) -> bool {
+    spec.kind == NodeKind::Popup && spec.scrim.is_some()
 }

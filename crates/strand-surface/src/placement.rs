@@ -185,15 +185,42 @@ pub fn layer_below(layer: Layer) -> Layer {
     }
 }
 
+/// The layer a popup's scrim goes on, for the layer surface the popup is
+/// nested in (`root`). Popups stack above every layer surface, but the
+/// scrim is a layer surface of its own, and two on one layer stack in an
+/// order the protocol leaves open (sway 1.9 draws the older on top,
+/// wlroots' scene graph, niri and labwc the newer). A surface that
+/// reserves an exclusive zone (a bar) is outside the usable area the
+/// scrim covers, so the scrim shares its layer; any other goes on the
+/// layer below (a `top` panel with such a popup rose to `overlay`, see
+/// [`layer_config_with`]).
+pub fn popup_scrim_layer(root: &LayerConfig) -> Layer {
+    if root.exclusive_zone > 0 {
+        root.layer
+    } else {
+        layer_below(root.layer)
+    }
+}
+
 /// Resolves the layer-surface state for `spec`.
 pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
+    layer_config_with(spec, false)
+}
+
+/// Resolves the layer-surface state for `spec`; `nested_scrim`: a popup
+/// nested in it has a scrim (see [`popup_scrim_layer`]).
+pub fn layer_config_with(
+    spec: &SurfaceSpec,
+    nested_scrim: bool,
+) -> Result<LayerConfig, PlacementError> {
     let mut layer = spec
         .layer
         .ok_or(PlacementError::NotLayerSurface(spec.kind))?;
-    // A panel's scrim goes on the layer below it, which for a `top` panel
-    // would be under the windows it should dim: such a panel rises to
-    // `overlay`, its scrim on `top` (`manager/catcher.rs`).
-    if spec.kind == NodeKind::Panel && spec.scrim.is_some() && layer == Layer::Top {
+    // A panel's scrim, or its popup's, goes on the layer below it, which
+    // for a `top` panel would be under the windows it should dim: such a
+    // panel rises to `overlay`, the scrim on `top` (`manager/catcher.rs`).
+    if spec.kind == NodeKind::Panel && (spec.scrim.is_some() || nested_scrim) && layer == Layer::Top
+    {
         layer = Layer::Overlay;
     }
     let m = spec.margin;
@@ -888,5 +915,33 @@ mod tests {
         assert_eq!(layer_below(Layer::Overlay), Layer::Top);
         assert_eq!(layer_below(Layer::Bottom), Layer::Background);
         assert_eq!(layer_below(Layer::Background), Layer::Background);
+    }
+
+    /// A popup's scrim goes below a panel it is nested in (which rises
+    /// from `top` to `overlay` for it), and beside a bar, whose
+    /// exclusive zone the scrim leaves out.
+    #[test]
+    fn a_popup_scrim_goes_below_its_panel_and_beside_its_bar() {
+        let size = [
+            (Prop::Width, PropValue::Number(100.0)),
+            (Prop::Height, PropValue::Number(100.0)),
+        ];
+        let panel = spec(NodeKind::Panel, &size);
+        let raised = layer_config_with(&panel, true).unwrap();
+        assert_eq!(raised.layer, Layer::Overlay);
+        assert_eq!(popup_scrim_layer(&raised), Layer::Top);
+        assert_eq!(layer_config_with(&panel, false).unwrap().layer, Layer::Top);
+        let mut bottom = size.to_vec();
+        bottom.push((Prop::Layer, kw("bottom")));
+        let c = layer_config_with(&spec(NodeKind::Panel, &bottom), true).unwrap();
+        assert_eq!(
+            (c.layer, popup_scrim_layer(&c)),
+            (Layer::Bottom, Layer::Background)
+        );
+
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        let c = layer_config_with(&bar, true).unwrap();
+        assert_eq!(c.layer, Layer::Top, "a bar does not rise");
+        assert_eq!(popup_scrim_layer(&c), Layer::Top);
     }
 }
