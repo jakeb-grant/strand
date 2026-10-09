@@ -16,6 +16,13 @@
 //! darker than empty ones, the focused window's title), and a click on
 //! a dot must switch the compositor.
 //!
+//! labwc (`STRAND_MATRIX=labwc`) is the matrix's compositor without an
+//! IPC adapter: no CLI reports its state, so the two tests above skip it
+//! and `the_stores_follow_a_compositor_without_ipc` runs instead, with the
+//! test windows' own `xdg_toplevel` configures (activated or not) and
+//! close requests as the truth, and the workspaces labwc reports over
+//! `ext-workspace-v1`.
+//!
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
 //! (`SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`, `NIRI_SOCKET`) point at
@@ -100,12 +107,24 @@ struct Real {
     focused: Option<String>,
 }
 
+/// `STRAND_MATRIX` names a compositor with no IPC adapter (labwc).
+fn without_ipc() -> bool {
+    std::env::var("STRAND_MATRIX").is_ok_and(|m| m == "labwc")
+}
+
 fn live() -> Option<Live> {
+    if without_ipc() {
+        eprintln!(
+            "\n*** labwc has no IPC to compare with: this test is for sway, niri and Hyprland; \
+             the_stores_follow_a_compositor_without_ipc covers labwc ***\n"
+        );
+        return None;
+    }
     let kind = match std::env::var("STRAND_MATRIX").ok()?.as_str() {
         "sway" => Kind::Sway,
         "hyprland" => Kind::Hyprland,
         "niri" => Kind::Niri,
-        other => panic!("STRAND_MATRIX={other}: sway, hyprland or niri"),
+        other => panic!("STRAND_MATRIX={other}: sway, hyprland, niri or labwc"),
     };
     let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
     let display = std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY");
@@ -129,6 +148,11 @@ fn live() -> Option<Live> {
 }
 
 fn skipped(what: &str) {
+    if without_ipc() {
+        // `live()` said why.
+        eprintln!("{what}: skipped on labwc");
+        return;
+    }
     eprintln!(
         "\n*** SKIPPED: STRAND_MATRIX is not set; {what} did not run (scripts/compositor-matrix.sh) ***\n"
     );
@@ -736,6 +760,208 @@ fn the_stores_report_the_live_compositor() {
         "an idle {:?} woke the host",
         live.kind
     );
+    s.shutdown();
+}
+
+/// A compositor without an IPC adapter (labwc): the standard protocols
+/// alone. `windows.focused` and the window actions come from
+/// `zwlr_foreign_toplevel_management_v1`, workspaces and `ws.focus()`
+/// from `ext-workspace-v1`. The truth is each test window's own view (the
+/// compositor's `xdg_toplevel` configures say whether it is activated;
+/// `close` reaches it) and the workspace state labwc sends.
+#[test]
+fn the_stores_follow_a_compositor_without_ipc() {
+    if !without_ipc() {
+        if std::env::var_os("STRAND_MATRIX").is_some() {
+            eprintln!("the no-IPC stores test runs on labwc only");
+        } else {
+            skipped("the no-IPC stores test");
+        }
+        return;
+    }
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let rt = Runtime::new();
+    let wakes = Arc::new(AtomicU32::new(0));
+    let w = wakes.clone();
+    // The real detection path (`WmConfig::from_env`): no adapter is found.
+    let s = Services::new(&rt, Buses::none(), move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    });
+    let b = Builtin::register(&s, &rt);
+    b.workspaces.acquire(&rt);
+    b.windows.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    let pump = || {
+        s.pump(&rt);
+        rt.flush();
+    };
+    until("wm.name", || {
+        pump();
+        match b.wm.cells().snapshot(&rt).map(|w| w.name) {
+            Ok(n) if n == "labwc" => Ok(()),
+            other => Err(format!("{other:?}")),
+        }
+    });
+    let focused = || -> Option<(String, String)> {
+        let w = b.windows.cells().snapshot(&rt).ok()?;
+        w.focused.map(|f| (f.app_id, f.title))
+    };
+    let window = |app: &str| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .unwrap()
+            .all
+            .into_iter()
+            .find(|w| w.app_id == app)
+            .unwrap_or_else(|| panic!("{app} in windows.all"))
+    };
+    // `windows.focused` is the window the compositor activated, and only
+    // it (the client's own view).
+    let focus_is = |what: &str, wins: &[(&TestWindow, &str, &str)], app: &str| {
+        until(what, || {
+            pump();
+            let f = focused();
+            let activated: Vec<&str> = wins
+                .iter()
+                .filter(|(w, _, _)| w.activated.load(Ordering::SeqCst))
+                .map(|(_, a, _)| *a)
+                .collect();
+            let title = wins.iter().find(|(_, a, _)| *a == app).map(|(_, _, t)| *t);
+            if f.as_ref().map(|(a, t)| (a.as_str(), t.as_str())) == title.map(|t| (app, t))
+                && activated == [app]
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "windows.focused {f:?}; activated by the compositor: {activated:?}"
+                ))
+            }
+        });
+        eprintln!("matrix: {what}: {app} focused");
+    };
+
+    let first = TestWindow::open(&socket, "strand-matrix", "matrix one");
+    focus_is(
+        "a window",
+        &[(&first, "strand-matrix", "matrix one")],
+        "strand-matrix",
+    );
+    first.set_title("matrix two");
+    focus_is(
+        "the title",
+        &[(&first, "strand-matrix", "matrix two")],
+        "strand-matrix",
+    );
+    let second = TestWindow::open(&socket, "strand-matrix-two", "matrix three");
+    let both = [
+        (&first, "strand-matrix", "matrix two"),
+        (&second, "strand-matrix-two", "matrix three"),
+    ];
+    focus_is("a second window", &both, "strand-matrix-two");
+    assert!(
+        window("strand-matrix").workspace.is_none(),
+        "the protocols place no window"
+    );
+
+    // `win.focus()`: the first window back, through the store.
+    b.windows
+        .act(
+            &rt,
+            WindowAction::Focus {
+                item: window("strand-matrix"),
+            },
+        )
+        .unwrap();
+    focus_is("win.focus()", &both, "strand-matrix");
+
+    // Workspaces over ext-workspace-v1 (labwc's `desktops` in rc.xml): one
+    // output, so the one active workspace is focused; `ws.focus()` to the
+    // other and back.
+    let workspaces = || b.workspaces.cells().snapshot(&rt).unwrap();
+    until("two workspaces", || {
+        pump();
+        let ws = workspaces();
+        if ws.all.len() >= 2 && ws.focused.is_some() {
+            Ok(())
+        } else {
+            Err(format!("{:?}", ws.all))
+        }
+    });
+    let home = workspaces().focused.unwrap();
+    let other = workspaces()
+        .all
+        .into_iter()
+        .find(|w| w.id != home.id)
+        .unwrap();
+    b.workspaces
+        .act(
+            &rt,
+            WorkspaceAction::Focus {
+                item: other.clone(),
+            },
+        )
+        .unwrap();
+    until("ws.focus()", || {
+        pump();
+        let ws = workspaces();
+        match ws.focused {
+            Some(f) if f.id == other.id && f.active => Ok(()),
+            f => Err(format!("focused {f:?}")),
+        }
+    });
+    eprintln!("matrix: ws.focus(): {} focused", other.name);
+    b.workspaces
+        .act(&rt, WorkspaceAction::Focus { item: home.clone() })
+        .unwrap();
+    until("ws.focus() back", || {
+        pump();
+        match workspaces().focused {
+            Some(f) if f.id == home.id => Ok(()),
+            f => Err(format!("focused {f:?}")),
+        }
+    });
+
+    // `win.close()`: the compositor asks the client.
+    b.windows
+        .act(
+            &rt,
+            WindowAction::Close {
+                item: window("strand-matrix-two"),
+            },
+        )
+        .unwrap();
+    until("the window closed", || {
+        pump();
+        let gone = b
+            .windows
+            .cells()
+            .snapshot(&rt)
+            .is_ok_and(|w| w.all.iter().all(|x| x.app_id != "strand-matrix-two"));
+        if second.closed.load(Ordering::SeqCst) && gone {
+            Ok(())
+        } else {
+            Err(format!(
+                "asked: {}; gone from the store: {gone}",
+                second.closed.load(Ordering::SeqCst)
+            ))
+        }
+    });
+    drop(second);
+
+    // Nothing changes: nothing wakes the logic thread.
+    std::thread::sleep(Duration::from_millis(500));
+    s.pump(&rt);
+    let before = wakes.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        before,
+        "an idle labwc woke the host"
+    );
+    drop(first);
     s.shutdown();
 }
 

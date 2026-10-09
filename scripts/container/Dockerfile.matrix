@@ -7,7 +7,7 @@ RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf \
  && (pacman-key --init >/dev/null 2>&1 || true) \
  && (pacman-key --populate archlinux >/dev/null 2>&1 || true) \
  && pacman -Syu --noconfirm --needed \
-      sway niri hyprland grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
+      sway niri hyprland labwc grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
       fontconfig libxkbcommon wayland pipewire libcap \
  && pacman -Scc --noconfirm >/dev/null \
- && pacman -Q sway niri hyprland grim seatd mesa
+ && pacman -Q sway niri hyprland labwc grim seatd mesa
