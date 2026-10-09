@@ -18,9 +18,11 @@
 //!
 //! A reply the adapter cannot decode (or bytes that are no i3-ipc frame),
 //! eight event payloads in a row that are no JSON, or a command for an
-//! action every sway has (focus, kill, workspace) that sway cannot parse
-//! (`parse_error`) degrade the adapter (`understood`), naming sway's
-//! version (`get_version`); a later action's parse error is only
+//! action every sway has (focus, kill, workspace) that sway does not know
+//! (`Unknown/invalid command`, [`refuses_syntax`]) degrade the adapter
+//! (`understood`), naming sway's version (`get_version`); a later
+//! action's unknown command, and any other `parse_error` (sway's
+//! `CMD_INVALID`, which states such as no outputs also return), are only
 //! rejected (`understood::tells_syntax`). An event of a type it does not know is
 //! ignored; one it cannot decode is followed by a re-read, as before.
 
@@ -296,6 +298,17 @@ impl State {
     }
 }
 
+/// Whether a command's error says sway does not know the command at all.
+/// sway sets `parse_error` for every `CMD_INVALID` result, and `focus`,
+/// `kill` and `workspace` return one for states too (no outputs
+/// connected, `Expected workspace number`, `There is no previous
+/// workspace`), so only `execute_command`'s unknown-command reply
+/// (`Unknown/invalid command '…'`) tells that the syntax is not sway's
+/// (sway 1.10 `sway/commands.c`; decisions.md, laptop-resilience).
+fn refuses_syntax(error: &str) -> bool {
+    error.trim_start().starts_with("Unknown/invalid command")
+}
+
 async fn query(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
     state.workspaces = conn.request(CommandType::GetWorkspaces, "").await?;
     let tree: Node = conn.request(CommandType::GetTree, "").await?;
@@ -509,12 +522,15 @@ async fn session(
                                 .map(CommandOutcome::decode)
                                 .find_map(Result::err)
                                 .map_or(Ok(()), |e| {
-                                    // sway could not parse the command. For
+                                    // sway does not know the command. For
                                     // an action every sway has, its syntax
                                     // is not sway's (any more); a later
                                     // one is only rejected
-                                    // (`understood::tells_syntax`).
+                                    // (`understood::tells_syntax`). Any
+                                    // other `parse_error` is the action's
+                                    // own failure ([`refuses_syntax`]).
                                     if let swayipc_types::Error::CommandParse(m) = &e
+                                        && refuses_syntax(m)
                                         && understood::tells_syntax(&action)
                                     {
                                         refused_syntax = Some(format!(
@@ -550,6 +566,23 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only sway's unknown-command reply refuses the syntax; the
+    /// `CMD_INVALID` replies its `focus`, `kill` and `workspace` give for
+    /// a state (sway 1.10) do not.
+    #[test]
+    fn only_an_unknown_command_refuses_the_syntax() {
+        assert!(refuses_syntax("Unknown/invalid command 'focus'"));
+        assert!(refuses_syntax("Unknown/invalid command 'workspace'"));
+        for state in [
+            "Can't run this command while there's no outputs connected.",
+            "Expected workspace number",
+            "There is no previous workspace",
+            "No matching node.",
+        ] {
+            assert!(!refuses_syntax(state), "{state}");
+        }
+    }
 
     /// A `get_tree` reply (captured from sway 1.9) whose window title is
     /// Latin-1 decodes, with U+FFFD for the bad byte.

@@ -756,8 +756,76 @@ async fn a_sway_refusing_a_later_command_rejects_only_it() {
     service.abort();
 }
 
-/// sway that cannot parse the adapter's command (`parse_error`) refuses
-/// the one syntax it has: the action fails and the adapter degrades.
+/// sway sets `parse_error` for every `CMD_INVALID` result, and its
+/// `focus`, `kill` and `workspace` return one for a state: no outputs
+/// connected (a lid closed and the last monitor unplugged), or a bare
+/// `number` workspace name. Those actions are rejected and the adapter
+/// stays: a healthy sway is never marked failed.
+#[tokio::test]
+async fn a_sway_refusing_an_action_for_its_state_rejects_only_it() {
+    let fake = FakeSway::start(b"foot");
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| {
+        m.sources.connected && m.window_by_app("foot").is_some() && !m.workspaces.is_empty()
+    })
+    .await;
+    let id = c.mirror.window_by_app("foot").unwrap().id.clone();
+    let ws = c.mirror.workspaces[0].1.id;
+    let up = c.log.len();
+    for (error, action) in [
+        (
+            "Can't run this command while there's no outputs connected.",
+            WmAction::FocusWindow(id.clone()),
+        ),
+        (
+            "Can't run this command while there's no outputs connected.",
+            WmAction::CloseWindow(id.clone()),
+        ),
+        (
+            "Can't run this command while there's no outputs connected.",
+            WmAction::FocusWorkspace(ws),
+        ),
+        ("Expected workspace number", WmAction::FocusWorkspace(ws)),
+    ] {
+        fake.set_reply(
+            0,
+            Some(
+                format!(r#"[{{"success": false, "parse_error": true, "error": "{error}"}}]"#)
+                    .as_bytes(),
+            ),
+        );
+        let (r, done) = WmRequest::new(action.clone());
+        req_tx.send(r).unwrap();
+        assert!(
+            matches!(done.await, Err(wm::WmError::Rejected(ref m)) if m.contains(error)),
+            "{action:?}"
+        );
+    }
+    c.quiet_for(Duration::from_millis(500)).await;
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(_))),
+        "the adapter stays"
+    );
+    // Outputs are back: the same actions run.
+    fake.set_reply(0, None);
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(id));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    service.abort();
+}
+
+/// sway that does not know the adapter's command (`Unknown/invalid
+/// command`) refuses the one syntax it has: the action fails and the
+/// adapter degrades.
 #[tokio::test]
 async fn a_sway_refusing_the_command_syntax_degrades() {
     let fake = FakeSway::start(b"foot");
