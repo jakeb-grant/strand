@@ -711,7 +711,7 @@ Services are typed Rust structs that start lazily when a shell first references 
 - **Lifecycle.** The compiler collects which service paths a shell uses. A service starts on first subscription, is reference-counted, and stops 5 s after its last reader leaves or goes invisible. Streams such as a Wi-Fi scan run only while visible.
 - **Threads.** Services share one tokio current-thread runtime. PipeWire and the Wayland toplevel protocols each get their own thread, since pipewire-rs is `!Send`.
 - **No-code services.** `service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }` is checked against D-Bus introspection. `from file`, `from listen` and `from poll` sources are checked against the schema you declare. Running commands needs an explicit `permit exec`.
-- **Compositor-agnostic first.** Workspaces come from `ext-workspace-v1`, windows from `ext-foreign-toplevel-list`, thumbnails from `ext-image-copy-capture`. Hyprland, niri and sway IPC are adapters for what the standard protocols don't yet cover.
+- **Compositor-agnostic first.** Workspaces come from `ext-workspace-v1`, windows from `ext-foreign-toplevel-list`, thumbnails from `ext-image-copy-capture`. Hyprland, niri and sway IPC are adapters for what the standard protocols don't yet cover. Where no adapter runs (labwc, wayfire, river), `wlr-foreign-toplevel-management` supplies the focused window, window state and the window actions; with only `ext-foreign-toplevel-list` (COSMIC), windows are listed without focus and their actions answer `Unsupported`.
 
 | Crate | Purpose | Notes |
 | --- | --- | --- |

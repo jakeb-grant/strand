@@ -28,7 +28,8 @@ once a minute.
 notification server run on D-Bus and procfs, audio on PipeWire,
 `clock`, `calendar` and `screens` in the host, workspaces, windows and
 `wm` on the compositor (our own Hyprland, niri and sway IPC adapters,
-`ext-workspace-v1`, `ext-foreign-toplevel-list`), apps on the desktop
+`ext-workspace-v1`, `ext-foreign-toplevel-list`, and
+`zwlr_foreign_toplevel_management_v1` where no adapter runs), apps on the desktop
 entries and icon themes, and `from dbus | file | listen | poll` declare
 services without Rust. A service starts on its first reader and stops
 5 s after the last one leaves or goes invisible; streams such as a
@@ -38,7 +39,7 @@ visible surface (a `from poll` service polls at its declared
 interval); everything else waits on events, so nothing wakes while
 nothing changes.
 design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
-job), takes 100 live reloads without a service reconnecting, and on
+job, which also checks the stores on labwc, a compositor with no IPC), takes 100 live reloads without a service reconnecting, and on
 two 2560×1440 monitors with the real services uses about 31–32 MiB
 (target 34, ceiling 38); the full shell with the launcher, two toasts and
 the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
@@ -46,11 +47,12 @@ measured here and in CI (design.md: 59–64; figures in
 docs/m3-report.md). `STRAND_MOCK=desktop` still fills everything with
 a mock desktop for tests. Wave 4 (M3) is merged into `main`; what it
 leaves open is listed in docs/m3-report.md's Open section. That covers
-a second output not yet checked live on Hyprland, niri and sway. It also
-covers `windows.focused` being null on compositors without an IPC
-adapter (labwc, COSMIC, wayfire, river) until the
-`zwlr_foreign_toplevel_management_v1` fallback lands. The rest are
-sign-offs owed by crate owners.
+a second output not yet checked live on Hyprland, niri and sway. On
+compositors without an IPC adapter, `zwlr_foreign_toplevel_management_v1`
+now serves `windows.focused` and the window actions (labwc, wayfire,
+river); COSMIC offers only `ext-foreign-toplevel-list`, so there
+`windows.focused` stays null. The rest are sign-offs owed by crate
+owners.
 
 M2's exit gates are met too (see
 [`docs/m2-report.md`](docs/m2-report.md)): the four example shells of
