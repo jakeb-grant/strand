@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Runs a command in the CI image (scripts/container/Dockerfile: the CI
-# `check` job's Ubuntu 24.04 packages and Rust 1.97.0) as the host user,
+# test jobs' Ubuntu 24.04 packages and Rust 1.97.0) as the host user,
 # with the checkout mounted at its own absolute path.
 #
-# Usage: scripts/container/run.sh ci            every step of CI's check job
+# Usage: scripts/container/run.sh ci            every step of CI's lint, test,
+#                                               budgets, acceptance and timing
+#                                               jobs (CI_JOB=NAME: one job)
 #        scripts/container/run.sh CMD [ARGS...] e.g. cargo test -p strand-watch
 #        scripts/container/run.sh shell         an interactive bash
 # Env:   CARGO_BUILD_JOBS (default 6); every STRAND_* variable set on the
@@ -20,7 +22,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,17p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,19p' "$0"; exit 2; }
 
 hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
 IMAGE=strand-ci:$hash
@@ -56,6 +58,7 @@ while IFS='=' read -r name _; do
   envs+=(-e "$name")
 done < <(env | grep -E '^STRAND_[A-Z0-9_]*=' || true)
 [ -n "${CI_FROM:-}" ] && envs+=(-e CI_FROM)
+[ -n "${CI_JOB:-}" ] && envs+=(-e CI_JOB)
 
 tty=()
 [ -t 0 ] && [ -t 1 ] && tty=(-it)

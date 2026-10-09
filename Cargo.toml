@@ -133,3 +133,13 @@ opt-level = "s"
 
 [profile.release.package.libspa]
 opt-level = "s"
+
+# The timing gates' build (CI's `timing` job: theme_swap_bench and the
+# reload latency bench): the release profile, its per-package opt-levels
+# above and its single codegen unit included (a custom profile inherits
+# them), without the cross-crate link-time optimisation that makes a
+# release build slow. The memory gates (demo, services, budgets) and
+# the acceptance tests keep `release` (docs/decisions.md, laptop-ci).
+[profile.timing]
+inherits = "release"
+lto = false

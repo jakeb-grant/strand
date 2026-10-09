@@ -53,9 +53,14 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### CI
 
-- Split the single `check` job; give the timing gates a lighter release
-  profile; consolidate test binaries to cut link time; make
-  `theme_swap_bench` robust to runner noise.
+- Done on `laptop/ci` (decisions.md laptop-ci): the `check` job is split
+  into `lint`, `test`, `budgets`, `acceptance` and `timing`; the timing
+  gates build on a `timing` profile (release without LTO); `theme_swap_bench`
+  gates the median of more swaps, measured once. Its tightest gated
+  case, 8 scopes on `spring(1600, 1)` (whole swap), measured 4.46 ms on
+  GitHub against 5 ms (about 11% headroom, no retry); if `timing` fails
+  there, look at that case first. Consolidating test binaries was
+  measured (about 39 s of linking in all) and not done.
 - Flakes seen once each, with diagnostics added so a recurrence names its
   cause (none reproduced locally; all in m3-report Open):
   - `strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`
@@ -71,6 +76,13 @@ and the full shell warns above 64 MB and fails above 70 MB
     (the assertion races the text worker).
   - `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle` (an unnamed
     thread woke; it now names the thread).
+  - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
+    (`t0.elapsed() >= max_delay` failed: read before `max_delay`) and
+    `strand/src/run.rs::tests::a_save_fixed_at_once_never_opens_the_overlay`
+    (the overlay flashed on the formatted save), one each in the `test` job
+    of run 37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30 and 0
+    of 15 failed in the container; `laptop/ci` changed no code either
+    test runs (a doc comment in run.rs only).
 
 ### Verification gaps
 

@@ -1,0 +1,100 @@
+name: Strand job setup
+description: >
+  The machine every CI job of .github/workflows/ci.yml starts from: room on
+  the disk, the apt packages (the build headers, or the whole test tier),
+  the fonts as the pixel references were drawn, the pinned toolchain and
+  a dependency cache.
+inputs:
+  tier:
+    description: >
+      "headers": the build headers only (fmt, clippy, building). "full":
+      also headless sway, grim, the services tier (dbus-daemon,
+      python3-dbusmock, PipeWire with WirePlumber), the fonts and icons
+      the references were drawn with.
+    default: full
+  free-disk:
+    description: Removes the image's unused SDKs first ("true" or "false").
+    default: "true"
+  cache-key:
+    description: >
+      Swatinem/rust-cache's shared-key; empty keeps its default (one cache
+      per job).
+    default: ""
+  cache-save:
+    description: Whether this job saves the cache ("true" or "false").
+    default: "true"
+runs:
+  using: composite
+  steps:
+    # Room for the debug and release builds: the image's SDKs we never
+    # use take most of the disk.
+    - name: Free disk space
+      if: inputs.free-disk == 'true'
+      shell: bash
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h /
+    # smithay-client-toolkit's build script finds xkbcommon through
+    # pkg-config; wayland-sys and fontconfig link their system libraries;
+    # pipewire-rs needs its headers and libclang (bindgen).
+    - name: Install the build headers
+      if: inputs.tier == 'headers'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+          libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+    # The services tier (design.md, "Testing"): private buses
+    # (dbus-daemon), python-dbusmock for UPower, NetworkManager, BlueZ,
+    # logind and notifications, PipeWire with WirePlumber and a null
+    # sink; with the build headers above.
+    - name: Install headless sway, grim, dbus, fonts, icons and build headers
+      if: inputs.tier == 'full'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+          dbus-daemon python3-dbusmock pipewire pipewire-pulse pipewire-bin wireplumber pulseaudio-utils libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+    - name: Services tier tools
+      if: inputs.tier == 'full'
+      shell: bash
+      run: |
+        dbus-daemon --version | head -1
+        python3 -c 'import dbusmock' && dpkg -s python3-dbusmock | grep '^Version'
+        pipewire --version
+    # The references are drawn with fonts-dejavu-core alone, whose DejaVu
+    # Sans has no oblique face (italic text is slanted from the upright
+    # one). The image also ships fonts-dejavu-extra, whose real
+    # DejaVuSans-Oblique would change every italic glyph; take it out
+    # without touching what depends on it.
+    - name: Fonts as the references were drawn
+      if: inputs.tier == 'full'
+      shell: bash
+      run: sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
+    # The versions the references depend on, to trace a mismatch.
+    - name: Reference package versions
+      if: inputs.tier == 'full'
+      shell: bash
+      run: |
+        sway --version
+        dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E '^(Package|Version)'
+        # Every font fontconfig sees (text references depend on which
+        # family a style or a missing glyph falls back to).
+        dpkg -l 'fonts-*' | grep '^ii' || true
+        fc-list : family style file | sort
+        fc-match -s 'sans-serif:italic' | head -5
+        # The acceptance tests pin XCURSOR_THEME=Adwaita (size 24); the
+        # default theme only matters to processes outside them.
+        readlink -f /usr/share/icons/default/index.theme || true
+        ls /usr/share/icons/Adwaita/cursors/default
+    # Pinned to the container suite's toolchain (scripts/container) so a
+    # new stable release's lints and deprecations cannot fail -D warnings
+    # on unchanged code.
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: 1.97.0
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        save-if: ${{ inputs.cache-save }}

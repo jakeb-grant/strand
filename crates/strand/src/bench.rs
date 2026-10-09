@@ -44,8 +44,9 @@
 //! without `dbus-daemon` unless `STRAND_REQUIRE_DBUS` is set (CI).
 //!
 //! A budget test: ignored in debug builds, run optimised in CI
-//! (`cargo test --release -p strand --bin strand reload_latency --
-//! --test-threads=1`). Skipped when sway is not installed, unless
+//! (`cargo test --profile timing -p strand --bin strand reload_latency
+//! -- --test-threads=1`: release's opt-levels without link-time
+//! optimisation; `--release` measures the same). Skipped when sway is not installed, unless
 //! `STRAND_REQUIRE_SWAY` is set (CI). `STRAND_LATENCY_ROUNDS` sets the
 //! edits per kind (20).
 
