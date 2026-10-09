@@ -26,7 +26,9 @@
 //! compositor never answers.
 //!
 //! A request that reaches the thread after it ended, or that it had not
-//! taken when it ended, is answered [`WmError::NotConnected`].
+//! taken when it ended, is answered [`WmError::NotConnected`]. An `Ok`
+//! means the request was written; a stop after requests waits (briefly)
+//! until the compositor has read them before it closes the connection.
 //!
 //! M4's window thumbnails (`ext-image-copy-capture-v1`) need the
 //! toplevel's handle on this connection: they will add a `ProtoCmd` that
@@ -40,6 +42,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
 use tokio::sync::mpsc::UnboundedSender;
@@ -542,6 +545,8 @@ fn thread_main(
     display.sync(&qh, 1);
     let mut syncs_sent = 1;
     let mut started = false;
+    // A request was sent: a stop waits for the compositor to take it.
+    let mut sent = false;
     let mut client = Client::default();
     loop {
         queue
@@ -608,23 +613,132 @@ fn thread_main(
         if wake_ready {
             let mut buf = [0u8; 8];
             let _ = rustix::io::read(wake, &mut buf);
+            let mut replies = Vec::new();
+            let mut stop = false;
             while let Ok(cmd) = cmds.try_recv() {
                 match cmd {
-                    ProtoCmd::Stop => return Ok(()),
-                    ProtoCmd::Activate(key, reply) => {
-                        let result = activate(&client, key);
-                        if let Some(r) = reply {
-                            let _ = r.send(result);
-                        }
+                    ProtoCmd::Stop => {
+                        stop = true;
+                        break;
                     }
+                    ProtoCmd::Activate(key, reply) => replies.push((reply, activate(&client, key))),
                     ProtoCmd::Window(key, op, reply) => {
-                        let result = window_action(&client, key, op);
-                        if let Some(r) = reply {
-                            let _ = r.send(result);
-                        }
+                        replies.push((reply, window_action(&client, key, op)));
                     }
                 }
             }
+            // The requests are written before their `Ok` goes out.
+            let flushed = send_queued(&conn, Duration::ZERO);
+            for (reply, result) in replies {
+                let result = match (&flushed, result) {
+                    (Err(_), Ok(())) => Err(WmError::NotConnected),
+                    (_, result) => {
+                        sent |= result.is_ok();
+                        result
+                    }
+                };
+                if let Some(r) = reply {
+                    let _ = r.send(result);
+                }
+            }
+            flushed?;
+            if stop {
+                if sent {
+                    settle(&conn, &mut queue, &mut client, SETTLE_WAIT)?;
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// How long a stop waits for the compositor to take the requests sent
+/// ([`settle`]).
+const SETTLE_WAIT: Duration = Duration::from_millis(500);
+
+/// The sync [`settle`] sends (above every startup sync).
+const SETTLED: u32 = u32::MAX;
+
+/// Before the connection closes: waits (`wait` at most) until the
+/// compositor has dispatched every request sent on it, the `done` of a
+/// sync sent after them. Writing them is not enough: libwayland-server
+/// destroys a client whose socket hung up without reading what is still
+/// in it (`wl_client_connection_data` handles the hangup first), so a
+/// request written just before the close was lost when the run that sent
+/// it ended right after its `Ok` (1 request in 100 on labwc;
+/// decisions.md laptop-labwc).
+fn settle(
+    conn: &Connection,
+    queue: &mut EventQueue<Client>,
+    client: &mut Client,
+    wait: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now() + wait;
+    conn.display().sync(&queue.handle(), SETTLED);
+    loop {
+        queue.dispatch_pending(client).map_err(io::Error::other)?;
+        if client.synced == SETTLED {
+            return Ok(());
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        send_queued(conn, left)?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            log::warn!("the compositor did not answer within {wait:?}: closing anyway");
+            return Ok(());
+        }
+        let Some(guard) = queue.prepare_read() else {
+            continue;
+        };
+        let readable = {
+            let fd = guard.connection_fd();
+            let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+            match rustix::event::poll(&mut fds, Some(&timespec(left))) {
+                Ok(_) => !fds[0].revents().is_empty(),
+                Err(rustix::io::Errno::INTR) => false,
+                Err(e) => return Err(e.into()),
+            }
+        };
+        if readable {
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(io::Error::other(e)),
+            }
+        }
+    }
+}
+
+fn timespec(d: Duration) -> rustix::event::Timespec {
+    rustix::event::Timespec {
+        tv_sec: d.as_secs().try_into().unwrap_or(i64::MAX),
+        tv_nsec: d.subsec_nanos().into(),
+    }
+}
+
+/// Writes the connection's queued requests. A full socket buffer is not
+/// an error: within `wait` it waits for the compositor to read; past it
+/// the rest stays queued (the poll loop writes it once the socket drains).
+fn send_queued(conn: &Connection, wait: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match conn.flush() {
+            Ok(()) => return Ok(()),
+            Err(wayland_client::backend::WaylandError::Io(e))
+                if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(io::Error::other(e)),
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        let backend = conn.backend();
+        let fd = backend.poll_fd();
+        let mut fds = [PollFd::new(&fd, PollFlags::OUT)];
+        match rustix::event::poll(&mut fds, Some(&timespec(left))) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(e.into()),
         }
     }
 }
@@ -1113,6 +1227,11 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for Client {
     }
 }
 
+/// The fake compositor of tests/protocol.rs.
+#[cfg(test)]
+#[path = "../../tests/common/fake_wlr.rs"]
+mod fake_wlr;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,5 +1270,60 @@ mod tests {
         let (reply, outcome) = tokio::sync::oneshot::channel();
         client.send(ProtoCmd::Activate(1, Some(reply)));
         assert_eq!(outcome.await, Ok(Err(WmError::NotConnected)));
+    }
+
+    /// A window action and a stop in one batch (as when the run that sent
+    /// it ends right after its reply: the compositor matrix's `reply_to`
+    /// on labwc): the request is written before its `Ok`, and the stop
+    /// keeps the connection until the compositor has dispatched it
+    /// (libwayland-server drops what a hung-up client left unread), here
+    /// while the compositor reads nothing for a while.
+    #[tokio::test]
+    async fn a_request_followed_at_once_by_a_stop_still_reaches_the_compositor() {
+        let fake = super::fake_wlr::Fake::start_opts(false, true, &["FAKE-1"]);
+        fake.cmd(super::fake_wlr::Cmd::AddToplevel("tl-1", "~", "foot"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let client = ProtocolClient::spawn(WaylandTarget::Socket(fake.socket.clone()), tx).unwrap();
+        let key = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let s = rx.recv().await.expect("the client stopped");
+                if let Some(m) = s.managed.iter().find(|m| m.app_id == "foot") {
+                    return m.key;
+                }
+            }
+        })
+        .await
+        .expect("the toplevel never showed");
+        fake.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Both queued before the thread wakes: it takes them in one batch.
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        let sender = client.sender();
+        sender
+            .tx
+            .send(ProtoCmd::Window(key, WindowOp::Fullscreen, Some(reply)))
+            .unwrap();
+        sender.tx.send(ProtoCmd::Stop).unwrap();
+        rustix::io::write(&*sender.wake, &1u64.to_ne_bytes()).unwrap();
+        assert_eq!(outcome.await, Ok(Ok(())));
+        // The compositor has not read it yet: the connection stays.
+        std::thread::sleep(SETTLE_WAIT / 5);
+        assert!(
+            !client.is_finished(),
+            "the connection closed before the compositor read the request"
+        );
+        fake.paused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // The compositor's answer to the stop's sync ends the thread.
+        let started = Instant::now();
+        while !client.is_finished() {
+            assert!(started.elapsed() < SETTLE_WAIT, "the thread did not end");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        client.stop();
+        let got = fake.wlr_requests.lock().unwrap().clone();
+        assert!(
+            got.iter().any(|r| r == "fullscreen tl-1"),
+            "the compositor never received set_fullscreen: {got:?}"
+        );
     }
 }

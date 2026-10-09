@@ -141,6 +141,23 @@ and the full shell warns above 64 MB and fails above 70 MB
     of run 37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30 and 0
     of 15 failed in the container; `laptop/ci` changed no code either
     test runs (a doc comment in run.rs only).
+  - Fixed at the cause (branch `laptop/labwc`, decisions.md
+    laptop-labwc): `strand/tests/compositor_matrix.rs::window_state_actions_follow_the_compositor`
+    on labwc (GitHub run 37913227852, `compositors`: "win.fullscreen() by
+    request" never showed). The test's `reply_to` ends its `wm::run`
+    right after the `Ok`; the wlr protocol thread then closed its
+    connection: with the request unwritten when the stop came in the
+    same batch, and, once written, before labwc read it
+    (libwayland-server drops what a hung-up client left unread; seen
+    with WAYLAND_DEBUG on both sides). A stop now writes, then waits
+    (500 ms at most) for a sync after the requests sent. Looped with
+    `MATRIX_FILTER` and `MATRIX_LOOP` (scripts/container/matrix.sh):
+    before, 4 of 200 idle runs, 3 of 200 with WAYLAND_DEBUG, 15 of 200
+    under load failed; writing alone, 2 of 200 and 1 of 300; after, 0
+    of 300 idle and 0 of 200 under load; pinned
+    by `wm::protocol::tests::a_request_followed_at_once_by_a_stop_still_reaches_the_compositor`.
+    labwc.log was empty because labwc logs only errors without `-d`;
+    the matrix runs it with `-d` now.
 
 ### Verification gaps
 
