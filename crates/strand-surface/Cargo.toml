@@ -9,6 +9,9 @@ publish.workspace = true
 
 [dependencies]
 strand-scene.workspace = true
+# The session lock's unlock gate: `State::unlock` takes an `UnlockToken`
+# (the lib only: libc and zeroize; the helper alone links libpam).
+strand-auth.workspace = true
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }

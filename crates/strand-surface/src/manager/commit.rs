@@ -200,6 +200,11 @@ impl<H: SurfaceHost + 'static> State<H> {
                 );
             }
         }
+        // A lock surface acks its configure only with the buffer at that
+        // size (`session_lock.rs`).
+        if let Role::Lock(l) = &mut s.role {
+            l.ack();
+        }
         wl.attach(Some(&buffer), 0, 0);
         if wl.version() >= 4 {
             for r in damage.rects() {
@@ -275,6 +280,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
+        // A lock surface takes no bare commit: its configure is acked
+        // with its next buffer instead (`session_lock.rs`).
+        if matches!(s.role, Role::Lock(_)) {
+            return;
+        }
         if s.ack_pending {
             s.ack_pending = false;
             s.wl().commit();

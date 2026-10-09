@@ -2311,6 +2311,21 @@ and the connection):
     colour on the rest. `State::unlock(strand_auth::UnlockToken)` is the
     only way to unlock; `finished` without `locked` is a diagnostic and
     the lock counts as not shown.
+    As built (m4-lock wave 1): the module is
+    `src/manager/session_lock.rs` (the manager's other concerns live
+    there too). The content surface is a `Role::Lock` surface the host
+    paints like any other (`SurfaceHost::surface_attached` with the
+    spec's node, or `LOCK_FALLBACK_NODE` when `State::lock()` was called
+    with no `lock` spec: the seam for render's built-in fallback);
+    `State::lock_content()` names it. The other outputs get a
+    manager-painted 1×1 shm buffer scaled by `wp_viewporter` (a
+    full-size one without it) in `set_lock_color`'s colour, and a keyboard focus on one of them is
+    delivered as the content's. A spec closing (`open: false`) or going
+    away never unlocks: the surfaces stay and only `unlock` releases the
+    lock; a closed spec re-arms it, so an open spec locks again only
+    after it closed. `Finished` after `Locked` sends nothing (the
+    compositor keeps the session locked). The tests take a session lock
+    only inside the lock VM (`scripts/lockvm/scenarios/`).
   - Drag and drop (`dnd.rs`): a `wl_data_device` per seat produces
     `InputEvent::Drag*` (external files, apps and text as
     `DropPayload::External`); `State::start_drag(surface, node)` starts

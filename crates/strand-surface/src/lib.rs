@@ -11,6 +11,8 @@
 //! the refresh rate, and pointer input as [`InputEvent`]s (the types live
 //! in `strand-scene`).
 //!
+//! The session lock (`ext-session-lock`, `manager/session_lock.rs`) is
+//! released only for a `strand_auth::UnlockToken` ([`State::unlock`]).
 //! Compositor-animated poses (alpha modifier, viewporter, margins), the
 //! blur ladder and shaped input regions land in M4.
 //!
@@ -26,8 +28,8 @@ pub mod shm;
 pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 pub use manager::{
-    Config, GRAB_WINDOW, LockState, RepaintHandle, Request, State, Stats, SurfaceError,
-    SurfaceHost, SurfaceInfo, SurfaceManager,
+    Config, GRAB_WINDOW, LOCK_FALLBACK_NODE, LockError, LockState, RepaintHandle, Request, State,
+    Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager,
 };
 pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
 pub use placement::{Anchors, LayerConfig, PlacementError, layer_config};
