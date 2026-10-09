@@ -195,3 +195,94 @@ fn refreshes_reuse_one_connection_and_a_restarted_bus_gets_a_new_one() {
     }
     assert_eq!(counted(&hellos), 1, "after the restart, connections made");
 }
+
+/// A connection that owns `name` on `address` and never answers what is
+/// asked of it (it has no object server), kept until the returned sender
+/// is dropped.
+fn silent_peer(address: &str, name: &'static str) -> std::sync::mpsc::Sender<()> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let address = address.to_string();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let conn = rt.block_on(async move {
+            let conn = zbus::connection::Builder::address(address.as_str())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            conn.request_name(name).await.unwrap();
+            conn
+        });
+        let _ = ready_tx.send(());
+        let _ = stop_rx.recv();
+        drop(conn);
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the silent peer started");
+    stop_tx
+}
+
+/// A "bus" that accepts connections and never says a word: connecting to
+/// it hangs until the caller gives up.
+fn mute_bus(dir: &Path) -> (Bus, std::sync::mpsc::Sender<()>) {
+    let path = dir.join("mute");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while stop_rx.try_recv().is_err() {
+            if let Ok((s, _)) = listener.accept() {
+                held.push(s);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    (
+        Bus::Address(format!("unix:path={}", path.display())),
+        stop_tx,
+    )
+}
+
+#[test]
+fn a_question_that_times_out_does_not_wait_for_another_callers_connect() {
+    let Some(bus) = PrivateBus::start("bound") else {
+        return;
+    };
+    let _peer = silent_peer(&bus.address, "org.example.Silent");
+    let target = Bus::Address(bus.address.clone());
+    // The kept connection to the private bus is made now.
+    ask(&target).unwrap();
+    let (mute, _stop) = mute_bus(&bus.dir);
+
+    // A question nobody answers: it times out at TIMEOUT and drops the
+    // kept connection...
+    let start = Instant::now();
+    let silent = {
+        let target = target.clone();
+        std::thread::spawn(move || {
+            let r = properties(&target, "org.example.Silent", "/");
+            (r, start.elapsed())
+        })
+    };
+    // ...while, from half way through, another caller is connecting to a
+    // bus that never answers, until its own deadline (1.5 TIMEOUT).
+    std::thread::sleep(strand_introspect::TIMEOUT / 2);
+    let connecting = std::thread::spawn(move || ask(&mute));
+
+    let (r, took) = silent.join().unwrap();
+    assert!(r.is_err(), "the silent peer answered: {r:?}");
+    assert!(
+        took < strand_introspect::TIMEOUT + Duration::from_millis(400),
+        "the timed-out question took {took:?}, past its {:?} bound",
+        strand_introspect::TIMEOUT
+    );
+    assert!(connecting.join().unwrap().is_err());
+    // The hung connection was dropped: the bus is reached on a new one.
+    assert!(ask(&target).is_ok());
+}

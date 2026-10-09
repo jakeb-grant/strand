@@ -153,8 +153,12 @@ pub enum Bus {
 /// idle connection costs no wakeup.
 struct Shared {
     rt: tokio::runtime::Runtime,
-    /// Held while one is made, so callers asking at once share it.
-    conns: tokio::sync::Mutex<HashMap<Bus, zbus::Connection>>,
+    /// The kept connections. Never held across an `await`, so dropping
+    /// one that broke or hung never waits for another caller.
+    conns: Mutex<HashMap<Bus, zbus::Connection>>,
+    /// Held while a connection is made, so callers asking at once share
+    /// it. Waited for only within a caller's deadline.
+    connecting: tokio::sync::Mutex<()>,
 }
 
 fn shared() -> Result<&'static Shared, String> {
@@ -167,7 +171,8 @@ fn shared() -> Result<&'static Shared, String> {
                 .ok()?;
             Some(Shared {
                 rt,
-                conns: tokio::sync::Mutex::new(HashMap::new()),
+                conns: Mutex::new(HashMap::new()),
+                connecting: tokio::sync::Mutex::new(()),
             })
         })
         .as_ref()
@@ -187,22 +192,35 @@ async fn connect(bus: &Bus) -> zbus::Result<zbus::Connection> {
 }
 
 impl Shared {
+    /// The kept connections (a caller that panicked holding them left
+    /// nothing half-done: every edit is one map operation).
+    fn conns(&self) -> std::sync::MutexGuard<'_, HashMap<Bus, zbus::Connection>> {
+        self.conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The kept connection to `bus`, made now if there is none.
     async fn connection(&self, bus: &Bus) -> Result<zbus::Connection, String> {
-        let mut conns = self.conns.lock().await;
-        if let Some(conn) = conns.get(bus) {
+        if let Some(conn) = self.conns().get(bus) {
+            return Ok(conn.clone());
+        }
+        let _connecting = self.connecting.lock().await;
+        // Another caller may have made it while this one waited.
+        if let Some(conn) = self.conns().get(bus) {
             return Ok(conn.clone());
         }
         let conn = connect(bus)
             .await
             .map_err(|e| format!("cannot reach the bus: {e}"))?;
-        conns.insert(bus.clone(), conn.clone());
+        self.conns().insert(bus.clone(), conn.clone());
         Ok(conn)
     }
 
-    /// Forgets `conn` as `bus`'s connection (it broke, or hung).
-    async fn forget(&self, bus: &Bus, conn: &zbus::Connection) {
-        let mut conns = self.conns.lock().await;
+    /// Forgets `conn` as `bus`'s connection (it broke, or hung). Never
+    /// waits: a connection being made elsewhere does not hold the map.
+    fn forget(&self, bus: &Bus, conn: &zbus::Connection) {
+        let mut conns = self.conns();
         if conns
             .get(bus)
             .is_some_and(|kept| kept.unique_name() == conn.unique_name())
@@ -231,16 +249,16 @@ impl Shared {
                 .map_err(|_| late())??;
             match tokio::time::timeout_at(deadline, introspect(&conn, name, path)).await {
                 Err(_) => {
-                    self.forget(bus, &conn).await;
+                    self.forget(bus, &conn);
                     return Err(late());
                 }
                 Ok(Err(e)) if !answered(&e) && !retried => {
-                    self.forget(bus, &conn).await;
+                    self.forget(bus, &conn);
                     retried = true;
                 }
                 Ok(Err(e)) => {
                     if !answered(&e) {
-                        self.forget(bus, &conn).await;
+                        self.forget(bus, &conn);
                     }
                     return Err(e.to_string());
                 }

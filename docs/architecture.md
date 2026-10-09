@@ -869,8 +869,11 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   key, item, send)` (the item updated at once; a throttled handler's item
   writes are held, the latest per item, each landing with its `send`;
   latest write wins per item: a landing item write drops other
-  handlers' held writes of that item made before it, any other change of
-  the item drops them all, and held writes of other items are kept)
+  handlers' held writes of that item made before it and re-bases the
+  later ones onto itself, a service's report settling the last landed
+  write of the item (`receive_items`, even a correcting one) re-bases
+  them too, any other change of the item drops them all, and held
+  writes of other items are kept)
   and the service's diffs come back through `receive_items(diffs,
   echo_of)`, which drops an item's echo (by tag, or by value untagged),
   keeps a written item in a `Reset` that echoes it, and drops updates

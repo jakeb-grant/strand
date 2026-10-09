@@ -1327,6 +1327,157 @@ fn of_two_held_item_writes_the_later_one_wins() {
     assert_eq!(item(&rt, sinks, 2), 600.0);
 }
 
+type SentTagged = std::rc::Rc<std::cell::RefCell<Vec<(Dev, Generation)>>>;
+
+/// Two throttled handlers each writing item 2 (with their tags into
+/// `sent`), `c` one tick behind `a`; `a` holds 500 and `c` 600, and the
+/// clock is run until 500 has landed with 600 still held. Returns the
+/// time and 500's tag.
+fn first_of_two_held_landed(
+    rt: &Runtime,
+    sinks: strand_core::KeyedSignal<u32, Dev>,
+    sent: &SentTagged,
+) -> (Duration, Generation) {
+    let writer = || {
+        let events = rt.events::<u32>();
+        let s = sent.clone();
+        events
+            .on(rt, move |rt, v| {
+                let s = s.clone();
+                sinks.write_item_tagged(rt, 2, (2, f64::from(*v)), move |_, _, d, g| {
+                    s.borrow_mut().push((*d, g))
+                })?;
+                Ok(())
+            })
+            .unwrap();
+        events
+    };
+    let (a, c) = (writer(), writer());
+    let mut t = Duration::ZERO;
+    for i in 0..=60u32 {
+        t += Duration::from_millis(5);
+        if i < 60 {
+            a.emit(rt, i + 1).unwrap();
+        }
+        if i >= 1 {
+            c.emit(rt, i).unwrap();
+        }
+        rt.tick(t);
+    }
+    a.emit(rt, 500).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    c.emit(rt, 600).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    assert!(
+        !sent.borrow().iter().any(|d| d.0.1 >= 500.0),
+        "both last writes are held: {:?}",
+        sent.borrow()
+    );
+    for _ in 0..200 {
+        if let Some(&(_, g)) = sent.borrow().iter().find(|d| d.0.1 == 500.0) {
+            assert!(
+                !sent.borrow().iter().any(|d| d.0.1 == 600.0),
+                "600 landed with 500"
+            );
+            return (t, g);
+        }
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    panic!("500 never landed: {:?}", sent.borrow());
+}
+
+/// The later held write of an item outlives the earlier one's landing
+/// even when something else in the list changes before it lands (here a
+/// service's report of another item).
+#[test]
+fn a_later_held_item_write_survives_a_change_after_an_earlier_one_landed() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentTagged = std::rc::Rc::default();
+    let (mut t, _) = first_of_two_held_landed(&rt, sinks, &sent);
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 0,
+                key: 1,
+                value: (1, 9.0),
+            }],
+            None,
+        )
+        .unwrap();
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    assert_eq!(item(&rt, sinks, 1), 9.0);
+    assert_eq!(item(&rt, sinks, 2), 600.0, "sent: {:?}", sent.borrow());
+    assert_eq!(sent.borrow().last().map(|d| d.0), Some((2, 600.0)));
+}
+
+/// A service's answer to the earlier write that landed, even one
+/// correcting it (a clamped volume), keeps the later held write: it was
+/// made after the write answered.
+#[test]
+fn a_service_correcting_an_earlier_write_keeps_the_later_held_one() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentTagged = std::rc::Rc::default();
+    let (mut t, g) = first_of_two_held_landed(&rt, sinks, &sent);
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 1,
+                key: 2,
+                value: (2, 499.0),
+            }],
+            Some(g),
+        )
+        .unwrap();
+    assert_eq!(item(&rt, sinks, 2), 499.0, "the correction applies");
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    assert_eq!(item(&rt, sinks, 2), 600.0, "sent: {:?}", sent.borrow());
+    assert_eq!(sent.borrow().last().map(|d| d.0), Some((2, 600.0)));
+}
+
+/// A report of the item that answers no write of ours (an outside change,
+/// here an untagged value no write of ours sent) still supersedes the held
+/// write.
+#[test]
+fn an_outside_report_after_an_earlier_write_landed_drops_the_later_held_one() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentTagged = std::rc::Rc::default();
+    let (mut t, _) = first_of_two_held_landed(&rt, sinks, &sent);
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 1,
+                key: 2,
+                value: (2, 0.75),
+            }],
+            None,
+        )
+        .unwrap();
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    assert_eq!(item(&rt, sinks, 2), 0.75, "sent: {:?}", sent.borrow());
+    assert!(!sent.borrow().iter().any(|d| d.0.1 == 600.0));
+}
+
 /// Another change of a held item (here a plain update of the list from
 /// outside any handler) supersedes the held write of that item.
 #[test]
