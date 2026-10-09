@@ -9008,3 +9008,23 @@ newly met or lost this round.
 **2026-10-09 · m4-owner: the lock VM container gets `/dev/kvm`.** `/dev/kvm` on the owner's laptop is mode 0666, so QEMU runs with KVM in a Docker container with no host change. The owner allowed passing `/dev/kvm` to the lock VM container only (`scripts/container/lockvm.sh`); CLAUDE.md's laptop rules name it next to renderD128.
 
 **2026-10-09 · m4-owner: `letters` keeps no positional.** The M4 plan proposed `letters "text" { … }`; design.md shows `letters { y: … }` and wave2-check recorded that `letters` has no positional. We keep that reading: `letters` animates the text of its enclosing `text` node.
+
+## m4-docs
+
+**2026-10-09 · m4-docs: where the M4 plan lives.** The execution plan and its review are merged into `docs/m4-plan.md`; the review's stream table, ownership fixes and ordering win over the plan, and the owner's answers (m4-owner) replace its open questions. architecture.md gets the M4 interface text in two parts: everything but the GPU now (wave 0a), the GPU after the spike (wave 0c), because the `Painter` backend, the shm/WSI hand-off and where naga lives depend on what the spike measures.
+
+**2026-10-09 · m4-docs: time leaves follow the schema, not the old sketch.** architecture.md sketched `Wave { period }` and `Noise { seed }`. builtin.schema has `wave(period, phase: float = 0)` and `noise(x: float)`, and design.md writes `wave(1s, phase: index * 0.1)` and `noise(x)`, so `Wave` carries its phase and `Noise` its argument as expressions. `Index` and `Count` are `letters`' element-scope `index` and `count` (builtin.schema), the only per-letter values a `letters` block reads. These replace the sketch; no syntax changes.
+
+**2026-10-09 · m4-docs: `DropPayload` in strand-scene, `NodeEvent::Drop` in strand-render.** `NodeEvent` lives in `strand_render::input`, so the M4 variant goes there. Its payload is produced by `strand-surface` for external drops (`InputEvent::DragDrop`), which cannot depend on render, so `DropPayload` sits in `strand-scene` next to `InputEvent`. An in-Strand drag sends only the source node; logic maps it back to its `drag:` value, so no logic value crosses into render. `Prop::Drag` and `Prop::Accepts` carry type names, which is all render needs to pick a target.
+
+**2026-10-09 · m4-docs: the unlock gate is a type.** design.md asks for a small, separately reviewable PAM helper and a lock that fails closed. `strand_auth::UnlockToken` is minted only by `strand_auth::Client` from a success reply and is neither `Clone` nor constructible elsewhere; `strand-surface`'s `State::unlock` takes it, so no other path can unlock. That adds an edge from `strand-surface` to `strand-auth`'s lib, which depends only on libc and zeroize; the binary alone links libpam.
+
+**2026-10-09 · m4-docs: keyframes travel inline.** `Prop::Play` carries the compiled `keyframes` block (`PropValue::Keyframes`) instead of `[name, seq]`, so render keeps no table of keyframes that a reload would have to update; the settings are the ones `check::keyframe_settings` already allows (`duration`, `delay`, `repeat`, `alternate`, `easing`).
+
+**2026-10-09 · m4-docs: an SVG part names its layer with `Prop::Name`.** The 2026-10-05 render decision makes `#id { … }` blocks child nodes; the new kind `SvgPart` carries the id as `Prop::Name`, the prop that already holds a declared name, rather than a new prop.
+
+**2026-10-09 · m4-docs: the lock fallback bypasses the Router.** While render's built-in fallback lock is shown, keys on lock surfaces go from the binary straight to `lock_fallback`, so the code that must work when everything else has failed does not depend on the Router, the logic thread or the text worker. The Router stays S-lists' alone; parallax, tilt and jelly read it (`pointer`, `drag`) and never edit it.
+
+**2026-10-09 · m4-docs: tray click coordinates are left to S-surface.** The plan gave the tray actions optional `x`/`y`. A user-facing argument would be new syntax with no way for a config to know the anchor's output position, so architecture.md only fixes the outcome (real coordinates instead of 0, 0) and leaves the route (an argument, or the host filling them in from the calling node) to S-surface's decision.
+
+**2026-10-09 · m4-docs: clipboard is not M4.** decisions.md (wave3-pixels p3) left Ctrl+C/V "for M4 with drag and drop", but design.md never mentions a clipboard and no M4 box asks for it. It stays out; drag and drop's `wl_data_device` makes it cheap to add later.

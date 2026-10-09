@@ -211,6 +211,9 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
 - The rest of M4 (blur protocols, drag and drop, tray menus, page
   transitions, the effects catalogue, 2,000-row scrolling) can run
   headless as M2 did.
+- The execution plan (streams, waves, owners, tests) is
+  `docs/m4-plan.md`; its interface text is in `docs/architecture.md`
+  (the GPU parts after the spike, wave 0c).
 
 ## Handoff checklist
 

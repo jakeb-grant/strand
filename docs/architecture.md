@@ -206,6 +206,31 @@ render. A client whose socket cannot take its output yet gets a write
 source on the logic loop until it is written (no polling); one more
 than 1 MiB behind is dropped.
 
+**M4 additions (planned; docs/m4-plan.md, wave 0a).** The GPU thread and
+its hand-off rules land in wave 0c, after the GPU spike.
+- `ToLogic::ListWindow { list, first, count }`: the rows a virtualised
+  `list` wants mounted (its view plus overscan, from
+  `Renderer::take_list_windows`), applied by logic with
+  `Instance::set_list_window`. `ToLogic::LockState(LockState)`: the
+  session lock as the compositor reports it (`Locked`, `Finished`,
+  `Unlocked`), which feeds `lock_shown`.
+- While a lock is shown, the main thread outlives the logic thread: logic
+  ending, panicking or hanging (a watchdog), SIGTERM, and a lock with no
+  first frame within 1 s leave the session locked and show render's
+  built-in fallback lock. The main thread then owns the unlock gate and a
+  `strand_auth::Client` of its own. SIGINT and SIGTERM end `strand run`
+  only while no lock is shown.
+- The PAM helper is a process, not a thread: the `strand-auth` binary,
+  fork+exec'd over a socketpair with `child::restore_in_child()` as its
+  `pre_exec`, one per lock session, respawned when it dies. Only it links
+  libpam.
+- Spectrum bins and thumbnail frames are produced off the main thread
+  (the audio thread, the `strand-toplevel` thread) and reach render
+  through the binary (`Renderer::feed(node, bins)`,
+  `Renderer::feed_frame(node, frame)`). Render tells the binary which of
+  those nodes are visible (`Renderer::take_feed_demand()`), and producers
+  run only for them.
+
 ## Crate graph
 
 ```
@@ -227,7 +252,27 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
           └── strand-introspect (D-Bus introspection; zbus only)
 strand (binary) wires everything; its ServiceHost adapters join
 strand-services' stores to strand-compiler's VM.
+
+strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
+             bin: the PAM helper, the only code that links libpam
+  ^-- strand-services (the `auth` service), strand-surface (the unlock
+      gate), strand (the main thread's fallback client, spawning the bin)
 ```
+
+`strand-auth` (M4) is the lock's whole security boundary, small enough to
+review alone. Its lib depends on `libc` and `zeroize` and no Strand
+crate; its binary adds a hand-written PAM FFI and nothing else. The lib
+holds the framed request/reply protocol over a socketpair, a blocking
+`Client` (spawn, `submit(password) -> Verdict`, timeout, respawn on a
+dead helper), password buffers that zeroize on drop, and `UnlockToken`:
+a value only `Client` mints, from a success reply, which is `Send` and
+neither `Clone` nor constructible elsewhere. `strand-surface` releases
+a session lock only for an `UnlockToken`, so no other code path can
+unlock. The PAM service is `strand`, or `login` with a one-time warning
+when `/etc/pam.d/strand` is missing (decisions.md, m4-owner); every
+other PAM error fails closed. A `faults` cargo feature (off in default
+and release builds) adds `STRAND_FAULT` injection points here and in
+`strand`. Where `strand-gpu` and `naga` sit is settled in wave 0c.
 
 `strand-icons` (wave 4, a3) is the Icon Theme Specification lookup with a
 cache `invalidate()` refreshes (`lookup(name, size, scale, theme)`,
@@ -330,6 +375,10 @@ be built and tested without the language, and the language without pixels.
       /// (M4) sends. Render draws the tint fallback (alpha + 0.15) until
       /// `Renderer::set_compositor_blur(true)`.
       fn blur_region(&self, surface: SurfaceId) -> Vec<BlurRegion> { Vec::new() }
+      /// (M4) The pose the compositor should apply to the whole surface
+      /// this frame, when render delegates its root's pose (see "M4
+      /// vocabulary"); `None` means identity.
+      fn surface_pose(&self, surface: SurfaceId) -> Option<SurfacePose> { None }
   }
   ```
 
@@ -679,6 +728,142 @@ be built and tested without the language, and the language without pixels.
 - Text is shaped once without a width bound per (node, scale) and
   aligned in its box at flatten time; only a box narrower than it asks
   for a layout of its (whole-pixel) width (decisions.md, wave3-pixels).
+
+- **M4 vocabulary** (planned; docs/m4-plan.md). S-runtime lands these
+  types in wave 0b, with stubs where behaviour is pending, so the streams
+  build against them; `tests/scene_catalogue.rs` stays green. `Prop`
+  stays a `Copy` enum (decisions.md, 2026-10-05 render). The GPU's
+  `Painter` backend negotiation lands in wave 0c.
+  - **Time-bound values** (`t`, `wave(…)`, `noise(…)`; design.md,
+    "Motion and time"). `TokenExpr` gains the leaves `Time` (`t`: seconds since
+    the node appeared), `Wave { period: Duration, phase: Box<TokenExpr> }`
+    (builtin.schema's `wave(period, phase: 0)`), `Noise(Box<TokenExpr>)`
+    (`noise(x)`), and `Index` and `Count` (a `letters` letter's `index`
+    and the letters' `count`). Arithmetic on them is the existing
+    `Binary`. `Template` gains numeric slots filled like its colours (in
+    field order), so `glow: 10 * wave(2s), $accent.alpha(0.4)` and
+    `conic(from: t * 40deg, …)` travel as one value.
+    `TokenScope::resolve` takes a per-node time context (`t`, `index`,
+    `count`); without one, every time leaf reads 0, as it does under
+    `reduced_motion`. A prop holding a time leaf is frame-driven: its node
+    repaints each frame of its clock while visible, and only it.
+  - **Per-node clocks with frame caps.** A node that reads time or plays
+    frames (an animated image at its own rate, `grain` at 12 fps,
+    `shimmer` at 30, others at refresh) has a clock; a clock that is not
+    due by the next frame leaves `wants_frame` false and puts its due
+    instant into `Renderer::next_wake()`, so the surface needs no new
+    call. Hidden nodes' clocks stop, and the frame loop stops when every
+    clock is idle.
+  - **Shader uniforms.** A node's `u_*` props travel as one
+    `Prop::Uniforms` holding `PropValue::Uniforms(Vec<(String,
+    PropValue)>)`, sorted by name as written (`u_speed`). Each entry
+    springs as a prop of its value's type would. The shader ABI lands in
+    wave 0c.
+  - **Canvas.** `Prop::Draw` holds `PropValue::DrawList(Arc<[DrawOp]>)`,
+    what the VM recorded running `draw: (c) => …` (re-run when what it
+    read changes; `c.width`/`c.height` come from layout facts). `DrawOp`
+    is the renderer's own paint vocabulary (paths, rounded rects, fills
+    and strokes with `Paint`, transforms, clips, text by spec); its
+    variants are added with the canvas work.
+  - **Effect layers** (design.md, "Runtime changes these need", items 1–4).
+    `strand_scene::effect::Effect` is a tagged group effect:
+    `ColorMatrix([f32; 20])` (the `filter:` colour functions compose into
+    one), `Blur { radius }`, `Blend(BlendMode)` (`screen`, `add`,
+    `multiply`, `overlay`, `difference`), `Mask(Mask)` (`fade(edge, len)`,
+    `radial(…)`, `shape(name)`) and `Opacity(f32)`; the shader group is
+    added in 0c. `Effect::reach() -> Insets` is how far it spreads
+    damage. Render's display list gains `Item::Layer { effects, bounds,
+    items }`, a group whose damage grows by its effects' reach, lowered by
+    each backend its own way (vello_cpu `push_layer`; masks always on the
+    CPU), and `Item::Raster { node, bounds }`, a CPU raster node
+    (particles, grain, graphs, spectrum, animated image frames) drawn into
+    a cached pixmap at its clock's rate. Cached offscreen groups (glows,
+    filtered subtrees, glass sources) redraw only when their children
+    change, in a second 4 MB budget freed when idle. The props keep
+    arriving as `PropValue::Call`; render builds the `Effect`s.
+  - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
+    block is a child node of kind `NodeKind::SvgPart` carrying the id it
+    selects as `Prop::Name` (`Text`, without the `#`) and ordinary props,
+    which render applies to that layer (decisions.md, 2026-10-05 render).
+  - **Keyframes.** `Prop::Play` holds `PropValue::Keyframes(Arc<Keyframes>)`
+    in place of `[name, seq]`: `Keyframes { name, seq, stops: Vec<(f32,
+    Vec<(Prop, PropValue)>)>, duration, delay, repeat, alternate, easing }`,
+    the compiled `keyframes` block inline (stops as fractions, settings as
+    `check::keyframe_settings` allows), so render keeps no keyframe table.
+    Keyframes are offsets composed with the node's springs; a new `seq`
+    restarts them.
+  - **Virtualised lists.** On a `list` whose direct child is a `for`,
+    logic sets `Prop::RowCount` (`Number`: all rows) and `Prop::RowFirst`
+    (`Number`: the global index of the first mounted row). `SceneOp::Create`
+    and `Remove` gain `window: bool`, true for a row the list window mounts
+    or unmounts: render plays no `enter`, `exit` or FLIP for it. Render
+    lays rows out at their global indexes (unmounted rows keep their
+    extent), scrolls by a paint offset with no relayout, and reports the
+    rows it wants (view plus overscan) with `Renderer::take_list_windows()
+    -> Vec<(NodeId, Range<u32>)>`, which the binary sends as
+    `ToLogic::ListWindow`.
+  - **Drag and drop** (design.md, "Drag and drop"). `Prop::Drag` on a
+    source reaches render as `PropValue::Keyword` naming the type of the
+    dragged value; `Prop::Accepts`, set by the compiler and never written
+    in source, is a `List` of `Keyword` type names the node's `on drop`
+    takes (`Drop` for other programs' drops, `any` for everything).
+    `DropPayload` lives in `strand-scene`, because `strand-surface`
+    produces the external one: `Node(NodeId)` (a `drag:` source in Strand;
+    logic maps it back to its value) or `External { kind: DropKind, files:
+    Vec<PathBuf>, text: String, app_id: Option<String> }`, `DropKind` being
+    `Files`, `App` or `Text`, matching builtin.schema's `record Drop`.
+    `strand_render::input::NodeEvent` gains `Drop { payload, at: u32 }`
+    (`at` a global row index) for `on drop(p, at)`.
+  - **Surface poses** (design.md, "Compositor-animated poses").
+    `SurfacePose { opacity: f32, scale: f32, offset: LogicalPoint }`. When
+    the compositor allows it (`Renderer::set_compositor_poses`) and a
+    root's motion is only its own opacity, scale (on an axis anchored on
+    one side) and x/y, render paints the content at rest and reports each
+    frame's pose through `Painter::surface_pose`; the surface manager
+    applies opacity with `wp_alpha_modifier_v1`, scale with the
+    viewporter's destination size and x/y with layer-shell margins. A
+    frame whose pose changed while `paint` returned no damage is a
+    pose-only commit: no buffer is attached and `age` does not advance. A
+    popup's x/y always repaints. Without the protocols, render repaints.
+  - **Compositor capabilities.** `CompositorCaps { alpha_modifier,
+    viewporter, single_pixel_buffer, background_effect, session_lock,
+    data_device }` (all `bool`), reported once the globals are bound
+    (`SurfaceHost::compositor_caps`); the host hands render what it uses
+    (`set_compositor_blur`, `set_compositor_poses`).
+  - **Scrims and fillets.** `SurfaceSpec` gains `scrim: Option<Color>`
+    (`scrim:` resolved through tokens; `popup` and `panel` only, checked by
+    the compiler). `attach: top` fillets are drawn outside the box beside
+    the attached edge: render adds the fillet radius to `overhang` on the
+    two sides along that edge, so the input region stays the box, and
+    placement puts the box at gap 0 from the attached edge. Fillets take
+    the paint of the outermost box touching that edge.
+  - **Input.** `InputEvent` gains `DragEnter { surface, at, kinds }`,
+    `DragMotion { surface, at }`, `DragLeave { surface }` and `DragDrop {
+    surface, at, payload: DropPayload }`, from `wl_data_device` (external
+    drops, and drags between Strand surfaces, which the pointer grab of a
+    press would otherwise hide).
+
+- **Router hooks** (M4; `strand_render::input`, owned by S-lists). The
+  `Router` stays the one place input is routed. Other streams read it
+  and do not edit it; a stream that needs more asks S-lists for a
+  reviewed addition. New `InputScene` methods always have no-op
+  defaults, so existing implementations keep compiling.
+  - `Router::pointer(surface) -> Option<LogicalPoint>`: the last pointer
+    position, read at flatten time by `parallax` and `tilt`.
+  - `Router::drag() -> Option<DragView>`: the drag in flight (source node,
+    pointer, velocity in px/s, target and insertion index), read by the
+    drag ghost, `jelly` and list reordering.
+  - Submenus: Right on a row that opens a nested `popup` opens it, Left
+    or Escape closes the innermost; S-lists adds these keys for
+    S-surface's tray menus, emitting the existing intents (a two-way
+    `open` write).
+  - The lock: keys on a lock surface while render's built-in fallback is
+    shown never reach the `Router`; the binary (`run/lock.rs`) hands them
+    to `strand_render::lock_fallback`, which needs no text worker. An
+    `input` with `type: password` is edited by the `Router` as any
+    `input`; its value is redacted by the binary in `strand watch`, logs
+    and (M5) the inspector.
+
 - Later (render):
   - `flatten_surface` rebuilds the map of every delivered layout and
     prunes text across all surfaces on each call, which is O(surfaces ×
@@ -1327,16 +1512,19 @@ Public interfaces other crates and later stages build on:
   `noise(…)` read 0 (`noise` once) on the logic thread today, with one
   `lower::time_signal` warning per name (`Program::warnings`, reported
   as boot-tick notices). They are to travel like tokens: `Value` gains a
-  symbolic variant holding a `strand_scene` time expression (a
-  `TokenExpr`-like tree over `Time`, `Wave { period }`, `Noise { seed }`
-  leaves and the same arithmetic, so `t * 20deg` or `10 * wave(2s)`
-  stays an expression), arithmetic on it builds the tree as
+  symbolic variant holding a `strand_scene::TokenExpr` with the time
+  leaves (`Time`, `Wave`, `Noise`, `Index`, `Count`: `strand-scene`, "M4
+  vocabulary"; the warning goes), so `t * 20deg` or `10 * wave(2s)`
+  stays an expression; arithmetic on it builds the tree as
   `builtins::binary` already does for `TokenExpr`, and `convert` maps it
-  to a `PropValue` variant that render evaluates per frame (`t` per
-  node, from its appearance). A prop holding one is a frame-driven prop
+  to `PropValue::Token` (a `Template` with numeric slots when it sits
+  inside a composite value), which render evaluates per frame (`t` per
+  node, from its appearance; a reload that keeps the node keeps its `t`,
+  a remount restarts it). A prop holding one is a frame-driven prop
   for render's frame scheduling; nothing else in the emitter changes.
-  A time-bound value reaching logic (a handler, a comparison, `match`)
-  is an error value, as a token in arithmetic without numbers is now.
+  `noise(x)` is a time value only when `x` is. A time-bound value
+  reaching logic (a handler, a comparison, `match`) is an error value,
+  as a token in arithmetic without numbers is now.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
   - `declare(rt, &lower::CustomService, types)`: a no-code service the
@@ -1699,6 +1887,30 @@ Public interfaces other crates and later stages build on:
     instance's id allocator and diff, and survive reloads (hard ones
     too); input on them is the caller's.
 
+- **M4 additions** (planned; docs/m4-plan.md). Shader checking
+  (`check::shaders`, naga) and `Role::Shader` paths land in wave 0c.
+  - List windows: a `for` that is a `list`'s direct child mounts through
+    `mount_keyed` only the rows of the list's window, row state kept by
+    key; `Instance::set_list_window(list, first, count)` (from
+    `ToLogic::ListWindow`) mounts and unmounts rows by key, sets
+    `Prop::RowCount`/`RowFirst` and marks those ops `window`. A change
+    to a mounted row is its ops; a change outside the window sends no row
+    op. `nav` selects by index, and a selection lands when its row mounts.
+  - Drag and drop: the instance sets `Prop::Drag` (the dragged value's
+    type) and `Prop::Accepts` (from each `on drop` parameter's type); a
+    `NodeEvent::Drop` with `DropPayload::Node` is delivered with that
+    source node's `drag:` value, an `External` one as a `Drop` record.
+  - The lock: only an `auth` success unlocks; the runtime then writes the
+    lock's `open` false, and a config write of `false` while locked is
+    ignored with a warning. `lock_shown()` follows `ToLogic::LockState`,
+    the compositor's state, not the `open` prop.
+  - `compositor-rules`: a query over a `Build` listing the surfaces whose
+    tree has `blur`, with their namespaces (`strand-<Name>`), for
+    `strand compositor-rules` (S-surface owns it).
+  - Checks live in per-stream submodules (`check/{surfaces, effects,
+    lists, lock}.rs`); `attach` and `scrim` are allowed only on `popup`
+    and `panel`.
+
 - **Formatting** (`strand_compiler::fmt`): `format(src) -> Result<String,
   FormatError>` (and `format_parsed(src, &Parse)`), the one formatter
   behind `strand fmt` and LSP formatting. It never changes a file's
@@ -1904,15 +2116,48 @@ and the connection):
   (innermost first, as any surface's are), and it is not shown again until
   its spec closes. `Painter::blur_region` is read for the blur ladder
   (M4); nothing is sent yet.
+- **M4 additions** (planned; docs/m4-plan.md). `raw_handles(surface)`
+  and the shm/WSI hand-off rules for GPU promotion land in wave 0c.
+  - Capabilities: the manager binds `wp_alpha_modifier_v1`,
+    `wp_single_pixel_buffer_v1` and `ext_background_effect_manager_v1`
+    when offered, and calls the new hook `SurfaceHost::compositor_caps(
+    &CompositorCaps)` once its globals are bound.
+  - Poses: each frame it reads `Painter::surface_pose` and applies it
+    (alpha modifier, viewporter destination size, layer-shell margins);
+    a pose change with no damage is a bare commit with no buffer, and
+    margin changes ride the next buffer commit when a paint is pending.
+    Render already holds `Removed`/`open: false` until an exit settles.
+  - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
+    viewporter, for scrims and lock backgrounds; shm when the protocol is
+    missing. A spec's `scrim` is a full-output layer surface under the
+    panel or popup, on the same layer and output; it is the click-away
+    catcher too when the surface has one (the catcher becomes visible
+    instead of a second surface being made).
+  - Fillets: placement puts an `attach`ed box at gap 0 from that edge;
+    the overhang render adds for the fillets grows the buffer only.
+  - Blur ladder (`blur.rs`): `Painter::blur_region` becomes a logical
+    `wl_region` inside the manager (rounded corners as about 1 px
+    bands), cached and sent with `ext_background_effect_v1` only when
+    the shape changes, null when empty.
+  - Popups: a `popup` nested in a popup may open to the side
+    (`anchor:`, right by default, flipping left), for tray submenus.
+  - Session lock (`session_lock.rs`): `State::lock()` asks
+    `ext_session_lock_v1` for a lock; the host hears
+    `SurfaceHost::lock_changed(LockState)` (`Locked`, `Finished`, and
+    `Unlocked` after an unlock). A `lock` spec gets one lock surface per
+    output, including outputs plugged in while locked; config content
+    goes on the focused output, a single-pixel background in the lock's
+    colour on the rest. `State::unlock(strand_auth::UnlockToken)` is the
+    only way to unlock; `finished` without `locked` is a diagnostic and
+    the lock counts as not shown.
+  - Drag and drop (`dnd.rs`): a `wl_data_device` per seat produces
+    `InputEvent::Drag*` (external files, apps and text as
+    `DropPayload::External`); `State::start_drag(surface, node)` starts
+    a drag between Strand surfaces with a Strand-private MIME type that
+    carries the node, delivered as `DropPayload::Node`. Drags out to
+    other programs are out of scope.
 - Later (planned, so the current shape does not block them):
-  - M2/M4: surface `exit` poses need the unmap delayed until exit
-    settles: render holds `Removed`/`open: false` until its exit is done
-    (or a `SurfaceHost::exit_done` hook); spec changes (compositor-animated
-    margins) get applied with the next buffer commit when a paint is
-    pending instead of a bare commit.
-  - M4: `raw_handles(surface)` (display + `wl_surface`) for GPU promotion
-    on the same surface; `State::recreate_all()` for `strand reload
-    --hard`.
+  - `State::recreate_all()` for `strand reload --hard`.
 
 ### `strand-dev`
 
@@ -2571,6 +2816,28 @@ transparent huge pages for life.
   `pipewire` feature the module is absent and the store answers
   `audio.*` at the schema's defaults (its schema text is left out of
   `strand_services::schemas()`).
+
+- **M4 additions** (planned; docs/m4-plan.md). One owner per file: tray
+  to S-surface, auth to S-lock, audio and wm to S-effects.
+  - `auth` stops being provisional (`auth.schema`: `busy`, `failed`,
+    `submit(password)`). Its store runs a `strand_auth::Client`, which
+    spawns the helper with `child::restore_in_child()`; the password
+    is zeroized once sent, and a success hands an
+    `strand_auth::UnlockToken` to the binary, which passes it to the
+    surface manager's unlock.
+  - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
+    (realfft) runs on the audio thread only while a reader is visible,
+    and stops while the source is silent.
+  - wm: `ProtoCmd::Capture` on the `strand-toplevel` thread captures a
+    window by its `Window::toplevel` identifier through
+    ext-image-copy-capture, for `thumbnail`; frames reach render through
+    the binary (`Renderer::feed_frame`), only while the thumbnail is
+    visible.
+  - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the
+    anchor's output-logical position for `x`/`y` instead of 0, 0. How it
+    reaches the action (an optional argument, or filled in by the host
+    from the node that called it) is S-surface's decision, recorded in
+    decisions.md; menus open as nested `popup`s.
 
 ### `strand-watch`
 

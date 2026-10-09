@@ -162,6 +162,8 @@ Exit: [x] runs on Hyprland, niri and sway · [x] 100 reloads with no reconnects 
 
 Exit: [ ] smooth 2,000-row scrolling · [ ] GPU released when idle · [ ] lock fails closed under faults
 
+Plan: streams, waves, owners and the tests behind each box are in `docs/m4-plan.md`.
+
 - [ ] GPU promotion (vello_gpu/wgpu) for large long animations; switch only when settled; device dropped after 30 s idle
 - [ ] Compositor-animated poses: alpha modifier, viewporter scale, layer-shell margins
 - [ ] Popups as nested xdg_popups; tray menus; tooltips (popups and `tooltip: expr` done in M2: see the M2 widgets item; M3's tray service with its DBusMenu model is done (`crates/strand-services/tests/tray.rs`), so only the tray menu popups are left for M4)
