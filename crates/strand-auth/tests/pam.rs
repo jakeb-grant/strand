@@ -359,7 +359,6 @@ fn the_helper_refuses_an_overlong_password() {
     assert_eq!(verdict("x".repeat(MAX_PASSWORD)), Code::Success, "control");
     assert_eq!(verdict("x".repeat(MAX_PASSWORD + 1)), Code::Denied);
     assert_eq!(verdict("x".repeat(600)), Code::Denied);
-    drop(verdict);
     drop(input);
     assert!(child.wait().unwrap().success());
 }
