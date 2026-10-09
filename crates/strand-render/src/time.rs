@@ -29,31 +29,46 @@ pub(crate) struct NodeTimes {
 }
 
 impl NodeTimes {
-    /// The time context of `id` in a frame at `frame`. A painted frame
+    /// The time context of `id` in a frame at `frame`, and when its clock
+    /// next ticks (`None`: every frame, or frozen). A painted frame
     /// (`commit`) starts the node's clock if it has none; a preview reads
     /// an unstarted clock as 0 without starting it. `frozen` (reduced
-    /// motion, or a frame with no clock) stops it at `t = 0`.
+    /// motion, or a frame with no clock) stops it at `t = 0`. A capped
+    /// clock (`period`) reads `t` in whole ticks, a tick counting as
+    /// reached `slack` early (half a frame: the frame nearest it draws
+    /// it).
     pub(crate) fn context(
         &mut self,
         id: NodeId,
         frame: Duration,
         commit: bool,
         frozen: bool,
-    ) -> TimeContext {
+        period: Option<Duration>,
+        slack: Duration,
+    ) -> (TimeContext, Option<Duration>) {
         let (index, count) = letter(id);
         if frozen {
-            return TimeContext::frozen(index, count);
+            return (TimeContext::frozen(index, count), None);
         }
         let start = if commit {
             *self.start.entry(id).or_insert(frame)
         } else {
             self.start.get(&id).copied().unwrap_or(frame)
         };
-        TimeContext {
-            t: frame.saturating_sub(start).as_secs_f32(),
+        let elapsed = frame.saturating_sub(start);
+        let (t, next) = match period.filter(|p| !p.is_zero()) {
+            None => (elapsed, None),
+            Some(p) => {
+                let ticks = ((elapsed + slack).as_nanos() / p.as_nanos()) as u32;
+                (p * ticks, Some(start + p * (ticks + 1)))
+            }
+        };
+        let cx = TimeContext {
+            t: t.as_secs_f32(),
             index,
             count,
-        }
+        };
+        (cx, next)
     }
 
     /// When the clock of `id` started, if it has.
@@ -111,22 +126,54 @@ mod tests {
     fn t_counts_from_the_first_painted_frame() {
         let mut times = NodeTimes::default();
         let s = Duration::from_secs;
+        let at = |times: &mut NodeTimes, n: u32, f: Duration, commit: bool, frozen: bool| {
+            times.context(id(n), f, commit, frozen, None, Duration::ZERO)
+        };
         // A preview does not start the clock.
-        assert_eq!(times.context(id(1), s(5), false, false).t, 0.0);
+        assert_eq!(at(&mut times, 1, s(5), false, false).0.t, 0.0);
         assert_eq!(times.len(), 0);
-        assert_eq!(times.context(id(1), s(10), true, false).t, 0.0);
-        assert_eq!(times.context(id(1), s(12), true, false).t, 2.0);
-        assert_eq!(times.context(id(1), s(13), false, false).t, 3.0);
+        assert_eq!(at(&mut times, 1, s(10), true, false).0.t, 0.0);
+        assert_eq!(
+            at(&mut times, 1, s(12), true, false),
+            (
+                TimeContext {
+                    t: 2.0,
+                    index: 0,
+                    count: 0
+                },
+                None
+            )
+        );
+        assert_eq!(at(&mut times, 1, s(13), false, false).0.t, 3.0);
         // Another node starts its own clock.
-        assert_eq!(times.context(id(2), s(13), true, false).t, 0.0);
+        assert_eq!(at(&mut times, 2, s(13), true, false).0.t, 0.0);
         // Frozen: `t = 0`, the clock kept.
         assert_eq!(
-            times.context(id(1), s(20), true, true),
-            TimeContext::frozen(0, 0)
+            at(&mut times, 1, s(20), true, true),
+            (TimeContext::frozen(0, 0), None)
         );
         assert_eq!(times.start(id(1)), Some(s(10)));
         // A remount (the id gone) starts again.
         times.retain(|n| n != id(1));
-        assert_eq!(times.context(id(1), s(30), true, false).t, 0.0);
+        assert_eq!(at(&mut times, 1, s(30), true, false).0.t, 0.0);
+    }
+
+    #[test]
+    fn a_capped_clock_reads_whole_ticks() {
+        let mut times = NodeTimes::default();
+        let ms = Duration::from_millis;
+        let p = Some(ms(100));
+        let (cx, next) = times.context(id(1), ms(1000), true, false, p, ms(8));
+        assert_eq!((cx.t, next), (0.0, Some(ms(1100))));
+        let (cx, next) = times.context(id(1), ms(1090), true, false, p, ms(8));
+        assert_eq!((cx.t, next), (0.0, Some(ms(1100))), "too early");
+        let (cx, next) = times.context(id(1), ms(1093), true, false, p, ms(8));
+        assert_eq!(
+            (cx.t, next),
+            (0.1, Some(ms(1200))),
+            "the frame nearest the tick"
+        );
+        let (cx, _) = times.context(id(1), ms(1250), true, false, p, ms(8));
+        assert_eq!(cx.t, 0.2);
     }
 }

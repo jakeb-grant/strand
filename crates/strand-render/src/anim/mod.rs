@@ -156,6 +156,9 @@ pub(crate) struct Animator {
     finished: Vec<(NodeId, ExitKind)>,
     /// (M4) When each node that reads time appeared ([`crate::time`]).
     times: crate::time::NodeTimes,
+    /// (M4) Half a frame of the surface being drawn: how early a capped
+    /// clock's tick counts as reached ([`crate::clock`]).
+    slack: Duration,
 }
 
 impl Animator {
@@ -181,12 +184,28 @@ impl Animator {
         self.active
     }
 
+    /// (M4) Half a frame of the surface about to be drawn (see
+    /// [`crate::clock`]).
+    pub fn set_slack(&mut self, slack: Duration) {
+        self.slack = slack;
+    }
+
     /// (M4) The time context of `id` in the frame being drawn: its own
-    /// `t` since it appeared, frozen at `t = 0` under `reduced_motion` or
-    /// in a frame with no clock.
-    pub fn time_of(&mut self, id: NodeId) -> strand_scene::TimeContext {
+    /// `t` since it appeared, in whole ticks of `rate` when capped,
+    /// frozen at `t = 0` under `reduced_motion` or in a frame with no
+    /// clock. Also when the clock next ticks (`None`: every frame).
+    pub fn time_of(
+        &mut self,
+        id: NodeId,
+        rate: crate::clock::Rate,
+    ) -> (strand_scene::TimeContext, Option<Duration>) {
         let frozen = self.snapping();
-        self.times.context(id, self.time, self.commit, frozen)
+        let period = match rate {
+            crate::clock::Rate::Refresh => None,
+            crate::clock::Rate::Every(p) => Some(p),
+        };
+        self.times
+            .context(id, self.time, self.commit, frozen, period, self.slack)
     }
 
     /// Everything snaps: `reduced_motion`, or a frame at time zero (no

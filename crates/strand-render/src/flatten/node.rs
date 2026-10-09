@@ -68,7 +68,16 @@ impl<'a> Flattener<'a> {
         // Time-bound props (M4) are evaluated at this node's own time.
         let timed_scope = inh.timed || crate::time::overrides_read_time(node);
         let timed = timed_scope || crate::time::reads_time(node);
-        let time = timed.then(|| self.anim.time_of(node.id));
+        // Its clock: the rate its time props and its own animation run at.
+        let rate = crate::clock::rate(node, timed);
+        let (time, next) = match rate {
+            Some(rate) => {
+                let (cx, next) = self.anim.time_of(node.id, rate);
+                (Some(cx), next)
+            }
+            None => (None, None),
+        };
+        let clock = rate.map(|_| crate::clock::Clock { next });
         let scope = TokenScope::new(&tokens).with_time(time);
         let mut props: Vec<(Prop, Cow<'a, PropValue>)> = node
             .props
@@ -86,9 +95,6 @@ impl<'a> Flattener<'a> {
                 None => return Rect::default(),
             }
         };
-        if timed {
-            self.out.clocks.push(node.id);
-        }
         // Springs: this frame's values of the props in flight.
         let inherited = inh.color.unwrap_or_else(|| default_color(&scope));
         self.anim
@@ -295,8 +301,17 @@ impl<'a> Flattener<'a> {
 
         let phys = self.scale.snap_rect(rect);
         let frame = kurbo_rect(phys);
+        // A hidden node's clock stops (its subtree is not visited, so
+        // theirs do too), unless what hides it follows time.
+        let follows = |p: Prop| {
+            node.get(p)
+                .is_some_and(|v| v.reads_time() || timed_scope && v.has_tokens())
+        };
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
+            if follows(Prop::Opacity) {
+                self.out.clocks.extend(clock);
+            }
             return Rect::default();
         }
 
@@ -304,6 +319,9 @@ impl<'a> Flattener<'a> {
         // under a transform, and its damage is the transformed bounds.
         let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
         if zoom <= 0.0 {
+            if follows(Prop::Scale) {
+                self.out.clocks.extend(clock);
+            }
             return Rect::default();
         }
         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
@@ -696,6 +714,19 @@ impl<'a> Flattener<'a> {
             self.marker(Item::PopClip);
         }
         let subtree = bounds.union(children);
+        // Drawn: its clock runs, unless all it draws is outside the clip
+        // and nothing that places it follows time (it stays out). A
+        // built-in `effect` draws in its box.
+        let moves = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotate, Prop::Shadow]
+            .into_iter()
+            .any(follows);
+        let effect = node.kind == NodeKind::Effect
+            && map_rect(self.xform, phys)
+                .intersect(inh.clip)
+                .is_some_and(|r| !r.is_empty());
+        if !subtree.is_empty() || moves || effect {
+            self.out.clocks.extend(clock);
+        }
         if let Some(i) = opacity_group {
             self.out.items[i].bounds = subtree;
             self.marker(Item::PopOpacity);

@@ -206,6 +206,8 @@ impl Renderer {
             return Damage::new();
         };
         s.time = target.time;
+        self.clocks.frame(surface, target.time, Instant::now());
+        self.anim.set_slack(self.clocks.slack(surface));
         self.glide_origin(surface, target.size, target.scale);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
@@ -266,7 +268,7 @@ impl Renderer {
             // Its clocks run while it draws them: not frozen (reduced
             // motion, a frame with no clock), and not after it detached.
             let frozen = self.anim.reduced() || target.time.is_zero();
-            let clocks = if frozen { Vec::new() } else { f.clocks.clone() };
+            let clocks: &[crate::clock::Clock] = if frozen { &[] } else { &f.clocks };
             self.clocks.drawn(surface, clocks);
             let surfaces = &self.surfaces;
             self.clocks.retain(|s| surfaces.contains_key(&s));
@@ -387,6 +389,6 @@ impl Renderer {
             && self
                 .surfaces
                 .get(&surface)
-                .is_some_and(|s| s.dirty || !s.valid || s.animating || self.clocks.running(surface))
+                .is_some_and(|s| s.dirty || !s.valid || s.animating || self.clocks.wants(surface))
     }
 }

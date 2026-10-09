@@ -849,7 +849,21 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     due by the next frame leaves `wants_frame` false and puts its due
     instant into `Renderer::next_wake()`, so the surface needs no new
     call. Hidden nodes' clocks stop, and the frame loop stops when every
-    clock is idle.
+    clock is idle. Built (m4-runtime F2): `strand-render`'s `clock.rs`
+    holds the rate table (`clock::rate`; S-effects adds `grain`, GIF and
+    raster-node rates there) and each surface's clocks from its last
+    fresh frame. A capped clock reads `t` in whole ticks, a tick reached
+    half a frame early, so it repaints only on ticks; between them the
+    surface wants the next frame only if that frame is the one nearest a
+    tick, and otherwise `next_wake` is half a frame before the tick
+    (mapped through the surface's last frame), after which `update` makes
+    `wants_frame` true. The frame period is the shortest gap between the
+    surface's frames, at most 1/60 s. A node is hidden, so it has no
+    clock, when it is not laid out, when its opacity or scale is 0, when
+    it is under a hidden ancestor, or when all it draws is outside the
+    clip. The first two count only while the hiding prop does not
+    follow time. The clip counts only while nothing that places the node
+    (`x`, `y`, `scale`, `rotate`, `shadow`) follows time.
   - **Shader uniforms.** A node's `u_*` props travel as one
     `Prop::Uniforms` holding `PropValue::Uniforms(Vec<(String,
     PropValue)>)`, sorted by name as written (`u_speed`). Each entry

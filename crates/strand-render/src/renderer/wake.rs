@@ -93,7 +93,10 @@ impl Renderer {
     /// nothing else happens: the earliest instant an exit in flight is
     /// ended for want of frames (its output asleep, see [`EXIT_STALL`]),
     /// so a closing surface whose frames stopped still closes and its
-    /// ghosts unmount, or a tooltip's delay ends. `None` when nothing
+    /// ghosts unmount, a tooltip's delay ends, or a capped clock (M4:
+    /// `effect shimmer` at 30 fps) is due its next tick (half a frame
+    /// before it; after that `update`, the surface's
+    /// [`strand_scene::Painter::wants_frame`] is true). `None` when nothing
     /// waits. The renderer arms its own timer thread at it after every
     /// `apply`, `update` and paint and wakes the loop through the text
     /// worker's waker, so a host whose waker handler runs `update` needs
@@ -122,10 +125,9 @@ impl Renderer {
                 Some(asleep.min(started + strand_scene::motion::MAX_MOTION + stall))
             })
             .min();
-        match (exits, tooltip) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        // A capped clock's next tick (M4), half a frame early.
+        let clocks = self.clocks.next_wake();
+        [exits, tooltip, clocks].into_iter().flatten().min()
     }
 
     /// Collects finished text layouts and sends shaping requests for text
@@ -141,6 +143,8 @@ impl Renderer {
             self.timer_due = None;
         }
         self.raster.trim_idle(now);
+        // A capped clock's tick has come: its surface wants a frame.
+        self.clocks.woke(now);
         self.show_tooltip();
         self.poll_text();
         self.expire_exits();
@@ -156,6 +160,7 @@ impl Renderer {
             if let Some(s) = self.surfaces.get(&id) {
                 // A preview: nothing starts until a frame samples it.
                 let (time, prev) = (s.time, s.painted_time);
+                self.anim.set_slack(self.clocks.slack(id));
                 self.sample_tokens(time, false);
                 self.anim.begin(time, prev, false);
             }

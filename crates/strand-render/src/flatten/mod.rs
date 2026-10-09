@@ -161,9 +161,10 @@ pub struct Flattened {
     /// surface: their rounded boxes in buffer pixels, with the radius
     /// (the blur ladder's first rung, M4).
     pub blur: Vec<BlurRegion>,
-    /// (M4) Drawn nodes that read time (`t`, `wave(…)`, `noise(t)`): they
-    /// repaint every frame of their clock while drawn.
-    pub clocks: Vec<NodeId>,
+    /// (M4) The clocks of drawn, visible nodes that read time (`t`,
+    /// `wave(…)`, `noise(t)`) or animate by nature (a built-in `effect`):
+    /// they repaint on every tick of their clock while drawn.
+    pub(crate) clocks: Vec<crate::clock::Clock>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
