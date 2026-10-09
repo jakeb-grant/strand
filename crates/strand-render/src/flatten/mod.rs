@@ -30,6 +30,8 @@ pub(crate) use hash::hash_item;
 
 pub use paint::BLUR_TINT;
 use paint::{cover, kurbo_rect};
+// `attach:` fillets resolve their target's radius like a fill does.
+pub(crate) use paint::{corners_of, radii};
 use text::sane_font;
 pub use text::{Shaped, TextSpec, natural_texts};
 pub(crate) use text::{pick, pick_part, slot_color};
@@ -323,6 +325,7 @@ pub fn flatten(
         extras,
         xform: kurbo::Affine::IDENTITY,
         out: &mut out,
+        fillet: crate::fillet::find(tree, boxes, root),
     };
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
@@ -370,6 +373,8 @@ struct Flattener<'a> {
     /// `scale` or `rotate`).
     xform: kurbo::Affine,
     out: &'a mut Flattened,
+    /// The surface's `attach:` fillet (`crate::fillet`).
+    fillet: Option<crate::fillet::Fillet>,
 }
 
 /// The pixels `r` covers once drawn under `a`.

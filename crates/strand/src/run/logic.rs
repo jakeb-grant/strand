@@ -120,10 +120,13 @@ pub fn logic(
         .dispatch(Some(Duration::ZERO), &mut inbox)
         .map_err(|e| format!("logic loop: {e}"))?;
     let mut stop = inbox.closed;
+    // Notices for `strand watch` from before the shell is up: kept.
+    let mut host_notices: Vec<String> = Vec::new();
     for msg in inbox.msgs.drain(..) {
         match msg {
             ToLogic::Screens(list) => set_screens(&rt, &host, &list),
             ToLogic::Shutdown => stop = true,
+            ToLogic::Notice(n) if !host_notices.contains(&n) => host_notices.push(n),
             _ => {}
         }
     }
@@ -174,6 +177,7 @@ pub fn logic(
         watched: Vec::new(),
         unheard: Vec::new(),
         warnings: Vec::new(),
+        host_notices,
         settings_reread: Vec::new(),
         layout_seen: None,
     };

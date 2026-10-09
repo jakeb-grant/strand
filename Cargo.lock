@@ -2306,6 +2306,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "strand-fake-wayland"
+version = "0.0.0"
+dependencies = [
+ "rustix",
+ "tempfile",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-server",
+]
+
+[[package]]
 name = "strand-icons"
 version = "0.0.0"
 
@@ -2360,6 +2371,7 @@ dependencies = [
  "serde_json",
  "strand-auth",
  "strand-core",
+ "strand-fake-wayland",
  "strand-icons",
  "strand-introspect",
  "strand-services-macros",
@@ -2372,7 +2384,6 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
- "wayland-server",
  "zbus",
 ]
 
@@ -2399,6 +2410,7 @@ dependencies = [
  "rustix",
  "smithay-client-toolkit",
  "strand-auth",
+ "strand-fake-wayland",
  "strand-render",
  "strand-scene",
  "strand-text",

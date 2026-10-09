@@ -7,26 +7,49 @@ use super::*;
 impl<H: SurfaceHost + 'static> State<H> {
     /// Pushes a changed spec to `node`'s live surfaces in place.
     pub(super) fn reconfigure(&mut self, node: NodeId) {
-        let Some(spec) = self.specs.get(&node) else {
+        let Some(spec) = self.specs.get(&node).cloned() else {
             return;
         };
+        let spec = &spec;
         if spec.kind == NodeKind::Popup {
             self.reconfigure_popups(node);
             return;
         }
-        let new = layer_config(spec);
-        let catcher = wants_catcher(spec);
+        let new = self.layer_config_of(node, spec);
+        let under = wants_under(spec);
+        // The layer its catcher goes on: one below the surface's with a
+        // scrim, else the surface's own.
+        let under_layer = new
+            .as_ref()
+            .ok()
+            .and_then(|c| Under::of_layer(spec, c))
+            .map(|u| u.layer);
         let ids = self.surfaces_of(node);
         for id in ids {
-            match (catcher, self.catchers.contains_key(&id)) {
-                // A catcher goes under the surface: made again, catcher
-                // first (`reconcile` follows).
-                (true, false) => {
+            match (under, self.under_of(id)) {
+                // A catcher goes under the surface (or one that starts or
+                // stops catching clicks, which changes its namespace):
+                // made again, catcher first (`reconcile` follows).
+                (Some(_), None) => {
                     self.destroy_surface(id);
                     continue;
                 }
-                (false, true) => self.destroy_catcher(id),
-                _ => {}
+                (Some((clicks, _)), Some((had, _))) if clicks != had => {
+                    self.destroy_surface(id);
+                    continue;
+                }
+                // A scrim that comes or goes on a surface whose layer
+                // stays (one the user put on `overlay` or `bottom`)
+                // moves its catcher: a layer is fixed at creation.
+                (Some(_), Some(_))
+                    if under_layer != self.catcher_layer(id)
+                        && new.as_ref().ok().map(|c| c.layer) == self.layer_of(id) =>
+                {
+                    self.recreate_catcher(id, spec)
+                }
+                (Some((_, scrim)), Some(_)) => self.recolor_scrim(id, scrim),
+                (None, Some(_)) => self.destroy_catcher(id),
+                (None, None) => {}
             }
             let Ok(mut config) = new.clone() else {
                 self.destroy_surface(id);
@@ -108,7 +131,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         placement: Placement,
         global: Option<u32>,
     ) {
-        let mut config = match layer_config(spec) {
+        let mut config = match self.layer_config_of(node, spec) {
             Ok(c) => c,
             Err(PlacementError::AutoSize(_) | PlacementError::NotLayerSurface(_)) => return,
         };
@@ -138,8 +161,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let generation = self.next_generation;
         self.next_generation += 1;
-        if wants_catcher(spec) {
-            self.create_catcher(id, node, &config, global);
+        if let Some(under) = Under::of_layer(spec, &config) {
+            self.create_catcher(id, node, &under, global);
         }
         let wl = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
@@ -196,6 +219,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             ack_pending: false,
             repaint: true,
             opaque: Vec::new(),
+            blur: None,
+            blur_sent: Some(Vec::new()),
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -240,6 +265,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         if let Some(v) = s.viewport.take() {
             v.destroy();
+        }
+        if let Some(b) = s.blur.take() {
+            b.destroy();
         }
         // Dropping the layer surface destroys it and its wl_surface.
         drop(s);

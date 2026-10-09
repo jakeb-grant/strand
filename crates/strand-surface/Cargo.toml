@@ -20,6 +20,9 @@ log = "0.4"
 rustix = { version = "1.1.5", features = ["time"] }
 
 [dev-dependencies]
+# A fake compositor for what sway 1.9 lacks (the alpha modifier, the
+# background effect).
+strand-fake-wayland = { path = "../strand-fake-wayland" }
 png = "0.18.1"
 rustix = { version = "1.1.5", features = ["process"] }
 strand-render.workspace = true

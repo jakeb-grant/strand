@@ -1026,6 +1026,9 @@ fn the_design_bar_is_laid_out_start_centre_end() {
         .unwrap_or_default()
         .lines()
         .filter(|l| l.contains("ERROR") || l.contains("WARN"))
+        // The blur ladder's one expected note: sway 1.9 does not blur
+        // the bar's `blur` (decisions.md m4-surface-w1).
+        .filter(|l| !l.contains("no blur behind strand-Top"))
         .map(String::from)
         .collect();
     assert!(errors.is_empty(), "{errors:?}");

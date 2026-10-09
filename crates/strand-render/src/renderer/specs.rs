@@ -367,7 +367,8 @@ impl Renderer {
                     } else {
                         self.spec_wanted.remove(&id);
                     }
-                    (b.size, b.overhang)
+                    // `attach:` fillets reach past the box too.
+                    (b.size, crate::fillet::grow(&self.tree, &b, id, b.overhang))
                 }
                 (_, Some(old)) => (
                     LogicalSize::new(old.width.unwrap_or(0.0), old.height.unwrap_or(0.0)),
@@ -375,7 +376,7 @@ impl Renderer {
                 ),
                 _ => (LogicalSize::default(), Insets::default()),
             };
-            spec.overhang = centred_overhang(&spec, overhang);
+            spec.overhang = crate::fillet::flush(&self.tree, id, centred_overhang(&spec, overhang));
             if content_sized {
                 // Capped: content taller than any output (a list with no
                 // `max_height`, a long body) never asks for a buffer of

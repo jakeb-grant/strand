@@ -640,6 +640,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             ack_pending: false,
             repaint: true,
             opaque: Vec::new(),
+            blur: None,
+            blur_sent: Some(Vec::new()),
             last_damage: Vec::new(),
             click_through: false,
             input_region: None,

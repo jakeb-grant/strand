@@ -275,7 +275,24 @@ strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
   ^-- strand-services (the `auth` service), strand-surface (the unlock
       gate), strand (the main thread's fallback client); both `Client`
       owners pass `child::restore_in_child` in as the spawn's `pre_exec`
+
+strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
+                     on wayland-server: toplevels, workspaces, layer
+                     surfaces and the M4 surface globals; no Strand crate
+  ^-- dev-dependency of strand-services (the wm protocol client's tests)
+      and strand-surface (the manager's tests, tests/fake.rs)
 ```
+
+`strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
+crate depends on it outside `[dev-dependencies]`, and it depends on no
+Strand crate, so it adds no runtime edge to the graph above. It serves
+the toplevel and workspace protocols strand-services' wm client speaks
+(`ext-foreign-toplevel-list-v1`, `ext-workspace-v1`, optionally
+`zwlr_foreign_toplevel_management_v1`), and `wl_compositor`, `wl_shm`,
+layer shell, the viewporter, single-pixel buffers, the alpha modifier
+and `ext-background-effect-v1` for strand-surface, recording what each
+surface committed for the tests to assert on (decisions.md,
+m4-surface-w1).
 
 `strand-auth` (M4) is the lock's whole security boundary, small enough to
 review alone. Its lib depends on `libc` and `zeroize` and no Strand
@@ -2162,7 +2179,10 @@ Public interfaces other crates and later stages build on:
     `anchor` and `keyboard` on a lock warnings (`check::lock_prop`).
   - `compositor-rules`: a query over a `Build` listing the surfaces whose
     tree has `blur`, with their namespaces (`strand-<Name>`), for
-    `strand compositor-rules` (S-surface owns it).
+    `strand compositor-rules` (S-surface owns it). It lives in the binary
+    (`strand/src/rules.rs`, `blur_rules(&Build) -> Vec<Rule>`) and walks
+    the lowered program's public tree: a layer surface's own `blur` gives
+    `blur`, a nested popup's gives `blur_popups` on its layer.
   - Checks live in per-stream submodules (`check/{surfaces, effects,
     lists, lock}.rs`); `attach` and `scrim` are allowed only on `popup`
     and `panel`.
@@ -2371,7 +2391,7 @@ and the connection):
   surface goes), then the popup and the popups nested in it are destroyed
   (innermost first, as any surface's are), and it is not shown again until
   its spec closes. `Painter::blur_region` is read for the blur ladder
-  (M4); nothing is sent yet.
+  (M4, below).
 - **M4 additions** (docs/m4-plan.md). 0b landed the host hooks as no-op
   defaults (`compositor_caps`, `gpu_release`, `lock_changed(LockState)`,
   `LockState` beside `SurfaceHost`); the manager calls them as the
@@ -2381,10 +2401,17 @@ and the connection):
     `State::take_back(surface)` and the hook
     `SurfaceHost::gpu_release(surface)`; the rules are in
     "`strand-gpu`", "Surface hand-off".
-  - Capabilities: the manager binds `wp_alpha_modifier_v1`,
+  - Capabilities (`caps.rs`): the manager binds `wp_alpha_modifier_v1`,
     `wp_single_pixel_buffer_v1` and `ext_background_effect_manager_v1`
-    when offered, and calls the new hook `SurfaceHost::compositor_caps(
-    &CompositorCaps)` once its globals are bound.
+    when offered, looks up `ext_session_lock_manager_v1` and
+    `wl_data_device_manager` in the registry, and calls the new hook
+    `SurfaceHost::compositor_caps(&CompositorCaps)` at the end of its
+    first wakeup (after the binds' replies, before any surface is
+    configured), and again whenever they change (the background
+    effect's `capabilities` event can come later or change).
+    `background_effect` is true only once that event names blur.
+    `State::compositor_caps()` reads them. The binary's host hands
+    `set_compositor_blur` to render and forwards `Painter::blur_region`.
   - Poses: each frame it reads `Painter::surface_pose` and applies it
     (alpha modifier, viewporter destination size, layer-shell margins);
     a pose change with no damage is a bare commit with no buffer, and
@@ -2392,16 +2419,43 @@ and the connection):
     Render already holds `Removed`/`open: false` until an exit settles.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
     viewporter, for scrims and lock backgrounds; shm when the protocol is
-    missing. A spec's `scrim` is a full-output layer surface under the
-    panel or popup, on the same layer and output; it is the click-away
-    catcher too when the surface has one (the catcher becomes visible
-    instead of a second surface being made).
-  - Fillets: placement puts an `attach`ed box at gap 0 from that edge;
-    the overhang render adds for the fillets grows the buffer only.
-  - Blur ladder (`blur.rs`): `Painter::blur_region` becomes a logical
-    `wl_region` inside the manager (rounded corners as about 1 px
-    bands), cached and sent with `ext_background_effect_v1` only when
-    the shape changes, null when empty.
+    missing (1×1 with the viewporter, else surface-sized). A spec's
+    `scrim` is a layer surface over the output's usable area (exclusive
+    zone 0, all four anchors) on the panel's output, on the layer below
+    the panel's: two layer surfaces on one layer stack in an order the
+    protocol leaves open (sway 1.9 puts the older on top, the others the
+    newer), so placement raises a `top` panel with a scrim to `overlay`
+    and its scrim goes on `top`. It is the click-away catcher too when
+    the panel has one (`strand-<Name>-click-away`, with its hole), else
+    `strand-<Name>-scrim` with an empty input region. A popup's `scrim`
+    is the same surface on its root layer surface's layer and output
+    (popups stack above layer surfaces), taking no clicks (the grab
+    closes it).
+  - Fillets: placement puts an `attach`ed box at gap 0 from that edge
+    (a panel anchored to it, its margin there 0; a popup opening away
+    from its attached side); the overhang render adds for the fillets
+    grows the buffer only. Render's `fillet.rs` finds the target, draws
+    it, grows the overhang along the edge and drops it past the edge,
+    through one call each in `flatten` (the target's fill) and the two
+    places a surface's overhang is set (`specs.rs`, `layout_pass.rs`).
+  - Blur ladder (`blur.rs`, `manager/effect.rs`): after each paint
+    `Painter::blur_region` becomes a logical `wl_region`
+    (`blur::region_rects`: inside every rounded shape, rounded inward,
+    the middle one rectangle and about 1 px bands down each rounded
+    corner), cached per surface and sent with
+    `ext_background_effect_surface_v1.set_blur_region` (made with the
+    first region) on that frame's buffer commit only when it changed,
+    null once empty; nothing while the compositor does not blur, and
+    sent again with a bare commit when it starts. `SurfaceInfo::
+    blur_region` and `Stats::blur_updates` show it. Rung 3 is the
+    binary's: the first frame that asks for blur on a compositor that
+    cannot blur logs one warning with the reason
+    (`caps::blur_fallback_reason`, naming `strand compositor-rules` on
+    Hyprland) and sends it to `strand watch` as a notice
+    (`ToLogic::Notice`), which logic keeps for the run: it is usually
+    said at boot, before anyone watches, so each watcher that subscribes
+    later gets it in the `notices` event that follows its `watch`
+    answer.
   - Popups: a `popup` nested in a popup may open to the side
     (`anchor:`, right by default, flipping left), for tray submenus.
   - Session lock (`session_lock.rs`): `State::lock()` asks

@@ -10,6 +10,7 @@ mod live;
 mod logging;
 mod mock;
 mod overlay;
+mod rules;
 mod run;
 mod services;
 mod system;
@@ -191,6 +192,19 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("strand set: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some("compositor-rules") => {
+            // Printed for the user to paste; never applied to the session.
+            return match rules::run(&args[1..]) {
+                Ok(text) => {
+                    print!("{text}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("strand compositor-rules: {e}");
                     ExitCode::FAILURE
                 }
             };

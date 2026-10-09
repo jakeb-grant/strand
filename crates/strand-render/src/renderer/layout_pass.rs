@@ -244,7 +244,8 @@ impl Renderer {
             && let Some(mut spec) = self.specs.get(&root).cloned()
             && spec.open
         {
-            let o = centred_overhang(&spec, boxes.overhang);
+            let grown = crate::fillet::grow(&self.tree, &boxes, root, boxes.overhang);
+            let o = crate::fillet::flush(&self.tree, root, centred_overhang(&spec, grown));
             if o != spec.overhang {
                 spec.overhang = o;
                 self.record_spec(root, spec);

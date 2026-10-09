@@ -40,6 +40,11 @@ use wayland_client::protocol::{
     wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
 };
 use wayland_client::{Connection, Proxy, QueueHandle};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::{self, ExtBackgroundEffectManagerV1},
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+};
+use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
@@ -48,6 +53,7 @@ use wayland_protocols::wp::presentation_time::client::{
     wp_presentation::{self, WpPresentation},
     wp_presentation_feedback::{self, WpPresentationFeedback},
 };
+use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
@@ -59,25 +65,29 @@ use strand_scene::{
     Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
+use crate::caps::Offered;
 use crate::clock::{FrameClock, Presentation, PresentationClock};
 use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
 use crate::placement::{
-    LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config, popup_config,
+    LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config_with, popup_config,
+    popup_scrim_layer,
 };
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 use strand_scene::{KeyInput, Modifiers};
 
 mod catcher;
 mod commit;
+mod effect;
 mod layer;
 mod outputs;
 mod popup;
 mod protocols;
+mod scrim;
 mod seat;
 mod session_lock;
 
-use catcher::{Catcher, wants_catcher};
+use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
 pub use session_lock::{LOCK_FALLBACK_NODE, LockError};
 
@@ -319,6 +329,9 @@ pub struct Stats {
     /// Popups created with an `xdg_popup.grab` (opened within
     /// [`GRAB_WINDOW`] of a press).
     pub grabs: u64,
+    /// `ext_background_effect_surface_v1.set_blur_region` requests (sent
+    /// only when the region changes).
+    pub blur_updates: u64,
 }
 
 /// A snapshot of one surface.
@@ -350,6 +363,9 @@ pub struct SurfaceInfo {
     pub last_damage: Vec<Rect>,
     /// The opaque region last sent, in surface-local logical pixels.
     pub opaque_region: Vec<Rect>,
+    /// The blur region last sent (`ext-background-effect-v1`), in
+    /// surface-local logical pixels: `None` until one was sent.
+    pub blur_region: Option<Vec<crate::blur::BlurRect>>,
     /// Input passes through (an `osd`: empty input region).
     pub click_through: bool,
     /// The input region: `None` the whole surface, `Some(None)` empty,
@@ -357,6 +373,13 @@ pub struct SurfaceInfo {
     pub input_region: Option<Option<(i32, i32, i32, i32)>>,
     /// A click-away catcher is mapped under it.
     pub click_away: bool,
+    /// A scrim in this colour is mapped under it (on its root layer
+    /// surface's output, for a popup).
+    pub scrim: Option<strand_scene::Color>,
+    /// The layer it is on (`None` for a popup).
+    pub layer: Option<Layer>,
+    /// The layer its click-away catcher or scrim is on.
+    pub under_layer: Option<Layer>,
     pub stats: Stats,
 }
 
@@ -412,6 +435,11 @@ struct Surface {
     repaint: bool,
     /// Last opaque region sent, in logical pixels.
     opaque: Vec<Rect>,
+    /// Its `ext_background_effect_surface_v1`, made with the first blur
+    /// region it sends, and that region's rectangles as last sent
+    /// (`None`: unknown, sent again with the next frame).
+    blur: Option<ExtBackgroundEffectSurfaceV1>,
+    blur_sent: Option<Vec<crate::blur::BlurRect>>,
     last_damage: Vec<Rect>,
     click_through: bool,
     /// The input region last sent: `None` the whole surface, `Some(None)`
@@ -544,9 +572,13 @@ impl Surface {
             buffers: self.buffers.slots.len(),
             last_damage: self.last_damage.clone(),
             opaque_region: self.opaque.clone(),
+            blur_region: self.blur.as_ref().and(self.blur_sent.clone()),
             click_through: self.click_through,
             input_region: self.input_region,
             click_away: false,
+            scrim: None,
+            layer: matches!(self.role, Role::Layer(_)).then_some(self.config.layer),
+            under_layer: None,
             stats: self.stats,
         }
     }
@@ -588,6 +620,17 @@ pub struct State<H: SurfaceHost + 'static> {
     viewporter: Option<WpViewporter>,
     fractional_manager: Option<WpFractionalScaleManagerV1>,
     presentation: Option<WpPresentation>,
+    /// (M4) Optional protocols: the alpha modifier (poses), single-pixel
+    /// buffers (scrims) and the background effect (the blur ladder).
+    /// Bound for compositor-animated poses (M4 wave 2).
+    #[allow(dead_code)]
+    alpha_modifier: Option<WpAlphaModifierV1>,
+    single_pixel: Option<WpSinglePixelBufferManagerV1>,
+    background_effect: Option<ExtBackgroundEffectManagerV1>,
+    /// What the compositor offers, and the capabilities last reported
+    /// through [`SurfaceHost::compositor_caps`] (`None`: not yet).
+    offered: Offered,
+    reported_caps: Option<CompositorCaps>,
     clock: Box<dyn FrameClock>,
     max_buffers: usize,
     monitors: Monitors,
@@ -760,6 +803,22 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
                 StrandGlobal,
             )
             .ok();
+        let alpha_modifier = globals
+            .bind::<WpAlphaModifierV1, _, _>(&qh, 1..=1, StrandGlobal)
+            .ok();
+        let single_pixel = globals
+            .bind::<WpSinglePixelBufferManagerV1, _, _>(&qh, 1..=1, StrandGlobal)
+            .ok();
+        let background_effect = globals
+            .bind::<ExtBackgroundEffectManagerV1, _, _>(&qh, 1..=1, StrandGlobal)
+            .ok();
+        let mut offered = globals
+            .contents()
+            .with_list(|list| Offered::from_registry(list.iter().map(|g| g.interface.as_str())));
+        offered.alpha_modifier = alpha_modifier.is_some();
+        offered.viewporter = viewporter.is_some();
+        offered.single_pixel_buffer = single_pixel.is_some();
+        offered.background_effect = background_effect.is_some();
 
         WaylandSource::new(conn.clone(), queue)
             .insert(handle.clone())
@@ -773,6 +832,10 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             })
             .map_err(|e| SurfaceError::EventLoop(e.error))?;
 
+        // The capabilities go to the host once the first wakeup has read
+        // the replies to these binds (the background effect's
+        // `capabilities` among them), before any surface is configured.
+        handle.insert_idle(|state: &mut State<H>| state.report_caps());
         let state = State {
             host,
             conn,
@@ -788,6 +851,11 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             viewporter,
             fractional_manager,
             presentation,
+            alpha_modifier,
+            single_pixel,
+            background_effect,
+            offered,
+            reported_caps: None,
             clock: config.clock,
             max_buffers: config.max_buffers,
             monitors: Monitors::default(),
@@ -923,10 +991,13 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     pub fn surface(&self, id: SurfaceId) -> Option<SurfaceInfo> {
         let mut info = self.surfaces.get(&id).map(Surface::info)?;
-        info.click_away = self
+        let primary = self
             .catchers
             .get(&id)
-            .is_some_and(|v| v.iter().any(|c| c.primary && c.buffer.is_some()));
+            .and_then(|v| v.iter().find(|c| c.primary && c.buffer.is_some()));
+        info.click_away = primary.is_some_and(|c| c.clicks);
+        info.scrim = primary.and_then(|c| c.scrim);
+        info.under_layer = primary.map(|c| c.on_layer);
         Some(info)
     }
 
@@ -953,6 +1024,30 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// True when `wp_presentation` feedback drives the frame clock.
     pub fn presentation_available(&self) -> bool {
         self.presentation.is_some()
+    }
+
+    /// (M4) The optional protocols the compositor offers, as reported to
+    /// the host ([`SurfaceHost::compositor_caps`]).
+    pub fn compositor_caps(&self) -> CompositorCaps {
+        self.offered.caps()
+    }
+
+    /// Tells the host the compositor's capabilities when they are new or
+    /// changed (the background effect's flags can change at any time).
+    fn report_caps(&mut self) {
+        let caps = self.offered.caps();
+        if self.reported_caps == Some(caps) {
+            return;
+        }
+        let blur_changed = self
+            .reported_caps
+            .is_some_and(|old| old.background_effect != caps.background_effect);
+        self.reported_caps = Some(caps);
+        log::debug!("compositor capabilities: {caps:?}");
+        self.host.compositor_caps(&caps);
+        if blur_changed {
+            self.blur_capability_changed();
+        }
     }
 
     /// Handles a [`Request`] (also what the repaint channel delivers).
@@ -994,6 +1089,20 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(change) = self.lock_spec_change(node, change) else {
             return;
         };
+        // A popup's scrim coming or going can move the layer surface it
+        // is nested in (`placement::layer_config_with`): that one is
+        // made again afterwards, and the popup nests in it once it maps.
+        let old = self.specs.get(&node);
+        let had = old.is_some_and(nested_scrim_of);
+        let (has, parent) = match &change {
+            SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. } => {
+                (nested_scrim_of(spec), spec.parent)
+            }
+            SurfaceChange::Removed => (false, old.and_then(|s| s.parent)),
+        };
+        let moved = (had != has)
+            .then(|| parent.and_then(|p| self.root_node(p)))
+            .flatten();
         match change {
             SurfaceChange::Created(spec) => {
                 self.specs.insert(node, spec);
@@ -1014,6 +1123,47 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.ids.retain(|(n, _), _| *n != node);
             }
         }
+        if let Some(root) = moved {
+            self.reconfigure(root);
+            self.reconcile(root);
+        }
+    }
+
+    /// The layer-surface node `node` is nested in (itself for one):
+    /// `None` when its chain of parents is broken.
+    fn root_node(&self, mut node: NodeId) -> Option<NodeId> {
+        for _ in 0..64 {
+            let spec = self.specs.get(&node)?;
+            if spec.kind != NodeKind::Popup {
+                return Some(node);
+            }
+            node = spec.parent?;
+        }
+        None
+    }
+
+    /// True if a popup nested in layer-surface node `node` declares a
+    /// scrim (open or not, so opening it does not move `node`).
+    fn has_nested_scrim(&self, node: NodeId) -> bool {
+        self.specs
+            .values()
+            .any(|s| nested_scrim_of(s) && s.parent.and_then(|p| self.root_node(p)) == Some(node))
+    }
+
+    /// The layer-surface state for `node` with `spec`, raised for a
+    /// popup's scrim nested in it.
+    fn layer_config_of(
+        &self,
+        node: NodeId,
+        spec: &SurfaceSpec,
+    ) -> Result<LayerConfig, PlacementError> {
+        layer_config_with(spec, self.has_nested_scrim(node))
+    }
+
+    /// The layer that layer surface `id` is on (`None` for a popup).
+    fn layer_of(&self, id: SurfaceId) -> Option<Layer> {
+        let s = self.surfaces.get(&id)?;
+        matches!(s.role, Role::Layer(_)).then_some(s.config.layer)
     }
 
     /// The surfaces showing `node`.
@@ -1115,7 +1265,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.reconcile_lock();
             return;
         }
-        let mapped = match layer_config(&spec) {
+        let mapped = match self.layer_config_of(node, &spec) {
             Ok(_) => spec.open,
             Err(e @ PlacementError::NotLayerSurface(_)) => {
                 log::debug!("{}: {e}", spec.namespace());
@@ -1181,6 +1331,11 @@ impl<H: SurfaceHost + 'static> State<H> {
 
 fn clamp_i32(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
+}
+
+/// A popup that declares a scrim.
+fn nested_scrim_of(spec: &SurfaceSpec) -> bool {
+    spec.kind == NodeKind::Popup && spec.scrim.is_some()
 }
 
 #[cfg(test)]

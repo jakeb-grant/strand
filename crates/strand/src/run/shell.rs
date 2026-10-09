@@ -68,6 +68,10 @@ pub(super) struct Shell {
     /// watcher that subscribes later hears them at once; a later reload
     /// event with none resolves them.
     pub(super) warnings: Vec<Json>,
+    /// Notices from the main thread (`ToLogic::Notice`: the blur
+    /// fallback's reason), said once per run: usually sent at boot, before
+    /// anyone watched, so each watcher that subscribes hears them too.
+    pub(super) host_notices: Vec<String>,
     /// Settings files (and their runtime overlays) read again since the
     /// last step, as notices name them.
     pub(super) settings_reread: Vec<String>,
@@ -124,6 +128,17 @@ impl Shell {
             ToLogic::ListWindow { list, first, count } => {
                 super::lists::set_window(inst, list, first, count);
             }
+            ToLogic::Notice(text) if !self.host_notices.contains(&text) => {
+                if let Some(s) = &mut self.server {
+                    s.broadcast(&json!({
+                        "event": "notices",
+                        "kept_over_default": [],
+                        "notices": [&text],
+                    }));
+                }
+                self.host_notices.push(text);
+            }
+            ToLogic::Notice(_) => {}
             ToLogic::Shutdown => {}
         }
     }
@@ -424,10 +439,10 @@ impl Shell {
                 }
             }
             // Answered by the server itself; the running config's
-            // warnings follow (the boot's were made before anyone
-            // watched).
+            // warnings and the main thread's notices follow (the boot's
+            // were made before anyone watched).
             ipc::Request::Watch => {
-                if !self.warnings.is_empty()
+                if !(self.warnings.is_empty() && self.host_notices.is_empty())
                     && let Some(s) = &mut self.server
                 {
                     s.send(
@@ -435,7 +450,7 @@ impl Shell {
                         &json!({
                             "event": "notices",
                             "kept_over_default": [],
-                            "notices": [],
+                            "notices": self.host_notices,
                             "diagnostics": self.warnings,
                         }),
                     );

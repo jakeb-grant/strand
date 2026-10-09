@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use strand_scene::{
-    Damage, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
+    Damage, Insets, Layer, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
 };
 use strand_surface::{ButtonState, Config, FakeClock, InputEvent, MAX_BUFFERS, Request};
 
@@ -2017,4 +2017,249 @@ fn a_keyboard_going_away_after_a_press_leaves_the_shell_running() {
         .unwrap();
     assert!(ok, "{:?}", mgr.state().surfaces());
     drop(input);
+}
+
+/// Sway 1.9 offers the viewporter, single-pixel buffers, the session
+/// lock and the data device, and no background effect: the manager
+/// reports exactly that once its globals are bound (the alpha modifier
+/// came with sway 1.10, so it is not asserted).
+#[test]
+fn sway_reports_its_capabilities() {
+    let Some((_sway, mut mgr)) = start("sway_reports_its_capabilities", Config::default()) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let caps = mgr.state().host().caps.clone();
+    assert_eq!(caps.len(), 1, "reported once: {caps:?}");
+    let c = caps[0];
+    assert!(c.viewporter && c.single_pixel_buffer, "{c:?}");
+    assert!(c.session_lock && c.data_device, "{c:?}");
+    assert!(!c.background_effect, "{c:?}");
+    assert_eq!(mgr.state().compositor_caps(), c);
+}
+
+/// `scrim:` on sway 1.9 (single-pixel buffers and the viewporter): a
+/// panel's scrim dims the usable area beneath it, under the panel (its
+/// box keeps its colour: sway 1.9 stacks the older of two layer surfaces
+/// on one layer on top, so the scrim is on the layer below the panel's)
+/// and not over the bar; a popup's goes on its bar's layer and output,
+/// under the popup. Taking a scrim away undims. A popup of a panel puts
+/// its scrim on the layer below the panel, which rises to `overlay` for
+/// it, so the scrim dims neither the panel nor the popup (sway 1.9 would
+/// show the panel above a scrim on its own layer anyway; the matrix runs
+/// the compositors that would not). A bar whose shadow reaches past its
+/// exclusive zone is a panel to its popup's scrim: it rises, its shadow
+/// undimmed.
+#[test]
+fn scrims_dim_beneath_panels_and_popups() {
+    let Some(sway) = Sway::start("scrims_dim_beneath_panels_and_popups") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    assert!(mgr.state().compositor_caps().single_pixel_buffer);
+    const PANEL: NodeId = NodeId::new(7, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    let bg = sway.grim("HEADLESS-1").rgb(500, 600);
+    assert_ne!(bg, BLUE);
+    let dimmed = bg.map(|c| (f32::from(c) * 0.7).round() as u8);
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2);
+    let dim = strand_scene::Color::new(0.0, 0.0, 0.0, 0.3);
+
+    let mut spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    spec.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == PANEL && i.scrim.is_some() && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?} vs {dimmed:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(1720, 186), BLUE, "the panel is above its scrim");
+    assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+
+    // No scrim: undimmed.
+    spec.scrim = None;
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec: spec.clone(),
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surfaces().iter().all(|i| i.scrim.is_none()))
+        .unwrap();
+    assert!(ok);
+    settle(&mut mgr);
+    assert_eq!(sway.grim("HEADLESS-1").rgb(500, 600), bg);
+
+    // A popup of the bar with a scrim.
+    let mut popup =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    popup.name = Some("Calendar".into());
+    popup.parent = Some(BAR);
+    popup.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+    popup.width = Some(200.0);
+    popup.height = Some(120.0);
+    popup.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == POPUP && i.scrim.is_some() && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(130, 100), BLUE, "the popup is above its scrim");
+    assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+    let bar_popup = mgr.state().surfaces_of(POPUP)[0];
+    assert_eq!(
+        mgr.state().surface(bar_popup).unwrap().under_layer,
+        Some(Layer::Top),
+        "beside the bar, outside its exclusive zone"
+    );
+
+    // A popup of the panel (no scrim of its own) with a scrim.
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Removed);
+    let mut popup =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    popup.name = Some("Menu".into());
+    popup.parent = Some(PANEL);
+    popup.anchor_rect = Some(LogicalRect::new(100.0, 200.0, 60.0, 20.0));
+    popup.width = Some(200.0);
+    popup.height = Some(120.0);
+    popup.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == POPUP && i.scrim.is_some() && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let panel = mgr.state().surfaces_of(PANEL)[0];
+    let menu = mgr.state().surfaces_of(POPUP)[0];
+    assert_eq!(
+        mgr.state().surface(panel).unwrap().layer,
+        Some(Layer::Overlay),
+        "the panel rises for its popup's scrim"
+    );
+    assert_eq!(
+        mgr.state().surface(menu).unwrap().under_layer,
+        Some(Layer::Top),
+        "the scrim below the panel"
+    );
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(1720, 100), BLUE, "the panel is above the scrim");
+    assert_eq!(shot.rgb(1650, 340), BLUE, "the popup is above the scrim");
+    assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+
+    // The popup goes: the panel goes back to `top`, undimmed.
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Removed);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == PANEL && i.layer == Some(Layer::Top) && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    assert_eq!(sway.grim("HEADLESS-1").rgb(500, 600), bg);
+
+    // The bar gains a 10 px shadow below it, past its exclusive zone, in
+    // the usable area a popup's scrim covers: with a scrimmed popup it
+    // rises to `overlay`, the scrim on `top` below it, so the shadow
+    // strip is not dimmed on a compositor that draws the newer surface
+    // of one layer on top either.
+    let mut shaded = bar_spec("Top", 36.0);
+    shaded.overhang.bottom = 10.0;
+    mgr.state_mut().apply_surface_change(
+        BAR,
+        SurfaceChange::Updated {
+            spec: shaded,
+            recreate: false,
+        },
+    );
+    let mut popup =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    popup.name = Some("Calendar".into());
+    popup.parent = Some(BAR);
+    popup.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+    popup.width = Some(200.0);
+    popup.height = Some(120.0);
+    popup.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == POPUP && i.scrim.is_some() && i.stats.commits > 0)
+                && s.surfaces()
+                    .iter()
+                    .any(|i| i.node == BAR && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    let tip = mgr.state().surfaces_of(POPUP)[0];
+    assert_eq!(
+        mgr.state().surface(bar).unwrap().layer,
+        Some(Layer::Overlay),
+        "a bar shadowing the usable area rises for its popup's scrim"
+    );
+    assert_eq!(
+        mgr.state().surface(tip).unwrap().under_layer,
+        Some(Layer::Top),
+        "the scrim below the bar"
+    );
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(1000, 10), BLUE, "the bar is not dimmed");
+    assert_eq!(shot.rgb(1000, 41), BLUE, "nor is its shadow");
+    assert_eq!(shot.rgb(130, 100), BLUE, "the popup is above its scrim");
 }

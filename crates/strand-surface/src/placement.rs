@@ -49,6 +49,28 @@ pub struct LayerConfig {
 }
 
 impl LayerConfig {
+    /// True if the surface reserves an exclusive zone and its buffer
+    /// lies wholly inside it: no overhang on the side facing the usable
+    /// area (a bar with no shadow towards the windows). The zone counts
+    /// from the edge the surface is anchored to without its opposite.
+    pub fn inside_exclusive_zone(&self) -> bool {
+        if self.exclusive_zone <= 0 {
+            return false;
+        }
+        let [ot, or, ob, ol] = self.overhang;
+        let a = self.anchors;
+        let away = match (a.top, a.bottom, a.left, a.right) {
+            (true, false, _, _) => ob,
+            (false, true, _, _) => ot,
+            (_, _, true, false) => or,
+            (_, _, false, true) => ol,
+            // Anchored to all four edges or none: the zone applies to
+            // no edge, so nothing lies outside the usable area.
+            _ => return false,
+        };
+        away == 0
+    }
+
     /// Where a surface of this config, `(w, h)` logical pixels (its
     /// buffer: box plus overhang), lands in an area of `(aw, ah)` (the
     /// output's usable area, where the compositor arranges layer
@@ -176,8 +198,44 @@ fn size(v: f32) -> u32 {
     px(v).max(1) as u32
 }
 
+/// The layer under `layer` (the background has none: itself).
+pub fn layer_below(layer: Layer) -> Layer {
+    match layer {
+        Layer::Overlay => Layer::Top,
+        Layer::Top => Layer::Bottom,
+        Layer::Bottom | Layer::Background => Layer::Background,
+    }
+}
+
+/// The layer a popup's scrim goes on, for the layer surface the popup is
+/// nested in (`root`). Popups stack above every layer surface, but the
+/// scrim is a layer surface of its own, and two on one layer stack in an
+/// order the protocol leaves open (sway 1.9 draws the older on top,
+/// wlroots' scene graph, niri and labwc the newer). A bar whose buffer
+/// lies wholly inside its exclusive zone is outside the usable area the
+/// scrim covers, so the scrim shares its layer; any other surface (a
+/// panel, or a bar whose shadow reaches past its zone) has it on the
+/// layer below (a `top` one with such a popup rose to `overlay`, see
+/// [`layer_config_with`]).
+pub fn popup_scrim_layer(root: &LayerConfig) -> Layer {
+    if root.inside_exclusive_zone() {
+        root.layer
+    } else {
+        layer_below(root.layer)
+    }
+}
+
 /// Resolves the layer-surface state for `spec`.
 pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
+    layer_config_with(spec, false)
+}
+
+/// Resolves the layer-surface state for `spec`; `nested_scrim`: a popup
+/// nested in it has a scrim (see [`popup_scrim_layer`]).
+pub fn layer_config_with(
+    spec: &SurfaceSpec,
+    nested_scrim: bool,
+) -> Result<LayerConfig, PlacementError> {
     let layer = spec
         .layer
         .ok_or(PlacementError::NotLayerSurface(spec.kind))?;
@@ -185,12 +243,15 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
     let o = spec.overhang;
     let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
     let [ot, or, ob, ol] = overhang;
+    // `attach: <edge>` (a panel): flush against that edge, gap 0.
+    let attach = spec.attach.filter(|_| spec.kind == NodeKind::Panel);
+    let flush = |e: Edge, v: f32| if attach == Some(e) { 0 } else { px(v) };
     // The box keeps its place: each margin moves out by the overhang.
     let margin = [
-        px(m.top) - ot,
-        px(m.right) - or,
-        px(m.bottom) - ob,
-        px(m.left) - ol,
+        flush(Edge::Top, m.top) - ot,
+        flush(Edge::Right, m.right) - or,
+        flush(Edge::Bottom, m.bottom) - ob,
+        flush(Edge::Left, m.left) - ol,
     ];
     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
         let edge = spec.edge.unwrap_or(Edge::Top);
@@ -232,7 +293,7 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
         let (Some(w), Some(h)) = (spec.width, spec.height) else {
             return Err(PlacementError::AutoSize(spec.kind));
         };
-        let anchors = match spec.anchor {
+        let mut anchors = match spec.anchor {
             Anchor::Center => Anchors::default(),
             Anchor::Top => Anchors::new(true, false, false, false),
             Anchor::Bottom => Anchors::new(false, true, false, false),
@@ -243,6 +304,15 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
             Anchor::BottomLeft => Anchors::new(false, true, true, false),
             Anchor::BottomRight => Anchors::new(false, true, false, true),
         };
+        // Attached: anchored to that edge (not the opposite one); the
+        // anchor's other axis stays.
+        match attach {
+            Some(Edge::Top) => (anchors.top, anchors.bottom) = (true, false),
+            Some(Edge::Bottom) => (anchors.top, anchors.bottom) = (false, true),
+            Some(Edge::Left) => (anchors.left, anchors.right) = (true, false),
+            Some(Edge::Right) => (anchors.left, anchors.right) = (false, true),
+            None => {}
+        }
         (
             anchors,
             size(w) + (ol + or) as u32,
@@ -250,7 +320,7 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
             0,
         )
     };
-    Ok(LayerConfig {
+    let mut config = LayerConfig {
         namespace: spec.namespace(),
         layer,
         anchors,
@@ -262,7 +332,21 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
         overhang,
         // An OSD is click-through (design example d).
         click_through: spec.kind == NodeKind::Osd,
-    })
+    };
+    // A panel's scrim, or a popup's nested in a panel or in a bar that
+    // reaches past its exclusive zone, goes on the layer below it, which
+    // for a `top` surface would be under the windows it should dim: such
+    // a surface rises to `overlay`, the scrim on `top`
+    // (`manager/catcher.rs`, [`popup_scrim_layer`]).
+    let below = match spec.kind {
+        NodeKind::Panel => spec.scrim.is_some() || nested_scrim,
+        NodeKind::Bar => nested_scrim && !config.inside_exclusive_zone(),
+        _ => false,
+    };
+    if below && layer == Layer::Top {
+        config.layer = Layer::Overlay;
+    }
+    Ok(config)
 }
 
 /// Which side of its anchor a popup opens on.
@@ -352,7 +436,9 @@ pub fn popup_config(
     let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
     let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
     let bar_edge = (parent.kind == NodeKind::Bar).then(|| parent.edge.unwrap_or(Edge::Top));
-    let side = match bar_edge {
+    // `attach: <edge>` names the popup's side that touches its anchor,
+    // so it opens away from it, at gap 0.
+    let side = match spec.attach.or(bar_edge) {
         Some(Edge::Top) | None => PopupSide::Below,
         Some(Edge::Bottom) => PopupSide::Above,
         Some(Edge::Left) => PopupSide::Right,
@@ -379,7 +465,13 @@ pub fn popup_config(
         PopupSide::Right => m.left,
         PopupSide::Left => m.right,
     };
-    let gap = if gap == 0.0 { 6 } else { px(gap) };
+    let gap = if spec.attach.is_some() {
+        0
+    } else if gap == 0.0 {
+        6
+    } else {
+        px(gap)
+    };
     if spec.tooltip {
         // A tooltip sits just under what it describes, bars included.
         if bar_edge.is_some() {
@@ -738,5 +830,233 @@ mod tests {
         let c = popup_config(&tip, &bar).unwrap();
         assert_eq!(c.anchor_rect, (100, 12, 60, 20));
         assert!(!c.grab && c.as_layer().click_through);
+    }
+
+    /// `attach: top` on a panel: anchored to the top edge whatever its
+    /// `anchor:` said about that axis (the other axis stays), its top
+    /// margin gone (the box flush with the edge), the others kept.
+    #[test]
+    fn an_attached_panel_is_flush_with_its_edge() {
+        let s = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("bottom_right")),
+                (Prop::Attach, kw("top")),
+                (Prop::Margin, PropValue::Insets(Insets::all(8.0))),
+                (Prop::Width, PropValue::Number(400.0)),
+                (Prop::Height, PropValue::Number(300.0)),
+            ],
+        );
+        let mut s2 = s.clone();
+        s2.overhang = Insets {
+            top: 0.0,
+            right: 16.0,
+            bottom: 0.0,
+            left: 16.0,
+        };
+        let c = layer_config(&s).unwrap();
+        assert_eq!(c.anchors, Anchors::new(true, false, false, true));
+        assert_eq!(c.margin, [0, 8, 8, 8]);
+        // The fillets' overhang moves the side margins out; the box stays.
+        let c = layer_config(&s2).unwrap();
+        assert_eq!(c.margin, [0, -8, 8, -8]);
+        assert_eq!(c.width, 432);
+        for (edge, anchors) in [
+            ("bottom", Anchors::new(false, true, false, true)),
+            ("left", Anchors::new(false, true, true, false)),
+            ("right", Anchors::new(false, true, false, true)),
+        ] {
+            let mut t = s.clone();
+            t.attach = Edge::from_name(edge);
+            assert_eq!(layer_config(&t).unwrap().anchors, anchors, "{edge}");
+        }
+        let mut centred = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Attach, kw("left")),
+                (Prop::Width, PropValue::Number(100.0)),
+                (Prop::Height, PropValue::Number(100.0)),
+            ],
+        );
+        assert_eq!(
+            layer_config(&centred).unwrap().anchors,
+            Anchors::new(false, false, true, false)
+        );
+        centred.attach = None;
+        assert_eq!(layer_config(&centred).unwrap().anchors, Anchors::default());
+    }
+
+    /// `attach:` on a popup names its side that touches the anchor: it
+    /// opens away from it, at gap 0 (whatever its margin), even away from
+    /// a bar's usual side.
+    #[test]
+    fn an_attached_popup_touches_its_anchor() {
+        use strand_scene::{LogicalRect, NodeId};
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
+        let mut p = spec(
+            NodeKind::Popup,
+            &[
+                (Prop::Attach, kw("top")),
+                (Prop::Margin, PropValue::Insets(Insets::all(10.0))),
+            ],
+        );
+        p.parent = Some(NodeId::new(1, 0));
+        p.width = Some(200.0);
+        p.height = Some(120.0);
+        p.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+        let c = popup_config(&p, &bar).unwrap();
+        assert_eq!((c.side, c.gap), (PopupSide::Below, 0));
+        for (edge, side) in [
+            ("bottom", PopupSide::Above),
+            ("left", PopupSide::Right),
+            ("right", PopupSide::Left),
+        ] {
+            p.attach = Edge::from_name(edge);
+            let c = popup_config(&p, &bar).unwrap();
+            assert_eq!((c.side, c.gap), (side, 0), "{edge}");
+        }
+    }
+
+    /// A `top` panel with a scrim rises to `overlay`, so its scrim fits on
+    /// `top` beneath it and above the windows; other layers keep theirs,
+    /// and the scrim's layer is the one below.
+    #[test]
+    fn a_top_panel_with_a_scrim_rises_to_overlay() {
+        let dim = PropValue::Color(strand_scene::Color::new(0.0, 0.0, 0.0, 0.3));
+        let size = [
+            (Prop::Width, PropValue::Number(100.0)),
+            (Prop::Height, PropValue::Number(100.0)),
+        ];
+        let mut props = size.to_vec();
+        props.push((Prop::Scrim, dim.clone()));
+        assert_eq!(
+            layer_config(&spec(NodeKind::Panel, &props)).unwrap().layer,
+            Layer::Overlay
+        );
+        assert_eq!(
+            layer_config(&spec(NodeKind::Panel, &size)).unwrap().layer,
+            Layer::Top
+        );
+        props.push((Prop::Layer, kw("bottom")));
+        assert_eq!(
+            layer_config(&spec(NodeKind::Panel, &props)).unwrap().layer,
+            Layer::Bottom
+        );
+        assert_eq!(layer_below(Layer::Overlay), Layer::Top);
+        assert_eq!(layer_below(Layer::Bottom), Layer::Background);
+        assert_eq!(layer_below(Layer::Background), Layer::Background);
+    }
+
+    /// A popup's scrim goes below a panel it is nested in (which rises
+    /// from `top` to `overlay` for it), and beside a bar, whose
+    /// exclusive zone the scrim leaves out.
+    #[test]
+    fn a_popup_scrim_goes_below_its_panel_and_beside_its_bar() {
+        let size = [
+            (Prop::Width, PropValue::Number(100.0)),
+            (Prop::Height, PropValue::Number(100.0)),
+        ];
+        let panel = spec(NodeKind::Panel, &size);
+        let raised = layer_config_with(&panel, true).unwrap();
+        assert_eq!(raised.layer, Layer::Overlay);
+        assert_eq!(popup_scrim_layer(&raised), Layer::Top);
+        assert_eq!(layer_config_with(&panel, false).unwrap().layer, Layer::Top);
+        let mut bottom = size.to_vec();
+        bottom.push((Prop::Layer, kw("bottom")));
+        let c = layer_config_with(&spec(NodeKind::Panel, &bottom), true).unwrap();
+        assert_eq!(
+            (c.layer, popup_scrim_layer(&c)),
+            (Layer::Bottom, Layer::Background)
+        );
+
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        let c = layer_config_with(&bar, true).unwrap();
+        assert_eq!(c.layer, Layer::Top, "a bar does not rise");
+        assert_eq!(popup_scrim_layer(&c), Layer::Top);
+    }
+
+    /// A bar whose shadow reaches past its exclusive zone into the
+    /// usable area is a panel to its popup's scrim: the scrim goes on
+    /// the layer below, and a `top` bar rises to `overlay` for it. An
+    /// overhang towards the edge or along it stays inside the zone.
+    #[test]
+    fn a_bar_shadowing_the_usable_area_rises_over_its_popup_scrim() {
+        for (edge, away) in [
+            (
+                "top",
+                Insets {
+                    bottom: 6.0,
+                    ..Insets::default()
+                },
+            ),
+            (
+                "bottom",
+                Insets {
+                    top: 6.0,
+                    ..Insets::default()
+                },
+            ),
+            (
+                "left",
+                Insets {
+                    right: 6.0,
+                    ..Insets::default()
+                },
+            ),
+            (
+                "right",
+                Insets {
+                    left: 6.0,
+                    ..Insets::default()
+                },
+            ),
+        ] {
+            let mut bar = spec(
+                NodeKind::Bar,
+                &[
+                    (Prop::Edge, kw(edge)),
+                    (Prop::Height, PropValue::Number(30.0)),
+                    (Prop::Width, PropValue::Number(30.0)),
+                ],
+            );
+            bar.overhang = away;
+            let c = layer_config_with(&bar, true).unwrap();
+            assert!(!c.inside_exclusive_zone(), "{edge}");
+            assert_eq!(
+                (c.layer, popup_scrim_layer(&c)),
+                (Layer::Overlay, Layer::Top),
+                "{edge}"
+            );
+            let c = layer_config_with(&bar, false).unwrap();
+            assert_eq!(c.layer, Layer::Top, "{edge}: no scrim, no rise");
+        }
+
+        // A top bar's shadow above it and to its sides is in the zone.
+        let mut bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        bar.overhang = Insets {
+            top: 6.0,
+            left: 6.0,
+            right: 6.0,
+            bottom: 0.0,
+        };
+        let c = layer_config_with(&bar, true).unwrap();
+        assert!(c.inside_exclusive_zone());
+        assert_eq!((c.layer, popup_scrim_layer(&c)), (Layer::Top, Layer::Top));
+
+        // A shadowed bar the user put on `bottom` keeps it, its popup's
+        // scrim one below.
+        let mut bar = spec(
+            NodeKind::Bar,
+            &[
+                (Prop::Height, PropValue::Number(30.0)),
+                (Prop::Layer, kw("bottom")),
+            ],
+        );
+        bar.overhang = Insets::all(6.0);
+        let c = layer_config_with(&bar, true).unwrap();
+        assert_eq!(
+            (c.layer, popup_scrim_layer(&c)),
+            (Layer::Bottom, Layer::Background)
+        );
     }
 }

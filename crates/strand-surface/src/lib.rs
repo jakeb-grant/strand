@@ -11,20 +11,24 @@
 //! the refresh rate, and pointer input as [`InputEvent`]s (the types live
 //! in `strand-scene`).
 //!
-//! The session lock (`ext-session-lock`, `manager/session_lock.rs`) is
-//! released only for a `strand_auth::UnlockToken` ([`State::unlock`]),
-//! and taken only after [`State::enable_session_lock`].
-//! Compositor-animated poses (alpha modifier, viewporter, margins), the
-//! blur ladder and shaped input regions land in M4.
+//! M4 adds compositor capabilities ([`caps`]), the blur ladder's
+//! `ext-background-effect-v1` rung, single-pixel scrims and `attach`
+//! fillets. The session lock (`ext-session-lock`,
+//! `manager/session_lock.rs`) is released only for a
+//! `strand_auth::UnlockToken` ([`State::unlock`]), and taken only after
+//! [`State::enable_session_lock`]. Compositor-animated poses follow.
 //!
 //! See `docs/architecture.md`, "strand-surface" and "Render loop".
 
+pub mod blur;
+pub mod caps;
 pub mod clock;
 pub mod input;
 mod manager;
 pub mod monitor;
 pub mod placement;
 pub mod shm;
+pub mod solid;
 
 pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};

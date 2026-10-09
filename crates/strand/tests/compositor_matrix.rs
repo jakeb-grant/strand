@@ -2083,3 +2083,594 @@ fn occupied_and_empty_dots_are_told_apart() {
     let focused: Vec<bool> = dots.iter().map(|d| d.focused).collect();
     assert_eq!(focused, [false, true, false, false]);
 }
+
+// ---- surfaces: capabilities, the blur region, scrims, Hyprland's rules ------
+
+/// A surface host that paints every surface the test blue (or as
+/// `fills` says) and asks for the blur region it is given, recording the
+/// capabilities reported.
+#[derive(Default)]
+struct BlueHost {
+    caps: Vec<strand_scene::CompositorCaps>,
+    blur: Vec<strand_scene::BlurRegion>,
+    fills: std::collections::HashMap<strand_scene::SurfaceId, Fill>,
+}
+
+/// How [`BlueHost`] paints a surface other than blue.
+#[derive(Copy, Clone, PartialEq)]
+enum Fill {
+    /// Black and white columns two pixels wide: sharp unless blurred.
+    Stripes,
+    /// White at 60 % (above Hyprland's `ignore_alpha 0.5`).
+    Glass,
+}
+
+impl strand_scene::Painter for BlueHost {
+    fn paint(
+        &mut self,
+        id: strand_scene::SurfaceId,
+        target: &mut strand_scene::PaintTarget<'_>,
+    ) -> strand_scene::Damage {
+        let (w, stride) = (target.size.w as usize, target.stride as usize);
+        let fill = self.fills.get(&id).copied();
+        for row in target.pixels.chunks_exact_mut(stride) {
+            for (x, px) in row[..w * 4].chunks_exact_mut(4).enumerate() {
+                // ARGB8888, little-endian, premultiplied.
+                px.copy_from_slice(&match fill {
+                    // The blue of the surface tests.
+                    None => [0xe0, 0x60, 0x20, 0xff],
+                    Some(Fill::Stripes) if (x / 2) % 2 == 0 => [0, 0, 0, 0xff],
+                    Some(Fill::Stripes) => [0xff; 4],
+                    Some(Fill::Glass) => [0x99; 4],
+                });
+            }
+        }
+        strand_scene::Damage::full(target.size)
+    }
+
+    fn wants_frame(&self, _: strand_scene::SurfaceId) -> bool {
+        false
+    }
+
+    fn blur_region(&self, _: strand_scene::SurfaceId) -> Vec<strand_scene::BlurRegion> {
+        self.blur.clone()
+    }
+}
+
+impl strand_surface::SurfaceHost for BlueHost {
+    fn compositor_caps(&mut self, caps: &strand_scene::CompositorCaps) {
+        self.caps.push(*caps);
+    }
+}
+
+/// The interfaces the compositor at `socket` offers.
+fn registry(socket: &std::path::Path) -> Vec<String> {
+    use wayland_client::Connection;
+    use wayland_client::globals::registry_queue_init;
+    let stream = std::os::unix::net::UnixStream::connect(socket).expect("the compositor");
+    let conn = Connection::from_socket(stream).expect("a connection");
+    let (globals, _queue) =
+        registry_queue_init::<support::pointer::Client>(&conn).expect("the registry");
+    globals
+        .contents()
+        .with_list(|l| l.iter().map(|g| g.interface.clone()).collect())
+}
+
+/// The whole layout as grim captures it (labwc has one output), or one
+/// output.
+fn grab(output: Option<&str>, dir: &std::path::Path) -> Option<Img> {
+    let path = dir.join("surfaces.ppm");
+    let mut cmd = Command::new("grim");
+    cmd.args(["-t", "ppm"]);
+    if let Some(o) = output {
+        cmd.args(["-o", o]);
+    }
+    let ok = cmd
+        .arg(&path)
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        return None;
+    }
+    Img::ppm(&std::fs::read(&path).ok()?)
+}
+
+/// M4's surface protocols against each compositor (labwc included):
+/// the capabilities the surface manager reports are the registry's (the
+/// background effect only where it is offered); where the compositor
+/// blurs, a panel's rounded blur region is sent; a panel's scrim dims a
+/// wallpaper surface beneath it and not the panel, and so does a scrim on
+/// a panel's popup (neither the panel nor the popup), and one on the
+/// popup of a bar whose shadow reaches past its exclusive zone (not the
+/// shadow); and on Hyprland the layer rules
+/// `strand compositor-rules` prints evaluate without errors and blur the
+/// surface they name.
+#[test]
+fn surfaces_meet_the_live_compositor() {
+    use strand_scene::{
+        BlurRegion, Color, NodeId, NodeKind, Prop, PropValue, Rect, SurfaceChange, SurfaceSpec,
+    };
+    use strand_surface::{Config, SurfaceManager};
+    use wayland_client::Connection;
+
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        eprintln!(
+            "\n*** SKIPPED: STRAND_MATRIX is not set; surfaces_meet_the_live_compositor did not \
+             run (scripts/compositor-matrix.sh) ***\n"
+        );
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    // The output under test (labwc: its only one, the whole layout).
+    let live = live();
+    let output = live.as_ref().map(|l| l.output.clone());
+    let (ow, oh) = match &live {
+        Some(l) => (l.w as usize, l.h as usize),
+        None => {
+            let img = grab(None, &std::env::temp_dir()).expect("grim");
+            (img.w, img.h)
+        }
+    };
+    let dir = tempfile::tempdir().expect("a temporary directory");
+
+    let stream = std::os::unix::net::UnixStream::connect(&socket).expect("the compositor");
+    let conn = Connection::from_socket(stream).expect("a connection");
+    let mut mgr = SurfaceManager::with_connection(conn, BlueHost::default(), Config::default())
+        .expect("the surface manager starts");
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| !s.host().caps.is_empty())
+        .expect("dispatch");
+    assert!(ok, "{kind}: no capabilities reported");
+    // The blur capability comes with the manager's first event.
+    let _ = mgr.dispatch_until(Duration::from_millis(500), |_| false);
+    let caps = mgr.state().compositor_caps();
+    let offered = registry(&socket);
+    let has = |i: &str| offered.iter().any(|o| o == i);
+    eprintln!("matrix: {kind} reports {caps:?}");
+    assert_eq!(caps.alpha_modifier, has("wp_alpha_modifier_v1"), "{kind}");
+    assert_eq!(caps.viewporter, has("wp_viewporter"), "{kind}");
+    assert_eq!(
+        caps.single_pixel_buffer,
+        has("wp_single_pixel_buffer_manager_v1"),
+        "{kind}"
+    );
+    assert_eq!(
+        caps.session_lock,
+        has("ext_session_lock_manager_v1"),
+        "{kind}"
+    );
+    assert_eq!(caps.data_device, has("wl_data_device_manager"), "{kind}");
+    assert!(
+        !caps.background_effect || has("ext_background_effect_manager_v1"),
+        "{kind}: blur without the protocol"
+    );
+    assert_eq!(mgr.state().host().caps.last(), Some(&caps));
+
+    // A wallpaper of our own on the background layer, so the scrim has
+    // something to dim (the matrix's desktops are black on some).
+    const WALL: NodeId = NodeId::new(8, 0);
+    let wall: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Wall".into())),
+        (Prop::Layer, PropValue::Keyword("background".into())),
+        (Prop::Width, PropValue::Number(ow as f32)),
+        (Prop::Height, PropValue::Number(oh as f32)),
+    ]
+    .into_iter()
+    .collect();
+    mgr.state_mut().apply_surface_change(
+        WALL,
+        SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| wall.get(&p))),
+    );
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == WALL && i.stats.commits > 0)
+        })
+        .expect("dispatch");
+    assert!(ok, "{kind}: the wallpaper: {:?}", mgr.state().surfaces());
+    let deadline = Instant::now() + PATIENCE;
+    let before = loop {
+        let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        if dist(img.px(ow / 4, oh * 3 / 4), [0x20, 0x60, 0xe0]) <= 9 {
+            break img;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{kind}: the wallpaper never showed"
+        );
+    };
+    // `panel Matrix { anchor: top_right; 300 × 200; scrim: black 30 % }`,
+    // asking for blur behind its box with 16 px corners.
+    const PANEL: NodeId = NodeId::new(9, 0);
+    let props: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Matrix".into())),
+        (Prop::Anchor, PropValue::Keyword("top_right".into())),
+        (Prop::Width, PropValue::Number(300.0)),
+        (Prop::Height, PropValue::Number(200.0)),
+        (
+            Prop::Scrim,
+            PropValue::Color(Color::new(0.0, 0.0, 0.0, 0.3)),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let spec = SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p));
+    mgr.state_mut().host_mut().blur = vec![BlurRegion {
+        rect: Rect::new(0, 0, 300, 200),
+        radii: [16.0; 4],
+        radius: 24.0,
+    }];
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == PANEL && i.stats.commits > 0 && i.scrim.is_some())
+        })
+        .expect("dispatch");
+    assert!(
+        ok,
+        "{kind}: the panel and its scrim: {:?}",
+        mgr.state().surfaces()
+    );
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    if caps.background_effect {
+        let info = mgr.state().surface(id).expect("the panel");
+        let region = info.blur_region.expect("a blur region was sent");
+        assert!(
+            region.len() > 1,
+            "{kind}: rounded corners are bands: {region:?}"
+        );
+        assert!(region.contains(&(0, 16, 300, 168)), "{kind}: {region:?}");
+        eprintln!("matrix: {kind} blurs: {} rectangles", region.len());
+    } else {
+        eprintln!("matrix: {kind} does not blur: the tint fallback stays");
+    }
+
+    // The scrim dims a desktop pixel far from the panel; the panel itself
+    // keeps its blue.
+    let (sx, sy) = (ow / 4, oh * 3 / 4);
+    let (px, py) = (ow - 150, 120);
+    let base = before.px(sx, sy);
+    let want = base.map(|c| (f32::from(c) * 0.7).round() as u8);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        let (got, panel) = (img.px(sx, sy), img.px(px, py));
+        if dist(got, want) <= 9 && dist(panel, [0x20, 0x60, 0xe0]) <= 9 {
+            eprintln!("matrix: {kind}: the scrim dims {base:?} to {got:?}; the panel is {panel:?}");
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                let mut cmd = Command::new("grim");
+                if let Some(o) = &output {
+                    cmd.args(["-o", o]);
+                }
+                let _ = cmd
+                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-surfaces-failed.png")))
+                    .status();
+            }
+            panic!(
+                "{kind}: the desktop at ({sx}, {sy}) is {got:?} (was {base:?}, want {want:?}); \
+                 the panel at ({px}, {py}) is {panel:?}"
+            );
+        }
+    }
+    if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+        let mut cmd = Command::new("grim");
+        if let Some(o) = &output {
+            cmd.args(["-o", o]);
+        }
+        let _ = cmd
+            .arg(PathBuf::from(shots).join(format!("matrix-{kind}-surfaces-scrim.png")))
+            .status();
+    }
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Removed);
+    mgr.state_mut().host_mut().blur.clear();
+
+    // `panel Host { anchor: top_right; 300 × 200; popup { scrim: black
+    // 30 % } }`: the popup's scrim goes on the layer below the panel (which
+    // rises to `overlay` for it), so on a compositor that stacks the newer
+    // of two surfaces on one layer on top the scrim still dims neither.
+    const HOST: NodeId = NodeId::new(10, 0);
+    const MENU: NodeId = NodeId::new(11, 0);
+    let host: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Host".into())),
+        (Prop::Anchor, PropValue::Keyword("top_right".into())),
+        (Prop::Width, PropValue::Number(300.0)),
+        (Prop::Height, PropValue::Number(200.0)),
+    ]
+    .into_iter()
+    .collect();
+    mgr.state_mut().apply_surface_change(
+        HOST,
+        SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| host.get(&p))),
+    );
+    let mut menu = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&PropValue>);
+    menu.name = Some("Menu".into());
+    menu.parent = Some(HOST);
+    menu.anchor_rect = Some(strand_scene::LogicalRect::new(100.0, 150.0, 60.0, 20.0));
+    menu.width = Some(200.0);
+    menu.height = Some(120.0);
+    menu.scrim = Some(Color::new(0.0, 0.0, 0.0, 0.3));
+    mgr.state_mut()
+        .apply_surface_change(MENU, SurfaceChange::Created(menu));
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == MENU && i.stats.commits > 0 && i.scrim.is_some())
+        })
+        .expect("dispatch");
+    assert!(
+        ok,
+        "{kind}: the panel's popup and its scrim: {:?}",
+        mgr.state().surfaces()
+    );
+    let host_id = mgr.state().surfaces_of(HOST)[0];
+    assert_eq!(
+        mgr.state().surface(host_id).and_then(|i| i.layer),
+        Some(strand_scene::Layer::Overlay),
+        "{kind}: the panel rises for its popup's scrim"
+    );
+    // The popup opens below its anchor, past the panel's bottom edge.
+    let (hx, hy) = (ow - 150, 60);
+    let (mx, my) = (ow - 170, 260);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        let (got, panel, popup) = (img.px(sx, sy), img.px(hx, hy), img.px(mx, my));
+        let blue = [0x20, 0x60, 0xe0];
+        if dist(got, want) <= 9 && dist(panel, blue) <= 9 && dist(popup, blue) <= 9 {
+            eprintln!(
+                "matrix: {kind}: a popup's scrim dims {base:?} to {got:?}; \
+                 the panel is {panel:?}, the popup {popup:?}"
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                let mut cmd = Command::new("grim");
+                if let Some(o) = &output {
+                    cmd.args(["-o", o]);
+                }
+                let _ = cmd
+                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-popup-scrim-failed.png")))
+                    .status();
+            }
+            panic!(
+                "{kind}: a popup's scrim: the desktop at ({sx}, {sy}) is {got:?} (want {want:?}); \
+                 the panel at ({hx}, {hy}) is {panel:?}; the popup at ({mx}, {my}) is {popup:?}"
+            );
+        }
+    }
+    for node in [MENU, HOST] {
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
+    }
+
+    // `bar Shade { edge: top; height: 30 }` with a 10 px shadow below
+    // it, past its exclusive zone, and `popup { scrim: black 30 % }`:
+    // the shadow is in the usable area the scrim covers, so the scrim
+    // goes on the layer below the bar (which rises to `overlay`) and the
+    // shadow strip keeps its blue on every compositor.
+    const SHADE: NodeId = NodeId::new(12, 0);
+    const TIP: NodeId = NodeId::new(13, 0);
+    let shade: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Shade".into())),
+        (Prop::Edge, PropValue::Keyword("top".into())),
+        (Prop::Height, PropValue::Number(30.0)),
+    ]
+    .into_iter()
+    .collect();
+    let mut bar = SurfaceSpec::resolve(NodeKind::Bar, |p| shade.get(&p));
+    bar.overhang.bottom = 10.0;
+    mgr.state_mut()
+        .apply_surface_change(SHADE, SurfaceChange::Created(bar));
+    let mut tip = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&PropValue>);
+    tip.name = Some("Tip".into());
+    tip.parent = Some(SHADE);
+    tip.anchor_rect = Some(strand_scene::LogicalRect::new(100.0, 5.0, 60.0, 20.0));
+    tip.width = Some(200.0);
+    tip.height = Some(120.0);
+    tip.scrim = Some(Color::new(0.0, 0.0, 0.0, 0.3));
+    mgr.state_mut()
+        .apply_surface_change(TIP, SurfaceChange::Created(tip));
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == TIP && i.stats.commits > 0 && i.scrim.is_some())
+        })
+        .expect("dispatch");
+    assert!(
+        ok,
+        "{kind}: the shadowed bar's popup and its scrim: {:?}",
+        mgr.state().surfaces()
+    );
+    let shade_id = mgr.state().surfaces_of(SHADE)[0];
+    assert_eq!(
+        mgr.state().surface(shade_id).and_then(|i| i.layer),
+        Some(strand_scene::Layer::Overlay),
+        "{kind}: a bar shadowing the usable area rises for its popup's scrim"
+    );
+    // Far from the popup: the bar's box, then its shadow strip.
+    let (bx, by, shy) = (ow * 3 / 4, 15, 35);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        let (got, bar, shadow) = (img.px(sx, sy), img.px(bx, by), img.px(bx, shy));
+        let blue = [0x20, 0x60, 0xe0];
+        if dist(got, want) <= 9 && dist(bar, blue) <= 9 && dist(shadow, blue) <= 9 {
+            eprintln!(
+                "matrix: {kind}: a shadowed bar's popup scrim dims {base:?} to {got:?}; \
+                 the bar is {bar:?}, its shadow {shadow:?}"
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                let mut cmd = Command::new("grim");
+                if let Some(o) = &output {
+                    cmd.args(["-o", o]);
+                }
+                let _ = cmd
+                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-bar-scrim-failed.png")))
+                    .status();
+            }
+            panic!(
+                "{kind}: a shadowed bar's popup scrim: the desktop at ({sx}, {sy}) is {got:?} \
+                 (want {want:?}); the bar at ({bx}, {by}) is {bar:?}; its shadow at ({bx}, {shy}) \
+                 is {shadow:?}"
+            );
+        }
+    }
+    for node in [TIP, SHADE, WALL] {
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
+    }
+    let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
+
+    if kind == "hyprland" {
+        // `strand compositor-rules` for a config with a blurred panel and
+        // a blurred popup, evaluated by Hyprland's Lua config.
+        let conf = dir.path().join("conf");
+        std::fs::create_dir_all(&conf).expect("a config directory");
+        std::fs::write(
+            conf.join("shell.strand"),
+            "bar Top { edge: top; height: 30; blur: 24\n  \
+             popup { open: true; width: 100; height: 50; box { blur: 8 } }\n}\n\
+             panel Dash { anchor: top_right; width: 300; height: 200; blur: 24 }\n",
+        )
+        .expect("the config");
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("compositor-rules")
+            .arg(&conf)
+            .output()
+            .expect("strand compositor-rules");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lua = String::from_utf8(out.stdout).expect("UTF-8 rules");
+        assert_eq!(lua.matches("hl.layer_rule(").count(), 2, "{lua}");
+        let eval = Command::new("hyprctl")
+            .arg("eval")
+            .arg(&lua)
+            .output()
+            .expect("hyprctl eval");
+        let said = String::from_utf8_lossy(&eval.stdout).to_string();
+        eprintln!("matrix: hyprctl eval of the rules: {said:?}");
+        assert!(eval.status.success(), "hyprctl eval failed: {said}");
+        assert!(
+            !said.to_lowercase().contains("error"),
+            "Hyprland rejected the rules: {said}\n{lua}"
+        );
+        let errors = run("hyprctl", &["configerrors"]);
+        assert!(
+            !errors.to_lowercase().contains("layer_rule"),
+            "config errors: {errors}"
+        );
+
+        // hyprctl answers 0 for a rule it did not take, so the proof is
+        // a blurred pixel: `strand-Dash` (the rule's namespace), white
+        // at 60 % over sharp stripes and asking for no blur of its own
+        // (no ext-background-effect region), shows the stripes blurred
+        // only if Hyprland applied the rule; beside it they stay sharp.
+        const STRIPES: NodeId = NodeId::new(12, 0);
+        const DASH: NodeId = NodeId::new(13, 0);
+        let wall: std::collections::HashMap<Prop, PropValue> = [
+            (Prop::Name, PropValue::Text("Stripes".into())),
+            (Prop::Layer, PropValue::Keyword("background".into())),
+            (Prop::Width, PropValue::Number(ow as f32)),
+            (Prop::Height, PropValue::Number(oh as f32)),
+        ]
+        .into_iter()
+        .collect();
+        let dash: std::collections::HashMap<Prop, PropValue> = [
+            (Prop::Name, PropValue::Text("Dash".into())),
+            (Prop::Anchor, PropValue::Keyword("top_right".into())),
+            (Prop::Width, PropValue::Number(300.0)),
+            (Prop::Height, PropValue::Number(200.0)),
+        ]
+        .into_iter()
+        .collect();
+        for (node, props, fill) in [(STRIPES, &wall, Fill::Stripes), (DASH, &dash, Fill::Glass)] {
+            mgr.state_mut().apply_surface_change(
+                node,
+                SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p))),
+            );
+            let id = mgr.state().surfaces_of(node)[0];
+            mgr.state_mut().host_mut().fills.insert(id, fill);
+        }
+        let ok = mgr
+            .dispatch_until(PATIENCE, |s| {
+                [STRIPES, DASH].iter().all(|n| {
+                    s.surfaces()
+                        .iter()
+                        .any(|i| i.node == *n && i.stats.commits > 0)
+                })
+            })
+            .expect("dispatch");
+        assert!(
+            ok,
+            "{kind}: the stripes and Dash: {:?}",
+            mgr.state().surfaces()
+        );
+        // The largest step between a pixel and the one two to its right
+        // (black against white in sharp stripes), along row `y`.
+        let contrast = |img: &Img, x0: usize, y: usize| {
+            (x0..x0 + 160)
+                .map(|x| dist(img.px(x, y), img.px(x + 2, y)))
+                .max()
+                .unwrap_or(0)
+        };
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+            let img = grab(output.as_deref(), dir.path()).expect("grim");
+            let (inside, beside) = (
+                contrast(&img, ow - 240, 100),
+                contrast(&img, ow / 4, oh / 2),
+            );
+            if beside > 600 && inside < 120 {
+                eprintln!(
+                    "matrix: hyprland blurs strand-Dash by its layer rule: contrast {inside} \
+                     under it, {beside} beside it"
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                    let mut cmd = Command::new("grim");
+                    if let Some(o) = &output {
+                        cmd.args(["-o", o]);
+                    }
+                    let _ = cmd
+                        .arg(PathBuf::from(shots).join("matrix-hyprland-layer-rule-failed.png"))
+                        .status();
+                }
+                panic!(
+                    "hyprland: the layer rule did not blur strand-Dash: contrast {inside} under \
+                     it (want < 120), {beside} beside it (want > 600)\n{lua}"
+                );
+            }
+        }
+        for node in [DASH, STRIPES] {
+            mgr.state_mut()
+                .apply_surface_change(node, SurfaceChange::Removed);
+        }
+        let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
+    }
+}
