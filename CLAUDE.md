@@ -48,13 +48,16 @@ CI_JOB=timing scripts/container/run.sh ci   # one job: lint, test, budgets,
                                              # acceptance or timing
 scripts/container/run.sh shell     # a bash in the image
 scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland, labwc
+scripts/container/gpu.sh           # advisory real-GPU leg (renderD128 only)
+scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-vm job
 ```
 
 - `run.sh` uses `scripts/container/Dockerfile`: Ubuntu 24.04 with exactly
   CI's apt packages (sway 1.9, grim, DejaVu core only, Adwaita, dbus,
-  python3-dbusmock, PipeWire) and Rust 1.97.0, so pixel references match
-  CI. It runs as your uid with the checkout at its own path (worktrees
-  included), CI's env (`STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE=1`,
+  python3-dbusmock, PipeWire, lavapipe, libpam0g-dev) and Rust 1.97.0, so
+  pixel references match CI; lavapipe is the only Vulkan driver in it.
+  It runs as your uid with the checkout at its own path (worktrees
+  included), CI's env (`STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE/GPU=1`,
   `RUSTFLAGS=-D warnings`, no debug info), `CARGO_BUILD_JOBS=6`, and builds
   into `target/container`. Host `STRAND_*` variables are passed in. Tests
   start their own headless sway, buses and PipeWire inside the container.
@@ -62,6 +65,11 @@ scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland,
   (`Dockerfile.matrix`). Hyprland gets only `/dev/dri/renderD128`; CI's
   vkms card needs modprobe, so Hyprland is skipped when it cannot start
   without a KMS card.
+- `gpu.sh` runs a command in the same image with the laptop's real GPU
+  (only `/dev/dri/renderD128`) and its own headless sway; failures WARN
+  unless `STRAND_STRICT_GPU=1`. `lockvm.sh` boots the lock VM
+  (`Dockerfile.lockvm`, only `/dev/kvm` passed in) and runs a command in
+  the guest; `LOCKVM_TCG=1` emulates without KVM.
 - `ci` treats the wall-clock gates in the timing steps (theme_swap_bench,
   reload_latency) as advisory: when every failure in a step is a gate
   miss (a panic starting "timing gate missed", `gate-misses.sh`), it
