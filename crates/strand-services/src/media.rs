@@ -7,8 +7,14 @@
 //! started playing last, else the one that paused last, else the first
 //! by name. Its position is asked for (`Position`, which players do not
 //! signal) only when its state, track or rate changes or it seeks, and
-//! carried forward at its rate from there; `elapsed` and `position` are
-//! `#[store(stream)]` fields, ticking once a second only while a visible
+//! carried forward at its rate from there. A `Metadata` naming another
+//! track (by `mpris:trackid`, else `xesam:url`, else `xesam:title` with
+//! `xesam:artist`: the first both name) starts the position at 0 at
+//! once, so a new title never shows with the old track's time; the
+//! position answer then corrects it. New art or a length for the same
+//! track carries on. A track change signalled as an invalidated
+//! `Metadata` is judged when the re-read lands. `elapsed` and `position`
+//! are `#[store(stream)]` fields, ticking once a second only while a visible
 //! reader shows them and the player plays. Otherwise nothing wakes.
 
 use std::collections::BTreeMap;
@@ -102,6 +108,64 @@ struct Player {
     /// Which position question is the latest (a seek or a newer question
     /// makes an older answer stale).
     asked: u64,
+    /// The track its `Metadata` last named (none until a `Metadata` is
+    /// known): a `Metadata` naming another one starts the position at 0.
+    track: Option<Track>,
+}
+
+/// What tells one track from another: `mpris:trackid`, else
+/// `xesam:url`, else `xesam:title` with `xesam:artist`.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Track {
+    id: Option<String>,
+    url: Option<String>,
+    title: Option<(String, String)>,
+}
+
+impl Track {
+    fn of(meta: &Props) -> Self {
+        let text = |k: &str| dbus::text(meta, k).filter(|s| !s.is_empty());
+        let id = meta
+            .get("mpris:trackid")
+            .and_then(|v| {
+                v.downcast_ref::<zbus::zvariant::ObjectPath<'_>>()
+                    .ok()
+                    .map(|p| p.to_string())
+            })
+            .or_else(|| text("mpris:trackid"));
+        Track {
+            id,
+            url: text("xesam:url"),
+            title: text("xesam:title").map(|t| (t, artist(meta).unwrap_or_default())),
+        }
+    }
+
+    /// The same track: judged by the first of trackid, URL and title
+    /// with artist that both name (a player that adds a trackid to a
+    /// track it named by title alone has not changed track); when they
+    /// share none, only two that name nothing are the same.
+    fn same(&self, other: &Track) -> bool {
+        if let (Some(a), Some(b)) = (&self.id, &other.id) {
+            return a == b;
+        }
+        if let (Some(a), Some(b)) = (&self.url, &other.url) {
+            return a == b;
+        }
+        if let (Some(a), Some(b)) = (&self.title, &other.title) {
+            return a == b;
+        }
+        self == other
+    }
+}
+
+/// `xesam:artist`, a list (as MPRIS says) or one name, joined.
+fn artist(meta: &Props) -> Option<String> {
+    meta.get("xesam:artist")
+        .and_then(|v| v.try_clone().ok())
+        .and_then(|v| Vec::<String>::try_from(v).ok())
+        .map(|a| a.join(", "))
+        .filter(|s| !s.is_empty())
+        .or_else(|| dbus::text(meta, "xesam:artist").filter(|s| !s.is_empty()))
 }
 
 impl Player {
@@ -125,6 +189,24 @@ impl Player {
             .and_then(|v| v.try_clone().ok())
             .and_then(|v| Props::try_from(v).ok())
             .unwrap_or_default()
+    }
+
+    /// Note the track its `Metadata` names now (nothing when no
+    /// `Metadata` is known); when that is another track than the one
+    /// noted before, its position starts at 0 at `now`, so the title and
+    /// the time change in one update (the position question asked with
+    /// the change corrects it). Whether it was another track.
+    fn note_track(&mut self, now: Instant) -> bool {
+        if !self.props.contains_key("Metadata") {
+            return false;
+        }
+        let track = Track::of(&self.metadata());
+        let other = self.track.as_ref().is_some_and(|t| !t.same(&track));
+        if other {
+            self.at = Some((Duration::ZERO, now));
+        }
+        self.track = Some(track);
+        other
     }
 
     /// The position now, carried forward while playing.
@@ -182,17 +264,10 @@ impl Players {
         let length = meta.get("mpris:length").and_then(micros);
         let elapsed = p.elapsed(now, length);
         let text = |k: &str| dbus::text(&meta, k).filter(|s| !s.is_empty());
-        let artist = meta
-            .get("xesam:artist")
-            .and_then(|v| v.try_clone().ok())
-            .and_then(|v| Vec::<String>::try_from(v).ok())
-            .map(|a| a.join(", "))
-            .filter(|s| !s.is_empty())
-            .or_else(|| text("xesam:artist"));
         Media {
             playing: p.playing(),
             title: text("xesam:title"),
-            artist,
+            artist: artist(&meta),
             album: text("xesam:album"),
             art: text("mpris:artUrl").filter(|u| local_art(u)),
             position: match length {
@@ -219,9 +294,12 @@ impl Players {
         }
     }
 
-    /// Apply a read's answer; whether anything changed (an answer for an
-    /// owner that is gone, or a position overtaken, is dropped).
-    fn answer(&mut self, r: Read) -> bool {
+    /// Apply a read's answer, landed at `now`; whether anything changed
+    /// (an answer for an owner that is gone, or a position overtaken, is
+    /// dropped). A whole read naming another track (a track change
+    /// signalled as an invalidated `Metadata`) starts its position at 0,
+    /// unless the read's own position answer, current, says where.
+    fn answer(&mut self, r: Read, now: Instant) -> bool {
         let Some(p) = self.by_name.get_mut(&r.name) else {
             return false;
         };
@@ -252,6 +330,9 @@ impl Players {
             if let Some(since) = since {
                 p.props.extend(since);
             }
+            // Judged after the changes signalled since are applied: a
+            // stale read naming the old track does not count as a change.
+            p.note_track(now);
             p.known = true;
         }
         if let Some((asked, pos, at)) = r.position
@@ -412,7 +493,7 @@ impl Media {
         while players.by_name.values().any(|p| !p.known) {
             match tasks.join_next().await {
                 Some(Ok(Some(r))) => {
-                    players.answer(r);
+                    players.answer(r, Instant::now());
                 }
                 Some(_) => {}
                 None => break,
@@ -431,7 +512,7 @@ impl Media {
             };
             let changed = tokio::select! {
                 Some(done) = tasks.join_next(), if !tasks.is_empty() => match done {
-                    Ok(Some(r)) => players.answer(r),
+                    Ok(Some(r)) => players.answer(r, Instant::now()),
                     _ => false,
                 },
                 o = owners.next() => {
@@ -519,58 +600,76 @@ fn signal(
         p.at = Some((Duration::from_micros(pos.max(0) as u64), Instant::now()));
         return true;
     }
+    let owner = p.owner.clone();
     let Some(c) = dbus::properties_changed(m) else {
         return false;
     };
     if c.iface != PLAYER {
         return false;
     }
-    // Carry the position forward to now before the state changes, then
-    // ask again where the state, track or rate moved it.
-    let now = Instant::now();
-    let length = p.metadata().get("mpris:length").and_then(micros);
-    let here = p.elapsed(now, length);
-    p.at = Some((here, now));
-    let status_moved = c.changed.contains_key("PlaybackStatus")
-        || c.invalidated.iter().any(|i| i == "PlaybackStatus");
-    let mut ask = Ask::default();
-    if status_moved
-        || c.changed.contains_key("Metadata")
-        || c.changed.contains_key("Rate")
-        || c.invalidated.iter().any(|i| i == "Metadata" || i == "Rate")
-    {
-        p.asked += 1;
-        ask.position = Some(p.asked);
-    }
-    for (k, v) in c.changed {
-        if let Some(pending) = &mut p.pending
-            && let Ok(v2) = v.try_clone()
-        {
-            pending.insert(k.clone(), v2);
-        }
-        p.props.insert(k, v);
-    }
-    if !c.invalidated.is_empty() {
-        for i in &c.invalidated {
-            p.props.remove(i);
-            if let Some(pending) = &mut p.pending {
-                pending.remove(i);
-            }
-        }
-        // Read it whole again (one call for any number of properties).
-        ask.props = true;
-        p.reading += 1;
-        p.pending.get_or_insert_with(Props::new);
-    }
+    let ask = players.changed(&name, c.changed, &c.invalidated, Instant::now());
     if ask.props || ask.position.is_some() {
-        let owner = p.owner.clone();
-        let (conn, name) = (conn.clone(), name.clone());
+        let conn = conn.clone();
         tasks.spawn(async move { Some(read(conn, name, owner, ask).await) });
     }
-    if status_moved {
-        players.touch(&name);
-    }
     true
+}
+
+impl Players {
+    /// Apply a `PropertiesChanged` from `name`'s player at `now`; what to
+    /// ask it again.
+    fn changed(&mut self, name: &str, changed: Props, invalidated: &[String], now: Instant) -> Ask {
+        let mut ask = Ask::default();
+        let Some(p) = self.by_name.get_mut(name) else {
+            return ask;
+        };
+        // Carry the position forward to now before the state changes, then
+        // ask again where the state, track or rate moved it.
+        let length = p.metadata().get("mpris:length").and_then(micros);
+        let here = p.elapsed(now, length);
+        p.at = Some((here, now));
+        let status_moved = changed.contains_key("PlaybackStatus")
+            || invalidated.iter().any(|i| i == "PlaybackStatus");
+        let metadata = changed.contains_key("Metadata");
+        if status_moved
+            || metadata
+            || changed.contains_key("Rate")
+            || invalidated.iter().any(|i| i == "Metadata" || i == "Rate")
+        {
+            p.asked += 1;
+            ask.position = Some(p.asked);
+        }
+        for (k, v) in changed {
+            if let Some(pending) = &mut p.pending
+                && let Ok(v2) = v.try_clone()
+            {
+                pending.insert(k.clone(), v2);
+            }
+            p.props.insert(k, v);
+        }
+        // Another track starts at 0 now, in the same update as its title
+        // (the question just asked corrects it); the same track with new
+        // art or a length keeps its carried position.
+        if metadata {
+            p.note_track(now);
+        }
+        if !invalidated.is_empty() {
+            for i in invalidated {
+                p.props.remove(i);
+                if let Some(pending) = &mut p.pending {
+                    pending.remove(i);
+                }
+            }
+            // Read it whole again (one call for any number of properties).
+            ask.props = true;
+            p.reading += 1;
+            p.pending.get_or_insert_with(Props::new);
+        }
+        if status_moved {
+            self.touch(name);
+        }
+        ask
+    }
 }
 
 #[cfg(test)]
@@ -605,13 +704,13 @@ mod tests {
             props: Some(Ok(props)),
             position: None,
         };
-        assert!(players.answer(answer(status("Paused"))));
+        assert!(players.answer(answer(status("Paused")), Instant::now()));
         // Signalled now: playing.
         let p = players.by_name.get_mut("org.mpris.MediaPlayer2.p").unwrap();
         p.props.extend(status("Playing"));
         p.pending.as_mut().unwrap().extend(status("Playing"));
         // The other read, asked before the signal, answers last.
-        assert!(players.answer(answer(status("Paused"))));
+        assert!(players.answer(answer(status("Paused")), Instant::now()));
         let p = &players.by_name["org.mpris.MediaPlayer2.p"];
         assert_eq!(p.status(), "Playing");
         assert_eq!(p.reading, 0);
@@ -624,5 +723,314 @@ mod tests {
         assert!(local_art("/tmp/a.png"));
         assert!(!local_art("https://i.scdn.co/image/ab67"));
         assert!(!local_art("http://x/a.jpg"));
+    }
+
+    const P: &str = "org.mpris.MediaPlayer2.p";
+
+    /// A `Metadata` value: these entries, with a fixed length and art.
+    fn meta(entries: &[(&str, zbus::zvariant::Value<'static>)]) -> OwnedValue {
+        use zbus::zvariant::Value;
+        let mut m: std::collections::HashMap<String, Value<'static>> =
+            std::collections::HashMap::from([
+                ("mpris:length".to_string(), Value::from(200_000_000i64)),
+                ("mpris:artUrl".to_string(), Value::from("file:///a.png")),
+            ]);
+        for (k, v) in entries {
+            m.insert((*k).to_string(), v.try_clone().unwrap());
+        }
+        OwnedValue::try_from(Value::from(m)).unwrap()
+    }
+
+    fn id(path: &'static str) -> zbus::zvariant::Value<'static> {
+        zbus::zvariant::ObjectPath::try_from(path).unwrap().into()
+    }
+
+    fn text(s: &'static str) -> zbus::zvariant::Value<'static> {
+        s.into()
+    }
+
+    /// One player, known and playing `metadata` at 120 s as of `t0`.
+    fn playing(metadata: OwnedValue, t0: Instant) -> Players {
+        let mut players = Players::default();
+        let mut p = Player {
+            owner: ":1.5".into(),
+            known: true,
+            asked: 1,
+            at: Some((Duration::from_secs(120), t0)),
+            ..Player::default()
+        };
+        p.props.insert(
+            "PlaybackStatus".into(),
+            OwnedValue::try_from(zbus::zvariant::Value::from("Playing")).unwrap(),
+        );
+        p.props.insert("Metadata".into(), metadata);
+        p.note_track(t0);
+        players.by_name.insert(P.into(), p);
+        players
+    }
+
+    fn metadata_changed(players: &mut Players, m: OwnedValue, now: Instant) -> Ask {
+        players.changed(P, Props::from([("Metadata".to_string(), m)]), &[], now)
+    }
+
+    /// A `Metadata` naming another track: the title and a time of 0 in
+    /// the same state, with the position asked again.
+    #[test]
+    fn another_trackid_starts_the_position_at_zero_at_once() {
+        let t0 = Instant::now();
+        let a = || {
+            meta(&[
+                ("mpris:trackid", id("/t/1")),
+                ("xesam:title", text("First")),
+            ])
+        };
+        let mut players = playing(a(), t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert_eq!(players.state(t1).elapsed, Duration::from_secs(121));
+        let b = meta(&[
+            ("mpris:trackid", id("/t/2")),
+            ("xesam:title", text("Second")),
+        ]);
+        let ask = metadata_changed(&mut players, b, t1);
+        assert_eq!(ask.position, Some(2), "the position is asked again");
+        let s = players.state(t1);
+        assert_eq!(s.title.as_deref(), Some("Second"));
+        assert_eq!(s.elapsed, Duration::ZERO);
+        assert_eq!(s.position, 0.0);
+        // It plays on from 0.
+        let t2 = t1 + Duration::from_secs(2);
+        assert_eq!(players.state(t2).elapsed, Duration::from_secs(2));
+        // The position answer still says where it is.
+        let p = &players.by_name[P];
+        let r = Read {
+            name: P.into(),
+            owner: p.owner.clone(),
+            identity: None,
+            props: None,
+            position: Some((2, Some(Duration::from_millis(1500)), t2)),
+        };
+        assert!(players.answer(r, t2));
+        assert_eq!(players.state(t2).elapsed, Duration::from_millis(1500));
+    }
+
+    /// New art or a length for the track playing: the time carries on.
+    #[test]
+    fn the_same_trackid_with_new_art_keeps_its_position() {
+        let t0 = Instant::now();
+        let mut players = playing(
+            meta(&[
+                ("mpris:trackid", id("/t/1")),
+                ("xesam:title", text("First")),
+            ]),
+            t0,
+        );
+        let t1 = t0 + Duration::from_secs(1);
+        let new_art = meta(&[
+            ("mpris:trackid", id("/t/1")),
+            ("xesam:title", text("First")),
+            ("mpris:artUrl", text("file:///b.png")),
+            ("mpris:length", zbus::zvariant::Value::from(300_000_000i64)),
+        ]);
+        metadata_changed(&mut players, new_art, t1);
+        let s = players.state(t1);
+        assert_eq!(s.art.as_deref(), Some("file:///b.png"));
+        assert_eq!(s.length, Some(Duration::from_secs(300)));
+        assert_eq!(s.elapsed, Duration::from_secs(121));
+        // A trackid string (not an object path) is read as one too, and a
+        // retitled track with the same trackid is still the same track.
+        let renamed = meta(&[
+            ("mpris:trackid", text("/t/1")),
+            ("xesam:title", text("Renamed")),
+        ]);
+        metadata_changed(&mut players, renamed, t1);
+        assert_eq!(players.state(t1).elapsed, Duration::from_secs(121));
+    }
+
+    /// No trackid: the URL tells tracks apart, else the title and artist.
+    #[test]
+    fn without_a_trackid_the_url_then_the_title_and_artist_tell_tracks_apart() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        // By URL: a retitled URL is the same track; another URL is not.
+        let mut players = playing(
+            meta(&[
+                ("xesam:url", text("file:///1.ogg")),
+                ("xesam:title", text("First")),
+            ]),
+            t0,
+        );
+        let retitled = meta(&[
+            ("xesam:url", text("file:///1.ogg")),
+            ("xesam:title", text("Uno")),
+        ]);
+        metadata_changed(&mut players, retitled, t1);
+        assert_eq!(players.state(t1).elapsed, Duration::from_secs(121));
+        let other = meta(&[
+            ("xesam:url", text("file:///2.ogg")),
+            ("xesam:title", text("Uno")),
+        ]);
+        metadata_changed(&mut players, other, t1);
+        assert_eq!(players.state(t1).elapsed, Duration::ZERO);
+
+        // By title and artist (the test player's case).
+        let artist = |a: &'static str| zbus::zvariant::Value::from(vec![a]);
+        let mut players = playing(
+            meta(&[
+                ("xesam:title", text("First")),
+                ("xesam:artist", artist("Ann")),
+            ]),
+            t0,
+        );
+        let new_art = meta(&[
+            ("xesam:title", text("First")),
+            ("xesam:artist", artist("Ann")),
+            ("mpris:artUrl", text("file:///b.png")),
+        ]);
+        metadata_changed(&mut players, new_art, t1);
+        assert_eq!(players.state(t1).elapsed, Duration::from_secs(121));
+        let cover = meta(&[
+            ("xesam:title", text("First")),
+            ("xesam:artist", artist("Bo")),
+        ]);
+        metadata_changed(&mut players, cover, t1);
+        assert_eq!(players.state(t1).elapsed, Duration::ZERO);
+    }
+
+    /// Track identity compares the first key both name.
+    #[test]
+    fn tracks_compare_by_the_first_key_both_name() {
+        let t = |id: Option<&str>, url: Option<&str>, title: Option<&str>| Track {
+            id: id.map(Into::into),
+            url: url.map(Into::into),
+            title: title.map(|t| (t.into(), String::new())),
+        };
+        // A trackid added to a track named by title alone: the same.
+        assert!(t(None, None, Some("A")).same(&t(Some("/1"), None, Some("A"))));
+        // Trackids differ: another track, whatever the titles say.
+        assert!(!t(Some("/1"), None, Some("A")).same(&t(Some("/2"), None, Some("A"))));
+        // Nothing shared: only two empty ones are the same.
+        assert!(t(None, None, None).same(&t(None, None, None)));
+        assert!(!t(None, None, None).same(&t(None, None, Some("A"))));
+        assert!(!t(Some("/1"), None, None).same(&t(None, Some("u"), None)));
+    }
+
+    /// A track change signalled as an invalidated `Metadata`: the time
+    /// starts at 0 when the whole read lands (its own position answer,
+    /// when current, says where instead); a re-read naming the same track
+    /// leaves the time alone.
+    #[test]
+    fn an_invalidated_metadata_naming_another_track_starts_at_zero_when_read() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let a = || {
+            meta(&[
+                ("mpris:trackid", id("/t/1")),
+                ("xesam:title", text("First")),
+            ])
+        };
+        let b = || {
+            meta(&[
+                ("mpris:trackid", id("/t/2")),
+                ("xesam:title", text("Second")),
+            ])
+        };
+        let whole = |m: OwnedValue, position| Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            identity: None,
+            props: Some(Ok(Props::from([
+                (
+                    "PlaybackStatus".to_string(),
+                    OwnedValue::try_from(zbus::zvariant::Value::from("Playing")).unwrap(),
+                ),
+                ("Metadata".to_string(), m),
+            ]))),
+            position,
+        };
+        let invalidate = |players: &mut Players| {
+            let ask = players.changed(P, Props::new(), &["Metadata".to_string()], t1);
+            assert!(ask.props);
+            assert_eq!(ask.position, Some(2));
+        };
+
+        // Another track; the read's position question was overtaken (a
+        // newer one is in flight): 0 from when it landed.
+        let mut players = playing(a(), t0);
+        invalidate(&mut players);
+        players.by_name.get_mut(P).unwrap().asked = 3;
+        let t2 = t1 + Duration::from_secs(1);
+        assert!(players.answer(whole(b(), Some((2, Some(Duration::from_secs(9)), t2))), t2));
+        let s = players.state(t2);
+        assert_eq!(s.title.as_deref(), Some("Second"));
+        assert_eq!(s.elapsed, Duration::ZERO);
+
+        // Another track with its current position answer: that stands.
+        let mut players = playing(a(), t0);
+        invalidate(&mut players);
+        let answer = Some((2, Some(Duration::from_millis(300)), t2));
+        assert!(players.answer(whole(b(), answer), t2));
+        assert_eq!(players.state(t2).elapsed, Duration::from_millis(300));
+
+        // The same track re-read: the carried time stands.
+        let mut players = playing(a(), t0);
+        invalidate(&mut players);
+        players.by_name.get_mut(P).unwrap().asked = 3;
+        assert!(players.answer(whole(a(), None), t2));
+        assert_eq!(players.state(t2).elapsed, Duration::from_secs(122));
+    }
+
+    /// A read asked before a track change answering after it (with the
+    /// old track): no second reset, the new track's answered time stands.
+    #[test]
+    fn a_stale_read_naming_the_old_track_does_not_reset_the_new_one() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let a = || {
+            meta(&[
+                ("mpris:trackid", id("/t/1")),
+                ("xesam:title", text("First")),
+            ])
+        };
+        let b = || {
+            meta(&[
+                ("mpris:trackid", id("/t/2")),
+                ("xesam:title", text("Second")),
+            ])
+        };
+        let mut players = playing(a(), t0);
+        {
+            let p = players.by_name.get_mut(P).unwrap();
+            p.reading = 1;
+            p.pending = Some(Props::new());
+        }
+        let ask = metadata_changed(&mut players, b(), t1);
+        assert_eq!(players.state(t1).elapsed, Duration::ZERO);
+        let t2 = t1 + Duration::from_secs(1);
+        let pos = Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            identity: None,
+            props: None,
+            position: Some((ask.position.unwrap(), Some(Duration::from_secs(3)), t2)),
+        };
+        assert!(players.answer(pos, t2));
+        let stale = Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            identity: None,
+            props: Some(Ok(Props::from([
+                (
+                    "PlaybackStatus".to_string(),
+                    OwnedValue::try_from(zbus::zvariant::Value::from("Playing")).unwrap(),
+                ),
+                ("Metadata".to_string(), a()),
+            ]))),
+            position: None,
+        };
+        let t3 = t2 + Duration::from_secs(1);
+        assert!(players.answer(stale, t3));
+        let s = players.state(t3);
+        assert_eq!(s.title.as_deref(), Some("Second"));
+        assert_eq!(s.elapsed, Duration::from_secs(4));
     }
 }
