@@ -434,20 +434,20 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         match change {
             SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. } => {
-                if let Some(other) = self.session_lock.node
-                    && other != node
-                    && !self.session_lock.spec_gone
-                    && self.specs.contains_key(&other)
+                if let Some(old) = self.session_lock.node
+                    && old != node
                 {
-                    log::warn!("a second `lock` is ignored: one lock is shown at a time");
-                    return None;
-                }
-                if self.session_lock.node != Some(node) && self.lock_active() {
-                    // A new lock spec while the old one's lock is held
-                    // (a reload made a new node): it takes the content
-                    // over, the lock stays.
-                    self.session_lock.node = Some(node);
-                    if let Some(id) = self.session_lock.content.take() {
+                    // A config has one `lock` (`check::lock_twice`), so a
+                    // new node is that lock mounted again by a reload,
+                    // whose `Created` comes before the old node's
+                    // `Removed`. It takes over: the old spec goes (its
+                    // `Removed` then finds nothing), a held lock stays
+                    // and its content moves to the new node, and a spent
+                    // lock stays spent (a remount is not a new request).
+                    self.specs.remove(&old);
+                    if self.lock_active()
+                        && let Some(id) = self.session_lock.content.take()
+                    {
                         self.destroy_surface(id);
                     }
                 }

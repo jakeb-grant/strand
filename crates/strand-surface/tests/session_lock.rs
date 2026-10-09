@@ -556,3 +556,72 @@ fn a_token_before_locked_unlocks_once_locked() {
         .expect("the lock client's connection survives");
     assert_eq!(shot(&sway, "HEADLESS-1")[0], RED, "the desktop shows again");
 }
+
+/// A reload that mounts the lock again sends the new node's `Created`
+/// before the old node's `Removed`. The new node takes over: while
+/// locked its content is attached to the new node (not left on the gone
+/// one, which would show only the fallback); after an unlock with `open`
+/// still true the remount does not lock again, and only closing and
+/// opening the new node does.
+#[test]
+fn a_remounted_lock_takes_over() {
+    let test = "a_remounted_lock_takes_over";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    const AGAIN: NodeId = NodeId::new(8, 0);
+    const THIRD: NodeId = NodeId::new(9, 0);
+    let mut desk = desktop(&sway, 1);
+    let mut lock = locker(&sway);
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    wait_lock(&mut lock, LockState::Locked);
+
+    // Remounted while locked.
+    lock.state_mut()
+        .apply_surface_change(AGAIN, SurfaceChange::Created(lock_spec(true)));
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Removed);
+    let content = lock.state().lock_content().expect("a content surface");
+    assert!(
+        lock.state().host().attached.contains(&(content, AGAIN)),
+        "the content follows the new node: {:?}",
+        lock.state().host().attached
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert!(lock.state().is_locked());
+    assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE]);
+
+    // Unlocked with `open` still true, then remounted: no new lock.
+    assert!(lock.state_mut().unlock(token()));
+    lock.state_mut()
+        .apply_surface_change(THIRD, SurfaceChange::Created(lock_spec(true)));
+    lock.state_mut()
+        .apply_surface_change(AGAIN, SurfaceChange::Removed);
+    settle(&mut lock, &mut desk, Duration::from_millis(500));
+    assert!(
+        !lock.state().lock_active(),
+        "a remount is not a new request"
+    );
+    assert_eq!(shot(&sway, "HEADLESS-1")[0], RED);
+
+    // Closed and opened: a new request.
+    for open in [false, true] {
+        lock.state_mut().apply_surface_change(
+            THIRD,
+            SurfaceChange::Updated {
+                spec: lock_spec(open),
+                recreate: false,
+            },
+        );
+    }
+    let n = lock.state().host().locks.len();
+    let ok = lock
+        .dispatch_until(WAIT, |s| s.host().locks[n..].contains(&LockState::Locked))
+        .unwrap();
+    assert!(ok, "reopened, it locks again");
+    assert!(lock.state_mut().unlock(token()));
+}

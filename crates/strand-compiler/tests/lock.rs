@@ -213,3 +213,32 @@ fn a_one_way_open_is_left_alone_by_the_unlock() {
     assert!(!s.inst.lock_shown());
     assert_eq!(s.locked(), Value::Bool(true));
 }
+
+/// A lock mounted again by a reload after the unlock, with its one-way
+/// `open` still true, is not a new request: the surface manager does not
+/// lock again until `open` goes false and true (`session_lock.rs`), so
+/// `lock_shown` stays false and later lock edits are not held back for
+/// an unlock that never comes. Closing and opening it is a new request.
+#[test]
+fn a_lock_remounted_open_after_the_unlock_is_not_shown() {
+    let src = |t: &str| {
+        format!("export state locked = true\nlock {{\n  open: locked\n  text \"{t}\"\n}}\n")
+    };
+    let mut s = boot(&src("locked"));
+    s.report(SessionLock::Locked);
+    s.report(SessionLock::Unlocked);
+    assert!(!s.inst.lock_shown());
+    assert!(!s.reload(&src("edited")), "lands: not shown");
+    assert!(s.scene.texts().contains(&"edited".to_string()));
+    assert_eq!(s.open(), Some(&PropValue::Bool(true)));
+    assert!(!s.inst.lock_shown(), "a remount is not a new request");
+    assert!(!s.reload(&src("edited again")), "the next edit lands too");
+    assert!(s.scene.texts().contains(&"edited again".to_string()));
+
+    s.inst.set("shell.locked", Value::Bool(false)).unwrap();
+    s.flush();
+    s.inst.set("shell.locked", Value::Bool(true)).unwrap();
+    s.flush();
+    assert!(s.inst.lock_shown(), "closed and opened: a new request");
+    assert!(s.reload(&src("third")), "and a lock edit waits again");
+}

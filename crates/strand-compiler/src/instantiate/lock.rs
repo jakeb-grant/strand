@@ -101,8 +101,11 @@ impl LockTrack {
         (PropValue::Bool(true), notice)
     }
 
-    /// The lock's `open` turned true: a new request, which the next
-    /// report is about.
+    /// The lock's `open` turned from false to true: a new request,
+    /// which the next report is about. A lock mounted open (a reload
+    /// remounting it) is not one: after an unlock or a refusal the
+    /// surface manager asks again only once `open` was false, and so
+    /// does this.
     pub(crate) fn opened(&self) {
         if self.phase.get() == Phase::Ended {
             self.phase.set(Phase::Unreported);
@@ -142,7 +145,7 @@ impl super::Ctx {
         }
     }
 
-    /// A `lock` was shown (its `open` turned true).
+    /// A mounted `lock`'s `open` turned from false to true.
     pub(crate) fn lock_opened(&self) {
         if let Some(track) = self.lock.borrow().as_ref() {
             track.opened();

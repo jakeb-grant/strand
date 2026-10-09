@@ -1287,7 +1287,9 @@ impl Ctx {
             if prev == Some(is_open) {
                 return;
             }
-            if is_lock && is_open {
+            // A lock's new request is its `open` going false to true; a
+            // mount that starts open (a reload) is not one.
+            if is_lock && is_open && prev == Some(false) {
                 me.lock_opened();
             }
             if is_open {
