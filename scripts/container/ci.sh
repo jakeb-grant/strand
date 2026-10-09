@@ -5,12 +5,13 @@
 # `scripts/container/run.sh ci`). Stops at the first failing step and
 # names it. Keep the steps in step with ci.yml.
 #
-# The wall-clock latency gates (the `timing` job: theme_swap_bench and
-# reload_latency) are advisory here: they run and print their numbers,
-# and a step whose only failures are wall-clock gate misses (panics
-# marked "timing gate missed", judged by gate-misses.sh) prints WARN
-# instead of failing the run (decisions.md laptop-open, "laptop timing
-# gates" and "only gate misses are advisory"). GitHub's `timing` job
+# The wall-clock latency gates (the `timing` job: theme_swap_bench,
+# reload_latency and list_scroll_bench) are advisory here: they run and
+# print their numbers, and a step whose only failures are wall-clock
+# gate misses (panics marked "timing gate missed", judged by
+# gate-misses.sh) prints WARN instead of failing the run (decisions.md
+# laptop-open, "laptop timing gates" and "only gate misses are
+# advisory"). GitHub's `timing` job
 # stays the enforcing gate. Any other failure in those steps (a
 # functional assertion, a crash, a build error, a timeout) still fails.
 # The memory budgets, pixel tests and every other step stay strict.
@@ -76,7 +77,7 @@ step() {
 # The lines of a timing test's output that carry its numbers and, on a
 # miss, its verdicts.
 key_numbers() {
-  grep -a -E 'timing gate missed|theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^test .* FAILED$|^test result:' "$1" |
+  grep -a -E 'timing gate missed|theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^list scroll|^test .* FAILED$|^test result:' "$1" |
     sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | head -60
 }
 
@@ -169,6 +170,8 @@ timing_step "cargo test --profile timing -p strand-render --test theme_swap_benc
   cargo test --profile timing -p strand-render --test theme_swap_bench -- --nocapture
 timing_step "reload_latency (--profile timing, STRAND_LATENCY_ROUNDS=50)" 60 \
   env STRAND_LATENCY_ROUNDS=50 cargo test --profile timing -p strand --bin strand reload_latency -- --nocapture --test-threads=1
+timing_step "cargo test --profile timing -p strand-render --test list_scroll_bench" 30 \
+  cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
 
 echo
 if [ "${#warned[@]}" -gt 0 ]; then

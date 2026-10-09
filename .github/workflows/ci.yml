@@ -181,6 +181,11 @@ jobs:
       - run: cargo test --profile timing -p strand --bin strand reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "50"
+      # M4 exit "smooth 2,000-row scrolling": a 2,000-row list's render
+      # frame p95 within 3.5 ms at 60 and 144 Hz on an optimised build,
+      # with logic's window answers 50 ms late and no stalled frame
+      # (decisions.md m4-lists-w1).
+      - run: cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
 
   # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's
   # bar in `strand run` against each live compositor, compared with what
