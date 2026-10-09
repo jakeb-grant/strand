@@ -85,14 +85,21 @@ and the full shell warns above 64 MB and fails above 70 MB
 - Media: remote (https) art is not fetched.
 - Network: `connect()` is awaited inline (bounded: 5 s per settings call,
   25 s for activation); enterprise (802.1X) and WEP networks are refused.
-- Audio: `DeviceRef::Id` does not carry `object.serial`; when `inotify_init`
-  fails the audio thread stays on its 10 s retry timer; `StepVolume` has no
-  caller on the language path; the future `spectrum` element needs PCM
-  samples as well as peaks.
-- Item writes: a stale held write from one handler can land after a newer
-  one from another handler in the same throttle window.
-- `strand-introspect` opens a new D-Bus connection for each 10 s refresh of
-  a `from dbus` check.
+- Audio: `StepVolume` has no caller on the language path; the future
+  `spectrum` element needs PCM samples as well as peaks. Without an
+  inotify instance the audio thread reconnects on its 10 s timer (no other
+  unprivileged signal exists) and makes its socket watch again as soon as
+  inotify gives one.
+- Audio: an item kept past its device leaving is told apart from the
+  device that reused its id by `node.name` (`Write::held`); a device
+  replugged under its freed id with the same node name counts as the same
+  device.
+
+Closed on `laptop/services` (2026-10-08; decisions.md, laptop-services):
+`DeviceRef::Id` carries `object.serial`; the audio thread no longer stays
+on its retry timer when `inotify_init` fails; held item writes follow
+"latest write wins" per item (a strand-core fix); `strand-introspect`
+keeps one D-Bus connection per bus.
 
 ### Open M1 boxes owned by later milestones
 
