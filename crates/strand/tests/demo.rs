@@ -415,13 +415,19 @@ impl Shot {
 
     /// The bar on `output` aligned ([`Shot::misaligned`]), once its text
     /// has drawn: the text is shaped off the frame path, so screenshots
-    /// are taken until it shows, bounded ([`poll::until`]).
+    /// are taken until some text shows on the bar, bounded
+    /// ([`poll::until`]), and the alignment is then checked once on a
+    /// shot a short settle later. Only the arrival of text is waited
+    /// for, never the alignment itself: a layout built for another width
+    /// that a later relayout (a clock tick) corrects still fails.
     fn assert_aligned(sway: &Sway, output: &str, scale: f64) {
-        let shot = poll::until(
-            || Shot::take(sway, output),
-            |s| s.misaligned(output, scale).is_none(),
-        );
-        if let Some(why) = shot.misaligned(output, scale) {
+        let bar_h = (32.0 * scale).round() as usize;
+        let text_shown = |s: &Shot| {
+            s.h > bar_h && s.px(s.w / 2, 1) == [0x1e, 0x1e, 0x2e] && s.lit(0..s.w, bar_h)
+        };
+        poll::until(|| Shot::take(sway, output), text_shown);
+        std::thread::sleep(Duration::from_millis(300));
+        if let Some(why) = Shot::take(sway, output).misaligned(output, scale) {
             panic!("{why}");
         }
     }
@@ -2007,11 +2013,10 @@ fn strand_run_reloads_live_with_state_kept() {
     save(&file, &hello("#208040", "#802020", ""));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["node-removed"]), "{ev}");
-    assert_eq!(
-        poll::until(|| end_ink(&sway), |ink| *ink == before),
-        before,
-        "the removed node's ink stays"
-    );
+    // Removal draws no new text: a fixed settle, then one look, so ink
+    // left until some later repaint fails.
+    settle();
+    assert_eq!(end_ink(&sway), before, "the removed node's ink stays");
 
     // 4. Broken: held back, the last good bar stays; after 250 ms the
     // overlay (a 960 px wide panel) opens.

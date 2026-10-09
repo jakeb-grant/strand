@@ -20,8 +20,9 @@ for the reasoning behind each item below.
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
   is the latency reference (decisions.md laptop-open).
-- Remote branches: only `origin/main`. The `wave4/*` and `laptop/*`
-  branches were all deleted on 2026-10-09.
+- Remote branches: `origin/main`, and `origin/laptop/cleanup` (this
+  update) until it merges, when it is deleted too. The other `wave4/*`
+  and `laptop/*` branches were all deleted on 2026-10-09.
 - Merged since `b87865a` (decisions.md laptop-open, laptop-resilience,
   laptop-media, laptop-labwc):
   - `win.maximize()` and `win.fullscreen()`, toggles beside
@@ -222,8 +223,9 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
   `reload_latency` warned). CI's run 37921942812 covers every job.
 - [x] Open decisions 1–4 answered and recorded in `docs/decisions.md`
   (laptop-decisions); the audio read again and COSMIC too (laptop-open).
-- [x] Remote branches `wave4/*` and `laptop/*` deleted (2026-10-09; only
-  `origin/main` remains).
+- [x] Remote branches `wave4/*` and `laptop/*` deleted (2026-10-09;
+  `origin/main` remains, with `laptop/cleanup` until it merges, then
+  deleted as well).
 - [x] README status, `docs/features.md` and `docs/m3-report.md` agree
   with the code (audited 2026-10-09 on branch `laptop/cleanup`). Every
   `file.rs::name` citation in the four docs (382) and every backticked
