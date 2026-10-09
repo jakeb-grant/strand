@@ -47,7 +47,7 @@ scripts/container/run.sh ci        # every step of CI's check jobs, in order
 CI_JOB=timing scripts/container/run.sh ci   # one job: lint, test, budgets,
                                              # acceptance or timing
 scripts/container/run.sh shell     # a bash in the image
-scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland
+scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland, labwc
 ```
 
 - `run.sh` uses `scripts/container/Dockerfile`: Ubuntu 24.04 with exactly
@@ -81,9 +81,13 @@ scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland
   containers and named volumes are fine; host Python only via uv/uvx.
 - Never touch the live Hyprland session (`WAYLAND_DISPLAY=wayland-1`):
   read-only `hyprctl -j` queries at most, no test clients on it, no
-  compositor on the host. Pass only `/dev/dri/renderD128` into containers,
-  never `/dev/dri/card*`.
-- Run one full-workspace test run at a time. Delete your worktree's
+  compositor on the host. Pass only `/dev/dri/renderD128` into containers
+  (and `/dev/kvm` into the lock VM container only), never `/dev/dri/card*`.
+- Lock-screen code runs only inside the lock VM
+  (`scripts/container/lockvm.sh`), never against a host or container
+  compositor outside it.
+- Run one full-workspace test run at a time, and at most three worktrees
+  build at once. Delete your worktree's
   `target/` when your task ends; the cargo registry stays in the
   `strand-cargo-registry` and `strand-cargo-git` volumes.
 - Commit on your own branch and push only that branch after each commit;
