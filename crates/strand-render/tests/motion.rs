@@ -2126,3 +2126,355 @@ fn an_exit_seen_on_one_of_two_outputs_plays_there() {
     assert!(reds[0] > 100, "{reds:?}");
     assert!(reds[..4].windows(2).all(|w| w[1] < w[0]), "{reds:?}");
 }
+
+/// A list of `n` 30 px red-edged rows in a 200 px viewport.
+fn scroll_stage(n: usize, row_props: Vec<(Prop, PropValue)>) -> (Stage, NodeId, Vec<NodeId>) {
+    let mut lst = None;
+    let mut rows = Vec::new();
+    let st = Stage::new(120, 200, |b, root| {
+        let l = b.node(NodeKind::List, Some(root), vec![(Prop::Height, num(200.0))]);
+        lst = Some(l);
+        for _ in 0..n {
+            let mut props = vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))];
+            props.extend(row_props.iter().cloned());
+            rows.push(b.node(NodeKind::Box, Some(l), props));
+        }
+    });
+    (st, lst.unwrap(), rows)
+}
+
+fn wheel(dy: f32, time: u32) -> strand_render::ScrollInput {
+    strand_render::ScrollInput {
+        dy,
+        kind: strand_render::ScrollKind::Wheel,
+        time,
+    }
+}
+
+fn touch(dy: f32, time: u32) -> strand_render::ScrollInput {
+    strand_render::ScrollInput {
+        dy,
+        kind: strand_render::ScrollKind::Touch,
+        time,
+    }
+}
+
+/// Wheel steps spring the offset (`$motion.spatial`): the first frame
+/// after a step is on its way, every frame moves further without
+/// overshooting far, and it settles at the step's sum. A second step in
+/// flight retargets from where it is, with its velocity. Rows move by a
+/// paint offset: no layout pass runs while the view stays within the
+/// rows laid out, and the frames stop once it lands.
+#[test]
+fn wheel_steps_spring_the_offset() {
+    let (mut st, lst, _) = scroll_stage(200, vec![]);
+    let at = LogicalPoint::new(60.0, 100.0);
+    let passes = st.r.layout_passes();
+    assert_eq!(st.r.scroll_input(S, at, wheel(45.0, 0)), Some(lst));
+    assert!(st.r.wants_frame(S));
+    let mut seen = Vec::new();
+    for k in 1..4 {
+        st.paint(frame(k));
+        seen.push(st.r.scroll_offset(lst).unwrap());
+    }
+    assert!(seen[0] > 0.0 && seen[0] < 45.0, "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[1] > w[0]), "{seen:?}");
+    // A second step mid-flight: the target is 90, and the offset keeps
+    // going from where it was.
+    st.r.scroll_input(S, at, wheel(45.0, 50));
+    st.paint(frame(4));
+    let now = st.r.scroll_offset(lst).unwrap();
+    assert!(now > seen[2] && now < 90.0, "{now} after {seen:?}");
+    let mut k = 5;
+    let mut top = now;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        top = top.max(st.r.scroll_offset(lst).unwrap());
+        k += 1;
+        assert!(k < 200, "never settled");
+    }
+    assert_eq!(st.r.scroll_offset(lst), Some(90.0));
+    // `$motion.spatial` is damped 0.9: it may overshoot a hair.
+    assert!(top < 92.0, "overshot to {top}");
+    assert_eq!(st.r.layout_passes(), passes, "scrolling laid nothing out");
+    // The rows are drawn where the offset puts them: row 3 (90..120)
+    // at the top.
+    assert_eq!(st.red_top(60), Some(0));
+    let boxes = st.r.boxes(S).unwrap();
+    let row3 = st.r.tree().get(lst).unwrap().children[3];
+    assert_eq!(boxes.rects[&row3].y, 0.0);
+
+    // Under `reduced_motion` a step lands at once.
+    st.r.set_reduced_motion(true);
+    st.r.scroll_input(S, at, wheel(30.0, 400));
+    st.paint(frame(k));
+    assert_eq!(st.r.scroll_offset(lst), Some(120.0));
+    assert!(!st.r.wants_frame(S));
+}
+
+/// A touchpad moves the offset with the fingers, and lifting them while
+/// moving flings it: the velocity decays (`FLING_DECAY`), each frame
+/// moves less than the one before, and it stops by itself, about
+/// `velocity × FLING_DECAY` further on. A list scrolled past what it laid
+/// out lays out only the rows that came into view, each once.
+#[test]
+fn a_touchpad_fling_decays_and_stops() {
+    let (mut st, lst, _) = scroll_stage(400, vec![]);
+    let at = LogicalPoint::new(60.0, 100.0);
+    // 10 px every 10 ms: 1,000 px/s.
+    for i in 0..4 {
+        st.r.scroll_input(S, at, touch(10.0, 1000 + i * 10));
+    }
+    st.paint(frame(1));
+    assert_eq!(st.r.scroll_offset(lst), Some(40.0), "follows the fingers");
+    let lift = strand_render::ScrollInput {
+        dy: 0.0,
+        kind: strand_render::ScrollKind::Lift,
+        time: 1030,
+    };
+    assert_eq!(st.r.scroll_input(S, at, lift), Some(lst));
+    let mut offs = vec![40.0];
+    let mut k = 2;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        offs.push(st.r.scroll_offset(lst).unwrap());
+        k += 1;
+        assert!(k < 400, "the fling never stopped");
+    }
+    let steps: Vec<f32> = offs.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(steps[1] > 0.0, "{offs:?}");
+    assert!(
+        steps.windows(2).all(|w| w[1] <= w[0] + 0.01),
+        "each frame moves less: {steps:?}"
+    );
+    let travel = offs.last().unwrap() - 40.0;
+    let expect = 1000.0 * strand_render::FLING_DECAY;
+    assert!(
+        (travel - expect).abs() < 0.15 * expect,
+        "flung {travel} px, about {expect} expected"
+    );
+    // Rows came into view and were laid out once each.
+    let rows_in = st.r.scroll_rows_laid_out();
+    assert!(rows_in > 0 && rows_in <= 400 / 30 + 12, "{rows_in}");
+    // A lift with the fingers at rest flings nothing.
+    st.r.scroll_input(S, at, touch(5.0, 5000));
+    let still = strand_render::ScrollInput { time: 5200, ..lift };
+    assert_eq!(st.r.scroll_input(S, at, still), None);
+}
+
+/// Rows a list's window mounts and unmounts as it scrolls (`window:
+/// true`) play no `enter` or `exit` pose, and their siblings no FLIP: a
+/// row mounted that way is drawn at rest on its first frame, one
+/// unmounted that way leaves at once with no ghost, and the rows around
+/// them stay where their global indexes put them. A row the data adds
+/// (`window: false`) still enters.
+#[test]
+fn window_mounts_do_not_play_poses() {
+    let enter = (
+        Prop::Enter,
+        pose(vec![(Prop::Opacity, num(0.0)), (Prop::X, num(60.0))]),
+    );
+    let (mut st, lst, rows) = scroll_stage(4, vec![enter.clone()]);
+    // A view of four rows, so the mounted rows fill it once it has
+    // shrunk (while it shrinks from 200 px, frames show the unmounted
+    // rows below: a gap, counted before the window moves).
+    let mut d = SceneDiff::new();
+    d.set(lst, Prop::RowCount, num(100.0))
+        .set(lst, Prop::RowFirst, num(0.0))
+        .set(lst, Prop::Height, num(120.0));
+    st.apply(d);
+    st.settle(1);
+    let gaps = st.r.list_frames().gaps;
+    // The window moves down a row: row 0 goes, a row comes in below.
+    let new = NodeId::new(500, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: rows[0],
+        window: true,
+    });
+    d.push(SceneOp::Create {
+        id: new,
+        kind: NodeKind::Box,
+        parent: Some(lst),
+        index: 3,
+        window: true,
+    });
+    d.set(new, Prop::Height, num(30.0))
+        .set(new, Prop::Bg, color("#ff0000"))
+        .set(new, Prop::Enter, enter.1.clone())
+        .set(lst, Prop::RowFirst, num(1.0));
+    st.apply(d);
+    assert!(st.r.tree().get(rows[0]).is_none(), "no ghost");
+    st.paint(frame(30));
+    // At rest on its first frame (its enter pose would draw it clear and
+    // 60 px to the right), and the rows sit 30 px apart from global row
+    // 1 (the view, still asked for the top, shows the mounted rows'
+    // first: row 1 at the top).
+    let r1 = st.rect(rows[1]);
+    let rn = st.rect(new);
+    assert_eq!((r1.y, rn.y), (0.0, 90.0), "{r1:?} {rn:?}");
+    assert_eq!(st.red_from(100), Some(0));
+    assert_eq!(st.buf.px(10, 100), [0, 0, 255, 255]);
+    assert_eq!(st.red_from(10), Some(0), "row 1 did not glide");
+    assert_eq!(st.r.list_frames().gaps, gaps);
+    // A row the data inserts enters.
+    let data = NodeId::new(501, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Create {
+        id: data,
+        kind: NodeKind::Box,
+        parent: Some(lst),
+        index: 1,
+        window: false,
+    });
+    d.set(data, Prop::Height, num(30.0))
+        .set(data, Prop::Bg, color("#ff0000"))
+        .set(data, Prop::Enter, enter.1)
+        .set(lst, Prop::RowCount, num(101.0));
+    st.apply(d);
+    st.paint(frame(31));
+    assert!(st.r.wants_frame(S), "a data row enters");
+}
+
+/// A run of columns, first to last.
+type Span = Option<(u32, u32)>;
+
+/// The columns of row `y` showing red (`r`) and green (`g`) at most a
+/// little darkened (a page sliding is drawn at full opacity).
+fn spans(st: &Stage, y: u32) -> (Span, Span) {
+    let mut red: Span = None;
+    let mut green: Span = None;
+    for x in 0..st.buf.size.w {
+        let p = st.buf.px(x, y);
+        let grow = |s: &mut Span| {
+            *s = Some(s.map_or((x, x), |(a, _)| (a, x)));
+        };
+        if p[2] > 200 && p[1] < 60 {
+            grow(&mut red);
+        }
+        if p[1] > 200 && p[2] < 60 {
+            grow(&mut green);
+        }
+    }
+    (red, green)
+}
+
+/// `pages` slides between pages by their source order (`row_first`):
+/// going forward the new page comes in from the right while the old one
+/// leaves to the left, both moving every frame, and `pages` clips them;
+/// going back mirrors it. The pairing is readable while the old page
+/// plays out (`page_swap`). A page with its own `enter` plays that, and
+/// under `reduced_motion` the swap snaps.
+#[test]
+fn pages_slide_by_source_order() {
+    let red =
+        |b: &mut Builder, p| b.node(NodeKind::Page, Some(p), vec![(Prop::Bg, color("#ff0000"))]);
+    let mut pages = None;
+    let mut a = None;
+    let mut st = Stage::new(200, 60, |b, root| {
+        let p = b.node(
+            NodeKind::Pages,
+            Some(root),
+            vec![
+                (Prop::Width, num(120.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::RowFirst, num(10.0)),
+            ],
+        );
+        pages = Some(p);
+        a = Some(red(b, p));
+    });
+    let (pages, a) = (pages.unwrap(), a.unwrap());
+    assert_eq!(spans(&st, 30), (Some((0, 119)), None));
+    let swap = |st: &mut Stage, out: NodeId, inn: NodeId, bg: &str, first: f32, enter: bool| {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: out,
+            window: false,
+        });
+        d.create(inn, NodeKind::Page, Some(pages), 0)
+            .set(inn, Prop::Bg, color(bg));
+        if enter {
+            d.set(inn, Prop::Enter, PropValue::Keyword("fade".into()));
+        }
+        d.set(pages, Prop::RowFirst, num(first));
+        st.apply(d);
+    };
+
+    // Forward: b (green) comes in from the right, a (red) leaves left.
+    let b = NodeId::new(500, 0);
+    swap(&mut st, a, b, "#00ff00", 20.0, false);
+    assert_eq!(
+        st.r.page_swap(pages),
+        Some(strand_render::PageSwap {
+            entering: Some(b),
+            leaving: Some(a),
+            forward: true
+        })
+    );
+    let mut k = 1;
+    let mut last_green = 120;
+    let mut frames = 0;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        k += 1;
+        let (r, g) = spans(&st, 30);
+        let gx = g.map_or(120, |(x0, x1)| {
+            assert_eq!(x1, 119, "the new page's right edge is clipped");
+            x0
+        });
+        if let Some((x0, x1)) = r {
+            assert_eq!(x0, 0, "the old page leaves to the left");
+            assert!(x1 < gx, "{r:?} {g:?}");
+        }
+        for x in 120..200 {
+            assert_eq!(st.buf.px(x, 30)[1], st.buf.px(199, 30)[1], "clipped at {x}");
+        }
+        assert!(gx <= last_green, "moves left: {gx} after {last_green}");
+        if frames == 0 {
+            assert!(gx > 40 && gx < 120, "on its way in: {gx}");
+        }
+        last_green = gx;
+        frames += 1;
+        assert!(k < 200, "never settled");
+    }
+    assert!(frames >= 5, "{frames} frames");
+    assert_eq!(spans(&st, 30), (None, Some((0, 119))));
+    assert!(st.r.tree().get(a).is_none(), "the old page is gone");
+    assert_eq!(st.r.page_swap(pages), None);
+
+    // Back: a2 (red) comes in from the left, b leaves to the right.
+    let a2 = NodeId::new(501, 0);
+    swap(&mut st, b, a2, "#ff0000", 10.0, false);
+    st.paint(frame(k));
+    k += 1;
+    let (r, g) = spans(&st, 30);
+    let (r, g) = (r.unwrap(), g.unwrap());
+    assert_eq!((r.0, g.1), (0, 119), "{r:?} {g:?}");
+    assert!(r.1 < 80 && g.0 > r.1, "{r:?} {g:?}");
+    k = st.settle(k);
+    assert_eq!(spans(&st, 30), (Some((0, 119)), None));
+
+    // A page with its own enter plays it (a fade: in place, never to the
+    // side), and the old page with no pose of its own still slides out.
+    let c = NodeId::new(502, 0);
+    swap(&mut st, a2, c, "#00ff00", 30.0, true);
+    st.paint(frame(k));
+    k += 1;
+    let (r, g) = spans(&st, 30);
+    assert!(g.is_none(), "fading in, not yet bright: {g:?}");
+    let r = r.unwrap();
+    assert!(r.0 == 0 && r.1 < 119, "a2 slides out: {r:?}");
+    // Behind it, c shows faintly (a sliding page is drawn whole).
+    let p = st.buf.px(119, 30);
+    assert!(p[1] > 0 && p[1] < 200 && p[2] < 60, "c fades in: {p:?}");
+    k = st.settle(k);
+
+    // Under reduced_motion the swap snaps.
+    st.r.set_reduced_motion(true);
+    let d2 = NodeId::new(503, 0);
+    swap(&mut st, c, d2, "#ff0000", 40.0, false);
+    st.paint(frame(k));
+    assert_eq!(spans(&st, 30), (Some((0, 119)), None));
+    assert!(!st.r.wants_frame(S));
+}

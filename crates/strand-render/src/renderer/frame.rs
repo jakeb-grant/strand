@@ -235,9 +235,11 @@ impl Renderer {
                 return Damage::new();
             }
         }
+        // Scrolls move to this frame's offsets (lists.rs).
+        self.advance_scrolls(surface, target.time);
         // Springs sample this frame's time; a scene flattened earlier
         // (by `update`) is stale while anything moves.
-        let swapping = self.swap_moving(surface);
+        let swapping = self.swap_moving(surface) || self.scrolling(surface);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
@@ -281,7 +283,11 @@ impl Renderer {
         self.take_snapshot(surface, target);
         let fade = self.fade_frame(surface, target.time, target.size);
         // A cached scene was drawn at rest.
-        let animating = fresh && (self.anim.active() || self.swap_moving(surface));
+        let animating =
+            fresh && (self.anim.active() || self.swap_moving(surface) || self.scrolling(surface));
+        // Every painted frame, cached or not, is checked for a list
+        // showing a gap or held at its mounted rows.
+        self.check_list_gaps(surface);
         if fresh {
             // Exits under this surface it did not draw (a row scrolled
             // out of view) end: nobody sees them, unless another surface

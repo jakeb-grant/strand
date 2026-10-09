@@ -158,11 +158,13 @@ pub mod keyboard {
     }
 
     /// The named keys the keymap has, with their evdev codes.
-    const NAMED: [(&str, u32); 5] = [
+    const NAMED: [(&str, u32); 7] = [
         ("Escape", 1),
         ("BackSpace", 14),
         ("Return", 28),
+        ("Home", 102),
         ("Up", 103),
+        ("End", 107),
         ("Down", 108),
     ];
 
@@ -218,7 +220,7 @@ pub mod keyboard {
         }
 
         /// Presses and releases a named key (`Return`, `Escape`, `Up`,
-        /// `Down`, `BackSpace`).
+        /// `Down`, `Home`, `End`, `BackSpace`).
         pub fn press(&mut self, name: &str) {
             let k = NAMED
                 .iter()
@@ -231,6 +233,17 @@ pub mod keyboard {
             }
             self.queue.roundtrip(&mut Client).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+
+        /// Presses and releases a named key with Control held (the
+        /// keymap's real `Control` modifier, sent as the modifier state).
+        pub fn press_ctrl(&mut self, name: &str) {
+            const CONTROL: u32 = 1 << 2;
+            self.keyboard.modifiers(CONTROL, 0, 0, 0);
+            self.queue.roundtrip(&mut Client).unwrap();
+            self.press(name);
+            self.keyboard.modifiers(0, 0, 0, 0);
+            self.queue.roundtrip(&mut Client).unwrap();
         }
 
         /// Types `text` (lowercase letters), each key pressed and

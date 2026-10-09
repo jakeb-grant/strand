@@ -301,7 +301,22 @@ impl Host {
         }
     }
 
-    //// Hands laid-out sizes that changed to logic (`self.width`).
+    /// Asks logic for the rows of virtualised lists that scrolled past
+    /// their mounted rows (`ToLogic::ListWindow`).
+    pub(crate) fn forward_list_windows(&mut self) {
+        let Some(f) = &self.logic else {
+            return;
+        };
+        for (list, rows) in self.renderer.take_list_windows() {
+            f.send(ToLogic::ListWindow {
+                list,
+                first: rows.start,
+                count: rows.end.saturating_sub(rows.start),
+            });
+        }
+    }
+
+    /// Hands laid-out sizes that changed to logic (`self.width`).
     pub(crate) fn forward_facts(&mut self) {
         let facts = self.renderer.take_layout_facts();
         if !facts.is_empty()
@@ -319,6 +334,9 @@ impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
         self.forward_facts();
+        // Virtualised lists scrolled past their mounted rows ask logic
+        // for the rows they show.
+        self.forward_list_windows();
         self.wake_if_changed();
         #[cfg(test)]
         if let Some(p) = &self.probe {
@@ -335,8 +353,14 @@ impl Painter for Host {
                 .collect();
             // One line per painted frame, parsed by scripts/m0-exit.sh;
             // strand-surface commits it unless `frame_dropped` follows.
+            // `gaps=`: frames so far that showed a list's unmounted rows
+            // (always 0; the M4 exit's per-frame check); `stalls=`:
+            // frames so far that held a list's view at its mounted rows
+            // while the scroll went on; `top=`: the first row (global
+            // index) a list showed in the last such frame.
+            let lists = self.renderer.list_frames();
             eprintln!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={}",
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={}",
                 surface.0,
                 target.size.w,
                 target.size.h,
@@ -344,6 +368,9 @@ impl Painter for Host {
                 target.age,
                 damage.area(),
                 rects.join(","),
+                lists.gaps,
+                lists.stalls,
+                lists.top_row,
             );
         }
         damage
@@ -441,12 +468,27 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
+        // Surfaces already wanting a frame (animating) get it anyway.
+        let idle: Vec<SurfaceId> = self.logic.as_ref().map_or_else(Vec::new, |f| {
+            f.surfaces
+                .keys()
+                .copied()
+                .filter(|s| !self.renderer.wants_frame(*s))
+                .collect()
+        });
         if let Some(f) = &mut self.logic {
             f.input(event, &mut self.renderer);
         }
         // A scroll lays out again: its sizes go with it.
         self.forward_facts();
         self.wake_if_changed();
+        // Input that moved something on an idle surface with no logic
+        // diff to follow (a key scrolling a list to the row it selects)
+        // still needs a frame: only then is the loop woken.
+        let woke = idle.iter().any(|s| self.renderer.wants_frame(*s));
+        if woke && let Some(p) = &self.wake {
+            p.ping();
+        }
     }
 
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
@@ -655,6 +697,101 @@ mod tests {
                 vec!["DP-2".to_string(), "DP-1".to_string()],
             ]
         );
+    }
+
+    /// Input wakes the main loop only when it leaves an idle surface
+    /// wanting a frame (a wheel step on a still list): while the surface
+    /// already wants frames (the step's spring in flight), more input
+    /// does not ping again.
+    #[test]
+    fn input_wakes_the_loop_only_for_an_idle_surface() {
+        use std::time::Duration;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, _rx) = calloop::channel::channel();
+        let mut el = calloop::EventLoop::<u32>::try_new().unwrap();
+        let (ping, source) = calloop::ping::make_ping().unwrap();
+        el.handle()
+            .insert_source(source, |_, _, n: &mut u32| *n += 1)
+            .unwrap();
+        let mut pings = || {
+            let mut n = 0;
+            el.dispatch(Some(Duration::ZERO), &mut n).unwrap();
+            n
+        };
+        let mut host = Host::new(renderer, false).forwarding(tx).waking(ping);
+        let (panel, list) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let num = strand_scene::PropValue::Number;
+        let mut d = SceneDiff::new();
+        d.create(panel, strand_scene::NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, num(100.0))
+            .set(panel, Prop::Height, num(100.0))
+            .create(list, strand_scene::NodeKind::List, Some(panel), 0)
+            .set(list, Prop::Height, num(100.0));
+        for i in 0..40 {
+            let row = NodeId::new(10 + i, 0);
+            d.create(row, strand_scene::NodeKind::Box, Some(list), i)
+                .set(row, Prop::Height, num(20.0));
+        }
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let mut px = vec![0u8; 100 * 100 * 4];
+        let mut paint = |host: &mut Host, ms: u64| {
+            let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+            let mut t = t.at(Duration::from_millis(ms));
+            host.paint(s, &mut t);
+        };
+        paint(&mut host, 1000);
+        let at = strand_scene::LogicalPoint::new(50.0, 50.0);
+        host.input(&InputEvent::PointerEnter {
+            surface: s,
+            position: at,
+        });
+        // The surface manager has synced the surface (its changes would
+        // ping on their own).
+        host.renderer.take_surface_changes();
+        let _ = pings();
+        assert!(!host.renderer.wants_frame(s));
+        let wheel = InputEvent::PointerAxis {
+            surface: s,
+            position: at,
+            horizontal: AxisDelta::default(),
+            vertical: AxisDelta {
+                pixels: 15.0,
+                value120: 120,
+                stop: false,
+            },
+            source: None,
+            time: 1010,
+        };
+        // A wheel step on the still list: a ping.
+        host.input(&wheel);
+        assert!(host.renderer.wants_frame(s));
+        assert_eq!(pings(), 1);
+        // Another while it springs, and pointer motion: none.
+        host.input(&wheel);
+        host.input(&InputEvent::PointerMotion {
+            surface: s,
+            position: at,
+            time: 1020,
+        });
+        assert_eq!(pings(), 0);
+        // Settled, a step pings again.
+        let mut ms = 1016;
+        while host.renderer.wants_frame(s) {
+            paint(&mut host, ms);
+            ms += 16;
+            assert!(ms < 10_000, "the wheel never settled");
+        }
+        host.renderer.take_surface_changes();
+        let _ = pings();
+        host.input(&wheel);
+        assert_eq!(pings(), 1);
     }
 
     /// A surface sized to its content resizes whenever its text changes

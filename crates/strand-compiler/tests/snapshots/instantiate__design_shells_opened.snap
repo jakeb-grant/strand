@@ -134,7 +134,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
 panel anchor=center layer=overlay keyboard=exclusive screens=focused open=true name="Launcher" two_way=[open] enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
   col width=600 pad=$space.3 gap=$space.2 bg=$surface.alpha(0.82) radius=$radius.xl shadow=$elevation.xl blur=32 clip=true
     input two_way=[text] text="" font=$font.title placeholder="Search apps" focus=true nav=node 53
-    list max_height=420
+    list max_height=420 row_count=3 row_first=0
       row pad=$space.2 gap=$space.3 align=center radius=$radius.md
         image size=32 source="firefox"
         col grow=1

@@ -165,7 +165,7 @@ impl Renderer {
                 self.anim.begin(time, prev, false);
             }
             let f = self.flatten_surface(id);
-            let animating = self.anim.active() || self.swap_moving(id);
+            let animating = self.anim.active() || self.swap_moving(id) || self.scrolling(id);
             // Text with a request in flight and no layout for this
             // surface's scale and width yet. A stand-in from another scale
             // or width does not count: a first frame drawn with one would

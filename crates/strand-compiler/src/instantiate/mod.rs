@@ -47,6 +47,7 @@ pub use convert::{
 pub use emit::PropOut;
 pub use lock::{IGNORED_CLOSE, SessionLock};
 pub use mirror::{SceneMirror, show, show_expr};
+pub use mount::{DEFAULT_LIST_WINDOW, MAX_LIST_WINDOW};
 
 use crate::hir::{DefId, DefKind};
 use crate::lower::{Node, Program};
@@ -242,6 +243,11 @@ pub(crate) struct Ctx {
     /// The session lock as reported (`lock.rs`), carried across reloads;
     /// `None` only before the boot mounts.
     pub lock: RefCell<Option<Rc<lock::LockTrack>>>,
+    /// (M4) Mounted virtualised lists, by `list` node: what moves each
+    /// one's window ([`Instance::set_list_window`]).
+    pub list_windows: RefCell<HashMap<NodeId, Rc<mount::SetWindow>>>,
+    /// (M4) The order of each `pages`' pages (directional transitions).
+    pub pages: RefCell<mount::PagesOrder>,
 }
 
 impl VmHooks for Ctx {
@@ -533,6 +539,8 @@ impl Ctx {
             handover: RefCell::default(),
             outlined: RefCell::default(),
             lock: RefCell::default(),
+            list_windows: RefCell::default(),
+            pages: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -1425,6 +1433,23 @@ impl Instance {
                 NodeFlag::Selected => s.selected,
             };
             let _ = sig.set(&self.rt, on);
+        }
+    }
+
+    /// (M4) Render's window for the virtualised `list` node `list`
+    /// (`ToLogic::ListWindow`): the `count` rows from global index
+    /// `first` are mounted, by key, and the rest unmounted; the ops are
+    /// marked `window` and `row_first` follows. A window past the end
+    /// shows the list's last rows. Returns false when `list` is not a
+    /// mounted virtualised list.
+    pub fn set_list_window(&self, list: NodeId, first: u32, count: u32) -> bool {
+        let set = self.ctx.list_windows.borrow().get(&list).cloned();
+        match set {
+            Some(set) => {
+                set(&self.rt, first as usize, count as usize);
+                true
+            }
+            None => false,
         }
     }
 

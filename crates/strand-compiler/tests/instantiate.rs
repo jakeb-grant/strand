@@ -2094,13 +2094,17 @@ fn one_item_change_reruns_one_item() {
     assert!(shell.scene.find_text("changed").is_some());
 }
 
-/// A 2,000-row `list` mounts every row on the logic side: render lays
-/// out only the rows in view, and mounting stays eager until M4
-/// (decisions.md, wave3-pixels). The cost that keeps that viable: a
-/// mount of 2,000 rows with a `when hover` each, and one changed row
-/// re-running only its own bindings and sending one op.
+/// A 2,000-row `list` whose direct child is a `for` mounts only its
+/// window (M4: virtualised lists). At boot that is the first
+/// `DEFAULT_LIST_WINDOW` rows; `set_list_window` (render's
+/// `ToLogic::ListWindow`) mounts and unmounts rows by key, marking those
+/// ops `window` so render plays no pose or FLIP, while a row that stays
+/// in the window keeps its node; `row_count` and `row_first` say where
+/// the mounted rows are. A change to a mounted row is its one op and
+/// re-runs only its bindings; a change outside the window sends no op.
 #[test]
-fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
+fn a_2000_row_list_mounts_only_its_window() {
+    use strand_compiler::instantiate::DEFAULT_LIST_WINDOW;
     let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
     for i in 0..2000 {
         src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
@@ -2112,29 +2116,345 @@ fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
     let mut shell = boot(&[("t.strand", &src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
-    let mounted = t.elapsed();
-    assert_eq!(shell.scene.of_kind(NodeKind::Row).len(), 2000);
-    eprintln!("mounted 2,000 list rows in {mounted:?}");
-    let before = shell.rt.stats().computations;
+    eprintln!("mounted a 2,000-row list in {:?}", t.elapsed());
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    let rows = |shell: &Shell| shell.scene.children(list).to_vec();
+    let num = |shell: &Shell, p: Prop| match shell.scene.prop(list, p) {
+        Some(PropValue::Number(n)) => *n,
+        v => panic!("{p:?}: {v:?}"),
+    };
+    let labels = |shell: &Shell| -> Vec<String> {
+        rows(shell)
+            .iter()
+            .map(
+                |r| match shell.scene.prop(shell.scene.children(*r)[0], Prop::Text) {
+                    Some(PropValue::Text(t)) => t.clone(),
+                    v => panic!("{v:?}"),
+                },
+            )
+            .collect()
+    };
+    assert_eq!(
+        shell.scene.of_kind(NodeKind::Row).len(),
+        DEFAULT_LIST_WINDOW
+    );
+    assert_eq!(num(&shell, Prop::RowCount), 2000.0);
+    assert_eq!(num(&shell, Prop::RowFirst), 0.0);
+    // Mounted with the list, its first rows are not the window's doing.
+    assert!(shell.boot.iter().all(|op| !matches!(
+        op,
+        SceneOp::Create { window: true, .. } | SceneOp::Remove { window: true, .. }
+    )));
+    assert_eq!(labels(&shell)[0], "r0");
+
+    // Render asks for rows 100..120: by key, with no poses.
+    assert!(shell.inst.set_list_window(list, 100, 20));
+    let u = shell.flush();
+    let (mut created, mut removed) = (0, 0);
+    for op in &u.diff.ops {
+        match op {
+            SceneOp::Create { parent, window, .. } if *parent == Some(list) => {
+                assert!(window, "{op:?}");
+                created += 1;
+            }
+            SceneOp::Remove { window, .. } => {
+                assert!(window, "{op:?}");
+                removed += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((created, removed), (20, DEFAULT_LIST_WINDOW));
+    assert_eq!(num(&shell, Prop::RowFirst), 100.0);
+    assert_eq!(
+        labels(&shell),
+        (100..120).map(|i| format!("r{i}")).collect::<Vec<_>>()
+    );
+
+    // Overlapping: the ten rows that stay keep their nodes.
+    let kept = rows(&shell)[10..].to_vec();
+    shell.inst.set_list_window(list, 110, 20);
+    let u = shell.flush();
+    let creates = u
+        .diff
+        .ops
+        .iter()
+        .filter(|op| matches!(op, SceneOp::Create { parent, .. } if *parent == Some(list)))
+        .count();
+    assert_eq!(creates, 10);
+    assert_eq!(rows(&shell)[..10], kept[..]);
+    assert_eq!(labels(&shell)[0], "r110");
+
+    // The same window again: nothing.
+    shell.inst.set_list_window(list, 110, 20);
+    assert!(shell.flush().diff.ops.is_empty());
+
+    // A row in the window changes: one op, its own bindings only. One
+    // outside it: none.
     let row = shell.inst.vm().types().find_record("Row").expect("Row");
-    let rows: Vec<Value> = (0..2000)
-        .map(|i| {
-            let label = if i == 1500 {
-                "changed".to_string()
-            } else {
-                format!("r{i}")
-            };
-            Value::record(row, vec![Value::int(i), Value::text(label)])
-        })
-        .collect();
-    shell
-        .inst
-        .set_value("t", "rows", Value::list(rows))
-        .unwrap();
+    let all = |changed: &[usize]| {
+        Value::list(
+            (0..2000)
+                .map(|i| {
+                    let label = if changed.contains(&i) {
+                        "changed".to_string()
+                    } else {
+                        format!("r{i}")
+                    };
+                    Value::record(row, vec![Value::int(i as i64), Value::text(label)])
+                })
+                .collect(),
+        )
+    };
+    let before = shell.rt.stats().computations;
+    shell.inst.set_value("t", "rows", all(&[115])).unwrap();
     let u = shell.flush();
     let runs = shell.rt.stats().computations - before;
     assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
     assert!(runs < 20, "{runs} computations for one changed row");
+    assert_eq!(labels(&shell)[5], "changed");
+    shell
+        .inst
+        .set_value("t", "rows", all(&[115, 1500]))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.diff.ops.is_empty(), "{:?}", u.diff);
+    assert_eq!(
+        shell
+            .scene
+            .texts()
+            .iter()
+            .filter(|t| *t == "changed")
+            .count(),
+        1
+    );
+
+    // A row the data inserts in the window is the data's (it enters);
+    // the row it pushes out is the window's. `row_count` follows.
+    let mut list_v: Vec<Value> = (0..2000)
+        .map(|i| Value::record(row, vec![Value::int(i), Value::text(format!("r{i}"))]))
+        .collect();
+    list_v.insert(
+        112,
+        Value::record(row, vec![Value::int(5000), Value::text("new")]),
+    );
+    shell
+        .inst
+        .set_value("t", "rows", Value::list(list_v))
+        .unwrap();
+    let u = shell.flush();
+    let new = shell.scene.find_text("new").expect("the new row mounts");
+    let new_row = shell.scene.parent(new).unwrap();
+    for op in &u.diff.ops {
+        match op {
+            SceneOp::Create { id, window, .. } if *id == new_row => assert!(!window),
+            SceneOp::Remove { window, .. } => assert!(window, "{op:?}"),
+            _ => {}
+        }
+    }
+    assert_eq!(num(&shell, Prop::RowCount), 2001.0);
+    assert_eq!(rows(&shell).len(), 20);
+    assert_eq!(labels(&shell)[2], "new");
+
+    // A window past the end shows the last rows.
+    shell.inst.set_list_window(list, 5000, 20);
+    shell.flush();
+    assert_eq!(num(&shell, Prop::RowFirst), 1981.0);
+    assert_eq!(labels(&shell).last().unwrap(), "r1999");
+}
+
+/// A row the window unmounts keeps its `state`s by key: scrolled away
+/// and back, an opened row is still open. A key the data drops loses
+/// them, so the same key coming back starts afresh.
+#[test]
+fn a_row_scrolled_out_and_back_keeps_its_state() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..200 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str(
+        "]\n\
+         component Item(r: Row) {\n\
+           state open = false\n\
+           row { text r.label\n text open ? \"open\" : \"shut\"\n box { on click { open = !open } } }\n\
+         }\n\
+         bar B { list { for r in rows { Item(r) } } }\n",
+    );
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    let opened = |shell: &Shell| -> Vec<String> {
+        shell
+            .scene
+            .children(list)
+            .iter()
+            .filter(|r| {
+                matches!(
+                    shell.scene.prop(shell.scene.children(**r)[1], Prop::Text),
+                    Some(PropValue::Text(t)) if t == "open"
+                )
+            })
+            .map(
+                |r| match shell.scene.prop(shell.scene.children(*r)[0], Prop::Text) {
+                    Some(PropValue::Text(t)) => t.clone(),
+                    v => panic!("{v:?}"),
+                },
+            )
+            .collect()
+    };
+    // Open row 3.
+    let row3 = shell.scene.children(list)[3];
+    let button = shell.scene.children(row3)[2];
+    assert!(shell.inst.event(button, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(opened(&shell), ["r3"]);
+    // Scrolled away: row 3 is unmounted.
+    shell.inst.set_list_window(list, 100, 20);
+    shell.flush();
+    assert!(opened(&shell).is_empty());
+    assert!(shell.scene.find_text("r3").is_none());
+    // And back: open still.
+    shell.inst.set_list_window(list, 0, 20);
+    shell.flush();
+    assert_eq!(opened(&shell), ["r3"]);
+
+    // Away again, and the data drops row 3 then brings it back: shut.
+    shell.inst.set_list_window(list, 100, 20);
+    shell.flush();
+    let row = shell.inst.vm().types().find_record("Row").expect("Row");
+    let rows = |skip: Option<i64>| {
+        Value::list(
+            (0..200)
+                .filter(|i| Some(*i) != skip)
+                .map(|i| Value::record(row, vec![Value::int(i), Value::text(format!("r{i}"))]))
+                .collect(),
+        )
+    };
+    shell.inst.set_value("t", "rows", rows(Some(3))).unwrap();
+    shell.flush();
+    shell.inst.set_value("t", "rows", rows(None)).unwrap();
+    shell.flush();
+    shell.inst.set_list_window(list, 0, 20);
+    shell.flush();
+    assert!(shell.scene.find_text("r3").is_some());
+    assert!(opened(&shell).is_empty());
+}
+
+/// What a window move keeps of the rows it unmounts: nothing for rows
+/// without `state` (no scope per row: scrolled through and back, the
+/// runtime holds as many nodes as at the start), and for rows with one
+/// a few nodes per key scrolled past, the same on a second pass.
+#[test]
+fn rows_scrolled_past_keep_only_their_states() {
+    fn live(rt: &strand_core::Runtime) -> usize {
+        let mut stack = rt.root_owned();
+        let mut n = 0;
+        while let Some(id) = stack.pop() {
+            n += 1;
+            stack.extend(rt.owned(id).unwrap_or_default());
+        }
+        n
+    }
+    let shell_of = |row: &str| {
+        let mut src =
+            String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+        for i in 0..2000 {
+            src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+        }
+        src.push_str(&format!(
+            "]\n{row}\nbar B {{ list {{ for r in rows {{ Item(r) }} }} }}\n"
+        ));
+        boot(&[("t.strand", &src)], |rt, host| {
+            screens(rt, host, &["DP-1"])
+        })
+    };
+    // Through the list in steps of 20 rows and back to the top.
+    let scroll = |shell: &mut Shell| {
+        let list = shell.scene.of_kind(NodeKind::List)[0];
+        for first in (0..2000).step_by(20).chain([0]) {
+            shell.inst.set_list_window(list, first, 32);
+            shell.flush();
+        }
+    };
+
+    let mut plain = shell_of("component Item(r: Row) { row { text r.label } }");
+    let start = live(plain.inst.runtime());
+    scroll(&mut plain);
+    assert_eq!(live(plain.inst.runtime()), start, "rows without state");
+
+    let mut stateful = shell_of(
+        "component Item(r: Row) {\n state open = false\n row { text r.label\n text open ? \"open\" : \"shut\" } }",
+    );
+    let start = live(stateful.inst.runtime());
+    scroll(&mut stateful);
+    let once = live(stateful.inst.runtime());
+    let per_key = (once - start) as f64 / 2000.0;
+    assert!(
+        (0.5..=4.0).contains(&per_key),
+        "{per_key} nodes kept per row scrolled past ({start} -> {once})"
+    );
+    scroll(&mut stateful);
+    assert_eq!(
+        live(stateful.inst.runtime()),
+        once,
+        "a second pass keeps no more"
+    );
+}
+
+/// A `list` holding more than its `for` (a header row) is not windowed:
+/// every row mounts, as in any container.
+#[test]
+fn a_list_with_more_than_its_for_mounts_every_row() {
+    let mut src = String::from("state rows = [");
+    for i in 0..40 {
+        src.push_str(&format!("\"r{i}\", "));
+    }
+    src.push_str("]\nbar B { list { text \"head\"\n for r in rows key r { text r } } }\n");
+    let shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(shell.scene.children(list).len(), 41);
+    assert!(shell.scene.prop(list, Prop::RowCount).is_none());
+}
+
+/// A list is windowed only when each item of its `for` makes exactly one
+/// row (render and `nav` count each child as a row): an item of two
+/// nodes, an `if` or a component of two roots mounts every row, while a
+/// component with one root is windowed.
+#[test]
+fn a_list_whose_items_are_not_one_row_mounts_every_row() {
+    use strand_compiler::instantiate::DEFAULT_LIST_WINDOW;
+    let mut rows = String::from("state rows = [");
+    for i in 0..40 {
+        rows.push_str(&format!("\"r{i}\", "));
+    }
+    rows.push_str("]\n");
+    let windowed = |body: &str, extra: &str| {
+        let src = format!("{rows}{extra}bar B {{ list {{ for r in rows key r {{ {body} }} }} }}\n");
+        let shell = boot(&[("t.strand", &src)], |rt, host| {
+            screens(rt, host, &["DP-1"])
+        });
+        let list = shell.scene.of_kind(NodeKind::List)[0];
+        let n = shell.scene.children(list).len();
+        (shell.scene.prop(list, Prop::RowCount).is_some(), n)
+    };
+    assert_eq!(windowed("text r\n text r", ""), (false, 80));
+    assert_eq!(windowed("if r != \"r3\" { text r }", ""), (false, 39));
+    assert_eq!(
+        windowed("Two(r)", "component Two(s: text) { text s\n text s }\n"),
+        (false, 80)
+    );
+    assert_eq!(
+        windowed("One(r)", "component One(s: text) { row { text s } }\n"),
+        (true, DEFAULT_LIST_WINDOW)
+    );
+    // `let`s and handlers beside the one row are fine.
+    assert_eq!(
+        windowed("let u = r\n row { text u }", ""),
+        (true, DEFAULT_LIST_WINDOW)
+    );
 }
 
 /// A fault in a file's top-level handler is located but freezes
@@ -3058,16 +3378,103 @@ fn pages_and_tooltips_mount_on_demand() {
     assert!(shell.inst.event(inc, "click", Vec::new()));
     shell.flush();
     shell.text_node("PA 1");
+    // `row_first` on the `pages` is the current page's place in source
+    // order: render slides forward when it grows (directional pages).
+    let pages = shell.scene.of_kind(NodeKind::Pages)[0];
+    let first = |shell: &Shell| match shell.scene.prop(pages, Prop::RowFirst) {
+        Some(PropValue::Number(f)) => *f,
+        other => panic!("row_first {other:?}"),
+    };
+    let on_a = first(&shell);
     assert!(shell.inst.event(toggle, "click", Vec::new()));
     shell.flush();
     let scene = shell.scene.render();
     assert!(scene.contains("PB"), "{scene}");
     assert!(!scene.contains("PA"), "the hidden page stayed:\n{scene}");
     assert_eq!(shell.scene.of_kind(NodeKind::Page).len(), 1, "{scene}");
+    assert!(first(&shell) > on_a, "page b comes after page a");
+    // One diff swaps the page and sets `row_first`.
     assert!(shell.inst.event(toggle, "click", Vec::new()));
-    shell.flush();
+    let diff = shell.flush().diff;
+    let sets_first = diff
+        .ops
+        .iter()
+        .any(|op| matches!(op, SceneOp::SetProp { id, prop: Prop::RowFirst, .. } if *id == pages));
+    let creates_page = diff.ops.iter().any(|op| {
+        matches!(
+            op,
+            SceneOp::Create {
+                kind: NodeKind::Page,
+                ..
+            }
+        )
+    });
+    assert!(sets_first && creates_page, "{diff:?}");
     shell.text_node("PA 1");
     assert!(!shell.scene.render().contains("PB"));
+    assert_eq!(first(&shell), on_a);
+}
+
+/// Directional pages go by the pages' order as mounted, not by where
+/// each `page` is written: pages a `for` makes follow their items (they
+/// all share one span), also once the items are reordered. `row_first`
+/// on the `pages` moves by one towards the new page's side. (A `page`
+/// must sit directly in its `pages`, through `if`, `match` or `for`
+/// only: the checker refuses one in a component, so pages never come
+/// from another file.)
+#[test]
+fn pages_from_a_for_slide_by_their_items_order() {
+    let main = "state tabs = [\"x\", \"y\", \"z\"]\n\
+                state cur = \"x\"\n\
+                bar B {\n\
+                  pages current: cur {\n\
+                    page \"a\" { text \"PA\" }\n\
+                    for p in tabs key p { page p { text p } }\n\
+                    if true { page \"w\" { text \"PW\" } }\n\
+                  }\n\
+                }\n";
+    let mut shell = boot(&[("t.strand", main)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let pages = shell.scene.of_kind(NodeKind::Pages)[0];
+    let first = |shell: &Shell| match shell.scene.prop(pages, Prop::RowFirst) {
+        Some(PropValue::Number(f)) => *f,
+        other => panic!("row_first {other:?}"),
+    };
+    let show = |shell: &mut Shell, page: &str| {
+        let before = first(shell);
+        shell.inst.set_value("t", "cur", Value::text(page)).unwrap();
+        shell.flush();
+        let text = match page {
+            "a" => "PA",
+            "w" => "PW",
+            p => p,
+        };
+        let scene = shell.scene.render();
+        assert!(shell.scene.find_text(text).is_some(), "{page}: {scene}");
+        first(shell) - before
+    };
+    shell.text_node("x");
+    // Forward along the `for`'s items, then back.
+    assert!(show(&mut shell, "z") > 0.0);
+    assert!(show(&mut shell, "y") < 0.0);
+    assert!(show(&mut shell, "a") < 0.0);
+    assert!(show(&mut shell, "x") > 0.0);
+    // The page in the `if` comes after the `for`'s.
+    assert!(show(&mut shell, "w") > 0.0);
+    assert!(show(&mut shell, "z") < 0.0);
+    // Items reordered: their pages follow.
+    shell
+        .inst
+        .set_value(
+            "t",
+            "tabs",
+            Value::list(vec![Value::text("z"), Value::text("y"), Value::text("x")]),
+        )
+        .unwrap();
+    shell.flush();
+    assert!(show(&mut shell, "x") > 0.0);
+    assert!(show(&mut shell, "z") < 0.0);
 }
 
 /// A `popup`'s content is mounted when it opens and unmounted when it

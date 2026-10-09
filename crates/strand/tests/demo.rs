@@ -1354,6 +1354,235 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
     drop(strand);
 }
 
+/// The M4 exit's smooth 2,000-row scrolling, end to end: design.md's
+/// launcher over 2,000 mock apps (`STRAND_MOCK_APPS`) on headless sway.
+/// A virtual-pointer wheel scrolls its virtualised list far past the 32
+/// rows logic mounts at first: the list asks logic for the rows it shows
+/// (`ToLogic::ListWindow`) as it goes, frames keep coming, and no frame
+/// shows a gap where rows are not mounted (render's per-frame check,
+/// `gaps=` on every damage line). Settled, the list is full of rows; End
+/// then selects the last app, past the mounted rows, and it lands drawn
+/// selected at the bottom of the list.
+#[test]
+fn the_design_launcher_scrolls_2000_apps() {
+    let Some(sway) = Sway::start_as("scroll2000") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    let launcher = include_str!("../../strand-compiler/tests/fixtures/launcher.strand")
+        .replace("export state open = false", "export state open = true");
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand").to_string(),
+        ),
+        ("launcher.strand", launcher),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_APPS", "2000")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let whole_log = |log: &Path| std::fs::read_to_string(log).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while damage_lines(&log).is_empty() {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            whole_log(&log)
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no launcher: {}",
+            whole_log(&log)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let bright_in =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() > 450;
+    let dark =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 200;
+    // The launcher's box on a column clear of its text, and the bands of
+    // ink in its icon column (one per row shown).
+    let x = Shot::take(&sway, "HEADLESS-1").w / 2 + 250;
+    let boxed = |s: &Shot| -> Option<(usize, usize, usize)> {
+        let rows: Vec<usize> = (0..s.h).filter(|&y| bright_in(s, x, y)).collect();
+        let (&top, &bottom) = (rows.first()?, rows.last()?);
+        let left = (0..s.w).find(|&xx| bright_in(s, xx, (top + bottom) / 2))?;
+        Some((top, bottom, left))
+    };
+    let bands = |s: &Shot, (top, bottom, left): (usize, usize, usize)| -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for y in top + 48..bottom {
+            if (left + 20..left + 52).any(|xx| dark(s, xx, y)) {
+                match out.last_mut() {
+                    Some(b) if b.1 + 1 == y => b.1 = y,
+                    _ => out.push((y, y)),
+                }
+            }
+        }
+        out
+    };
+    // Settled with its icons: two shots alike, eight rows or more shown
+    // (420 px of 48 px rows).
+    let settled = || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last = None;
+        loop {
+            let s = Shot::take(&sway, "HEADLESS-1");
+            let key = boxed(&s).map(|b| (b, bands(&s, b)));
+            if let Some((_, bs)) = &key
+                && bs.len() >= 8
+                && key == last
+            {
+                return s;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the launcher never settled with its rows: {key:?}"
+            );
+            last = key;
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    };
+    let shot = settled();
+    let b = boxed(&shot).unwrap();
+    let (top, bottom, _) = b;
+    let tint = |p: [u8; 3]| p[2] as i32 - p[0] as i32;
+    let row_mid = |band: (usize, usize)| (band.0 + band.1) / 2;
+    // With a keyboard the input takes focus and its `nav` list selects
+    // its first row: bluer than the second.
+    let mut keyboard = keyboard::Keyboard::new(&sway.dir.join(&sway.display), &sway.dir);
+    let selected_first = |s: &Shot| {
+        let bs = bands(s, b);
+        bs.len() >= 2 && tint(s.px(x, row_mid(bs[0]))) >= tint(s.px(x, row_mid(bs[1]))) + 10
+    };
+    let shot = poll::until(|| Shot::take(&sway, "HEADLESS-1"), selected_first);
+    assert!(selected_first(&shot), "the first row is not drawn selected");
+    let first = bands(&shot, b);
+    let sel = shot.px(x, row_mid(first[0]));
+    let plain = shot.px(x, row_mid(first[1]));
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_top.png"));
+    }
+
+    // The wheel, over the list: 600 notches (9,000 px, about 190 rows)
+    // in steps of 10, a frame or two apart.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    let (w, h) = (shot.w as u32, shot.h as u32);
+    let over = (x as u32, ((top + bottom) / 2) as u32);
+    pointer.motion(over.0, over.1, w, h);
+    std::thread::sleep(Duration::from_millis(200));
+    // A damage line's count `name=` (render's list frames so far).
+    let field = |l: &str, name: &str| -> u64 {
+        l.split_whitespace()
+            .find_map(|f| f.strip_prefix(name)?.strip_prefix('='))
+            .and_then(|g| g.parse().ok())
+            .unwrap_or_else(|| panic!("no {name}= in {l}"))
+    };
+    let lines = damage_lines(&log);
+    let before = lines.len();
+    let stalls_before = lines.last().map_or(0, |l| field(l, "stalls"));
+    assert_eq!(lines.last().map(|l| field(l, "top")), Some(0));
+    for _ in 0..60 {
+        pointer.wheel(10, over.0, over.1, w, h);
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let shot = settled();
+    let lines = damage_lines(&log);
+    let scrolled = lines.len() - before;
+    assert!(scrolled >= 20, "{scrolled} frames while scrolling");
+    // Every frame reports render's gap count, and none showed a gap.
+    let gaps: Vec<u64> = lines.iter().map(|l| field(l, "gaps")).collect();
+    assert!(
+        gaps.iter().all(|g| *g == 0),
+        "frames showed a gap: {gaps:?}"
+    );
+    // The view went far past the rows logic mounted at first (rows 0..32,
+    // `DEFAULT_LIST_WINDOW`): the wheel's windows reached logic and its
+    // rows came back, about 190 rows down.
+    let last = lines.last().expect("frames");
+    let top = field(last, "top");
+    assert!(top >= 100, "the view stopped at row {top}: {last}");
+    // Frames held at the mounted rows' edge waiting for logic are
+    // reported, not asserted: here they depend on how fast a debug
+    // logic thread answers on a shared runner. The overscan's cover of
+    // logic's lag is proved deterministically by list_scroll_bench (a
+    // logic stand-in answering `LOGIC_LAG` late, `stalls == 0`).
+    let stalls = field(last, "stalls") - stalls_before;
+    eprintln!("wheel: {scrolled} frames, top row {top}, {stalls} stalled");
+    // Settled far down: the rows still fill the list, none selected
+    // (the selected first row is far above).
+    let b2 = boxed(&shot).expect("the launcher is still open");
+    assert_eq!(b2, b, "the launcher's box kept its place and size");
+    let down = bands(&shot, b2);
+    assert!(down.len() >= 8, "rows fill the list: {down:?}");
+    for band in &down {
+        let p = shot.px(x, row_mid(*band));
+        assert!(tint(p) < tint(sel) - 5, "a row drawn selected: {p:?}");
+    }
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_scrolled.png"));
+    }
+
+    // Ctrl+End selects the last app (plain End moves the search's
+    // caret): not mounted, it is scrolled to, mounted by logic and drawn
+    // selected at the bottom of the list.
+    keyboard.press_ctrl("End");
+    let shot = poll::until(
+        || Shot::take(&sway, "HEADLESS-1"),
+        |s| {
+            boxed(s).is_some_and(|b| {
+                bands(s, b)
+                    .last()
+                    .is_some_and(|l| tint(s.px(x, row_mid(*l))) >= tint(plain) + 10)
+            })
+        },
+    );
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_end.png"));
+    }
+    let b3 = boxed(&shot).unwrap();
+    let end = bands(&shot, b3);
+    let last = *end.last().unwrap();
+    assert!(
+        tint(shot.px(x, row_mid(last))) >= tint(plain) + 10,
+        "the last app is not drawn selected"
+    );
+    assert!(
+        bottom - last.1 < 48,
+        "the last row is at the bottom: {last:?} in {top}..{bottom}"
+    );
+    let lines = damage_lines(&log);
+    assert!(
+        lines.iter().all(|l| field(l, "gaps") == 0),
+        "a frame showed a gap"
+    );
+    // The last rows are in view: the first of them about eight rows
+    // (420 px of 48 px rows) above the last app.
+    let top = field(lines.last().expect("frames"), "top");
+    assert!((1988..2000).contains(&top), "top row {top}");
+    drop(keyboard);
+    drop(strand);
+}
+
 /// The four design shells with their widgets (M2): the bar's icons, the
 /// OSD's icon and meter (shown at boot here, as a volume change would),
 /// the toasts' close icons, and the bar's `Clock` calendar `popup`: a

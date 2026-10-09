@@ -499,18 +499,21 @@ fn long_list(n: usize) -> (SceneDiff, NodeId, NodeId) {
     (d, root, lst.unwrap())
 }
 
-/// A 2,000-row `list` lays out only the rows its viewport shows, measures
-/// them, and scrolls by row heights; the rest are never laid out.
+/// A 2,000-row `list` lays out only the rows its viewport shows (and its
+/// overscan, `LAYOUT_OVERSCAN` of the viewport each side, at most
+/// `MAX_LAYOUT_OVERSCAN`), measures them, and scrolls by row heights;
+/// the rest are never laid out.
 #[test]
 fn a_2000_row_list_lays_out_only_visible_rows() {
     let (d, root, lst) = long_list(2000);
     let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
     let b = r.boxes(S).unwrap();
     assert_eq!(b.rows_total, 2000);
-    // 32 px rows in a 400 px viewport: 13 rows at most.
-    assert!(b.rows_laid_out <= 14, "{}", b.rows_laid_out);
+    // 32 px rows in a 400 px viewport and 100 px of overscan below (none
+    // above the first): 16 rows at most.
+    assert!(b.rows_laid_out <= 17, "{}", b.rows_laid_out);
     let laid = b.rects.len();
-    assert!(laid < 14 * 3 + 10, "{laid} boxes");
+    assert!(laid < 17 * 3 + 10, "{laid} boxes");
     approx(rect(&r, lst), (0.0, 0.0, 200.0, 400.0));
     assert_matches_ref("layout_list", &buf, TOLERANCE);
     // Scroll to the end: the last rows are laid out, the first are gone.
@@ -527,8 +530,168 @@ fn a_2000_row_list_lays_out_only_visible_rows() {
         (lr.y + lr.h - 400.0).abs() < 0.6,
         "last row at the bottom: {lr:?}"
     );
-    assert!(b.rows_laid_out <= 14);
+    assert!(b.rows_laid_out <= 17);
     eprintln!("scrolled 2000 rows and painted in {spent:?}");
+}
+
+/// A windowed 2,000-row `list` (logic mounted rows 500..532 of
+/// `row_count` 2,000, `row_first` 500): the mounted rows sit at their
+/// global indexes, the rows logic has not mounted take the estimated
+/// row height, and only the rows in view and their overscan are laid
+/// out. The view never leaves the mounted rows (no frame shows a gap):
+/// asked for the top it shows row 500, scrolled past the window's end
+/// it stops at the last mounted row and asks logic for the window
+/// around where it is heading (`take_list_windows`, once).
+#[test]
+fn a_2000_row_list_lays_out_only_its_window() {
+    let first = 500u32;
+    let mut lst = None;
+    let mut rows = Vec::new();
+    let (mut d, root) = panel(200, 420, |b, root| {
+        let l = b.node(
+            NodeKind::List,
+            Some(root),
+            vec![(Prop::MaxHeight, num(400.0))],
+        );
+        lst = Some(l);
+        for i in 0..32u32 {
+            let row = b.node(
+                NodeKind::Row,
+                Some(l),
+                vec![(Prop::Pad, num(4.0)), (Prop::Gap, num(6.0))],
+            );
+            swatch(
+                b,
+                row,
+                "#a6e3a1",
+                vec![(Prop::Size, num(24.0)), (Prop::Radius, num(12.0))],
+            );
+            b.node(
+                NodeKind::Text,
+                Some(row),
+                vec![(Prop::Text, text(&format!("Row {}", first + i)))],
+            );
+            rows.push(row);
+        }
+    });
+    let lst = lst.unwrap();
+    d.set(lst, Prop::RowCount, num(2000.0))
+        .set(lst, Prop::RowFirst, num(first as f32));
+    let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
+    let b = r.boxes(S).unwrap();
+    assert_eq!(b.rows_total, 2000);
+    assert!(b.rows_laid_out <= 17, "{}", b.rows_laid_out);
+    assert!(b.rects.len() < 17 * 3 + 10, "{} boxes", b.rects.len());
+    approx(rect(&r, lst), (0.0, 0.0, 200.0, 400.0));
+    // Row 500 at the top: the view shows the mounted rows.
+    approx(rect(&r, rows[0]), (0.0, 0.0, 200.0, 32.0));
+    let shown = r.scroll_offset(lst).unwrap();
+    assert!((shown - 500.0 * 32.0).abs() < 0.6, "{shown}");
+    assert_eq!(r.list_frames().gaps, 0);
+    // The view is held at the mounted rows, short of the offset (the
+    // top): a stalled frame, showing row 500 first.
+    let stats = r.list_frames();
+    assert_eq!((stats.frames, stats.stalls, stats.top_row), (1, 1, 500));
+    assert_matches_ref("layout_list_window", &buf, TOLERANCE);
+    // The view sits at the top of the content, far from what it shows:
+    // logic is asked for the rows around row 0, once.
+    let asked = r.take_list_windows();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].0, lst);
+    assert_eq!(asked[0].1.start, 0, "{asked:?}");
+    assert!(asked[0].1.end >= 13 && asked[0].1.end <= 40, "{asked:?}");
+    assert!(r.take_list_windows().is_empty(), "asked once");
+
+    // Scrolled far past the window: it stops at the last mounted row.
+    assert!(
+        r.scroll(S, LogicalPoint::new(10.0, 10.0), 40_000.0)
+            .is_some()
+    );
+    buf.paint(&mut r, S, 1);
+    let last = rect(&r, rows[31]);
+    assert!(
+        (last.y + last.h - 400.0).abs() < 0.6,
+        "last mounted row at the bottom: {last:?}"
+    );
+    assert_eq!(r.list_frames().gaps, 0);
+    // Held at the last mounted row while the offset is far below: the
+    // frame stalled, its first row about 12.5 rows above row 531.
+    let stats = r.list_frames();
+    assert_eq!(stats.stalls, 2, "{stats:?}");
+    assert!((518..=520).contains(&stats.top_row), "{stats:?}");
+    let b = r.boxes(S).unwrap();
+    assert!(b.rows_laid_out <= 17, "{}", b.rows_laid_out);
+    let asked = r.take_list_windows();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let want = &asked[0].1;
+    let at = (40_000.0f32 / 32.0) as u32;
+    assert!(want.start < at && want.end > at + 12, "{want:?}");
+    // Logic answers with rows from 1,240: the view goes where the
+    // offset is, and the frame no longer stalls.
+    let mut d = SceneDiff::new();
+    for row in &rows {
+        d.push(SceneOp::Remove {
+            id: *row,
+            window: true,
+        });
+    }
+    let mut next = 10_000;
+    for (k, i) in (1240u32..1272).enumerate() {
+        let row = NodeId::new(next, 0);
+        next += 1;
+        d.push(SceneOp::Create {
+            id: row,
+            kind: NodeKind::Row,
+            parent: Some(lst),
+            index: k as u32,
+            window: true,
+        });
+        // As tall as the rows before (an estimate that changed would
+        // move the offset's row).
+        d.set(row, Prop::Pad, num(4.0))
+            .set(row, Prop::Height, num(32.0));
+        let t = NodeId::new(next, 0);
+        next += 1;
+        d.push(SceneOp::Create {
+            id: t,
+            kind: NodeKind::Text,
+            parent: Some(row),
+            index: 0,
+            window: true,
+        });
+        d.set(t, Prop::Text, text(&format!("Row {i}")));
+    }
+    d.set(lst, Prop::RowFirst, num(1240.0));
+    assert!(r.apply(d).is_empty());
+    buf.paint(&mut r, S, 1);
+    let stats = r.list_frames();
+    assert_eq!((stats.stalls, stats.gaps), (2, 0), "{stats:?}");
+    let offset = r.scroll_state(lst).unwrap().offset;
+    assert!(
+        (r.scroll_offset(lst).unwrap() - offset).abs() < 0.6,
+        "shown where the offset is: {:?} {stats:?}",
+        r.scroll_state(lst)
+    );
+    assert!((1245..=1255).contains(&stats.top_row), "{stats:?}");
+
+    // A jump to the last row (Ctrl+End, `reveal_index`): the view is
+    // held at the mounted rows until logic mounts it, by design, so the
+    // frame is not a stall.
+    r.reveal_index(lst, 1999);
+    buf.paint(&mut r, S, 1);
+    let offset = r.scroll_state(lst).unwrap().offset;
+    assert!(
+        (r.scroll_offset(lst).unwrap() - offset).abs() > 100.0,
+        "held at the mounted rows: {:?}",
+        r.scroll_state(lst)
+    );
+    let stats = r.list_frames();
+    assert_eq!((stats.stalls, stats.gaps), (2, 0), "{stats:?}");
+    // The pointer scrolling it on while still held: a stall again.
+    assert!(r.scroll(S, LogicalPoint::new(10.0, 10.0), -100.0).is_some());
+    buf.paint(&mut r, S, 1);
+    let stats = r.list_frames();
+    assert_eq!((stats.stalls, stats.gaps), (3, 0), "{stats:?}");
 }
 
 /// Hit testing uses the rounded shape (a pill's corner is not the pill),
@@ -864,7 +1027,8 @@ fn a_content_sized_launcher_caps_its_list_and_shapes_visible_rows() {
         assert!((c.h - want).abs() < 1.0, "col {c:?} (fixed: {fixed})");
         approx(rect(&r, lst), (8.0, 8.0, 584.0, 420.0));
         let bx = r.boxes(S).unwrap();
-        assert!(bx.rows_laid_out <= 14, "{}", bx.rows_laid_out);
+        // The view and 105 px of overscan below it.
+        assert!(bx.rows_laid_out <= 17, "{}", bx.rows_laid_out);
         assert!(r.text_slots() < 50, "{} text slots", r.text_slots());
     }
 }

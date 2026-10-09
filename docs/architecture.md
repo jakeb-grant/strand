@@ -955,14 +955,39 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     logic sets `Prop::RowCount` (`Number`: all rows) and `Prop::RowFirst`
     (`Number`: the global index of the first mounted row). `SceneOp::Create`
     and `Remove` gain `window: bool`, true for a row the list window mounts
-    or unmounts: render plays no `enter`, `exit` or FLIP for it (until
-    S-lists does that, render mounts such rows like any other).
-    `SceneDiff::create` and `SceneDiff::remove` send `false`. Render
-    lays rows out at their global indexes (unmounted rows keep their
-    extent), scrolls by a paint offset with no relayout, and reports the
-    rows it wants (view plus overscan) with `Renderer::take_list_windows()
-    -> Vec<(NodeId, Range<u32>)>`, which the binary sends as
-    `ToLogic::ListWindow`.
+    or unmounts: render plays no `enter`, `exit` or FLIP for it (nor
+    for what the same diff creates under it), and an unmounted row
+    leaves no ghost. `SceneDiff::create` and `SceneDiff::remove` send
+    `false`. Render lays rows out at their global indexes (unmounted
+    rows take the measured rows' mean height), scrolls by a paint offset
+    with no relayout while the view stays within the rows laid out,
+    never shows past the mounted rows, and reports the rows it wants
+    (view plus overscan) with `Renderer::take_list_windows() ->
+    Vec<(NodeId, Range<u32>)>`, which the binary sends as
+    `ToLogic::ListWindow`. Pointer scrolling enters as
+    `Renderer::scroll_input(surface, point, ScrollInput { dy, kind:
+    ScrollKind::{Wheel, Touch, Lift}, time })` (the Router maps
+    `AxisSource` and `stop` to it); `Renderer::list_frames() ->
+    ListFrames { frames, gaps, stalls, top_row }` counts painted frames
+    (cached ones too) with a list in view, those that showed an
+    unmounted gap, and those whose view was held at the mounted rows'
+    edge short of the scroll's offset (logic's rows late), and gives the
+    global index of the first row the last one showed (the M4 exit's
+    per-frame checks; the binary's `STRAND_LOG=damage` lines carry them
+    as `gaps=`, `stalls=` and `top=`).
+  - **Directional pages** (design.md, "Pages"). Logic sets
+    `Prop::RowFirst` on a `pages` node in the diff that swaps the page:
+    one more than before when the new page comes after the old one in
+    mount order (source order, a `for`'s item order), one less when
+    before (only the direction is meaningful). Render keeps the old page as a ghost,
+    and at the end of the diff slides the new page in from the right and
+    the old one out to the left when `row_first` grew (mirrored when it
+    shrank), each by its own width (the `slide(edge)` preset); a page
+    with its own `enter`/`exit` plays that, a `pages` with `transition:`
+    leaves the swap to its mask, `reduced_motion` snaps. `pages` clips
+    its content. `Renderer::page_swap(pages) -> Option<PageSwap {
+    entering, leaving, forward }>` pairs the two pages while the old one
+    plays out, for S-effects' transition masks.
   - **Drag and drop** (design.md, "Drag and drop"). `Prop::Drag` on a
     source reaches render as `PropValue::Keyword` naming the type of the
     dragged value; `Prop::Accepts`, set by the compiler and never written
@@ -1027,14 +1052,34 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   reviewed addition. New `InputScene` methods always have no-op
   defaults, so existing implementations keep compiling.
   - `Router::pointer(surface) -> Option<LogicalPoint>`: the last pointer
-    position, read at flatten time by `parallax` and `tilt`.
-  - `Router::drag() -> Option<DragView>`: the drag in flight (source node,
-    pointer, velocity in px/s, target and insertion index), read by the
-    drag ghost, `jelly` and list reordering.
+    position, read at flatten time by `parallax` and `tilt` (set by
+    enter, motion, buttons and axis frames; `None` after a leave).
+  - `Router::drag() -> Option<DragView>`: the drag in flight, read by the
+    drag ghost, `jelly` and list reordering. `DragView { source: NodeId,
+    surface: SurfaceId, pointer: LogicalPoint, velocity: LogicalPoint
+    (px/s), target: Option<NodeId>, index: Option<u32> (a global row
+    index) }`. Always `None` until drag and drop lands (M4 wave 2).
+  - Virtualised `nav`: `Router::selected_index(list) -> Option<u32>` is
+    the selection's global index, mounted or not. Keys move it by index
+    (Up, Down, Page_Up/Prior and Page_Down/Next by
+    `InputScene::rows_in_view`, Home and End, which in an `input` are
+    Ctrl+Home and Ctrl+End: plain ones move its caret); a row not mounted is
+    scrolled to with `InputScene::reveal_index(list, index)` and the
+    selection lands in `Router::settle` once logic mounts it (Return
+    pressed meanwhile activates it then). `Router::observe` keeps a
+    selected row that a diff unmounts with `window: true` selected by
+    index until it mounts again. Both `InputScene` methods have no-op
+    defaults; the `Renderer` maps them to `Renderer::reveal_index` and
+    `Renderer::rows_in_view`.
   - Submenus: Right on a row that opens a nested `popup` opens it, Left
     or Escape closes the innermost; S-lists adds these keys for
     S-surface's tray menus, emitting the existing intents (a two-way
-    `open` write).
+    `open` write). Built: Right (focus not on an `input`) writes `open:
+    true` to the first closed `popup` with a two-way `open` under the
+    focused list's selected row, else among the direct children of the
+    hovered chain; Left on a surface whose root is a `popup` nested in
+    another `popup` closes it as Escape does (`open: false` and
+    `dismiss`); Left in a top-level popup does nothing.
   - The lock: keys on a lock surface while render's built-in fallback is
     shown never reach the `Router`; the binary (`run/lock.rs`) hands them
     to `strand_render::lock_fallback`, which needs no text worker. An
