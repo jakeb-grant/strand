@@ -503,25 +503,6 @@ pub fn square_wav(path: &Path, secs: f32, amplitude: f32) {
 }
 
 impl PipeWire {
-    /// Stops WirePlumber (`SIGSTOP`): it answers nothing until
-    /// [`PipeWire::resume_wireplumber`].
-    pub fn pause_wireplumber(&self) {
-        self.signal_wireplumber(rustix::process::Signal::STOP);
-    }
-
-    /// Lets a paused WirePlumber run again (`SIGCONT`).
-    pub fn resume_wireplumber(&self) {
-        self.signal_wireplumber(rustix::process::Signal::CONT);
-    }
-
-    fn signal_wireplumber(&self, signal: rustix::process::Signal) {
-        let child = self.wireplumber.as_ref().expect("WirePlumber runs");
-        let pid = rustix::process::Pid::from_child(child);
-        rustix::process::kill_process(pid, signal).expect("WirePlumber is signalled");
-    }
-}
-
-impl PipeWire {
     /// WirePlumber's process id, while it runs.
     pub fn wireplumber_pid(&self) -> Option<u32> {
         self.wireplumber.as_ref().map(Child::id)

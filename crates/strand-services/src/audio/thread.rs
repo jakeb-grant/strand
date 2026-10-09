@@ -75,7 +75,13 @@ pub const SETTLE: Duration = Duration::from_secs(3);
 /// or an effective default is cleared (WirePlumber clears both keys and
 /// sets them again within milliseconds when it rescans; the set is the
 /// event a window drops). One read per burst, this long after its first
-/// sign; decisions.md, laptop-flakes.
+/// sign. Nearly every connection reads again once: the service's own
+/// client is a client that comes, seen after the metadata is bound when
+/// its id is above the metadata's (registry globals come in id order). A
+/// read again waits until the first read (the sync after the first bind)
+/// is back, pushed back this long each time, so the first state never
+/// goes out between a replaced binding's sync and the replay;
+/// decisions.md, laptop-flakes.
 pub const REREAD: Duration = Duration::from_millis(250);
 
 /// How long a connection's first sync may take: a daemon that accepted
@@ -1656,8 +1662,16 @@ impl Driver<'_> {
                     self.meters_dirty = true;
                 }
                 if s.reread_at.is_some_and(|t| t <= now) {
-                    s.reread_at = None;
-                    reread_metadata(s, self.q.clone());
+                    if s.meta_sync.is_some() {
+                        // The first read is not back: a read again now
+                        // would replace its binding, and its sync would
+                        // mark the metadata read with no keys yet. It
+                        // replays every key anyway; read again after it.
+                        s.reread_at = Some(now + REREAD);
+                    } else {
+                        s.reread_at = None;
+                        reread_metadata(s, self.q.clone());
+                    }
                 }
                 if s.meters
                     .iter()

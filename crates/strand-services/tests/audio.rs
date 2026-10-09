@@ -366,6 +366,57 @@ fn a_lost_default_update_comes_back_on_a_read_again() {
     assert!(!w.sink("strand-sink-a").default);
 }
 
+/// A read again never overtakes the first read: with WirePlumber slow to
+/// answer the first bind's ping (paused here, past [`REREAD`]), the
+/// clients that come meanwhile (the service's own, and a `pw-cli`) ask
+/// for a read again, and it waits until the first read is back. Were it
+/// to replace the first binding before then, that binding's sync would
+/// mark the metadata read while its replay was dropped, and the first
+/// state would go out with no default sink or source.
+#[test]
+fn the_first_state_waits_for_a_slow_first_read() {
+    let Some(pw) = PipeWire::start("the_first_state_waits_for_a_slow_first_read") else {
+        return;
+    };
+    meta::pause_wireplumber(&pw);
+    let mut w = Watch::start(pw.config());
+    std::thread::sleep(Duration::from_millis(150));
+    // A client that comes and goes after the metadata is bound (`pw-cli`
+    // binds every global, the metadata too, so it waits on WirePlumber
+    // as well, and is killed).
+    let mut cli = pw
+        .command("pw-cli")
+        .args(["info", "0"])
+        .spawn()
+        .expect("pw-cli starts");
+    std::thread::sleep(REREAD);
+    let _ = cli.kill();
+    let _ = cli.wait();
+    std::thread::sleep(REREAD * 2);
+    w.poll();
+    let held = !w.mirror.connected;
+    meta::resume_wireplumber(&pw);
+    // The premise: the first read was held past a read again's time.
+    assert!(
+        held,
+        "the first state went out while WirePlumber was paused: {:#?}",
+        w.mirror
+    );
+    w.until(10, "the first state", |m| m.connected);
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.name.as_str()),
+        Some("strand-sink-a"),
+        "the first state has no default sink: {:#?}",
+        w.mirror
+    );
+    assert_eq!(
+        w.mirror.source.as_ref().map(|d| d.name.as_str()),
+        Some("strand-source"),
+        "the first state has no default source: {:#?}",
+        w.mirror
+    );
+}
+
 #[test]
 fn writes_land_where_wpctl_reads_them() {
     let Some(pw) = PipeWire::start("writes_land_where_wpctl_reads_them") else {

@@ -2420,7 +2420,11 @@ transparent huge pages for life.
   defaults whole once its sync is back (a key a lost update cleared is
   not replayed, so it goes too), and such a read sends only what
   changed. The old binding is dropped only once the new one and its
-  sync are made, so a failed read keeps following the keys.
+  sync are made, so a failed read keeps following the keys. A read
+  again waits until the first read of a connection is back (nearly
+  every connection reads again once: the service's own client, when
+  its id is above the metadata's, comes after the bind), so the first
+  state never goes out before the replay.
   Actions sent before a connection has settled (a write that lazily
   starts the service, one sent during a restart) wait, in order, and
   run right after its first state; with no connection at all they
