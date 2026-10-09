@@ -79,11 +79,35 @@ The job tracks the compositors' current Arch packages on purpose
 Hyprland 0.55+ with a Lua config answers `ok` to dispatcher objects, which
 the adapter falls back to (`crates/strand-services/tests/hyprland.rs::a_lua_config_hyprland_gets_lua_dispatches`).
 
-**Not tested live:** a second output on any of the three compositors
-(`workspaces.on(screen)` per screen, `Workspace.screen` on a second
-output, one bar per monitor). Each run has one output; the per-screen
-logic is covered only by the offline replay tests and by sway's two
-headless outputs in the other tiers.
+**Second output (laptop/verify).** sway (`create_output`, HEADLESS-2
+at 1280,0) and Hyprland (`hyprctl output create headless` beside the
+vkms monitor) now run with two outputs (`MATRIX_OUTPUTS`, default 2).
+`the_stores_report_every_output` checks that every output's
+`Workspace.screen` and shown workspace agree with the compositor;
+`the_design_bar_is_on_every_output` checks one bar per monitor, each
+showing its own output's dots, and a click on a dot of each bar
+(pointer moved through the whole layout) switching that output. CI run
+[37870503923](https://github.com/jakeb-grant/strand/actions/runs/37870503923)
+passed all three: sway 7/7 on two outputs, Hyprland 7/7 on Virtual-2
+and STRAND-2, niri 7/7 on one. Locally (`scripts/container/matrix.sh`)
+sway and niri pass; Hyprland is skipped there.
+
+**Still not tested live:** niri on a second output (niri nested on
+winit has one output and cannot add one at run time; the per-output
+logic is covered by the offline niri tests); Hyprland locally (it needs
+a KMS card, and nested Hyprland 0.56.2 fails in sway 1.12 and in niri;
+decisions.md laptop-verify). CI is the only Hyprland run.
+
+**IPC fixtures checked against real sessions (laptop/verify).** niri
+26.04 was captured in the matrix image (`scripts/container/capture-niri.sh`,
+`tests/fixtures/niri-26.04-captured`); Hyprland 0.56.2 from the owner's
+live session, read-only (`scripts/capture-hyprland.sh`,
+`tests/fixtures/hyprland-0.56.2-captured`, titles and classes scrubbed
+as its SOURCE.txt says). Differences found: niri lists windows in map
+order, so the adapter now sorts them by id; both reconstructed event
+streams had bursts in the wrong order (fixed in their `events.txt`).
+The Hyprland adapter needed no change. Regression tests:
+`wm::niri::tests::captured_*` and `wm::hyprland::tests::captured_*`.
 
 ## 100 reloads with no reconnects
 
@@ -358,8 +382,10 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
 
 ## Open
 
-- A second output on Hyprland, niri and sway is not checked live (see
-  the matrix).
+- A second output on niri is not checked live, and Hyprland runs only
+  in CI (see the matrix). The Hyprland capture is of an idle-ish single
+  monitor session: no second monitor, close, move, fullscreen, reload
+  or special workspace in it.
 - `strand-watch` wakes its thread once for each name made or removed in
   any ancestor of a watched directory (up to `/`): on a desktop, every
   atomic save in `~` or `~/.config`. No logic wake or frame follows, but
