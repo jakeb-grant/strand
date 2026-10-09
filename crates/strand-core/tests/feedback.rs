@@ -1166,3 +1166,334 @@ fn throttled_item_writes_land_per_item() {
     assert_eq!(item(&rt, sinks, 1), 100.0);
     assert_eq!(item(&rt, sinks, 2), 100.0);
 }
+
+/// Item writes sent so far, in send order.
+type SentItems = std::rc::Rc<std::cell::RefCell<Vec<Dev>>>;
+
+/// A graph-triggered handler (counted by the rate guard) writing each of
+/// `keys` to the value of each event; returns its event queue.
+fn item_writer(
+    rt: &Runtime,
+    sinks: strand_core::KeyedSignal<u32, Dev>,
+    keys: &'static [u32],
+    sent: &SentItems,
+) -> strand_core::EventQueue<u32> {
+    let events = rt.events::<u32>();
+    let s = sent.clone();
+    events
+        .on(rt, move |rt, v| {
+            for &key in keys {
+                let s = s.clone();
+                sinks.write_item_tagged(rt, key, (key, f64::from(*v)), move |_, _, d, _| {
+                    s.borrow_mut().push(*d)
+                })?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    events
+}
+
+/// Drives `events` with 1..=60 every 5 ms from `t` (the handler is
+/// throttled after 30), then emits `last` 1 ms later; returns the time.
+fn throttle(
+    rt: &Runtime,
+    events: strand_core::EventQueue<u32>,
+    mut t: Duration,
+    last: u32,
+) -> Duration {
+    for v in 1..=60u32 {
+        events.emit(rt, v).unwrap();
+        t += Duration::from_millis(5);
+        rt.tick(t);
+    }
+    events.emit(rt, last).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    t
+}
+
+/// A throttled handler holds an item write; another handler's newer write
+/// of the same item goes through (to the value the item already has).
+/// The held write is superseded: it never lands, and the newer value
+/// stays (latest write wins, as for a field).
+#[test]
+fn a_newer_item_write_supersedes_a_held_one_of_that_item() {
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentItems = std::rc::Rc::default();
+    let a = item_writer(&rt, sinks, &[2], &sent);
+    let t = throttle(&rt, a, Duration::ZERO, 1000);
+    assert!(
+        !sent.borrow().contains(&(2, 1000.0)),
+        "the handler's last write was not held: {:?}",
+        sent.borrow()
+    );
+    // An input handler's write (not counted): the item's current value.
+    let now = item(&rt, sinks, 2);
+    let s = sent.clone();
+    sinks
+        .write_item_tagged(&rt, 2, (2, now), move |_, _, d, _| s.borrow_mut().push(*d))
+        .unwrap();
+    rt.tick(t + Duration::from_secs(1));
+    assert_eq!(
+        item(&rt, sinks, 2),
+        now,
+        "the held write landed after a newer one"
+    );
+    assert_eq!(sent.borrow().last(), Some(&(2, now)));
+    assert!(!sent.borrow().contains(&(2, 1000.0)));
+}
+
+/// Changes to other items (another handler's write, a service report) do
+/// not drop a throttled handler's held writes of the items they did not
+/// touch.
+#[test]
+fn held_item_writes_survive_changes_to_other_items() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentItems = std::rc::Rc::default();
+    let a = item_writer(&rt, sinks, &[1], &sent);
+    let t = throttle(&rt, a, Duration::ZERO, 1000);
+    assert!(!sent.borrow().contains(&(1, 1000.0)));
+    // A service report of item 2, then a write of it from elsewhere.
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 1,
+                key: 2,
+                value: (2, 8.0),
+            }],
+            None,
+        )
+        .unwrap();
+    assert_eq!(item(&rt, sinks, 2), 8.0);
+    sinks
+        .write_item_tagged(&rt, 2, (2, 7.0), |_, _, _, _| {})
+        .unwrap();
+    rt.tick(t + Duration::from_secs(1));
+    assert_eq!(
+        item(&rt, sinks, 1),
+        1000.0,
+        "the held write of item 1 was lost"
+    );
+    assert_eq!(item(&rt, sinks, 2), 7.0);
+}
+
+/// Two throttled handlers hold writes of one item; the one made first
+/// lands first (its window has room first), and the one made later still
+/// lands after it and wins.
+#[test]
+fn of_two_held_item_writes_the_later_one_wins() {
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentItems = std::rc::Rc::default();
+    let a = item_writer(&rt, sinks, &[2], &sent);
+    let c = item_writer(&rt, sinks, &[2], &sent);
+    // Both throttled, `c` one tick behind `a`: `a`'s window has room
+    // first.
+    let mut t = Duration::ZERO;
+    for i in 0..=60u32 {
+        t += Duration::from_millis(5);
+        if i < 60 {
+            a.emit(&rt, i + 1).unwrap();
+        }
+        if i >= 1 {
+            c.emit(&rt, i).unwrap();
+        }
+        rt.tick(t);
+    }
+    a.emit(&rt, 500).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    c.emit(&rt, 600).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    assert!(
+        !sent.borrow().iter().any(|d| d.1 >= 500.0),
+        "both last writes are held: {:?}",
+        sent.borrow()
+    );
+    let from = sent.borrow().len();
+    // Each lands on its own tick.
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    let landed: Vec<f64> = sent.borrow()[from..].iter().map(|d| d.1).collect();
+    assert_eq!(landed, [500.0, 600.0], "the held writes as they landed");
+    assert_eq!(item(&rt, sinks, 2), 600.0);
+}
+
+type SentTagged = std::rc::Rc<std::cell::RefCell<Vec<(Dev, Generation)>>>;
+
+/// Two throttled handlers each writing item 2 (with their tags into
+/// `sent`), `c` one tick behind `a`; `a` holds 500 and `c` 600, and the
+/// clock is run until 500 has landed with 600 still held. Returns the
+/// time and 500's tag.
+fn first_of_two_held_landed(
+    rt: &Runtime,
+    sinks: strand_core::KeyedSignal<u32, Dev>,
+    sent: &SentTagged,
+) -> (Duration, Generation) {
+    let writer = || {
+        let events = rt.events::<u32>();
+        let s = sent.clone();
+        events
+            .on(rt, move |rt, v| {
+                let s = s.clone();
+                sinks.write_item_tagged(rt, 2, (2, f64::from(*v)), move |_, _, d, g| {
+                    s.borrow_mut().push((*d, g))
+                })?;
+                Ok(())
+            })
+            .unwrap();
+        events
+    };
+    let (a, c) = (writer(), writer());
+    let mut t = Duration::ZERO;
+    for i in 0..=60u32 {
+        t += Duration::from_millis(5);
+        if i < 60 {
+            a.emit(rt, i + 1).unwrap();
+        }
+        if i >= 1 {
+            c.emit(rt, i).unwrap();
+        }
+        rt.tick(t);
+    }
+    a.emit(rt, 500).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    c.emit(rt, 600).unwrap();
+    t += Duration::from_millis(1);
+    rt.tick(t);
+    assert!(
+        !sent.borrow().iter().any(|d| d.0.1 >= 500.0),
+        "both last writes are held: {:?}",
+        sent.borrow()
+    );
+    for _ in 0..200 {
+        if let Some(&(_, g)) = sent.borrow().iter().find(|d| d.0.1 == 500.0) {
+            assert!(
+                !sent.borrow().iter().any(|d| d.0.1 == 600.0),
+                "600 landed with 500"
+            );
+            return (t, g);
+        }
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    panic!("500 never landed: {:?}", sent.borrow());
+}
+
+/// The later held write of an item outlives the earlier one's landing
+/// even when something else in the list changes before it lands (here a
+/// service's report of another item).
+#[test]
+fn a_later_held_item_write_survives_a_change_after_an_earlier_one_landed() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentTagged = std::rc::Rc::default();
+    let (mut t, _) = first_of_two_held_landed(&rt, sinks, &sent);
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 0,
+                key: 1,
+                value: (1, 9.0),
+            }],
+            None,
+        )
+        .unwrap();
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    assert_eq!(item(&rt, sinks, 1), 9.0);
+    assert_eq!(item(&rt, sinks, 2), 600.0, "sent: {:?}", sent.borrow());
+    assert_eq!(sent.borrow().last().map(|d| d.0), Some((2, 600.0)));
+}
+
+/// A service's answer to the earlier write that landed, even one
+/// correcting it (a clamped volume), keeps the later held write: it was
+/// made after the write answered.
+#[test]
+fn a_service_correcting_an_earlier_write_keeps_the_later_held_one() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentTagged = std::rc::Rc::default();
+    let (mut t, g) = first_of_two_held_landed(&rt, sinks, &sent);
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 1,
+                key: 2,
+                value: (2, 499.0),
+            }],
+            Some(g),
+        )
+        .unwrap();
+    assert_eq!(item(&rt, sinks, 2), 499.0, "the correction applies");
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    assert_eq!(item(&rt, sinks, 2), 600.0, "sent: {:?}", sent.borrow());
+    assert_eq!(sent.borrow().last().map(|d| d.0), Some((2, 600.0)));
+}
+
+/// A report of the item that answers no write of ours (an outside change,
+/// here an untagged value no write of ours sent) still supersedes the held
+/// write.
+#[test]
+fn an_outside_report_after_an_earlier_write_landed_drops_the_later_held_one() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentTagged = std::rc::Rc::default();
+    let (mut t, _) = first_of_two_held_landed(&rt, sinks, &sent);
+    sinks
+        .receive_items(
+            &rt,
+            &[VecDiff::Update {
+                index: 1,
+                key: 2,
+                value: (2, 0.75),
+            }],
+            None,
+        )
+        .unwrap();
+    for _ in 0..200 {
+        t += Duration::from_millis(1);
+        rt.tick(t);
+    }
+    assert_eq!(item(&rt, sinks, 2), 0.75, "sent: {:?}", sent.borrow());
+    assert!(!sent.borrow().iter().any(|d| d.0.1 == 600.0));
+}
+
+/// Another change of a held item (here a plain update of the list from
+/// outside any handler) supersedes the held write of that item.
+#[test]
+fn a_change_of_a_held_item_supersedes_its_write() {
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: SentItems = std::rc::Rc::default();
+    let a = item_writer(&rt, sinks, &[1, 2], &sent);
+    let t = throttle(&rt, a, Duration::ZERO, 1000);
+    assert!(!sent.borrow().contains(&(2, 1000.0)));
+    sinks.update(&rt, &2, |d| d.1 = 3.0).unwrap();
+    rt.tick(t + Duration::from_secs(1));
+    assert_eq!(
+        item(&rt, sinks, 2),
+        3.0,
+        "a held write landed after a newer change"
+    );
+    assert_eq!(item(&rt, sinks, 1), 1000.0);
+}

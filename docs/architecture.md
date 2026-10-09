@@ -246,7 +246,10 @@ connection (`Services::spawn_task`, crate-private), and feeds
 main thread's callback) and has `switched` redraw icons as an
 `index.theme` change does. `strand-introspect` reads an object's properties from its
 D-Bus introspection (`properties_on(conn, name, path)` async,
-`properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
+`properties(&Bus, name, path)` blocking with a 2 s bound over one
+connection per bus kept for the process (on a current-thread runtime
+with no thread of its own, so an idle connection costs no wakeup; made
+again when it breaks or hangs), `parse(xml)`,
 `default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),
 `properties` blocking, `properties_or_ask` answering from what it
 remembers and asking on a thread of its own): what `from dbus` services
@@ -864,7 +867,13 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   held, then sent) and reports come back through `receive`. An item of a
   service's keyed list is written with `KeyedSignal::write_item_tagged(
   key, item, send)` (the item updated at once; a throttled handler's item
-  writes are held, the latest per item, each landing with its `send`)
+  writes are held, the latest per item, each landing with its `send`;
+  latest write wins per item: a landing item write drops other
+  handlers' held writes of that item made before it and re-bases the
+  later ones onto itself, a service's report settling the last landed
+  write of the item (`receive_items`, even a correcting one) re-bases
+  them too, any other change of the item drops them all, and held
+  writes of other items are kept)
   and the service's diffs come back through `receive_items(diffs,
   echo_of)`, which drops an item's echo (by tag, or by value untagged),
   keeps a written item in a `Reset` that echoes it, and drops updates
@@ -2019,9 +2028,12 @@ transparent huge pages for life.
   outside changes); `ready()` ends the boot phase (updates before it are boot
   values: `on change` takes them as its baseline; it also ends the first
   frame's wait); `recv().await` / `blocking_recv()` / `try_recv()` give
-  `Msg::{Write(Write { field, key, path, value, field_value, generation
-  }) (an item write names the keyed list in `field`, the item's key in
-  `key`, the path below the item, and the item's whole new value),
+  `Msg::{Write(Write { field, key, path, value, field_value, held,
+  generation }) (an item write names the keyed list in `field`, the
+  item's key in `key`, the path below the item, the list's item with the
+  write applied in `field_value`, and in `held` the record the writer
+  held, which may be an item that left and whose key was reused since;
+  `None` for a field write),
   Action(S::Action), Call(S::Call, Reply), Visible(bool), Watch { field,
   on }}` and `None` once stopped; `visible()` (a reader is visible: a
   service polling as a whole, cpu or memory, runs only then);
@@ -2393,7 +2405,10 @@ transparent huge pages for life.
   (`Vec<VecDiff<u32, AudioDevice>>` keyed by the PipeWire id, a `Reset`
   first; an id PipeWire reused for another device, a new `object.serial`,
   is a `Remove` and an `Insert`), `Sink`/`Source` (`Option<AudioDevice>`: the defaults; `None`
-  is shown as the record's schema defaults) and `Levels { target,
+  is shown as the record's schema defaults), `Serials` (every listed
+  device's `object.serial` by id, the whole map, in the first batch and
+  whenever it changes; `Mirror::device_ref(id)` /
+  `AudioState::device_ref(id)` turn it into a `DeviceRef`) and `Levels { target,
   device, peaks }` (at most one per meter per `audio::FRAME`, 1/60 s,
   the cycles read on PipeWire's data thread so the loop wakes about once
   a frame at most; a meter that stops or is retargeted after showing sound sends one with
@@ -2440,6 +2455,13 @@ transparent huge pages for life.
   run right after its first state; with no connection at all they
   answer `NotConnected` after `audio::GRACE` (2 s). `DeviceRef::
   DefaultSink` resolves on the audio thread when the write runs.
+  `DeviceRef::Id { id, serial: Option<u64> }` (`DeviceRef::id(id)`,
+  `DeviceRef::device(id, serial)`) names a device by its PipeWire id and,
+  with a serial, only while that id holds the device with that
+  `object.serial`: PipeWire hands a freed id to the next object it
+  creates, so a reference kept past its device leaving answers
+  `UnknownDevice` instead of reaching the new device (a node without a
+  readable serial matches any).
   Every language-side write arrives as `SetVolume`: VM writes, and
   IPC's relative form (`strand set audio.sink.volume +5%`, design.md
   example (d)), which wave4/core's `services::set_text` resolves
@@ -2474,7 +2496,12 @@ transparent huge pages for life.
   ends the loop. A write of `audio.sink`/`audio.source` (`.volume`,
   `.muted`) becomes `SetVolume`/`SetMuted` on `DeviceRef::DefaultSink`
   (`DefaultSource`); an item write of `audio.sinks`/`audio.sources` on
-  `DeviceRef::Id`. Each write is answered tagged (`Cx::report`) by the
+  `DeviceRef::Id` with the serial the store shows under that id, unless
+  the record the write was made on (`Write::held`) names another
+  `node.name` than the device under its id now (an item kept past its
+  device leaving, its id reused): that write changes nothing and is
+  answered with the device as it is, and `make_default()` on such an
+  item does nothing. Each write is answered tagged (`Cx::report`) by the
   first batch that changes its device and shows its value (the earlier
   writes of that device's field are overtaken, so the logic thread
   ignores their echoes and settles on the last), or, refused, not a

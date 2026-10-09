@@ -11,7 +11,7 @@
 //! access>` matter.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// How long introspecting may take (connecting included) before it is
@@ -128,18 +128,9 @@ pub async fn properties_on(
     name: &str,
     path: &str,
 ) -> Result<Vec<Property>, String> {
-    let reply = conn
-        .call_method(
-            Some(name),
-            path,
-            Some("org.freedesktop.DBus.Introspectable"),
-            "Introspect",
-            &(),
-        )
+    introspect(conn, name, path)
         .await
-        .map_err(|e| e.to_string())?;
-    let xml: String = reply.body().deserialize().map_err(|e| e.to_string())?;
-    Ok(parse(&xml))
+        .map_err(|e| e.to_string())
 }
 
 /// Which bus.
@@ -154,31 +145,162 @@ pub enum Bus {
     Address(String),
 }
 
-/// Introspect `path` of `name` on `bus`, blocking (a runtime of its own),
-/// at most [`TIMEOUT`]. For callers without a tokio runtime: `strand
-/// check`, the loader, the LSP.
-pub fn properties(bus: &Bus, name: &str, path: &str) -> Result<Vec<Property>, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    rt.block_on(async {
-        let work = async {
-            let conn = match bus {
-                Bus::System => zbus::Connection::system().await,
-                Bus::Session => zbus::Connection::session().await,
-                Bus::Address(a) => match zbus::connection::Builder::address(a.as_str()) {
-                    Ok(b) => b.build().await,
-                    Err(e) => Err(e),
-                },
-            }
-            .map_err(|e| format!("cannot reach the bus: {e}"))?;
-            properties_on(&conn, name, path).await
-        };
-        match tokio::time::timeout(TIMEOUT, work).await {
-            Ok(r) => r,
-            Err(_) => Err(format!("no answer within {TIMEOUT:?}")),
+/// [`properties`]' runtime and its connection to each bus, kept for the
+/// process: a `from dbus` check refreshed every [`TTL`] asks over the
+/// same connection instead of opening one per question. The runtime is
+/// current-thread and has no thread of its own: it runs only inside a
+/// caller's `block_on` (several callers take turns driving it), so an
+/// idle connection costs no wakeup.
+struct Shared {
+    rt: tokio::runtime::Runtime,
+    /// The kept connections. Never held across an `await`, so dropping
+    /// one that broke or hung never waits for another caller.
+    conns: Mutex<HashMap<Bus, zbus::Connection>>,
+    /// Held while a connection is made, so callers asking at once share
+    /// it. Waited for only within a caller's deadline.
+    connecting: tokio::sync::Mutex<()>,
+}
+
+fn shared() -> Result<&'static Shared, String> {
+    static SHARED: OnceLock<Option<Shared>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            Some(Shared {
+                rt,
+                conns: Mutex::new(HashMap::new()),
+                connecting: tokio::sync::Mutex::new(()),
+            })
+        })
+        .as_ref()
+        .ok_or_else(|| "cannot start an async runtime".to_string())
+}
+
+async fn connect(bus: &Bus) -> zbus::Result<zbus::Connection> {
+    match bus {
+        Bus::System => zbus::Connection::system().await,
+        Bus::Session => zbus::Connection::session().await,
+        Bus::Address(a) => {
+            zbus::connection::Builder::address(a.as_str())?
+                .build()
+                .await
         }
+    }
+}
+
+impl Shared {
+    /// The kept connections (a caller that panicked holding them left
+    /// nothing half-done: every edit is one map operation).
+    fn conns(&self) -> std::sync::MutexGuard<'_, HashMap<Bus, zbus::Connection>> {
+        self.conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The kept connection to `bus`, made now if there is none.
+    async fn connection(&self, bus: &Bus) -> Result<zbus::Connection, String> {
+        if let Some(conn) = self.conns().get(bus) {
+            return Ok(conn.clone());
+        }
+        let _connecting = self.connecting.lock().await;
+        // Another caller may have made it while this one waited.
+        if let Some(conn) = self.conns().get(bus) {
+            return Ok(conn.clone());
+        }
+        let conn = connect(bus)
+            .await
+            .map_err(|e| format!("cannot reach the bus: {e}"))?;
+        self.conns().insert(bus.clone(), conn.clone());
+        Ok(conn)
+    }
+
+    /// Forgets `conn` as `bus`'s connection (it broke, or hung). Never
+    /// waits: a connection being made elsewhere does not hold the map.
+    fn forget(&self, bus: &Bus, conn: &zbus::Connection) {
+        let mut conns = self.conns();
+        if conns
+            .get(bus)
+            .is_some_and(|kept| kept.unique_name() == conn.unique_name())
+        {
+            conns.remove(bus);
+        }
+    }
+
+    /// Introspects over the kept connection, by `deadline`. A connection
+    /// that fails other than with an answer (the bus restarted) is
+    /// dropped and the question asked once more on a new one; one that
+    /// gets no answer in time is dropped too, so a hung bus is never
+    /// kept.
+    async fn properties(
+        &self,
+        bus: &Bus,
+        name: &str,
+        path: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<Vec<Property>, String> {
+        let late = || format!("no answer within {TIMEOUT:?}");
+        let mut retried = false;
+        loop {
+            let conn = tokio::time::timeout_at(deadline, self.connection(bus))
+                .await
+                .map_err(|_| late())??;
+            match tokio::time::timeout_at(deadline, introspect(&conn, name, path)).await {
+                Err(_) => {
+                    self.forget(bus, &conn);
+                    return Err(late());
+                }
+                Ok(Err(e)) if !answered(&e) && !retried => {
+                    self.forget(bus, &conn);
+                    retried = true;
+                }
+                Ok(Err(e)) => {
+                    if !answered(&e) {
+                        self.forget(bus, &conn);
+                    }
+                    return Err(e.to_string());
+                }
+                Ok(Ok(props)) => return Ok(props),
+            }
+        }
+    }
+}
+
+/// The error is the bus's or the peer's answer (no such name, no such
+/// object), not a broken connection.
+fn answered(e: &zbus::Error) -> bool {
+    matches!(e, zbus::Error::MethodError(..) | zbus::Error::FDO(_))
+}
+
+async fn introspect(
+    conn: &zbus::Connection,
+    name: &str,
+    path: &str,
+) -> zbus::Result<Vec<Property>> {
+    let reply = conn
+        .call_method(
+            Some(name),
+            path,
+            Some("org.freedesktop.DBus.Introspectable"),
+            "Introspect",
+            &(),
+        )
+        .await?;
+    let xml: String = reply.body().deserialize()?;
+    Ok(parse(&xml))
+}
+
+/// Introspect `path` of `name` on `bus`, blocking, at most [`TIMEOUT`],
+/// over one connection per bus kept for the process (made at the first
+/// question, made again when it breaks). For callers outside any tokio
+/// runtime: `strand check`, the loader, the LSP.
+pub fn properties(bus: &Bus, name: &str, path: &str) -> Result<Vec<Property>, String> {
+    let shared = shared()?;
+    shared.rt.block_on(async {
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
+        shared.properties(bus, name, path, deadline).await
     })
 }
 

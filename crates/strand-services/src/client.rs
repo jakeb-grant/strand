@@ -1492,6 +1492,7 @@ impl<S: Service> DynService for Client<S> {
                             path,
                             value,
                             field_value: sent_whole,
+                            held: None,
                             generation,
                         },
                     );
@@ -1528,7 +1529,7 @@ impl<S: Service> DynService for Client<S> {
         let mut last = None;
         for i in lists {
             let (name, me, key2) = (S::FIELDS[i].name, Rc::downgrade(&self.0), key.clone());
-            let (path2, value2) = (path.to_vec(), value.clone());
+            let (path2, value2, held) = (path.to_vec(), value.clone(), item.clone());
             let send: crate::store::SendItemWrite = Box::new(move |rt, index, item, generation| {
                 let Some(c) = me.upgrade() else {
                     return;
@@ -1554,6 +1555,7 @@ impl<S: Service> DynService for Client<S> {
                         path: path2,
                         value: value2,
                         field_value: item,
+                        held: Some(Box::new(held)),
                         generation,
                     },
                 );

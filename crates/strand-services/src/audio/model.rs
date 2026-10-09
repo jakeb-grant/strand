@@ -190,6 +190,20 @@ impl AudioState {
     pub fn device(&self, id: u32) -> Option<&AudioDevice> {
         self.sinks.iter().chain(&self.sources).find(|d| d.id == id)
     }
+
+    /// A reference to the device that holds `id` now: with its serial,
+    /// so an action sent with it never reaches a later device under the
+    /// same id.
+    pub fn device_ref(&self, id: u32) -> super::DeviceRef {
+        serial_ref(&self.serials, id)
+    }
+}
+
+fn serial_ref(serials: &BTreeMap<u32, u64>, id: u32) -> super::DeviceRef {
+    super::DeviceRef::Id {
+        id,
+        serial: serials.get(&id).copied(),
+    }
 }
 
 /// Which device a peak meter follows.
@@ -245,6 +259,10 @@ pub enum AudioChange {
     Sink(Option<AudioDevice>),
     /// `audio.source`: the default input, if any (`None` as for `Sink`).
     Source(Option<AudioDevice>),
+    /// Every listed device's `object.serial`, by id (the whole map, in the
+    /// first batch and whenever it changes: a device came, left or its id
+    /// was reused), for [`super::DeviceRef::Id`]. Not a schema field.
+    Serials(BTreeMap<u32, u64>),
     /// A peak meter's reading (only while one is asked for).
     Levels(Levels),
 }
@@ -318,6 +336,7 @@ impl Publisher {
                 }]));
                 out.push(AudioChange::Sink(next.sink().cloned()));
                 out.push(AudioChange::Source(next.source().cloned()));
+                out.push(AudioChange::Serials(next.serials.clone()));
             }
             Some(last) => {
                 if last.connected != next.connected {
@@ -336,6 +355,9 @@ impl Publisher {
                 }
                 if last.source() != next.source() {
                     out.push(AudioChange::Source(next.source().cloned()));
+                }
+                if last.serials != next.serials {
+                    out.push(AudioChange::Serials(next.serials.clone()));
                 }
             }
         }
@@ -360,6 +382,8 @@ pub struct Mirror {
     pub source: Option<AudioDevice>,
     /// The last reading of each meter.
     pub levels: Vec<Levels>,
+    /// Each device's `object.serial`, by id.
+    pub serials: BTreeMap<u32, u64>,
 }
 
 impl Mirror {
@@ -380,6 +404,7 @@ impl Mirror {
             }
             AudioChange::Sink(d) => self.sink = d.clone(),
             AudioChange::Source(d) => self.source = d.clone(),
+            AudioChange::Serials(s) => self.serials = s.clone(),
             AudioChange::Levels(l) => match self.levels.iter_mut().find(|m| m.target == l.target) {
                 Some(m) => *m = l.clone(),
                 None => self.levels.push(l.clone()),
@@ -401,6 +426,12 @@ impl Mirror {
     /// The last reading of `target`'s meter.
     pub fn levels(&self, target: LevelTarget) -> Option<&Levels> {
         self.levels.iter().find(|l| l.target == target)
+    }
+
+    /// A reference to the device that holds `id` now, with its serial
+    /// ([`AudioState::device_ref`]).
+    pub fn device_ref(&self, id: u32) -> super::DeviceRef {
+        serial_ref(&self.serials, id)
     }
 }
 
@@ -497,7 +528,8 @@ mod tests {
             serials: BTreeMap::new(),
         };
         let first = p.publish(s.clone());
-        assert_eq!(first.len(), 5);
+        assert_eq!(first.len(), 6);
+        assert_eq!(first[5], AudioChange::Serials(BTreeMap::new()));
         assert_eq!(first[0], AudioChange::Connected(true));
         for c in &first {
             m.apply(c).unwrap();
@@ -570,13 +602,17 @@ mod tests {
         for c in p.publish(s.clone()) {
             m.apply(&c).unwrap();
         }
+        assert_eq!(m.device_ref(30), crate::audio::DeviceRef::device(30, 100));
+        // A reference taken now (an open popup's item).
+        let stale = m.device_ref(30);
         // a leaves and another device gets its id in the same burst.
         s.sinks[0] = dev(30, "c", Direction::Sink, 0.5);
         s.serials.insert(30, 205);
         let c = p.publish(s.clone());
-        let [AudioChange::Sinks(d)] = &c[..] else {
+        let [AudioChange::Sinks(d), AudioChange::Serials(serials)] = &c[..] else {
             panic!("{c:?}")
         };
+        assert_eq!(serials, &s.serials);
         assert!(
             matches!(
                 &d[..],
@@ -595,13 +631,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["c", "b"]
         );
+        // The mirror's reference names the new device; the stale one
+        // still names the old serial (the audio thread refuses it).
+        assert_eq!(m.device_ref(30), s.device_ref(30));
+        assert_ne!(m.device_ref(30), stale);
+        assert_eq!(m.device_ref(99), crate::audio::DeviceRef::id(99));
         // The same device, even with every field the same: no change.
         assert!(p.publish(s.clone()).is_empty());
         // Another serial with identical fields is still a new device.
         s.serials.insert(31, 300);
         let c = p.publish(s);
         assert!(
-            matches!(&c[..], [AudioChange::Sinks(d)] if matches!(d[..], [VecDiff::Remove { key: 31, .. }, VecDiff::Insert { key: 31, .. }])),
+            matches!(&c[..], [AudioChange::Sinks(d), AudioChange::Serials(_)] if matches!(d[..], [VecDiff::Remove { key: 31, .. }, VecDiff::Insert { key: 31, .. }])),
             "{c:?}"
         );
     }

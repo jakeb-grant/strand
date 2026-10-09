@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
-tokio = { version = "1.53", features = ["rt", "time"] }
+tokio = { version = "1.53", features = ["rt", "sync", "time"] }
 
 [lints]
 workspace = true

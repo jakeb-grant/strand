@@ -198,6 +198,41 @@ fn the_audio_store_follows_and_writes_pipewire() {
             .any(|d| d.id == sink_b && d.volume == 0.6)
     });
 
+    // An item kept past its device leaving (a popup's), its id reused by
+    // another device: the record names another node, so its write and its
+    // `make_default()` change nothing, and the write is answered with the
+    // device as it is.
+    let stale = audio::AudioDevice {
+        name: "strand-sink-that-left".into(),
+        ..item.clone()
+    };
+    dynamic
+        .write_item(
+            &rt,
+            "AudioDevice",
+            &stale.to_data(),
+            &[Step::Field("volume".into())],
+            Data::Float(0.15),
+        )
+        .unwrap();
+    b.audio
+        .act(&rt, AudioDeviceAction::MakeDefault { item: stale })
+        .unwrap();
+    until(&rt, &s, "the stale write answered as is", || {
+        state(&b, &rt)
+            .sinks
+            .iter()
+            .any(|d| d.id == sink_b && d.volume == 0.6)
+    });
+    let settle = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settle {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(pw.volume(sink_b).0, 0.6, "a stale item's write landed");
+    assert_eq!(state(&b, &rt).sink.id, sink_a, "a stale make_default() ran");
+
     // Mute through the default.
     dynamic
         .write(

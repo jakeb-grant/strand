@@ -27,7 +27,9 @@
 //!   frame (1/60 s, the loudest of the cycles in between), read on
 //!   PipeWire's data thread so the loop wakes at most once a frame;
 //! - reconnects when the daemon restarts (100 ms doubling backoff, and an
-//!   inotify watch on the socket's directory while disconnected), keeping
+//!   inotify watch on the socket's directory while disconnected; with no
+//!   inotify instance to be had, attempts every 10 s, and the watch is
+//!   tried again on each until it can be made), keeping
 //!   the last devices meanwhile: a new connection's first state waits for
 //!   the session manager (its `default` metadata, and the defaults shown
 //!   before) for up to [`SETTLE`], so a restart shows no empty default or
@@ -86,6 +88,8 @@ pub use schema::SCHEMA;
 pub use service::{
     ANSWER_WAIT, AudioDeviceAction, AudioStore, AudioStoreCells, LevelTap, configure, tap_levels,
 };
+#[doc(hidden)]
+pub use thread::deny_inotify;
 pub use thread::{ECHOES, FRAME, GRACE, REREAD, SETTLE, UNANSWERED};
 
 /// Where to connect.
@@ -105,8 +109,36 @@ pub enum DeviceRef {
     DefaultSink,
     /// The default input (`audio.source`).
     DefaultSource,
-    /// A device by id (an item of `audio.sinks` or `audio.sources`).
-    Id(u32),
+    /// A device by id (an item of `audio.sinks` or `audio.sources`) and,
+    /// when known, its `object.serial`. PipeWire reuses a freed id for
+    /// an object it creates later; serials are never reused, so a
+    /// reference with a serial is refused ([`AudioError::UnknownDevice`])
+    /// once its id holds another device, and never reaches that device.
+    /// Without a serial it is whatever device holds the id when the
+    /// action runs. [`AudioState::device_ref`] and [`Mirror::device_ref`]
+    /// build one from the stream's serials ([`AudioChange::Serials`]).
+    Id {
+        /// The PipeWire global id.
+        id: u32,
+        /// Its `object.serial`; `None`: any device holding `id`.
+        serial: Option<u64>,
+    },
+}
+
+impl DeviceRef {
+    /// Whatever device holds `id` when the action runs.
+    pub fn id(id: u32) -> Self {
+        Self::Id { id, serial: None }
+    }
+
+    /// The device with `id` and `object.serial` `serial`, only while it
+    /// holds that id.
+    pub fn device(id: u32, serial: u64) -> Self {
+        Self::Id {
+            id,
+            serial: Some(serial),
+        }
+    }
 }
 
 /// A write or action on a device.
