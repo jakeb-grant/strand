@@ -49,7 +49,7 @@ and the full shell warns above 64 MB and fails above 70 MB
 - Done on `laptop/ci` (decisions.md laptop-ci): the `check` job is split
   into `lint`, `test`, `budgets`, `acceptance` and `timing`; the timing
   gates build on a `timing` profile (release without LTO); `theme_swap_bench`
-  gates medians of more swaps with up to three attempts. Consolidating
+  gates the median of more swaps, measured once. Consolidating
   test binaries was measured (about 39 s of linking in all) and not done.
 - Flakes seen once each, with diagnostics added so a recurrence names its
   cause (none reproduced locally; all in m3-report Open):

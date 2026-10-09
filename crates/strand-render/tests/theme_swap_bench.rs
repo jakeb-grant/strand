@@ -13,10 +13,9 @@
 //! strand-render --test theme_swap_bench`, the release opt-levels
 //! without link-time optimisation). Every case is gated on the median of
 //! many swaps (31 per look pair, 24 crossfades, 16 per scopes case,
-//! half as many in a debug build; the
-//! p95 and the worst are printed), and a case over its gate is measured
-//! again, up to [`ATTEMPTS`] times, before it fails: runner noise lifts
-//! one attempt, a regression every one. A debug build does the same
+//! half as many in a debug build; the p95 and the worst are printed),
+//! measured once: no case is re-run, so the gate is that one median
+//! (decisions.md, laptop-ci). A debug build does the same
 //! work about four times slower (some six on CI's runners), so there the
 //! gate is eight times the budget: it still fails on a regression of the
 //! work's shape (a check per node, a palette played through without
@@ -63,7 +62,7 @@ const BUDGET: Duration = Duration::from_millis(5);
 /// quarter of a 60 Hz frame), optimised.
 const BLEND_BUDGET: Duration = Duration::from_micros(4_000);
 
-/// Swaps measured per attempt: `optimised` where the gate is the budget
+/// Swaps measured per case: `optimised` where the gate is the budget
 /// (a median of 31 moves only when most of them do), half as many in a
 /// debug build, whose gate is a check of the work's shape and whose run
 /// is part of the workspace tests.
@@ -106,33 +105,6 @@ fn quantile(v: &[Duration], q: f64) -> Duration {
     sorted[i]
 }
 
-/// How many times a case is measured at most before its gate fails.
-/// Runner noise only ever adds time (a descheduled thread, a neighbour
-/// job on the same host) and can lift a whole attempt's median with it;
-/// a regression in the work itself lifts every attempt. A case passes
-/// on the first attempt within its gates (the 5 ms budget unchanged),
-/// so a noisy stretch on a shared runner costs that case a second
-/// measurement, not the job (docs/decisions.md, laptop-ci).
-const ATTEMPTS: usize = 3;
-
-/// Measures a case up to [`ATTEMPTS`] times, stopping at the first
-/// result that `passes`; returns that result, or the last one.
-fn measured<T>(name: &str, mut measure: impl FnMut() -> T, passes: impl Fn(&T) -> bool) -> T {
-    let mut attempt = 1;
-    loop {
-        let result = measure();
-        if passes(&result) {
-            return result;
-        }
-        if attempt == ATTEMPTS {
-            eprintln!("{name}: over its gate in all {ATTEMPTS} attempts");
-            return result;
-        }
-        eprintln!("{name}: attempt {attempt} over its gate, measuring again");
-        attempt += 1;
-    }
-}
-
 #[test]
 fn quantiles_are_nearest_rank() {
     let ms = |v: &[u64]| {
@@ -146,26 +118,6 @@ fn quantiles_are_nearest_rank() {
     assert_eq!(quantile(&v, 0.0), Duration::from_millis(1));
     let v: Vec<Duration> = (1..=40).map(Duration::from_millis).collect();
     assert_eq!(quantile(&v, 0.95), Duration::from_millis(38));
-    let mut calls = 0;
-    let got = measured(
-        "self-check of measured() (retries expected)",
-        || {
-            calls += 1;
-            calls
-        },
-        |n| *n == 2,
-    );
-    assert_eq!((got, calls), (2, 2));
-    let mut calls = 0;
-    let got = measured(
-        "self-check of measured() (retries expected)",
-        || {
-            calls += 1;
-            calls
-        },
-        |_| false,
-    );
-    assert_eq!((got, calls), (ATTEMPTS, ATTEMPTS));
 }
 
 fn fixture(name: &str) -> String {
@@ -341,33 +293,29 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
         ("mocha", "wallpaper"),
         ("wallpaper", "auto"),
     ] {
-        let median = measured(
-            &format!("theme swap {from} → {to}"),
-            || {
-                let mut totals = Vec::new();
-                let mut parts = Vec::new();
-                for _ in 0..samples(SWAPS) {
-                    shell.look(from, false);
-                    shell.settle();
-                    let (logic, apply) = shell.look(to, true);
-                    assert!(shell.r.swapping(), "{from} → {to}: nothing springs");
-                    assert_eq!(shell.r.swap_crossfades(), 0, "{from} → {to} crossfaded");
-                    let frames = shell.settle();
-                    totals.push(logic + apply + frames);
-                    parts.push((logic, apply, frames));
-                }
-                let median = median(&totals);
-                let i = totals.iter().position(|t| *t == median).unwrap();
-                let (logic, apply, frames) = parts[i];
-                eprintln!(
-                    "theme swap {from} → {to}: median {median:?}, p95 {:?} (logic {logic:?}, \
+        let median = {
+            let mut totals = Vec::new();
+            let mut parts = Vec::new();
+            for _ in 0..samples(SWAPS) {
+                shell.look(from, false);
+                shell.settle();
+                let (logic, apply) = shell.look(to, true);
+                assert!(shell.r.swapping(), "{from} → {to}: nothing springs");
+                assert_eq!(shell.r.swap_crossfades(), 0, "{from} → {to} crossfaded");
+                let frames = shell.settle();
+                totals.push(logic + apply + frames);
+                parts.push((logic, apply, frames));
+            }
+            let median = median(&totals);
+            let i = totals.iter().position(|t| *t == median).unwrap();
+            let (logic, apply, frames) = parts[i];
+            eprintln!(
+                "theme swap {from} → {to}: median {median:?}, p95 {:?} (logic {logic:?}, \
                      render apply {apply:?}, roots and token graph over the frames {frames:?})",
-                    quantile(&totals, 0.95)
-                );
-                median
-            },
-            |median| *median < gate(),
-        );
+                quantile(&totals, 0.95)
+            );
+            median
+        };
         report.push((median, from, to));
     }
     let gate = gate();
@@ -556,26 +504,22 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
     let blend_gated = !cfg!(debug_assertions);
     for double in [false, true] {
         let age = if double { 2 } else { 1 };
-        let (m, blend) = measured(
-            &format!("crossfading swap, buffers of age {age}"),
-            || {
-                let (totals, parts, blends) = crossfade_rounds(double, samples(CROSSFADES) as u32);
-                let m = median(&totals);
-                let i = totals.iter().position(|t| *t == m).unwrap();
-                let (apply, work, frames) = parts[i];
-                let blend = median(&blends);
-                eprintln!(
-                    "crossfading swap, buffers of age {age}: median {m:?}, p95 {:?}, worst {:?} \
+        let (m, blend) = {
+            let (totals, parts, blends) = crossfade_rounds(double, samples(CROSSFADES) as u32);
+            let m = median(&totals);
+            let i = totals.iter().position(|t| *t == m).unwrap();
+            let (apply, work, frames) = parts[i];
+            let blend = median(&blends);
+            eprintln!(
+                "crossfading swap, buffers of age {age}: median {m:?}, p95 {:?}, worst {:?} \
                      (apply with snapshots {apply:?}, frames {work:?} over {frames} frames); \
                      blend per frame {blend:?} (p95 {:?})",
-                    quantile(&totals, 0.95),
-                    totals.iter().max().unwrap(),
-                    quantile(&blends, 0.95)
-                );
-                (m, blend)
-            },
-            |(m, blend)| *m < gate && (!blend_gated || *blend < BLEND_BUDGET),
-        );
+                quantile(&totals, 0.95),
+                totals.iter().max().unwrap(),
+                quantile(&blends, 0.95)
+            );
+            (m, blend)
+        };
         assert!(
             m < gate,
             "age {age}: {m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
@@ -675,95 +619,87 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
     for scopes in [0usize, 8, 32] {
         for stiffness in [1600.0f32, 120.0] {
             let (light, dark) = spring_tables(stiffness);
-            let (apply, each, whole) = measured(
-                &format!("{scopes} scopes, spring({stiffness}, 1)"),
-                || {
-                    let mut b = Builder::default();
-                    b.diff.set_tokens(light.clone(), Transition::Instant);
-                    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("surface"))]);
-                    for i in 0..scopes {
-                        let mut set = TokenTable::default();
-                        let k = 0.04 + 0.5 * i as f32 / 32.0;
-                        set.insert(
-                            "surface",
-                            PropValue::Token(TokenExpr::path("surface").call(
-                                TokenMethod::Mix,
-                                vec![TokenExpr::path("accent"), TokenExpr::value(num(k))],
-                            )),
-                        );
-                        let sub = b.node(
-                            NodeKind::Box,
-                            Some(root),
-                            vec![
-                                (Prop::X, num(8.0 + 40.0 * (i % 16) as f32)),
-                                (Prop::Y, num(8.0 + 40.0 * (i / 16) as f32)),
-                                (Prop::Width, num(36.0)),
-                                (Prop::Height, num(36.0)),
-                                (Prop::Tokens, PropValue::Tokens(Box::new(set))),
-                                (Prop::Bg, tok("surface")),
-                            ],
-                        );
-                        b.node(
-                            NodeKind::Text,
-                            Some(sub),
-                            vec![(Prop::Text, text("12")), (Prop::Color, tok("fg"))],
-                        );
+            let (apply, each, whole) = {
+                let mut b = Builder::default();
+                b.diff.set_tokens(light.clone(), Transition::Instant);
+                let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("surface"))]);
+                for i in 0..scopes {
+                    let mut set = TokenTable::default();
+                    let k = 0.04 + 0.5 * i as f32 / 32.0;
+                    set.insert(
+                        "surface",
+                        PropValue::Token(TokenExpr::path("surface").call(
+                            TokenMethod::Mix,
+                            vec![TokenExpr::path("accent"), TokenExpr::value(num(k))],
+                        )),
+                    );
+                    let sub = b.node(
+                        NodeKind::Box,
+                        Some(root),
+                        vec![
+                            (Prop::X, num(8.0 + 40.0 * (i % 16) as f32)),
+                            (Prop::Y, num(8.0 + 40.0 * (i / 16) as f32)),
+                            (Prop::Width, num(36.0)),
+                            (Prop::Height, num(36.0)),
+                            (Prop::Tokens, PropValue::Tokens(Box::new(set))),
+                            (Prop::Bg, tok("surface")),
+                        ],
+                    );
+                    b.node(
+                        NodeKind::Text,
+                        Some(sub),
+                        vec![(Prop::Text, text("12")), (Prop::Color, tok("fg"))],
+                    );
+                }
+                let mut r = renderer();
+                assert!(r.apply(b.diff).is_empty());
+                r.attach_surface(S, root);
+                let mut buf = Buffer::new(680, 96, Scale::ONE);
+                let mut k = 0u32;
+                let time =
+                    |k: u32| Duration::from_secs(1) + Duration::from_micros(16_667 * k as u64);
+                buf.paint_at(&mut r, S, 0, time(k));
+                let mut applies = Vec::new();
+                let mut frame_work = Vec::new();
+                let mut frame_counts = Vec::new();
+                let mut wholes = Vec::new();
+                for round in 0..samples(SCOPE_SWAPS) {
+                    let to = if round % 2 == 0 { &dark } else { &light };
+                    let mut d = SceneDiff::new();
+                    d.set_tokens(to.clone(), Transition::Default);
+                    r.take_swap_work();
+                    let started = Instant::now();
+                    assert!(r.apply(d).is_empty());
+                    applies.push(started.elapsed());
+                    r.take_swap_work();
+                    let mut frames = 0u32;
+                    while r.wants_frame(S) {
+                        k += 1;
+                        buf.paint_at(&mut r, S, 1, time(k));
+                        frames += 1;
+                        assert!(frames < 1200, "never settled");
                     }
-                    let mut r = renderer();
-                    assert!(r.apply(b.diff).is_empty());
-                    r.attach_surface(S, root);
-                    let mut buf = Buffer::new(680, 96, Scale::ONE);
-                    let mut k = 0u32;
-                    let time =
-                        |k: u32| Duration::from_secs(1) + Duration::from_micros(16_667 * k as u64);
-                    buf.paint_at(&mut r, S, 0, time(k));
-                    let mut applies = Vec::new();
-                    let mut frame_work = Vec::new();
-                    let mut frame_counts = Vec::new();
-                    let mut wholes = Vec::new();
-                    for round in 0..samples(SCOPE_SWAPS) {
-                        let to = if round % 2 == 0 { &dark } else { &light };
-                        let mut d = SceneDiff::new();
-                        d.set_tokens(to.clone(), Transition::Default);
-                        r.take_swap_work();
-                        let started = Instant::now();
-                        assert!(r.apply(d).is_empty());
-                        applies.push(started.elapsed());
-                        r.take_swap_work();
-                        let mut frames = 0u32;
-                        while r.wants_frame(S) {
-                            k += 1;
-                            buf.paint_at(&mut r, S, 1, time(k));
-                            frames += 1;
-                            assert!(frames < 1200, "never settled");
-                        }
-                        let work = r.take_swap_work();
-                        frame_work.push(work / frames.max(1));
-                        frame_counts.push(frames);
-                        wholes.push(logic + applies[round] + work);
-                    }
-                    let apply = median(&applies);
-                    let each = median(&frame_work);
-                    let whole = median(&wholes);
-                    let frames = frame_counts[frame_counts.len() / 2];
-                    eprintln!(
-                        "{scopes} scopes, spring({stiffness}, 1): apply {apply:?} (p95 {:?}, \
+                    let work = r.take_swap_work();
+                    frame_work.push(work / frames.max(1));
+                    frame_counts.push(frames);
+                    wholes.push(logic + applies[round] + work);
+                }
+                let apply = median(&applies);
+                let each = median(&frame_work);
+                let whole = median(&wholes);
+                let frames = frame_counts[frame_counts.len() / 2];
+                eprintln!(
+                    "{scopes} scopes, spring({stiffness}, 1): apply {apply:?} (p95 {:?}, \
                          worst {:?}), {each:?} per frame over {frames} frames, whole swap with \
                          logic's {logic:?}: {whole:?} (p95 {:?}, worst {:?}) ({} crossfades)",
-                        quantile(&applies, 0.95),
-                        applies.iter().max().unwrap(),
-                        quantile(&wholes, 0.95),
-                        wholes.iter().max().unwrap(),
-                        r.swap_crossfades()
-                    );
-                    (apply, each, whole)
-                },
-                |(apply, each, whole)| {
-                    (!whole_gated(scopes, stiffness) || *whole < gate)
-                        && *apply < apply_gate(scopes)
-                        && *each < gate_frame
-                },
-            );
+                    quantile(&applies, 0.95),
+                    applies.iter().max().unwrap(),
+                    quantile(&wholes, 0.95),
+                    wholes.iter().max().unwrap(),
+                    r.swap_crossfades()
+                );
+                (apply, each, whole)
+            };
             report.push((scopes, stiffness, apply, each, whole));
         }
     }

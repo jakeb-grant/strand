@@ -253,8 +253,9 @@ jobs:
           STRAND_FUZZ_EDITS: "10000"
           # A new sequence each night; the seed is printed to replay it.
           STRAND_FUZZ_SEED: ${{ github.run_id }}
-      # The same 10,000 edits on the instance level, and the state table.
-      - run: cargo test --release -p strand-compiler --test reload random_ -- --nocapture
+      # The same 10,000 edits on the instance level, and the state table,
+      # on the same profile so the job builds one optimised tree.
+      - run: cargo test --profile timing -p strand-compiler --test reload random_ -- --nocapture
         env:
           STRAND_RELOAD_FUZZ: "10000"
           STRAND_STATE_FUZZ: "2000"
