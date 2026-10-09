@@ -2337,7 +2337,10 @@ and the connection):
     cannot blur logs one warning with the reason
     (`caps::blur_fallback_reason`, naming `strand compositor-rules` on
     Hyprland) and sends it to `strand watch` as a notice
-    (`ToLogic::Notice`).
+    (`ToLogic::Notice`), which logic keeps for the run: it is usually
+    said at boot, before anyone watches, so each watcher that subscribes
+    later gets it in the `notices` event that follows its `watch`
+    answer.
   - Popups: a `popup` nested in a popup may open to the side
     (`anchor:`, right by default, flipping left), for tray submenus.
   - Session lock (`session_lock.rs`): `State::lock()` asks

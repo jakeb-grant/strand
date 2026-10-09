@@ -1819,3 +1819,63 @@ fn an_app_installed_with_its_icon_resolves_it() {
     strand_icons::set_base_dirs(None);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A notice from the main thread (`ToLogic::Notice`: the blur
+/// fallback's reason) is sent at boot, before anyone watches: each
+/// `strand watch` that subscribes later hears it at once, and the same
+/// notice again is not repeated.
+#[test]
+fn main_thread_notices_reach_watchers_that_come_later() {
+    let dir = temp_dir("notices");
+    std::fs::write(dir.join("bar.strand"), "bar Top { text \"x\" }\n").unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    assert!(boot.build.is_some() && boot.diagnostics.is_empty());
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let said = "strand-Top asks for blur: the compositor does not blur";
+    to_logic.send(ToLogic::Notice(said.into())).unwrap();
+    to_logic.send(ToLogic::Notice(said.into())).unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["x"]);
+    let watch = || {
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        events
+    };
+    let next = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        serde_json::from_str::<Json>(&line).unwrap()
+    };
+    let mut first = watch();
+    let ev = next(&mut first);
+    assert_eq!(ev["event"], "notices", "{ev}");
+    assert_eq!(ev["notices"], json!([said]), "once, at once: {ev}");
+    assert_eq!(ev["diagnostics"], json!([]), "{ev}");
+    // A new notice reaches the watcher already there; a second watcher
+    // hears both.
+    to_logic.send(ToLogic::Notice("another".into())).unwrap();
+    let ev = next(&mut first);
+    assert_eq!(ev["notices"], json!(["another"]), "{ev}");
+    let mut second = watch();
+    let ev = next(&mut second);
+    assert_eq!(ev["notices"], json!([said, "another"]), "{ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
