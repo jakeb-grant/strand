@@ -71,7 +71,7 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   (`Dockerfile.lockvm`, only `/dev/kvm` passed in) and runs a command in
   the guest; `LOCKVM_TCG=1` emulates without KVM.
 - `ci` treats the wall-clock gates in the timing steps (theme_swap_bench,
-  reload_latency) as advisory: when every failure in a step is a gate
+  reload_latency, list_scroll_bench) as advisory: when every failure in a step is a gate
   miss (a panic starting "timing gate missed", `gate-misses.sh`), it
   prints WARN with its numbers and the run goes on; any other failure in
   those steps fails. GitHub's `timing` job enforces the gates.
