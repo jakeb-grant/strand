@@ -163,11 +163,14 @@ impl Painter for Renderer {
         self.process_finished();
         self.release_holds();
         self.arm_timer();
-        // The frame loop stops (no surface wants another frame): the
-        // paint cache's entries none of its frames used are idle, and go
-        // now rather than at a wake of their own (design.md: "freed when
-        // idle"; the M0 gate: no wakeup between ticks).
-        if !self.surfaces.keys().any(|s| self.wants(*s)) {
+        // The frame loop stops (no surface wants another frame, and no
+        // capped clock waits on a wake for its next tick): the paint
+        // cache's entries none of its frames used are idle, and go now
+        // rather than at a wake of their own (design.md: "freed when
+        // idle"; the M0 gate: no wakeup between ticks). Between a capped
+        // clock's ticks the loop has not stopped, so nothing the tick
+        // left alone is freed (`IDLE_FREE` still applies).
+        if !self.surfaces.keys().any(|s| self.wants(*s)) && self.clocks.next_wake().is_none() {
             self.raster.trim_unused_since(burst);
             self.burst = None;
         }

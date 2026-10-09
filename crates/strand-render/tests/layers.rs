@@ -529,3 +529,96 @@ fn raster_nodes_draw_at_their_clock_rate() {
     assert_eq!((red, blue), (240, 0), "t = 0.5 s: 40 + 200");
     assert!(r.raster_nodes().1 >= 20 * 20 * 4);
 }
+
+/// A capped clock's ticks do not stop the frame loop: an offscreen group
+/// the ticks' damage never reaches stays cached between them (design.md:
+/// groups "render once and redraw only when children change", freed
+/// when idle), and goes once it has been idle.
+#[test]
+fn capped_ticks_keep_untouched_offscreen_groups() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let group = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(40.0)),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(group),
+        vec![
+            (Prop::X, num(5.0)),
+            (Prop::Y, num(5.0)),
+            (Prop::Size, num(30.0)),
+            (Prop::Bg, color("#f38ba8")),
+        ],
+    );
+    let raster = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(180.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.set_layer_effects(group, vec![Effect::Blur { radius: 3.0 }]);
+    r.set_raster_source(
+        raster,
+        Some(std::sync::Arc::new(Steps(Duration::from_millis(100)))),
+    );
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    let at = |k: u64| t0 + Duration::from_nanos(1_000_000_000 * k / 60);
+    buf.paint_at(&mut r, S, 0, t0);
+    assert_eq!(r.offscreen_cache().1, 1, "the blurred group is built");
+    let blurred = r.boxes(S).unwrap().rects[&group];
+    let reach = Rect::new(
+        blurred.x as i32 - 12,
+        blurred.y as i32 - 12,
+        blurred.w as u32 + 24,
+        blurred.h as u32 + 24,
+    );
+    for tick in 1..=4 {
+        let d = buf.paint_at(&mut r, S, 1, at(6 * tick));
+        assert!(!d.is_empty(), "tick {tick} repaints the raster node");
+        for rect in d.rects() {
+            assert!(
+                !rect.intersects(reach),
+                "tick {tick}: damage {rect:?} reaches the group"
+            );
+        }
+        assert!(!r.wants_frame(S), "between ticks: no frame");
+        assert!(r.next_wake().is_some(), "but a wake for the next tick");
+        assert_eq!(
+            r.offscreen_cache().2,
+            1,
+            "tick {tick}: the untouched group stays cached"
+        );
+    }
+    assert_eq!(r.offscreen_cache().1, 1, "never built again");
+
+    // The clock goes and the loop stops. The burst's first frame used the
+    // group, so it is kept until it has been idle for the idle time.
+    r.set_raster_source(raster, None);
+    let mut k = 30;
+    while r.wants_frame(S) {
+        buf.paint_at(&mut r, S, 1, at(k));
+        k += 1;
+        assert!(k < 40, "settles");
+    }
+    assert_eq!(r.next_wake(), None);
+    assert_eq!(r.offscreen_cache().2, 1, "used in the burst");
+    r.set_paint_cache_idle(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(5));
+    r.update();
+    assert_eq!(r.offscreen_cache().2, 0, "idle: freed");
+}
