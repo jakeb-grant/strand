@@ -49,6 +49,28 @@ pub struct LayerConfig {
 }
 
 impl LayerConfig {
+    /// True if the surface reserves an exclusive zone and its buffer
+    /// lies wholly inside it: no overhang on the side facing the usable
+    /// area (a bar with no shadow towards the windows). The zone counts
+    /// from the edge the surface is anchored to without its opposite.
+    pub fn inside_exclusive_zone(&self) -> bool {
+        if self.exclusive_zone <= 0 {
+            return false;
+        }
+        let [ot, or, ob, ol] = self.overhang;
+        let a = self.anchors;
+        let away = match (a.top, a.bottom, a.left, a.right) {
+            (true, false, _, _) => ob,
+            (false, true, _, _) => ot,
+            (_, _, true, false) => or,
+            (_, _, false, true) => ol,
+            // Anchored to all four edges or none: the zone applies to
+            // no edge, so nothing lies outside the usable area.
+            _ => return false,
+        };
+        away == 0
+    }
+
     /// Where a surface of this config, `(w, h)` logical pixels (its
     /// buffer: box plus overhang), lands in an area of `(aw, ah)` (the
     /// output's usable area, where the compositor arranges layer
@@ -189,13 +211,14 @@ pub fn layer_below(layer: Layer) -> Layer {
 /// nested in (`root`). Popups stack above every layer surface, but the
 /// scrim is a layer surface of its own, and two on one layer stack in an
 /// order the protocol leaves open (sway 1.9 draws the older on top,
-/// wlroots' scene graph, niri and labwc the newer). A surface that
-/// reserves an exclusive zone (a bar) is outside the usable area the
-/// scrim covers, so the scrim shares its layer; any other goes on the
-/// layer below (a `top` panel with such a popup rose to `overlay`, see
+/// wlroots' scene graph, niri and labwc the newer). A bar whose buffer
+/// lies wholly inside its exclusive zone is outside the usable area the
+/// scrim covers, so the scrim shares its layer; any other surface (a
+/// panel, or a bar whose shadow reaches past its zone) has it on the
+/// layer below (a `top` one with such a popup rose to `overlay`, see
 /// [`layer_config_with`]).
 pub fn popup_scrim_layer(root: &LayerConfig) -> Layer {
-    if root.exclusive_zone > 0 {
+    if root.inside_exclusive_zone() {
         root.layer
     } else {
         layer_below(root.layer)
@@ -213,16 +236,9 @@ pub fn layer_config_with(
     spec: &SurfaceSpec,
     nested_scrim: bool,
 ) -> Result<LayerConfig, PlacementError> {
-    let mut layer = spec
+    let layer = spec
         .layer
         .ok_or(PlacementError::NotLayerSurface(spec.kind))?;
-    // A panel's scrim, or its popup's, goes on the layer below it, which
-    // for a `top` panel would be under the windows it should dim: such a
-    // panel rises to `overlay`, the scrim on `top` (`manager/catcher.rs`).
-    if spec.kind == NodeKind::Panel && (spec.scrim.is_some() || nested_scrim) && layer == Layer::Top
-    {
-        layer = Layer::Overlay;
-    }
     let m = spec.margin;
     let o = spec.overhang;
     let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
@@ -304,7 +320,7 @@ pub fn layer_config_with(
             0,
         )
     };
-    Ok(LayerConfig {
+    let mut config = LayerConfig {
         namespace: spec.namespace(),
         layer,
         anchors,
@@ -316,7 +332,21 @@ pub fn layer_config_with(
         overhang,
         // An OSD is click-through (design example d).
         click_through: spec.kind == NodeKind::Osd,
-    })
+    };
+    // A panel's scrim, or a popup's nested in a panel or in a bar that
+    // reaches past its exclusive zone, goes on the layer below it, which
+    // for a `top` surface would be under the windows it should dim: such
+    // a surface rises to `overlay`, the scrim on `top`
+    // (`manager/catcher.rs`, [`popup_scrim_layer`]).
+    let below = match spec.kind {
+        NodeKind::Panel => spec.scrim.is_some() || nested_scrim,
+        NodeKind::Bar => nested_scrim && !config.inside_exclusive_zone(),
+        _ => false,
+    };
+    if below && layer == Layer::Top {
+        config.layer = Layer::Overlay;
+    }
+    Ok(config)
 }
 
 /// Which side of its anchor a popup opens on.
@@ -943,5 +973,90 @@ mod tests {
         let c = layer_config_with(&bar, true).unwrap();
         assert_eq!(c.layer, Layer::Top, "a bar does not rise");
         assert_eq!(popup_scrim_layer(&c), Layer::Top);
+    }
+
+    /// A bar whose shadow reaches past its exclusive zone into the
+    /// usable area is a panel to its popup's scrim: the scrim goes on
+    /// the layer below, and a `top` bar rises to `overlay` for it. An
+    /// overhang towards the edge or along it stays inside the zone.
+    #[test]
+    fn a_bar_shadowing_the_usable_area_rises_over_its_popup_scrim() {
+        for (edge, away) in [
+            (
+                "top",
+                Insets {
+                    bottom: 6.0,
+                    ..Insets::default()
+                },
+            ),
+            (
+                "bottom",
+                Insets {
+                    top: 6.0,
+                    ..Insets::default()
+                },
+            ),
+            (
+                "left",
+                Insets {
+                    right: 6.0,
+                    ..Insets::default()
+                },
+            ),
+            (
+                "right",
+                Insets {
+                    left: 6.0,
+                    ..Insets::default()
+                },
+            ),
+        ] {
+            let mut bar = spec(
+                NodeKind::Bar,
+                &[
+                    (Prop::Edge, kw(edge)),
+                    (Prop::Height, PropValue::Number(30.0)),
+                    (Prop::Width, PropValue::Number(30.0)),
+                ],
+            );
+            bar.overhang = away;
+            let c = layer_config_with(&bar, true).unwrap();
+            assert!(!c.inside_exclusive_zone(), "{edge}");
+            assert_eq!(
+                (c.layer, popup_scrim_layer(&c)),
+                (Layer::Overlay, Layer::Top),
+                "{edge}"
+            );
+            let c = layer_config_with(&bar, false).unwrap();
+            assert_eq!(c.layer, Layer::Top, "{edge}: no scrim, no rise");
+        }
+
+        // A top bar's shadow above it and to its sides is in the zone.
+        let mut bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        bar.overhang = Insets {
+            top: 6.0,
+            left: 6.0,
+            right: 6.0,
+            bottom: 0.0,
+        };
+        let c = layer_config_with(&bar, true).unwrap();
+        assert!(c.inside_exclusive_zone());
+        assert_eq!((c.layer, popup_scrim_layer(&c)), (Layer::Top, Layer::Top));
+
+        // A shadowed bar the user put on `bottom` keeps it, its popup's
+        // scrim one below.
+        let mut bar = spec(
+            NodeKind::Bar,
+            &[
+                (Prop::Height, PropValue::Number(30.0)),
+                (Prop::Layer, kw("bottom")),
+            ],
+        );
+        bar.overhang = Insets::all(6.0);
+        let c = layer_config_with(&bar, true).unwrap();
+        assert_eq!(
+            (c.layer, popup_scrim_layer(&c)),
+            (Layer::Bottom, Layer::Background)
+        );
     }
 }

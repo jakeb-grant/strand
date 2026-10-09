@@ -2181,7 +2181,9 @@ fn grab(output: Option<&str>, dir: &std::path::Path) -> Option<Img> {
 /// background effect only where it is offered); where the compositor
 /// blurs, a panel's rounded blur region is sent; a panel's scrim dims a
 /// wallpaper surface beneath it and not the panel, and so does a scrim on
-/// a panel's popup (neither the panel nor the popup); and on Hyprland the layer rules
+/// a panel's popup (neither the panel nor the popup), and one on the
+/// popup of a bar whose shadow reaches past its exclusive zone (not the
+/// shadow); and on Hyprland the layer rules
 /// `strand compositor-rules` prints evaluate without errors and blur the
 /// surface they name.
 #[test]
@@ -2451,7 +2453,89 @@ fn surfaces_meet_the_live_compositor() {
             );
         }
     }
-    for node in [MENU, HOST, WALL] {
+    for node in [MENU, HOST] {
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
+    }
+
+    // `bar Shade { edge: top; height: 30 }` with a 10 px shadow below
+    // it, past its exclusive zone, and `popup { scrim: black 30 % }`:
+    // the shadow is in the usable area the scrim covers, so the scrim
+    // goes on the layer below the bar (which rises to `overlay`) and the
+    // shadow strip keeps its blue on every compositor.
+    const SHADE: NodeId = NodeId::new(12, 0);
+    const TIP: NodeId = NodeId::new(13, 0);
+    let shade: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Shade".into())),
+        (Prop::Edge, PropValue::Keyword("top".into())),
+        (Prop::Height, PropValue::Number(30.0)),
+    ]
+    .into_iter()
+    .collect();
+    let mut bar = SurfaceSpec::resolve(NodeKind::Bar, |p| shade.get(&p));
+    bar.overhang.bottom = 10.0;
+    mgr.state_mut()
+        .apply_surface_change(SHADE, SurfaceChange::Created(bar));
+    let mut tip = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&PropValue>);
+    tip.name = Some("Tip".into());
+    tip.parent = Some(SHADE);
+    tip.anchor_rect = Some(strand_scene::LogicalRect::new(100.0, 5.0, 60.0, 20.0));
+    tip.width = Some(200.0);
+    tip.height = Some(120.0);
+    tip.scrim = Some(Color::new(0.0, 0.0, 0.0, 0.3));
+    mgr.state_mut()
+        .apply_surface_change(TIP, SurfaceChange::Created(tip));
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == TIP && i.stats.commits > 0 && i.scrim.is_some())
+        })
+        .expect("dispatch");
+    assert!(
+        ok,
+        "{kind}: the shadowed bar's popup and its scrim: {:?}",
+        mgr.state().surfaces()
+    );
+    let shade_id = mgr.state().surfaces_of(SHADE)[0];
+    assert_eq!(
+        mgr.state().surface(shade_id).and_then(|i| i.layer),
+        Some(strand_scene::Layer::Overlay),
+        "{kind}: a bar shadowing the usable area rises for its popup's scrim"
+    );
+    // Far from the popup: the bar's box, then its shadow strip.
+    let (bx, by, shy) = (ow * 3 / 4, 15, 35);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        let (got, bar, shadow) = (img.px(sx, sy), img.px(bx, by), img.px(bx, shy));
+        let blue = [0x20, 0x60, 0xe0];
+        if dist(got, want) <= 9 && dist(bar, blue) <= 9 && dist(shadow, blue) <= 9 {
+            eprintln!(
+                "matrix: {kind}: a shadowed bar's popup scrim dims {base:?} to {got:?}; \
+                 the bar is {bar:?}, its shadow {shadow:?}"
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                let mut cmd = Command::new("grim");
+                if let Some(o) = &output {
+                    cmd.args(["-o", o]);
+                }
+                let _ = cmd
+                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-bar-scrim-failed.png")))
+                    .status();
+            }
+            panic!(
+                "{kind}: a shadowed bar's popup scrim: the desktop at ({sx}, {sy}) is {got:?} \
+                 (want {want:?}); the bar at ({bx}, {by}) is {bar:?}; its shadow at ({bx}, {shy}) \
+                 is {shadow:?}"
+            );
+        }
+    }
+    for node in [TIP, SHADE, WALL] {
         mgr.state_mut()
             .apply_surface_change(node, SurfaceChange::Removed);
     }
