@@ -16,6 +16,7 @@ use strand_scene::{
 
 use super::Renderer;
 use super::layout_pass::TextInfo;
+use crate::anim::{exit_pose, is_pose, page_slide};
 use crate::layout::{layout_margin, relayout_list, scrolls_content, translate_under};
 
 /// What moved a scroll ([`Renderer::scroll_input`]).
@@ -497,5 +498,98 @@ impl Renderer {
                 self.lists.stats.gaps += 1;
             }
         }
+    }
+}
+
+/// Directional `pages` transitions (see `anim/pages.rs`).
+impl Renderer {
+    /// True if `node` is a `page` directly under a `pages`.
+    pub(super) fn is_page(&self, node: &crate::tree::Node) -> bool {
+        node.kind == NodeKind::Page
+            && node
+                .parent
+                .and_then(|p| self.tree.get(p))
+                .is_some_and(|p| p.kind == NodeKind::Pages)
+    }
+
+    /// Node `id` of `kind` is being created under `parent` and enters.
+    pub(super) fn page_created(&mut self, id: NodeId, kind: NodeKind, parent: Option<NodeId>) {
+        let Some(p) = parent else {
+            return;
+        };
+        let pages = self.tree.get(p).is_some_and(|n| n.kind == NodeKind::Pages);
+        if pages && kind == NodeKind::Page {
+            self.anim.pages.created(p, id);
+        }
+    }
+
+    /// Logic is about to set `row_first` on `id`: on a `pages`, the
+    /// current page's place in source order.
+    pub(super) fn page_moving(&mut self, id: NodeId) {
+        let Some(n) = self.tree.get(id).filter(|n| n.kind == NodeKind::Pages) else {
+            return;
+        };
+        let old = n.get(Prop::RowFirst).cloned();
+        self.anim.pages.moving(id, old.as_ref());
+    }
+
+    /// The end of a diff: each `pages` whose current page changed slides
+    /// the new page in and the old one out, by their order (forward in
+    /// from the right). A page with its own `enter` or `exit` plays that;
+    /// a `pages` with a `transition:` leaves the swap to its mask; with
+    /// no direction (no `row_first` before) or under `reduced_motion`
+    /// the old page goes at once.
+    pub(super) fn settle_pages(&mut self) {
+        let tree = &self.tree;
+        let settled = self
+            .anim
+            .pages
+            .settle(|p| match tree.get(p)?.get(Prop::RowFirst) {
+                Some(PropValue::Number(f)) if f.is_finite() => Some(*f),
+                _ => None,
+            });
+        let reduced = self.anim.reduced();
+        for s in settled {
+            let masked = self
+                .tree
+                .get(s.pages)
+                .is_some_and(|n| n.get(Prop::Transition).is_some());
+            let slides = s.moved && !masked && !reduced;
+            let forward = s.swap.forward;
+            if let Some(e) = s.swap.entering
+                && slides
+                && !self
+                    .tree
+                    .get(e)
+                    .is_some_and(|n| is_pose(n.get(Prop::Enter)))
+            {
+                self.anim.set_pose(e, page_slide(true, forward));
+            }
+            if let Some(l) = s.swap.leaving {
+                let own = self.tree.get(l).is_some_and(|n| is_pose(exit_pose(n)));
+                if own {
+                    continue;
+                }
+                if slides {
+                    self.anim.set_pose(l, page_slide(false, forward));
+                } else if !masked {
+                    self.anim.finish_now(l);
+                }
+            }
+        }
+        let tree = &self.tree;
+        self.anim
+            .pages
+            .prune(|g| tree.is_ghost(g), |p| tree.contains_live(p));
+    }
+
+    /// The last swap of `pages`' current page while its old page still
+    /// plays out: the page coming in, the page going out and whether it
+    /// went forward in source order (transition masks pair them).
+    pub fn page_swap(&self, pages: NodeId) -> Option<crate::anim::PageSwap> {
+        self.anim
+            .pages
+            .last(pages)
+            .filter(|s| s.leaving.is_some_and(|l| self.tree.is_ghost(l)))
     }
 }

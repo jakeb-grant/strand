@@ -27,6 +27,7 @@ mod renderer;
 mod tree;
 pub mod widgets;
 
+pub use anim::PageSwap;
 pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
 pub use flatten::BLUR_TINT;
 pub use input::{DragView, Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};

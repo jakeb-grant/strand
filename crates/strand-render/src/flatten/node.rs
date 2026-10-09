@@ -642,11 +642,15 @@ impl<'a> Flattener<'a> {
             });
         }
 
-        // Children. A `scroll` or `list` always clips its content, and so
+        // Children. A `scroll`, `list` or `pages` always clips its content
+        // (a page slides in from outside it), and so
         // does a node whose size springs (a toast collapsing to `height:
         // 0`).
         let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
-            || matches!(node.kind, NodeKind::Scroll | NodeKind::List)
+            || matches!(
+                node.kind,
+                NodeKind::Scroll | NodeKind::List | NodeKind::Pages
+            )
             || self.anim.sizing(node.id);
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);

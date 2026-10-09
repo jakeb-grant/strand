@@ -2330,3 +2330,146 @@ fn window_mounts_do_not_play_poses() {
     st.paint(frame(31));
     assert!(st.r.wants_frame(S), "a data row enters");
 }
+
+/// A run of columns, first to last.
+type Span = Option<(u32, u32)>;
+
+/// The columns of row `y` showing red (`r`) and green (`g`) at most a
+/// little darkened (a page sliding is drawn at full opacity).
+fn spans(st: &Stage, y: u32) -> (Span, Span) {
+    let mut red: Span = None;
+    let mut green: Span = None;
+    for x in 0..st.buf.size.w {
+        let p = st.buf.px(x, y);
+        let grow = |s: &mut Span| {
+            *s = Some(s.map_or((x, x), |(a, _)| (a, x)));
+        };
+        if p[2] > 200 && p[1] < 60 {
+            grow(&mut red);
+        }
+        if p[1] > 200 && p[2] < 60 {
+            grow(&mut green);
+        }
+    }
+    (red, green)
+}
+
+/// `pages` slides between pages by their source order (`row_first`):
+/// going forward the new page comes in from the right while the old one
+/// leaves to the left, both moving every frame, and `pages` clips them;
+/// going back mirrors it. The pairing is readable while the old page
+/// plays out (`page_swap`). A page with its own `enter` plays that, and
+/// under `reduced_motion` the swap snaps.
+#[test]
+fn pages_slide_by_source_order() {
+    let red =
+        |b: &mut Builder, p| b.node(NodeKind::Page, Some(p), vec![(Prop::Bg, color("#ff0000"))]);
+    let mut pages = None;
+    let mut a = None;
+    let mut st = Stage::new(200, 60, |b, root| {
+        let p = b.node(
+            NodeKind::Pages,
+            Some(root),
+            vec![
+                (Prop::Width, num(120.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::RowFirst, num(10.0)),
+            ],
+        );
+        pages = Some(p);
+        a = Some(red(b, p));
+    });
+    let (pages, a) = (pages.unwrap(), a.unwrap());
+    assert_eq!(spans(&st, 30), (Some((0, 119)), None));
+    let swap = |st: &mut Stage, out: NodeId, inn: NodeId, bg: &str, first: f32, enter: bool| {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: out,
+            window: false,
+        });
+        d.create(inn, NodeKind::Page, Some(pages), 0)
+            .set(inn, Prop::Bg, color(bg));
+        if enter {
+            d.set(inn, Prop::Enter, PropValue::Keyword("fade".into()));
+        }
+        d.set(pages, Prop::RowFirst, num(first));
+        st.apply(d);
+    };
+
+    // Forward: b (green) comes in from the right, a (red) leaves left.
+    let b = NodeId::new(500, 0);
+    swap(&mut st, a, b, "#00ff00", 20.0, false);
+    assert_eq!(
+        st.r.page_swap(pages),
+        Some(strand_render::PageSwap {
+            entering: Some(b),
+            leaving: Some(a),
+            forward: true
+        })
+    );
+    let mut k = 1;
+    let mut last_green = 120;
+    let mut frames = 0;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        k += 1;
+        let (r, g) = spans(&st, 30);
+        let gx = g.map_or(120, |(x0, x1)| {
+            assert_eq!(x1, 119, "the new page's right edge is clipped");
+            x0
+        });
+        if let Some((x0, x1)) = r {
+            assert_eq!(x0, 0, "the old page leaves to the left");
+            assert!(x1 < gx, "{r:?} {g:?}");
+        }
+        for x in 120..200 {
+            assert_eq!(st.buf.px(x, 30)[1], st.buf.px(199, 30)[1], "clipped at {x}");
+        }
+        assert!(gx <= last_green, "moves left: {gx} after {last_green}");
+        if frames == 0 {
+            assert!(gx > 40 && gx < 120, "on its way in: {gx}");
+        }
+        last_green = gx;
+        frames += 1;
+        assert!(k < 200, "never settled");
+    }
+    assert!(frames >= 5, "{frames} frames");
+    assert_eq!(spans(&st, 30), (None, Some((0, 119))));
+    assert!(st.r.tree().get(a).is_none(), "the old page is gone");
+    assert_eq!(st.r.page_swap(pages), None);
+
+    // Back: a2 (red) comes in from the left, b leaves to the right.
+    let a2 = NodeId::new(501, 0);
+    swap(&mut st, b, a2, "#ff0000", 10.0, false);
+    st.paint(frame(k));
+    k += 1;
+    let (r, g) = spans(&st, 30);
+    let (r, g) = (r.unwrap(), g.unwrap());
+    assert_eq!((r.0, g.1), (0, 119), "{r:?} {g:?}");
+    assert!(r.1 < 80 && g.0 > r.1, "{r:?} {g:?}");
+    k = st.settle(k);
+    assert_eq!(spans(&st, 30), (Some((0, 119)), None));
+
+    // A page with its own enter plays it (a fade: in place, never to the
+    // side), and the old page with no pose of its own still slides out.
+    let c = NodeId::new(502, 0);
+    swap(&mut st, a2, c, "#00ff00", 30.0, true);
+    st.paint(frame(k));
+    k += 1;
+    let (r, g) = spans(&st, 30);
+    assert!(g.is_none(), "fading in, not yet bright: {g:?}");
+    let r = r.unwrap();
+    assert!(r.0 == 0 && r.1 < 119, "a2 slides out: {r:?}");
+    // Behind it, c shows faintly (a sliding page is drawn whole).
+    let p = st.buf.px(119, 30);
+    assert!(p[1] > 0 && p[1] < 200 && p[2] < 60, "c fades in: {p:?}");
+    k = st.settle(k);
+
+    // Under reduced_motion the swap snaps.
+    st.r.set_reduced_motion(true);
+    let d2 = NodeId::new(503, 0);
+    swap(&mut st, c, d2, "#ff0000", 40.0, false);
+    st.paint(frame(k));
+    assert_eq!(spans(&st, 30), (Some((0, 119)), None));
+    assert!(!st.r.wants_frame(S));
+}

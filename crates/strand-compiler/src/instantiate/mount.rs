@@ -70,6 +70,10 @@ struct Switch {
     /// What `pick` reads: chunks in the scope, and nodes directly.
     reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
     at: (crate::source::FileId, crate::syntax::Span),
+    /// A `page`: its `pages` node and its place in source order, set as
+    /// the `pages`' `row_first` when it is shown (render slides pages by
+    /// it).
+    page: Option<(strand_scene::NodeId, f32)>,
 }
 
 type ListFn = Box<dyn Fn(&Runtime) -> Result<Vec<(ValueKey, Value)>, Error>>;
@@ -1754,6 +1758,7 @@ impl Ctx {
             what,
             reads: (vec![selector], Vec::new()),
             at,
+            page: None,
         };
         self.mount_branches(rt, branches, env, parent);
     }
@@ -1779,10 +1784,10 @@ impl Ctx {
                         .filter(|b| b.prop == SceneProp::Current)
                         .map(|b| b.memo)
                 });
-                Some((n.kind, n.state.clone(), current))
+                Some((h, n.kind, n.state.clone(), current))
             })
         };
-        let Some((host_kind, host_state, current)) = host else {
+        let Some((host, host_kind, host_state, current)) = host else {
             return;
         };
         let (pick, reads): (Pick, (Vec<ChunkId>, Vec<strand_core::NodeId>)) = match kind {
@@ -1829,6 +1834,7 @@ impl Ctx {
             what: format!("{} in {}", kind.name(), self.module_of(e.file)),
             reads,
             at: (e.file, e.span),
+            page: (kind == NodeKind::Page).then_some((host, e.span.start as f32)),
         };
         self.mount_branches(rt, branches, env, parent);
     }
@@ -1845,6 +1851,7 @@ impl Ctx {
             what,
             reads,
             at,
+            page,
         } = s;
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
         let (block, ()) = rt.scope(|_| ());
@@ -1854,6 +1861,15 @@ impl Ctx {
             let (ctx, env, branches) = (self.clone(), env.clone(), branches.clone());
             Rc::new(move |rt: &Runtime, which: Option<usize>| {
                 ctx.unmount(rt, frag, true);
+                // A page shown: its `pages` slides by its place.
+                if let (Some((pages, order)), Some(_)) = (page, which) {
+                    ctx.em.borrow_mut().set(
+                        pages,
+                        SceneProp::RowFirst,
+                        PropValue::Number(order),
+                        Transition::Instant,
+                    );
+                }
                 if let Some(nodes) = which.and_then(|i| branches.get(i)).cloned() {
                     // The branch's own `let`s and `state`s live while it
                     // is mounted.

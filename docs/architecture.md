@@ -918,6 +918,18 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     ListFrames { frames, gaps }` counts painted frames with a list in
     view and those that showed an unmounted gap (the M4 exit's
     per-frame check).
+  - **Directional pages** (design.md, "Pages"). Logic sets
+    `Prop::RowFirst` on a `pages` node to the shown page's place in
+    source order (its source offset: only the order is meaningful), in
+    the diff that swaps the page. Render keeps the old page as a ghost,
+    and at the end of the diff slides the new page in from the right and
+    the old one out to the left when `row_first` grew (mirrored when it
+    shrank), each by its own width (the `slide(edge)` preset); a page
+    with its own `enter`/`exit` plays that, a `pages` with `transition:`
+    leaves the swap to its mask, `reduced_motion` snaps. `pages` clips
+    its content. `Renderer::page_swap(pages) -> Option<PageSwap {
+    entering, leaving, forward }>` pairs the two pages while the old one
+    plays out, for S-effects' transition masks.
   - **Drag and drop** (design.md, "Drag and drop"). `Prop::Drag` on a
     source reaches render as `PropValue::Keyword` naming the type of the
     dragged value; `Prop::Accepts`, set by the compiler and never written

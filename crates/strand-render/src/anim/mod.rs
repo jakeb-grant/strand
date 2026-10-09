@@ -30,11 +30,14 @@ use strand_scene::{
 use crate::tree::{Node, SceneTree};
 
 mod motion;
+mod pages;
 mod pose;
 mod sizes;
 
 pub(crate) use motion::Extents;
 use motion::{PropMotion, decode, encode};
+pub use pages::PageSwap;
+pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
@@ -154,6 +157,12 @@ pub(crate) struct Animator {
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
+    /// Poses render chose for nodes in place of their own `enter`/`exit`
+    /// (a page's directional slide): read when the enter starts and on
+    /// every frame of the exit.
+    poses: HashMap<NodeId, PropValue>,
+    /// `pages` swaps (directional page transitions).
+    pub pages: pages::PageSwaps,
 }
 
 impl Animator {
@@ -266,6 +275,7 @@ impl Animator {
 
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
+        self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
@@ -283,7 +293,21 @@ impl Animator {
 
     /// Exits that finished in the frames painted since the last call.
     pub fn take_finished(&mut self) -> Vec<(NodeId, ExitKind)> {
+        for (id, _) in &self.finished {
+            self.poses.remove(id);
+        }
         std::mem::take(&mut self.finished)
+    }
+
+    /// `id` plays `pose` instead of its own `enter` (when its enter
+    /// starts) or `exit` (while it exits). Its props show at their
+    /// values meanwhile: a page sliding in is drawn whole (its colours
+    /// do not also spring from the values they had before it existed).
+    pub fn set_pose(&mut self, id: NodeId, pose: PropValue) {
+        self.poses.insert(id, pose);
+        if let Some(na) = self.nodes.get_mut(&id) {
+            na.touched.clear();
+        }
     }
 
     /// Ends the exits of nodes under `root` (by `root_of`) that the
@@ -417,13 +441,17 @@ impl Animator {
                 .filter_map(|(p, v)| Some((p, scope.resolve(&v)?.into_owned())))
                 .collect()
         };
+        let chosen = self.poses.get(&id);
         let enter_pose = entering
-            .then(|| node.get(Prop::Enter).map(resolve))
+            .then(|| chosen.or(node.get(Prop::Enter)).map(resolve))
             .flatten()
             .unwrap_or_default();
         let exit_pose = exiting
-            .and_then(|_| exit_pose(node).map(resolve))
+            .and_then(|_| chosen.or(exit_pose(node)).map(resolve))
             .unwrap_or_default();
+        if entering && exiting.is_none() {
+            self.poses.remove(&id);
+        }
         let (at, commit, last) = (self.time, self.commit, self.prev);
         let na = self.nodes.entry(id).or_default();
         let touched = std::mem::take(&mut na.touched);

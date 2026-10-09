@@ -308,6 +308,9 @@ impl Renderer {
                 s.mark_dirty();
             }
         }
+        // Pages that swapped choose their slides before anything samples
+        // the entering page.
+        self.settle_pages();
         // `update` refreshes the specs (after collecting delivered text,
         // so nothing asked for here can already be answered).
         self.update();
@@ -352,7 +355,7 @@ impl Renderer {
             SceneOp::Create {
                 id,
                 parent,
-                kind: _,
+                kind,
                 index: _,
                 window: false,
             } => {
@@ -370,6 +373,7 @@ impl Renderer {
                     let opening = root.is_some_and(|r| self.opening.contains(&r));
                     if opening || self.shown(root) {
                         self.anim.enter(*id);
+                        self.page_created(*id, *kind, *parent);
                     } else {
                         self.born.push(*id);
                     }
@@ -390,9 +394,12 @@ impl Renderer {
                     Some(s.root) == root
                         && s.boxes.as_ref().is_some_and(|b| b.rects.contains_key(id))
                 });
+                // A page leaving its `pages` plays out even with no exit
+                // pose of its own: it slides (`settle_pages`).
+                let page = self.is_page(node);
                 if !node.kind.is_surface()
                     && !reduced
-                    && is_pose(exit_pose(node))
+                    && (is_pose(exit_pose(node)) || page)
                     && laid
                     && self.shown(root)
                     && self.tree.ghost(*id).is_ok()
@@ -414,6 +421,9 @@ impl Renderer {
                         }
                     }
                     self.anim.exit(*id, ExitKind::Ghost);
+                    if let (true, Some(p)) = (page, parent) {
+                        self.anim.pages.removed(p, *id);
+                    }
                     return true;
                 }
                 // Content removed as its surface closes with a pose (a
@@ -438,6 +448,9 @@ impl Renderer {
             SceneOp::SetProp { id, prop, .. } => {
                 if !self.tree.contains_live(*id) {
                     return false;
+                }
+                if *prop == Prop::RowFirst {
+                    self.page_moving(*id);
                 }
                 let root = self.tree.root_of(*id);
                 let animates = !reduced && self.shown(root) && !self.lists.still.contains(id);

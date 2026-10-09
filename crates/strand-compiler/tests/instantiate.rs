@@ -3201,16 +3201,41 @@ fn pages_and_tooltips_mount_on_demand() {
     assert!(shell.inst.event(inc, "click", Vec::new()));
     shell.flush();
     shell.text_node("PA 1");
+    // `row_first` on the `pages` is the current page's place in source
+    // order: render slides forward when it grows (directional pages).
+    let pages = shell.scene.of_kind(NodeKind::Pages)[0];
+    let first = |shell: &Shell| match shell.scene.prop(pages, Prop::RowFirst) {
+        Some(PropValue::Number(f)) => *f,
+        other => panic!("row_first {other:?}"),
+    };
+    let on_a = first(&shell);
     assert!(shell.inst.event(toggle, "click", Vec::new()));
     shell.flush();
     let scene = shell.scene.render();
     assert!(scene.contains("PB"), "{scene}");
     assert!(!scene.contains("PA"), "the hidden page stayed:\n{scene}");
     assert_eq!(shell.scene.of_kind(NodeKind::Page).len(), 1, "{scene}");
+    assert!(first(&shell) > on_a, "page b comes after page a");
+    // One diff swaps the page and sets `row_first`.
     assert!(shell.inst.event(toggle, "click", Vec::new()));
-    shell.flush();
+    let diff = shell.flush().diff;
+    let sets_first = diff
+        .ops
+        .iter()
+        .any(|op| matches!(op, SceneOp::SetProp { id, prop: Prop::RowFirst, .. } if *id == pages));
+    let creates_page = diff.ops.iter().any(|op| {
+        matches!(
+            op,
+            SceneOp::Create {
+                kind: NodeKind::Page,
+                ..
+            }
+        )
+    });
+    assert!(sets_first && creates_page, "{diff:?}");
     shell.text_node("PA 1");
     assert!(!shell.scene.render().contains("PB"));
+    assert_eq!(first(&shell), on_a);
 }
 
 /// A `popup`'s content is mounted when it opens and unmounted when it
