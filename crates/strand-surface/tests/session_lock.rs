@@ -111,7 +111,15 @@ fn lock_spec(open: bool) -> SurfaceSpec {
     SurfaceSpec::resolve(NodeKind::Lock, |p| props.get(&p))
 }
 
+/// A lock client that may lock (`enable_session_lock`).
 fn locker(sway: &Sway) -> SurfaceManager<LockHost> {
+    let mut mgr = unwired_locker(sway);
+    mgr.state_mut().enable_session_lock();
+    mgr
+}
+
+/// A lock client as a build that routes no token to `unlock` has it.
+fn unwired_locker(sway: &Sway) -> SurfaceManager<LockHost> {
     let host = LockHost {
         fill: BLUE,
         ..LockHost::default()
@@ -222,7 +230,10 @@ fn locks_every_output_including_hotplug() {
         [GREEN, GREEN],
         "the solid on the second"
     );
-    assert_eq!(lock.state().lock_solid_outputs(), [second.clone()]);
+    assert_eq!(
+        lock.state().lock_solid_outputs(),
+        std::slice::from_ref(&second)
+    );
 
     // An output plugged in while locked gets a solid too.
     let third = sway.create_output();
@@ -464,5 +475,39 @@ fn keys_reach_the_lock_and_a_lock_without_a_spec_has_content() {
         "the key reached the lock content: {:?}",
         lock.state().host().input
     );
+    assert!(lock.state_mut().unlock(token()));
+}
+
+/// Nothing locks before `enable_session_lock`: an open `lock` spec is
+/// only a warning and `lock()` is refused, so a build that cannot unlock
+/// never locks. Enabling it then takes the lock the open spec asked for.
+#[test]
+fn nothing_locks_until_the_session_lock_is_enabled() {
+    let test = "nothing_locks_until_the_session_lock_is_enabled";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let mut lock = unwired_locker(&sway);
+    assert!(!lock.state().session_lock_enabled());
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    assert_eq!(
+        lock.state_mut().lock(),
+        Err(strand_surface::LockError::NotEnabled)
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(500));
+    assert!(!lock.state().lock_active());
+    assert_eq!(lock.state().lock_content(), None);
+    assert!(lock.state().host().locks.is_empty());
+    assert_eq!(shot(&sway, "HEADLESS-1")[0], RED, "the desktop still shows");
+
+    lock.state_mut().enable_session_lock();
+    wait_lock(&mut lock, LockState::Locked);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE]);
     assert!(lock.state_mut().unlock(token()));
 }

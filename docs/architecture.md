@@ -2340,6 +2340,11 @@ and the connection):
     after it closed. `Finished` after `Locked` sends nothing (the
     compositor keeps the session locked). The tests take a session lock
     only inside the lock VM (`scripts/lockvm/scenarios/`).
+    Nothing locks until `State::enable_session_lock()`: before it an
+    open `lock` spec is a warning and `State::lock()` returns
+    `LockError::NotEnabled`. The binary calls it only once `auth`'s
+    tokens reach `State::unlock` (wave 2, `run/lock.rs`), so no build
+    can take a lock it cannot release.
   - Drag and drop (`dnd.rs`): a `wl_data_device` per seat produces
     `InputEvent::Drag*` (external files, apps and text as
     `DropPayload::External`); `State::start_drag(surface, node)` starts

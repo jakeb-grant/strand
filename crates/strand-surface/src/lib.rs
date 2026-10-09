@@ -12,7 +12,8 @@
 //! in `strand-scene`).
 //!
 //! The session lock (`ext-session-lock`, `manager/session_lock.rs`) is
-//! released only for a `strand_auth::UnlockToken` ([`State::unlock`]).
+//! released only for a `strand_auth::UnlockToken` ([`State::unlock`]),
+//! and taken only after [`State::enable_session_lock`].
 //! Compositor-animated poses (alpha modifier, viewporter, margins), the
 //! blur ladder and shaped input regions land in M4.
 //!

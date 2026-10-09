@@ -12,6 +12,11 @@
 //! `Locked` once the compositor says every output is covered, `Finished`
 //! when it refuses or ends the lock, `Unlocked` after an unlock.
 //!
+//! Nothing locks until the owner opts in ([`State::enable_session_lock`]):
+//! a lock that only a token releases must not be taken by a build that
+//! routes no token to [`State::unlock`]. Until then an open `lock` spec
+//! is a warning and [`State::lock`] is [`LockError::NotEnabled`].
+//!
 //! Fail-closed rules:
 //! - Only [`State::unlock`], which takes a [`strand_auth::UnlockToken`],
 //!   releases the lock. The spec closing (`open: false`) or going away
@@ -51,6 +56,9 @@ pub const LOCK_FALLBACK_NODE: NodeId = NodeId::new(u32::MAX, u32::MAX);
 pub enum LockError {
     /// The compositor offers no `ext_session_lock_manager_v1`.
     Unsupported,
+    /// [`State::enable_session_lock`] was not called: nothing would
+    /// release the lock.
+    NotEnabled,
 }
 
 impl std::fmt::Display for LockError {
@@ -59,6 +67,11 @@ impl std::fmt::Display for LockError {
             Self::Unsupported => write!(
                 f,
                 "the compositor does not offer ext-session-lock: the session cannot be locked"
+            ),
+            Self::NotEnabled => write!(
+                f,
+                "the session lock is not enabled in this build (nothing would unlock it): \
+                 the session is not locked"
             ),
         }
     }
@@ -103,6 +116,10 @@ pub(super) struct SessionLock {
     /// The other outputs' solids, by `wl_output` global.
     solids: BTreeMap<u32, Solid>,
     color: Color,
+    /// [`State::enable_session_lock`] was called.
+    enabled: bool,
+    /// The not-enabled warning was given.
+    warned_disabled: bool,
 }
 
 impl SessionLock {
@@ -116,6 +133,8 @@ impl SessionLock {
             content: None,
             solids: BTreeMap::new(),
             color: Color::BLACK,
+            enabled: false,
+            warned_disabled: false,
         }
     }
 }
@@ -216,14 +235,32 @@ fn lock_config() -> LayerConfig {
 impl<H: SurfaceHost + 'static> State<H> {
     // ---- the public API ------------------------------------------------------
 
+    /// Lets this manager take session locks. Off by default, so a build
+    /// that does not route `auth`'s tokens to [`Self::unlock`] can never
+    /// lock a session it cannot release; the binary calls this only once
+    /// it has wired them (m4-lock wave 2, `run/lock.rs`).
+    pub fn enable_session_lock(&mut self) {
+        self.session_lock.enabled = true;
+        self.reconcile_lock();
+    }
+
+    /// [`Self::enable_session_lock`] was called.
+    pub fn session_lock_enabled(&self) -> bool {
+        self.session_lock.enabled
+    }
+
     /// Asks the compositor to lock the session, if no lock is asked for
     /// or held. Every output gets a lock surface at once (the protocol
     /// asks for them before `locked`); the host hears `Locked` or
     /// `Finished`. Called when a `lock` spec opens; the binary also calls
     /// it to lock with its fallback when no lock is compiled.
+    /// [`LockError::NotEnabled`] before [`Self::enable_session_lock`].
     pub fn lock(&mut self) -> Result<(), LockError> {
         if self.session_lock.phase.lock().is_some() {
             return Ok(());
+        }
+        if !self.session_lock.enabled {
+            return Err(LockError::NotEnabled);
         }
         let Some(manager) = &self.session_lock.manager else {
             return Err(LockError::Unsupported);
@@ -239,7 +276,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// PAM helper's success). False when no lock was asked for or held.
     /// The lock is not asked for again until its spec closes.
     pub fn unlock(&mut self, token: UnlockToken) -> bool {
-        drop(token);
+        let _spent = token;
         let unlocked = match std::mem::take(&mut self.session_lock.phase) {
             Phase::Idle => return false,
             // The protocol: `unlock_and_destroy` once `locked` was sent,
@@ -405,9 +442,18 @@ impl<H: SurfaceHost + 'static> State<H> {
         if !spec.open {
             self.session_lock.spent = false;
         } else if !self.session_lock.spent && !self.lock_active() {
-            if let Err(e) = self.lock() {
-                log::warn!("{e}");
-                self.session_lock.spent = true;
+            match self.lock() {
+                Ok(()) => {}
+                // Not spent: enabling it later takes the lock.
+                Err(e @ LockError::NotEnabled) => {
+                    if !std::mem::replace(&mut self.session_lock.warned_disabled, true) {
+                        log::warn!("`lock`: {e}");
+                    }
+                }
+                Err(e) => {
+                    log::warn!("{e}");
+                    self.session_lock.spent = true;
+                }
             }
             return;
         }
