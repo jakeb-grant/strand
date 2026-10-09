@@ -25,6 +25,7 @@ mod manager;
 pub mod monitor;
 pub mod placement;
 pub mod shm;
+pub mod solid;
 
 pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};

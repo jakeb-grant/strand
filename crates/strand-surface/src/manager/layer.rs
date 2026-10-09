@@ -15,18 +15,27 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         }
         let new = layer_config(spec);
-        let catcher = wants_catcher(spec);
+        let under = wants_under(spec);
         let ids = self.surfaces_of(node);
         for id in ids {
-            match (catcher, self.catchers.contains_key(&id)) {
-                // A catcher goes under the surface: made again, catcher
-                // first (`reconcile` follows).
-                (true, false) => {
+            match (under, self.under_of(id)) {
+                // A catcher goes under the surface (or one that starts or
+                // stops catching clicks, which changes its namespace):
+                // made again, catcher first (`reconcile` follows).
+                (Some(_), None) => {
                     self.destroy_surface(id);
                     continue;
                 }
-                (false, true) => self.destroy_catcher(id),
-                _ => {}
+                (Some((clicks, _)), Some((had, _))) if clicks != had => {
+                    self.destroy_surface(id);
+                    continue;
+                }
+                (Some((_, scrim)), Some(_)) => self.set_panel_scrim(id, scrim),
+                (None, Some(_)) => {
+                    self.destroy_scrim(id);
+                    self.destroy_catcher(id);
+                }
+                (None, None) => {}
             }
             let Ok(mut config) = new.clone() else {
                 self.destroy_surface(id);
@@ -138,8 +147,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let generation = self.next_generation;
         self.next_generation += 1;
-        if wants_catcher(spec) {
-            self.create_catcher(id, node, &config, global);
+        if let Some(under) = Under::of_layer(spec, &config) {
+            self.create_catcher(id, node, &under, global);
         }
         let wl = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
@@ -208,6 +217,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.stats.bare_commits += 1;
         self.surfaces.insert(id, surface);
+        if let Some(scrim) = wants_scrim(spec) {
+            self.set_panel_scrim(id, Some(scrim));
+        }
         self.host.surface_attached(id, node, monitor.as_ref());
     }
 
@@ -223,6 +235,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         for c in children {
             self.destroy_surface(c);
         }
+        self.destroy_scrim(id);
         self.destroy_catcher(id);
         let Some(mut s) = self.surfaces.remove(&id) else {
             return;
@@ -368,6 +381,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         // The size it got may not be the one it asked for.
         self.update_catcher(id);
+        self.place_scrim(id);
         // Size and scale are resolved once, right before the next paint.
         self.mark(id);
     }

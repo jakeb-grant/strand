@@ -1,5 +1,5 @@
 //! The surface side of the fake: `wl_compositor`, `wl_region`, `wl_shm`,
-//! `zwlr_layer_shell_v1`, `wp_viewporter`, `wp_single_pixel_buffer_v1`,
+//! `wl_subcompositor`, `zwlr_layer_shell_v1`, `wp_viewporter`, `wp_single_pixel_buffer_v1`,
 //! `wp_alpha_modifier_v1` and `ext_background_effect_v1`, enough for the
 //! surface manager (`strand-surface`) to map layer surfaces, and recording
 //! what each surface committed so tests can check the protocol state the
@@ -30,7 +30,8 @@ use wayland_protocols_wlr::layer_shell::v1::server::{
 };
 use wayland_server::backend::ObjectId;
 use wayland_server::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_subcompositor,
+    wl_subsurface, wl_surface,
 };
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
 
@@ -152,6 +153,14 @@ pub struct SurfaceRecord {
     pub buffer_commits: usize,
     /// The client destroyed it.
     pub destroyed: bool,
+    /// A subsurface: its parent's index in [`crate::Fake::surfaces`].
+    pub subsurface_of: Option<usize>,
+    /// A subsurface's position in its parent, as of the parent's last
+    /// commit.
+    pub position: (i32, i32),
+    /// A subsurface placed directly below its parent (`place_below`
+    /// with the parent).
+    pub below_parent: bool,
 }
 
 /// What a surface has pending until its next commit.
@@ -184,6 +193,10 @@ struct Live {
     /// The request last configured (`None`: not configured yet).
     layer_configured: Option<LayerRequest>,
     serial: u32,
+    /// A subsurface's parent, and the position it set for the parent's
+    /// next commit.
+    sub_parent: Option<ObjectId>,
+    pending_position: Option<(i32, i32)>,
 }
 
 /// The surface state of the fake.
@@ -225,6 +238,20 @@ impl Surfaces {
     }
 
     fn commit(&mut self, surface: &ObjectId) {
+        // Its subsurfaces' positions take effect with it.
+        let moved: Vec<(usize, (i32, i32))> = self
+            .live
+            .values_mut()
+            .filter(|l| l.sub_parent.as_ref() == Some(surface))
+            .filter_map(|l| l.pending_position.take().map(|p| (l.index, p)))
+            .collect();
+        if let Ok(mut r) = self.records.lock() {
+            for (i, p) in moved {
+                if let Some(rec) = r.get_mut(i) {
+                    rec.position = p;
+                }
+            }
+        }
         let (w, h) = self.output_size();
         let Some(live) = self.live.get_mut(surface) else {
             return;
@@ -352,6 +379,8 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for Server {
                         layer_request: LayerRequest::default(),
                         layer_configured: None,
                         serial: 0,
+                        sub_parent: None,
+                        pending_position: None,
                     },
                 );
             }
@@ -816,9 +845,91 @@ impl Dispatch<ExtBackgroundEffectSurfaceV1, ObjectId> for Server {
     }
 }
 
+// ---- wl_subcompositor ------------------------------------------------------------
+
+impl GlobalDispatch<wl_subcompositor::WlSubcompositor, ()> for Server {
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<wl_subcompositor::WlSubcompositor>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        init.init(resource, ());
+    }
+}
+
+impl Dispatch<wl_subcompositor::WlSubcompositor, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &wl_subcompositor::WlSubcompositor,
+        request: wl_subcompositor::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let wl_subcompositor::Request::GetSubsurface {
+            id,
+            surface,
+            parent,
+        } = request
+        {
+            init.init(id, surface.id());
+            let parent_index = state.surf.live.get(&parent.id()).map(|l| l.index);
+            if let Some(l) = state.surf.live.get_mut(&surface.id()) {
+                l.sub_parent = Some(parent.id());
+            }
+            state
+                .surf
+                .record(&surface.id(), |r| r.subsurface_of = parent_index);
+        }
+    }
+}
+
+impl Dispatch<wl_subsurface::WlSubsurface, ObjectId> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &wl_subsurface::WlSubsurface,
+        request: wl_subsurface::Request,
+        surface: &ObjectId,
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        match request {
+            wl_subsurface::Request::SetPosition { x, y } => {
+                if let Some(l) = state.surf.live.get_mut(surface) {
+                    l.pending_position = Some((x, y));
+                }
+            }
+            wl_subsurface::Request::PlaceBelow { sibling } => {
+                let below = state
+                    .surf
+                    .live
+                    .get(surface)
+                    .is_some_and(|l| l.sub_parent == Some(sibling.id()));
+                state.surf.record(surface, |r| r.below_parent = below);
+            }
+            wl_subsurface::Request::PlaceAbove { .. } => {
+                state.surf.record(surface, |r| r.below_parent = false);
+            }
+            wl_subsurface::Request::Destroy => {
+                if let Some(l) = state.surf.live.get_mut(surface) {
+                    l.sub_parent = None;
+                }
+                state.surf.record(surface, |r| r.subsurface_of = None);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Creates the surface globals `g` asks for.
 pub(crate) fn create_globals(dh: &DisplayHandle, g: &SurfaceGlobals) {
     dh.create_global::<Server, wl_compositor::WlCompositor, ()>(6, ());
+    dh.create_global::<Server, wl_subcompositor::WlSubcompositor, ()>(1, ());
     dh.create_global::<Server, wl_shm::WlShm, ()>(1, ());
     dh.create_global::<Server, ZwlrLayerShellV1, ()>(4, ());
     if g.viewporter {

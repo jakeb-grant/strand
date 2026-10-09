@@ -82,10 +82,12 @@ mod layer;
 mod outputs;
 mod popup;
 mod protocols;
+mod scrim;
 mod seat;
 
-use catcher::{Catcher, wants_catcher};
+use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
+use scrim::Scrim;
 
 /// How long an unmapped surface whose paint drew nothing, while its
 /// painter still wants a frame, waits before it is painted again (no frame
@@ -369,6 +371,9 @@ pub struct SurfaceInfo {
     pub input_region: Option<Option<(i32, i32, i32, i32)>>,
     /// A click-away catcher is mapped under it.
     pub click_away: bool,
+    /// A scrim in this colour is mapped under it (on its root layer
+    /// surface's output, for a popup).
+    pub scrim: Option<strand_scene::Color>,
     pub stats: Stats,
 }
 
@@ -561,6 +566,7 @@ impl Surface {
             click_through: self.click_through,
             input_region: self.input_region,
             click_away: false,
+            scrim: None,
             stats: self.stats,
         }
     }
@@ -607,9 +613,10 @@ pub struct State<H: SurfaceHost + 'static> {
     /// Bound for compositor-animated poses (M4 wave 2).
     #[allow(dead_code)]
     alpha_modifier: Option<WpAlphaModifierV1>,
-    #[allow(dead_code)]
     single_pixel: Option<WpSinglePixelBufferManagerV1>,
     background_effect: Option<ExtBackgroundEffectManagerV1>,
+    /// `wl_subcompositor`, for panels' scrims.
+    subcompositor: Option<wayland_client::protocol::wl_subcompositor::WlSubcompositor>,
     /// What the compositor offers, and the capabilities last reported
     /// through [`SurfaceHost::compositor_caps`] (`None`: not yet).
     offered: Offered,
@@ -627,6 +634,8 @@ pub struct State<H: SurfaceHost + 'static> {
     /// each catcher's `wl_surface` serves.
     catchers: HashMap<SurfaceId, Vec<Catcher>>,
     catcher_of: HashMap<ObjectId, SurfaceId>,
+    /// Panels' scrims, by panel.
+    scrims: HashMap<SurfaceId, Scrim>,
     /// Stable ids per (node, placement), kept while the monitor is
     /// remembered so a replugged monitor gets its surface id back.
     ids: HashMap<(NodeId, Placement), SurfaceId>,
@@ -786,6 +795,13 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         let background_effect = globals
             .bind::<ExtBackgroundEffectManagerV1, _, _>(&qh, 1..=1, StrandGlobal)
             .ok();
+        let subcompositor = globals
+            .bind::<wayland_client::protocol::wl_subcompositor::WlSubcompositor, _, _>(
+                &qh,
+                1..=1,
+                StrandGlobal,
+            )
+            .ok();
         let mut offered = globals
             .contents()
             .with_list(|list| Offered::from_registry(list.iter().map(|g| g.interface.as_str())));
@@ -828,6 +844,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             alpha_modifier,
             single_pixel,
             background_effect,
+            subcompositor,
             offered,
             reported_caps: None,
             clock: config.clock,
@@ -840,6 +857,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             by_wl: HashMap::new(),
             catchers: HashMap::new(),
             catcher_of: HashMap::new(),
+            scrims: HashMap::new(),
             ids: HashMap::new(),
             next_id: 1,
             next_generation: 1,
@@ -964,10 +982,12 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     pub fn surface(&self, id: SurfaceId) -> Option<SurfaceInfo> {
         let mut info = self.surfaces.get(&id).map(Surface::info)?;
-        info.click_away = self
+        let primary = self
             .catchers
             .get(&id)
-            .is_some_and(|v| v.iter().any(|c| c.primary && c.buffer.is_some()));
+            .and_then(|v| v.iter().find(|c| c.primary && c.buffer.is_some()));
+        info.click_away = primary.is_some_and(|c| c.clicks);
+        info.scrim = self.scrim_shown(id);
         Some(info)
     }
 

@@ -975,6 +975,20 @@ impl Fake {
             .collect()
     }
 
+    /// The live subsurfaces of the live layer surface `ns`.
+    pub fn subsurfaces_of(&self, ns: &str) -> Vec<SurfaceRecord> {
+        let all = self.surfaces();
+        all.iter()
+            .filter(|s| {
+                !s.destroyed
+                    && s.subsurface_of
+                        .and_then(|p| all.get(p))
+                        .is_some_and(|p| !p.destroyed && p.namespace.as_deref() == Some(ns))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// A connection to it.
     pub fn connect(&self) -> std::os::unix::net::UnixStream {
         std::os::unix::net::UnixStream::connect(&self.socket).expect("the fake's socket")

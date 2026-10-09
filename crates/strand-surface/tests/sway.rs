@@ -2037,3 +2037,101 @@ fn sway_reports_its_capabilities() {
     assert!(!c.background_effect, "{c:?}");
     assert_eq!(mgr.state().compositor_caps(), c);
 }
+
+/// `scrim:` on sway 1.9 (single-pixel buffers and the viewporter): a
+/// panel's scrim dims the usable area beneath it, under the panel (its
+/// box keeps its colour; sway 1.9 stacks the older of two layer surfaces
+/// on top, which a subsurface below the panel is immune to) and not over
+/// the bar; a popup's goes on its bar's layer and output, under the
+/// popup. Taking a scrim away undims.
+#[test]
+fn scrims_dim_beneath_panels_and_popups() {
+    let Some(sway) = Sway::start("scrims_dim_beneath_panels_and_popups") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    assert!(mgr.state().compositor_caps().single_pixel_buffer);
+    const PANEL: NodeId = NodeId::new(7, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    let bg = sway.grim("HEADLESS-1").rgb(500, 600);
+    assert_ne!(bg, BLUE);
+    let dimmed = bg.map(|c| (f32::from(c) * 0.7).round() as u8);
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2);
+    let dim = strand_scene::Color::new(0.0, 0.0, 0.0, 0.3);
+
+    let mut spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    spec.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == PANEL && i.scrim.is_some() && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?} vs {dimmed:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(1720, 186), BLUE, "the panel is above its scrim");
+    assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+
+    // No scrim: undimmed.
+    spec.scrim = None;
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec: spec.clone(),
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surfaces().iter().all(|i| i.scrim.is_none()))
+        .unwrap();
+    assert!(ok);
+    settle(&mut mgr);
+    assert_eq!(sway.grim("HEADLESS-1").rgb(500, 600), bg);
+
+    // A popup of the bar with a scrim.
+    let mut popup =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    popup.name = Some("Calendar".into());
+    popup.parent = Some(BAR);
+    popup.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+    popup.width = Some(200.0);
+    popup.height = Some(120.0);
+    popup.scrim = Some(dim);
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == POPUP && i.scrim.is_some() && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    let shot = sway.grim("HEADLESS-1");
+    assert!(
+        near(shot.rgb(500, 600), dimmed),
+        "dimmed: {:?}",
+        shot.rgb(500, 600)
+    );
+    assert_eq!(shot.rgb(130, 100), BLUE, "the popup is above its scrim");
+    assert_eq!(shot.rgb(10, 10), BLUE, "the bar is not dimmed");
+}

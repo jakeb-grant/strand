@@ -112,6 +112,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.destroy_surface(id);
             }
         }
+        for id in self.surfaces_of(node) {
+            self.sync_popup_scrim(id, &spec);
+        }
         self.reconcile(node);
     }
 
@@ -276,9 +279,39 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.stats.bare_commits += 1;
         self.surfaces.insert(id, surface);
+        self.sync_popup_scrim(id, spec);
         let monitor = monitor.and_then(|m| self.monitors.get(&m)).cloned();
         self.host.surface_attached(id, node, monitor.as_ref());
         self.sync_popup_keyboard();
+    }
+
+    /// Gives popup `id` the scrim `spec` asks for (or takes it away, or
+    /// recolours it): a scrim-only catcher on its root layer surface's
+    /// layer and output, which takes no clicks (the popup's grab closes
+    /// it).
+    pub(super) fn sync_popup_scrim(&mut self, id: SurfaceId, spec: &SurfaceSpec) {
+        let want = wants_scrim(spec);
+        match (want, self.under_of(id)) {
+            (None, None) => {}
+            (None, Some(_)) => self.destroy_catcher(id),
+            (Some(c), Some(_)) => self.recolor_scrim(id, Some(c)),
+            (Some(c), None) => {
+                let Some(s) = self.surfaces.get(&id) else {
+                    return;
+                };
+                let Some(root) = self.root_layer(id).and_then(|r| self.surfaces.get(&r)) else {
+                    return;
+                };
+                let under = Under {
+                    layer: root.config.layer,
+                    namespace: s.config.namespace.clone(),
+                    clicks: false,
+                    scrim: Some(c),
+                };
+                let (node, output) = (s.node, root.output);
+                self.create_catcher(id, node, &under, output);
+            }
+        }
     }
 
     /// The layer surface popup `id` is nested in (itself for a layer

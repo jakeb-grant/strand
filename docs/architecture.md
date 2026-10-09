@@ -2287,10 +2287,18 @@ and the connection):
     Render already holds `Removed`/`open: false` until an exit settles.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
     viewporter, for scrims and lock backgrounds; shm when the protocol is
-    missing. A spec's `scrim` is a full-output layer surface under the
-    panel or popup, on the same layer and output; it is the click-away
-    catcher too when the surface has one (the catcher becomes visible
-    instead of a second surface being made).
+    missing (1×1 with the viewporter, else surface-sized). A panel's
+    `scrim` is a subsurface of the panel placed below it
+    (`manager/scrim.rs`), covering the output's usable area: the panel's
+    transparent full-area layer surface on its layer and output (the
+    click-away catcher when it has one, else a `strand-<Name>-scrim`
+    surface with an empty input region) is configured to that area, and
+    the scrim sits at minus the panel's position in it. Two layer
+    surfaces on one layer stack in an order the protocol leaves open
+    (sway 1.9 puts the older on top), so the catcher cannot be the
+    visible scrim. A popup's `scrim` is that layer surface itself,
+    coloured, on its root layer surface's layer and output (popups stack
+    above layer surfaces), taking no clicks (the grab closes it).
   - Fillets: placement puts an `attach`ed box at gap 0 from that edge;
     the overhang render adds for the fillets grows the buffer only.
   - Blur ladder (`blur.rs`, `manager/effect.rs`): after each paint

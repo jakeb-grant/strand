@@ -424,7 +424,13 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
             && list[0].output.is_none()
         {
             list[0].output = Some(global);
-            self.add_secondary_catchers(id, node, &config, global);
+            let under = Under {
+                layer: config.layer,
+                namespace: config.namespace.clone(),
+                clicks: list[0].clicks,
+                scrim: None,
+            };
+            self.add_secondary_catchers(id, node, &under, global);
         }
         self.host.surface_entered(id, &monitor);
     }
