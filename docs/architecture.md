@@ -2416,7 +2416,11 @@ transparent huge pages for life.
   manager replays its keys) `audio::REREAD` (250 ms) after a client
   comes or goes or an effective default is cleared: PipeWire forwards
   no metadata update to existing bindings while another client's bind
-  is in its handshake, and such a read sends only what changed.
+  is in its handshake. The keys the new binding replays replace the
+  defaults whole once its sync is back (a key a lost update cleared is
+  not replayed, so it goes too), and such a read sends only what
+  changed. The old binding is dropped only once the new one and its
+  sync are made, so a failed read keeps following the keys.
   Actions sent before a connection has settled (a write that lazily
   starts the service, one sent during a restart) wait, in order, and
   run right after its first state; with no connection at all they

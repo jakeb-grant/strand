@@ -453,14 +453,18 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   the metadata event was missed; the log could not say which. It
   did not reproduce in 20 runs here. The test now prints `pw-metadata`'s `default` on
   that timeout, so a recurrence names the side that stalled (audio
-  owners). Since (laptop-flakes): the metadata event was missed.
-  PipeWire drops metadata updates to existing bindings while another
-  client's bind is in its handshake (`wpctl` binds it); traced in the
+  owners). Since (laptop-flakes): most likely the metadata event was
+  missed, though this test never failed in the loops (0 of 300), so
+  that is inferred from its siblings, not shown. PipeWire drops
+  metadata updates to existing bindings while another client's bind is
+  in its handshake (`wpctl` binds it); traced in the
   same family's `a_daemon_restart_reconnects` and
   `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
   whole-binary runs). The audio thread now reads the metadata again
   `audio::REREAD` (250 ms) after client churn or a cleared default:
-  0 of 40 loaded runs fail.
+  0 of 40 loaded runs fail, and
+  `a_lost_default_update_comes_back_on_a_read_again` loses a set and a
+  clear on purpose and shows the read bringing both back.
 - A CI flake in the debug workspace step: run 37810171999 (`522f6ae`)
   failed `crates/strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
   with "round 3 (style 3): a blank frame". Style 3 deletes a file and

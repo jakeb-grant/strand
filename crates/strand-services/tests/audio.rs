@@ -7,11 +7,14 @@
 
 #![cfg(feature = "pipewire")]
 
+#[path = "pipewire/meta.rs"]
+mod meta;
 mod pipewire;
 
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+use meta::MetaClient;
 use pipewire::{PipeWire, square_wav};
 use strand_services::audio::{
     Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
@@ -255,7 +258,8 @@ fn devices_volume_mute_and_the_default_arrive() {
 /// drops metadata updates to existing bindings while another client's
 /// bind is in its handshake: decisions.md, laptop-flakes). Nothing was
 /// lost here, so the read sends nothing; a default changed by such a
-/// client still arrives.
+/// client still arrives. (That a read happens, and brings a lost update
+/// back, is `a_lost_default_update_comes_back_on_a_read_again`.)
 #[test]
 fn a_metadata_reread_sends_only_what_changed() {
     let Some(pw) = PipeWire::start("a_metadata_reread_sends_only_what_changed") else {
@@ -284,6 +288,82 @@ fn a_metadata_reread_sends_only_what_changed() {
         |m| m.sink.as_ref().is_some_and(|d| d.id == b.id),
         || pw.session_state(),
     );
+}
+
+/// A set and a clear of the effective defaults, lost on purpose in
+/// PipeWire's window (`MetaClient::lose`: WirePlumber emits them while a
+/// bind waits for its pong), reach the service once a client goes: the
+/// read again brings the set back, and the key the clear removed goes
+/// too (the replayed keys replace the defaults; they are not laid over
+/// them). With no read again the service would show sink a and the source
+/// for good.
+#[test]
+fn a_lost_default_update_comes_back_on_a_read_again() {
+    let Some(pw) = PipeWire::start("a_lost_default_update_comes_back_on_a_read_again") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    let a = w.sink("strand-sink-a");
+    let b = w.sink("strand-sink-b");
+    assert!(a.default);
+    let client = MetaClient::connect(&pw);
+    // The read again its coming caused is over.
+    std::thread::sleep(REREAD * 2 + Duration::from_millis(300));
+    w.poll();
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.id),
+        Some(a.id),
+        "{}",
+        pw.session_state()
+    );
+
+    // WirePlumber does not set the effective keys again on its own
+    // (nothing rescans here), so what is lost stays lost.
+    client.lose(
+        &pw,
+        "default.audio.sink",
+        Some(r#"{"name":"strand-sink-b"}"#),
+    );
+    client.lose(&pw, "default.audio.source", None);
+    let wanted = |keys: &std::collections::BTreeMap<String, String>| {
+        keys.get("default.audio.sink")
+            .is_some_and(|v| v.contains("strand-sink-b"))
+            && !keys.contains_key("default.audio.source")
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !wanted(&client.keys()) {
+        assert!(
+            Instant::now() < deadline,
+            "WirePlumber did not apply the set and the clear: {:?}",
+            client.keys()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The premise: the service missed both (no client came or went, so
+    // nothing made it read again).
+    std::thread::sleep(Duration::from_millis(500));
+    w.poll();
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.id),
+        Some(a.id),
+        "the service saw the set: the window did not hold it back"
+    );
+    assert!(
+        w.mirror.source.is_some(),
+        "the service saw the clear: the window did not hold it back"
+    );
+
+    // A client goes: the service reads the metadata again.
+    drop(client);
+    w.until_or(
+        5,
+        "b as the default sink and no default source",
+        |m| m.sink.as_ref().is_some_and(|d| d.id == b.id) && m.source.is_none(),
+        || pw.session_state(),
+    );
+    assert!(w.sink("strand-sink-b").default);
+    assert!(!w.sink("strand-sink-a").default);
 }
 
 #[test]

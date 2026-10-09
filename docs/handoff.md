@@ -55,7 +55,10 @@ and the full shell warns above 64 MB and fails above 70 MB
     metadata updates (PipeWire drops them for existing bindings while
     another client's bind is in its handshake); the audio thread now
     reads the metadata again `audio::REREAD` after client churn or a
-    cleared default. Reproduced as `a_daemon_restart_reconnects` and
+    cleared default (the replayed keys replace the ones held, so a lost
+    clear comes back too;
+    `a_lost_default_update_comes_back_on_a_read_again` loses a set and a
+    clear on purpose). Reproduced as `a_daemon_restart_reconnects` and
     `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
     runs), 0 of 40 after; CI's
     `devices_volume_mute_and_the_default_arrive` has the same shape but

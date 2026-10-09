@@ -15,7 +15,8 @@
 //!   (`default.audio.sink`, else `default.configured.audio.sink`; the same
 //!   for sources), reading it again [`REREAD`] after a client comes or
 //!   goes or a default is cleared (PipeWire drops metadata updates to
-//!   existing bindings while another client binds it);
+//!   existing bindings while another client binds it; the replayed keys
+//!   replace the ones held, so a lost clear is read too);
 //! - writes volume and mute on every channel: through the card's active
 //!   `Route` (`save: true`) when the node has one, as `wpctl` and
 //!   pipewire-pulse do, else with the node's `set_param(Props)`; and the
