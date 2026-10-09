@@ -130,7 +130,14 @@ cargo test --workspace
 
 CI runs these on every push, with headless sway, grim and DejaVu fonts
 installed so the Wayland integration tests and the M0 demo run (set
-`STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip):
+`STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip), in
+five jobs side by side: `lint` (fmt and clippy), `test` (the debug
+workspace tests, the 100 reloads and the short fuzzer run), `budgets`
+(demo, services and budgets on the release profile), `acceptance` and
+`timing` (the theme swap and latency benches on the `timing` profile:
+release's opt-levels without link-time optimisation).
+`scripts/container/run.sh ci` runs every step in order in an image that
+matches CI (`CI_JOB=NAME` for one job). The steps:
 
 - fmt and clippy as above;
 - `cargo test --workspace -- --skip random_edits_through_five_save_styles`
@@ -144,9 +151,9 @@ installed so the Wayland integration tests and the M0 demo run (set
   the mock services, screenshots compared with
   `crates/strand/tests/refs/acceptance` (`STRAND_UPDATE_REFS=1` rewrites
   them; a mismatch is uploaded from `target/acceptance`);
-- `cargo test --release -p strand-render --test theme_swap_bench` for
-  the 5 ms theme swap;
-- `cargo test --release -p strand --bin strand reload_latency --
+- `cargo test --profile timing -p strand-render --test theme_swap_bench`
+  for the 5 ms theme swap;
+- `cargo test --profile timing -p strand --bin strand reload_latency --
   --test-threads=1` with `STRAND_LATENCY_ROUNDS=50` for the save-to-pixels
   budget;
 - the reload fuzzer's short run in a step of its own: `cargo test -p

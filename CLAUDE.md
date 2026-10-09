@@ -43,7 +43,9 @@ session. Everything builds and tests in Docker images that match CI:
 
 ```sh
 scripts/container/run.sh cargo test -p strand-watch   # any command
-scripts/container/run.sh ci        # every step of CI's check job, in order
+scripts/container/run.sh ci        # every step of CI's check jobs, in order
+CI_JOB=timing scripts/container/run.sh ci   # one job: lint, test, budgets,
+                                             # acceptance or timing
 scripts/container/run.sh shell     # a bash in the image
 scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland
 ```
