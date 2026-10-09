@@ -798,3 +798,396 @@ fn a_removed_input_playing_its_exit_loses_focus_at_once() {
         "nothing goes to the removed id"
     );
 }
+
+/// A virtualised list (logic mounted 32 of its 2,000 rows) steered by
+/// an `input`'s `nav`: keys select by global index, past the mounted
+/// rows too. A row not mounted is scrolled to and the selection lands
+/// when logic mounts it (Return pressed meanwhile activates it then);
+/// Home, End, Page_Up and Page_Down move by the list's whole length and
+/// by the rows in view. A selected row the window unmounts (the list
+/// scrolled away from it) stays selected by its index and is selected
+/// again when it comes back, with no first-row reselection in between.
+#[test]
+fn nav_selects_rows_beyond_the_mounted_window() {
+    use strand_scene::{Color, Modifiers, NodeKind, SceneDiff, SceneOp};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, input, list) = (id(0), id(1), id(2), id(3));
+    // Row `i` of the data is node 100 + i.
+    let row = |i: u32| id(100 + i);
+    let mount = |d: &mut SceneDiff, first: u32, window: bool| {
+        for i in first..first + 32 {
+            d.push(SceneOp::Create {
+                id: row(i),
+                kind: NodeKind::Row,
+                parent: Some(list),
+                index: i - first,
+                window,
+            });
+            d.set(row(i), Prop::Height, PropValue::Number(20.0));
+        }
+        d.set(list, Prop::RowFirst, PropValue::Number(first as f32));
+    };
+    let unmount = |d: &mut SceneDiff, first: u32| {
+        for i in first..first + 32 {
+            d.push(SceneOp::Remove {
+                id: row(i),
+                window: true,
+            });
+        }
+    };
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(130.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(input, NodeKind::Input, Some(col), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(input, Prop::Nav, PropValue::Node(list))
+        .set(input, Prop::Text, PropValue::Text(String::new()))
+        .create(list, NodeKind::List, Some(col), 1)
+        .set(list, Prop::Height, PropValue::Number(100.0))
+        .set(list, Prop::RowCount, PropValue::Number(2000.0));
+    mount(&mut d, 0, false);
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 130 * 4];
+    let mut paint = |r: &mut Renderer| {
+        let mut t = PaintTarget::new(&mut px, Size::new(200, 130), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t);
+    };
+    paint(&mut r);
+    let mut f = R::default();
+    f.attached(s, panel);
+    let key = |name: &str| InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: name.into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+        },
+    };
+    let flag = |node, on| Intent::Flag {
+        node,
+        flag: Flag::Selected,
+        on,
+    };
+    let activate = |node| Intent::Event {
+        node,
+        event: NodeEvent::Activate,
+    };
+    let picked = |msgs: Vec<Intent>| -> Vec<Intent> {
+        msgs.into_iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    Intent::Flag {
+                        flag: Flag::Selected,
+                        ..
+                    } | Intent::Event {
+                        event: NodeEvent::Activate,
+                        ..
+                    }
+                )
+            })
+            .collect()
+    };
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    assert_eq!(f.router.selected(list), Some(row(0)));
+    assert_eq!(r.rows_in_view(list), Some(5));
+    f.drain();
+
+    // Page_Down moves by the rows in view, within the mounted rows.
+    f.input(&key("Page_Down"), &mut r);
+    assert_eq!(picked(f.drain()), [flag(row(0), false), flag(row(5), true)]);
+    assert_eq!(f.router.selected_index(list), Some(5));
+
+    // End: row 1,999 is not mounted. The selection leaves row 5 and is
+    // on its way; the list scrolls there and asks logic for that window.
+    f.input(&key("End"), &mut r);
+    assert_eq!(picked(f.drain()), [flag(row(5), false)]);
+    assert_eq!(f.router.selected(list), None);
+    assert_eq!(f.router.selected_index(list), Some(1999));
+    paint(&mut r);
+    let asked = r.take_list_windows();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].1.contains(&1999), "{asked:?}");
+    // Return before it lands: nothing yet, and settling with nothing
+    // mounted keeps waiting (no first-row selection).
+    f.input(&key("Return"), &mut r);
+    assert!(picked(f.drain()).is_empty());
+    assert!(picked(f.router.settle(&mut r)).is_empty());
+    assert_eq!(f.router.selected(list), None);
+
+    // Logic answers with rows 1,968..2,000: the selection lands on row
+    // 1,999 and Return's activate goes to it.
+    let mut d = SceneDiff::new();
+    unmount(&mut d, 0);
+    mount(&mut d, 1968, true);
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    assert_eq!(
+        picked(f.router.settle(&mut r)),
+        [flag(row(1999), true), activate(row(1999))]
+    );
+    assert_eq!(f.router.selected(list), Some(row(1999)));
+    paint(&mut r);
+    let shown = r.scroll_offset(list).unwrap();
+    assert!(
+        (shown - (2000.0 * 20.0 - 100.0)).abs() < 0.6,
+        "the view at the end: {shown}"
+    );
+    // Up: a mounted row, selected at once; Return activates it.
+    f.input(&key("Up"), &mut r);
+    f.input(&key("Return"), &mut r);
+    assert_eq!(
+        picked(f.drain()),
+        [
+            flag(row(1999), false),
+            flag(row(1998), true),
+            activate(row(1998))
+        ]
+    );
+
+    // The list scrolls back to the top on its own (a wheel): the window
+    // unmounts the selected row. It stays selected by index, and the
+    // first row is not selected in its place.
+    let mut d = SceneDiff::new();
+    unmount(&mut d, 1968);
+    mount(&mut d, 0, true);
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    assert!(picked(f.router.settle(&mut r)).is_empty());
+    assert_eq!(f.router.selected(list), None);
+    assert_eq!(f.router.selected_index(list), Some(1998));
+    // Back down: selected again where it was, and not activated.
+    let mut d = SceneDiff::new();
+    unmount(&mut d, 0);
+    mount(&mut d, 1968, true);
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    assert_eq!(picked(f.router.settle(&mut r)), [flag(row(1998), true)]);
+    // Home goes to row 0 (not mounted) and Down moves on from where it
+    // is heading: row 1.
+    f.input(&key("Home"), &mut r);
+    f.input(&key("Down"), &mut r);
+    assert_eq!(f.router.selected_index(list), Some(1));
+    let mut d = SceneDiff::new();
+    unmount(&mut d, 1968);
+    mount(&mut d, 0, true);
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(row(1)));
+    // A new query starts the results over at the top, even while a
+    // selection is on its way.
+    f.input(&key("End"), &mut r);
+    let mut d = SceneDiff::new();
+    d.set(input, Prop::Text, PropValue::Text("q".into()));
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(row(0)));
+    assert_eq!(f.router.selected_index(list), Some(0));
+}
+
+/// Router hooks (architecture.md, "Router hooks"): the last pointer
+/// position per surface, no drag in flight before drag and drop lands,
+/// and submenu keys: Right on a row holding a closed popup with a
+/// two-way `open` opens it, Left in a popup opened from another popup
+/// closes it (Escape too); Left in a top-level popup does nothing.
+#[test]
+fn router_hooks_pointer_drag_and_submenu_keys() {
+    use strand_scene::{Modifiers, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (menu, list, plain, parent, sub, item) = (id(0), id(1), id(2), id(3), id(4), id(5));
+    let two_way = PropValue::List(vec![PropValue::Keyword("open".into())]);
+    let mut d = SceneDiff::new();
+    d.create(menu, NodeKind::Popup, None, 0)
+        .set(menu, Prop::Open, PropValue::Bool(true))
+        .set(menu, Prop::TwoWay, two_way.clone())
+        .create(list, NodeKind::List, Some(menu), 0)
+        .set(list, Prop::Focus, PropValue::Bool(true))
+        .create(plain, NodeKind::Row, Some(list), 0)
+        .set(plain, Prop::Height, PropValue::Number(20.0))
+        .create(parent, NodeKind::Row, Some(list), 1)
+        .set(parent, Prop::Height, PropValue::Number(20.0))
+        .create(sub, NodeKind::Popup, Some(parent), 0)
+        .set(sub, Prop::Open, PropValue::Bool(false))
+        .set(sub, Prop::TwoWay, two_way)
+        .create(item, NodeKind::Row, Some(sub), 0)
+        .set(item, Prop::Focus, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    let (s, s2) = (SurfaceId(1), SurfaceId(2));
+    r.attach_surface(s, menu);
+    let mut px = vec![0u8; 100 * 60 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(100, 60), 400, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let mut f = R::default();
+    f.attached(s, menu);
+    f.attached(s2, sub);
+
+    // The pointer.
+    assert_eq!(f.router.pointer(s), None);
+    let at = LogicalPoint::new(12.0, 7.0);
+    f.input(
+        &InputEvent::PointerMotion {
+            surface: s,
+            position: at,
+            time: 0,
+        },
+        &mut r,
+    );
+    assert_eq!(f.router.pointer(s), Some(at));
+    assert_eq!(f.router.pointer(s2), None);
+    assert_eq!(f.router.drag(), None);
+    f.input(&InputEvent::PointerLeave { surface: s }, &mut r);
+    assert_eq!(f.router.pointer(s), None);
+
+    let key = |surface, name: &str| InputEvent::Key {
+        surface,
+        key: KeyInput {
+            name: name.into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+        },
+    };
+    let open = |node, on| Intent::Write {
+        node,
+        prop: Prop::Open,
+        value: PropValue::Bool(on),
+    };
+    let writes = |msgs: Vec<Intent>| -> Vec<Intent> {
+        msgs.into_iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    Intent::Write { .. }
+                        | Intent::Event {
+                            event: NodeEvent::Dismiss,
+                            ..
+                        }
+                )
+            })
+            .collect()
+    };
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    // Right on a row with no submenu: nothing opens.
+    f.input(&key(s, "Down"), &mut r);
+    assert_eq!(f.router.selected(list), Some(plain));
+    f.input(&key(s, "Right"), &mut r);
+    // Left in the top-level menu: nothing closes.
+    f.input(&key(s, "Left"), &mut r);
+    assert!(writes(f.drain()).is_empty());
+    // Right on the row holding the submenu opens it.
+    f.input(&key(s, "Down"), &mut r);
+    f.input(&key(s, "Right"), &mut r);
+    assert_eq!(writes(f.drain()), [open(sub, true)]);
+    // The submenu takes the keyboard: Left closes it (and dismisses it).
+    let mut d = SceneDiff::new();
+    d.set(sub, Prop::Open, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    f.input(&InputEvent::KeyboardEnter { surface: s2 }, &mut r);
+    f.drain();
+    f.input(&key(s2, "Left"), &mut r);
+    assert_eq!(
+        writes(f.drain()),
+        [
+            open(sub, false),
+            Intent::Event {
+                node: sub,
+                event: NodeEvent::Dismiss
+            }
+        ]
+    );
+    f.input(&key(s2, "Escape"), &mut r);
+    assert_eq!(writes(f.drain())[0], open(sub, false));
+}
+
+/// An `input` with `type: password` is edited by the Router as any
+/// `input`: typed text and BackSpace write its `text`, arrows move the
+/// caret.
+#[test]
+fn a_password_input_is_edited_like_any_input() {
+    use strand_scene::{Modifiers, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, input) = (id(0), id(1));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(40.0))
+        .create(input, NodeKind::Input, Some(panel), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(
+            input,
+            Prop::InputType,
+            PropValue::Keyword("password".into()),
+        )
+        .set(input, Prop::Text, PropValue::Text(String::new()));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 40 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(200, 40), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let mut f = R::default();
+    f.attached(s, panel);
+    let key = |name: &str, text: &str| InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: name.into(),
+            text: text.into(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+        },
+    };
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    for k in [
+        key("h", "h"),
+        key("u", "u"),
+        key("Left", ""),
+        key("n", "n"),
+        key("End", ""),
+        key("BackSpace", ""),
+    ] {
+        f.input(&k, &mut r);
+    }
+    let texts: Vec<String> = f
+        .drain()
+        .into_iter()
+        .filter_map(|m| match m {
+            Intent::Write {
+                node,
+                prop: Prop::Text,
+                value: PropValue::Text(t),
+            } if node == input => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["h", "hu", "hnu", "hn"]);
+}

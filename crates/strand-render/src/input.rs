@@ -119,6 +119,19 @@ pub trait InputScene {
     fn reveal(&mut self, list: NodeId, row: NodeId) {
         let _ = (list, row);
     }
+    /// (M4) Scrolls virtualised list `list` so its row at global index
+    /// `index` is in view, mounted or not (see
+    /// [`Renderer::reveal_index`]): its window follows, and the row
+    /// mounts.
+    fn reveal_index(&mut self, list: NodeId, index: u32) {
+        let _ = (list, index);
+    }
+    /// (M4) How many rows of `list` its view shows at once (Page_Up and
+    /// Page_Down move by that many).
+    fn rows_in_view(&self, list: NodeId) -> Option<u32> {
+        let _ = list;
+        None
+    }
     /// True if surface node `root` is open with `keyboard: exclusive` and
     /// a two-way `open` (the design's launcher): a press on another
     /// surface is a click away from it.
@@ -178,6 +191,12 @@ impl InputScene for Renderer {
     fn reveal(&mut self, list: NodeId, row: NodeId) {
         self.scroll_into_view(list, row);
     }
+    fn reveal_index(&mut self, list: NodeId, index: u32) {
+        Renderer::reveal_index(self, list, index);
+    }
+    fn rows_in_view(&self, list: NodeId) -> Option<u32> {
+        Renderer::rows_in_view(self, list)
+    }
     fn exclusive_open(&self, root: NodeId) -> bool {
         self.surface_spec(root).is_some_and(|s| {
             s.open && s.open_two_way && s.keyboard == strand_scene::Keyboard::Exclusive
@@ -226,6 +245,41 @@ pub const EDIT_IN_FLIGHT: Duration = Duration::from_millis(500);
 /// only detents.
 pub const WHEEL_STEP: f64 = 15.0;
 
+/// (M4) A drag in flight, as other streams read it ([`Router::drag`]):
+/// the drag ghost, `jelly` and list reordering. Drag and drop arrives in
+/// M4's wave 2; until then no drag is ever in flight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DragView {
+    /// The `drag:` source node.
+    pub source: NodeId,
+    /// The surface the pointer is over.
+    pub surface: SurfaceId,
+    /// The pointer, logical pixels on `surface`.
+    pub pointer: LogicalPoint,
+    /// The pointer's velocity, logical pixels per second.
+    pub velocity: LogicalPoint,
+    /// The node that would take the drop (its `on drop` accepts the
+    /// dragged type), if any.
+    pub target: Option<NodeId>,
+    /// Where in the target list it would land, as a global row index.
+    pub index: Option<u32>,
+}
+
+/// A list's selection that is not on a mounted row: moved there by a key
+/// past the rows logic has mounted (it lands when that row mounts), or
+/// left behind when the list's window unmounted the selected row.
+#[derive(Clone, Copy, Debug)]
+struct Away {
+    /// The selected row's global index.
+    index: u32,
+    /// Return was pressed while it was on its way: it is activated when
+    /// it lands.
+    activate: bool,
+    /// Scrolled into view when it lands (moved by a key, not left
+    /// behind by a scroll).
+    reveal: bool,
+}
+
 /// An `input`'s writes logic has not answered yet.
 #[derive(Debug)]
 struct InFlight {
@@ -257,6 +311,12 @@ pub struct Router {
     focus: HashMap<SurfaceId, NodeId>,
     /// The selected row of each list arrows or clicks have moved in.
     selected: HashMap<NodeId, NodeId>,
+    /// The global index of each selected row, as of the last routing.
+    sel_index: HashMap<NodeId, u32>,
+    /// Lists whose selection is a row not mounted now.
+    away: HashMap<NodeId, Away>,
+    /// The last pointer position on each surface the pointer is over.
+    pointer: HashMap<SurfaceId, LogicalPoint>,
     /// The text of a focused input and the rows of its `nav` list when
     /// its selection was last settled: a new query selects the first row
     /// again; rows that change under the same query (late or re-ranked
@@ -291,7 +351,27 @@ impl Router {
     /// order), and a text that is none of them is logic's own (a handler
     /// cleared the query), which drops the writes in flight, so the next
     /// key builds on it.
+    ///
+    /// A selected row the diff unmounts for its list's window (`window:
+    /// true`: the list scrolled away from it) stays selected by its
+    /// global index, and is selected again when the window brings it
+    /// back.
     pub fn observe(&mut self, diff: &SceneDiff) {
+        for op in &diff.ops {
+            if let SceneOp::Remove { id, window: true } = op
+                && let Some(list) = self
+                    .selected
+                    .iter()
+                    .find_map(|(l, r)| (*r == *id).then_some(*l))
+                && let Some(&index) = self.sel_index.get(&list)
+            {
+                self.away.entry(list).or_insert(Away {
+                    index,
+                    activate: false,
+                    reveal: false,
+                });
+            }
+        }
         if self.edits.is_empty() {
             return;
         }
@@ -331,6 +411,33 @@ impl Router {
         self.right_down.remove(&surface);
         self.middle_down.remove(&surface);
         self.focus.remove(&surface);
+        self.pointer.remove(&surface);
+    }
+
+    /// (M4) The last pointer position on `surface`, while the pointer is
+    /// over it (`parallax` and `tilt` read it when they flatten).
+    pub fn pointer(&self, surface: SurfaceId) -> Option<LogicalPoint> {
+        self.pointer.get(&surface).copied()
+    }
+
+    /// (M4) The drag in flight. Drag and drop is M4's wave 2: until it
+    /// lands this is always `None`.
+    pub fn drag(&self) -> Option<DragView> {
+        None
+    }
+
+    /// The global index of `list`'s selected row, mounted or not (a
+    /// virtualised list's selection may be a row its window has not
+    /// mounted: it lands when that row mounts).
+    pub fn selected_index(&self, list: NodeId) -> Option<u32> {
+        match self.away.get(&list) {
+            Some(a) => Some(a.index),
+            None => self
+                .selected
+                .contains_key(&list)
+                .then(|| self.sel_index.get(&list).copied())
+                .flatten(),
+        }
     }
 
     /// The node with keyboard focus on `surface`.
@@ -388,10 +495,60 @@ impl Router {
     /// first too, unless the user moved the selection (an arrow, a
     /// click) to a row that is still there. Returns what logic hears of
     /// it.
+    ///
+    /// A selection moved past a virtualised list's mounted rows lands on
+    /// its row once logic mounts it (and Return pressed meanwhile
+    /// activates it then).
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
+        self.land(scene);
         self.select_first_rows(scene);
+        self.index_selections(scene.tree());
         self.flush(scene)
+    }
+
+    /// Selections that were away from their list's mounted rows and
+    /// whose row is mounted now: selected (scrolled into view if a key
+    /// moved them there), and activated if Return was pressed meanwhile.
+    fn land(&mut self, scene: &mut dyn InputScene) {
+        let Some(tree) = scene.tree() else {
+            return;
+        };
+        self.away.retain(|l, _| tree.contains_live(*l));
+        let mut landed = Vec::new();
+        for (&list, a) in &self.away {
+            let w = window_rows(tree, list);
+            if w.count == 0 {
+                continue;
+            }
+            let index = a.index.min(w.count - 1);
+            if let Some(row) = w.row(index) {
+                landed.push((list, row, *a));
+            }
+        }
+        landed.sort_by_key(|(l, _, _)| *l);
+        for (list, row, a) in landed {
+            self.away.remove(&list);
+            self.select_with(scene, list, Some(row), a.reveal);
+            if a.activate {
+                self.event(row, NodeEvent::Activate);
+            }
+        }
+    }
+
+    /// Remembers each selected row's global index (a window that
+    /// unmounts it keeps the selection by it).
+    fn index_selections(&mut self, tree: Option<&SceneTree>) {
+        let Some(tree) = tree else {
+            return;
+        };
+        for (&list, &row) in &self.selected {
+            if let Some(i) = window_rows(tree, list).index_of(row) {
+                self.sel_index.insert(list, i);
+            }
+        }
+        let selected = &self.selected;
+        self.sel_index.retain(|l, _| selected.contains_key(l));
     }
 
     /// Widgets draw hover, press, focus and selection at once.
@@ -428,6 +585,21 @@ impl Router {
                 Some(PropValue::Text(t)) => t.clone(),
                 _ => String::new(),
             };
+            // A selection on its way to a row not mounted yet (or left
+            // behind by a scroll) waits for it, unless a new query
+            // starts the results over.
+            if self.away.contains_key(list) {
+                match self.nav_rows.get(list) {
+                    Some((t, _)) if *t != text => {
+                        self.away.remove(list);
+                        self.moved.remove(list);
+                    }
+                    _ => {
+                        self.nav_rows.insert(*list, (text, rows));
+                        continue;
+                    }
+                }
+            }
             if let Some(sel) = self.selected.get(list) {
                 match self.nav_rows.get(list) {
                     // A new query: its results start at the top.
@@ -485,11 +657,12 @@ impl Router {
         match event {
             InputEvent::PointerEnter { position, .. }
             | InputEvent::PointerMotion { position, .. } => {
+                self.pointer.insert(surface, *position);
                 if self.pressed.contains_key(&surface) {
                     // A drag: the slider follows the pointer, a held
                     // button in an `input` extends the selection.
                     if let Some(&slider) = self.dragging.get(&surface) {
-                        self.drag(scene, surface, slider, *position, false);
+                        self.drag_slider(scene, surface, slider, *position, false);
                     }
                     if let Some(&input) = self.selecting.get(&surface)
                         && let Some(pos) = scene.caret_at(surface, input, *position)
@@ -503,6 +676,7 @@ impl Router {
                 self.hover(surface, now);
             }
             InputEvent::PointerLeave { .. } => {
+                self.pointer.remove(&surface);
                 self.end_drags(scene, surface);
                 self.release(surface);
                 self.hover(surface, Vec::new());
@@ -513,6 +687,7 @@ impl Router {
                 position,
                 ..
             } => {
+                self.pointer.insert(surface, *position);
                 let under = chain(scene, *position);
                 if *b == button::LEFT && *state == ButtonState::Pressed {
                     self.click_away_from_others(surface, root, scene);
@@ -527,6 +702,7 @@ impl Router {
                 time,
                 ..
             } => {
+                self.pointer.insert(surface, *position);
                 // A wheel (detents, or its high-resolution pixels) springs
                 // the offset; a touchpad or other continuous source moves
                 // it at once, and its lift (`axis_stop`) may fling.
@@ -708,7 +884,7 @@ impl Router {
                         && value_two_way(scene.tree(), slider)
                     {
                         self.dragging.insert(surface, slider);
-                        self.drag(scene, surface, slider, at, false);
+                        self.drag_slider(scene, surface, slider, at, false);
                     }
                     // A press in an `input` puts the caret there and starts
                     // selecting.
@@ -723,7 +899,7 @@ impl Router {
                 }
                 ButtonState::Released => {
                     if let Some(&slider) = self.dragging.get(&surface) {
-                        self.drag(scene, surface, slider, at, true);
+                        self.drag_slider(scene, surface, slider, at, true);
                     }
                     self.end_drags(scene, surface);
                     self.release(surface);
@@ -775,6 +951,7 @@ impl Router {
         let live = |n: NodeId| tree.contains_live(n);
         self.nav_rows.retain(|list, _| live(*list));
         self.moved.retain(|list| live(*list));
+        self.away.retain(|list, _| live(*list));
         self.selected.retain(|list, row| {
             live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });
@@ -873,38 +1050,96 @@ impl Router {
             Some(NodeKind::List) => Some(focus),
             _ => nav,
         };
-        if let Some(list) = list {
-            let rows = scene
-                .tree()
-                .and_then(|t| t.get(list))
-                .map(|n| n.children.clone())
-                .unwrap_or_default();
-            let cur = self
-                .selected
-                .get(&list)
-                .and_then(|r| rows.iter().position(|x| x == r));
+        // Submenus (tray menus): Right on a row that holds a popup opens
+        // it; Left closes a popup that opened from another popup.
+        if kind != Some(NodeKind::Input) {
+            let tree = scene.tree();
             match key.name.as_str() {
-                "Down" | "Up" | "KP_Down" | "KP_Up" => {
-                    let down = key.name.ends_with("Down");
-                    let next = match (cur, down) {
-                        (None, _) => rows.first(),
-                        (Some(i), true) => rows.get((i + 1).min(rows.len().saturating_sub(1))),
-                        (Some(i), false) => rows.get(i.saturating_sub(1)),
-                    };
-                    if let Some(&row) = next {
-                        self.moved.insert(list);
-                        self.select(scene, list, Some(row));
+                "Right" | "KP_Right" => {
+                    let rows = list
+                        .and_then(|l| self.selected.get(&l))
+                        .into_iter()
+                        .copied();
+                    let menu = tree.and_then(|t| {
+                        rows.filter_map(|r| submenu_in(t, r, true))
+                            .next()
+                            .or_else(|| {
+                                self.hovered.get(&surface).and_then(|chain| {
+                                    chain
+                                        .iter()
+                                        .take_while(|n| **n != root)
+                                        .find_map(|n| submenu_in(t, *n, false))
+                                })
+                            })
+                    });
+                    if let Some(menu) = menu {
+                        self.emit(Intent::Write {
+                            node: menu,
+                            prop: Prop::Open,
+                            value: PropValue::Bool(true),
+                        });
+                        return;
                     }
+                }
+                "Left" | "KP_Left" if open && tree.is_some_and(|t| nested_popup(t, root)) => {
+                    self.close(scene, root);
                     return;
                 }
+                _ => {}
+            }
+        }
+        if let Some(list) = list {
+            let w = scene
+                .tree()
+                .map(|t| window_rows(t, list))
+                .unwrap_or_default();
+            let cur = self
+                .away
+                .get(&list)
+                .map(|a| a.index)
+                .or_else(|| self.selected.get(&list).and_then(|r| w.index_of(*r)));
+            let last = w.count.saturating_sub(1);
+            let page = scene.rows_in_view(list).unwrap_or(1).max(1);
+            let to = match key.name.as_str() {
+                "Down" | "KP_Down" => Some(cur.map_or(w.first, |i| (i + 1).min(last))),
+                "Up" | "KP_Up" => Some(cur.map_or(w.first, |i| i.saturating_sub(1))),
+                "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => {
+                    Some(cur.map_or(w.first, |i| i.saturating_add(page).min(last)))
+                }
+                "Page_Up" | "Prior" | "KP_Page_Up" | "KP_Prior" => {
+                    Some(cur.map_or(w.first, |i| i.saturating_sub(page)))
+                }
+                "Home" | "KP_Home" => Some(0),
+                "End" | "KP_End" => Some(last),
                 "Return" | "KP_Enter" => {
-                    let row = cur.and_then(|i| rows.get(i)).or(rows.first()).copied();
+                    if let Some(a) = self.away.get_mut(&list) {
+                        // On its way: activated when it lands.
+                        a.activate = true;
+                        if !a.reveal {
+                            a.reveal = true;
+                            scene.reveal_index(list, a.index);
+                        }
+                        return;
+                    }
+                    let row = self
+                        .selected
+                        .get(&list)
+                        .copied()
+                        .filter(|r| w.rows.contains(r))
+                        .or(w.rows.first().copied());
                     if let Some(row) = row {
                         self.event(row, NodeEvent::Activate);
                     }
                     return;
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(to) = to {
+                if w.count > 0 {
+                    self.moved.insert(list);
+                    self.go_to(scene, list, &w, to);
+                }
+                return;
             }
         }
         if kind == Some(NodeKind::Input) {
@@ -947,7 +1182,7 @@ impl Router {
 
     /// Moves `slider` to the pointer at `at` (its value from where `at`
     /// falls along its track, 0 to 1) and writes it; `last` ends the drag.
-    fn drag(
+    fn drag_slider(
         &mut self,
         scene: &mut dyn InputScene,
         surface: SurfaceId,
@@ -1018,8 +1253,45 @@ impl Router {
         });
     }
 
+    /// Moves `list`'s selection to its row at global index `to`: selected
+    /// at once if mounted, else on its way (scrolled to, so the window
+    /// mounts it; `settle` lands it).
+    fn go_to(&mut self, scene: &mut dyn InputScene, list: NodeId, w: &WindowRows, to: u32) {
+        if let Some(row) = w.row(to) {
+            self.away.remove(&list);
+            self.select(scene, list, Some(row));
+            return;
+        }
+        self.select(scene, list, None);
+        self.away.insert(
+            list,
+            Away {
+                index: to,
+                activate: false,
+                reveal: true,
+            },
+        );
+        scene.reveal_index(list, to);
+    }
+
     /// Selects `row` in `list` (`selected`), scrolled into view.
     fn select(&mut self, scene: &mut dyn InputScene, list: NodeId, row: Option<NodeId>) {
+        self.select_with(scene, list, row, true);
+    }
+
+    /// Selects `row` in `list`, scrolled into view if `reveal`.
+    fn select_with(
+        &mut self,
+        scene: &mut dyn InputScene,
+        list: NodeId,
+        row: Option<NodeId>,
+        reveal: bool,
+    ) {
+        if let Some(r) = row
+            && let Some(i) = scene.tree().and_then(|t| window_rows(t, list).index_of(r))
+        {
+            self.sel_index.insert(list, i);
+        }
         let old = match row {
             Some(r) => self.selected.insert(list, r),
             None => self.selected.remove(&list),
@@ -1032,7 +1304,9 @@ impl Router {
         }
         if let Some(r) = row {
             self.flag(r, Flag::Selected, true);
-            scene.reveal(list, r);
+            if reveal {
+                scene.reveal(list, r);
+            }
         }
     }
 
@@ -1099,4 +1373,94 @@ fn list_row(tree: Option<&SceneTree>, chain: &[NodeId]) -> Option<(NodeId, NodeI
         let parent = tree.get(w[1])?;
         (parent.kind == NodeKind::List).then_some((w[1], w[0]))
     })
+}
+
+/// The rows a list has mounted, with where they sit among all its rows.
+#[derive(Debug, Default)]
+struct WindowRows {
+    /// The global index of the first mounted row (`row_first`).
+    first: u32,
+    /// All rows, mounted or not (`row_count`; the mounted ones on a list
+    /// logic does not window).
+    count: u32,
+    /// The mounted rows, in order (ghosts left out).
+    rows: Vec<NodeId>,
+}
+
+impl WindowRows {
+    /// The mounted row at global index `index`.
+    fn row(&self, index: u32) -> Option<NodeId> {
+        let j = index.checked_sub(self.first)?;
+        self.rows.get(j as usize).copied()
+    }
+
+    /// The global index of mounted row `row`.
+    fn index_of(&self, row: NodeId) -> Option<u32> {
+        let j = self.rows.iter().position(|r| *r == row)?;
+        Some(self.first + j as u32)
+    }
+}
+
+/// `list`'s mounted rows and their place among all its rows.
+fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
+    let Some(n) = tree.get(list) else {
+        return WindowRows::default();
+    };
+    let index = |p: Prop| match n.get(p) {
+        Some(PropValue::Number(f)) if f.is_finite() && *f >= 0.0 => Some(*f as u32),
+        _ => None,
+    };
+    let rows: Vec<NodeId> = n
+        .children
+        .iter()
+        .copied()
+        .filter(|r| tree.contains_live(*r))
+        .collect();
+    let first = index(Prop::RowFirst).unwrap_or(0);
+    let mounted = first.saturating_add(rows.len() as u32);
+    let count = index(Prop::RowCount).map_or(mounted, |c| c.max(mounted));
+    WindowRows { first, count, rows }
+}
+
+/// A closed `popup` with a two-way `open` that `node` holds: among its
+/// direct children, or anywhere below it if `deep` (popups' own content
+/// left out).
+fn submenu_in(tree: &SceneTree, node: NodeId, deep: bool) -> Option<NodeId> {
+    let mut stack: Vec<NodeId> = tree.get(node)?.children.iter().rev().copied().collect();
+    while let Some(id) = stack.pop() {
+        let Some(n) = tree.get(id).filter(|_| tree.contains_live(id)) else {
+            continue;
+        };
+        if n.kind == NodeKind::Popup {
+            if strand_scene::is_two_way(n.get(Prop::TwoWay), Prop::Open)
+                && !matches!(n.get(Prop::Open), Some(PropValue::Bool(true)))
+            {
+                return Some(id);
+            }
+            continue;
+        }
+        if deep {
+            stack.extend(n.children.iter().rev());
+        }
+    }
+    None
+}
+
+/// True if surface node `root` is a popup that opened from another popup
+/// (a submenu).
+fn nested_popup(tree: &SceneTree, root: NodeId) -> bool {
+    let Some(n) = tree.get(root).filter(|n| n.kind == NodeKind::Popup) else {
+        return false;
+    };
+    let mut at = n.parent;
+    while let Some(p) = at {
+        let Some(pn) = tree.get(p) else {
+            return false;
+        };
+        if pn.kind == NodeKind::Popup {
+            return true;
+        }
+        at = pn.parent;
+    }
+    false
 }

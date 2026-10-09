@@ -233,6 +233,29 @@ impl Renderer {
         }
     }
 
+    /// How many rows of list `id` its view shows at once (at the rows'
+    /// measured mean height), once it is laid out.
+    pub fn rows_in_view(&self, id: NodeId) -> Option<u32> {
+        let st = self.scrolls.get(&id)?;
+        if st.viewport <= 0.0 {
+            return None;
+        }
+        let gap = self
+            .tree
+            .get(id)
+            .and_then(|n| n.get(Prop::Gap))
+            .and_then(PropValue::as_number)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let est = if st.heights.is_empty() {
+            crate::layout::LIST_ROW_ESTIMATE
+        } else {
+            st.heights.values().sum::<f32>() / st.heights.len() as f32
+        };
+        let n = ((st.viewport + gap) / (est + gap).max(1.0)).floor();
+        Some(if n.is_finite() { n.max(1.0) as u32 } else { 1 })
+    }
+
     /// The offset scroll or list `id` shows (logical pixels from the top
     /// of its content).
     pub fn scroll_offset(&self, id: NodeId) -> Option<f32> {

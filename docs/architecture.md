@@ -982,14 +982,33 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   reviewed addition. New `InputScene` methods always have no-op
   defaults, so existing implementations keep compiling.
   - `Router::pointer(surface) -> Option<LogicalPoint>`: the last pointer
-    position, read at flatten time by `parallax` and `tilt`.
-  - `Router::drag() -> Option<DragView>`: the drag in flight (source node,
-    pointer, velocity in px/s, target and insertion index), read by the
-    drag ghost, `jelly` and list reordering.
+    position, read at flatten time by `parallax` and `tilt` (set by
+    enter, motion, buttons and axis frames; `None` after a leave).
+  - `Router::drag() -> Option<DragView>`: the drag in flight, read by the
+    drag ghost, `jelly` and list reordering. `DragView { source: NodeId,
+    surface: SurfaceId, pointer: LogicalPoint, velocity: LogicalPoint
+    (px/s), target: Option<NodeId>, index: Option<u32> (a global row
+    index) }`. Always `None` until drag and drop lands (M4 wave 2).
+  - Virtualised `nav`: `Router::selected_index(list) -> Option<u32>` is
+    the selection's global index, mounted or not. Keys move it by index
+    (Up, Down, Page_Up/Prior and Page_Down/Next by
+    `InputScene::rows_in_view`, Home, End); a row not mounted is
+    scrolled to with `InputScene::reveal_index(list, index)` and the
+    selection lands in `Router::settle` once logic mounts it (Return
+    pressed meanwhile activates it then). `Router::observe` keeps a
+    selected row that a diff unmounts with `window: true` selected by
+    index until it mounts again. Both `InputScene` methods have no-op
+    defaults; the `Renderer` maps them to `Renderer::reveal_index` and
+    `Renderer::rows_in_view`.
   - Submenus: Right on a row that opens a nested `popup` opens it, Left
     or Escape closes the innermost; S-lists adds these keys for
     S-surface's tray menus, emitting the existing intents (a two-way
-    `open` write).
+    `open` write). Built: Right (focus not on an `input`) writes `open:
+    true` to the first closed `popup` with a two-way `open` under the
+    focused list's selected row, else among the direct children of the
+    hovered chain; Left on a surface whose root is a `popup` nested in
+    another `popup` closes it as Escape does (`open: false` and
+    `dismiss`); Left in a top-level popup does nothing.
   - The lock: keys on a lock surface while render's built-in fallback is
     shown never reach the `Router`; the binary (`run/lock.rs`) hands them
     to `strand_render::lock_fallback`, which needs no text worker. An

@@ -29,7 +29,7 @@ pub mod widgets;
 
 pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
 pub use flatten::BLUR_TINT;
-pub use input::{Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};
+pub use input::{DragView, Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};
 pub use layout::{
     Boxes, CH_EM, FLING_DECAY, LAYOUT_OVERSCAN, LIST_ROW_ESTIMATE, ListBox, ListWindow,
     MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
