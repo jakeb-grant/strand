@@ -1598,8 +1598,8 @@ fn a_moved_ancestor_directory_is_seen() {
 }
 
 /// The `(device, inode)` of every directory an inotify instance of this
-/// process watches, from `/proc/self/fdinfo` (`sdev` is the kernel's
-/// `major << 20 | minor`).
+/// process watches, from `/proc/self/fdinfo` (`sdev` is the watched
+/// inode's superblock device, `major << 20 | minor`).
 fn inotify_watched() -> std::collections::HashSet<(u64, u64)> {
     let mut out = std::collections::HashSet::new();
     for fd in fs::read_dir("/proc/self/fd").unwrap().flatten() {
@@ -1626,13 +1626,22 @@ fn inotify_watched() -> std::collections::HashSet<(u64, u64)> {
     out
 }
 
-/// `dir`'s `(device, inode)` in `inotify_watched`'s encoding.
-fn dev_ino(dir: &Path) -> (u64, u64) {
+/// `dir`'s inode. `stat`'s device is not used to match a watch: fdinfo's
+/// `sdev` is the superblock's device, and on btrfs `stat` reports the
+/// subvolume's anonymous device instead, so the two differ there.
+fn ino(dir: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
-    let m = fs::metadata(dir).unwrap();
-    let dev = m.dev();
-    let kdev = (u64::from(rustix::fs::major(dev)) << 20) | u64::from(rustix::fs::minor(dev));
-    (kdev, m.ino())
+    fs::metadata(dir).unwrap().ino()
+}
+
+/// The devices (fdinfo `sdev`) on which every one of `dirs` holds a watch:
+/// a filesystem known by its watched directories rather than by `stat`.
+fn devices_watching(watched: &std::collections::HashSet<(u64, u64)>, dirs: &[&Path]) -> Vec<u64> {
+    let mut devs: Vec<u64> = watched.iter().map(|&(d, _)| d).collect();
+    devs.sort_unstable();
+    devs.dedup();
+    devs.retain(|&d| dirs.iter().all(|p| watched.contains(&(d, ino(p)))));
+    devs
 }
 
 /// Under `$HOME` ancestors are watched only strictly below it, by real
@@ -1659,11 +1668,16 @@ fn a_moved_parent_below_home_is_seen() {
     fs::write(&prefs, "a = 1\n").unwrap();
     fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
     let watched = inotify_watched();
-    for d in [&z, &home.join("x/y"), &home.join("x")] {
-        assert!(watched.contains(&dev_ino(d)), "{d:?} is not watched");
-    }
-    for d in [&home, &root] {
-        assert!(!watched.contains(&dev_ino(d)), "{d:?} holds a watch");
+    let (y, x) = (home.join("x/y"), home.join("x"));
+    let devs = devices_watching(&watched, &[&z, &y, &x]);
+    assert!(
+        !devs.is_empty(),
+        "z, y and x are not all watched: {watched:?}"
+    );
+    for dev in devs {
+        for d in [&home, &root] {
+            assert!(!watched.contains(&(dev, ino(d))), "{d:?} holds a watch");
+        }
     }
 
     // `$HOME` moved and back: nothing watches it or its parent.
