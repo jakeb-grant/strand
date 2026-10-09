@@ -7,11 +7,13 @@
 #
 # The wall-clock latency gates (the `timing` job: theme_swap_bench and
 # reload_latency) are advisory here: they run and print their numbers,
-# and a test that misses its gate prints WARN instead of failing the run
-# (decisions.md laptop-open, "laptop timing gates"). GitHub's `timing`
-# job stays the enforcing gate. A build failure or a timeout in those
-# steps still fails. The memory budgets, pixel tests and every other
-# step stay strict.
+# and a step whose only failures are wall-clock gate misses (panics
+# marked "timing gate missed", judged by gate-misses.sh) prints WARN
+# instead of failing the run (decisions.md laptop-open, "laptop timing
+# gates" and "only gate misses are advisory"). GitHub's `timing` job
+# stays the enforcing gate. Any other failure in those steps (a
+# functional assertion, a crash, a build error, a timeout) still fails.
+# The memory budgets, pixel tests and every other step stay strict.
 #
 # Env: CI_FROM=N starts at step N (the steps are numbered as printed).
 #      CI_JOB=NAME runs that job's steps only (the setup steps 1 and 2
@@ -74,14 +76,14 @@ step() {
 # The lines of a timing test's output that carry its numbers and, on a
 # miss, its verdicts.
 key_numbers() {
-  grep -a -E 'theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^test .* FAILED$|^test result:' "$1" |
+  grep -a -E 'timing gate missed|theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^test .* FAILED$|^test result:' "$1" |
     sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | head -60
 }
 
 # timing_step NAME MINUTES CMD...: a wall-clock latency gate. As `step`
-# under STRAND_STRICT_TIMING=1; otherwise a test that misses (cargo's
-# "test result: FAILED") warns and the run goes on. Either way its key
-# numbers are printed again after it.
+# under STRAND_STRICT_TIMING=1; otherwise a run whose every failure is
+# a gate miss (gate-misses.sh) warns and the run goes on. Either way
+# its key numbers are printed again after it.
 timing_step() {
   local name=$1 minutes=$2
   shift 2
@@ -100,7 +102,7 @@ timing_step() {
   echo "--- [$n] key numbers:"
   key_numbers "$log" | sed 's/^/    /'
   [ "$status" = 0 ] && return 0
-  if [ "$STRICT_TIMING" = 1 ] || ! grep -a -q 'test result: FAILED' "$log"; then
+  if [ "$STRICT_TIMING" = 1 ] || ! scripts/container/gate-misses.sh "$log"; then
     fail "$name" "$status" "$minutes"
   fi
   echo "########################################################################"

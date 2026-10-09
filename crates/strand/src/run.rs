@@ -3039,6 +3039,7 @@ pub(crate) mod tests {
         ignore = "a budget test: run optimised (cargo test --release)"
     )]
     fn reload_latency_meets_its_budget() {
+        use crate::bench::GATE_MISS;
         let rounds = std::env::var("STRAND_LATENCY_ROUNDS")
             .ok()
             .and_then(|n| n.parse().ok())
@@ -3050,8 +3051,14 @@ pub(crate) mod tests {
             tokens.iter().copied().fold(0.0, f64::max),
             markup.iter().copied().fold(0.0, f64::max),
         );
-        assert!(pt <= 35.0, "token edits: p95 {pt:.1} ms: {tokens:?}");
-        assert!(pm <= 50.0, "markup edits: p95 {pm:.1} ms: {markup:?}");
+        assert!(
+            pt <= 35.0,
+            "{GATE_MISS}: token edits: p95 {pt:.1} ms: {tokens:?}"
+        );
+        assert!(
+            pm <= 50.0,
+            "{GATE_MISS}: markup edits: p95 {pm:.1} ms: {markup:?}"
+        );
     }
 
     /// design.md, "Live reload": monitor changes show on the next frame.

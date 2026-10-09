@@ -62,10 +62,14 @@ scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland
   (`Dockerfile.matrix`). Hyprland gets only `/dev/dri/renderD128`; CI's
   vkms card needs modprobe, so Hyprland is skipped when it cannot start
   without a KMS card.
-- `ci` treats the wall-clock timing steps (theme_swap_bench, reload_latency)
-  as advisory: a miss prints WARN with its numbers and the run goes on;
-  GitHub's `timing` job enforces them. `STRAND_STRICT_TIMING=1` makes them
-  fail here too. Memory budgets, pixel tests and the rest stay strict.
+- `ci` treats the wall-clock gates in the timing steps (theme_swap_bench,
+  reload_latency) as advisory: when every failure in a step is a gate
+  miss (a panic starting "timing gate missed", `gate-misses.sh`), it
+  prints WARN with its numbers and the run goes on; any other failure in
+  those steps fails. GitHub's `timing` job enforces the gates.
+  `STRAND_STRICT_TIMING=1` makes them fail here too. A new wall-clock
+  gate starts its message with `GATE_MISS`; a functional assertion never
+  does. Memory budgets, pixel tests and the rest stay strict.
 - When the Dockerfile changes, the image is rebuilt (tagged by its hash);
   edit it together with `.github/workflows/ci.yml`.
 

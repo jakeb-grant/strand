@@ -62,6 +62,12 @@ const BUDGET: Duration = Duration::from_millis(5);
 /// quarter of a 60 Hz frame), optimised.
 const BLEND_BUDGET: Duration = Duration::from_micros(4_000);
 
+/// The start of every wall-clock gate's failure message: the laptop's
+/// container suite warns, instead of failing, only on failures that all
+/// carry it (`scripts/container/gate-misses.sh`; decisions.md
+/// laptop-open). Functional assertions never carry it.
+const GATE_MISS: &str = "timing gate missed";
+
 /// Swaps measured per case: `optimised` where the gate is the budget
 /// (a median of 31 moves only when most of them do), half as many in a
 /// debug build, whose gate is a check of the work's shape and whose run
@@ -339,7 +345,7 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
     for (median, from, to) in report {
         assert!(
             median < gate,
-            "{from} → {to}: {median:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
+            "{GATE_MISS}: {from} → {to}: {median:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
         );
     }
     finish(shell, dir, storage);
@@ -539,14 +545,14 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
         };
         assert!(
             m < gate,
-            "age {age}: {m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
+            "{GATE_MISS}: age {age}: {m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
         );
         // A per-byte loop runs some twenty times slower unoptimised: the
         // blend is held to its budget in optimised builds only (CI).
         if blend_gated {
             assert!(
                 blend < BLEND_BUDGET,
-                "{blend:?} blending a frame, over {BLEND_BUDGET:?}"
+                "{GATE_MISS}: {blend:?} blending a frame, over {BLEND_BUDGET:?}"
             );
         }
     }
@@ -724,17 +730,25 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
         if whole_gated(scopes, stiffness) {
             assert!(
                 whole < gate,
-                "{scopes} scopes, spring({stiffness}, 1): {whole:?} of work in all, over {gate:?}"
+                "{GATE_MISS}: {scopes} scopes, spring({stiffness}, 1): {whole:?} of work in all, over {gate:?}"
             );
         }
         let apply_gate = apply_gate(scopes);
         assert!(
             apply < apply_gate,
-            "{scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {apply_gate:?}"
+            "{GATE_MISS}: {scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {apply_gate:?}"
         );
         assert!(
             each < gate_frame,
-            "{scopes} scopes, spring({stiffness}, 1): {each:?} per frame, over {gate_frame:?}"
+            "{GATE_MISS}: {scopes} scopes, spring({stiffness}, 1): {each:?} per frame, over {gate_frame:?}"
         );
     }
+}
+
+/// The container suite's gate-miss check reads the marker these gates'
+/// failures start with.
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
 }
