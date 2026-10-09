@@ -370,6 +370,24 @@ impl PipeWire {
             .unwrap_or_default()
     }
 
+    /// What a timeout waiting for a default prints: the `default`
+    /// metadata (`pw-metadata`) and every metadata object (`pw-cli ls
+    /// Metadata`), so a stall names its side: the session manager (no
+    /// `default.audio.sink`), or the service (the key set, not seen).
+    pub fn session_state(&self) -> String {
+        let objects = self
+            .command("pw-cli")
+            .args(["ls", "Metadata"])
+            .stdout(Stdio::piped())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        format!(
+            "pw-metadata default:\n{}\npw-cli ls Metadata:\n{objects}",
+            self.metadata()
+        )
+    }
+
     /// `wpctl get-volume id`: `(volume, muted)`.
     pub fn volume(&self, id: u32) -> (f64, bool) {
         self.volume_of(&id.to_string())

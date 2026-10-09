@@ -13,7 +13,9 @@
 //!   the audio devices (cards) those nodes belong to;
 //! - reads the default sink and source from the `default` metadata
 //!   (`default.audio.sink`, else `default.configured.audio.sink`; the same
-//!   for sources);
+//!   for sources), reading it again [`REREAD`] after a client comes or
+//!   goes or a default is cleared (PipeWire drops metadata updates to
+//!   existing bindings while another client binds it);
 //! - writes volume and mute on every channel: through the card's active
 //!   `Route` (`save: true`) when the node has one, as `wpctl` and
 //!   pipewire-pulse do, else with the node's `set_param(Props)`; and the
@@ -83,7 +85,7 @@ pub use schema::SCHEMA;
 pub use service::{
     ANSWER_WAIT, AudioDeviceAction, AudioStore, AudioStoreCells, LevelTap, configure, tap_levels,
 };
-pub use thread::{ECHOES, FRAME, GRACE, SETTLE, UNANSWERED};
+pub use thread::{ECHOES, FRAME, GRACE, REREAD, SETTLE, UNANSWERED};
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
