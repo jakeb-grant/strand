@@ -34,6 +34,16 @@
 #                with `cargo test -p strand --test compositor_matrix
 #                --no-run`).
 # Env:   OUT (default target/matrix/<compositor>): logs and screenshots.
+#        MATRIX_FILTER  one test by its exact name (the test binary's
+#                       `--exact` filter), e.g.
+#                       window_state_actions_follow_the_compositor.
+#        MATRIX_LOOP    runs the test(s) that many times against the same
+#                       compositor; a failed run keeps run-N.log (and,
+#                       on labwc, its stretch of labwc.log); loop.log
+#                       says how many failed.
+#        MATRIX_WAYLAND_DEBUG=1  WAYLAND_DEBUG for the test (client
+#                       side) and labwc (server side: every request it
+#                       received).
 # Exit status is the test's (non-zero when the compositor never starts).
 
 set -euo pipefail
@@ -43,7 +53,7 @@ KIND=${1:-}
 TEST=${2:-}
 case "$KIND" in
   sway|niri|hyprland|labwc) ;;
-  *) sed -n '2,32p' "$0"; exit 2 ;;
+  *) sed -n '2,47p' "$0"; exit 2 ;;
 esac
 OUTPUTS=${MATRIX_OUTPUTS:-2}
 OUT=${OUT:-$ROOT/target/matrix/$KIND}
@@ -295,10 +305,16 @@ EOF
 </labwc_config>
 EOF
     : >"$RT/labwc/autostart"
+    # -d: labwc logs only errors without it (an empty labwc.log, run
+    # 37913227852). Appended (>>), so a MATRIX_LOOP run can mark its
+    # stretch. MATRIX_WAYLAND_DEBUG also logs every request it receives.
+    : >"$OUT/labwc.log"
+    labwc_debug=()
+    [ -z "${MATRIX_WAYLAND_DEBUG:-}" ] || labwc_debug=(WAYLAND_DEBUG=server)
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u NIRI_SOCKET \
       XDG_RUNTIME_DIR="$RT" WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=pixman \
       WLR_LIBINPUT_NO_DEVICES=1 \
-      labwc -C "$RT/labwc" >"$OUT/labwc.log" 2>&1 &
+      "${labwc_debug[@]}" labwc -d -C "$RT/labwc" >>"$OUT/labwc.log" 2>&1 &
     PIDS+=($!)
     wait_for "$OUT/labwc.log" labwc_ready "$RT"
     export XDG_RUNTIME_DIR=$RT
@@ -316,7 +332,38 @@ sleep 1
 grim "$OUT/$KIND-desktop.png" || echo "grim failed on the bare $KIND desktop" >&2
 
 status=0
-STRAND_MATRIX=$KIND STRAND_MATRIX_OUTPUTS=$OUTPUTS STRAND_SHOTS=$OUT "$TEST" --test-threads=1 --nocapture 2>&1 |
-  tee "$OUT/test.log" || status=${PIPESTATUS[0]}
+# The test binary's own arguments: the filter (MATRIX_FILTER, matched
+# exactly: one test), one thread.
+args=(--test-threads=1 --nocapture)
+[ -z "${MATRIX_FILTER:-}" ] || args+=(--exact "$MATRIX_FILTER")
+test_env=(STRAND_MATRIX="$KIND" STRAND_MATRIX_OUTPUTS="$OUTPUTS" STRAND_SHOTS="$OUT")
+[ -z "${MATRIX_WAYLAND_DEBUG:-}" ] || test_env+=(WAYLAND_DEBUG=client)
+LOOP=${MATRIX_LOOP:-1}
+if [ "$LOOP" -le 1 ]; then
+  env "${test_env[@]}" "$TEST" "${args[@]}" 2>&1 | tee "$OUT/test.log" || status=${PIPESTATUS[0]}
+else
+  # MATRIX_LOOP runs against the same compositor: each run's output goes
+  # to run-N.log, kept only when it failed (with its stretch of the
+  # compositor's log in run-N-<compositor>.log for labwc).
+  failures=0
+  rm -f "$OUT"/run-*.log
+  for i in $(seq "$LOOP"); do
+    log=$OUT/run-$i.log
+    from=$(wc -l <"$OUT/$KIND.log" 2>/dev/null || echo 0)
+    [ "$KIND" != labwc ] || echo "=== strand matrix: run $i of $LOOP" >>"$OUT/labwc.log"
+    if env "${test_env[@]}" "$TEST" "${args[@]}" >"$log" 2>&1; then
+      rm -f "$log"
+      echo "run $i/$LOOP: ok (failures so far: $failures)"
+    else
+      failures=$((failures + 1))
+      [ ! -f "$OUT/$KIND.log" ] || tail -n "+$((from + 1))" "$OUT/$KIND.log" >"$OUT/run-$i-$KIND.log"
+      echo "run $i/$LOOP: FAILED (failures so far: $failures; $log)"
+      grep -E -A3 "panicked|^never:" "$log" | grep -v WAYLAND | head -12 || true
+    fi
+  done
+  echo "compositor matrix on $KIND: $failures of $LOOP runs failed (${MATRIX_FILTER:-every test})" |
+    tee "$OUT/loop.log"
+  [ "$failures" = 0 ] || status=1
+fi
 echo "compositor matrix on $KIND: exit $status (logs and shots in $OUT)"
 exit "$status"

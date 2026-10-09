@@ -11,6 +11,8 @@
 # Env:   STRAND_DRM_CARD  the vkms card passed in with --device (Hyprland)
 #        MATRIX_OUTPUTS   outputs for sway and Hyprland (default 2; niri 1)
 #        MATRIX           the compositors (default "sway niri hyprland labwc")
+#        MATRIX_FILTER, MATRIX_LOOP, MATRIX_WAYLAND_DEBUG  passed on to
+#                         scripts/compositor-matrix.sh (one test, many runs)
 # The bar's click is required (STRAND_MATRIX_REQUIRE_CLICK=1): a
 # compositor without zwlr_virtual_pointer_manager_v1 fails, not skips it.
 # Exit status is non-zero when any compositor failed; logs and shots are
@@ -88,6 +90,8 @@ for kind in $MATRIX; do
     HOME="/home/$user" USER="$user" \
     STRAND_DRM_CARD="${STRAND_DRM_CARD:-}" LIBSEAT_BACKEND=seatd SEATD_SOCK=/run/seatd.sock \
     STRAND_MATRIX_REQUIRE_CLICK=1 MATRIX_OUTPUTS="${MATRIX_OUTPUTS:-2}" \
+    MATRIX_FILTER="${MATRIX_FILTER:-}" MATRIX_LOOP="${MATRIX_LOOP:-1}" \
+    MATRIX_WAYLAND_DEBUG="${MATRIX_WAYLAND_DEBUG:-}" \
     OUT="$ROOT/target/matrix/$kind" \
     "$ROOT/scripts/compositor-matrix.sh" "$kind" "$TEST"
   status=$?

@@ -14,6 +14,10 @@
 #        (default: all four). Logs and shots: target/matrix/<compositor>.
 # Env:   MATRIX_REBUILD=1 rebuilds the Arch image (pulls archlinux:latest).
 #        MATRIX_OUTPUTS (default 2): outputs for sway and Hyprland (niri: 1).
+#        MATRIX_FILTER, MATRIX_LOOP, MATRIX_WAYLAND_DEBUG: one test, many
+#        runs, Wayland protocol logs (scripts/compositor-matrix.sh), e.g.
+#        MATRIX_FILTER=window_state_actions_follow_the_compositor MATRIX_LOOP=100 \
+#          scripts/container/matrix.sh labwc
 
 set -uo pipefail
 
@@ -47,6 +51,8 @@ run_arch() { # MATRIX DRM_CARD [docker args...]
   shift 2
   docker run --rm --init "$@" "${mounts[@]}" -w "$ROOT" \
     -e MATRIX="$matrix" -e STRAND_DRM_CARD="$card" -e MATRIX_OUTPUTS="${MATRIX_OUTPUTS:-2}" \
+    -e MATRIX_FILTER="${MATRIX_FILTER:-}" -e MATRIX_LOOP="${MATRIX_LOOP:-1}" \
+    -e MATRIX_WAYLAND_DEBUG="${MATRIX_WAYLAND_DEBUG:-}" \
     "$ARCH_IMAGE" bash scripts/compositor-matrix-ci.sh "$TEST"
 }
 
