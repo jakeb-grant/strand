@@ -79,7 +79,7 @@ pub(super) fn hash_path(h: &mut impl Hasher, p: &BezPath) {
     }
 }
 
-pub(super) fn hash_item(h: &mut impl Hasher, item: &Item) {
+pub(crate) fn hash_item(h: &mut impl Hasher, item: &Item) {
     match item {
         Item::PushClip(p) => {
             0u8.hash(h);
@@ -99,12 +99,22 @@ pub(super) fn hash_item(h: &mut impl Hasher, item: &Item) {
         }
         Item::PopTransform => 9u8.hash(h),
         Item::PushLayer(l) => {
-            10u8.hash(h);
+            12u8.hash(h);
             crate::layers::hash_effects(h, &l.effects);
             hash_rect(h, l.frame);
             hash_f32(h, l.scale);
+            for v in l.xform.as_coeffs() {
+                v.to_bits().hash(h);
+            }
         }
-        Item::PopLayer => 11u8.hash(h),
+        Item::Raster {
+            node, key, rect, ..
+        } => {
+            14u8.hash(h);
+            (node, key).hash(h);
+            hash_rect(h, *rect);
+        }
+        Item::PopLayer => 13u8.hash(h),
         Item::Shadow {
             rect,
             radii,

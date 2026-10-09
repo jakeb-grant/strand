@@ -1,6 +1,7 @@
 //! Drawing a display list into one render context, and splitting the
 //! damage into disjoint rectangles.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use strand_scene::{Damage, Paint, Rect, Scale};
@@ -15,6 +16,7 @@ use crate::cache::{
     shadow_key,
 };
 use crate::flatten::{DisplayItem, FillShape, Item};
+use crate::offscreen::{Drawn, layer_key};
 
 /// A gradient frame's size in whole pixels.
 pub(super) fn frame_px(f: kurbo::Rect) -> Option<(u32, u32)> {
@@ -63,7 +65,7 @@ pub(super) fn paint_for(
 }
 
 /// Index just past the pop matching the push at `i`.
-pub(super) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
+pub(crate) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
     let mut depth = 0usize;
     for (j, d) in items.iter().enumerate().skip(i) {
         match d.item {
@@ -84,8 +86,11 @@ pub(super) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
 }
 
 /// Encodes the display items that touch `clip`. `base` maps surface
-/// coordinates to the cell being rasterised.
-pub(super) fn draw(
+/// coordinates to the cell being rasterised, and `start` is the
+/// transform in force before the first item (an offscreen group's).
+/// `groups` holds this frame's offscreen groups.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw(
     ctx: &mut RenderContext,
     items: &[DisplayItem],
     clip: Rect,
@@ -93,6 +98,8 @@ pub(super) fn draw(
     cache: &PaintCache,
     scale: Scale,
     base: Affine,
+    start: Affine,
+    groups: &HashMap<usize, Drawn>,
 ) {
     let touches = |b: &Rect| clip.intersects(*b);
     // The cell in item coordinates under transform `cur`.
@@ -107,7 +114,7 @@ pub(super) fn draw(
     };
     // The transform in force (`scale`, `rotate` groups), and the ones
     // their pops return to.
-    let mut cur = base;
+    let mut cur = base * start;
     let mut saved: Vec<Affine> = Vec::new();
     let mut i = 0;
     while i < items.len() {
@@ -128,14 +135,34 @@ pub(super) fn draw(
                 ctx.set_transform(cur);
             }
             Item::PopTransform => {
-                cur = saved.pop().unwrap_or(base);
+                cur = saved.pop().unwrap_or(base * start);
                 ctx.set_transform(cur);
             }
             Item::PushClip(p) => ctx.push_clip_path(p),
             Item::PopClip => ctx.pop_clip(),
             Item::PushOpacity(o) => ctx.push_opacity_layer(*o),
             Item::PopOpacity => ctx.pop_layer(),
-            Item::PushLayer(l) => crate::layers::push(ctx, l, cur),
+            Item::PushLayer(l) => {
+                crate::layers::push(ctx, l, cur);
+                // An offscreen group: its filtered pixels, as an image in
+                // surface pixels, in place of its items.
+                if let Some(g) = groups.get(&layer_key(l)) {
+                    ctx.set_transform(base);
+                    let (p, t) = image_paint(&g.pixmap, g.x as f64, g.y as f64, false);
+                    ctx.set_paint(p);
+                    ctx.set_paint_transform(t);
+                    ctx.fill_rect(&kurbo::Rect::new(
+                        g.x as f64,
+                        g.y as f64,
+                        g.x as f64 + g.pixmap.width() as f64,
+                        g.y as f64 + g.pixmap.height() as f64,
+                    ));
+                    ctx.reset_paint_transform();
+                    ctx.set_transform(cur);
+                    ctx.pop_layer();
+                    i = skip_group(items, i - 1);
+                }
+            }
             Item::PopLayer => ctx.pop_layer(),
             _ if !touches(&d.bounds) => {}
             Item::Shadow {
@@ -195,6 +222,13 @@ pub(super) fn draw(
                 ctx.set_fill_rule(Fill::EvenOdd);
                 ctx.fill_path(path);
                 ctx.set_fill_rule(Fill::NonZero);
+                ctx.reset_paint_transform();
+            }
+            Item::Raster { pixmap, rect, .. } => {
+                let (p, t) = image_paint(pixmap, rect.x0, rect.y0, cur != base);
+                ctx.set_paint(p);
+                ctx.set_paint_transform(t);
+                ctx.fill_rect(rect);
                 ctx.reset_paint_transform();
             }
             Item::Image {

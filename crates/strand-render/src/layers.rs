@@ -12,8 +12,9 @@
 //!   `Mask` (`fade`, `radial`: a cell-sized alpha mask, in device pixels
 //!   through the group's transform). Effects that read neighbouring
 //!   pixels (`Blur`) or a whole group (`ColorMatrix`) are drawn by an
-//!   offscreen group (until then they draw unfiltered). The CPU draws a `Shader`
-//!   pass's group unfiltered, and `Mask::Shape` is opaque until the shape
+//!   offscreen group ([`crate::offscreen`]), then drawn into each cell as
+//!   an image under the cell-local part. The CPU draws a `Shader` pass's
+//!   group unfiltered, and `Mask::Shape` is opaque until the shape
 //!   library lands (S-effects).
 //!
 //! Effects are built from props by S-effects (`filter:`, `blend:`,
@@ -38,6 +39,19 @@ pub struct Layer {
     pub frame: kurbo::Rect,
     /// The surface's scale: mask lengths are logical.
     pub scale: f32,
+    /// The transform in force at the group (its node's and its
+    /// ancestors' `scale`/`rotate`): an offscreen group is drawn under it.
+    pub xform: Affine,
+}
+
+impl Layer {
+    /// True if a cell can draw the layer with `push_layer` alone; else
+    /// it is an offscreen group ([`crate::offscreen`]).
+    pub fn cell_local(&self) -> bool {
+        self.effects
+            .iter()
+            .all(|e| !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_)))
+    }
 }
 
 /// Effects attached to nodes until S-effects builds them from props.
@@ -195,6 +209,7 @@ mod tests {
             effects: effects.into(),
             frame: kurbo::Rect::new(10.0, 10.0, 110.0, 50.0),
             scale: 2.0,
+            xform: Affine::IDENTITY,
         }
     }
 
@@ -220,10 +235,14 @@ mod tests {
     }
 
     #[test]
-    fn reach_is_physical() {
+    fn reach_is_physical_and_only_spatial_effects_leave_the_cell() {
         let blur = vec![Effect::Blur { radius: 2.0 }, Effect::Opacity(0.5)];
         assert_eq!(reach_px(&blur, 2.0), 12, "3σ of 2 logical px at 2×");
         assert_eq!(reach_px(&[Effect::Opacity(0.5)], 2.0), 0);
         assert_eq!(reach_px(&[Effect::Blur { radius: f32::NAN }], 1.0), 0);
+        assert!(!layer(blur).cell_local());
+        assert!(layer(vec![Effect::Blend(BlendMode::Screen)]).cell_local());
+        let gray = Effect::ColorMatrix(strand_scene::effect::IDENTITY_MATRIX);
+        assert!(!layer(vec![gray]).cell_local());
     }
 }

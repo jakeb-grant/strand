@@ -34,18 +34,38 @@ const MIN_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / 360);
 
 /// How often a node's clock ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Rate {
+pub enum Rate {
     /// Every frame the surface draws.
     Refresh,
     /// Once per period: a frame cap.
     Every(Duration),
 }
 
-/// The clock of `node`, if it has one: `timed` (a prop reads time) runs
-/// at refresh, and a built-in `effect` animates by nature, `shimmer` at
-/// 30 fps and the others at refresh. A node's clock is one clock: its
-/// time-bound props follow its cap.
-pub(crate) fn rate(node: &Node, timed: bool) -> Option<Rate> {
+/// The clock of `node`, if it has one. A built-in `effect` animates by
+/// nature (`shimmer` at 30 fps, the others at refresh) and a CPU raster
+/// node at its source's `raster` rate (the faster of the two if both);
+/// otherwise a node whose props read time (`timed`) runs at refresh. A
+/// node's clock is one clock: its time-bound props follow its cap.
+pub(crate) fn rate(node: &Node, timed: bool, raster: Option<Rate>) -> Option<Rate> {
+    [kind_rate(node), raster]
+        .into_iter()
+        .flatten()
+        .reduce(Rate::faster)
+        .or(timed.then_some(Rate::Refresh))
+}
+
+impl Rate {
+    /// The faster of two rates.
+    fn faster(self, other: Rate) -> Rate {
+        match (self, other) {
+            (Rate::Every(a), Rate::Every(b)) => Rate::Every(a.min(b)),
+            _ => Rate::Refresh,
+        }
+    }
+}
+
+/// The rate a node's kind animates at by nature.
+fn kind_rate(node: &Node) -> Option<Rate> {
     if node.kind == NodeKind::Effect {
         let style = match node.get(Prop::Style) {
             Some(PropValue::Keyword(k) | PropValue::Text(k)) => k.as_str(),
@@ -56,7 +76,7 @@ pub(crate) fn rate(node: &Node, timed: bool) -> Option<Rate> {
             _ => Rate::Refresh,
         });
     }
-    timed.then_some(Rate::Refresh)
+    None
 }
 
 /// A clock a frame drew: when it next ticks on the presentation clock

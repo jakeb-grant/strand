@@ -24,6 +24,7 @@ mod paint;
 
 pub use atlas::AtlasMirror;
 use draw::{disjoint, draw, frame_px, to_kurbo};
+pub(crate) use draw::{draw as draw_group, skip_group};
 
 /// Width of a raster cell: one vello wide tile.
 pub const CELL_W: u32 = 256;
@@ -47,6 +48,8 @@ pub struct Raster {
     rasterised: u64,
     /// Dithered gradients and blurred shadows, drawn from pixmaps.
     cache: PaintCache,
+    /// (M4) Offscreen groups (blurred, colour-filtered subtrees).
+    offscreen: crate::offscreen::Offscreen,
 }
 
 impl Default for Raster {
@@ -58,6 +61,7 @@ impl Default for Raster {
             scratch: Vec::new(),
             rasterised: 0,
             cache: PaintCache::default(),
+            offscreen: crate::offscreen::Offscreen::default(),
         }
     }
 }
@@ -82,19 +86,30 @@ impl Raster {
         &self.cache
     }
 
-    /// Frees the paint cache's idle entries without painting.
+    /// The offscreen group cache.
+    pub fn offscreen(&self) -> &crate::offscreen::Offscreen {
+        &self.offscreen
+    }
+
+    /// Frees the paint cache's and offscreen groups' idle entries without
+    /// painting.
     pub fn trim_idle(&mut self, now: std::time::Instant) {
         self.cache.trim_idle(now);
+        self.offscreen.trim_idle(now);
     }
 
-    /// Frees the paint cache's entries no frame has used since `since`.
+    /// Frees the paint cache's entries and offscreen groups no frame has
+    /// used since `since`.
     pub fn trim_unused_since(&mut self, since: std::time::Instant) {
         self.cache.trim_unused_since(since);
+        self.offscreen.trim_unused_since(since);
     }
 
-    /// Shortens (tests) how long an unused paint cache entry lives.
+    /// Shortens (tests) how long an unused paint cache entry or
+    /// offscreen group lives.
     pub fn set_idle_free(&mut self, idle: std::time::Duration) {
         self.cache.set_idle_free(idle);
+        self.offscreen.set_idle_free(idle);
     }
 
     /// Pixels the last [`Raster::paint`] rasterised. Tracks damage, not
@@ -156,7 +171,11 @@ impl Raster {
             return;
         };
         self.prepare(items, &damage);
-        self.cache.trim_idle(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.cache.trim_idle(now);
+        self.offscreen
+            .prepare(items, &damage, target.bounds(), atlas, &self.cache, scale);
+        self.offscreen.trim_idle(now);
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
         // composite through it.
@@ -190,7 +209,17 @@ impl Raster {
                 ctx.set_transform(base);
                 for clip in &clips {
                     ctx.push_clip_rect(&to_kurbo(*clip));
-                    draw(ctx, items, *clip, atlas, &self.cache, scale, base);
+                    draw(
+                        ctx,
+                        items,
+                        *clip,
+                        atlas,
+                        &self.cache,
+                        scale,
+                        base,
+                        Affine::IDENTITY,
+                        self.offscreen.current(),
+                    );
                     ctx.pop_clip();
                 }
                 ctx.flush();

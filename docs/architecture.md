@@ -904,7 +904,18 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     (particles, grain, graphs, spectrum, animated image frames) drawn into
     a cached pixmap at its clock's rate. Cached offscreen groups (glows,
     filtered subtrees, glass sources) redraw only when their children
-    change, in a second 4 MB budget freed when idle. The props keep
+    change, in a second 4 MB budget freed when idle. Built (m4-runtime
+    F4, `strand-render`'s `offscreen.rs`):
+    - A layer with `Blur` or `ColorMatrix` (`Layer::cell_local` false) is
+      drawn whole into a pixmap of its bounds, filtered there, and drawn
+      into each cell as an image under the layer's cell-local part. The
+      pixmap is keyed by the hash of what the group draws
+      (`OFFSCREEN_BYTES`, LRU; a group over the budget is drawn uncached;
+      freed with the paint cache's idle rules).
+    - The raster node is `Item::Raster { node, key, pixmap, rect }`. A
+      `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
+      is attached through the hidden `Renderer::set_raster_source` seam.
+      Its pixmap is redrawn only when its tick or size changes. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the

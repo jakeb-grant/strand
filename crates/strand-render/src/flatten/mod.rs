@@ -26,6 +26,8 @@ mod paint;
 mod text;
 mod widget;
 
+pub(crate) use hash::hash_item;
+
 pub use paint::BLUR_TINT;
 use paint::{cover, kurbo_rect};
 use text::sane_font;
@@ -59,6 +61,15 @@ pub enum Item {
     /// ([`crate::layers`]): its bounds include their reach.
     PushLayer(Arc<crate::layers::Layer>),
     PopLayer,
+    /// (M4) A CPU raster node's pixels ([`crate::offscreen::RasterNodes`])
+    /// filling `rect`, drawn at its clock's rate; `key` names the tick
+    /// and size they were drawn at.
+    Raster {
+        node: NodeId,
+        key: u64,
+        pixmap: Arc<vello_cpu::Pixmap>,
+        rect: kurbo::Rect,
+    },
     /// A blurred rounded rect, clipped to outside the casting box.
     Shadow {
         rect: kurbo::Rect,
@@ -279,6 +290,8 @@ pub struct Extras {
     /// (M4) Group effects per node ([`crate::layers`]), until S-effects
     /// builds them from props.
     pub effects: crate::layers::NodeEffects,
+    /// (M4) CPU raster nodes' sources and pixmaps.
+    pub rasters: crate::offscreen::RasterNodes,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.

@@ -69,7 +69,7 @@ impl<'a> Flattener<'a> {
         let timed_scope = inh.timed || crate::time::overrides_read_time(node);
         let timed = timed_scope || crate::time::reads_time(node);
         // Its clock: the rate its time props and its own animation run at.
-        let rate = crate::clock::rate(node, timed);
+        let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
         let (time, next) = match rate {
             Some(rate) => {
                 let (cx, next) = self.anim.time_of(node.id, rate);
@@ -360,6 +360,7 @@ impl<'a> Flattener<'a> {
                 effects,
                 frame,
                 scale: self.scale.as_f32(),
+                xform: self.xform,
             })))
         });
         // Widgets' default radius: `$radius.md` for buttons and segmented
@@ -465,6 +466,35 @@ impl<'a> Flattener<'a> {
                     shape,
                     paint,
                     frame,
+                },
+                phys,
+                &mut sig,
+                &mut ink,
+            );
+        }
+        // (M4) A CPU raster node's pixels at its clock's tick, over its
+        // background.
+        if has_area
+            && let Some((key, pixmap)) = self.extras.rasters.pixmap(
+                node.id,
+                frame.width().round() as u32,
+                frame.height().round() as u32,
+                self.scale.as_f32(),
+                time.unwrap_or_default(),
+            )
+        {
+            let rect = kurbo::Rect::new(
+                frame.x0.round(),
+                frame.y0.round(),
+                frame.x0.round() + pixmap.width() as f64,
+                frame.y0.round() + pixmap.height() as f64,
+            );
+            self.push(
+                Item::Raster {
+                    node: node.id,
+                    key,
+                    pixmap,
+                    rect,
                 },
                 phys,
                 &mut sig,

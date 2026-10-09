@@ -400,6 +400,34 @@ impl Renderer {
         self.raster.set_idle_free(idle);
     }
 
+    /// (M4) The offscreen group cache: bytes kept, groups drawn so far,
+    /// and groups kept (`crate::offscreen`).
+    pub fn offscreen_cache(&self) -> (usize, u64, usize) {
+        let o = self.raster.offscreen();
+        (o.bytes(), o.builds(), o.len())
+    }
+
+    /// (M4) Makes `node` a CPU raster node drawn by `source` at its rate
+    /// (`None` makes it an ordinary node again). The seam S-effects'
+    /// particles, grain, graphs and spectrum draw through; tests use it
+    /// directly.
+    #[doc(hidden)]
+    pub fn set_raster_source(
+        &mut self,
+        node: NodeId,
+        source: Option<std::sync::Arc<dyn crate::offscreen::RasterSource>>,
+    ) {
+        self.extras.rasters.set(node, source);
+        for s in self.surfaces.values_mut() {
+            s.mark_dirty();
+        }
+    }
+
+    /// (M4) Pixmaps the raster nodes drew so far, and their bytes kept.
+    pub fn raster_nodes(&self) -> (u64, usize) {
+        (self.extras.rasters.builds(), self.extras.rasters.bytes())
+    }
+
     /// Decodes images and icons inline with icons from `theme` (offline
     /// renders and tests; a worker-backed renderer decodes off-thread).
     pub fn set_icon_theme_inline(&mut self, theme: &str) {
