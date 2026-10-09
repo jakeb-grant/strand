@@ -187,7 +187,7 @@ jobs:
   # compositor and its package version (an annotation and the job
   # summary; decisions.md laptop-resilience).
   compositors:
-    name: ${{ github.event_name == 'schedule' && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}
+    name: "${{ github.event_name == 'schedule' && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
