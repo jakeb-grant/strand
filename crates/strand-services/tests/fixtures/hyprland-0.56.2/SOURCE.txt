@@ -1,7 +1,11 @@
 Hyprland 0.56.2 IPC traffic, reconstructed from Hyprland's source at tag
 v0.56.2 (the files and wiki page cited below), not captured from a
-running Hyprland. M3's exit box "runs on Hyprland, niri and sway" is
-where real captures replace or validate these files.
+running Hyprland. Checked against a live Hyprland 0.56.2
+(hyprland-0.56.2-captured, 2026-10-08): the reply shapes match; the
+switch burst was reordered (the active window first) and the title burst
+gained the activewindow pair Hyprland restates after a focused window's
+title. This file keeps the two-monitor scenario and the events the
+capture did not see.
 
 Request replies (.socket.sock, one request per connection; Hyprland writes
 the reply and closes): j/monitors, j/workspaces, j/clients, j/activewindow,

@@ -1,0 +1,45 @@
+[{
+    "id": 1,
+    "name": "1",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557a6df4c490",
+    "lastwindowtitle": "◐ term one",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 2,
+    "name": "2",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557a6e2e3d90",
+    "lastwindowtitle": "Example · page - Google Chrome",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 3,
+    "name": "3",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557a6e37b040",
+    "lastwindowtitle": "top",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 4,
+    "name": "4",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557a6e3f20d0",
+    "lastwindowtitle": "project — notes.txt",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}]

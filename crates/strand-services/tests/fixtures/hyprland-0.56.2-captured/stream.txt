@@ -1,0 +1,3641 @@
+# Hyprland 0.56.2 .socket2.sock, captured from a live session for 40 minutes
+# (2026-10-08 18:56-19:36), every line as it came, titles scrubbed (SOURCE.txt).
+# The replies in before/ were read just before, those in after/ just after.
+
+## stream
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,✳ term one
+activewindow>>com.mitchellh.ghostty,✳ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+activewindow>>,
+activewindowv2>>
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557a6e2e3d90
+workspace>>2
+workspacev2>>2,2
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557a6e3f20d0
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557a6e3f20d0
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557a6e3f20d0
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557a6e2e3d90
+workspace>>2
+workspacev2>>2,2
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557a6e2e3d90
+workspace>>2
+workspacev2>>2,2
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+workspace>>1
+workspacev2>>1,1
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+activewindow>>,
+activewindowv2>>
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◐ term one
+activewindow>>com.mitchellh.ghostty,◐ term one
+activewindowv2>>557a6df4c490
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557a6e2e3d90
+workspace>>2
+workspacev2>>2,2
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557a6e3f20d0
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557a6e3f20d0
+workspace>>4
+workspacev2>>4,4
+createworkspace>>5
+createworkspacev2>>5,5
+activewindow>>,
+activewindowv2>>
+workspace>>5
+workspacev2>>5,5
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,Ghostty
+urgent>>557a6e504f50
+openwindow>>557a6e504f50,5,com.mitchellh.ghostty,Ghostty
+activewindow>>com.mitchellh.ghostty,Ghostty
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,cd projects/project
+activewindow>>com.mitchellh.ghostty,cd projects/project
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,user@host:~/projects/project
+activewindow>>com.mitchellh.ghostty,user@host:~/projects/project
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,~/projects/project
+activewindow>>com.mitchellh.ghostty,~/projects/project
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,agent
+activewindow>>com.mitchellh.ghostty,agent
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,✳ agent
+activewindow>>com.mitchellh.ghostty,✳ agent
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,✳ term two
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>557a6e504f50
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,✳ term two
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>557a6e504f50
