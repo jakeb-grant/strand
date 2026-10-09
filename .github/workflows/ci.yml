@@ -277,12 +277,18 @@ jobs:
         with:
           filters: |
             lock:
+              # S-lock's files as the M4 critique's ownership table names
+              # them; the globs also catch them if they land elsewhere in a
+              # crate. Keep this list in step with the lock code.
               - 'crates/strand-auth/**'
-              - 'crates/strand-surface/src/session_lock.rs'
-              - 'crates/strand-surface/tests/session_lock.rs'
-              - 'crates/strand-render/src/lock_fallback.rs'
+              - 'crates/**/*session_lock*'
+              - 'crates/**/*lock_fallback*'
+              - 'crates/strand/src/lock.rs'
               - 'crates/strand/src/run/lock.rs'
               - 'crates/strand/tests/lock.rs'
+              - 'crates/strand/src/services/auth*'
+              - 'crates/strand-services-schema/src/auth.schema'
+              - 'crates/strand-compiler/src/check/lock.rs'
               - 'scripts/lockvm/**'
               - 'scripts/container/*lockvm*'
               - 'scripts/container/lockvm/**'
