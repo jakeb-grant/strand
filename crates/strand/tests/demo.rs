@@ -485,6 +485,30 @@ fn demo_bar_on_two_outputs_then_idle() {
         memory_report(pid)
     );
 
+    // Boot's settling done first: a whole second with no switch in any
+    // thread and no frame (up to 20 s). Its last wakes (the text and
+    // image workers' owed trims and the allocator's delayed trim, each
+    // 500 ms after the work) follow the boot's last work, which a loaded
+    // runner can push past the fixed wait above and into the window
+    // (once in a full workspace run: decisions.md, laptop-flakes).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (f, w) = (damage_lines(&log).len(), switches(pid));
+        let threads = per_thread(pid);
+        std::thread::sleep(Duration::from_secs(1));
+        if damage_lines(&log).len() == f && switches(pid) == w {
+            break;
+        }
+        let woke: Vec<String> = per_thread(pid)
+            .into_iter()
+            .filter(|(t, n)| threads.get(t) != Some(n))
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            Instant::now() < deadline,
+            "never settled after boot: {woke:?} woke in the last second"
+        );
+    }
     // Idle: no thread of the process wakes. Skip a window that would
     // contain a minute boundary (the clock tick is the one wakeup).
     if seconds_into_minute() >= 56 {
