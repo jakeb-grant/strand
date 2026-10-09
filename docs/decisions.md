@@ -9159,3 +9159,16 @@ Two exceptions keep the clock running, because the node can come back:
 - for a node outside the clip, a prop that places it (`x`, `y`, `scale`, `rotate`, `shadow`) follows time.
 
 With every clock idle, there are no frames and no wake (`damage.rs::hidden_time_nodes_request_no_frames`, `::all_idle_clocks_stop_the_frame_loop`).
+
+**2026-10-09 · m4-runtime-w1 (F3): an effect layer is a push/pop group, and vello_cpu lowers only what one cell can draw.** architecture.md sketched `Item::Layer { effects, bounds, items }` with nested items. Every other group in the display list (clip, opacity, transform) is a push/pop marker pair, and the raster skips a group missing the damage by its push's bounds. A nested item would need a second walk everywhere. So the layer is `Item::PushLayer(Arc<Layer>)` … `Item::PopLayer`, with the same skip.
+
+The CPU raster draws in fixed 256×64 cells, each its own vello context. Only effects that work on one cell's pixels lower to that cell's `push_layer`:
+- `Opacity`, with several multiplied;
+- `Blend`, where the last wins, and `add` is Porter-Duff plus;
+- `Mask::Fade` and `Mask::Radial`, as a cell-sized alpha mask computed in the group's space through its transform. `fade(edge, len)` is transparent at the edge and opaque `len` in. `radial(at, size)` is an antialiased disc of radius `size` around the anchor point.
+
+`Blur` and `ColorMatrix` read neighbouring pixels or a whole group, so they go to offscreen groups (F4). The CPU draws a `Shader` pass's group unfiltered, and `Mask::Shape` stays opaque until the shape library lands (S-effects).
+
+Damage: every node under a layer gets the accumulated reach in physical pixels added to its record's bounds, after clipping. A clip inside the layer therefore never under-damages a blur's spread. The effects are hashed into the node's signature and its children's context.
+
+S-effects builds effects from props. Until it does, `Renderer::set_layer_effects` attaches them per node (`crates/strand-render/tests/layers.rs`).

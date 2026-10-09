@@ -345,6 +345,23 @@ impl<'a> Flattener<'a> {
         let mut ink = Rect::default();
 
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
+        // (M4) Group effects: a layer around the node and its subtree,
+        // whose damage grows by their reach.
+        let effects = self.extras.effects.get(&node.id).cloned();
+        let own_reach = effects
+            .as_deref()
+            .map_or(0, |e| crate::layers::reach_px(e, self.scale.as_f32()));
+        let reach = inh.reach.saturating_add(own_reach);
+        if let Some(e) = &effects {
+            crate::layers::hash_effects(&mut sig, e);
+        }
+        let layer_group = effects.map(|effects| {
+            self.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
+                effects,
+                frame,
+                scale: self.scale.as_f32(),
+            })))
+        });
         // Widgets' default radius: `$radius.md` for buttons and segmented
         // controls, a pill for meters.
         let default_radius = match node.kind {
@@ -431,6 +448,7 @@ impl<'a> Flattener<'a> {
         {
             if root
                 && opacity >= 1.0
+                && layer_group.is_none()
                 && saved == self.xform
                 && self.xform == kurbo::Affine::IDENTITY
                 && opaque_paint(&paint)
@@ -617,7 +635,13 @@ impl<'a> Flattener<'a> {
             );
         }
 
-        let bounds = ink.intersect(inh.clip).unwrap_or_default();
+        let mut bounds = ink.intersect(inh.clip).unwrap_or_default();
+        if reach > 0 && !bounds.is_empty() {
+            bounds = bounds
+                .inflate(reach)
+                .intersect(self.surface)
+                .unwrap_or_default();
+        }
         self.out.records.insert(
             node.id,
             NodeRecord {
@@ -676,6 +700,11 @@ impl<'a> Flattener<'a> {
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
+        if let Some(i) = layer_group
+            && let Item::PushLayer(l) = &self.out.items[i].item
+        {
+            crate::layers::hash_effects(&mut ctx, &l.effects);
+        }
         let mut child_clip = inh.clip;
         let mut clip_group = None;
         if clips {
@@ -695,6 +724,7 @@ impl<'a> Flattener<'a> {
             offset,
             inert,
             timed: timed_scope,
+            reach,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
@@ -714,6 +744,10 @@ impl<'a> Flattener<'a> {
             self.marker(Item::PopClip);
         }
         let subtree = bounds.union(children);
+        if let Some(i) = layer_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(Item::PopLayer);
+        }
         // Drawn: its clock runs, unless all it draws is outside the clip
         // and nothing that places it follows time (it stays out). A
         // built-in `effect` draws in its box.

@@ -67,8 +67,11 @@ pub(super) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
     let mut depth = 0usize;
     for (j, d) in items.iter().enumerate().skip(i) {
         match d.item {
-            Item::PushClip(_) | Item::PushOpacity(_) | Item::PushTransform(_) => depth += 1,
-            Item::PopClip | Item::PopOpacity | Item::PopTransform => {
+            Item::PushClip(_)
+            | Item::PushOpacity(_)
+            | Item::PushTransform(_)
+            | Item::PushLayer(_) => depth += 1,
+            Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     return j + 1;
@@ -111,7 +114,10 @@ pub(super) fn draw(
         let d = &items[i];
         i += 1;
         match &d.item {
-            Item::PushClip(_) | Item::PushOpacity(_) | Item::PushTransform(_)
+            Item::PushClip(_)
+            | Item::PushOpacity(_)
+            | Item::PushTransform(_)
+            | Item::PushLayer(_)
                 if !touches(&d.bounds) =>
             {
                 i = skip_group(items, i - 1);
@@ -129,6 +135,8 @@ pub(super) fn draw(
             Item::PopClip => ctx.pop_clip(),
             Item::PushOpacity(o) => ctx.push_opacity_layer(*o),
             Item::PopOpacity => ctx.pop_layer(),
+            Item::PushLayer(l) => crate::layers::push(ctx, l, cur),
+            Item::PopLayer => ctx.pop_layer(),
             _ if !touches(&d.bounds) => {}
             Item::Shadow {
                 rect,

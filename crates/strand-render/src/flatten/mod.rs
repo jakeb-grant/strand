@@ -55,6 +55,10 @@ pub enum Item {
     /// surface's origin): `scale` and `rotate` about the node's centre.
     PushTransform(kurbo::Affine),
     PopTransform,
+    /// (M4) Draws the group through its node's effects
+    /// ([`crate::layers`]): its bounds include their reach.
+    PushLayer(Arc<crate::layers::Layer>),
+    PopLayer,
     /// A blurred rounded rect, clipped to outside the casting box.
     Shadow {
         rect: kurbo::Rect,
@@ -256,6 +260,9 @@ struct Inherited<'a> {
     /// (M4) A `tokens` override in scope reads time: every node under it
     /// is evaluated at its own time.
     timed: bool,
+    /// (M4) How far the effect layers around this node spread its
+    /// pixels, physical: its damage grows by it.
+    reach: u32,
 }
 
 /// What flattening reads besides the tree, layout and springs.
@@ -269,6 +276,9 @@ pub struct Extras {
     pub widgets: crate::widgets::Widgets,
     /// Decoded `image` and `icon` pixels.
     pub images: crate::image::ImageStore,
+    /// (M4) Group effects per node ([`crate::layers`]), until S-effects
+    /// builds them from props.
+    pub effects: crate::layers::NodeEffects,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -313,6 +323,7 @@ pub fn flatten(
         offset: (0.0, 0.0),
         inert: false,
         timed: false,
+        reach: 0,
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.

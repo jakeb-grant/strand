@@ -460,6 +460,24 @@ impl Renderer {
         }
     }
 
+    /// (M4) Draws `node`'s subtree through `effects` (an empty list
+    /// removes them): a group layer whose damage grows by their reach
+    /// (`crate::layers`). The seam S-effects' prop parsing (`filter:`,
+    /// `blend:`, `mask:`) replaces; tests use it directly.
+    #[doc(hidden)]
+    pub fn set_layer_effects(&mut self, node: NodeId, effects: Vec<strand_scene::Effect>) {
+        let tree = &self.tree;
+        self.extras.effects.retain(|id, _| tree.get(*id).is_some());
+        if effects.is_empty() {
+            self.extras.effects.remove(&node);
+        } else {
+            self.extras.effects.insert(node, effects.into());
+        }
+        for s in self.surfaces.values_mut() {
+            s.mark_dirty();
+        }
+    }
+
     /// Hover, press, focus, carets and slider drags as the input router
     /// last set them.
     pub fn widgets(&self) -> &crate::widgets::Widgets {

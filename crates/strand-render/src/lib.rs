@@ -21,6 +21,7 @@ mod clock;
 mod flatten;
 pub mod image;
 pub mod input;
+mod layers;
 mod layout;
 mod markup;
 mod raster;

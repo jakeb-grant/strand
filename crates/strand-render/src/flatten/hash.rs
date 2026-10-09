@@ -98,6 +98,13 @@ pub(super) fn hash_item(h: &mut impl Hasher, item: &Item) {
             }
         }
         Item::PopTransform => 9u8.hash(h),
+        Item::PushLayer(l) => {
+            10u8.hash(h);
+            crate::layers::hash_effects(h, &l.effects);
+            hash_rect(h, l.frame);
+            hash_f32(h, l.scale);
+        }
+        Item::PopLayer => 11u8.hash(h),
         Item::Shadow {
             rect,
             radii,

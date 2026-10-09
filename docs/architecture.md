@@ -890,10 +890,17 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     see "`strand-gpu`"). `Effect::reach(scale) -> Insets` is how far it
     spreads damage in logical pixels on a surface at `scale`: three
     standard deviations for a blur, a bundled pass's own (its uniforms
-    are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains `Item::Layer { effects, bounds,
-    items }`, a group whose damage grows by its effects' reach, lowered by
-    each backend its own way (vello_cpu `push_layer`; masks always on the
-    CPU), and `Item::Raster { node, bounds }`, a CPU raster node
+    are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains a layer group,
+    `Item::PushLayer(Arc<layers::Layer { effects, frame, scale }>)` …
+    `Item::PopLayer` (markers like its clip, opacity and transform
+    groups, the push carrying the group's bounds; built: m4-runtime F3),
+    whose bounds and whose nodes' damage grow by its effects' reach,
+    lowered by each backend its own way (vello_cpu: one cell's
+    `push_layer` with the opacities multiplied, the last blend and a
+    cell-sized mask of `fade`/`radial`; masks always on the CPU;
+    `strand-render`'s `layers.rs`). Until S-effects builds `Effect`s
+    from props, `Renderer::set_layer_effects(node, effects)` (hidden)
+    attaches them. The display list also gains `Item::Raster { node, bounds }`, a CPU raster node
     (particles, grain, graphs, spectrum, animated image frames) drawn into
     a cached pixmap at its clock's rate. Cached offscreen groups (glows,
     filtered subtrees, glass sources) redraw only when their children
