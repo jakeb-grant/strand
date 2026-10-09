@@ -122,18 +122,16 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### Known limits, recorded and not M3 blockers
 
-- No IPC adapter for labwc, COSMIC, wayfire or river. Since branch
+- No IPC adapter for labwc, wayfire or river. Since branch
   `laptop/toplevel`, `zwlr_foreign_toplevel_management_v1` is the fallback
   for windows: `windows.focused`, `minimized`, `fullscreen` and
   `win.focus()`/`close()`/`minimize()` work on labwc (checked live in the
   compositor matrix) and should on wayfire and river (not run here).
-  Still limited: COSMIC offers only `ext-foreign-toplevel-list`, so
-  `windows.focused` is null and window actions answer `Unsupported`
-  there; no window has a `workspace` without an adapter (no standard
-  protocol relates the two); the wlr protocol has no identifier, so a
-  window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is joined
-  by app id and title and is missing while twins disagree; maximize and
-  fullscreen toggles are not language actions (decisions.md
+  Still limited: no window has a `workspace` without an adapter (no
+  standard protocol relates the two); the wlr protocol has no identifier,
+  so a window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is
+  joined by app id and title and is missing while twins disagree;
+  maximize and fullscreen toggles are not language actions (decisions.md
   laptop-toplevel); `wm.config_reloaded` never fires without IPC; and
   the design bar's pixel test does not run on labwc (only the stores
   test does).
@@ -154,6 +152,12 @@ and the full shell warns above 64 MB and fails above 70 MB
   device that reused its id by `node.name` (`Write::held`); a device
   replugged under its freed id with the same node name counts as the same
   device.
+
+Out of scope, not a limit (owner's decision, 2026-10-08; decisions.md
+laptop-open): COSMIC, a full desktop with its own shell; people who build
+a custom shell run bare compositors. Strand still runs there; with only
+`ext-foreign-toplevel-list`, `windows.focused` stays null and window
+actions answer `Unsupported`.
 
 Closed on `laptop/services` (2026-10-08; decisions.md, laptop-services):
 `DeviceRef::Id` carries `object.serial`; the audio thread no longer stays

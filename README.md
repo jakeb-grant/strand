@@ -50,9 +50,9 @@ leaves open is listed in docs/m3-report.md's Open section. That covers
 a second output not yet checked live on Hyprland, niri and sway. On
 compositors without an IPC adapter, `zwlr_foreign_toplevel_management_v1`
 now serves `windows.focused` and the window actions (labwc, wayfire,
-river); COSMIC offers only `ext-foreign-toplevel-list`, so there
-`windows.focused` stays null. The rest are sign-offs owed by crate
-owners.
+river). COSMIC, a full desktop with its own shell, is out of scope;
+Strand runs there with `windows.focused` null. The rest are sign-offs
+owed by crate owners.
 
 M2's exit gates are met too (see
 [`docs/m2-report.md`](docs/m2-report.md)): the four example shells of
