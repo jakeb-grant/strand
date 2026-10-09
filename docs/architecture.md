@@ -2412,6 +2412,19 @@ transparent huge pages for life.
   never answers its first sync (socket activation with a failing
   `pipewire.service`) publishes nothing and is dropped after
   `audio::UNANSWERED` (6 s), then retried like a lost connection.
+  The `default` metadata is read again (bound afresh, so the session
+  manager replays its keys) `audio::REREAD` (250 ms) after a client
+  comes or goes or an effective default is cleared: PipeWire forwards
+  no metadata update to existing bindings while another client's bind
+  is in its handshake. The keys the new binding replays replace the
+  defaults whole once its sync is back (a key a lost update cleared is
+  not replayed, so it goes too), and such a read sends only what
+  changed. The old binding is dropped only once the new one and its
+  sync are made, so a failed read keeps following the keys. A read
+  again waits until the first read of a connection is back (nearly
+  every connection reads again once: the service's own client, when
+  its id is above the metadata's, comes after the bind), so the first
+  state never goes out before the replay.
   Actions sent before a connection has settled (a write that lazily
   starts the service, one sent during a restart) wait, in order, and
   run right after its first state; with no connection at all they

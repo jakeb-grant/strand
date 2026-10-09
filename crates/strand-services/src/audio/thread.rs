@@ -61,6 +61,29 @@ pub const ECHOES: usize = 64;
 /// leaves.
 pub const SETTLE: Duration = Duration::from_secs(3);
 
+/// How long after a sign that a `default` metadata update may have been
+/// lost the thread reads the metadata again (binds it afresh: the session
+/// manager replays every key to a new binding).
+///
+/// PipeWire (`module-metadata`, 1.0.5 and still upstream) forwards no
+/// property event to a binding that is already set up while another
+/// client's bind of the same metadata waits for the session manager's
+/// pong (`impl->pending`): a default changed in that window never reaches
+/// this thread, while the new client (`wpctl`, `pw-metadata`) reads it.
+/// The signs: a client comes or goes (a client binds the metadata soon
+/// after it connects, and command-line tools bind it and leave at once),
+/// or an effective default is cleared (WirePlumber clears both keys and
+/// sets them again within milliseconds when it rescans; the set is the
+/// event a window drops). One read per burst, this long after its first
+/// sign. Nearly every connection reads again once: the service's own
+/// client is a client that comes, seen after the metadata is bound when
+/// its id is above the metadata's (registry globals come in id order). A
+/// read again waits until the first read (the sync after the first bind)
+/// is back, pushed back this long each time, so the first state never
+/// goes out between a replaced binding's sync and the replay;
+/// decisions.md, laptop-flakes.
+pub const REREAD: Duration = Duration::from_millis(250);
+
 /// How long a connection's first sync may take: a daemon that accepted
 /// the connection but has not answered by then (a socket-activated
 /// `pipewire.service` that is slow to start or keeps failing) counts as
@@ -122,6 +145,9 @@ pub(crate) enum Work {
     },
     Meta {
         session: u64,
+        /// The binding it came from ([`MetaEntry::binding`]): one replaced
+        /// by a read again is not heard any more.
+        binding: u64,
         subject: u32,
         key: Option<String>,
         value: Option<String>,
@@ -438,6 +464,17 @@ struct Session {
     /// (its properties are read then).
     meta_sync: Option<i32>,
     meta_ready: bool,
+    /// When to read the `default` metadata again ([`REREAD`]).
+    reread_at: Option<Instant>,
+    /// A read again in flight: the sync after its bind, and the keys
+    /// replayed so far. They replace `defaults` whole when the sync comes
+    /// back, so a key cleared in a lost update is cleared too.
+    replay: Option<(i32, Defaults)>,
+    /// The bindings of the `default` metadata made so far.
+    meta_bindings: u64,
+    /// The clients connected (ids), whose coming and going may hide a
+    /// metadata update ([`REREAD`]).
+    clients: BTreeSet<u32>,
     /// The first state of this connection has gone out.
     published: bool,
     /// The first state goes out once the session manager is back (the
@@ -640,6 +677,10 @@ fn write_via(link: Option<RouteLink>, routes: impl Fn(u32) -> Option<Route>) -> 
 
 struct MetaEntry {
     global: u32,
+    /// This binding's number in its session (`Session::meta_bindings`).
+    binding: u64,
+    /// The registry's global, to bind it again ([`REREAD`]).
+    source: GlobalObject<PropertiesBox>,
     _listener: MetadataListener,
     proxy: Metadata,
 }
@@ -817,14 +858,29 @@ impl Driver<'_> {
             }
             Work::Meta {
                 session,
+                binding,
                 subject,
                 key,
                 value,
             } if self.live(session) => {
                 if subject == 0
                     && let Some(s) = &mut self.session
+                    && s.metadata.as_ref().is_some_and(|m| m.binding == binding)
                 {
-                    apply_meta(&mut s.defaults, key.as_deref(), value.as_deref());
+                    // A read again collects the replayed keys apart, and
+                    // they replace the defaults when its sync is back.
+                    let into = match &mut s.replay {
+                        Some((_, replayed)) => replayed,
+                        None => &mut s.defaults,
+                    };
+                    apply_meta(into, key.as_deref(), value.as_deref());
+                    let effective = matches!(
+                        key.as_deref(),
+                        Some("default.audio.sink" | "default.audio.source")
+                    );
+                    if effective && value.is_none() {
+                        reread_soon(s);
+                    }
                     self.dirty = true;
                     self.meters_dirty = true;
                 }
@@ -838,6 +894,13 @@ impl Driver<'_> {
                     if s.meta_sync.is_some_and(|m| seq >= m) {
                         s.meta_sync = None;
                         s.meta_ready = true;
+                    }
+                    if s.replay.as_ref().is_some_and(|(r, _)| seq >= *r)
+                        && let Some((_, replayed)) = s.replay.take()
+                    {
+                        // What the new binding holds is the whole truth:
+                        // a key it did not replay is gone.
+                        s.defaults = replayed;
                     }
                     for n in s.nodes.values_mut() {
                         if !n.ready && seq >= n.sync {
@@ -978,7 +1041,10 @@ impl Driver<'_> {
                 // Only what the thread binds is copied.
                 if matches!(
                     g.type_,
-                    ObjectType::Node | ObjectType::Device | ObjectType::Metadata
+                    ObjectType::Node
+                        | ObjectType::Device
+                        | ObjectType::Metadata
+                        | ObjectType::Client
                 ) {
                     q1.borrow_mut().push_back(Work::Global {
                         session: number,
@@ -1010,6 +1076,10 @@ impl Driver<'_> {
             awaiting: Some(seq),
             meta_sync: None,
             meta_ready: false,
+            reread_at: None,
+            replay: None,
+            meta_bindings: 0,
+            clients: BTreeSet::new(),
             published: false,
             settle_by: Instant::now() + SETTLE,
             expect_sink: false,
@@ -1194,37 +1264,27 @@ impl Driver<'_> {
                     },
                 );
             }
+            ObjectType::Client => {
+                s.clients.insert(global.id);
+                reread_soon(s);
+            }
             ObjectType::Metadata => {
                 if s.metadata.is_some() || get("metadata.name").as_deref() != Some("default") {
                     return;
                 }
-                let meta: Metadata = match s.registry.bind(&global) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        log::warn!("audio: cannot bind the default metadata: {e}");
-                        return;
-                    }
+                let Some((binding, proxy, listener)) = bind_metadata(s, q, &global) else {
+                    return;
                 };
-                let number = s.number;
-                let listener = meta
-                    .add_listener_local()
-                    .property(move |subject, key, _ty, value| {
-                        q.borrow_mut().push_back(Work::Meta {
-                            session: number,
-                            subject,
-                            key: key.map(str::to_owned),
-                            value: value.map(str::to_owned),
-                        });
-                        0
-                    })
-                    .register();
                 let Some(seq) = sync(s) else { return };
                 s.meta_sync = Some(seq);
                 s.meta_ready = false;
+                s.replay = None;
                 s.metadata = Some(MetaEntry {
                     global: global.id,
+                    binding,
+                    source: global,
                     _listener: listener,
-                    proxy: meta,
+                    proxy,
                 });
             }
             _ => {}
@@ -1234,6 +1294,9 @@ impl Driver<'_> {
     fn global_remove(&mut self, id: u32) {
         let Some(s) = &mut self.session else { return };
         s.devices.remove(&id);
+        if s.clients.remove(&id) {
+            reread_soon(s);
+        }
         if s.nodes.remove(&id).is_some() {
             self.dirty = true;
             self.meters_dirty = true;
@@ -1246,6 +1309,8 @@ impl Driver<'_> {
             s.metadata = None;
             s.meta_sync = None;
             s.meta_ready = false;
+            s.reread_at = None;
+            s.replay = None;
             s.defaults = Defaults::default();
             self.dirty = true;
             self.meters_dirty = true;
@@ -1537,6 +1602,9 @@ impl Driver<'_> {
                 if let Some(h) = &s.held {
                     at(h.until);
                 }
+                if let Some(t) = s.reread_at {
+                    at(t);
+                }
                 for m in s.meters.iter().filter(|m| m.failed) {
                     if let Some(t) = m.retry_at {
                         at(t);
@@ -1592,6 +1660,18 @@ impl Driver<'_> {
                     s.held = None;
                     self.dirty = true;
                     self.meters_dirty = true;
+                }
+                if s.reread_at.is_some_and(|t| t <= now) {
+                    if s.meta_sync.is_some() {
+                        // The first read is not back: a read again now
+                        // would replace its binding, and its sync would
+                        // mark the metadata read with no keys yet. It
+                        // replays every key anyway; read again after it.
+                        s.reread_at = Some(now + REREAD);
+                    } else {
+                        s.reread_at = None;
+                        reread_metadata(s, self.q.clone());
+                    }
                 }
                 if s.meters
                     .iter()
@@ -1653,6 +1733,77 @@ fn sync(s: &mut Session) -> Option<i32> {
             None
         }
     }
+}
+
+/// Binds the `default` metadata `global` and follows its keys (they come
+/// as [`Work::Meta`]; a new binding gets every key the daemon holds).
+fn bind_metadata(
+    s: &mut Session,
+    q: Queue,
+    global: &GlobalObject<PropertiesBox>,
+) -> Option<(u64, Metadata, MetadataListener)> {
+    let meta: Metadata = match s.registry.bind(global) {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("audio: cannot bind the default metadata: {e}");
+            return None;
+        }
+    };
+    s.meta_bindings += 1;
+    let (number, binding) = (s.number, s.meta_bindings);
+    let listener = meta
+        .add_listener_local()
+        .property(move |subject, key, _ty, value| {
+            q.borrow_mut().push_back(Work::Meta {
+                session: number,
+                binding,
+                subject,
+                key: key.map(str::to_owned),
+                value: value.map(str::to_owned),
+            });
+            0
+        })
+        .register();
+    Some((binding, meta, listener))
+}
+
+/// A metadata update may have been lost ([`REREAD`]): reads the
+/// `default` metadata again, at most [`REREAD`] from now.
+fn reread_soon(s: &mut Session) {
+    if s.metadata.is_some() {
+        s.reread_at.get_or_insert(Instant::now() + REREAD);
+    }
+}
+
+/// Binds the `default` metadata again, so the session manager replays
+/// the keys it holds ([`REREAD`]). The replayed keys replace the defaults
+/// whole once the sync after the bind is back (a key a lost update
+/// cleared is not replayed, so it is cleared too). The old binding is
+/// dropped only once the new one and its sync are made: if either fails,
+/// it stays and keeps following the keys.
+fn reread_metadata(s: &mut Session, q: Queue) {
+    let Some(old) = s.metadata.take() else { return };
+    let Some((binding, proxy, listener)) = bind_metadata(s, q, &old.source) else {
+        s.metadata = Some(old);
+        return;
+    };
+    let seq = match s.core.sync(0) {
+        Ok(seq) => seq.seq(),
+        Err(e) => {
+            log::warn!("audio: cannot sync after reading the default metadata again: {e}");
+            s.metadata = Some(old);
+            return;
+        }
+    };
+    log::debug!("audio: reading the default metadata again");
+    s.replay = Some((seq, Defaults::default()));
+    s.metadata = Some(MetaEntry {
+        global: old.global,
+        binding,
+        source: old.source,
+        _listener: listener,
+        proxy,
+    });
 }
 
 fn apply_props(n: &mut NodeEntry, props: &Props) {

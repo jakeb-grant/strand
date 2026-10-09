@@ -410,6 +410,13 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   the second frame jumping from 0 to 253 (a stall nearly as long as the
   fade, both tests at once, so the machine rather than the pose); four
   runs of the binary and a full workspace run after it passed.
+  Since (laptop-flakes): the cause of the repeat is a new surface's
+  first two frames, both painted for `now` before any presentation
+  feedback, a sliver of a refresh apart (traced 3–23 ms; not specific
+  to content-sized panels), and the stall reproduced on two loaded
+  cores (6 of 60). Both tests now judge the fade by sample time
+  (frames 4 ms apart must rise; the fade spans 50 ms of samples): 0 of
+  80 loaded runs fail.
 - Closed since: whether the M0-only gates in `crates/strand/tests/demo.rs`
   should stay a hard 34 MiB. The owner confirmed the 34 MB target
   (warns) and 38 MB ceiling (fails) for the two-monitor bar, and the
@@ -422,7 +429,10 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   woken thread on failure, and `the_design_bar_keeps_the_m0_budget`
   makes the font and icon directories the cache sources name, as
   `budgets.rs` does, so its HOME is not a `Parent` watch
-  (decisions.md wave4-core, carried issues round 1 closer).
+  (decisions.md wave4-core, carried issues round 1 closer). Since
+  (laptop-flakes): not reproduced in 55 runs (unloaded, two and one
+  loaded cores); the window now starts after boot has settled (a whole
+  quiet second), which removes boot's late trims as a way to fail.
 - A CI flake in the debug workspace step: run 37796294304 (attempt 1)
   failed `crates/strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
   with "the launcher shows 0 rows with a marked app's icon, not 3": the
@@ -430,7 +440,9 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   quiet for the settle second with no marked icon on screen. Attempt 2
   passed, as do local debug runs; whether the icons are late or never
   drawn on that path is not known (strand-icons / strand-render
-  owners).
+  owners). Since (laptop-flakes): not reproduced in 50 runs (25 on two
+  loaded cores); a failure now reports where the magenta is on screen
+  and whether the icons come within 5 s more (and when) or never.
 - A CI flake in the debug workspace step: run 37804811859 (`5eb4a1a`)
   failed `crates/strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`
   at "b as the default": after `wpctl set-default` the mirror kept
@@ -440,7 +452,18 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   the metadata event was missed; the log could not say which. It
   did not reproduce in 20 runs here. The test now prints `pw-metadata`'s `default` on
   that timeout, so a recurrence names the side that stalled (audio
-  owners).
+  owners). Since (laptop-flakes): most likely the metadata event was
+  missed, though this test never failed in the loops (0 of 300), so
+  that is inferred from its siblings, not shown. PipeWire drops
+  metadata updates to existing bindings while another client's bind is
+  in its handshake (`wpctl` binds it); traced in the
+  same family's `a_daemon_restart_reconnects` and
+  `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
+  whole-binary runs). The audio thread now reads the metadata again
+  `audio::REREAD` (250 ms) after client churn or a cleared default:
+  0 of 40 loaded runs fail, and
+  `a_lost_default_update_comes_back_on_a_read_again` loses a set and a
+  clear on purpose and shows the read bringing both back.
 - A CI flake in the debug workspace step: run 37810171999 (`522f6ae`)
   failed `crates/strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
   with "round 3 (style 3): a blank frame". Style 3 deletes a file and
@@ -448,11 +471,16 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   watcher's 50 ms removal grace is a real removal of `bar.strand`, so
   the bar goes. It did not reproduce in 33 runs here; the round's
   label now carries how long the file was missing (M1 reload owners).
+  Since (laptop-flakes): confirmed; `STRAND_SAVE_GAP_MS=120` fails the
+  old test with that message every time. A round missing its file past
+  the grace is now excused until the scene matches the cold boot.
 - `crates/strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
   failed once in a full workspace run here ("no frame without its
   text": the text worker had already answered when the test asserted
   that nothing had polled it) and passed in the five runs of its binary
-  after; the assertion races the worker (strand-render owners).
+  after; the assertion races the worker (strand-render owners). Since
+  (laptop-flakes): reproduced (1 of 50 on a loaded core) and fixed; the
+  test holds the worker until it has looked (0 of 150).
 - Closed since: the cache change sources (`applications/`, icon theme
   bases and GTK settings, font dirs and fontconfig) were proved only in
   `strand-watch` and the caches' own tests. `crates/strand/src/live.rs::tests::cache_sources_name_every_directory_strand_run_watches`

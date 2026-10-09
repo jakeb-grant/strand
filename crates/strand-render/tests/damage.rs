@@ -613,6 +613,44 @@ fn worker_renderer() -> Renderer {
     Renderer::new(TextBackend::Worker(worker))
 }
 
+/// A worker renderer whose text worker answers nothing the renderer asks
+/// until the returned sender is sent to or dropped, so a test can look
+/// at the state "requests in flight" without racing the worker.
+///
+/// The worker is handed a warm-up request of its own before the
+/// renderer gets it; the waker it runs after answering that request
+/// blocks the worker thread on the gate. The warm-up is at a scale no
+/// surface uses and under a key the renderer never issues, so its
+/// delivery is ignored (no atlas page is mirrored for an unused scale).
+fn held_worker_renderer() -> (Renderer, std::sync::mpsc::Sender<()>) {
+    use std::sync::{Arc, Mutex, mpsc};
+    use strand_render::TextBackend;
+    use strand_text::{FontConfig, TextKey, TextRequest, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let (open, gate) = mpsc::channel::<()>();
+    let gate = Mutex::new(Some(gate));
+    let waker: strand_text::Waker = Box::new(move || {
+        // Only the first wake (the warm-up's) holds; later ones pass.
+        let held = gate.lock().ok().and_then(|mut g| g.take());
+        if let Some(gate) = held {
+            let _ = gate.recv();
+        }
+    });
+    let worker =
+        TextWorker::spawn_with_waker(FontConfig::isolated(vec![Arc::new(data)]), Some(waker))
+            .unwrap();
+    worker
+        .request(TextRequest {
+            key: TextKey(u64::MAX),
+            text: "warm-up".into(),
+            style: Default::default(),
+            max_width: None,
+            scale: Scale::from_integer(7).unwrap(),
+        })
+        .unwrap();
+    (Renderer::new(TextBackend::Worker(worker)), open)
+}
+
 /// Unplugging the only output at a scale and plugging one back in must
 /// bring text back: the worker's atlas for that scale is dropped together
 /// with the render thread's mirror, so glyphs are uploaded again.
@@ -1255,15 +1293,20 @@ fn surface_specs_resolve_tokens_and_report_changes() {
 #[test]
 fn first_frame_of_a_new_surface_has_its_text() {
     use std::time::Duration;
-    let mut r = worker_renderer();
+    // The worker is held until the asserts below have looked: with a free
+    // one, `configure_surface`'s poll could collect the bar's layouts
+    // (requested at `apply`, for its size) before the assert, which then
+    // saw a surface with nothing to wait for (a flake under load).
+    let (mut r, open) = held_worker_renderer();
     r.set_first_frame_wait(Duration::from_secs(30));
     let (diff, _) = bar("12:59");
     r.apply(diff);
     r.attach_surface(BAR, r.tree().roots()[0]);
     r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
-    // Nothing has polled the worker since the requests went out.
+    assert!(r.text_pending());
     assert!(!r.wants_frame(BAR), "no frame without its text");
     assert!(r.frame_deadline(BAR).is_some());
+    drop(open);
     assert!(r.wait_for_text(Duration::from_secs(10)));
     assert!(r.wants_frame(BAR));
     assert!(r.frame_deadline(BAR).is_none());

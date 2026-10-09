@@ -7,15 +7,18 @@
 
 #![cfg(feature = "pipewire")]
 
+#[path = "pipewire/meta.rs"]
+mod meta;
 mod pipewire;
 
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+use meta::MetaClient;
 use pipewire::{PipeWire, square_wav};
 use strand_services::audio::{
     Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
-    LevelTarget, Levels, Mirror, SETTLE, UNANSWERED,
+    LevelTarget, Levels, Mirror, REREAD, SETTLE, UNANSWERED,
 };
 
 /// The service and a mirror of what it sent.
@@ -224,7 +227,7 @@ fn devices_volume_mute_and_the_default_arrive() {
         5,
         "b as the default",
         |m| m.sink.as_ref().is_some_and(|d| d.name == "strand-sink-b"),
-        || format!("pw-metadata default:\n{}", pw.metadata()),
+        || pw.session_state(),
     );
     assert!(w.sink("strand-sink-b").default);
     assert!(!w.sink("strand-sink-a").default);
@@ -248,6 +251,170 @@ fn devices_volume_mute_and_the_default_arrive() {
     w.until(5, "sink c gone", |m| {
         m.sink_named("strand-sink-c").is_none()
     });
+}
+
+/// Clients that bind the `default` metadata and leave (`pw-metadata`,
+/// `wpctl`) make the service read it again after `REREAD` (PipeWire
+/// drops metadata updates to existing bindings while another client's
+/// bind is in its handshake: decisions.md, laptop-flakes). Nothing was
+/// lost here, so the read sends nothing; a default changed by such a
+/// client still arrives. (That a read happens, and brings a lost update
+/// back, is `a_lost_default_update_comes_back_on_a_read_again`.)
+#[test]
+fn a_metadata_reread_sends_only_what_changed() {
+    let Some(pw) = PipeWire::start("a_metadata_reread_sends_only_what_changed") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    let b = w.sink("strand-sink-b");
+    let batches = w.batches;
+    for _ in 0..3 {
+        pw.metadata();
+        let _ = pw.wpctl(&["status"]);
+    }
+    std::thread::sleep(REREAD * 2 + Duration::from_millis(300));
+    w.poll();
+    assert_eq!(
+        w.batches, batches,
+        "a read again sent a batch: {:#?}",
+        w.mirror
+    );
+    assert!(w.sink("strand-sink-a").default);
+    pw.wpctl(&["set-default", &b.id.to_string()]);
+    w.until_or(
+        5,
+        "b as the default",
+        |m| m.sink.as_ref().is_some_and(|d| d.id == b.id),
+        || pw.session_state(),
+    );
+}
+
+/// A set and a clear of the effective defaults, lost on purpose in
+/// PipeWire's window (`MetaClient::lose`: WirePlumber emits them while a
+/// bind waits for its pong), reach the service once a client goes: the
+/// read again brings the set back, and the key the clear removed goes
+/// too (the replayed keys replace the defaults; they are not laid over
+/// them). With no read again the service would show sink a and the source
+/// for good.
+#[test]
+fn a_lost_default_update_comes_back_on_a_read_again() {
+    let Some(pw) = PipeWire::start("a_lost_default_update_comes_back_on_a_read_again") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    let a = w.sink("strand-sink-a");
+    let b = w.sink("strand-sink-b");
+    assert!(a.default);
+    let client = MetaClient::connect(&pw);
+    // The read again its coming caused is over.
+    std::thread::sleep(REREAD * 2 + Duration::from_millis(300));
+    w.poll();
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.id),
+        Some(a.id),
+        "{}",
+        pw.session_state()
+    );
+
+    // WirePlumber does not set the effective keys again on its own
+    // (nothing rescans here), so what is lost stays lost.
+    client.lose(
+        &pw,
+        "default.audio.sink",
+        Some(r#"{"name":"strand-sink-b"}"#),
+    );
+    client.lose(&pw, "default.audio.source", None);
+    let wanted = |keys: &std::collections::BTreeMap<String, String>| {
+        keys.get("default.audio.sink")
+            .is_some_and(|v| v.contains("strand-sink-b"))
+            && !keys.contains_key("default.audio.source")
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !wanted(&client.keys()) {
+        assert!(
+            Instant::now() < deadline,
+            "WirePlumber did not apply the set and the clear: {:?}",
+            client.keys()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The premise: the service missed both (no client came or went, so
+    // nothing made it read again).
+    std::thread::sleep(Duration::from_millis(500));
+    w.poll();
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.id),
+        Some(a.id),
+        "the service saw the set: the window did not hold it back"
+    );
+    assert!(
+        w.mirror.source.is_some(),
+        "the service saw the clear: the window did not hold it back"
+    );
+
+    // A client goes: the service reads the metadata again.
+    drop(client);
+    w.until_or(
+        5,
+        "b as the default sink and no default source",
+        |m| m.sink.as_ref().is_some_and(|d| d.id == b.id) && m.source.is_none(),
+        || pw.session_state(),
+    );
+    assert!(w.sink("strand-sink-b").default);
+    assert!(!w.sink("strand-sink-a").default);
+}
+
+/// A read again never overtakes the first read: with WirePlumber slow to
+/// answer the first bind's ping (paused here, past [`REREAD`]), the
+/// clients that come meanwhile (the service's own, and a `pw-cli`) ask
+/// for a read again, and it waits until the first read is back. Were it
+/// to replace the first binding before then, that binding's sync would
+/// mark the metadata read while its replay was dropped, and the first
+/// state would go out with no default sink or source.
+#[test]
+fn the_first_state_waits_for_a_slow_first_read() {
+    let Some(pw) = PipeWire::start("the_first_state_waits_for_a_slow_first_read") else {
+        return;
+    };
+    meta::pause_wireplumber(&pw);
+    let mut w = Watch::start(pw.config());
+    std::thread::sleep(Duration::from_millis(150));
+    // A client that comes and goes after the metadata is bound (`pw-cli`
+    // binds every global, the metadata too, so it waits on WirePlumber
+    // as well, and is killed).
+    let mut cli = pw
+        .command("pw-cli")
+        .args(["info", "0"])
+        .spawn()
+        .expect("pw-cli starts");
+    std::thread::sleep(REREAD);
+    let _ = cli.kill();
+    let _ = cli.wait();
+    std::thread::sleep(REREAD * 2);
+    w.poll();
+    let held = !w.mirror.connected;
+    meta::resume_wireplumber(&pw);
+    // The premise: the first read was held past a read again's time.
+    assert!(
+        held,
+        "the first state went out while WirePlumber was paused: {:#?}",
+        w.mirror
+    );
+    w.until(10, "the first state", |m| m.connected);
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.name.as_str()),
+        Some("strand-sink-a"),
+        "the first state has no default sink: {:#?}",
+        w.mirror
+    );
+    assert_eq!(
+        w.mirror.source.as_ref().map(|d| d.name.as_str()),
+        Some("strand-source"),
+        "the first state has no default source: {:#?}",
+        w.mirror
+    );
 }
 
 #[test]
@@ -483,12 +650,22 @@ fn a_daemon_restart_reconnects() {
     });
     assert!(gone.elapsed() >= SETTLE - Duration::from_millis(100));
     pw.start_wireplumber();
-    w.until(10, "the default back", |m| m.sink.is_some());
+    w.until_or(
+        10,
+        "the default back",
+        |m| m.sink.is_some(),
+        || pw.session_state(),
+    );
     w.guard = true;
     pw.kill_wireplumber();
     std::thread::sleep(Duration::from_millis(300));
     pw.start_wireplumber();
-    w.until(10, "the default", |m| m.sink.is_some());
+    w.until_or(
+        10,
+        "the default",
+        |m| m.sink.is_some(),
+        || pw.session_state(),
+    );
     std::thread::sleep(Duration::from_millis(500));
     w.poll();
     assert!(
@@ -678,7 +855,7 @@ fn it_starts_without_pipewire_and_connects_when_it_appears() {
     w.take(first);
     assert!(w.mirror.sinks.is_empty() && w.mirror.sink.is_none());
     pw.start_daemon();
-    w.until(10, "connected", ready);
+    w.until_or(10, "connected", ready, || pw.session_state());
 }
 
 /// The readings of `target` after `from` (an index into `w.levels`).

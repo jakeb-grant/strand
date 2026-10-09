@@ -992,6 +992,33 @@ impl Shot {
             .unwrap_or_else(|e| panic!("saving {}: {e}", path.display()));
     }
 
+    /// Where `color` (within 24 a channel, as [`Shot::bands`] reads it)
+    /// is on screen: how many pixels, their bounding box and the rows
+    /// holding any, and the widest run in one row; what a missing band
+    /// prints (nothing drawn, drawn smaller, or drawn elsewhere).
+    fn color_report(&self, color: [u8; 3]) -> String {
+        let (mut n, mut rows, mut widest) = (0, 0, 0);
+        let mut bbox: Option<(usize, usize, usize, usize)> = None;
+        for (y, row) in self.rgb.chunks_exact(self.w * 3).enumerate() {
+            let mut in_row = 0;
+            for (x, p) in row.chunks_exact(3).enumerate() {
+                if (0..3).all(|c| p[c].abs_diff(color[c]) <= 24) {
+                    in_row += 1;
+                    let b = bbox.get_or_insert((x, y, x, y));
+                    *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+                }
+            }
+            n += in_row;
+            rows += usize::from(in_row > 0);
+            widest = widest.max(in_row);
+        }
+        format!(
+            "{n} px of {color:?} in {rows} rows (at most {widest} in a row), box {bbox:?} \
+             of {}x{}",
+            self.w, self.h
+        )
+    }
+
     /// The pixels in the top `rows` that are `color`, within 8 a channel.
     fn count(&self, rows: usize, color: [u8; 3]) -> usize {
         self.rgb
@@ -1843,12 +1870,41 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     let launcher = pss_kb(pid);
     let open = shot(&desk, "the launcher");
     let rows = open.bands(MARK, 48, 48);
-    assert!(
-        rows >= apps.marked.min(3),
-        "the launcher shows {rows} rows with a marked app's icon, not {}\n{}",
-        apps.marked.min(3),
-        desk.log_text()
-    );
+    if rows < apps.marked.min(3) {
+        // CI run 37796294304 failed here once (not reproduced in 50 runs
+        // on the laptop, 25 of them on two loaded cores): name the cause.
+        // What is on screen now, then whether the icons come late (a
+        // screenshot every 250 ms for 5 s, and the frames meanwhile) or
+        // never.
+        let now = open.color_report(MARK);
+        let frames = desk.frames().len();
+        let start = Instant::now();
+        let mut late = None;
+        while start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(250));
+            let s = shot(&desk, "the launcher, again");
+            if s.bands(MARK, 48, 48) >= apps.marked.min(3) {
+                late = Some(start.elapsed());
+                break;
+            }
+        }
+        let after = desk.frames();
+        let verdict = match late {
+            Some(t) => format!("the icons drew {t:?} after the settle second"),
+            None => format!(
+                "no icons 5 s later either: {}",
+                shot(&desk, "the launcher, at last").color_report(MARK)
+            ),
+        };
+        panic!(
+            "the launcher shows {rows} rows with a marked app's icon, not {}: {now}; {verdict}; \
+             {} frames meanwhile: {:?}\n{}",
+            apps.marked.min(3),
+            after.len() - frames,
+            &after[frames..],
+            desk.log_text()
+        );
+    }
     assert_eq!(
         before_launcher.bands(MARK, 48, 48),
         0,

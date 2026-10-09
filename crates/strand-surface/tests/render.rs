@@ -26,6 +26,9 @@ struct Host {
     /// Every paint that drew: its surface, buffer age and the alpha at
     /// the buffer's centre.
     drawn: Vec<(SurfaceId, u8, u8)>,
+    /// For each entry of `drawn`: the buffer size and the time it was
+    /// painted for (what a failed pose assert prints).
+    drawn_at: Vec<(Size, Duration)>,
 }
 
 impl Host {
@@ -35,8 +38,79 @@ impl Host {
             text_pending_at_paint: Vec::new(),
             times: Vec::new(),
             drawn: Vec::new(),
+            drawn_at: Vec::new(),
         }
     }
+
+    /// `surface`'s paints that drew from entry `from` on, as
+    /// `age/alpha WxH @ms` with the time since the first of them.
+    fn trace(&self, from: usize, surface: SurfaceId) -> Vec<String> {
+        let paints = self.drawn.iter().zip(&self.drawn_at).skip(from);
+        let mut first = None;
+        paints
+            .filter(|(d, _)| d.0 == surface)
+            .map(|(d, (size, time))| {
+                let t0 = *first.get_or_insert(*time);
+                let ms = time.saturating_sub(t0).as_secs_f64() * 1000.0;
+                format!("{}/{} {}x{} @{ms:.1}", d.1, d.2, size.w, size.h)
+            })
+            .collect()
+    }
+
+    /// `surface`'s paints that drew from entry `from` on, as (alpha at
+    /// the centre, the time the frame was painted for).
+    fn alphas(&self, from: usize, surface: SurfaceId) -> Vec<(u8, Duration)> {
+        let paints = self.drawn.iter().zip(&self.drawn_at).skip(from);
+        paints
+            .filter(|(d, _)| d.0 == surface)
+            .map(|(d, (_, time))| (d.2, *time))
+            .collect()
+    }
+}
+
+/// Two frames sampled at least this far apart show a fade moving.
+///
+/// Closer ones may repeat a value: a spring barely moves in a sliver of a
+/// refresh. That happens on a new surface: its first frame, with no
+/// presentation feedback yet, is painted for `now`, and its second, painted
+/// on the first frame callback (which sway sends before the first frame's
+/// feedback), for `now` again, anywhere from a few milliseconds to a
+/// refresh later: CI run 37747149738 drew `[0, 0, 40, 99, ...]`, a second
+/// frame sampled within about a millisecond of the first. (Feedback from
+/// other surfaces does not give the phase on headless sway, whose output
+/// restarts its frame timer at an arbitrary phase after going idle;
+/// decisions.md, laptop-flakes.)
+const MOVES_WITHIN: Duration = Duration::from_millis(4);
+
+/// Asserts an enter fade as painted: `frames` are a new surface's paints,
+/// first on, as (centre alpha, sample time). It starts near transparent
+/// and ends opaque; it never falls; between any two frames sampled at
+/// least [`MOVES_WITHIN`] apart it rises until it is nearly opaque; and
+/// the fade takes several refreshes of sampled time, however few frames
+/// a loaded machine managed to paint in it (CI and a loaded laptop drew
+/// `[0, 253, ...]`, a stall nearly as long as the fade). So a pose that
+/// snaps or sticks fails, and a slow machine does not.
+fn assert_fades_in(frames: &[(u8, Duration)], what: &str, trace: &[String]) {
+    assert!(frames.len() >= 3, "{what}: enter frames {trace:?}");
+    assert!(
+        frames[0].0 < 128,
+        "{what}: starts near transparent: {trace:?}"
+    );
+    assert_eq!(frames.last().map(|f| f.0), Some(255), "{what}: {trace:?}");
+    for w in frames.windows(2) {
+        let ((a, ta), (b, tb)) = (w[0], w[1]);
+        assert!(tb > ta, "{what}: sampled at rising times: {trace:?}");
+        assert!(b >= a, "{what}: never fades back: {trace:?}");
+        if a < 250 && tb - ta >= MOVES_WITHIN {
+            assert!(b > a, "{what}: fades in frame by frame: {trace:?}");
+        }
+    }
+    let nearly = frames.iter().find(|f| f.0 >= 250).map(|f| f.1);
+    let span = nearly.map_or(Duration::ZERO, |t| t - frames[0].1);
+    assert!(
+        span >= Duration::from_millis(50),
+        "{what}: the fade plays over several refreshes: {trace:?}"
+    );
 }
 
 impl Painter for Host {
@@ -51,6 +125,7 @@ impl Painter for Host {
             let i = ((h / 2 * w + w / 2) * 4 + 3) as usize;
             let alpha = target.pixels.get(i).copied().unwrap_or(0);
             self.drawn.push((surface, age, alpha));
+            self.drawn_at.push((target.size, target.time));
         }
         damage
     }
@@ -454,19 +529,12 @@ fn a_toggling_panel_plays_its_poses_and_goes_away() {
         assert!(ok, "round {round}: never settled open");
         // (The manager keeps a node's surface id across re-creations.)
         let id = id.unwrap();
-        let frames: Vec<(u8, u8)> = mgr.state().host().drawn[opened..]
-            .iter()
-            .filter(|p| p.0 == id)
-            .map(|p| (p.1, p.2))
-            .collect();
-        assert!(frames.len() >= 5, "round {round}: enter frames {frames:?}");
-        assert_eq!(frames[0].0, 0, "a fresh buffer: {frames:?}");
-        assert!(frames[0].1 < 128, "starts near transparent: {frames:?}");
-        assert!(
-            frames[..5].windows(2).all(|w| w[1].1 > w[0].1),
-            "fades in frame by frame: {frames:?}"
-        );
-        assert_eq!(frames.last().unwrap().1, 255, "{frames:?}");
+        let host = mgr.state().host();
+        let trace = host.trace(opened, id);
+        let first = host.drawn[opened..].iter().find(|p| p.0 == id);
+        assert_eq!(first.map(|p| p.1), Some(0), "a fresh buffer: {trace:?}");
+        let what = format!("round {round}");
+        assert_fades_in(&host.alphas(opened, id), &what, &trace);
         std::thread::sleep(Duration::from_millis(50));
         let shot = sway.grim("HEADLESS-1");
         assert_eq!(
@@ -493,10 +561,11 @@ fn a_toggling_panel_plays_its_poses_and_goes_away() {
             .filter(|p| p.0 == id)
             .map(|p| p.2)
             .collect();
-        assert!(exit.len() >= 3, "round {round}: exit frames {exit:?}");
+        let exit_trace = mgr.state().host().trace(before, id);
+        assert!(exit.len() >= 3, "round {round}: exit frames {exit_trace:?}");
         assert!(
             exit.windows(2).all(|w| w[1] <= w[0]) && exit[0] < 255,
-            "fades out: {exit:?}"
+            "fades out: {exit_trace:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
         mgr.dispatch(Some(Duration::from_millis(20))).unwrap();
@@ -569,26 +638,10 @@ fn a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes() {
         });
         assert!(ok, "round {round}: never settled open");
         let id = id.unwrap();
-        let frames: Vec<u8> = mgr.state().host().drawn[opened..]
-            .iter()
-            .filter(|p| p.0 == id)
-            .map(|p| p.2)
-            .collect();
-        assert!(frames.len() >= 5, "round {round}: enter frames {frames:?}");
-        assert!(frames[0] < 128, "starts near transparent: {frames:?}");
-        // The content-sized panel can be painted twice at its starting
-        // opacity before the fade's first step (CI run 37747149738 drew
-        // [0, 0, 40, 99, ...] twice in a row; never reproduced locally):
-        // repeats of the starting value are skipped, and from the first
-        // step on every frame must move.
-        let start = frames.iter().take_while(|&&a| a == frames[0]).count() - 1;
-        let fade = &frames[start..];
-        assert!(fade.len() >= 5, "round {round}: enter frames {frames:?}");
-        assert!(
-            fade[..5].windows(2).all(|w| w[1] > w[0]),
-            "fades in frame by frame: {frames:?}"
-        );
-        assert_eq!(*frames.last().unwrap(), 255, "{frames:?}");
+        // (A repeated starting value: see `MOVES_WITHIN`.)
+        let host = mgr.state().host();
+        let what = format!("round {round}");
+        assert_fades_in(&host.alphas(opened, id), &what, &host.trace(opened, id));
         std::thread::sleep(Duration::from_millis(50));
         let shot = sway.grim("HEADLESS-1");
         assert_eq!(shot.rgb(960, 540), rgb("#f38ba8"), "round {round}: shown");
@@ -612,10 +665,11 @@ fn a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes() {
             .filter(|p| p.0 == id)
             .map(|p| p.2)
             .collect();
-        assert!(exit.len() >= 3, "round {round}: exit frames {exit:?}");
+        let exit_trace = mgr.state().host().trace(before, id);
+        assert!(exit.len() >= 3, "round {round}: exit frames {exit_trace:?}");
         assert!(
             exit.windows(2).all(|w| w[1] <= w[0]) && exit[0] < 255,
-            "fades out: {exit:?}"
+            "fades out: {exit_trace:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
         mgr.dispatch(Some(Duration::from_millis(20))).unwrap();

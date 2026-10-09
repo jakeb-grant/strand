@@ -61,22 +61,40 @@ and the full shell warns above 64 MB and fails above 70 MB
   GitHub against 5 ms (about 11% headroom, no retry); if `timing` fails
   there, look at that case first. Consolidating test binaries was
   measured (about 39 s of linking in all) and not done.
-- Flakes seen once each, with diagnostics added so a recurrence names its
-  cause (none reproduced locally; all in m3-report Open):
-  - `strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`
-    (default sink not seen within 5 s; now prints `pw-metadata`).
-  - `strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
-    (launcher drew no marked icon in the settle second).
-  - `strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
-    (delete-then-write gap stretched past the 50 ms grace; label now
-    carries the gap).
-  - `strand-surface/tests/render.rs` lone-toast and toggling-panel pose
-    tests (a repeated first frame; tolerated, cause unknown).
-  - `strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
-    (the assertion races the text worker).
-  - `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle` (an unnamed
-    thread woke; it now names the thread).
-  - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
+- The CI flakes, looped in the container on branch `laptop/flakes`
+  (decisions.md laptop-flakes; m3-report Open):
+  - Fixed at the cause: `strand-services` audio lost `default`
+    metadata updates (PipeWire drops them for existing bindings while
+    another client's bind is in its handshake); the audio thread now
+    reads the metadata again `audio::REREAD` after client churn or a
+    cleared default (the replayed keys replace the ones held, so a lost
+    clear comes back too;
+    `a_lost_default_update_comes_back_on_a_read_again` loses a set and a
+    clear on purpose). Reproduced as `a_daemon_restart_reconnects` and
+    `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
+    runs), 0 of 40 after; CI's
+    `devices_volume_mute_and_the_default_arrive` has the same shape but
+    did not reproduce itself (0 of 300).
+  - Fixed at the cause: `strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
+    (raced the text worker; the test holds the worker now).
+  - Fixed: `strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
+    (a save missing past the 50 ms removal grace is a real removal; such
+    a round is excused, `STRAND_SAVE_GAP_MS` reproduces it).
+  - Cause found, test fixed: the `strand-surface/tests/render.rs`
+    lone-toast and toggling-panel pose tests. A repeated first value is
+    a new surface's first two frames sampled for `now` (no feedback
+    yet) a sliver of a refresh apart; loaded stalls also failed the
+    toggling panel, which (contrary to this list before) did not have
+    the lone toast's tolerance. Both now judge the fade by sample time.
+  - Not reproduced, diagnostic added:
+    `strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
+    (launcher drew no marked icon; a failure now says whether the icons
+    are late or never drawn, and where the magenta is).
+  - Not reproduced, hardened: `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle`
+    (its idle window now starts after boot has settled; the woken
+    thread is named on failure).
+  - Seen once each on `laptop/ci`'s GitHub `test` job, not reproduced:
+    `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
     (`t0.elapsed() >= max_delay` failed: read before `max_delay`) and
     `strand/src/run.rs::tests::a_save_fixed_at_once_never_opens_the_overlay`
     (the overlay flashed on the formatted save), one each in the `test` job
