@@ -44,11 +44,31 @@ fn number_slot(v: &Value) -> Option<(f32, Option<TokenExpr>)> {
     }
 }
 
-/// A colour or token colour: the placeholder and its slot.
+/// Whether a symbolic value is a number by its shape: a time leaf,
+/// arithmetic (always numeric in render), or a literal number. A colour
+/// method result (`$accent.alpha(wave(1s))`), `oklch(from …)` or a token
+/// reference may be a colour.
+fn numeric(e: &TokenExpr) -> bool {
+    match e {
+        TokenExpr::Time
+        | TokenExpr::Wave { .. }
+        | TokenExpr::Noise(_)
+        | TokenExpr::Index
+        | TokenExpr::Count
+        | TokenExpr::Binary { .. } => true,
+        TokenExpr::Value(v) => matches!(**v, PropValue::Number(_) | PropValue::Length(_)),
+        _ => false,
+    }
+}
+
+/// A colour or token colour: the placeholder and its slot. A symbolic
+/// number (`8 * wave(2s)`, `$gap * 2`) is not one.
 fn color_slot(v: &Value) -> Option<(Color, Option<TokenExpr>)> {
     match v {
         Value::Color(c) => Some((*c, None)),
-        Value::Token(t) | Value::Time(t) => Some((Color::BLACK, Some((**t).clone()))),
+        Value::Token(t) | Value::Time(t) if !numeric(t) => {
+            Some((Color::BLACK, Some((**t).clone())))
+        }
         _ => None,
     }
 }
@@ -139,17 +159,19 @@ fn templated(value: PropValue, colors: Slots, mut numbers: Slots) -> PropValue {
 }
 
 /// One shadow from `x y blur [spread] color`, with its colour slot and
-/// its four number slots. The colour is the last part when that is a
-/// colour, a token or a time-bound value (`$accent.alpha(wave(1s))`);
-/// every other part is a number, possibly symbolic (`8 * wave(2s)`).
+/// its four number slots. The colour is the last part when that can be
+/// a colour: a colour, a token or a colour-valued time-bound value
+/// (`$accent.alpha(wave(1s))`), never a symbolic number (`8 *
+/// wave(2s)`, which with no colour given is the blur); every other part
+/// is a number, possibly symbolic.
 fn shadow(items: &[Value]) -> Option<(Shadow, Option<TokenExpr>, Slots)> {
     // The colour: the last part if it can be one, else the first plain
     // colour or token (`$shadow 0 2px 8px` reads as CSS does).
     let at = match items.last() {
         Some(last) if color_slot(last).is_some() => Some(items.len() - 1),
-        _ => items
-            .iter()
-            .position(|v| matches!(v, Value::Color(_) | Value::Token(_))),
+        _ => items.iter().position(|v| {
+            matches!(v, Value::Color(_) | Value::Token(_)) && color_slot(v).is_some()
+        }),
     };
     let (color, slot) = at
         .and_then(|i| color_slot(&items[i]))
@@ -530,6 +552,117 @@ mod tests {
             matches!(pv, PropValue::Token(TokenExpr::Template { .. })),
             "{pv:?}"
         );
+    }
+
+    /// `8 * wave(2s)`: a symbolic number, as a vm value.
+    fn wave_times(k: f32) -> Value {
+        Value::symbolic(TokenExpr::Binary {
+            op: strand_scene::BinOp::Mul,
+            lhs: Box::new(TokenExpr::value(PropValue::Number(k))),
+            rhs: Box::new(TokenExpr::Wave {
+                period: Duration::from_secs(2),
+                phase: Box::new(TokenExpr::value(PropValue::Number(0.0))),
+            }),
+        })
+    }
+
+    /// A shadow whose blur reads time and that names no colour keeps the
+    /// expression in the blur's number slot and the default colour; a
+    /// time-bound colour (`$accent.alpha(wave(1s))`) last is its colour.
+    #[test]
+    fn a_time_bound_shadow_number_is_not_its_colour() {
+        let t = types();
+        let s = Value::Spaced(Rc::new(vec![
+            Value::float(0.0),
+            Value::float(0.0),
+            wave_times(8.0),
+        ]));
+        let pv = prop_value(&t, &Ty::SHADOW, &s);
+        let PropValue::Token(TokenExpr::Template {
+            value,
+            colors,
+            numbers,
+        }) = &pv
+        else {
+            panic!("{pv:?}")
+        };
+        let PropValue::Shadow(sh) = &**value else {
+            panic!("{value:?}")
+        };
+        assert_eq!(sh[0].color, Color::BLACK.with_alpha(0.3));
+        assert_eq!(colors, &vec![None]);
+        assert_eq!(numbers.len(), 3, "x, y, blur: {numbers:?}");
+        assert!(numbers[2].as_ref().is_some_and(TokenExpr::reads_time));
+        // At t = 0.5 s (a quarter period) the blur is 8 · 0.5.
+        let table = TokenTable::default();
+        let levels = [&table];
+        let at = strand_scene::TokenScope::new(&levels)
+            .with_time(Some(strand_scene::TimeContext::at(0.5)))
+            .resolve(&pv)
+            .map(|c| c.into_owned());
+        let Some(PropValue::Shadow(sh)) = at else {
+            panic!("{at:?}")
+        };
+        assert!((sh[0].blur - 4.0).abs() < 1e-5, "{:?}", sh[0]);
+
+        // A colour method on a token with a time argument is the colour.
+        let pulse = Value::symbolic(TokenExpr::path("accent").call(
+            strand_scene::TokenMethod::Alpha,
+            vec![TokenExpr::Wave {
+                period: Duration::from_secs(1),
+                phase: Box::new(TokenExpr::value(PropValue::Number(0.0))),
+            }],
+        ));
+        let s = Value::Spaced(Rc::new(vec![
+            Value::float(0.0),
+            Value::float(2.0),
+            wave_times(8.0),
+            pulse,
+        ]));
+        let PropValue::Token(TokenExpr::Template {
+            colors, numbers, ..
+        }) = prop_value(&t, &Ty::SHADOW, &s)
+        else {
+            panic!("a template")
+        };
+        assert!(colors[0].as_ref().is_some_and(TokenExpr::reads_time));
+        assert!(numbers[2].is_some(), "the blur: {numbers:?}");
+    }
+
+    /// `radial(center, 40 * wave(2s))` is a mask with an animated size,
+    /// not a gradient: only a colour-valued argument makes a stop.
+    #[test]
+    fn a_radial_mask_with_a_time_bound_size_is_not_a_gradient() {
+        let t = types();
+        let anchor = t.find_enum("Anchor").expect("Anchor");
+        let center = t
+            .enum_(anchor)
+            .variants
+            .iter()
+            .position(|v| v == "center")
+            .expect("center");
+        let c = CallValue {
+            name: "radial".into(),
+            args: vec![Value::Enum(anchor, center as u32), wave_times(40.0)],
+        };
+        let pv = prop_value(&t, &Ty::Any, &Value::Call(Rc::new(c)));
+        let PropValue::Call { name, args } = &pv else {
+            panic!("{pv:?}")
+        };
+        assert_eq!(name, "radial");
+        assert!(args[1].reads_time(), "{args:?}");
+        // With colours it is still a gradient.
+        let g = CallValue {
+            name: "radial".into(),
+            args: vec![
+                Value::Color(Color::WHITE),
+                Value::token(TokenExpr::path("accent")),
+            ],
+        };
+        assert!(matches!(
+            prop_value(&t, &Ty::Any, &Value::Call(Rc::new(g))),
+            PropValue::Token(TokenExpr::Template { .. })
+        ));
     }
 
     #[test]
