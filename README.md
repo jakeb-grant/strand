@@ -120,6 +120,28 @@ Each crate is one box in the runtime architecture:
 Every milestone ends on measurable exit criteria. Usable v0.1 comes at week 24
 and 1.0 at week 52.
 
+## Building and installing
+
+```sh
+cargo build --release                    # target/release/strand
+cargo install --locked --path crates/strand
+```
+
+Release builds use the workspace's `[profile.release]` in the root
+`Cargo.toml`: thin LTO, one codegen unit, and 27 per-package `opt-level`
+overrides that build the event-rate crates (D-Bus, sockets, parsing) for
+size and keep the per-frame paths at 3 (`docs/decisions.md`,
+wave4-exitMemory and laptop-decisions). The memory figures in the docs
+(the bar's 34 MB target, the full shell's 64 MB) are measured with
+exactly these settings and hold for our builds only. Both commands above,
+and `cargo install --git` of this repository, read them. A build that
+does not read the root manifest's profile tables does not get them: a
+crate packaged for a registry (packaging drops workspace profiles),
+Strand built as a dependency of another workspace, or a distribution
+package that sets its own `CARGO_PROFILE_RELEASE_*`, `opt-level` or LTO
+flags. Such a build works, but its code size and memory differ; copy the
+profile tables to reproduce ours.
+
 ## Development
 
 ```sh
