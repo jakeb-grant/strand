@@ -180,6 +180,9 @@ impl Reply {
 }
 
 /// A message from the logic thread.
+// A `Write` is moved once per local write, through the run's channel;
+// boxing it would cost an allocation per write for no gain.
+#[allow(clippy::large_enum_variant)]
 pub enum Msg<S: Service> {
     /// A local write ([`Write`]).
     Write(Write),

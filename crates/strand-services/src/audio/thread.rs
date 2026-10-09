@@ -2074,12 +2074,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("pipewire-0");
         let _ = std::fs::remove_file(&socket);
-        let watch = SocketWatch::new(Some(&socket.display().to_string())).unwrap();
+        let remote = socket.display().to_string();
+        let watch = SocketWatch::new(Some(&remote)).unwrap().unwrap();
         assert!(watch.socket_missing());
         // A stale socket (a crashed daemon's), or one that refuses: the
         // timer keeps trying.
         std::fs::write(&socket, b"").unwrap();
         assert!(!watch.socket_missing());
+        // No inotify instance for this socket: an error, not a watch; the
+        // denial ends and the watch can be made again.
+        deny_inotify(&remote, true);
+        assert!(matches!(
+            SocketWatch::new(Some(&remote)),
+            Some(Err(rustix::io::Errno::MFILE))
+        ));
+        deny_inotify(&remote, false);
+        assert!(matches!(SocketWatch::new(Some(&remote)), Some(Ok(_))));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
