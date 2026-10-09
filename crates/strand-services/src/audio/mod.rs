@@ -85,9 +85,9 @@ pub use schema::SCHEMA;
 pub use service::{
     ANSWER_WAIT, AudioDeviceAction, AudioStore, AudioStoreCells, LevelTap, configure, tap_levels,
 };
-pub use thread::{ECHOES, FRAME, GRACE, SETTLE, UNANSWERED};
 #[doc(hidden)]
 pub use thread::deny_inotify;
+pub use thread::{ECHOES, FRAME, GRACE, SETTLE, UNANSWERED};
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
