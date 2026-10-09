@@ -93,8 +93,13 @@ fn gate() -> Duration {
     }
 }
 
+/// The median as `main` took it: the element at `len / 2` of the sorted
+/// sample, the upper middle one when the count is even (24 crossfades,
+/// 16 per scopes case), so the gate is no more lenient than before.
 fn median(v: &[Duration]) -> Duration {
-    quantile(v, 0.5)
+    let mut sorted = v.to_vec();
+    sorted.sort();
+    sorted[sorted.len() / 2]
 }
 
 /// The `q` quantile of `v` (nearest rank; `v` not empty).
@@ -106,7 +111,7 @@ fn quantile(v: &[Duration], q: f64) -> Duration {
 }
 
 #[test]
-fn quantiles_are_nearest_rank() {
+fn quantiles_are_nearest_rank_and_the_median_is_the_upper_middle() {
     let ms = |v: &[u64]| {
         v.iter()
             .map(|m| Duration::from_millis(*m))
@@ -118,6 +123,18 @@ fn quantiles_are_nearest_rank() {
     assert_eq!(quantile(&v, 0.0), Duration::from_millis(1));
     let v: Vec<Duration> = (1..=40).map(Duration::from_millis).collect();
     assert_eq!(quantile(&v, 0.95), Duration::from_millis(38));
+    // An even count takes the upper middle, as `main`'s `sorted[len / 2]`.
+    assert_eq!(median(&ms(&[4, 1, 3, 2])), Duration::from_millis(3));
+    for n in [8, 12, 16, 24] {
+        let v: Vec<Duration> = (1..=n as u64).rev().map(Duration::from_millis).collect();
+        assert_eq!(
+            median(&v),
+            Duration::from_millis(n as u64 / 2 + 1),
+            "n = {n}"
+        );
+    }
+    let v: Vec<Duration> = (1..=31).map(Duration::from_millis).collect();
+    assert_eq!(median(&v), Duration::from_millis(16));
 }
 
 fn fixture(name: &str) -> String {

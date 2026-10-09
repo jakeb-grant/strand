@@ -49,8 +49,11 @@ and the full shell warns above 64 MB and fails above 70 MB
 - Done on `laptop/ci` (decisions.md laptop-ci): the `check` job is split
   into `lint`, `test`, `budgets`, `acceptance` and `timing`; the timing
   gates build on a `timing` profile (release without LTO); `theme_swap_bench`
-  gates the median of more swaps, measured once. Consolidating
-  test binaries was measured (about 39 s of linking in all) and not done.
+  gates the median of more swaps, measured once. Its tightest gated
+  case, 8 scopes on `spring(1600, 1)` (whole swap), measured 4.46 ms on
+  GitHub against 5 ms (about 11% headroom, no retry); if `timing` fails
+  there, look at that case first. Consolidating test binaries was
+  measured (about 39 s of linking in all) and not done.
 - Flakes seen once each, with diagnostics added so a recurrence names its
   cause (none reproduced locally; all in m3-report Open):
   - `strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`
