@@ -62,6 +62,23 @@ done < <(env | grep -E '^STRAND_[A-Z0-9_]*=' || true)
 [ -n "${CI_FROM:-}" ] && envs+=(-e CI_FROM)
 [ -n "${CI_JOB:-}" ] && envs+=(-e CI_JOB)
 
+# The advisory hardware GPU leg (scripts/container/gpu.sh sets
+# RUN_GPU_HARDWARE to the hardware ICD's JSON): the render node and
+# nothing else from /dev/dri (never a card*, CLAUDE.md), and that ICD in
+# place of lavapipe.
+devices=()
+if [ -n "${RUN_GPU_HARDWARE:-}" ]; then
+  devices=(--device /dev/dri/renderD128)
+  envs+=(
+    -e VK_DRIVER_FILES="$RUN_GPU_HARDWARE"
+    -e VK_ICD_FILENAMES="$RUN_GPU_HARDWARE"
+    -e STRAND_GPU_HARDWARE=1
+  )
+fi
+for arg in "${devices[@]}"; do
+  case "$arg" in *card*) echo "run.sh: refusing to pass $arg (render node only)" >&2; exit 2 ;; esac
+done
+
 tty=()
 [ -t 0 ] && [ -t 1 ] && tty=(-it)
 
@@ -74,6 +91,6 @@ mkdir -p "$ROOT/target/container"
 exec docker run --rm --init "${tty[@]}" \
   --user "$(id -u):$(id -g)" \
   --shm-size=2g \
-  "${mounts[@]}" "${envs[@]}" \
+  "${devices[@]}" "${mounts[@]}" "${envs[@]}" \
   -w "$ROOT" \
   "$IMAGE" bash -c 'mkdir -p "$HOME" && exec "$@"' bash "$@"
