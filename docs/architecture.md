@@ -891,7 +891,7 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     spreads damage in logical pixels on a surface at `scale`: three
     standard deviations for a blur, a bundled pass's own (its uniforms
     are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains a layer group,
-    `Item::PushLayer(Arc<layers::Layer { effects, frame, scale }>)` …
+    `Item::PushLayer(Arc<layers::Layer { effects, frame, scale, xform }>)` …
     `Item::PopLayer` (markers like its clip, opacity and transform
     groups, the push carrying the group's bounds; built: m4-runtime F3),
     whose bounds and whose nodes' damage grow by its effects' reach,
@@ -900,9 +900,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     cell-sized mask of `fade`/`radial`; masks always on the CPU;
     `strand-render`'s `layers.rs`). Until S-effects builds `Effect`s
     from props, `Renderer::set_layer_effects(node, effects)` (hidden)
-    attaches them. The display list also gains `Item::Raster { node, bounds }`, a CPU raster node
-    (particles, grain, graphs, spectrum, animated image frames) drawn into
-    a cached pixmap at its clock's rate. Cached offscreen groups (glows,
+    attaches them. The display list also gains `Item::Raster`, a CPU
+    raster node (particles, grain, graphs, spectrum, animated image
+    frames) drawn into a cached pixmap at its clock's rate (its fields
+    below). Cached offscreen groups (glows,
     filtered subtrees, glass sources) redraw only when their children
     change, in a second 4 MB budget freed when idle. Built (m4-runtime
     F4, `strand-render`'s `offscreen.rs`):
@@ -912,7 +913,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
       pixmap is keyed by the hash of what the group draws
       (`OFFSCREEN_BYTES`, LRU; a group over the budget is drawn uncached;
       freed with the paint cache's idle rules).
-    - The raster node is `Item::Raster { node, key, pixmap, rect }`. A
+    - The raster node is `Item::Raster { node, key, pixmap, rect }`
+      (`key` hashes size, scale and `TimeContext`; `rect` is its box in
+      physical pixels). A
       `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
       is attached through the hidden `Renderer::set_raster_source` seam.
       Its pixmap is redrawn only when its tick or size changes. The props keep
