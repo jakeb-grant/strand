@@ -9058,3 +9058,7 @@ newly met or lost this round.
 **2026-10-09 · m4-docs: a scrim is a colour.** builtin.schema declared `scrim: paint`, which admits gradients, while design.md makes a scrim a single-pixel buffer and `SurfaceSpec` carries `Option<Color>`. 0b narrows the field to `scrim: color`, so a gradient scrim is a type error instead of a value with no representation. This removes a case rather than adding one.
 
 **2026-10-09 · m4-docs: an external drop's app is resolved by logic.** `DropPayload::External` carries `app_id: Option<String>` (strand-surface knows only the id it was offered), while `record Drop` has `app: App?`. Logic resolves the id through the `apps` service when it builds the `Drop` value, null when no installed app has it.
+
+## m4-integration
+
+**2026-10-09 · m4-integration: owners for the modules the wave-0 splits added.** F0 and S0 split by the concerns that exist today, so several new modules (`renderer/{text,layout_pass,apply,specs,surfaces,tooltip}.rs`, `layout/{style,text,list}.rs`, `anim/{motion,pose,sizes}.rs`, `run/{logic,shell,sleep,trim}.rs`) had no owner in the corrected stream table, and some named files (`list.rs`, `scroll.rs`) became parts of `layout/list.rs`. Each goes to the stream whose work it already holds: render internals to S-runtime, surfaces and exit poses to S-surface, scroll and virtualisation to S-lists; the run loop's shared modules change by small PRs S-runtime reviews, as the table already does for `main.rs` with S-surface. Recorded in m4-plan.md under the stream table ("Wave 0 as landed").

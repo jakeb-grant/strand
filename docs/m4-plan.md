@@ -98,6 +98,19 @@ Per-file ownership in shared crates: tray to S-surface, auth to S-lock,
 audio and wm to S-effects. `strand/src/main.rs` belongs to S-surface; the
 GPU and auth-spawn hooks there are small PRs it reviews.
 
+Wave 0 as landed (integration-m4): the splits created only modules that
+have code today, so the table's `renderer/{feed,backend}.rs`,
+`anim/{keyframes,morph,stagger,pages}.rs`, `run/{feeds,lists,gpu}.rs`,
+`pose.rs`, `fillet.rs`, `list.rs` and `scroll.rs` are created by the
+streams that own them. The modules the table does not name are owned so:
+S-runtime takes `renderer/{mod,text,layout_pass,apply,specs,tooltip}.rs`,
+`anim/{mod,motion,sizes}.rs` and `layout/{mod,style,text}.rs`; S-surface
+takes `renderer/surfaces.rs` and `anim/pose.rs` (with `renderer/pose.rs`);
+S-lists takes `layout/list.rs` (today's scroll and virtualisation code)
+with `renderer/lists.rs`; `run/{mod,logic,shell,sleep,trim,tests}.rs` are
+shared, changed by small PRs that S-runtime reviews. The module maps are
+in architecture.md.
+
 ### S-infra
 
 - Lavapipe (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and
