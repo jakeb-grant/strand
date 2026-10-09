@@ -2058,6 +2058,20 @@ Public interfaces other crates and later stages build on:
     lock's `open` false, and a config write of `false` while locked is
     ignored with a warning. `lock_shown()` follows `ToLogic::LockState`,
     the compositor's state, not the `open` prop.
+    As built (m4-lock wave 1): `Instance::set_session_lock(SessionLock)`
+    takes the report (`Locked`, `Finished`, `Unlocked`; the binary maps
+    strand-surface's `LockState` onto it, since the compiler does not
+    depend on strand-surface). While `Locked`, the `lock`'s `open`
+    binding sends `true` whatever the config wrote, so the content stays
+    shown and live, with the notice `IGNORED_CLOSE` once per lock
+    session; after `Unlocked` the instance writes `false` through a
+    two-way `open` (a one-way one is left alone). `lock_shown()` is
+    true while `Locked`, false after `Finished` or `Unlocked`, and,
+    before any report since the lock last opened (a host with no session
+    lock included), true while a `lock` on the scene is not `open:
+    false`. The code is `instantiate/lock.rs`; `check/lock.rs` makes a
+    second `lock` an error (`check::lock_twice`) and `screens`, `layer`,
+    `anchor` and `keyboard` on a lock warnings (`check::lock_prop`).
   - `compositor-rules`: a query over a `Build` listing the surfaces whose
     tree has `blur`, with their namespaces (`strand-<Name>`), for
     `strand compositor-rules` (S-surface owns it).

@@ -1266,6 +1266,7 @@ impl Ctx {
             })
         };
         let on_demand = matches!(e.kind, ElementKind::Builtin(NodeKind::Popup));
+        let is_lock = matches!(e.kind, ElementKind::Builtin(NodeKind::Lock));
         let services = services.unwrap_or_default();
         let content = Arc::new(content);
         let inner = self.em.borrow_mut().new_frag(Some(frag), None);
@@ -1285,6 +1286,9 @@ impl Ctx {
             let prev = shown.replace(Some(is_open));
             if prev == Some(is_open) {
                 return;
+            }
+            if is_lock && is_open {
+                me.lock_opened();
             }
             if is_open {
                 me.set_held(rt, token, true);
@@ -1511,7 +1515,10 @@ impl Ctx {
         // a laid-out size, `self.width < 300`) that held keeps holding
         // while it would hold 4 px either way, so it cannot flicker.
         let held: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(vec![false; sources.len()]));
-        let memo = rt.memo(move |rt| {
+        // A `lock`'s `open` is held true while the session is locked
+        // (`lock.rs`).
+        let lock_open = (kind == NodeKind::Lock && prop == SceneProp::Open).then(|| self.clone());
+        let pick = move |rt: &Runtime| -> Result<PropOut, strand_core::Error> {
             for (i, s) in srcs.iter().enumerate().rev() {
                 if let Some(c) = s.cond {
                     let (v, query) = crate::vm::builtins::layout_query(0.0, || ctx.eval(rt, c, &e));
@@ -1545,6 +1552,13 @@ impl Ctx {
             Ok(PropOut {
                 value: PropValue::Unset,
                 source: 0,
+            })
+        };
+        let memo = rt.memo(move |rt| {
+            let out = pick(rt)?;
+            Ok(match &lock_open {
+                Some(ctx) => ctx.hold_lock_open(rt, out),
+                None => out,
             })
         });
         let what: Rc<str> = format!("{}.{}", kind.name(), prop.name()).into();

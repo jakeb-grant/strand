@@ -1,0 +1,10 @@
+// expect: check::lock_twice
+// A config has one `lock`, across its files.
+// file: shell.strand
+lock {
+  text "locked"
+}
+// file: lock.strand
+lock Other {
+  text "also locked"
+}

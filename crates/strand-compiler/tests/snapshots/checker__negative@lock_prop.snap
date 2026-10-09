@@ -1,0 +1,39 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::lock_prop
+
+  ⚠ `screens` has no effect on a `lock`
+   ╭─[lock_prop.strand:6:3]
+ 5 │   open: <-> locked
+ 6 │   screens: focused
+   ·   ───┬───
+   ·      ╰── a lock covers every monitor
+ 7 │   layer: top
+   ╰────
+  help: remove `screens`
+
+check::lock_prop
+
+  ⚠ `layer` has no effect on a `lock`
+   ╭─[lock_prop.strand:7:3]
+ 6 │   screens: focused
+ 7 │   layer: top
+   ·   ──┬──
+   ·     ╰── a lock is above everything, on `ext-session-lock`
+ 8 │   keyboard: on_demand
+   ╰────
+  help: remove `layer`
+
+check::lock_prop
+
+  ⚠ `keyboard` has no effect on a `lock`
+   ╭─[lock_prop.strand:8:3]
+ 7 │   layer: top
+ 8 │   keyboard: on_demand
+   ·   ────┬───
+   ·       ╰── a lock always takes the keyboard
+ 9 │   text "locked"
+   ╰────
+  help: remove `keyboard`

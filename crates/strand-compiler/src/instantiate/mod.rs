@@ -23,6 +23,7 @@ mod chain;
 mod convert;
 mod edges;
 mod emit;
+mod lock;
 mod mirror;
 mod mount;
 mod reload;
@@ -44,6 +45,7 @@ pub use convert::{
     BEZIER_DURATION, from_prop, prop_value, prop_value_for, token_entry, transition,
 };
 pub use emit::PropOut;
+pub use lock::{IGNORED_CLOSE, SessionLock};
 pub use mirror::{SceneMirror, show, show_expr};
 
 use crate::hir::{DefId, DefKind};
@@ -237,6 +239,9 @@ pub(crate) struct Ctx {
     /// `state`s of components in it) while the content is unmounted:
     /// they are bound again, values and all, when it opens.
     pub closed: RefCell<std::collections::HashSet<Rc<str>>>,
+    /// The session lock as reported (`lock.rs`), carried across reloads;
+    /// `None` only before the boot mounts.
+    pub lock: RefCell<Option<Rc<lock::LockTrack>>>,
 }
 
 impl VmHooks for Ctx {
@@ -527,6 +532,7 @@ impl Ctx {
             closed: RefCell::default(),
             handover: RefCell::default(),
             outlined: RefCell::default(),
+            lock: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -747,6 +753,7 @@ impl Instance {
             storage.config_dir.clone(),
         ));
         let ctx = Ctx::create(vm, Emitter::default(), storage, identity, hashes);
+        *ctx.lock.borrow_mut() = Some(Rc::new(lock::LockTrack::new(rt)));
         // Lowering's warnings (a frozen time signal), once, in the boot
         // tick.
         ctx.notices
@@ -910,6 +917,7 @@ impl Instance {
             Some(build.hashes.clone()),
         );
         *ctx.parked.borrow_mut() = old.parked.borrow().clone();
+        *ctx.lock.borrow_mut() = old.lock.borrow().clone();
         *ctx.pending.borrow_mut() = std::mem::take(&mut *old.pending.borrow_mut());
         *ctx.carry.borrow_mut() = Some(reload::Carry {
             old: std::mem::take(&mut *old.registry.borrow_mut()),
@@ -1127,6 +1135,7 @@ impl Instance {
             Some(build.identity.clone()),
             Some(build.hashes.clone()),
         );
+        *ctx.lock.borrow_mut() = self.ctx.lock.borrow().clone();
         self.ctx = ctx.clone();
         self.boot(true);
         let mut ops = prior;
@@ -1138,8 +1147,16 @@ impl Instance {
     }
 
     /// True while a `lock` surface is shown (reloads that change a lock
-    /// wait for the unlock).
+    /// wait for the unlock): while the compositor reports the session
+    /// locked, never after it reported `Finished` or `Unlocked`; before
+    /// any report since the lock opened, while a `lock` on the scene is
+    /// not `open: false` (`lock.rs`).
     pub fn lock_shown(&self) -> bool {
+        match self.ctx.lock.borrow().as_ref().map(|l| l.phase()) {
+            Some(lock::Phase::Locked) => return true,
+            Some(lock::Phase::Ended) => return false,
+            Some(lock::Phase::Unreported) | None => {}
+        }
         let em = self.ctx.em.borrow();
         em.nodes.iter().any(|(id, e)| {
             e.kind == strand_scene::NodeKind::Lock
@@ -1147,6 +1164,38 @@ impl Instance {
                 && em.sent.get(id).and_then(|s| s.get(&SceneProp::Open))
                     != Some(&PropValue::Bool(false))
         })
+    }
+
+    /// The compositor's report on the session lock (the binary's
+    /// `ToLogic::LockState`). After `Unlocked` the runtime writes each
+    /// `lock`'s two-way `open` false; see `lock.rs`. The change lands
+    /// with the next tick.
+    pub fn set_session_lock(&self, state: SessionLock) {
+        let Some(track) = self.ctx.lock.borrow().clone() else {
+            return;
+        };
+        if !track.report(&self.rt, state) {
+            return;
+        }
+        let locks: Vec<NodeId> = {
+            let em = self.ctx.em.borrow();
+            em.nodes
+                .iter()
+                .filter(|(_, e)| {
+                    e.kind == strand_scene::NodeKind::Lock
+                        && e.two_way.iter().any(|(p, _, _)| *p == SceneProp::Open)
+                })
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        for node in locks {
+            if let Err(e) = self.write(node, SceneProp::Open, PropValue::Bool(false)) {
+                let err = self
+                    .ctx
+                    .unlocated("the lock's `open` after the unlock".into(), e);
+                self.ctx.errors.borrow_mut().push(err);
+            }
+        }
     }
 
     pub fn runtime(&self) -> &Runtime {
@@ -1967,6 +2016,10 @@ impl Instance {
         }
         if let Some(t) = self.tokens.take() {
             self.rt.dispose(t.id());
+        }
+        let lock = self.ctx.lock.borrow_mut().take();
+        if let Some(l) = lock {
+            l.dispose(&self.rt);
         }
         self.ctx.em.borrow_mut().ops.clear();
     }
