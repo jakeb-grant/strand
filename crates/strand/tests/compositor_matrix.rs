@@ -2657,7 +2657,13 @@ fn surfaces_meet_the_live_compositor() {
                 contrast(&img, ow - 240, 100),
                 contrast(&img, ow / 4, oh / 2),
             );
-            if beside > 600 && inside < 120 {
+            // Unblurred, the glass (white at 60 %) leaves 40 % of the
+            // stripes' 765: 306. Hyprland 0.56 under the rule draws the
+            // glass over an even mix of the blurred and the sharp
+            // stripes (GitHub run 38000763592: 178/229 under it against
+            // 153/255 unblurred, contrast 153), so the proof is the
+            // contrast falling well below 306, not to nothing.
+            if beside > 600 && inside < 230 {
                 eprintln!(
                     "matrix: hyprland blurs strand-Dash by its layer rule: contrast {inside} \
                      under it, {beside} beside it"
@@ -2676,7 +2682,7 @@ fn surfaces_meet_the_live_compositor() {
                 }
                 panic!(
                     "hyprland: the layer rule did not blur strand-Dash: contrast {inside} under \
-                     it (want < 120), {beside} beside it (want > 600)\n{lua}"
+                     it (want < 230; 306 unblurred), {beside} beside it (want > 600)\n{lua}"
                 );
             }
         }
