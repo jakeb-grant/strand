@@ -1914,6 +1914,20 @@ and the connection):
     on the same surface; `State::recreate_all()` for `strand reload
     --hard`.
 
+Module map (`src/manager/`, split by concern in M4 wave 0 with no
+behaviour change; the public API is re-exported from `lib.rs` as before):
+`mod.rs` (the `SurfaceHost` trait, `Config`, `SurfaceError`, `Request`,
+`RepaintHandle`, `Stats`, `SurfaceInfo`, the `Surface`/`Role` records,
+`State`, `SurfaceManager`, the public `State` API and node reconciliation),
+`layer.rs` (layer surface creation, in-place reconfiguration, configure,
+close and destruction), `popup.rs` (xdg popups: nesting, positioners,
+grabs and the keyboard they hold, dismissal), `catcher.rs` (click-away
+catchers), `outputs.rs` (hotplug, monitor identity and expiry),
+`commit.rs` (geometry, paint and commit, frame callbacks, deadlines and
+presentation feedback), `seat.rs` (pointer and keyboard input, key repeat)
+and `protocols.rs` (registry, shm, viewporter, fractional scale and the
+presentation global). New M4 concerns get files of their own beside them.
+
 ### `strand-dev`
 
 The language server, `strand-dev lsp` (stdio), built on `lsp-server` and
