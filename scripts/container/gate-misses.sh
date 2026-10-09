@@ -7,7 +7,7 @@
 # A gate miss is a panic whose message starts with the marker
 # "timing gate missed" (the `GATE_MISS` constants of
 # strand-render/tests/theme_swap_bench.rs, strand/src/bench.rs and
-# strand/src/run.rs; their tests check this file still names it). LOG
+# strand/src/run/tests.rs; their tests check this file still names it). LOG
 # passes when:
 #   - libtest reported "test result: FAILED" with N failed tests,
 #   - every panic in it ("thread '...' panicked at ...:" followed by its
