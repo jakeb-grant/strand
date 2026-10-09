@@ -29,8 +29,7 @@ use strand_scene::{Damage, Effect, NodeId, Rect, Scale, TimeContext};
 use vello_cpu::color::PremulRgba8;
 use vello_cpu::kurbo::Affine;
 use vello_cpu::{
-    Pixmap, PixmapMut, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources,
-    TargetInit,
+    Pixmap, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources, TargetInit,
 };
 
 use crate::cache::{IDLE_FREE, PaintCache};
@@ -280,35 +279,30 @@ fn render_group(
         groups,
     );
     ctx.flush();
-    let mut bytes = vec![0u8; w as usize * h as usize * 4];
+    // Drawn straight into the pixmap that is kept, and filtered there:
+    // the transient heap is the context and the blur's few rows (design.md
+    // bounds a group at about 4 MB; a group over the budget is drawn on
+    // every damaged frame).
+    let mut pm = Pixmap::new(w, h);
     let mut resources = Resources::new();
-    if let Some(pm) = PixmapMut::new(w, h, &mut bytes) {
-        ctx.render_with(
-            pm,
-            &mut resources,
-            RasterizerSettings {
-                target_init: TargetInit::SrcOver,
-                render_mode: RenderMode::OptimizeQuality,
-                ..RasterizerSettings::default()
-            },
-        );
-    }
+    ctx.render_with(
+        pm.as_mut(),
+        &mut resources,
+        RasterizerSettings {
+            target_init: TargetInit::SrcOver,
+            render_mode: RenderMode::OptimizeQuality,
+            ..RasterizerSettings::default()
+        },
+    );
+    drop(ctx);
     let s = scale.as_f32();
+    let bytes = pm.data_as_u8_slice_mut();
     for e in layer.effects.iter() {
         match e {
-            Effect::Blur { radius } => blur(&mut bytes, w as usize, h as usize, radius * s),
-            Effect::ColorMatrix(m) => color_matrix(&mut bytes, m),
+            Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
+            Effect::ColorMatrix(m) => color_matrix(bytes, m),
             _ => {}
         }
-    }
-    let mut pm = Pixmap::new(w, h);
-    for (d, s) in pm.data_mut().iter_mut().zip(bytes.chunks_exact(4)) {
-        *d = PremulRgba8 {
-            r: s[0],
-            g: s[1],
-            b: s[2],
-            a: s[3],
-        };
     }
     Some(Drawn {
         pixmap: Arc::new(pm),
@@ -334,44 +328,58 @@ pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
         let sum: f32 = k.iter().sum();
         k.into_iter().map(|v| v / sum).collect()
     };
-    let mut tmp = vec![0f32; w * h * 4];
-    // Rows into `tmp`.
+    // Rows are blurred into a ring of the `2r + 1` rows the column pass
+    // reads (f32, as the columns need them), and each output row is
+    // written back in place once its rows are in: a row read for the ring
+    // is always below every row written so far. The heap is the ring,
+    // not a copy of the whole group.
+    let ring_rows = (2 * r + 1).min(h);
+    let stride = w * 4;
+    let mut ring = vec![0f32; ring_rows * stride];
+    let mut out = vec![0f32; stride];
+    let mut next = 0;
     for y in 0..h {
-        for x in 0..w {
-            let mut acc = [0f32; 4];
-            for (i, k) in kernel.iter().enumerate() {
-                let sx = x as isize + i as isize - r as isize;
-                if sx < 0 || sx >= w as isize {
-                    continue;
+        let last = (y + r).min(h - 1);
+        while next <= last {
+            let row = &px[next * stride..(next + 1) * stride];
+            let slot = &mut ring[(next % ring_rows) * stride..(next % ring_rows + 1) * stride];
+            for x in 0..w {
+                let mut acc = [0f32; 4];
+                for (i, k) in kernel.iter().enumerate() {
+                    let sx = x as isize + i as isize - r as isize;
+                    if sx < 0 || sx >= w as isize {
+                        continue;
+                    }
+                    let o = sx as usize * 4;
+                    for c in 0..4 {
+                        acc[c] += k * row[o + c] as f32;
+                    }
                 }
-                let o = (y * w + sx as usize) * 4;
-                for c in 0..4 {
-                    acc[c] += k * px[o + c] as f32;
-                }
+                slot[x * 4..x * 4 + 4].copy_from_slice(&acc);
             }
-            tmp[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&acc);
+            next += 1;
         }
-    }
-    // Columns back into `px`.
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = [0f32; 4];
-            for (i, k) in kernel.iter().enumerate() {
-                let sy = y as isize + i as isize - r as isize;
-                if sy < 0 || sy >= h as isize {
-                    continue;
-                }
-                let o = (sy as usize * w + x) * 4;
-                for c in 0..4 {
-                    acc[c] += k * tmp[o + c];
-                }
+        // The column pass for row `y`, tap by tap in kernel order (the
+        // same sums, in the same order, as one pixel at a time).
+        out.fill(0.0);
+        for (i, k) in kernel.iter().enumerate() {
+            let sy = y as isize + i as isize - r as isize;
+            if sy < 0 || sy >= h as isize {
+                continue;
             }
-            let o = (y * w + x) * 4;
+            let slot = sy as usize % ring_rows;
+            let src = &ring[slot * stride..(slot + 1) * stride];
+            for (o, v) in out.iter_mut().zip(src) {
+                *o += k * v;
+            }
+        }
+        let dst = &mut px[y * stride..(y + 1) * stride];
+        for (d, acc) in dst.chunks_exact_mut(4).zip(out.chunks_exact(4)) {
             let a = acc[3].round().clamp(0.0, 255.0);
-            px[o + 3] = a as u8;
+            d[3] = a as u8;
             for c in 0..3 {
                 // Premultiplied: a channel never exceeds its alpha.
-                px[o + c] = acc[c].round().clamp(0.0, a) as u8;
+                d[c] = acc[c].round().clamp(0.0, a) as u8;
             }
         }
     }
@@ -521,6 +529,77 @@ mod tests {
         assert_eq!(alpha[0], 0, "3σ away: nothing");
         for p in px.chunks(4) {
             assert!(p[0] <= p[3], "premultiplied");
+        }
+    }
+
+    /// The whole-group two-pass blur the ring replaced (an f32 copy of
+    /// every row pass).
+    fn blur_whole(px: &mut [u8], w: usize, h: usize, sigma: f32) {
+        let r = (3.0 * sigma).ceil() as usize;
+        let k: Vec<f32> = (0..=2 * r)
+            .map(|i| {
+                let x = i as f32 - r as f32;
+                (-(x * x) / (2.0 * sigma * sigma)).exp()
+            })
+            .collect();
+        let sum: f32 = k.iter().sum();
+        let kernel: Vec<f32> = k.into_iter().map(|v| v / sum).collect();
+        let mut tmp = vec![0f32; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                for (i, k) in kernel.iter().enumerate() {
+                    let sx = x as isize + i as isize - r as isize;
+                    if (0..w as isize).contains(&sx) {
+                        for c in 0..4 {
+                            tmp[(y * w + x) * 4 + c] +=
+                                k * px[(y * w + sx as usize) * 4 + c] as f32;
+                        }
+                    }
+                }
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0f32; 4];
+                for (i, k) in kernel.iter().enumerate() {
+                    let sy = y as isize + i as isize - r as isize;
+                    if (0..h as isize).contains(&sy) {
+                        for c in 0..4 {
+                            acc[c] += k * tmp[(sy as usize * w + x) * 4 + c];
+                        }
+                    }
+                }
+                let o = (y * w + x) * 4;
+                let a = acc[3].round().clamp(0.0, 255.0);
+                px[o + 3] = a as u8;
+                for c in 0..3 {
+                    px[o + c] = acc[c].round().clamp(0.0, a) as u8;
+                }
+            }
+        }
+    }
+
+    /// The in-place ring blur gives exactly the whole-group blur, for
+    /// groups taller and shorter than its ring.
+    #[test]
+    fn ring_blur_matches_the_whole_group_blur() {
+        for (w, h, sigma) in [(37, 53, 2.0), (29, 5, 3.0), (16, 40, 0.7), (1, 9, 4.0)] {
+            let mut px = vec![0u8; w * h * 4];
+            let mut seed = 0x2545_f491_u32;
+            for p in px.chunks_exact_mut(4) {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let a = (seed >> 24) as u8;
+                for (c, v) in p[..3].iter_mut().enumerate() {
+                    *v = ((seed >> (c * 8)) as u8).min(a);
+                }
+                p[3] = a;
+            }
+            let mut whole = px.clone();
+            blur_whole(&mut whole, w, h, sigma);
+            blur(&mut px, w, h, sigma);
+            assert!(px == whole, "{w}×{h} σ {sigma}");
         }
     }
 
