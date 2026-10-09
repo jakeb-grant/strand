@@ -1867,8 +1867,10 @@ impl<B: Backend> Core<B> {
     /// ([`WatchKind::Ancestor`]), so that one of them being moved or
     /// deleted is seen even though the descriptors below follow the moved
     /// inodes and report nothing: strictly below `$HOME` for a directory
-    /// under it, else up to its mount's root ([`paths::watched_ancestors`]). With `verify`, every watched directory
-    /// is stat'ed, and one whose inode changed behind our back is watched
+    /// under it, else up to its mount's root
+    /// ([`paths::watched_ancestors`]). With `verify`, every watched
+    /// directory is stat'ed, and one whose inode changed behind our back
+    /// is watched
     /// again and what lies below it re-checked at the next flush (a full
     /// rescan does that); without it, only directories not yet watched
     /// are looked at. Returns the directories newly watched or polled
