@@ -2362,9 +2362,10 @@ transparent huge pages for life.
   (swayipc-async 3.0's types) over its own lossy i3-ipc framing) from
   the environment; `ProtocolClient::spawn(WaylandTarget, tx)` runs
   `ext-foreign-toplevel-list-v1`, `zwlr_foreign_toplevel_management_v1`
-  (with the first `wl_seat`, for `activate`) and `ext-workspace-v1` on
-  its own `strand-toplevel` thread (own connection, `poll(2)` on the
-  socket and an eventfd), sending a `ProtocolState` per atomic update
+  (with every `wl_seat`; `activate` names the first still offered) and
+  `ext-workspace-v1` on its own `strand-toplevel` thread (own
+  connection, `poll(2)` on the socket and an eventfd), sending a
+  `ProtocolState` per atomic update
   (`toplevels`, `managed: Vec<ManagedToplevel>` with each wlr toplevel's
   `key`, title, app id, `activated`/`minimized`/`maximized`/`fullscreen`
   and output names, `workspaces`, and which of the three globals are

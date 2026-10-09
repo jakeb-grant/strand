@@ -171,7 +171,7 @@ pub struct ProtocolState {
 /// A window action `zwlr_foreign_toplevel_handle_v1` can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowOp {
-    /// `activate` on the first seat.
+    /// `activate` on the first seat still offered.
     Activate,
     /// `close`.
     Close,
@@ -416,8 +416,10 @@ struct Client {
     toplevel_list: Option<ExtForeignToplevelListV1>,
     toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     workspace_manager: Option<ExtWorkspaceManagerV1>,
-    /// The first seat, with its global name: wlr's `activate` names one.
-    seat: Option<(u32, wl_seat::WlSeat)>,
+    /// Every seat, with its global name, in the order announced: wlr's
+    /// `activate` names the first one still offered, so a removed seat
+    /// falls back to the next.
+    seats: Vec<(u32, wl_seat::WlSeat)>,
     /// wl_output proxies by object, with their global name and `name`.
     outputs: HashMap<ObjectId, (u32, wl_output::WlOutput, String)>,
     toplevels: Vec<(ObjectId, ToplevelEntry)>,
@@ -658,8 +660,8 @@ fn window_action(client: &Client, key: u64, op: WindowOp) -> Result<(), WmError>
     match op {
         WindowOp::Activate => {
             let (_, seat) = client
-                .seat
-                .as_ref()
+                .seats
+                .first()
                 .ok_or(WmError::Unsupported("the compositor offers no seat"))?;
             entry.handle.activate(seat);
         }
@@ -711,9 +713,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 {
                     state.toplevel_manager = Some(registry.bind(name, version.min(3), qh, ()));
                     state.dirty = true;
-                } else if interface == wl_seat::WlSeat::interface().name && state.seat.is_none() {
+                } else if interface == wl_seat::WlSeat::interface().name {
                     // Only named by `activate`: version 1 (no events read).
-                    state.seat = Some((name, registry.bind(name, 1, qh, ())));
+                    // Every seat is bound, so one removed leaves the others.
+                    state.seats.push((name, registry.bind(name, 1, qh, ())));
                 } else if interface == ExtWorkspaceManagerV1::interface().name
                     && state.workspace_manager.is_none()
                 {
@@ -722,10 +725,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 }
             }
             wl_registry::Event::GlobalRemove { name } => {
-                if state.seat.as_ref().is_some_and(|(n, _)| *n == name) {
-                    // A version 1 seat has no `release`: forget it.
-                    state.seat = None;
-                }
+                // A version 1 seat has no `release`: forget it.
+                state.seats.retain(|(n, _)| *n != name);
                 let gone: Vec<ObjectId> = state
                     .outputs
                     .iter()

@@ -31,7 +31,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::server::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
-use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use wayland_server::backend::{ClientData, ClientId, DisconnectReason, GlobalId};
 use wayland_server::protocol::{wl_output, wl_seat};
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
@@ -56,6 +56,9 @@ enum Cmd {
     SetActive(&'static str, bool),
     /// The manager's `done`.
     Done,
+    /// Removes seat `n`'s global (by the order they were offered), as a
+    /// seat going away would.
+    RemoveSeat(usize),
 }
 
 struct Toplevel {
@@ -127,8 +130,11 @@ struct Server {
     pending: Vec<String>,
     activated: Arc<Mutex<Vec<String>>>,
     /// The wlr requests received: `activate <ident>`, `close <ident>`,
-    /// `minimize <ident>`.
+    /// `minimize <ident>`; an `activate` naming a seat other than the
+    /// first offered is logged `activate <ident> on seat <n>`.
     wlr_requests: Arc<Mutex<Vec<String>>>,
+    /// The seat globals, by index; `None` once removed.
+    seat_globals: Vec<Option<GlobalId>>,
 }
 
 impl Server {
@@ -308,6 +314,11 @@ impl Server {
                 }
             }
             Cmd::Done => self.done(),
+            Cmd::RemoveSeat(n) => {
+                if let Some(id) = self.seat_globals.get_mut(n).and_then(Option::take) {
+                    dh.remove_global::<Server>(id);
+                }
+            }
             Cmd::RemoveWorkspace(name) => {
                 if let Some(i) = self.workspaces.iter().position(|w| w.name == name) {
                     for h in &self.workspaces[i].handles {
@@ -584,8 +595,15 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, String> for Server {
                 .push(format!("{what} {ident}"));
         };
         match request {
-            Request::Activate { .. } => {
-                log("activate");
+            Request::Activate { seat } => {
+                match seat.data::<usize>() {
+                    Some(n) if *n > 0 => state
+                        .wlr_requests
+                        .lock()
+                        .unwrap()
+                        .push(format!("activate {ident} on seat {n}")),
+                    _ => log("activate"),
+                }
                 state.activate(ident);
             }
             Request::Close => {
@@ -610,27 +628,27 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, String> for Server {
     }
 }
 
-impl GlobalDispatch<wl_seat::WlSeat, ()> for Server {
+impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
     fn bind(
         _: &mut Self,
         _: &DisplayHandle,
         _: &Client,
         resource: New<wl_seat::WlSeat>,
-        _: &(),
+        n: &usize,
         init: &mut DataInit<'_, Self>,
     ) {
-        let seat = init.init(resource, ());
+        let seat = init.init(resource, *n);
         seat.capabilities(wl_seat::Capability::Keyboard);
     }
 }
 
-impl Dispatch<wl_seat::WlSeat, ()> for Server {
+impl Dispatch<wl_seat::WlSeat, usize> for Server {
     fn request(
         _: &mut Self,
         _: &Client,
         _: &wl_seat::WlSeat,
         _: wl_seat::Request,
-        _: &(),
+        _: &usize,
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
@@ -662,6 +680,16 @@ impl Fake {
     /// A fake that also offers `zwlr_foreign_toplevel_management_v1` (v3)
     /// and a seat.
     fn start_opts(with_workspaces: bool, wlr: bool, outputs: &'static [&'static str]) -> Fake {
+        Self::start_seats(with_workspaces, wlr, usize::from(wlr), outputs)
+    }
+
+    /// [`Fake::start_opts`] with `seats` seat globals.
+    fn start_seats(
+        with_workspaces: bool,
+        wlr: bool,
+        seats: usize,
+        outputs: &'static [&'static str],
+    ) -> Fake {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("wayland-fake");
         let listener = ListeningSocket::bind_absolute(socket.clone()).unwrap();
@@ -683,8 +711,10 @@ impl Fake {
             }
             if wlr {
                 dh.create_global::<Server, ZwlrForeignToplevelManagerV1, ()>(3, ());
-                dh.create_global::<Server, wl_seat::WlSeat, ()>(1, ());
             }
+            let seat_globals = (0..seats)
+                .map(|n| Some(dh.create_global::<Server, wl_seat::WlSeat, usize>(1, n)))
+                .collect();
             for i in 0..outputs.len() {
                 dh.create_global::<Server, wl_output::WlOutput, usize>(4, i);
             }
@@ -692,6 +722,7 @@ impl Fake {
                 activated: thread_activated,
                 wlr_requests: thread_wlr_requests,
                 output_names: outputs.iter().map(|o| o.to_string()).collect(),
+                seat_globals,
                 ..Default::default()
             };
             while !thread_stop.load(Ordering::SeqCst) {
@@ -1315,4 +1346,59 @@ async fn protocol_client_follows_wlr_toplevels() {
     fake.cmd(Cmd::CloseToplevel("tl-1"));
     let s = next_matching(&mut rx, "closed", |s| s.managed.len() == 1).await;
     assert_eq!(s.managed[0].app_id, "xterm");
+}
+
+/// Every seat is bound: when the seat `activate` names goes away,
+/// `win.focus()` falls back to a seat announced before it, and answers
+/// `Unsupported` only once no seat is left.
+#[tokio::test]
+async fn win_focus_falls_back_to_another_seat_when_one_is_removed() {
+    let fake = Fake::start_seats(false, true, 2, &["FAKE-1"]);
+    fake.cmd(Cmd::AddToplevel("tl-1", "~", "foot"));
+    std::thread::sleep(Duration::from_millis(50));
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        desktop: Some("labwc".into()),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.windows.len() == 1).await;
+    let foot = c.mirror.window_by_app("foot").unwrap().clone();
+    let focus = || {
+        let (r, done) = WmRequest::new(WmAction::FocusWindow(foot.id.clone()));
+        req_tx.send(r).unwrap();
+        done
+    };
+
+    // Both seats offered: the first one announced is named.
+    assert_eq!(focus().await, Ok(()));
+    // The first seat goes. The retitle is sent after the global's removal
+    // on the same connection, so once it shows the removal was read.
+    fake.cmd(Cmd::RemoveSeat(0));
+    fake.cmd(Cmd::SetTitle("tl-1", "one seat"));
+    c.until("retitled", |m| {
+        m.window_by_app("foot")
+            .is_some_and(|w| w.title == "one seat")
+    })
+    .await;
+    assert_eq!(focus().await, Ok(()));
+    // No seat left: refused.
+    fake.cmd(Cmd::RemoveSeat(1));
+    fake.cmd(Cmd::SetTitle("tl-1", "no seat"));
+    c.until("retitled again", |m| {
+        m.window_by_app("foot")
+            .is_some_and(|w| w.title == "no seat")
+    })
+    .await;
+    assert_eq!(
+        focus().await,
+        Err(WmError::Unsupported("the compositor offers no seat"))
+    );
+    assert_eq!(
+        *fake.wlr_requests.lock().unwrap(),
+        ["activate tl-1", "activate tl-1 on seat 1"]
+    );
+    service.abort();
 }
