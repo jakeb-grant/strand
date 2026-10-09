@@ -2052,6 +2052,10 @@ pub(crate) mod tests {
         /// Every diff must leave the bar up and the error overlay shut
         /// (saves that are valid once complete never flash it).
         steady: bool,
+        /// Set while a save may really have removed a file (it was missing
+        /// past the watcher's removal grace): the blank and steady
+        /// checks are off.
+        excused: bool,
         /// The last `reduced_motion` a diff carried.
         reduced: Option<bool>,
     }
@@ -2062,6 +2066,7 @@ pub(crate) mod tests {
                 inbox: inbox(rx),
                 scene: SceneMirror::new(),
                 steady: false,
+                excused: false,
                 reduced: None,
             }
         }
@@ -2076,10 +2081,10 @@ pub(crate) mod tests {
             // No blank frame: once something shows, a diff never leaves
             // nothing.
             assert!(
-                !had || !self.scene.roots().is_empty(),
+                self.excused || !had || !self.scene.roots().is_empty(),
                 "{what}: a blank frame"
             );
-            if self.steady {
+            if self.steady && !self.excused {
                 assert_eq!(
                     self.scene.of_kind(strand_scene::NodeKind::Bar).len(),
                     1,
@@ -3233,6 +3238,18 @@ pub(crate) mod tests {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(25);
+        // How long a delete-then-create save leaves the file missing
+        // (`STRAND_SAVE_GAP_MS`, 5 by default: an editor's). Past the
+        // watcher's removal grace (a stalled machine, or a longer gap
+        // set here to prove the excuse) the round is excused.
+        let missing = Duration::from_millis(
+            std::env::var("STRAND_SAVE_GAP_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+        );
+        let grace = strand_watch::Options::default().removal_grace;
+        let mut excused = 0;
         for round in 0..rounds {
             let which = rnd(2);
             let style = round % 5;
@@ -3263,11 +3280,18 @@ pub(crate) mod tests {
                 }
                 // Delete, then create.
                 3 => {
-                    std::fs::remove_file(&path).unwrap();
+                    // Taken before the removal and after the write, so
+                    // the gap read is never shorter than the real one.
                     let removed = Instant::now();
-                    std::thread::sleep(Duration::from_millis(5));
+                    std::fs::remove_file(&path).unwrap();
+                    std::thread::sleep(missing);
                     std::fs::write(&path, &text).unwrap();
-                    gap = format!(", missing {} ms", removed.elapsed().as_millis());
+                    let elapsed = removed.elapsed();
+                    gap = format!(", missing {} ms", elapsed.as_millis());
+                    // Past the grace the removal is real: the bar may go
+                    // (or the overlay open, for an imported file) until
+                    // the file is back. CI run 37810171999 stalled here.
+                    m.excused = elapsed >= grace;
                 }
                 // A symlink swapped to a new target.
                 _ => {
@@ -3281,10 +3305,20 @@ pub(crate) mod tests {
                 }
             }
             let expect = cold_boot(&config);
-            m.until(&format!("round {round} (style {style}{gap})"), |s| {
-                canonical(s) == expect
-            });
+            let what = format!("round {round} (style {style}{gap})");
+            m.until(&what, |s| canonical(s) == expect);
+            if m.excused {
+                // What the real removal sent may still be on its way (the
+                // new text can equal the old, and an overlay opens 250 ms
+                // after an error): let it land, then the scene must be
+                // the cold boot's again.
+                m.settle(&what, Duration::from_millis(400));
+                m.until(&what, |s| canonical(s) == expect);
+                m.excused = false;
+                excused += 1;
+            }
         }
+        eprintln!("{excused} of {rounds} rounds missing a file past the removal grace");
         // An overlay a save had armed would open 250 ms after it.
         m.settle("after the saves", Duration::from_millis(400));
         to_logic.send(ToLogic::Shutdown).unwrap();
