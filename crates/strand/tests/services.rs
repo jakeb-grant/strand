@@ -571,7 +571,10 @@ fn the_real_services_sleep_when_nothing_changes() {
     );
     // The logic thread wakes once per sample: the allocator's trim
     // (run.rs, `Trimmer`) does not come between the samples (it did, at
-    // 500 ms after each wake: 10 switches in 5 s).
+    // 500 ms after each wake: 10 switches in 5 s), nor does the popup's
+    // resize when `pct(load)` changes width (`5%` to `13%`, the load of
+    // a quiet many-core machine): nothing reads the popup's size, so the
+    // main thread does not send it (demo/host.rs, `Forward::configured`).
     assert!(
         logic <= 7,
         "the logic thread woke {logic} times in 5 s of 1 s cpu samples"

@@ -10,7 +10,7 @@ use calloop::channel::Sender;
 use strand_compiler::instantiate::NodeFlag;
 use strand_render::{Flag, InputScene, Intent, NodeEvent as RouteEvent, Renderer, Router};
 use strand_scene::{
-    Damage, InputEvent, NodeId, PaintTarget, Painter, Scale, SceneDiff, Size, SurfaceId,
+    Damage, InputEvent, NodeId, PaintTarget, Painter, Prop, Scale, SceneDiff, Size, SurfaceId,
 };
 use strand_surface::{Monitor, SurfaceHost};
 
@@ -117,9 +117,24 @@ impl Forward {
         self.router.attached(surface, node);
     }
 
-    /// A surface's logical size: its buffer size over its scale.
-    pub(crate) fn configured(&self, surface: SurfaceId, size: Size, scale: Scale) {
-        if let Some(&node) = self.surfaces.get(&surface) {
+    /// A surface's logical size: its buffer size over its scale, sent
+    /// only when logic reads the surface node's size (`watched`: it
+    /// carries `Prop::Watch`, as [`Renderer::take_layout_facts`] asks of
+    /// every node). A surface sized to its content resizes whenever its
+    /// text changes width (a popup's `pct(cpu.usage)` going from `9%`
+    /// to `10%`); nobody measuring it, that wakes logic for nothing
+    /// (`docs/decisions.md`, laptop-trim). A node watched later gets
+    /// its size from the renderer's layout facts at once.
+    pub(crate) fn configured(
+        &self,
+        surface: SurfaceId,
+        size: Size,
+        scale: Scale,
+        watched: impl Fn(NodeId) -> bool,
+    ) {
+        if let Some(&node) = self.surfaces.get(&surface)
+            && watched(node)
+        {
             let s = scale.as_f64();
             self.send(ToLogic::Size {
                 node,
@@ -364,7 +379,10 @@ impl SurfaceHost for Host {
         }
         self.renderer.configure_surface(surface, size, scale);
         if let Some(f) = &self.logic {
-            f.configured(surface, size, scale);
+            let tree = self.renderer.tree();
+            f.configured(surface, size, scale, |node| {
+                tree.get(node).is_some_and(|n| n.get(Prop::Watch).is_some())
+            });
         }
         // Its first layout's sizes: a container query answers before the
         // first frame (the renderer holds it for that).
@@ -478,15 +496,21 @@ mod tests {
     /// Surface-level input and sizes become the logic thread's messages
     /// on the surface's node: hover on enter, pressed while the left
     /// button is down, `click`/`secondary` on release, `scroll(dy, dx)`,
-    /// the logical size (buffer over scale); other buttons and motion
-    /// send nothing, nor does a surface the forwarder does not know.
+    /// the logical size (buffer over scale) of a watched node; other
+    /// buttons and motion send nothing, nor does a surface the forwarder
+    /// does not know.
     #[test]
     fn surface_input_becomes_logic_messages() {
         let (mut f, mut el) = setup();
         let s = SurfaceId(7);
         let node = NodeId::new(3, 0);
         f.attached(s, node);
-        f.configured(s, Size::new(2560, 50), Scale::from_f64(1.25).unwrap());
+        f.configured(
+            s,
+            Size::new(2560, 50),
+            Scale::from_f64(1.25).unwrap(),
+            |n| n == node,
+        );
         let at = LogicalPoint::new(10.0, 5.0);
         let button = |b, state| InputEvent::PointerButton {
             surface: s,
@@ -598,5 +622,58 @@ mod tests {
                 vec!["DP-2".to_string(), "DP-1".to_string()],
             ]
         );
+    }
+
+    /// A surface sized to its content resizes whenever its text changes
+    /// width (a popup's `pct(cpu.usage)` crossing `10%` on a quiet
+    /// machine); logic hears of the size only once a binding reads it
+    /// (`Prop::Watch`), so a cpu sample wakes it once, not twice
+    /// (`docs/decisions.md`, laptop-trim). Independent of the machine:
+    /// the widths are the ones `5%` and `13%` take in the test font.
+    #[test]
+    fn an_unread_surface_size_does_not_wake_logic() {
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, rx) = calloop::channel::channel();
+        let mut el = calloop::EventLoop::<Vec<ToLogic>>::try_new().unwrap();
+        el.handle()
+            .insert_source(rx, |e, _, out: &mut Vec<ToLogic>| {
+                if let calloop::channel::Event::Msg(m) = e {
+                    out.push(m);
+                }
+            })
+            .unwrap();
+        let mut host = Host::new(renderer, false).forwarding(tx);
+        let popup = NodeId::new(0, 0);
+        let mut d = SceneDiff::new();
+        d.create(popup, strand_scene::NodeKind::Panel, None, 0);
+        d.set(popup, Prop::Height, strand_scene::PropValue::Number(16.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, popup, None);
+        for w in [21, 29, 21, 29, 21] {
+            host.surface_configured(s, Size::new(w, 16), Scale::ONE);
+        }
+        let sent = drain(&mut el);
+        assert!(sent.is_empty(), "nobody reads the popup's size: {sent:?}");
+        // `popup.width` read from now on: its size goes to logic.
+        let mut d = SceneDiff::new();
+        d.set(
+            popup,
+            Prop::Watch,
+            strand_scene::PropValue::Keyword("size".into()),
+        );
+        assert!(host.renderer.apply(d).is_empty());
+        host.surface_configured(s, Size::new(29, 16), Scale::ONE);
+        let sent = drain(&mut el);
+        let size = ToLogic::Size {
+            node: popup,
+            width: 29.0,
+            height: 16.0,
+        };
+        assert!(sent.contains(&size), "{sent:?}");
     }
 }
