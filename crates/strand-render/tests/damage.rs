@@ -1673,7 +1673,7 @@ fn hit_follows_paint_order() {
 /// A long wrapped text (6,000 glyphs: a notification body, a log, a
 /// clipboard entry) whose last character changes repaints only that
 /// glyph and matches a full repaint. Its glyphs are diffed in linear
-/// time (`renderer.rs::glyph_damage_is_linear_in_the_glyphs`): the
+/// time (`renderer/tests.rs::glyph_damage_is_linear_in_the_glyphs`): the
 /// quadratic diff made this frame 16 ms on an optimised build, the
 /// linear one about 5 ms, nearly all of it shaping and flattening the
 /// new text.

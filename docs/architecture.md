@@ -262,6 +262,39 @@ unchecked until the answer wakes the server to publish again).
 `strand-scene` has no heavy dependencies; it is what lets render and surface
 be built and tested without the language, and the language without pixels.
 
+### `strand-render` module map
+
+The render crate's large files are directories of modules (M4 F0, a
+split with no behaviour change), so streams that work in parallel own
+disjoint files. Each directory's `mod.rs` re-exports what the rest of
+the crate used, so paths such as `crate::flatten::pick` are unchanged.
+
+- `renderer/`: `mod.rs` (the `Renderer` struct, `SurfaceState`, tuning
+  constants, widget and asset hooks), `frame.rs` (frame holds and
+  deadlines, damage diffing, `Painter`), `wake.rs` (the loop's timer
+  thread, `next_wake`, `update`), `text.rs` (`TextBackend`, text slots,
+  requests, delivery, pruning), `layout_pass.rs` (the layout step, size
+  springs and FLIP, layout facts, flattening), `apply.rs` (scene diffs
+  and the motions they start), `specs.rs` (surface specs, content
+  sizing, size holds), `surfaces.rs` (attach, configure, detach, hit),
+  `pose.rs` (exit poses and closing surfaces), `lists.rs` (scrolling),
+  `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`. The M4 plan's
+  `feed.rs` (effects) and `backend.rs` (GPU promotion) have no code yet:
+  their streams create them.
+- `flatten/`: `mod.rs` (display list types, `flatten`, `Flattener`),
+  `node.rs` (one node: box, paint, shadows, text, clips, children),
+  `text.rs`, `paint.rs`, `hash.rs`, `widget.rs`, `image.rs`, `tests.rs`.
+- `raster/`: `mod.rs` (`Raster`), `atlas.rs` (`AtlasMirror`), `paint.rs`
+  (scene paints as vello paints), `draw.rs` (drawing a display list,
+  disjoint damage), `tests.rs`.
+- `anim/`: `mod.rs` (`Animator` and its per-frame `paint`), `motion.rs`
+  (channel encoding, `PropMotion`), `pose.rs` (enter/exit poses),
+  `sizes.rs` (size springs), `tests.rs`. Keyframes, morph, stagger and
+  page slides get modules of their own here when they land.
+- `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
+  `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
+  measuring), `list.rs` (`ScrollState`, list virtualisation).
+
 ## Contracts
 
 ### `strand-scene`
@@ -442,7 +475,7 @@ be built and tested without the language, and the language without pixels.
   `Renderer::take_surface_changes()` returns `(NodeId, SurfaceChange)`s,
   `Created(spec)`, `Updated { spec, recreate }` or `Removed`, in order;
   token changes that move a resolved value count as updates.
-- **Layout**: taffy 0.14 on the render thread (`layout.rs`): one pass
+- **Layout**: taffy 0.14 on the render thread (`layout/`): one pass
   per surface whose layout inputs changed (paint-only props never
   relayout; `Renderer::layout_passes` counts them), boxes in surface
   logical pixels (`Renderer::boxes`), `x`/`y` applied at flatten time as
@@ -450,7 +483,7 @@ be built and tested without the language, and the language without pixels.
   innermost `scroll`/`list` under a point and `scroll_into_view(list,
   row)` reveals a row; a `list` lays out only the rows in view. Text is
   measured from delivered layouts (estimated until the first arrives).
-- **Animation** (`anim.rs`, on the render thread): the render thread owns
+- **Animation** (`anim/`, on the render thread): the render thread owns
   every spring. A prop of `ANIMATED` (`x`, `y`, `opacity`, `scale`,
   `rotate`, `bg`, `color`, `border`, `shadow`, `radius`, `value`,
   `track`) that logic sets
