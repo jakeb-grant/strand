@@ -90,7 +90,10 @@ showing its own output's dots, and a click on a dot of each bar
 [37870503923](https://github.com/jakeb-grant/strand/actions/runs/37870503923)
 passed all three: sway 7/7 on two outputs, Hyprland 7/7 on Virtual-2
 and STRAND-2, niri 7/7 on one. Locally (`scripts/container/matrix.sh`)
-sway and niri pass; Hyprland is skipped there.
+sway, niri and labwc pass (last on 2026-10-09 at `f56aade`); Hyprland is
+skipped there. Since M3 the job also runs labwc and runs nightly, and
+CI run 37921942812 (`f56aade`) passed it on sway 1.12, niri 26.04,
+Hyprland 0.56.2 and labwc 0.20.2, 9/9 tests each.
 
 **Still not tested live:** niri on a second output (niri nested on
 winit has one output and cannot add one at run time; the per-output
@@ -221,10 +224,11 @@ wave4-core, "memory targets and ceilings confirmed by the owner, numbers
 included", commit 607bd10; it supersedes the wave4-exitReport review r2
 qualification). `budgets.rs` holds exactly these numbers, and
 `budgets.rs::the_report_states_the_owner_confirmed_memory_gates` keeps
-this report in step with them. The ~27 `[profile.release.package]`
-opt-level overrides are the architect's and not separately confirmed by
-the owner (Open). Every measured figure also passes 34 / 64 MB as hard
-gates, so the milestone does not depend on them.
+this report in step with them. The 27 `[profile.release.package]`
+opt-level overrides were the architect's at M3; the owner signed them
+off on 2026-10-08 (decisions.md laptop-decisions; README's "Building and
+installing" gives the caveat). Every measured figure also passes 34 /
+64 MB as hard gates, so the milestone does not depend on them.
 
 ## Idle wakeups
 
@@ -328,7 +332,10 @@ PSS (34,031 and 34,116 kB against 31,978 and 31,987 kB with `"s"`,
 almost all file-backed: 19.3–19.4 MB against 17.6–17.7 MB), which puts it
 over the 34 MB target, so the override stays. The token edit's ~19 ms
 is the reload path itself, not the binary's code size; the margin is
-the M1 gate's, and listed as open.
+the M1 gate's. Since (2026-10-08, decisions.md laptop-decisions and
+laptop-open): the owner kept the gate, and GitHub's `timing` job is its
+reference; on the owner's laptop the container suite reports a miss as
+a warning.
 
 ## Screenshots
 
@@ -394,6 +401,11 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   (idle and memory on the real services);
 - the release `reload_latency` bench with its portal clause;
 - the `compositors` job: sway, niri and Hyprland in `archlinux:latest`.
+
+Since (laptop-ci, laptop-resilience): `check` is split into `lint`,
+`test`, `budgets`, `acceptance` and `timing` (the timing gates on a
+`timing` profile, release without LTO), and the `compositors` job adds
+labwc and also runs nightly (README's "Development").
 
 ## Open
 
@@ -528,6 +540,9 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   CI runs failed because `strand run` inherited the runner's
   `XDG_CONFIG_HOME`; the test harness now points the XDG homes at the
   test's HOME (decisions.md wave4-core, round 2 closer).
-- `strand-introspect` opens a new D-Bus connection for each 10 s
-  introspection refresh of a `from dbus` check; the reloads test carves
-  out its Hello and Introspect.
+- Closed since (2026-10-08, decisions.md laptop-services):
+  `strand-introspect` opened a new D-Bus connection for each 10 s
+  introspection refresh of a `from dbus` check; it now keeps one per bus
+  (`crates/strand-introspect/tests/connection.rs::refreshes_reuse_one_connection_and_a_restarted_bus_gets_a_new_one`).
+  The reloads test still allows a connection that only introspects,
+  which is looser than needed (left to that file's owner).

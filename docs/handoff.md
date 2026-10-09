@@ -1,4 +1,4 @@
-# Handoff: state after M3 (2026-10-08)
+# Handoff: state after M3 (updated 2026-10-09)
 
 Where the project stands, what the owner still has to decide, and what was
 deliberately left for later. Read this first when picking the repo up again,
@@ -7,46 +7,47 @@ for the reasoning behind each item below.
 
 ## State
 
-- `main` is at the laptop integration merge (`b87865a`, "Merge
-  laptop/trim into laptop/integration"): M0, M1, M2 and M3 are complete
-  and CI is green on it (run 37887410210: `lint`, `test`, `budgets`,
-  `acceptance`, `timing` and `compositors`).
+- `main` is at `f56aade` ("Merge laptop/labwc into laptop/integration2"),
+  fast-forwarded from `laptop/integration2`: M0, M1, M2 and M3 are
+  complete. GitHub CI run 37921942812 passed all six jobs on it (`lint`,
+  `test`, `budgets`, `acceptance`, `timing`, `compositors`; the
+  compositors on sway 1.12, niri 26.04, Hyprland 0.56.2 and labwc
+  0.20.2). The previous reference was run 37887410210 on `b87865a`.
 - `docs/features.md`: M0 21/21, M1 56/59, M2 30/30, M3 14/14 (exit line
   included), M4 0/17, M5 0/9. The three open M1 boxes are owned by later
   milestones (below).
-- Work moved from the cloud dev container to the owner's laptop, where
-  every build and test runs through the container suite
-  (`scripts/container/`, CLAUDE.md; decisions.md laptop-container). Its
-  wall-clock timing steps are advisory there; GitHub's `timing` job is
-  the latency reference (decisions.md laptop-open).
-- The `wave4/*` and `laptop/*` remote branches merged into `main` are
-  deleted (as of 2026-10-08 only `origin/main` remained).
-- The four open decisions that blocked M4 are answered (below,
-  2026-10-08), and so are the later ones: the audio read again is kept
-  with no upstream report, and COSMIC is out of scope (decisions.md
-  laptop-open).
-- Branch `laptop/resilience` (from `laptop/integration2`; decisions.md
-  laptop-resilience) makes the compositor adapters resilient to a
-  compositor that changed: an adapter that is connected but cannot read
-  a reply, the event stream, or has the syntax of an action every
-  version has (focus, close) refused in every dialect degrades to the
-  standard protocols (as when it cannot connect), raises one non-notice
-  `ServiceDiagnostic` naming the compositor, its version and what was
-  not understood (`Cx::warn`; log and `strand watch`, not the overlay),
-  and retries on its backoff without flipping back until it is
-  understood (after a stream failure, a retry comes up only on an
-  event); it recovers on its own. A later action an older compositor
-  cannot parse (niri 25.08 and `MaximizeWindowToEdges`) is only
-  rejected. Hyprland dispatches send Lua first and fall back
-  to classic on `Invalid dispatcher`, keeping the dialect that worked for
-  the session. CI's `compositors` job now also runs nightly against
-  `archlinux:latest`, and its step summary lists each compositor's
-  version and result.
+- Every build and test runs on the owner's laptop through the container
+  suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
+  Its wall-clock timing steps are advisory there; GitHub's `timing` job
+  is the latency reference (decisions.md laptop-open).
+- Remote branches: only `origin/main`. The `wave4/*` and `laptop/*`
+  branches were all deleted on 2026-10-09.
+- Merged since `b87865a` (decisions.md laptop-open, laptop-resilience,
+  laptop-media, laptop-labwc):
+  - `win.maximize()` and `win.fullscreen()`, toggles beside
+    `win.maximized` and `win.fullscreen`, on every adapter and the wlr
+    fallback, checked live on all four compositors of the matrix.
+  - The compositor adapters degrade to the standard protocols when
+    connected to a compositor they cannot understand (a reply of another
+    shape, a stream of no events, focus and close refused in every
+    dialect). They raise one `ServiceDiagnostic` naming the compositor,
+    its version and what was not understood (log and `strand watch`, not
+    the overlay), and recover on their own. A later action an older
+    compositor cannot parse is only rejected. Hyprland dispatches go out
+    in Lua first and fall back to classic on `Invalid dispatcher`.
+  - The `compositors` job runs nightly against `archlinux:latest` too;
+    its summary tables each compositor's version and result.
+  - `media`: a new track's time starts at 0 in the same update as its
+    title (the `media_follows_the_active_player_without_polling` flake).
+  - The wlr protocol thread waits (500 ms at most) for the compositor to
+    read the requests it sent before it stops (the labwc fullscreen
+    flake in CI run 37913227852's `compositors` job).
 
 ## Owner decisions (answered 2026-10-08)
 
 All four are answered; each is recorded in `docs/decisions.md` under
-"laptop-decisions".
+"laptop-decisions". One decision is open: how M4's GPU work is tested
+("Before starting M4").
 
 1. **Release build settings: signed off.** The 27
    `[profile.release.package]` `opt-level` overrides stay as they are.
@@ -81,94 +82,50 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### CI
 
-- Nightly compositors (laptop-resilience): the scheduled run also runs
-  the `compositors` job (named `compositors (nightly: archlinux:latest
-  Hyprland, niri, sway, labwc)`), so an Arch upgrade that breaks an
-  adapter shows as a red nightly; the job's summary tables each
-  compositor's `pacman -Q` version and result, and each failure is an
-  annotation `compositors: <kind> <version>`. The matrix test helper
-  `compositor_matrix.rs` still drives Hyprland through `hyprctl` with the
-  classic syntax (outside `strand-services`); that is its own check of
-  the compositor, not the adapter's.
-- Done on `laptop/ci` (decisions.md laptop-ci): the `check` job is split
-  into `lint`, `test`, `budgets`, `acceptance` and `timing`; the timing
-  gates build on a `timing` profile (release without LTO); `theme_swap_bench`
-  gates the median of more swaps, measured once. Its tightest gated
-  case, 8 scopes on `spring(1600, 1)` (whole swap), measured 4.46 ms on
-  GitHub against 5 ms (about 11% headroom, no retry); if `timing` fails
-  there, look at that case first. Consolidating test binaries was
-  measured (about 39 s of linking in all) and not done.
-- The CI flakes, looped in the container on branch `laptop/flakes`
-  (decisions.md laptop-flakes; m3-report Open):
-  - Fixed at the cause: `strand-services` audio lost `default`
-    metadata updates (PipeWire drops them for existing bindings while
-    another client's bind is in its handshake); the audio thread now
-    reads the metadata again `audio::REREAD` after client churn or a
-    cleared default (the replayed keys replace the ones held, so a lost
-    clear comes back too;
-    `a_lost_default_update_comes_back_on_a_read_again` loses a set and a
-    clear on purpose). Reproduced as `a_daemon_restart_reconnects` and
-    `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
-    runs), 0 of 40 after; CI's
-    `devices_volume_mute_and_the_default_arrive` has the same shape but
-    did not reproduce itself (0 of 300). Reviewed by the owner and kept;
-    no upstream report: the dropped update is a side effect of
-    `module-metadata`'s deliberate replay filter, not a PipeWire bug
-    (decisions.md laptop-open).
-  - Fixed at the cause: `strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
-    (raced the text worker; the test holds the worker now).
-  - Fixed: `strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
-    (a save missing past the 50 ms removal grace is a real removal; such
-    a round is excused, `STRAND_SAVE_GAP_MS` reproduces it).
-  - Cause found, test fixed: the `strand-surface/tests/render.rs`
-    lone-toast and toggling-panel pose tests. A repeated first value is
-    a new surface's first two frames sampled for `now` (no feedback
-    yet) a sliver of a refresh apart; loaded stalls also failed the
-    toggling panel, which (contrary to this list before) did not have
-    the lone toast's tolerance. Both now judge the fade by sample time.
-  - Not reproduced, diagnostic added:
-    `strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
-    (launcher drew no marked icon; a failure now says whether the icons
-    are late or never drawn, and where the magenta is).
-  - Not reproduced, hardened: `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle`
-    (its idle window now starts after boot has settled; the woken
-    thread is named on failure).
-  - Seen once each on `laptop/ci`'s GitHub `test` job, not reproduced:
-    `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
-    (`t0.elapsed() >= max_delay` failed: read before `max_delay`) and
+- The matrix test helper `compositor_matrix.rs` still drives Hyprland
+  through `hyprctl` with the classic syntax (outside `strand-services`);
+  that is its own check of the compositor, not the adapter's.
+- `theme_swap_bench`'s tightest gated case, 8 scopes on
+  `spring(1600, 1)` (whole swap), measured 4.46 ms on GitHub against
+  5 ms (about 11% headroom, no retry; decisions.md laptop-ci). If
+  `timing` fails there, look at that case first. Consolidating test
+  binaries was measured (about 39 s of linking in all) and not done.
+- On the laptop the timing gates warn: `scripts/container/run.sh ci`
+  prints WARN for `reload_latency` and `theme_swap_bench` gate misses
+  (token p95 about 21 ms headless against a break near 19.9 ms;
+  decisions.md laptop-open). The likely cause, the laptop's power state,
+  is unconfirmed; `CI_JOB=timing STRAND_STRICT_TIMING=1
+  scripts/container/run.sh ci` under a performance power profile would
+  confirm it.
+- CI flakes seen once and not reproduced (decisions.md laptop-flakes;
+  m3-report Open). The fixed ones (the audio `default` read again, the
+  damage text race, the cold-boot save gap, the pose tests, the labwc
+  fullscreen request, the media track time) are recorded there and in
+  decisions.md laptop-labwc and laptop-media.
+  - `strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
+    (launcher drew no marked icon). A failure now says whether the icons
+    are late or never drawn, and where the magenta is.
+  - `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle`. Its idle
+    window now starts after boot has settled; the woken thread is named
+    on failure.
+  - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
+    (read before `max_delay`) and
     `strand/src/run.rs::tests::a_save_fixed_at_once_never_opens_the_overlay`
-    (the overlay flashed on the formatted save), one each in the `test` job
-    of run 37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30 and 0
-    of 15 failed in the container; `laptop/ci` changed no code either
-    test runs (a doc comment in run.rs only).
-  - Fixed at the cause (branch `laptop/labwc`, decisions.md
-    laptop-labwc): `strand/tests/compositor_matrix.rs::window_state_actions_follow_the_compositor`
-    on labwc (GitHub run 37913227852, `compositors`: "win.fullscreen() by
-    request" never showed). The test's `reply_to` ends its `wm::run`
-    right after the `Ok`; the wlr protocol thread then closed its
-    connection: with the request unwritten when the stop came in the
-    same batch, and, once written, before labwc read it
-    (libwayland-server drops what a hung-up client left unread; seen
-    with WAYLAND_DEBUG on both sides). A stop now writes, then waits
-    (500 ms at most) for a sync after the requests sent. Looped with
-    `MATRIX_FILTER` and `MATRIX_LOOP` (scripts/container/matrix.sh):
-    before, 4 of 200 idle runs, 3 of 200 with WAYLAND_DEBUG, 15 of 200
-    under load failed; writing alone, 2 of 200 and 1 of 300; after, 0
-    of 300 idle and 0 of 200 under load; pinned
-    by `wm::protocol::tests::a_request_followed_at_once_by_a_stop_still_reaches_the_compositor`.
-    labwc.log was empty because labwc logs only errors without `-d`;
-    the matrix runs it with `-d` now.
+    (the overlay flashed on the formatted save), once each in the `test`
+    job of run 37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30
+    and 0 of 15 failed in the container.
+- `crates/strand/tests/reloads.rs` still allows a bus connection that
+  only introspects, though `strand-introspect` now keeps one connection
+  per bus; tightening it is left to that file's owner (decisions.md
+  laptop-services).
 
 ### Verification gaps
 
 - A second monitor is checked live on sway and Hyprland (CI, vkms) by the
   compositor matrix; niri runs on one output (nested winit cannot add
-  one), and Hyprland cannot run locally (decisions.md laptop-verify).
-- `win.maximize()` and `win.fullscreen()` passed live on sway, niri and
-  labwc (`compositor_matrix.rs::window_state_actions_follow_the_compositor`).
-  On Hyprland they are checked only against 0.56.2's source and the
-  fakes until CI's vkms leg runs that test (decisions.md, laptop-open).
-- The Hyprland 0.56.2 and niri 26.04 IPC fixtures are now checked against
+  one), and Hyprland cannot run locally without a KMS card (decisions.md
+  laptop-verify). Hyprland's matrix leg is CI's alone.
+- The Hyprland 0.56.2 and niri 26.04 IPC fixtures are checked against
   real captures (`*-captured` fixtures; `scripts/capture-hyprland.sh`,
   `scripts/container/capture-niri.sh`). The Hyprland capture lacks a
   second monitor, close, move, fullscreen, reload and special workspaces.
@@ -180,19 +137,25 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### Known limits, recorded and not M3 blockers
 
-- No IPC adapter for labwc, wayfire or river. Since branch
-  `laptop/toplevel`, `zwlr_foreign_toplevel_management_v1` is the fallback
-  for windows: `windows.focused`, `minimized`, `maximized`, `fullscreen`
-  and `win.focus()`/`close()`/`minimize()`/`maximize()`/`fullscreen()`
-  work on labwc (checked live in the compositor matrix) and should on
-  wayfire and river (not run here).
-  Still limited: no window has a `workspace` without an adapter (no standard
-  protocol relates the two); the wlr protocol has no identifier, so a
-  window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is joined
-  by app id and title and is missing while twins disagree;
-  `wm.config_reloaded` never fires without IPC; and
-  the design bar's pixel test does not run on labwc (only the stores
-  test does).
+- No IPC adapter for labwc, wayfire or river.
+  `zwlr_foreign_toplevel_management_v1` is the fallback for windows:
+  `windows.focused`, `minimized`, `maximized`, `fullscreen` and
+  `win.focus()`/`close()`/`minimize()`/`maximize()`/`fullscreen()` work
+  on labwc (checked live in the compositor matrix) and should on wayfire
+  and river (not run here). Still limited: no window has a `workspace`
+  without an adapter (no standard protocol relates the two); the wlr
+  protocol has no identifier, so a window's `ext-foreign-toplevel-list`
+  handle (M4 thumbnails) is joined by app id and title and is missing
+  while twins disagree; `wm.config_reloaded` never fires without IPC;
+  and the design bar's pixel test does not run on labwc (only the
+  stores and window-state tests do).
+- niri: its IPC has no window state, so `maximized` and `fullscreen`
+  come from the wlr toplevels, matched by app id (twins by app id and
+  title in order). Twins whose counts disagree get neither state rather
+  than a guess (decisions.md laptop-open, winstate).
+- sway: `win.maximize()` answers `Unsupported` on the adapter (sway has
+  no maximize). Through the wlr fallback (adapter off) the reply is
+  `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
 - Notifications: ActivationToken (spec 1.2) needs an xdg-activation token
   from the clicked surface (M4), so the server reports spec 1.1;
   `Notification.time` has no time of day yet.
@@ -210,18 +173,16 @@ and the full shell warns above 64 MB and fails above 70 MB
   device that reused its id by `node.name` (`Write::held`); a device
   replugged under its freed id with the same node name counts as the same
   device.
+- Audio: the metadata is read again `audio::REREAD` (250 ms) after client
+  churn or a cleared default, because PipeWire drops `default` updates
+  to existing bindings during another client's bind. Reviewed by the
+  owner and kept, with no upstream report (decisions.md laptop-open).
 
 Out of scope, not a limit (owner's decision, 2026-10-08; decisions.md
 laptop-open): COSMIC, a full desktop with its own shell; people who build
-a custom shell run bare compositors. Strand still runs there; with only
-`ext-foreign-toplevel-list`, `windows.focused` stays null and window
-actions answer `Unsupported`.
-
-Closed on `laptop/services` (2026-10-08; decisions.md, laptop-services):
-`DeviceRef::Id` carries `object.serial`; the audio thread no longer stays
-on its retry timer when `inotify_init` fails; held item writes follow
-"latest write wins" per item (a strand-core fix); `strand-introspect`
-keeps one D-Bus connection per bus.
+a custom shell run bare compositors. No adapter or test for it is
+planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
+`windows.focused` stays null and window actions answer `Unsupported`.
 
 ### Open M1 boxes owned by later milestones
 
@@ -233,12 +194,16 @@ keeps one D-Bus connection per bus.
 ## Before starting M4
 
 - GPU promotion and the 8 bundled GPU effects need a GPU to test against.
-  Neither the dev container nor GitHub's runners have one; decide on a
-  software Vulkan driver (lavapipe/llvmpipe) for CI and real-hardware
-  checks on the owner's machine.
+  GitHub's runners have none. The proposal is a software Vulkan driver
+  (lavapipe) in the container image and CI, plus real-hardware checks
+  through `/dev/dri/renderD128` on the owner's laptop (the only node a
+  container may get, CLAUDE.md). **Still the owner's open decision.**
 - The lock screen must be tested in a local QEMU VM with injected faults,
-  never on a real session (design.md). The dev container has no KVM, so
-  that exit criterion needs a VM-capable runner or the owner's machine.
+  never on a real session (design.md). The laptop can do it: `/dev/kvm`
+  there is `crw-rw-rw-` (0666, checked 2026-10-09), so a container given
+  `--device /dev/kvm` runs a KVM-accelerated VM as the owner's user with
+  no host config change. That needs QEMU in an image of the container
+  suite; GitHub's runners would need their own KVM setup to run it in CI.
 - The rest of M4 (blur protocols, drag and drop, tray menus, page
   transitions, the effects catalogue, 2,000-row scrolling) can run
   headless as M2 did.
@@ -246,18 +211,35 @@ keeps one D-Bus connection per bus.
 ## Handoff checklist
 
 - [x] CI green on `main`'s head (`gh run list --repo jakeb-grant/strand -L 3`):
-  run 37887410210 on `b87865a`.
-- [ ] Local checks pass through the container suite (CLAUDE.md):
-  `scripts/container/run.sh ci` exits 0 (timing steps may warn;
-  `STRAND_STRICT_TIMING=1` to enforce them), and
-  `scripts/container/matrix.sh` for the compositors job. `run.sh ci`
-  passed on 2026-10-08 at `b87865a` (laptop/gates: reload_latency warned);
-  `matrix.sh` was not re-run then.
+  run 37921942812 on `f56aade`, all six jobs.
+- [x] `scripts/container/matrix.sh` passes locally: sway, niri and labwc
+  on 2026-10-09 at `f56aade` (Hyprland skipped: it needs a KMS card;
+  CI's vkms leg covers it).
+- [ ] `scripts/container/run.sh ci` exits 0 locally (timing steps may
+  warn; `STRAND_STRICT_TIMING=1` to enforce them). On 2026-10-09 at
+  `f56aade` only its `test` job was run, and it passed; the whole run
+  last passed on 2026-10-08 at `b87865a` (laptop/gates:
+  `reload_latency` warned). CI's run 37921942812 covers every job.
 - [x] Open decisions 1–4 answered and recorded in `docs/decisions.md`
   (laptop-decisions); the audio read again and COSMIC too (laptop-open).
-- [x] Remote branches `wave4/*` and the merged `laptop/*` streams
-  deleted.
-- [ ] README status, `docs/features.md` and `docs/m3-report.md` still
-  agree with the code.
-- [ ] `scripts/m3-shots.sh` re-run if the shell's look changed; the images
-  in `docs/images/m3-*.png` match `main` as of 2026-10-08.
+- [x] Remote branches `wave4/*` and `laptop/*` deleted (2026-10-09; only
+  `origin/main` remains).
+- [x] README status, `docs/features.md` and `docs/m3-report.md` agree
+  with the code (audited 2026-10-09 on branch `laptop/cleanup`). Every
+  `file.rs::name` citation in the four docs (382) and every backticked
+  test or fixture name was checked against the tree; three renamed tests
+  (four citations in features.md) are fixed. Stale claims fixed:
+  README (Hyprland/sway second output "not yet checked", the
+  format-on-save check listed as open, sign-offs owed), m3-report (the
+  opt-level overrides as unconfirmed, the latency margin and
+  `strand-introspect`'s connection per refresh as open, the CI jobs),
+  features.md (the services tier's `check` job). COSMIC appears only as
+  out of scope (design.md still names it as an example of a compositor
+  with only `ext-foreign-toplevel-list`, and in its blur risk row; neither
+  promises support).
+- [x] `scripts/m3-shots.sh` not re-run: the shell's look has not changed
+  since `docs/images/m3-*.png` (`dbe2104`, 2026-10-08). Since then the
+  only render source change is `a595513` (a percentage-sized
+  `image`/`icon` may shrink; no fixture sizes one in percent), plus a test
+  font (`d43cb46`); the fixtures and the shots' extra component are
+  unchanged.

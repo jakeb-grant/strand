@@ -19,7 +19,8 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status: v0.1, M3 complete.** Work is paused after M3; open decisions and deferred items are in
+**Status: v0.1, M3 complete; M4 is next.** Where the project stands,
+the deferred items and what M4 needs first are in
 [`docs/handoff.md`](docs/handoff.md). M3's exit gates are met (see
 [`docs/m3-report.md`](docs/m3-report.md)): every builtin service but
 `auth` (M4, the lock screen) is real. The portal, cpu, memory, battery
@@ -39,20 +40,22 @@ visible surface (a `from poll` service polls at its declared
 interval); everything else waits on events, so nothing wakes while
 nothing changes.
 design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
-job, which also checks the stores on labwc, a compositor with no IPC), takes 100 live reloads without a service reconnecting, and on
+job, which also checks the stores and window actions on labwc, a
+compositor with no IPC), takes 100 live reloads without a service
+reconnecting, and on
 two 2560×1440 monitors with the real services uses about 31–32 MiB
 (target 34, ceiling 38); the full shell with the launcher, two toasts and
 the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
 measured here and in CI (design.md: 59–64; figures in
 docs/m3-report.md). `STRAND_MOCK=desktop` still fills everything with
-a mock desktop for tests. Wave 4 (M3) is merged into `main`; what it
-leaves open is listed in docs/m3-report.md's Open section. That covers
-a second output not yet checked live on Hyprland, niri and sway. On
-compositors without an IPC adapter, `zwlr_foreign_toplevel_management_v1`
-now serves `windows.focused` and the window actions (labwc, wayfire,
-river). COSMIC, a full desktop with its own shell, is out of scope;
-Strand runs there with `windows.focused` null. The rest are sign-offs
-owed by crate owners.
+a mock desktop for tests. What M3 leaves open is listed in
+docs/m3-report.md's Open section and docs/handoff.md: a second output is
+checked live on sway and Hyprland but not on niri (nested niri has one
+output), and Hyprland runs only in CI. On compositors without an IPC
+adapter, `zwlr_foreign_toplevel_management_v1` serves `windows.focused`
+and the window actions (labwc, wayfire, river). COSMIC, a full desktop
+with its own shell, is out of scope; Strand runs there with
+`windows.focused` null and no window actions.
 
 M2's exit gates are met too (see
 [`docs/m2-report.md`](docs/m2-report.md)): the four example shells of
@@ -88,8 +91,7 @@ formats, `strand set` writes an exported state or a settings field,
 `strand-dev lsp` serves diagnostics, completion, hover,
 go-to-definition, rename and quick fixes. Still open from M1: the
 tree-sitter grammar, the render side of `keyframes`, `shader` and
-`canvas`, a dedicated format-on-save overlay check and the loader's
-`.wgsl` and wallpaper module paths. Progress is
+`canvas`, and the loader's `.wgsl` and wallpaper module paths. Progress is
 tracked in [`docs/features.md`](docs/features.md);
 [`docs/design.md`](docs/design.md) has the full design.
 
@@ -199,8 +201,11 @@ reloads, no reconnects), `cargo test --release -p strand --test
 services` (the real services idle) and `cargo test --release -p strand
 --test budgets` (memory and idle wakeups of design.md's bar and the full
 shell on the real services). The `compositors` job runs
-`crates/strand/tests/compositor_matrix.rs` on sway, niri and Hyprland in
-an Arch Linux container (`scripts/compositor-matrix-ci.sh`).
+`crates/strand/tests/compositor_matrix.rs` on sway, niri, Hyprland and
+labwc in an Arch Linux container (`scripts/compositor-matrix-ci.sh`), on
+every push and nightly against `archlinux:latest`;
+`scripts/container/matrix.sh` runs it locally (Hyprland only where it
+gets a KMS card).
 
 `scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
 and damage gates over whole minutes on a release build (the M0 demo and
