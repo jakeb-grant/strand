@@ -74,7 +74,10 @@ and the full shell warns above 64 MB and fails above 70 MB
     `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
     runs), 0 of 40 after; CI's
     `devices_volume_mute_and_the_default_arrive` has the same shape but
-    did not reproduce itself (0 of 300).
+    did not reproduce itself (0 of 300). Reviewed by the owner and kept;
+    no upstream report: the dropped update is a side effect of
+    `module-metadata`'s deliberate replay filter, not a PipeWire bug
+    (decisions.md laptop-open).
   - Fixed at the cause: `strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
     (raced the text worker; the test holds the worker now).
   - Fixed: `strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
