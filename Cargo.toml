@@ -5,7 +5,8 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.89"
+# material-colors 0.5 (strand-theme) needs Rust 1.97; CI pins 1.97.0.
+rust-version = "1.97"
 repository = "https://github.com/jakeb-grant/strand"
 publish = false
 

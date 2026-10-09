@@ -3,8 +3,7 @@ name = "strand-theme"
 description = "Palettes: the Material 3 role schema, material(seed:/image:), importers, gamut mapping and the contrast guard"
 version.workspace = true
 edition.workspace = true
-# material-colors 0.5 needs Rust 1.97.
-rust-version = "1.97"
+rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 

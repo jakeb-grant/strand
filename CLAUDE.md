@@ -33,29 +33,46 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## Headless Wayland for tests
+Run them, and every build and test, through the container below
+(`scripts/container/run.sh cargo fmt --all`, and so on), never natively.
 
-sway, grim and DejaVu fonts are installed in the dev container and in CI
-(`.github/workflows/ci.yml`). Start a headless compositor:
+## Building and testing (the container suite)
+
+Development happens on the owner's laptop, which runs a live Hyprland
+session. Everything builds and tests in Docker images that match CI:
 
 ```sh
-export XDG_RUNTIME_DIR=$(mktemp -d); chmod 700 $XDG_RUNTIME_DIR
-printf 'xwayland disable\noutput HEADLESS-1 resolution 1920x1080\n' > $XDG_RUNTIME_DIR/sway.cfg
-WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
-  sway -c $XDG_RUNTIME_DIR/sway.cfg &
-# WAYLAND_DISPLAY=wayland-1; add a monitor: swaymsg create_output
-# scale: swaymsg output HEADLESS-2 scale 1.5 ; screenshot: grim out.png
+scripts/container/run.sh cargo test -p strand-watch   # any command
+scripts/container/run.sh ci        # every step of CI's check job, in order
+scripts/container/run.sh shell     # a bash in the image
+scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland
 ```
 
-Always kill the sway you started. The machine has 4 CPUs; avoid running
-more than one heavy `cargo` build at a time per task.
+- `run.sh` uses `scripts/container/Dockerfile`: Ubuntu 24.04 with exactly
+  CI's apt packages (sway 1.9, grim, DejaVu core only, Adwaita, dbus,
+  python3-dbusmock, PipeWire) and Rust 1.97.0, so pixel references match
+  CI. It runs as your uid with the checkout at its own path (worktrees
+  included), CI's env (`STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE=1`,
+  `RUSTFLAGS=-D warnings`, no debug info), `CARGO_BUILD_JOBS=6`, and builds
+  into `target/container`. Host `STRAND_*` variables are passed in. Tests
+  start their own headless sway, buses and PipeWire inside the container.
+- `matrix.sh` builds the matrix test there and runs it in an Arch image
+  (`Dockerfile.matrix`). Hyprland gets only `/dev/dri/renderD128`; CI's
+  vkms card needs modprobe, so Hyprland is skipped when it cannot start
+  without a KMS card.
+- When the Dockerfile changes, the image is rebuilt (tagged by its hash);
+  edit it together with `.github/workflows/ci.yml`.
 
-## Disk and restarts (dev container)
+## Laptop rules
 
-- The disk is small. `Cargo.toml` and `.cargo/config.toml` already build
-  without debug info or incremental caches; do not override them. If
-  `df -h /` shows under 8 GB free, delete your own worktree's `target/`
-  before building; never delete another worktree's. Delete your
-  worktree's `target/` when your task ends.
-- The container can restart without warning. On a parallel-build branch,
-  `git push origin <branch>` after every commit so nothing is lost.
+- No sudo, no host packages, no host config changes. Docker images,
+  containers and named volumes are fine; host Python only via uv/uvx.
+- Never touch the live Hyprland session (`WAYLAND_DISPLAY=wayland-1`):
+  read-only `hyprctl -j` queries at most, no test clients on it, no
+  compositor on the host. Pass only `/dev/dri/renderD128` into containers,
+  never `/dev/dri/card*`.
+- Run one full-workspace test run at a time. Delete your worktree's
+  `target/` when your task ends; the cargo registry stays in the
+  `strand-cargo-registry` and `strand-cargo-git` volumes.
+- Commit on your own branch and push only that branch after each commit;
+  never push `main`, never force-push.
