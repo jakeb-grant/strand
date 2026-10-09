@@ -298,6 +298,100 @@ fn blur_and_color_matrix_draw_through_offscreen_groups() {
     }
 }
 
+/// A blurred (σ 4, reach 12) grayscale group in a 240×80 bar holding a
+/// blurred (σ 2, reach 6) group of one red square, and a square 45 px to
+/// its right (`right`'s colour). Returns the scene, the effects and that
+/// square.
+fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let outer = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Width, num(220.0)),
+            (Prop::Height, num(60.0)),
+        ],
+    );
+    let inner = b.node(
+        NodeKind::Box,
+        Some(outer),
+        vec![
+            (Prop::X, num(5.0)),
+            (Prop::Y, num(5.0)),
+            (Prop::Size, num(50.0)),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(inner),
+        vec![
+            (Prop::X, num(20.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(30.0)),
+            (Prop::Bg, color("#f38ba8")),
+        ],
+    );
+    let sq = b.node(
+        NodeKind::Box,
+        Some(outer),
+        vec![
+            (Prop::X, num(100.0)),
+            (Prop::Y, num(15.0)),
+            (Prop::Size, num(30.0)),
+            (Prop::Bg, color(right)),
+        ],
+    );
+    let effects = vec![
+        (outer, vec![Effect::Blur { radius: 4.0 }, grayscale()]),
+        (inner, vec![Effect::Blur { radius: 2.0 }]),
+    ];
+    (b.diff, effects, sq)
+}
+
+/// Nested offscreen groups: damage that meets an outer group but not the
+/// group inside it still draws the inner one filtered into the outer
+/// group (which is drawn whole), so the partial repaint equals a full one
+/// and a full repaint afterwards reuses the outer group it built.
+#[test]
+fn nested_offscreen_groups_keep_their_filters_on_partial_repaints() {
+    for scale in [Scale::ONE, Scale::new(180).unwrap()] {
+        let (diff, effects, sq) = nested("#89b4fa");
+        let (mut r, mut buf) = drawn_80(diff, &effects, scale);
+        let mut d = SceneDiff::new();
+        d.set(sq, Prop::Bg, color("#a6e3a1"));
+        assert!(r.apply(d).is_empty());
+        let damage = buf.paint(&mut r, S, 1);
+        let k = scale.as_f32();
+        // The damage never meets the inner group's bounds (its square,
+        // its own reach and the outer blur's end at x = 83).
+        assert!(
+            damage.rects().iter().all(|d| d.x as f32 >= 83.0 * k),
+            "{scale:?}: {damage:?}"
+        );
+        let builds = r.offscreen_cache().1;
+        // A full repaint of the same content: both groups come from the
+        // cache, the outer one as the partial frame built it.
+        let mut d = SceneDiff::new();
+        d.set(r.tree().roots()[0], Prop::Bg, color("#1e1e2e"));
+        assert!(r.apply(d).is_empty());
+        buf.paint(&mut r, S, 0);
+        assert_eq!(
+            r.offscreen_cache().1,
+            builds,
+            "{scale:?}: the outer group was built without its inner one"
+        );
+        let (diff, effects, _) = nested("#a6e3a1");
+        let (_, full) = drawn_80(diff, &effects, scale);
+        assert!(
+            buf.pixels == full.pixels,
+            "{scale:?}: partial differs from full"
+        );
+    }
+}
+
 /// design.md: cached offscreen groups redraw only when their children
 /// change, within a 4 MB budget, freed when idle. A repaint of the whole
 /// surface reuses the group; a change inside it draws it again; four

@@ -121,7 +121,8 @@ impl Offscreen {
     }
 
     /// Draws (or finds) the offscreen groups among `items` that touch
-    /// `damage`, inner groups first, for this frame's cells.
+    /// `damage`, and every group nested in one of those, inner groups
+    /// first, for this frame's cells.
     pub fn prepare(
         &mut self,
         items: &[DisplayItem],
@@ -134,14 +135,22 @@ impl Offscreen {
         self.frame += 1;
         self.current.clear();
         let touches = |b: &Rect| damage.rects().iter().any(|r| r.intersects(*b));
-        let groups: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| {
-                matches!(&d.item, Item::PushLayer(l) if !l.cell_local()) && touches(&d.bounds)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let offscreen = |d: &DisplayItem| matches!(&d.item, Item::PushLayer(l) if !l.cell_local());
+        // Every group the damage touches, and every group inside one: an
+        // outer group is drawn whole, so its inner groups must be ready
+        // (their pixels drawn filtered) whether or not damage meets them.
+        let mut groups: Vec<usize> = Vec::new();
+        let mut i = 0;
+        while i < items.len() {
+            if offscreen(&items[i]) && touches(&items[i].bounds) {
+                let end = crate::raster::skip_group(items, i);
+                groups.extend((i..end.min(items.len())).filter(|&j| offscreen(&items[j])));
+                i = end.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        // Inner groups (later in the list) first.
         for &i in groups.iter().rev() {
             let Item::PushLayer(layer) = &items[i].item else {
                 continue;
