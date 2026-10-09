@@ -9,8 +9,9 @@
 #        scripts/container/run.sh CMD [ARGS...] e.g. cargo test -p strand-watch
 #        scripts/container/run.sh shell         an interactive bash
 # Env:   CARGO_BUILD_JOBS (default 6); every STRAND_* variable set on the
-#        host is passed in (STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE default to 1,
-#        as in CI).
+#        host is passed in (STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE/GPU default
+#        to 1, as in CI; the GPU tier is lavapipe, the image's only
+#        Vulkan driver).
 #
 # Builds land in <checkout>/target/container (apart from any native
 # target/); the cargo registry and git checkouts are the named volumes
@@ -22,7 +23,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,19p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,21p' "$0"; exit 2; }
 
 hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
 IMAGE=strand-ci:$hash
@@ -52,6 +53,7 @@ envs=(
   -e STRAND_REQUIRE_SWAY=1
   -e STRAND_REQUIRE_DBUS=1
   -e STRAND_REQUIRE_PIPEWIRE=1
+  -e STRAND_REQUIRE_GPU=1
 )
 # The host's STRAND_* (overriding the defaults above).
 while IFS='=' read -r name _; do
@@ -59,6 +61,23 @@ while IFS='=' read -r name _; do
 done < <(env | grep -E '^STRAND_[A-Z0-9_]*=' || true)
 [ -n "${CI_FROM:-}" ] && envs+=(-e CI_FROM)
 [ -n "${CI_JOB:-}" ] && envs+=(-e CI_JOB)
+
+# The advisory hardware GPU leg (scripts/container/gpu.sh sets
+# RUN_GPU_HARDWARE to the hardware ICD's JSON): the render node and
+# nothing else from /dev/dri (never a card*, CLAUDE.md), and that ICD in
+# place of lavapipe.
+devices=()
+if [ -n "${RUN_GPU_HARDWARE:-}" ]; then
+  devices=(--device /dev/dri/renderD128)
+  envs+=(
+    -e VK_DRIVER_FILES="$RUN_GPU_HARDWARE"
+    -e VK_ICD_FILENAMES="$RUN_GPU_HARDWARE"
+    -e STRAND_GPU_HARDWARE=1
+  )
+fi
+for arg in "${devices[@]}"; do
+  case "$arg" in *card*) echo "run.sh: refusing to pass $arg (render node only)" >&2; exit 2 ;; esac
+done
 
 tty=()
 [ -t 0 ] && [ -t 1 ] && tty=(-it)
@@ -72,6 +91,6 @@ mkdir -p "$ROOT/target/container"
 exec docker run --rm --init "${tty[@]}" \
   --user "$(id -u):$(id -g)" \
   --shm-size=2g \
-  "${mounts[@]}" "${envs[@]}" \
+  "${devices[@]}" "${mounts[@]}" "${envs[@]}" \
   -w "$ROOT" \
   "$IMAGE" bash -c 'mkdir -p "$HOME" && exec "$@"' bash "$@"

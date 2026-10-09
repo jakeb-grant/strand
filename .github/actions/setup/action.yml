@@ -9,8 +9,8 @@ inputs:
     description: >
       "headers": the build headers only (fmt, clippy, building). "full":
       also headless sway, grim, the services tier (dbus-daemon,
-      python3-dbusmock, PipeWire with WirePlumber), the fonts and icons
-      the references were drawn with.
+      python3-dbusmock, PipeWire with WirePlumber), the GPU tier
+      (lavapipe), the fonts and icons the references were drawn with.
     default: full
   free-disk:
     description: Removes the image's unused SDKs first ("true" or "false").
@@ -36,25 +36,28 @@ runs:
         df -h /
     # smithay-client-toolkit's build script finds xkbcommon through
     # pkg-config; wayland-sys and fontconfig link their system libraries;
-    # pipewire-rs needs its headers and libclang (bindgen).
+    # pipewire-rs needs its headers and libclang (bindgen); strand-auth's
+    # PAM helper links libpam.
     - name: Install the build headers
       if: inputs.tier == 'headers'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
-          libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+          libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev
     # The services tier (design.md, "Testing"): private buses
     # (dbus-daemon), python-dbusmock for UPower, NetworkManager, BlueZ,
     # logind and notifications, PipeWire with WirePlumber and a null
-    # sink; with the build headers above.
+    # sink; the GPU tier (Mesa's lavapipe, software Vulkan, with the
+    # loader and vulkaninfo); with the build headers above.
     - name: Install headless sway, grim, dbus, fonts, icons and build headers
       if: inputs.tier == 'full'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
-          dbus-daemon python3-dbusmock pipewire pipewire-pulse pipewire-bin wireplumber pulseaudio-utils libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+          dbus-daemon python3-dbusmock pipewire pipewire-pulse pipewire-bin wireplumber pulseaudio-utils libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev \
+          mesa-vulkan-drivers libvulkan1 vulkan-tools libpam0g-dev
     - name: Services tier tools
       if: inputs.tier == 'full'
       shell: bash
@@ -62,6 +65,16 @@ runs:
         dbus-daemon --version | head -1
         python3 -c 'import dbusmock' && dpkg -s python3-dbusmock | grep '^Version'
         pipewire --version
+    # The GPU tier's device: lavapipe, the only driver the loader is
+    # given (VK_DRIVER_FILES in ci.yml); STRAND_REQUIRE_GPU=1 makes the
+    # GPU tests fail without it.
+    - name: GPU tier device (lavapipe)
+      if: inputs.tier == 'full'
+      shell: bash
+      run: |
+        dpkg -s mesa-vulkan-drivers | grep '^Version'
+        vulkaninfo --summary 2>&1 | tee /tmp/vulkaninfo.txt | sed -n '/^Devices/,$p'
+        grep -Eq 'driverName += llvmpipe' /tmp/vulkaninfo.txt || { echo "::error::no lavapipe (llvmpipe) Vulkan device"; exit 1; }
     # The references are drawn with fonts-dejavu-core alone, whose DejaVu
     # Sans has no oblique face (italic text is slanted from the upright
     # one). The image also ships fonts-dejavu-extra, whose real

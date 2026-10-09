@@ -1,0 +1,58 @@
+# The lock screen's VM tier (design.md, "Testing": a real PAM stack and
+# a real session lock). Built and run by scripts/container/lockvm.sh.
+#
+# Two stages. `guest` is the VM's root filesystem: Ubuntu 24.04 (the
+# check image's release, so binaries run.sh builds run in it) with the
+# kernel, headless sway, grim, the strand binary's runtime libraries,
+# pamtester, a baked test user and /etc/pam.d/strand, and lockvm-init as
+# PID 1. `disk` turns that tree into an ext4 image (mke2fs -d: no loop
+# mount, no root on the host) and takes out the guest's kernel, made
+# readable by any uid. The final stage is QEMU plus those two files. The guest boots the image
+# with snapshot=on: every run starts from the same disk.
+FROM ubuntu:24.04 AS guest
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends linux-image-virtual kmod \
+      sway grim dbus fonts-dejavu-core adwaita-icon-theme \
+      libfontconfig1 libxkbcommon0 libwayland-client0 libpipewire-0.3-0t64 libvulkan1 \
+      libpam-modules libpam-runtime pamtester passwd \
+ && (dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true) \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+# The test user: uid 1000, password "strand-test" (lockvm.sh, the lock
+# tests). /etc/pam.d/strand is Ubuntu's usual stack; a scenario can
+# replace it, since the guest's writes never reach the image.
+RUN (userdel -r ubuntu 2>/dev/null || true) \
+ && useradd -m -u 1000 -s /bin/bash tester \
+ && echo 'tester:strand-test' | chpasswd \
+ && printf '%s\n' '# strand lock screen (scripts/container/Dockerfile.lockvm)' \
+      '@include common-auth' '@include common-account' >/etc/pam.d/strand \
+ && echo lockvm >/etc/hostname \
+ && ls -l /usr/sbin/unix_chkpwd
+COPY lockvm/init /sbin/lockvm-init
+RUN chmod 0755 /sbin/lockvm-init
+
+# The disk image, in a stage of its own so the copied tree is not a
+# layer of the final image.
+FROM ubuntu:24.04 AS disk
+COPY --from=guest / /guestroot
+# The kernel (Ubuntu's is 0600 root; lockvm.sh runs QEMU as the host
+# user) and the root filesystem image, sized to its contents plus room
+# for the guest's writes (those go to QEMU's snapshot file anyway).
+RUN mkdir -p /lockvm \
+ && cp "$(ls /guestroot/boot/vmlinuz-* | sort -V | tail -1)" /lockvm/vmlinuz \
+ && chmod 0644 /lockvm/vmlinuz \
+ && rm -rf /guestroot/boot/* /guestroot/proc/* /guestroot/sys/* /guestroot/dev/* \
+ && size=$(( $(du -sm /guestroot | cut -f1) * 13 / 10 + 256 )) \
+ && mke2fs -q -t ext4 -L lockvm-root -d /guestroot /lockvm/rootfs.img "${size}M" \
+ && chmod 0444 /lockvm/rootfs.img \
+ && ls -l /lockvm
+
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends qemu-system-x86 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=disk /lockvm /lockvm
+COPY lockvm/run-guest /usr/local/bin/lockvm-run-guest
+RUN chmod 0755 /usr/local/bin/lockvm-run-guest
+ENV LANG=C.UTF-8

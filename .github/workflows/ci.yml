@@ -20,6 +20,16 @@ env:
   # The audio tier (a private PipeWire with null sinks and WirePlumber)
   # fails instead of skipping when pipewire or wireplumber is missing.
   STRAND_REQUIRE_PIPEWIRE: "1"
+  # The GPU tier (M4) runs on Mesa's lavapipe, software Vulkan, and fails
+  # instead of skipping when no Vulkan device starts (decisions.md
+  # m4-owner). Lavapipe is the only driver the loader is given
+  # (VK_ICD_FILENAMES is the deprecated spelling), with a fixed llvmpipe
+  # vector width so GPU pixels do not depend on the runner's CPU; as in
+  # scripts/container/Dockerfile.
+  STRAND_REQUIRE_GPU: "1"
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  LP_NATIVE_VECTOR_WIDTH: "256"
   # No debug info: a full debug test build of the workspace with it does
   # not fit the runner's disk (as in the dev container, CLAUDE.md).
   CARGO_PROFILE_DEV_DEBUG: "0"
@@ -195,7 +205,7 @@ jobs:
       - name: Build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.0
@@ -245,6 +255,67 @@ jobs:
           name: compositor-matrix
           path: target/matrix/
           if-no-files-found: ignore
+
+  # The lock screen's VM tier (design.md, "Testing": a real PAM stack in
+  # a QEMU VM "before touching the lock code, and before releases"):
+  # scripts/container/lockvm.sh, as on the laptop. GitHub's standard
+  # Linux runners expose /dev/kvm (hardware-accelerated Android
+  # virtualization, 2024-04-02) once a udev rule opens it; that sudo
+  # step runs on the runner only, never in the container scripts. A
+  # runner without /dev/kvm fails here instead of emulating. Runs
+  # nightly, on demand, on tags and on pushes and pull requests that
+  # touch the lock code or the harness.
+  lock-vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lock paths changed
+        id: paths
+        if: (github.event_name == 'push' && github.ref_type == 'branch') || github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            lock:
+              # S-lock's files as the M4 critique's ownership table names
+              # them; the globs also catch them if they land elsewhere in a
+              # crate. Keep this list in step with the lock code.
+              - 'crates/strand-auth/**'
+              - 'crates/**/*session_lock*'
+              - 'crates/**/*lock_fallback*'
+              - 'crates/strand/src/lock.rs'
+              - 'crates/strand/src/run/lock.rs'
+              - 'crates/strand/tests/lock.rs'
+              - 'crates/strand/src/services/auth*'
+              - 'crates/strand-services-schema/src/auth.schema'
+              - 'crates/strand-compiler/src/check/lock.rs'
+              - 'scripts/lockvm/**'
+              - 'scripts/container/*lockvm*'
+              - 'scripts/container/lockvm/**'
+      - name: Decide
+        id: run
+        run: |
+          case "${{ github.event_name }}:${{ github.ref_type }}:${{ steps.paths.outputs.lock }}" in
+            schedule:* | workflow_dispatch:* | push:tag:* | *:true) echo "go=true" >>"$GITHUB_OUTPUT" ;;
+            *) echo "go=false" >>"$GITHUB_OUTPUT"; echo "no lock paths changed: the lock VM tier is skipped" ;;
+          esac
+      - name: KVM for the runner's user
+        if: steps.run.outputs.go == 'true'
+        run: |
+          ls -l /dev/kvm || { echo "::error::this runner has no /dev/kvm"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm || { echo "::error::/dev/kvm is not read-writable"; exit 1; }
+      # The harness's smoke: boot, the test user, headless sway, pam_unix
+      # through /etc/pam.d/strand with the right and a wrong password.
+      - name: Lock VM smoke
+        if: steps.run.outputs.go == 'true'
+        run: scripts/container/lockvm.sh
+        env:
+          LOCKVM_TIMEOUT: "300"
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
