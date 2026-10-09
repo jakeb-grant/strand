@@ -68,7 +68,9 @@ scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland
   prints WARN with its numbers and the run goes on; any other failure in
   those steps fails. GitHub's `timing` job enforces the gates.
   `STRAND_STRICT_TIMING=1` makes them fail here too. A new wall-clock
-  gate starts its message with `GATE_MISS`; a functional assertion never
+  gate starts its message with `GATE_MISS` and is checked once at the
+  test's end, after its functional assertions (`Gates` in
+  theme_swap_bench, `failed` in bench.rs); a functional assertion never
   does. Memory budgets, pixel tests and the rest stay strict.
 - When the Dockerfile changes, the image is rebuilt (tagged by its hash);
   edit it together with `.github/workflows/ci.yml`.
