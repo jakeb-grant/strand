@@ -1,0 +1,22 @@
+[package]
+name = "gpu-present"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Not a member of the strand workspace (decisions.md, m4-gpu-spike).
+[workspace]
+
+[dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["vulkan", "wgsl"] }
+vello_gpu = { version = "0.3.0", default-features = false, features = ["wgpu", "std", "text"] }
+vello_common = "0.3.0"
+smithay-client-toolkit = { version = "0.21.1", default-features = false }
+wayland-client = "0.31.15"
+wayland-backend = { version = "0.3.17", features = ["client_system"] }
+raw-window-handle = "0.6.2"
+pollster = "0.4"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
