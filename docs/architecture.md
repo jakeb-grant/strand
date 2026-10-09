@@ -2287,18 +2287,18 @@ and the connection):
     Render already holds `Removed`/`open: false` until an exit settles.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
     viewporter, for scrims and lock backgrounds; shm when the protocol is
-    missing (1×1 with the viewporter, else surface-sized). A panel's
-    `scrim` is a subsurface of the panel placed below it
-    (`manager/scrim.rs`), covering the output's usable area: the panel's
-    transparent full-area layer surface on its layer and output (the
-    click-away catcher when it has one, else a `strand-<Name>-scrim`
-    surface with an empty input region) is configured to that area, and
-    the scrim sits at minus the panel's position in it. Two layer
-    surfaces on one layer stack in an order the protocol leaves open
-    (sway 1.9 puts the older on top), so the catcher cannot be the
-    visible scrim. A popup's `scrim` is that layer surface itself,
-    coloured, on its root layer surface's layer and output (popups stack
-    above layer surfaces), taking no clicks (the grab closes it).
+    missing (1×1 with the viewporter, else surface-sized). A spec's
+    `scrim` is a layer surface over the output's usable area (exclusive
+    zone 0, all four anchors) on the panel's output, on the layer below
+    the panel's: two layer surfaces on one layer stack in an order the
+    protocol leaves open (sway 1.9 puts the older on top, the others the
+    newer), so placement raises a `top` panel with a scrim to `overlay`
+    and its scrim goes on `top`. It is the click-away catcher too when
+    the panel has one (`strand-<Name>-click-away`, with its hole), else
+    `strand-<Name>-scrim` with an empty input region. A popup's `scrim`
+    is the same surface on its root layer surface's layer and output
+    (popups stack above layer surfaces), taking no clicks (the grab
+    closes it).
   - Fillets: placement puts an `attach`ed box at gap 0 from that edge
     (a panel anchored to it, its margin there 0; a popup opening away
     from its attached side); the overhang render adds for the fillets

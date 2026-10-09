@@ -271,8 +271,7 @@ fn scrim_spec(color: Option<strand_scene::Color>, clicks: bool) -> strand_scene:
 
 const DIM: strand_scene::Color = strand_scene::Color::new(0.0, 0.0, 0.0, 0.3);
 
-/// Waits until the fake has a live layer surface `ns` with a buffer
-/// matching `want`.
+/// Waits until the fake has a live layer surface `ns` matching `want`.
 fn wait_layer(
     fake: &Fake,
     mgr: &mut SurfaceManager<TestHost>,
@@ -291,65 +290,36 @@ fn wait_layer(
         .unwrap()
 }
 
-/// Waits until the panel `strand-Dash` has a live subsurface (its
-/// scrim) matching `want`.
-fn wait_scrim(
-    fake: &Fake,
-    mgr: &mut SurfaceManager<TestHost>,
-    want: impl Fn(&strand_fake_wayland::SurfaceRecord) -> bool,
-) -> strand_fake_wayland::SurfaceRecord {
-    let ok = mgr
-        .dispatch_until(WAIT, |_| {
-            fake.subsurfaces_of("strand-Dash").iter().any(&want)
-        })
-        .unwrap();
-    assert!(ok, "{:?}", fake.surfaces());
-    fake.subsurfaces_of("strand-Dash")
-        .into_iter()
-        .find(|s| want(s))
-        .unwrap()
-}
-
 /// `scrim:` on a panel is one single-pixel buffer the viewporter scales
-/// over the usable area, in a subsurface placed below the panel (so it is
-/// under the panel on every compositor) at minus the panel's position
-/// there, with an empty input region; the area comes from a transparent
-/// full-area layer surface on the panel's layer, which takes no clicks
-/// either. A new colour is a new pixel on the same subsurface (the panel
-/// stays), and taking the scrim away destroys both.
+/// over the usable area, on its own layer surface with an empty input
+/// region (clicks pass through a scrim alone), on the layer below the
+/// panel's: a `top` panel rises to `overlay`, its scrim on `top` (two
+/// layer surfaces on one layer stack in an order the protocol leaves
+/// open). A new colour is a new pixel on the same surface (the panel
+/// stays), and taking the scrim away destroys it.
 #[test]
 fn a_scrim_is_one_single_pixel_under_the_panel() {
     let fake = Fake::compositor(SurfaceGlobals::default());
     let mut mgr = manager(&fake);
     mgr.state_mut()
         .apply_surface_change(PANEL, SurfaceChange::Created(scrim_spec(Some(DIM), false)));
-    let rec = wait_scrim(&fake, &mut mgr, |s| {
-        s.buffer.is_some() && s.position != (0, 0)
-    });
+    let rec = wait_layer(&fake, &mut mgr, "strand-Dash-scrim", |s| s.buffer.is_some());
     let a = (0.3 * f64::from(u32::MAX)).round() as u32;
     let Some(strand_fake_wayland::BufferKind::SinglePixel([0, 0, 0, got])) = rec.buffer else {
         panic!("not a black single pixel: {rec:?}");
     };
     assert!(got.abs_diff(a) < 300, "{got} vs {a}");
     assert_eq!(rec.viewport, Some((1920, 1080)));
-    // The panel is 400 wide at the top right of a 1920 × 1080 area.
-    assert_eq!(rec.position, (-1520, 0));
-    assert!(rec.below_parent, "placed below the panel");
     assert!(
         rec.input.as_ref().is_some_and(|r| r.area() == 0),
         "clicks pass through: {rec:?}"
     );
-    let area = wait_layer(&fake, &mut mgr, "strand-Dash-scrim", |s| s.buffer.is_some());
+    // zwlr_layer_shell_v1: top 2, overlay 3.
+    assert_eq!(rec.layer, Some(2), "the scrim on top");
     assert_eq!(
-        area.buffer,
-        Some(strand_fake_wayland::BufferKind::SinglePixel([0; 4])),
-        "the area surface is transparent"
-    );
-    assert!(area.input.as_ref().is_some_and(|r| r.area() == 0));
-    assert_eq!(
-        area.layer,
         fake.layer("strand-Dash")[0].layer,
-        "the panel's layer"
+        Some(3),
+        "the panel above it"
     );
     assert!(fake.layer("strand-Dash-click-away").is_empty());
     let id = mgr.state().surfaces_of(PANEL)[0];
@@ -366,9 +336,10 @@ fn a_scrim_is_one_single_pixel_under_the_panel() {
             recreate: false,
         },
     );
-    let rec = wait_scrim(
+    let rec = wait_layer(
         &fake,
         &mut mgr,
+        "strand-Dash-scrim",
         |s| matches!(s.buffer, Some(strand_fake_wayland::BufferKind::SinglePixel([r, 0, 0, _])) if r > 0),
     );
     let Some(strand_fake_wayland::BufferKind::SinglePixel([r, _, _, a])) = rec.buffer else {
@@ -376,14 +347,14 @@ fn a_scrim_is_one_single_pixel_under_the_panel() {
     };
     assert!(r.abs_diff(a) <= 1, "premultiplied: {r} vs {a}");
     assert_eq!(
-        fake.subsurfaces_of("strand-Dash").len(),
+        fake.layer("strand-Dash-scrim").len(),
         1,
         "recoloured in place"
     );
     assert_eq!(mgr.state().surfaces_of(PANEL), [id], "the panel stays");
     assert_eq!(mgr.state().surface(id).unwrap().scrim, Some(red));
 
-    // No scrim: both go.
+    // No scrim: it goes, and the panel is back on `top`.
     mgr.state_mut().apply_surface_change(
         PANEL,
         SurfaceChange::Updated {
@@ -393,12 +364,15 @@ fn a_scrim_is_one_single_pixel_under_the_panel() {
     );
     let ok = mgr
         .dispatch_until(WAIT, |_| {
-            fake.subsurfaces_of("strand-Dash").is_empty()
-                && fake.layer("strand-Dash-scrim").is_empty()
+            fake.layer("strand-Dash-scrim").is_empty()
+                && fake
+                    .layer("strand-Dash")
+                    .iter()
+                    .any(|s| s.layer == Some(2) && s.buffer.is_some())
         })
         .unwrap();
     assert!(ok, "{:?}", fake.surfaces());
-    assert_eq!(mgr.state().surfaces_of(PANEL), [id], "the panel stays");
+    let id = mgr.state().surfaces_of(PANEL)[0];
     assert_eq!(mgr.state().surface(id).unwrap().scrim, None);
 }
 
@@ -413,7 +387,7 @@ fn a_scrim_falls_back_to_shm() {
     let mut mgr = manager(&fake);
     mgr.state_mut()
         .apply_surface_change(PANEL, SurfaceChange::Created(scrim_spec(Some(DIM), false)));
-    let rec = wait_scrim(&fake, &mut mgr, |s| s.buffer.is_some());
+    let rec = wait_layer(&fake, &mut mgr, "strand-Dash-scrim", |s| s.buffer.is_some());
     assert_eq!(
         rec.buffer,
         Some(strand_fake_wayland::BufferKind::Shm {
@@ -431,7 +405,7 @@ fn a_scrim_falls_back_to_shm() {
     let mut mgr = manager(&fake);
     mgr.state_mut()
         .apply_surface_change(PANEL, SurfaceChange::Created(scrim_spec(Some(DIM), false)));
-    let rec = wait_scrim(&fake, &mut mgr, |s| s.buffer.is_some());
+    let rec = wait_layer(&fake, &mut mgr, "strand-Dash-scrim", |s| s.buffer.is_some());
     assert_eq!(
         rec.buffer,
         Some(strand_fake_wayland::BufferKind::Shm {
@@ -441,11 +415,11 @@ fn a_scrim_falls_back_to_shm() {
     );
 }
 
-/// A panel with a scrim and click-away gets one layer surface under it,
-/// the click-away catcher (transparent, with its hole for the panel),
-/// whose area the scrim covers.
+/// A panel with a scrim and click-away gets one surface for both: the
+/// click-away catcher, coloured, with its hole for the panel, on the
+/// layer below it.
 #[test]
-fn the_scrim_covers_the_click_away_catcher() {
+fn the_scrim_is_the_click_away_catcher() {
     let fake = Fake::compositor(SurfaceGlobals::default());
     let mut mgr = manager(&fake);
     mgr.state_mut()
@@ -453,22 +427,22 @@ fn the_scrim_covers_the_click_away_catcher() {
     let rec = wait_layer(&fake, &mut mgr, "strand-Dash-click-away", |s| {
         s.buffer.is_some() && s.input.is_some()
     });
+    assert!(
+        matches!(
+            rec.buffer,
+            Some(strand_fake_wayland::BufferKind::SinglePixel([0, 0, 0, a])) if a > 0
+        ),
+        "{rec:?}"
+    );
     let input = rec.input.unwrap();
     assert!(
         input.contains(10, 10) && !input.contains(1900, 100),
         "a hole for the panel"
     );
+    assert_eq!(rec.layer, Some(2));
     assert!(
         fake.layer("strand-Dash-scrim").is_empty(),
-        "one layer surface, not two"
-    );
-    let scrim = wait_scrim(&fake, &mut mgr, |s| s.buffer.is_some());
-    assert!(
-        matches!(
-            scrim.buffer,
-            Some(strand_fake_wayland::BufferKind::SinglePixel([0, 0, 0, a])) if a > 0
-        ),
-        "{scrim:?}"
+        "one surface, not two"
     );
     let id = mgr.state().surfaces_of(PANEL)[0];
     let ok = mgr

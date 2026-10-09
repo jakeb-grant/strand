@@ -176,11 +176,26 @@ fn size(v: f32) -> u32 {
     px(v).max(1) as u32
 }
 
+/// The layer under `layer` (the background has none: itself).
+pub fn layer_below(layer: Layer) -> Layer {
+    match layer {
+        Layer::Overlay => Layer::Top,
+        Layer::Top => Layer::Bottom,
+        Layer::Bottom | Layer::Background => Layer::Background,
+    }
+}
+
 /// Resolves the layer-surface state for `spec`.
 pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
-    let layer = spec
+    let mut layer = spec
         .layer
         .ok_or(PlacementError::NotLayerSurface(spec.kind))?;
+    // A panel's scrim goes on the layer below it, which for a `top` panel
+    // would be under the windows it should dim: such a panel rises to
+    // `overlay`, its scrim on `top` (`manager/catcher.rs`).
+    if spec.kind == NodeKind::Panel && spec.scrim.is_some() && layer == Layer::Top {
+        layer = Layer::Overlay;
+    }
     let m = spec.margin;
     let o = spec.overhang;
     let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
@@ -843,5 +858,35 @@ mod tests {
             let c = popup_config(&p, &bar).unwrap();
             assert_eq!((c.side, c.gap), (side, 0), "{edge}");
         }
+    }
+
+    /// A `top` panel with a scrim rises to `overlay`, so its scrim fits on
+    /// `top` beneath it and above the windows; other layers keep theirs,
+    /// and the scrim's layer is the one below.
+    #[test]
+    fn a_top_panel_with_a_scrim_rises_to_overlay() {
+        let dim = PropValue::Color(strand_scene::Color::new(0.0, 0.0, 0.0, 0.3));
+        let size = [
+            (Prop::Width, PropValue::Number(100.0)),
+            (Prop::Height, PropValue::Number(100.0)),
+        ];
+        let mut props = size.to_vec();
+        props.push((Prop::Scrim, dim.clone()));
+        assert_eq!(
+            layer_config(&spec(NodeKind::Panel, &props)).unwrap().layer,
+            Layer::Overlay
+        );
+        assert_eq!(
+            layer_config(&spec(NodeKind::Panel, &size)).unwrap().layer,
+            Layer::Top
+        );
+        props.push((Prop::Layer, kw("bottom")));
+        assert_eq!(
+            layer_config(&spec(NodeKind::Panel, &props)).unwrap().layer,
+            Layer::Bottom
+        );
+        assert_eq!(layer_below(Layer::Overlay), Layer::Top);
+        assert_eq!(layer_below(Layer::Bottom), Layer::Background);
+        assert_eq!(layer_below(Layer::Background), Layer::Background);
     }
 }

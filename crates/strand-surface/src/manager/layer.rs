@@ -30,11 +30,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                     self.destroy_surface(id);
                     continue;
                 }
-                (Some((_, scrim)), Some(_)) => self.set_panel_scrim(id, scrim),
-                (None, Some(_)) => {
-                    self.destroy_scrim(id);
-                    self.destroy_catcher(id);
-                }
+                (Some((_, scrim)), Some(_)) => self.recolor_scrim(id, scrim),
+                (None, Some(_)) => self.destroy_catcher(id),
                 (None, None) => {}
             }
             let Ok(mut config) = new.clone() else {
@@ -217,9 +214,6 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.stats.bare_commits += 1;
         self.surfaces.insert(id, surface);
-        if let Some(scrim) = wants_scrim(spec) {
-            self.set_panel_scrim(id, Some(scrim));
-        }
         self.host.surface_attached(id, node, monitor.as_ref());
     }
 
@@ -235,7 +229,6 @@ impl<H: SurfaceHost + 'static> State<H> {
         for c in children {
             self.destroy_surface(c);
         }
-        self.destroy_scrim(id);
         self.destroy_catcher(id);
         let Some(mut s) = self.surfaces.remove(&id) else {
             return;
@@ -381,7 +374,6 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         // The size it got may not be the one it asked for.
         self.update_catcher(id);
-        self.place_scrim(id);
         // Size and scale are resolved once, right before the next paint.
         self.mark(id);
     }

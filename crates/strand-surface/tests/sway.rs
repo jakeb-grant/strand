@@ -2040,10 +2040,10 @@ fn sway_reports_its_capabilities() {
 
 /// `scrim:` on sway 1.9 (single-pixel buffers and the viewporter): a
 /// panel's scrim dims the usable area beneath it, under the panel (its
-/// box keeps its colour; sway 1.9 stacks the older of two layer surfaces
-/// on top, which a subsurface below the panel is immune to) and not over
-/// the bar; a popup's goes on its bar's layer and output, under the
-/// popup. Taking a scrim away undims.
+/// box keeps its colour: sway 1.9 stacks the older of two layer surfaces
+/// on one layer on top, so the scrim is on the layer below the panel's)
+/// and not over the bar; a popup's goes on its bar's layer and output,
+/// under the popup. Taking a scrim away undims.
 #[test]
 fn scrims_dim_beneath_panels_and_popups() {
     let Some(sway) = Sway::start("scrims_dim_beneath_panels_and_popups") else {

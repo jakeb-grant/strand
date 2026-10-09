@@ -27,10 +27,11 @@ use strand_scene::Color;
 ///
 /// A scrim is the primary catcher made visible: one solid colour
 /// ([`crate::solid`]: a single-pixel buffer the viewporter scales, else
-/// shm). A surface with a scrim and no click-away gets only the primary
-/// one, with an empty input region (clicks pass through; a popup's own
-/// grab closes it); a popup's goes on its root layer surface's layer and
-/// output.
+/// shm), on the layer below the panel's (see [`Under::of_layer`]). A
+/// surface with a scrim and no click-away gets only the primary one,
+/// with an empty input region (clicks pass through; a popup's own grab
+/// closes it); a popup's goes on its root layer surface's layer and
+/// output (popups stack above layer surfaces).
 pub(super) struct Catcher {
     pub(super) layer: LayerSurface,
     /// On the output of the surface it serves, with a hole for it.
@@ -101,16 +102,22 @@ pub(super) struct Under {
 }
 
 impl Under {
-    /// For a layer surface with `config`, if `spec` asks for one. It is
-    /// transparent: a panel's scrim is its subsurface
-    /// (`manager/scrim.rs`), over the area this catcher is configured to.
+    /// For a layer surface with `config`, if `spec` asks for one. A
+    /// scrim goes on the layer below the surface's (placement raised a
+    /// `top` panel with a scrim to `overlay`), so it is under the surface
+    /// on every compositor: two layer surfaces on one layer stack in an
+    /// order the protocol leaves open.
     pub(super) fn of_layer(spec: &SurfaceSpec, config: &LayerConfig) -> Option<Under> {
-        let (clicks, _) = wants_under(spec)?;
+        let (clicks, scrim) = wants_under(spec)?;
         Some(Under {
-            layer: config.layer,
+            layer: if scrim.is_some() {
+                crate::placement::layer_below(config.layer)
+            } else {
+                config.layer
+            },
             namespace: config.namespace.clone(),
             clicks,
-            scrim: None,
+            scrim,
         })
     }
 
@@ -333,12 +340,10 @@ impl<H: SurfaceHost + 'static> State<H> {
             // No hole: its input region is all of it (the default), or
             // empty for a scrim alone (set at creation).
             wl.commit();
-            self.place_scrim(id);
             return;
         }
         // Committed with its input region.
         self.update_catcher(id);
-        self.place_scrim(id);
     }
 
     /// Recolours surface `id`'s scrim in place (its catcher stays).
