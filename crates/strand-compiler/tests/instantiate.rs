@@ -2341,6 +2341,67 @@ fn a_row_scrolled_out_and_back_keeps_its_state() {
     assert!(opened(&shell).is_empty());
 }
 
+/// What a window move keeps of the rows it unmounts: nothing for rows
+/// without `state` (no scope per row: scrolled through and back, the
+/// runtime holds as many nodes as at the start), and for rows with one
+/// a few nodes per key scrolled past, the same on a second pass.
+#[test]
+fn rows_scrolled_past_keep_only_their_states() {
+    fn live(rt: &strand_core::Runtime) -> usize {
+        let mut stack = rt.root_owned();
+        let mut n = 0;
+        while let Some(id) = stack.pop() {
+            n += 1;
+            stack.extend(rt.owned(id).unwrap_or_default());
+        }
+        n
+    }
+    let shell_of = |row: &str| {
+        let mut src =
+            String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+        for i in 0..2000 {
+            src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+        }
+        src.push_str(&format!(
+            "]\n{row}\nbar B {{ list {{ for r in rows {{ Item(r) }} }} }}\n"
+        ));
+        boot(&[("t.strand", &src)], |rt, host| {
+            screens(rt, host, &["DP-1"])
+        })
+    };
+    // Through the list in steps of 20 rows and back to the top.
+    let scroll = |shell: &mut Shell| {
+        let list = shell.scene.of_kind(NodeKind::List)[0];
+        for first in (0..2000).step_by(20).chain([0]) {
+            shell.inst.set_list_window(list, first, 32);
+            shell.flush();
+        }
+    };
+
+    let mut plain = shell_of("component Item(r: Row) { row { text r.label } }");
+    let start = live(plain.inst.runtime());
+    scroll(&mut plain);
+    assert_eq!(live(plain.inst.runtime()), start, "rows without state");
+
+    let mut stateful = shell_of(
+        "component Item(r: Row) {\n state open = false\n row { text r.label\n text open ? \"open\" : \"shut\" } }",
+    );
+    let start = live(stateful.inst.runtime());
+    scroll(&mut stateful);
+    let once = live(stateful.inst.runtime());
+    let per_key = (once - start) as f64 / 2000.0;
+    assert!(
+        (0.5..=4.0).contains(&per_key),
+        "{per_key} nodes kept per row scrolled past ({start} -> {once})"
+    );
+    scroll(&mut stateful);
+    assert_eq!(
+        live(stateful.inst.runtime()),
+        once,
+        "a second pass keeps no more"
+    );
+}
+
 /// A `list` holding more than its `for` (a header row) is not windowed:
 /// every row mounts, as in any container.
 #[test]

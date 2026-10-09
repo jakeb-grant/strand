@@ -970,6 +970,60 @@ impl Ctx {
         kept
     }
 
+    /// A windowed list's rows leave the window (`rows`: each row's
+    /// content scope and key): the cells owned under each are moved to a
+    /// scope of its own under `root`, made only for rows that have any,
+    /// and noted in [`Ctx::closed`] as [`Ctx::keep_cells`] does. One pass
+    /// over the registry for all the rows; cells already kept (in
+    /// `closed`, under a keep scope) are skipped without walking their
+    /// owners, so a move costs the live cells, not every row scrolled
+    /// past.
+    fn keep_row_cells(
+        &self,
+        rt: &Runtime,
+        rows: &HashMap<strand_core::NodeId, ValueKey>,
+        root: strand_core::NodeId,
+    ) -> Vec<(ValueKey, strand_core::Scope)> {
+        let reg = self.registry.borrow();
+        let mut closed = self.closed.borrow_mut();
+        let mut keeps: HashMap<strand_core::NodeId, (ValueKey, strand_core::Scope)> =
+            HashMap::new();
+        for (key, rec) in reg.cells.iter() {
+            if closed.contains(key) {
+                continue;
+            }
+            let holder = rec.holder().id();
+            let mut cur = rt.owner_of(holder).ok().flatten();
+            while let Some(c) = cur {
+                if rows.contains_key(&c) {
+                    break;
+                }
+                cur = rt.owner_of(c).ok().flatten();
+            }
+            let Some(content) = cur else {
+                continue;
+            };
+            let keep = match keeps.get(&content) {
+                Some((_, s)) => s.id(),
+                None => {
+                    let Ok((s, ())) = rt.with_owner(root, |rt| rt.scope(|_| ())) else {
+                        continue;
+                    };
+                    let Some(k) = rows.get(&content) else {
+                        s.dispose(rt);
+                        continue;
+                    };
+                    keeps.insert(content, (k.clone(), s));
+                    s.id()
+                }
+            };
+            if rt.reparent(holder, Some(keep)).is_ok() {
+                closed.insert(key.clone());
+            }
+        }
+        keeps.into_values().collect()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn declare_settings(
         self: &Rc<Self>,
@@ -2417,6 +2471,30 @@ impl Ctx {
                         .collect();
                     (all[lo..hi].to_vec(), len, lo, alive)
                 };
+                // Rows leaving the window, not the list: their cells wait
+                // for them, moved in one pass over the registry for all of
+                // them before their nodes go.
+                let leaving: HashMap<strand_core::NodeId, ValueKey> = {
+                    let wanted: std::collections::HashSet<&ValueKey> =
+                        want.iter().map(|(k, _)| k).collect();
+                    let em = ctx.em.borrow();
+                    items
+                        .borrow()
+                        .iter()
+                        .filter(|it| alive.contains(&it.key) && !wanted.contains(&it.key))
+                        .filter_map(|it| {
+                            let content = em.frag(it.frag).and_then(|f| f.scope)?.id();
+                            Some((content, it.key.clone()))
+                        })
+                        .collect()
+                };
+                if !leaving.is_empty() {
+                    for (key, keep) in ctx.keep_row_cells(rt, &leaving, keep_root.id()) {
+                        if let Some(old) = kept.borrow_mut().insert(key, keep) {
+                            old.dispose(rt);
+                        }
+                    }
+                }
                 let start = ctx.em.borrow().ops.len();
                 let marked: RefCell<std::collections::HashSet<strand_scene::NodeId>> =
                     RefCell::default();
@@ -2436,24 +2514,6 @@ impl Ctx {
                             marked
                                 .borrow_mut()
                                 .extend(ctx.em.borrow().top_nodes(it.frag));
-                            // Left the window, not the list: its cells
-                            // wait for it.
-                            let content = ctx
-                                .em
-                                .borrow()
-                                .frag(it.frag)
-                                .and_then(|f| f.scope)
-                                .map(|s| s.id());
-                            if let Some(content) = content
-                                && let Ok((keep, ())) =
-                                    rt.with_owner(keep_root.id(), |rt| rt.scope(|_| ()))
-                            {
-                                if ctx.keep_cells(rt, content, keep.id()) > 0 {
-                                    kept.borrow_mut().insert(it.key.clone(), keep);
-                                } else {
-                                    keep.dispose(rt);
-                                }
-                            }
                         }
                         leave(rt, it);
                     },
