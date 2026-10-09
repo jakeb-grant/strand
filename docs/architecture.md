@@ -2266,10 +2266,17 @@ and the connection):
     `State::take_back(surface)` and the hook
     `SurfaceHost::gpu_release(surface)`; the rules are in
     "`strand-gpu`", "Surface hand-off".
-  - Capabilities: the manager binds `wp_alpha_modifier_v1`,
+  - Capabilities (`caps.rs`): the manager binds `wp_alpha_modifier_v1`,
     `wp_single_pixel_buffer_v1` and `ext_background_effect_manager_v1`
-    when offered, and calls the new hook `SurfaceHost::compositor_caps(
-    &CompositorCaps)` once its globals are bound.
+    when offered, looks up `ext_session_lock_manager_v1` and
+    `wl_data_device_manager` in the registry, and calls the new hook
+    `SurfaceHost::compositor_caps(&CompositorCaps)` at the end of its
+    first wakeup (after the binds' replies, before any surface is
+    configured), and again whenever they change (the background
+    effect's `capabilities` event can come later or change).
+    `background_effect` is true only once that event names blur.
+    `State::compositor_caps()` reads them. The binary's host hands
+    `set_compositor_blur` to render and forwards `Painter::blur_region`.
   - Poses: each frame it reads `Painter::surface_pose` and applies it
     (alpha modifier, viewporter destination size, layer-shell margins);
     a pose change with no damage is a bare commit with no buffer, and

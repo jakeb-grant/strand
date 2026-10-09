@@ -40,6 +40,10 @@ use wayland_client::protocol::{
     wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
 };
 use wayland_client::{Connection, Proxy, QueueHandle};
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
+    self, ExtBackgroundEffectManagerV1,
+};
+use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
@@ -48,6 +52,7 @@ use wayland_protocols::wp::presentation_time::client::{
     wp_presentation::{self, WpPresentation},
     wp_presentation_feedback::{self, WpPresentationFeedback},
 };
+use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
@@ -59,6 +64,7 @@ use strand_scene::{
     Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
+use crate::caps::Offered;
 use crate::clock::{FrameClock, Presentation, PresentationClock};
 use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
@@ -582,6 +588,19 @@ pub struct State<H: SurfaceHost + 'static> {
     viewporter: Option<WpViewporter>,
     fractional_manager: Option<WpFractionalScaleManagerV1>,
     presentation: Option<WpPresentation>,
+    /// (M4) Optional protocols: the alpha modifier (poses), single-pixel
+    /// buffers (scrims) and the background effect (the blur ladder).
+    /// Bound for compositor-animated poses (M4 wave 2).
+    #[allow(dead_code)]
+    alpha_modifier: Option<WpAlphaModifierV1>,
+    #[allow(dead_code)]
+    single_pixel: Option<WpSinglePixelBufferManagerV1>,
+    #[allow(dead_code)]
+    background_effect: Option<ExtBackgroundEffectManagerV1>,
+    /// What the compositor offers, and the capabilities last reported
+    /// through [`SurfaceHost::compositor_caps`] (`None`: not yet).
+    offered: Offered,
+    reported_caps: Option<CompositorCaps>,
     clock: Box<dyn FrameClock>,
     max_buffers: usize,
     monitors: Monitors,
@@ -745,6 +764,22 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         let presentation = globals
             .bind::<WpPresentation, _, _>(&qh, 1..=1, StrandGlobal)
             .ok();
+        let alpha_modifier = globals
+            .bind::<WpAlphaModifierV1, _, _>(&qh, 1..=1, StrandGlobal)
+            .ok();
+        let single_pixel = globals
+            .bind::<WpSinglePixelBufferManagerV1, _, _>(&qh, 1..=1, StrandGlobal)
+            .ok();
+        let background_effect = globals
+            .bind::<ExtBackgroundEffectManagerV1, _, _>(&qh, 1..=1, StrandGlobal)
+            .ok();
+        let mut offered = globals
+            .contents()
+            .with_list(|list| Offered::from_registry(list.iter().map(|g| g.interface.as_str())));
+        offered.alpha_modifier = alpha_modifier.is_some();
+        offered.viewporter = viewporter.is_some();
+        offered.single_pixel_buffer = single_pixel.is_some();
+        offered.background_effect = background_effect.is_some();
 
         WaylandSource::new(conn.clone(), queue)
             .insert(handle.clone())
@@ -758,6 +793,10 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             })
             .map_err(|e| SurfaceError::EventLoop(e.error))?;
 
+        // The capabilities go to the host once the first wakeup has read
+        // the replies to these binds (the background effect's
+        // `capabilities` among them), before any surface is configured.
+        handle.insert_idle(|state: &mut State<H>| state.report_caps());
         let state = State {
             host,
             conn,
@@ -773,6 +812,11 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             viewporter,
             fractional_manager,
             presentation,
+            alpha_modifier,
+            single_pixel,
+            background_effect,
+            offered,
+            reported_caps: None,
             clock: config.clock,
             max_buffers: config.max_buffers,
             monitors: Monitors::default(),
@@ -937,6 +981,24 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// True when `wp_presentation` feedback drives the frame clock.
     pub fn presentation_available(&self) -> bool {
         self.presentation.is_some()
+    }
+
+    /// (M4) The optional protocols the compositor offers, as reported to
+    /// the host ([`SurfaceHost::compositor_caps`]).
+    pub fn compositor_caps(&self) -> CompositorCaps {
+        self.offered.caps()
+    }
+
+    /// Tells the host the compositor's capabilities when they are new or
+    /// changed (the background effect's flags can change at any time).
+    fn report_caps(&mut self) {
+        let caps = self.offered.caps();
+        if self.reported_caps == Some(caps) {
+            return;
+        }
+        self.reported_caps = Some(caps);
+        log::debug!("compositor capabilities: {caps:?}");
+        self.host.compositor_caps(&caps);
     }
 
     /// Handles a [`Request`] (also what the repaint channel delivers).

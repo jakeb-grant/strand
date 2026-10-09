@@ -11,11 +11,13 @@
 //! the refresh rate, and pointer input as [`InputEvent`]s (the types live
 //! in `strand-scene`).
 //!
-//! Compositor-animated poses (alpha modifier, viewporter, margins), the
-//! blur ladder and shaped input regions land in M4.
+//! M4 adds compositor capabilities ([`caps`]), the blur ladder's
+//! `ext-background-effect-v1` rung, single-pixel scrims and `attach`
+//! fillets; compositor-animated poses follow.
 //!
 //! See `docs/architecture.md`, "strand-surface" and "Render loop".
 
+pub mod caps;
 pub mod clock;
 pub mod input;
 mod manager;

@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Damage, Insets, LogicalRect, NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Rect,
-    Scale, Size, SurfaceChange, SurfaceId, SurfaceSpec,
+    BlurRegion, CompositorCaps, Damage, Insets, LogicalRect, NodeId, NodeKind, PaintTarget,
+    Painter, Prop, PropValue, Rect, Scale, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 use strand_surface::{Config, InputEvent, Monitor, MonitorId, SurfaceHost, SurfaceManager};
 use wayland_client::Connection;
@@ -327,6 +327,10 @@ pub struct TestHost {
     empty_done: HashSet<SurfaceId>,
     /// Pixels found not to hold the frame the buffer age claimed.
     pub age_errors: u64,
+    /// What [`SurfaceHost::compositor_caps`] reported, in order.
+    pub caps: Vec<CompositorCaps>,
+    /// What [`Painter::blur_region`] answers for every surface.
+    pub blur: Vec<BlurRegion>,
 }
 
 impl TestHost {
@@ -474,6 +478,10 @@ impl Painter for TestHost {
             _ => Damage::new(),
         }
     }
+
+    fn blur_region(&self, _: SurfaceId) -> Vec<BlurRegion> {
+        self.blur.clone()
+    }
 }
 
 impl SurfaceHost for TestHost {
@@ -510,6 +518,17 @@ impl SurfaceHost for TestHost {
 
     fn monitor_changed(&mut self, monitor: &Monitor) {
         self.monitors_changed.push(monitor.clone());
+    }
+
+    fn compositor_caps(&mut self, caps: &CompositorCaps) {
+        self.caps.push(*caps);
+    }
+}
+
+/// Bumps the content version so every surface paints again.
+impl TestHost {
+    pub fn touch(&mut self) {
+        self.version += 1;
     }
 }
 

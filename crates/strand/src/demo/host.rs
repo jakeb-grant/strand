@@ -10,7 +10,8 @@ use calloop::channel::Sender;
 use strand_compiler::instantiate::NodeFlag;
 use strand_render::{Flag, InputScene, Intent, NodeEvent as RouteEvent, Renderer, Router};
 use strand_scene::{
-    Damage, InputEvent, NodeId, PaintTarget, Painter, Prop, Scale, SceneDiff, Size, SurfaceId,
+    BlurRegion, CompositorCaps, Damage, InputEvent, NodeId, PaintTarget, Painter, Prop, Scale,
+    SceneDiff, Size, SurfaceId,
 };
 use strand_surface::{Monitor, SurfaceHost};
 
@@ -356,6 +357,10 @@ impl Painter for Host {
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
         self.renderer.opaque_region(surface)
     }
+
+    fn blur_region(&self, surface: SurfaceId) -> Vec<BlurRegion> {
+        self.renderer.blur_region(surface)
+    }
 }
 
 impl SurfaceHost for Host {
@@ -458,6 +463,17 @@ impl SurfaceHost for Host {
             eprintln!("strand: dropped surface={}", surface.0);
         }
         self.renderer.invalidate(surface);
+    }
+
+    fn compositor_caps(&mut self, caps: &CompositorCaps) {
+        // The blur ladder's first rung: with `ext-background-effect-v1`
+        // confirmed, `blur` draws no tint (the compositor blurs).
+        self.renderer.set_compositor_blur(caps.background_effect);
+        // Shown surfaces repaint with or without the tint: the main loop
+        // polls them (a report is rare: once, and on a change).
+        if let Some(p) = &self.wake {
+            p.ping();
+        }
     }
 }
 

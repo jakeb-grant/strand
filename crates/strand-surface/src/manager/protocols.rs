@@ -1,5 +1,6 @@
 //! Registry, shm and the protocol objects this crate binds itself
-//! (viewporter, fractional scale, presentation).
+//! (viewporter, fractional scale, presentation, and in M4 the alpha
+//! modifier, single-pixel buffers and the background effect).
 
 use super::*;
 
@@ -91,6 +92,51 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentation, State<H>> for StrandGlo
     ) {
         if let wp_presentation::Event::ClockId { clk_id } = event {
             state.clock.set_clock_id(clk_id);
+        }
+    }
+}
+
+impl<H: SurfaceHost + 'static> Dispatch2<WpAlphaModifierV1, State<H>> for StrandGlobal {
+    fn event(
+        &self,
+        _: &mut State<H>,
+        _: &WpAlphaModifierV1,
+        _: wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::Event,
+        _: &Connection,
+        _: &QueueHandle<State<H>>,
+    ) {
+    }
+}
+
+impl<H: SurfaceHost + 'static> Dispatch2<WpSinglePixelBufferManagerV1, State<H>> for StrandGlobal {
+    fn event(
+        &self,
+        _: &mut State<H>,
+        _: &WpSinglePixelBufferManagerV1,
+        _: wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::Event,
+        _: &Connection,
+        _: &QueueHandle<State<H>>,
+    ) {
+    }
+}
+
+impl<H: SurfaceHost + 'static> Dispatch2<ExtBackgroundEffectManagerV1, State<H>> for StrandGlobal {
+    fn event(
+        &self,
+        state: &mut State<H>,
+        _: &ExtBackgroundEffectManagerV1,
+        event: ext_background_effect_manager_v1::Event,
+        _: &Connection,
+        _: &QueueHandle<State<H>>,
+    ) {
+        if let ext_background_effect_manager_v1::Event::Capabilities { flags } = event {
+            state.offered.effect_flags = flags.into_result().map_or(0, |f| f.bits());
+            // Before the first report this only fills it in; after, a
+            // change of mind (blur turned off in the compositor's
+            // settings) reaches the host.
+            if state.reported_caps.is_some() {
+                state.report_caps();
+            }
         }
     }
 }

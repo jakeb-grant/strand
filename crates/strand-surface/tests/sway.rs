@@ -2018,3 +2018,22 @@ fn a_keyboard_going_away_after_a_press_leaves_the_shell_running() {
     assert!(ok, "{:?}", mgr.state().surfaces());
     drop(input);
 }
+
+/// Sway 1.9 offers the viewporter, single-pixel buffers, the session
+/// lock and the data device, and no background effect: the manager
+/// reports exactly that once its globals are bound (the alpha modifier
+/// came with sway 1.10, so it is not asserted).
+#[test]
+fn sway_reports_its_capabilities() {
+    let Some((_sway, mut mgr)) = start("sway_reports_its_capabilities", Config::default()) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let caps = mgr.state().host().caps.clone();
+    assert_eq!(caps.len(), 1, "reported once: {caps:?}");
+    let c = caps[0];
+    assert!(c.viewporter && c.single_pixel_buffer, "{c:?}");
+    assert!(c.session_lock && c.data_device, "{c:?}");
+    assert!(!c.background_effect, "{c:?}");
+    assert_eq!(mgr.state().compositor_caps(), c);
+}
