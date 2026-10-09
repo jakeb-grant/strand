@@ -49,8 +49,10 @@
 //!
 //! A reply the adapter cannot read (not JSON, or without a field it needs:
 //! an address, an id, a name), eight lines in a row that are no event (no
-//! `>>`), or an action refused in both dialects degrade the adapter
-//! (`understood`): the protocols serve until Hyprland is understood again,
+//! `>>`), or an action every Hyprland has (focus, close) refused in both
+//! dialects degrade the adapter (`understood`; a later action refused in
+//! both is only rejected, `understood::tells_syntax`): the protocols
+//! serve until Hyprland is understood again,
 //! and the diagnostic names Hyprland's version (`j/version`, read then).
 //! An event name it does not know is ignored, as before.
 
@@ -67,7 +69,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, next_line, too_long};
 use super::model::{Window, WmState, Workspace};
-use super::understood::{self, Refused, SessionEnd, Strikes};
+use super::understood::{self, Degradation, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 /// How long one request may take; Hyprland answers synchronously.
@@ -605,7 +607,7 @@ pub(crate) async fn run(
 ) {
     let mut backoff = Backoff::new();
     let mut state = State::default();
-    let mut refused = None;
+    let mut degradation = Degradation::default();
     loop {
         let end = session(
             &requests,
@@ -614,21 +616,21 @@ pub(crate) async fn run(
             &mut cmds,
             &mut state,
             &mut backoff,
-            &mut refused,
+            &mut degradation,
         )
         .await;
         let msg = match end {
             Ok(()) => return,
             Err(SessionEnd::Io(e)) => {
                 log::warn!("Hyprland IPC: {e}; reconnecting");
-                AdapterMsg::Connected(false)
+                Some(AdapterMsg::Connected(false))
             }
             Err(SessionEnd::NotUnderstood(n)) => {
                 let v = version(&requests).await;
-                understood::degraded("Hyprland", n, v, &mut refused)
+                degradation.ended("Hyprland", n, v)
             }
         };
-        if tx.send(msg).is_err() {
+        if msg.is_some_and(|m| tx.send(m).is_err()) {
             return;
         }
         backoff.wait(&mut cmds).await;
@@ -643,7 +645,7 @@ async fn session(
     cmds: &mut UnboundedReceiver<Cmd>,
     state: &mut State,
     backoff: &mut Backoff,
-    refused: &mut Option<Refused>,
+    degradation: &mut Degradation,
 ) -> Result<(), SessionEnd> {
     // Subscribe first, so nothing between the read and the stream is lost.
     let stream = UnixStream::connect(events).await?;
@@ -652,16 +654,11 @@ async fn session(
     query(requests, state).await?;
     // Actions this Hyprland refused in both dialects stay refused until
     // it reports another version.
-    if let Some(r) = refused.as_ref() {
-        if r.holds_for(version(requests).await.as_deref()) {
-            return Err(SessionEnd::actions(r.what.clone()));
-        }
-        *refused = None;
-    }
-    backoff.connected();
-    if tx.send(AdapterMsg::Connected(true)).is_err()
-        || tx.send(AdapterMsg::State(state.snapshot())).is_err()
-    {
+    degradation.check_refusal(version(requests)).await?;
+    // After a stream that was not understood, up only once this one
+    // carried an event (`understood::Degradation`).
+    let mut up = !degradation.on_probation();
+    if up && !degradation.come_up(tx, backoff, state.snapshot()) {
         return Ok(());
     }
     let mut cmds_open = true;
@@ -710,7 +707,15 @@ async fn session(
                 if requery {
                     query(requests, state).await?;
                 }
-                if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                if !up {
+                    if !strikes.seen_event() {
+                        continue;
+                    }
+                    up = true;
+                    if !degradation.come_up(tx, backoff, state.snapshot()) {
+                        return Ok(());
+                    }
+                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
                     return Ok(());
                 }
                 for _ in 0..reloads {
@@ -720,6 +725,12 @@ async fn session(
                 }
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
+                // Not up: the services act through the protocols.
+                Some((_, reply)) if !up => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Err(WmError::NotConnected));
+                    }
+                }
                 Some((action, reply)) => {
                     let (result, refused_both) =
                         dispatch_either(requests, state, &action, &mut dialect).await;
@@ -756,6 +767,14 @@ async fn dispatch_either(
     let other = dialect.other();
     let second = dispatch(requests, state, action, other).await;
     match &second {
+        // A later action (a fullscreen form) this Hyprland may not have:
+        // that action's failure, in the connection's dialect
+        // (`understood::tells_syntax`).
+        Err(WmError::Rejected(second_reply))
+            if refuses_dialect(second_reply) && !understood::tells_syntax(action) =>
+        {
+            (first, None)
+        }
         Err(WmError::Rejected(second_reply)) if refuses_dialect(second_reply) => {
             let form = |d: Dialect| state.dispatch_for(action, d).unwrap_or_default();
             let what = format!(

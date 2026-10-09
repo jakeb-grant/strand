@@ -2399,15 +2399,22 @@ transparent huge pages for life.
   compositor (`wm::understood`: a reply to a state request that is not
   the JSON it reads or lacks a field it needs, at once; eight
   event-stream messages in a row that are no event, each re-read; an
-  action whose syntax the compositor refuses in every dialect, which
-  holds until the compositor reports another version) sends
+  action every supported version has (focus a workspace, focus or close
+  a window; `understood::tells_syntax`) whose syntax the compositor
+  refuses in every dialect, which holds until the compositor reports
+  another version; the same refusal of a later action only rejects it)
+  sends
   `AdapterMsg::Degraded(text)` instead of `Connected(false)`: the run
   drops the adapter's state and serves the protocols exactly as when it
   cannot connect (their ids with a `Reset`, their actions), sets
   `Sources::degraded: Option<String>` (the compositor, its version from
   `j/version`, niri's `"Version"` or sway's `get_version`, and what
   was not understood; `connected` false), and the adapter retries on its
-  backoff; its next state clears it. The oldest subscription
+  backoff; its next state clears it. Retries do not flip the ids back
+  and forth (`understood::Degradation`): after a stream that was not
+  understood, a session sends `Connected(true)` and its state only once
+  its stream carried an event, and a session that never came up sends
+  no second `Degraded`. The oldest subscription
   (`WmSubscription::reports()`) raises each new `degraded` text as a
   `ServiceDiagnostic` with `Cx::warn` (logged and sent to `strand
   watch`; not an overlay notice, as the service retries it itself).

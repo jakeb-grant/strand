@@ -676,6 +676,83 @@ async fn an_unknown_sway_event_is_harmless_but_a_stream_of_no_events_is_not() {
         why.contains("event stream") && why.contains("sway 1.9"),
         "{why}"
     );
+
+    // A sway whose stream stays that way: retries read the state and the
+    // stream, but none comes up (no flip back to sway's ids, the reason
+    // raised once).
+    let why = why.to_string();
+    let before = fake.connections.load(std::sync::atomic::Ordering::SeqCst);
+    let up = c.log.len();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while tokio::time::Instant::now() < deadline {
+        for _ in 0..8 {
+            fake.send_event(3, b"not json");
+        }
+        c.quiet_for(Duration::from_millis(50)).await;
+    }
+    assert!(
+        fake.connections.load(std::sync::atomic::Ordering::SeqCst) >= before + 4,
+        "retried"
+    );
+    assert_eq!(degraded(&c.mirror), Some(why.as_str()));
+    assert!(c.mirror.windows.is_empty());
+    for ch in &c.log[up..] {
+        match ch {
+            wm::WmChange::Sources(s) => {
+                assert!(!s.connected, "no flip back to sway's state: {s:?}");
+                assert_eq!(s.degraded.as_deref(), Some(why.as_str()), "raised once");
+            }
+            other => panic!("the retries changed something: {other:?}"),
+        }
+    }
+
+    // Its stream carries events again: up, with its state.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !(c.mirror.sources.connected
+        && degraded(&c.mirror).is_none()
+        && c.mirror.window_by_app("foot").is_some())
+    {
+        assert!(tokio::time::Instant::now() < deadline, "not recovered");
+        fake.send_event(0x63, b"{}");
+        c.quiet_for(Duration::from_millis(100)).await;
+    }
+    service.abort();
+}
+
+/// A parse error for a later action (fullscreen) is that action's: it is
+/// rejected, and the adapter stays.
+#[tokio::test]
+async fn a_sway_refusing_a_later_command_rejects_only_it() {
+    let fake = FakeSway::start(b"foot");
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| {
+        m.sources.connected && m.window_by_app("foot").is_some()
+    })
+    .await;
+    fake.set_reply(
+        0,
+        Some(br#"[{"success": false, "parse_error": true, "error": "Unknown/invalid command 'fullscreen'"}]"#),
+    );
+    let id = c.mirror.window_by_app("foot").unwrap().id.clone();
+    let (r, done) = WmRequest::new(WmAction::FullscreenWindow(id.clone()));
+    req_tx.send(r).unwrap();
+    assert!(matches!(done.await, Err(wm::WmError::Rejected(_))));
+    let up = c.log.len();
+    c.quiet_for(Duration::from_millis(500)).await;
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(_))),
+        "the adapter stays"
+    );
+    fake.set_reply(0, None);
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(id));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
     service.abort();
 }
 

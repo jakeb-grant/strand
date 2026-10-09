@@ -28,12 +28,16 @@ for the reasoning behind each item below.
 - Branch `laptop/resilience` (from `laptop/integration2`; decisions.md
   laptop-resilience) makes the compositor adapters resilient to a
   compositor that changed: an adapter that is connected but cannot read
-  a reply, the event stream, or has its action syntax refused in every
-  dialect degrades to the standard protocols (as when it cannot connect),
-  raises one non-notice `ServiceDiagnostic` naming the compositor, its
-  version and what was not understood (`Cx::warn`; log and
-  `strand watch`, not the overlay), and retries on its backoff; it
-  recovers on its own. Hyprland dispatches send Lua first and fall back
+  a reply, the event stream, or has the syntax of an action every
+  version has (focus, close) refused in every dialect degrades to the
+  standard protocols (as when it cannot connect), raises one non-notice
+  `ServiceDiagnostic` naming the compositor, its version and what was
+  not understood (`Cx::warn`; log and `strand watch`, not the overlay),
+  and retries on its backoff without flipping back until it is
+  understood (after a stream failure, a retry comes up only on an
+  event); it recovers on its own. A later action an older compositor
+  cannot parse (niri 25.08 and `MaximizeWindowToEdges`) is only
+  rejected. Hyprland dispatches send Lua first and fall back
   to classic on `Invalid dispatcher`, keeping the dialect that worked for
   the session. CI's `compositors` job now also runs nightly against
   `archlinux:latest`, and its step summary lists each compositor's

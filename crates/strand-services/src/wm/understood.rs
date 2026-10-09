@@ -23,17 +23,36 @@
 //!   Hyprland line without `>>`); each is followed by a re-read, so one
 //!   costs only that;
 //! - an action whose syntax the compositor refuses in every dialect it
-//!   has (Hyprland's Lua and classic dispatches; niri's and sway's one):
-//!   the window and workspace actions would all fail. Such a refusal
-//!   holds for that compositor version: a retry that finds the same
-//!   version stays degraded ([`Refused`]).
+//!   has (Hyprland's Lua and classic dispatches; niri's and sway's one),
+//!   when the action is one every supported version has ([`tells_syntax`]:
+//!   focus a workspace, focus or close a window): the window and workspace
+//!   actions would all fail. Such a refusal holds for that compositor
+//!   version: a retry that finds the same version stays degraded
+//!   ([`Refused`]). The same answer to a later action (maximize,
+//!   fullscreen; niri 25.08 has no `MaximizeWindowToEdges` and answers it
+//!   `error parsing request`) is that action's: it is rejected, and the
+//!   adapter stays.
+//!
+//! A retry must not flip the services between the two id spaces
+//! ([`Degradation`]): after the event stream was not understood, the next
+//! session comes up (sends its state) only once its stream has carried an
+//! event; until then it reads and answers actions `NotConnected`. And a
+//! session that never came up does not report its end again: the service
+//! already has the reason, so the diagnostic is raised once per
+//! degradation.
 //!
 //! An event the adapter does not know (a new event name, a new change
 //! kind) is ignored or re-read as before: it never counts. An event it
 //! knows whose data has a new shape is followed by a re-read, whose
 //! replies decide.
 
+use std::future::Future;
 use std::io;
+
+use tokio::sync::mpsc::UnboundedSender;
+
+use super::backoff::Backoff;
+use super::{AdapterMsg, IpcSnapshot, WmAction};
 
 /// Consecutive event-stream messages that are not events at all before
 /// the stream counts as not understood. One or two from a compositor that
@@ -69,31 +88,60 @@ impl std::fmt::Display for SessionEnd {
     }
 }
 
+/// Which part of the IPC was not understood.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    /// A reply to a state request.
+    Reply,
+    /// The event stream ([`MAX_STRIKES`] messages that are no event).
+    Stream,
+    /// An action's syntax, refused in every dialect.
+    Actions,
+}
+
 /// What the adapter could not understand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NotUnderstood {
     /// For the diagnostic: `the reply to j/clients (…)`.
     pub what: String,
-    /// It was an action's syntax, refused in every dialect.
-    pub actions: bool,
+    pub part: Part,
 }
 
 impl SessionEnd {
-    /// A reply or the event stream was not understood.
-    pub(crate) fn reply(what: impl Into<String>) -> Self {
+    fn not_understood(what: impl Into<String>, part: Part) -> Self {
         Self::NotUnderstood(NotUnderstood {
             what: what.into(),
-            actions: false,
+            part,
         })
+    }
+
+    /// A reply was not understood.
+    pub(crate) fn reply(what: impl Into<String>) -> Self {
+        Self::not_understood(what, Part::Reply)
+    }
+
+    /// The event stream was not understood.
+    pub(crate) fn stream(what: impl Into<String>) -> Self {
+        Self::not_understood(what, Part::Stream)
     }
 
     /// An action's syntax was refused in every dialect.
     pub(crate) fn actions(what: impl Into<String>) -> Self {
-        Self::NotUnderstood(NotUnderstood {
-            what: what.into(),
-            actions: true,
-        })
+        Self::not_understood(what, Part::Actions)
     }
+}
+
+/// Whether a refusal of `action`'s syntax in every dialect is the
+/// syntax's rather than the action's: it is one every supported version of
+/// each compositor has (focus a workspace, focus or close a window). A
+/// compositor that cannot parse a later one (maximize, fullscreen,
+/// minimize) may just not have it yet: that action is rejected and the
+/// adapter stays (decisions.md, laptop-resilience).
+pub(crate) fn tells_syntax(action: &WmAction) -> bool {
+    matches!(
+        action,
+        WmAction::FocusWorkspace(_) | WmAction::FocusWindow(_) | WmAction::CloseWindow(_)
+    )
 }
 
 /// The first characters of `text`, on one line, for a diagnostic.
@@ -142,42 +190,110 @@ impl Refused {
     }
 }
 
-/// The message a run loop sends when its session ended not understood
-/// (`version`: what the compositor reports, read after the session):
-/// [`super::AdapterMsg::Degraded`] with the diagnostic's text. A refusal
-/// of actions is kept in `refused` for the next attempts.
-pub(crate) fn degraded(
-    compositor: &str,
-    n: NotUnderstood,
-    version: Option<String>,
-    refused: &mut Option<Refused>,
-) -> super::AdapterMsg {
-    let text = message(compositor, version.as_deref(), &n.what);
-    if n.actions {
-        *refused = Some(Refused {
-            version,
-            what: n.what,
-        });
+/// What an adapter keeps between sessions about not understanding its
+/// compositor, so that retries neither flip the services between the
+/// adapter's and the protocols' ids nor raise the diagnostic again.
+#[derive(Debug, Default)]
+pub(crate) struct Degradation {
+    /// Actions refused in every dialect, by this version.
+    refused: Option<Refused>,
+    /// The event stream was not understood: the next session comes up only
+    /// once its stream carried an event.
+    stream: bool,
+    /// The service was told it is degraded, and no session came up since.
+    reported: bool,
+}
+
+impl Degradation {
+    /// Before a session comes up: `Err` while the compositor reports the
+    /// version that refused the actions (`version` is read only then).
+    pub(crate) async fn check_refusal(
+        &mut self,
+        version: impl Future<Output = Option<String>>,
+    ) -> Result<(), SessionEnd> {
+        let Some(r) = &self.refused else {
+            return Ok(());
+        };
+        if r.holds_for(version.await.as_deref()) {
+            return Err(SessionEnd::actions(r.what.clone()));
+        }
+        self.refused = None;
+        Ok(())
     }
-    super::AdapterMsg::Degraded(text)
+
+    /// Whether the session must see an event before it comes up.
+    pub(crate) fn on_probation(&self) -> bool {
+        self.stream
+    }
+
+    /// The session comes up: `Connected(true)` and its state. `false` when
+    /// the service is gone.
+    pub(crate) fn come_up(
+        &mut self,
+        tx: &UnboundedSender<AdapterMsg>,
+        backoff: &mut Backoff,
+        snapshot: IpcSnapshot,
+    ) -> bool {
+        self.stream = false;
+        self.reported = false;
+        backoff.connected();
+        tx.send(AdapterMsg::Connected(true)).is_ok() && tx.send(AdapterMsg::State(snapshot)).is_ok()
+    }
+
+    /// A session ended not understood (`version`: what the compositor
+    /// reports, read after it): [`AdapterMsg::Degraded`] with the
+    /// diagnostic's text, or `None` when no session came up since the last
+    /// one was sent (the service already has the reason).
+    pub(crate) fn ended(
+        &mut self,
+        compositor: &str,
+        n: NotUnderstood,
+        version: Option<String>,
+    ) -> Option<AdapterMsg> {
+        let text = message(compositor, version.as_deref(), &n.what);
+        match n.part {
+            Part::Reply => {}
+            Part::Stream => self.stream = true,
+            Part::Actions => {
+                self.refused = Some(Refused {
+                    version,
+                    what: n.what,
+                });
+            }
+        }
+        if std::mem::replace(&mut self.reported, true) {
+            log::debug!("still degraded: {text}");
+            return None;
+        }
+        Some(AdapterMsg::Degraded(text))
+    }
 }
 
 /// Counts consecutive event-stream messages that are not events at all.
 #[derive(Debug, Default)]
-pub(crate) struct Strikes(u32);
+pub(crate) struct Strikes {
+    in_a_row: u32,
+    seen_event: bool,
+}
 
 impl Strikes {
     /// A message that was an event (known or not): the count starts over.
     pub(crate) fn event(&mut self) {
-        self.0 = 0;
+        self.in_a_row = 0;
+        self.seen_event = true;
+    }
+
+    /// Whether the stream carried an event (known or not) yet.
+    pub(crate) fn seen_event(&self) -> bool {
+        self.seen_event
     }
 
     /// A message that was no event: `Err` once [`MAX_STRIKES`] came in a
     /// row.
     pub(crate) fn garbage(&mut self, compositor: &str, sample: &[u8]) -> Result<(), SessionEnd> {
-        self.0 += 1;
-        if self.0 >= MAX_STRIKES {
-            return Err(SessionEnd::reply(format!(
+        self.in_a_row += 1;
+        if self.in_a_row >= MAX_STRIKES {
+            return Err(SessionEnd::stream(format!(
                 "its event stream ({MAX_STRIKES} messages in a row that are no {compositor} \
                  event, the last `{}`)",
                 excerpt(&String::from_utf8_lossy(sample))
@@ -224,7 +340,7 @@ mod tests {
         }
         match s.garbage("niri", b"junk") {
             Err(SessionEnd::NotUnderstood(n)) => {
-                assert!(!n.actions);
+                assert_eq!(n.part, Part::Stream);
                 assert!(n.what.contains("`junk`"), "{}", n.what);
             }
             other => panic!("{other:?}"),
@@ -245,5 +361,60 @@ mod tests {
             what: "x".into(),
         };
         assert!(!unknown.holds_for(None));
+    }
+
+    #[test]
+    fn only_actions_every_version_has_tell_the_syntax() {
+        assert!(tells_syntax(&WmAction::FocusWorkspace(1)));
+        assert!(tells_syntax(&WmAction::FocusWindow("1".into())));
+        assert!(tells_syntax(&WmAction::CloseWindow("1".into())));
+        assert!(!tells_syntax(&WmAction::MaximizeWindow("1".into())));
+        assert!(!tells_syntax(&WmAction::FullscreenWindow("1".into())));
+        assert!(!tells_syntax(&WmAction::MinimizeWindow("1".into())));
+    }
+
+    fn end(part: Part) -> NotUnderstood {
+        NotUnderstood {
+            what: "x".into(),
+            part,
+        }
+    }
+
+    /// One `Degraded` per degradation: retries that never come up stay
+    /// silent; a session that came up reports its next end again. A stream
+    /// that was not understood puts the next session on probation, until
+    /// one comes up.
+    #[tokio::test]
+    async fn a_degradation_is_reported_once_and_a_stream_one_waits_for_an_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut d = Degradation::default();
+        assert!(!d.on_probation());
+        let first = d.ended("niri", end(Part::Stream), Some("26.04".into()));
+        assert!(matches!(first, Some(AdapterMsg::Degraded(t)) if t.contains("niri 26.04: x")));
+        assert!(d.on_probation());
+        assert!(d.ended("niri", end(Part::Stream), None).is_none());
+        assert!(d.ended("niri", end(Part::Reply), None).is_none());
+        assert!(d.on_probation(), "a reply failure keeps the probation");
+
+        let mut backoff = Backoff::new();
+        assert!(d.come_up(&tx, &mut backoff, IpcSnapshot::default()));
+        assert!(matches!(rx.try_recv(), Ok(AdapterMsg::Connected(true))));
+        assert!(matches!(rx.try_recv(), Ok(AdapterMsg::State(_))));
+        assert!(!d.on_probation());
+        assert!(d.ended("niri", end(Part::Reply), None).is_some());
+        assert!(!d.on_probation(), "a reply failure needs no event");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_holds_across_retries_for_its_version() {
+        let mut d = Degradation::default();
+        assert!(d.check_refusal(async { None }).await.is_ok());
+        assert!(
+            d.ended("sway", end(Part::Actions), Some("1.9".into()))
+                .is_some()
+        );
+        assert!(d.check_refusal(async { Some("1.9".into()) }).await.is_err());
+        assert!(d.check_refusal(async { Some("1.10".into()) }).await.is_ok());
+        assert!(d.check_refusal(async { Some("1.9".into()) }).await.is_ok());
     }
 }

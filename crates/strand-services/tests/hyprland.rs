@@ -671,6 +671,82 @@ async fn an_unknown_hyprland_event_is_harmless_but_a_stream_of_no_events_is_not(
         "{why}"
     );
     assert!(why.contains("`not an event`"), "{why}");
+
+    // A Hyprland whose stream stays that way: every retry reads the state
+    // (its replies are fine) and the stream, but none comes up, so the
+    // services never flip back to its ids, and the reason is raised once.
+    let why = why.to_string();
+    let versions =
+        |fake: &FakeHyprland| fake.requests().iter().filter(|r| *r == "j/version").count();
+    let before = versions(&fake);
+    let up = c.log.len();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while tokio::time::Instant::now() < deadline {
+        fake.send(&"not an event\n".repeat(8));
+        c.quiet_for(Duration::from_millis(50)).await;
+    }
+    assert!(versions(&fake) >= before + 2, "retried");
+    assert_eq!(degraded(&c.mirror), Some(why.as_str()));
+    assert!(c.mirror.workspaces.is_empty());
+    for ch in &c.log[up..] {
+        match ch {
+            wm::WmChange::Sources(s) => {
+                assert!(!s.connected, "no flip back to the IPC state: {s:?}");
+                assert_eq!(s.degraded.as_deref(), Some(why.as_str()), "raised once");
+            }
+            other => panic!("the retries changed something: {other:?}"),
+        }
+    }
+
+    // Its stream carries events again: up, with its state.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !(c.mirror.sources.connected
+        && degraded(&c.mirror).is_none()
+        && !c.mirror.workspaces.is_empty())
+    {
+        assert!(tokio::time::Instant::now() < deadline, "not recovered");
+        fake.send("activelayout>>kb,us\n");
+        c.quiet_for(Duration::from_millis(100)).await;
+    }
+    service.abort();
+}
+
+/// A Hyprland refusing a later action (a fullscreen form) in both dialects
+/// may just not have it: that action is rejected, and the adapter stays.
+#[tokio::test]
+async fn a_hyprland_refusing_a_later_action_in_both_dialects_rejects_only_it() {
+    let fake = FakeHyprland::start();
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.windows.is_empty())
+        .await;
+    fake.set_reply("dispatch ", b"Invalid dispatcher");
+    let (r, done) = WmRequest::new(WmAction::FullscreenWindow("0x55d0c0a1b2c0".into()));
+    req_tx.send(r).unwrap();
+    assert_eq!(
+        done.await,
+        Err(WmError::Rejected("Invalid dispatcher".into()))
+    );
+    let up = c.log.len();
+    c.quiet_for(Duration::from_millis(500)).await;
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(_))),
+        "the adapter stays"
+    );
+    fake.clear_reply("dispatch ");
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
     service.abort();
 }
 

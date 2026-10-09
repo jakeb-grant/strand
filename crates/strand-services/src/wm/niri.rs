@@ -9,9 +9,11 @@
 //! (`niri-ipc/src/lib.rs`). Unknown events and fields are ignored.
 //! A known event whose data has another shape is followed by a re-read;
 //! a reply the adapter cannot read (or an `Err` to a query), eight lines
-//! in a row that are no JSON, or an action niri cannot parse (`error
-//! parsing request`) degrade the adapter (`understood`), naming niri's
-//! version (`"Version"`).
+//! in a row that are no JSON, or an action every niri has that it cannot
+//! parse (`error parsing request`) degrade the adapter (`understood`),
+//! naming niri's version (`"Version"`). niri gives the same answer to an
+//! action it does not have (25.08 and `MaximizeWindowToEdges`): such a
+//! later action is only rejected (`understood::tells_syntax`).
 //!
 //! Every request gets a connection of its own: niri before 25.05 reads
 //! one request per connection and closes it (`src/ipc/server.rs`,
@@ -32,7 +34,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::backoff::Backoff;
 use super::lines::next_line;
 use super::model::{Window, WmState, Workspace};
-use super::understood::{self, Refused, SessionEnd, Strikes};
+use super::understood::{self, Degradation, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -499,20 +501,20 @@ pub(crate) async fn run(
     mut cmds: UnboundedReceiver<Cmd>,
 ) {
     let mut backoff = Backoff::new();
-    let mut refused = None;
+    let mut degradation = Degradation::default();
     loop {
-        let msg = match session(&socket, &tx, &mut cmds, &mut backoff, &mut refused).await {
+        let msg = match session(&socket, &tx, &mut cmds, &mut backoff, &mut degradation).await {
             Ok(()) => return,
             Err(SessionEnd::Io(e)) => {
                 log::warn!("niri IPC: {e}; reconnecting");
-                AdapterMsg::Connected(false)
+                Some(AdapterMsg::Connected(false))
             }
             Err(SessionEnd::NotUnderstood(n)) => {
                 let v = version(&socket).await;
-                understood::degraded("niri", n, v, &mut refused)
+                degradation.ended("niri", n, v)
             }
         };
-        if tx.send(msg).is_err() {
+        if msg.is_some_and(|m| tx.send(m).is_err()) {
             return;
         }
         backoff.wait(&mut cmds).await;
@@ -524,7 +526,7 @@ async fn session(
     tx: &UnboundedSender<AdapterMsg>,
     cmds: &mut UnboundedReceiver<Cmd>,
     backoff: &mut Backoff,
-    refused: &mut Option<Refused>,
+    degradation: &mut Degradation,
 ) -> Result<(), SessionEnd> {
     // The event stream first, so nothing between the reads and it is lost;
     // its first events restate everything anyway.
@@ -538,16 +540,11 @@ async fn session(
     let mut state = query(socket).await?;
     // Actions this niri refused stay refused until it reports another
     // version.
-    if let Some(r) = refused.as_ref() {
-        if r.holds_for(version(socket).await.as_deref()) {
-            return Err(SessionEnd::actions(r.what.clone()));
-        }
-        *refused = None;
-    }
-    backoff.connected();
-    if tx.send(AdapterMsg::Connected(true)).is_err()
-        || tx.send(AdapterMsg::State(state.snapshot())).is_err()
-    {
+    degradation.check_refusal(version(socket)).await?;
+    // After a stream that was not understood, up only once this one
+    // carried an event (`understood::Degradation`).
+    let mut up = !degradation.on_probation();
+    if up && !degradation.come_up(tx, backoff, state.snapshot()) {
         return Ok(());
     }
     let mut cmds_open = true;
@@ -592,7 +589,15 @@ async fn session(
                 if requery {
                     state.reread(query(socket).await?);
                 }
-                if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                if !up {
+                    if !strikes.seen_event() {
+                        continue;
+                    }
+                    up = true;
+                    if !degradation.come_up(tx, backoff, state.snapshot()) {
+                        return Ok(());
+                    }
+                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
                     return Ok(());
                 }
                 for failed in reloads {
@@ -602,11 +607,28 @@ async fn session(
                 }
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
+                // Not up: the services act through the protocols.
+                Some((_, reply)) if !up => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Err(WmError::NotConnected));
+                    }
+                }
                 Some((action, reply)) => {
                     let mut refused_syntax = None;
                     let result = match state.action_for(&action) {
                         Ok(req) => match request(socket, &req).await {
                             Ok(Ok(_)) => Ok(()),
+                            // niri cannot parse the request. For an action
+                            // every niri has, its syntax is not niri's (any
+                            // more); a later one this niri may not have
+                            // (25.08 has no `MaximizeWindowToEdges`) is
+                            // only rejected (`understood::tells_syntax`).
+                            Ok(Err(e)) if refuses_syntax(&e) && !understood::tells_syntax(&action) => {
+                                Err(WmError::Rejected(format!(
+                                    "{e} (this niri does not know `{}`)",
+                                    short(&req)
+                                )))
+                            }
                             Ok(Err(e)) => {
                                 if refuses_syntax(&e) {
                                     refused_syntax = Some(format!(

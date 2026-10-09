@@ -514,13 +514,97 @@ async fn an_unknown_niri_event_is_harmless_but_a_stream_of_no_events_is_not() {
     ));
     c.quiet_for(Duration::from_millis(300)).await;
     assert_eq!(degraded(&c.mirror), None, "seven, then an event");
+    // From now on every event stream is lines that are no JSON.
+    fake.set_reply(
+        "\"EventStream\"",
+        Some(&format!(
+            "{{\"Ok\":\"Handled\"}}\n{}",
+            "not json\n".repeat(8)
+        )),
+    );
     fake.send(&"not json\n".repeat(8));
     c.until("degraded", |m| degraded(m).is_some()).await;
-    let why = degraded(&c.mirror).unwrap();
+    let why = degraded(&c.mirror).unwrap().to_string();
     assert!(
         why.contains("event stream") && why.contains("niri 26.04"),
         "{why}"
     );
+    assert_still_degraded(&fake, &mut c, &why).await;
+
+    // A niri whose stream carries events again comes back up.
+    fake.set_reply("\"EventStream\"", None);
+    c.until_within(15, "recovered", |m| {
+        m.sources.connected && degraded(m).is_none() && !m.workspaces.is_empty()
+    })
+    .await;
+    service.abort();
+}
+
+/// Retries of a niri that is still not understood: each reads the state
+/// (the replies are fine) and its event stream, but none comes up, so the
+/// services never flip back to niri's ids and its reason is raised once.
+async fn assert_still_degraded(fake: &FakeNiri, c: &mut Collector, why: &str) {
+    let streams = |fake: &FakeNiri| {
+        fake.requests()
+            .iter()
+            .filter(|r| *r == "\"EventStream\"")
+            .count()
+    };
+    let before = streams(fake);
+    let up = c.log.len();
+    c.quiet_for(Duration::from_millis(1500)).await;
+    assert!(streams(fake) >= before + 2, "retried");
+    assert_eq!(degraded(&c.mirror), Some(why));
+    assert!(c.mirror.workspaces.is_empty() && c.mirror.windows.is_empty());
+    for ch in &c.log[up..] {
+        match ch {
+            wm::WmChange::Sources(s) => {
+                assert!(!s.connected, "no flip back to niri's state: {s:?}");
+                assert_eq!(s.degraded.as_deref(), Some(why), "raised once");
+            }
+            other => panic!("the retries changed something: {other:?}"),
+        }
+    }
+}
+
+/// niri 25.08 has no `MaximizeWindowToEdges` and answers it as it answers
+/// anything it cannot parse (`error parsing request`): that one action is
+/// rejected, naming it, and the adapter stays, its other actions working.
+#[tokio::test]
+async fn a_niri_without_a_later_action_rejects_only_that_action() {
+    let fake = FakeNiri::start();
+    let (config, mut c, sink) = niri_service(&fake);
+    let (req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.windows.is_empty())
+        .await;
+    fake.set_reply(
+        "{\"Action\":{\"MaximizeWindowToEdges\"",
+        Some("{\"Err\":\"error parsing request\"}\n"),
+    );
+    let id = c.mirror.windows[0].1.id.clone();
+    let (r, done) = WmRequest::new(WmAction::MaximizeWindow(id.clone()));
+    req_tx.send(r).unwrap();
+    match done.await {
+        Err(WmError::Rejected(m)) => assert!(
+            m.contains("error parsing request") && m.contains("MaximizeWindowToEdges"),
+            "{m}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    let up = c.log.len();
+    c.quiet_for(Duration::from_millis(500)).await;
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(_))),
+        "the adapter stays"
+    );
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(id));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
     service.abort();
 }
 

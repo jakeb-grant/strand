@@ -17,9 +17,11 @@
 //! ([`MAX_MESSAGE`]); the event reader is cancel safe.
 //!
 //! A reply the adapter cannot decode (or bytes that are no i3-ipc frame),
-//! eight event payloads in a row that are no JSON, or a command sway
-//! cannot parse (`parse_error`) degrade the adapter (`understood`), naming
-//! sway's version (`get_version`). An event of a type it does not know is
+//! eight event payloads in a row that are no JSON, or a command for an
+//! action every sway has (focus, kill, workspace) that sway cannot parse
+//! (`parse_error`) degrade the adapter (`understood`), naming sway's
+//! version (`get_version`); a later action's parse error is only
+//! rejected (`understood::tells_syntax`). An event of a type it does not know is
 //! ignored; one it cannot decode is followed by a re-read, as before.
 
 use std::io;
@@ -37,7 +39,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, too_long};
 use super::model::{Window, WmState, Workspace};
-use super::understood::{self, Refused, SessionEnd, Strikes};
+use super::understood::{self, Degradation, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 /// sway's scratchpad workspace.
@@ -317,20 +319,20 @@ pub(crate) async fn run(
     mut cmds: UnboundedReceiver<Cmd>,
 ) {
     let mut backoff = Backoff::new();
-    let mut refused = None;
+    let mut degradation = Degradation::default();
     loop {
-        let msg = match session(&socket, &tx, &mut cmds, &mut backoff, &mut refused).await {
+        let msg = match session(&socket, &tx, &mut cmds, &mut backoff, &mut degradation).await {
             Ok(()) => return,
             Err(SessionEnd::Io(e)) => {
                 log::warn!("sway IPC: {e}; reconnecting");
-                AdapterMsg::Connected(false)
+                Some(AdapterMsg::Connected(false))
             }
             Err(SessionEnd::NotUnderstood(n)) => {
                 let v = version(&socket).await;
-                understood::degraded("sway", n, v, &mut refused)
+                degradation.ended("sway", n, v)
             }
         };
-        if tx.send(msg).is_err() {
+        if msg.is_some_and(|m| tx.send(m).is_err()) {
             return;
         }
         backoff.wait(&mut cmds).await;
@@ -397,7 +399,7 @@ async fn session(
     tx: &UnboundedSender<AdapterMsg>,
     cmds: &mut UnboundedReceiver<Cmd>,
     backoff: &mut Backoff,
-    refused: &mut Option<Refused>,
+    degradation: &mut Degradation,
 ) -> Result<(), SessionEnd> {
     let mut events = Conn::connect(socket).await?;
     let subscribed: Success = events
@@ -416,16 +418,11 @@ async fn session(
     query(&mut conn, &mut state).await?;
     // Actions this sway refused stay refused until it reports another
     // version.
-    if let Some(r) = refused.as_ref() {
-        if r.holds_for(version(socket).await.as_deref()) {
-            return Err(SessionEnd::actions(r.what.clone()));
-        }
-        *refused = None;
-    }
-    backoff.connected();
-    if tx.send(AdapterMsg::Connected(true)).is_err()
-        || tx.send(AdapterMsg::State(state.snapshot())).is_err()
-    {
+    degradation.check_refusal(version(socket)).await?;
+    // After a stream that was not understood, up only once this one
+    // carried an event (`understood::Degradation`).
+    let mut up = !degradation.on_probation();
+    if up && !degradation.come_up(tx, backoff, state.snapshot()) {
         return Ok(());
     }
     let mut cmds_open = true;
@@ -476,7 +473,15 @@ async fn session(
                 if requery {
                     query(&mut conn, &mut state).await?;
                 }
-                if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                if !up {
+                    if !strikes.seen_event() {
+                        continue;
+                    }
+                    up = true;
+                    if !degradation.come_up(tx, backoff, state.snapshot()) {
+                        return Ok(());
+                    }
+                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
                     return Ok(());
                 }
                 for _ in 0..reloads {
@@ -486,6 +491,12 @@ async fn session(
                 }
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
+                // Not up: the services act through the protocols.
+                Some((_, reply)) if !up => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Err(WmError::NotConnected));
+                    }
+                }
                 Some((action, reply)) => {
                     let mut refused_syntax = None;
                     let result = match state.command_for(&action) {
@@ -498,9 +509,14 @@ async fn session(
                                 .map(CommandOutcome::decode)
                                 .find_map(Result::err)
                                 .map_or(Ok(()), |e| {
-                                    // sway could not parse the command:
-                                    // its syntax is not sway's (any more).
-                                    if let swayipc_types::Error::CommandParse(m) = &e {
+                                    // sway could not parse the command. For
+                                    // an action every sway has, its syntax
+                                    // is not sway's (any more); a later
+                                    // one is only rejected
+                                    // (`understood::tells_syntax`).
+                                    if let swayipc_types::Error::CommandParse(m) = &e
+                                        && understood::tells_syntax(&action)
+                                    {
                                         refused_syntax = Some(format!(
                                             "the command syntax (`{}` answered `{}`)",
                                             understood::excerpt(&c),
