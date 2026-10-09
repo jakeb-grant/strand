@@ -13,7 +13,8 @@
 //! once, so a new title never shows with the old track's time; the
 //! position answer then corrects it. New art or a length for the same
 //! track carries on. A track change signalled as an invalidated
-//! `Metadata` is judged when the re-read lands. `elapsed` and `position`
+//! `Metadata` is judged when the re-read lands (a seek or position
+//! answer newer than the re-read stands). `elapsed` and `position`
 //! are `#[store(stream)]` fields, ticking once a second only while a visible
 //! reader shows them and the player plays. Otherwise nothing wakes.
 
@@ -195,14 +196,15 @@ impl Player {
     /// `Metadata` is known); when that is another track than the one
     /// noted before, its position starts at 0 at `now`, so the title and
     /// the time change in one update (the position question asked with
-    /// the change corrects it). Whether it was another track.
-    fn note_track(&mut self, now: Instant) -> bool {
+    /// the change corrects it), unless `reset` is false (a newer position
+    /// fix may already stand). Whether it was another track.
+    fn note_track(&mut self, now: Instant, reset: bool) -> bool {
         if !self.props.contains_key("Metadata") {
             return false;
         }
         let track = Track::of(&self.metadata());
         let other = self.track.as_ref().is_some_and(|t| !t.same(&track));
-        if other {
+        if other && reset {
             self.at = Some((Duration::ZERO, now));
         }
         self.track = Some(track);
@@ -298,7 +300,8 @@ impl Players {
     /// (an answer for an owner that is gone, or a position overtaken, is
     /// dropped). A whole read naming another track (a track change
     /// signalled as an invalidated `Metadata`) starts its position at 0,
-    /// unless the read's own position answer, current, says where.
+    /// unless a position question or seek came after the read was asked;
+    /// the read's own position answer, current, then says where.
     fn answer(&mut self, r: Read, now: Instant) -> bool {
         let Some(p) = self.by_name.get_mut(&r.name) else {
             return false;
@@ -332,7 +335,12 @@ impl Players {
             }
             // Judged after the changes signalled since are applied: a
             // stale read naming the old track does not count as a change.
-            p.note_track(now);
+            // Another track starts at 0 only while no position question
+            // or seek came after this read was asked: a newer fix (a
+            // seek, or a later answer landed first) stands, and a later
+            // question still in flight corrects the time when it lands.
+            let reset = r.asked == p.asked;
+            p.note_track(now, reset);
             p.known = true;
         }
         if let Some((asked, pos, at)) = r.position
@@ -361,6 +369,9 @@ fn local_art(url: &str) -> bool {
 struct Read {
     name: String,
     owner: String,
+    /// The player's latest position question when this was asked (a newer
+    /// one, or a seek, means a newer position fix may stand).
+    asked: u64,
     identity: Option<Option<String>>,
     props: Option<zbus::Result<Props>>,
     /// The position question's number, its answer and when it came.
@@ -373,6 +384,8 @@ struct Ask {
     identity: bool,
     props: bool,
     position: Option<u64>,
+    /// The player's latest position question as this is asked.
+    asked: u64,
 }
 
 /// Ask `name` (owned by `owner`) what `ask` says, each call bounded by
@@ -407,6 +420,7 @@ async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> 
     Read {
         name,
         owner,
+        asked: ask.asked,
         identity,
         props,
         position,
@@ -436,6 +450,7 @@ fn arrived(
         identity: true,
         props: true,
         position: Some(1),
+        asked: 1,
     };
     let conn = conn.clone();
     tasks.spawn(async move { Some(read(conn, name, owner, ask).await) });
@@ -596,8 +611,7 @@ fn signal(
     let name = name.clone();
     if member.as_deref() == Some("Seeked") && dbus::interface(m).as_deref() == Some(PLAYER) {
         let pos: i64 = m.body().deserialize().unwrap_or(0);
-        p.asked += 1;
-        p.at = Some((Duration::from_micros(pos.max(0) as u64), Instant::now()));
+        players.seeked(&name, pos, Instant::now());
         return true;
     }
     let owner = p.owner.clone();
@@ -616,6 +630,15 @@ fn signal(
 }
 
 impl Players {
+    /// Apply a `Seeked` from `name`'s player (to `pos` microseconds) at
+    /// `now`: the position fix stands over any answer asked before it.
+    fn seeked(&mut self, name: &str, pos: i64, now: Instant) {
+        if let Some(p) = self.by_name.get_mut(name) {
+            p.asked += 1;
+            p.at = Some((Duration::from_micros(pos.max(0) as u64), now));
+        }
+    }
+
     /// Apply a `PropertiesChanged` from `name`'s player at `now`; what to
     /// ask it again.
     fn changed(&mut self, name: &str, changed: Props, invalidated: &[String], now: Instant) -> Ask {
@@ -651,7 +674,7 @@ impl Players {
         // (the question just asked corrects it); the same track with new
         // art or a length keeps its carried position.
         if metadata {
-            p.note_track(now);
+            p.note_track(now, true);
         }
         if !invalidated.is_empty() {
             for i in invalidated {
@@ -665,6 +688,7 @@ impl Players {
             p.reading += 1;
             p.pending.get_or_insert_with(Props::new);
         }
+        ask.asked = p.asked;
         if status_moved {
             self.touch(name);
         }
@@ -700,6 +724,7 @@ mod tests {
         let answer = |props: Props| Read {
             name: "org.mpris.MediaPlayer2.p".into(),
             owner: ":1.5".into(),
+            asked: 0,
             identity: None,
             props: Some(Ok(props)),
             position: None,
@@ -764,7 +789,7 @@ mod tests {
             OwnedValue::try_from(zbus::zvariant::Value::from("Playing")).unwrap(),
         );
         p.props.insert("Metadata".into(), metadata);
-        p.note_track(t0);
+        p.note_track(t0, true);
         players.by_name.insert(P.into(), p);
         players
     }
@@ -805,6 +830,7 @@ mod tests {
         let r = Read {
             name: P.into(),
             owner: p.owner.clone(),
+            asked: 2,
             identity: None,
             props: None,
             position: Some((2, Some(Duration::from_millis(1500)), t2)),
@@ -922,61 +948,141 @@ mod tests {
     fn an_invalidated_metadata_naming_another_track_starts_at_zero_when_read() {
         let t0 = Instant::now();
         let t1 = t0 + Duration::from_secs(1);
-        let a = || {
-            meta(&[
-                ("mpris:trackid", id("/t/1")),
-                ("xesam:title", text("First")),
-            ])
-        };
-        let b = || {
-            meta(&[
-                ("mpris:trackid", id("/t/2")),
-                ("xesam:title", text("Second")),
-            ])
-        };
-        let whole = |m: OwnedValue, position| Read {
-            name: P.into(),
-            owner: ":1.5".into(),
-            identity: None,
-            props: Some(Ok(Props::from([
-                (
-                    "PlaybackStatus".to_string(),
-                    OwnedValue::try_from(zbus::zvariant::Value::from("Playing")).unwrap(),
-                ),
-                ("Metadata".to_string(), m),
-            ]))),
-            position,
-        };
+        let t2 = t1 + Duration::from_secs(1);
+        let (a, b, whole) = (track_a, track_b, whole_read);
         let invalidate = |players: &mut Players| {
             let ask = players.changed(P, Props::new(), &["Metadata".to_string()], t1);
             assert!(ask.props);
             assert_eq!(ask.position, Some(2));
+            assert_eq!(ask.asked, 2);
         };
 
-        // Another track; the read's position question was overtaken (a
-        // newer one is in flight): 0 from when it landed.
+        // Another track found by a read that asked no position (only
+        // something else was invalidated), nothing asked since: 0 from
+        // when it landed.
         let mut players = playing(a(), t0);
-        invalidate(&mut players);
-        players.by_name.get_mut(P).unwrap().asked = 3;
-        let t2 = t1 + Duration::from_secs(1);
-        assert!(players.answer(whole(b(), Some((2, Some(Duration::from_secs(9)), t2))), t2));
+        let ask = players.changed(P, Props::new(), &["Volume".to_string()], t1);
+        assert!(ask.props);
+        assert_eq!((ask.position, ask.asked), (None, 1));
+        assert!(players.answer(whole(1, b(), None), t2));
         let s = players.state(t2);
         assert_eq!(s.title.as_deref(), Some("Second"));
         assert_eq!(s.elapsed, Duration::ZERO);
+        let t3 = t2 + Duration::from_secs(4);
+        assert_eq!(players.state(t3).elapsed, Duration::from_secs(4));
 
         // Another track with its current position answer: that stands.
         let mut players = playing(a(), t0);
         invalidate(&mut players);
         let answer = Some((2, Some(Duration::from_millis(300)), t2));
-        assert!(players.answer(whole(b(), answer), t2));
+        assert!(players.answer(whole(2, b(), answer), t2));
         assert_eq!(players.state(t2).elapsed, Duration::from_millis(300));
 
         // The same track re-read: the carried time stands.
         let mut players = playing(a(), t0);
         invalidate(&mut players);
-        players.by_name.get_mut(P).unwrap().asked = 3;
-        assert!(players.answer(whole(a(), None), t2));
+        assert!(players.answer(whole(2, a(), None), t2));
         assert_eq!(players.state(t2).elapsed, Duration::from_secs(122));
+    }
+
+    /// A position fix newer than an invalidated `Metadata`'s whole read
+    /// (a seek, or a later question's answer landing first) stands when
+    /// that read lands naming another track; a later question still in
+    /// flight when it lands corrects the time once it answers.
+    #[test]
+    fn a_position_fix_newer_than_the_whole_read_survives_it() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let t2 = t1 + Duration::from_secs(1);
+        let later = t2 + Duration::from_secs(10);
+        let (a, b, whole) = (track_a, track_b, whole_read);
+        let invalidate = |players: &mut Players| {
+            let ask = players.changed(P, Props::new(), &["Metadata".to_string()], t1);
+            assert_eq!((ask.position, ask.asked), (Some(2), 2));
+        };
+        let position = |asked: u64, pos: Duration, at: Instant| Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            asked,
+            identity: None,
+            props: None,
+            position: Some((asked, Some(pos), at)),
+        };
+        let stale_answer = Some((2, Some(Duration::from_secs(9)), t2));
+
+        // A seek to 50 s, then the read lands with its stale answer.
+        let mut players = playing(a(), t0);
+        invalidate(&mut players);
+        let seek_at = t1 + Duration::from_millis(500);
+        players.seeked(P, 50_000_000, seek_at);
+        assert!(players.answer(whole(2, b(), stale_answer), t2));
+        let s = players.state(later);
+        assert_eq!(s.title.as_deref(), Some("Second"));
+        assert_eq!(s.elapsed, Duration::from_millis(60_500));
+
+        // The status moves (question 3); its answer lands first, then
+        // the read.
+        let mut players = playing(a(), t0);
+        invalidate(&mut players);
+        let ask = players.changed(P, status("Playing"), &[], t1);
+        assert_eq!((ask.position, ask.asked), (Some(3), 3));
+        assert!(players.answer(position(3, Duration::from_secs(5), t1), t1));
+        assert!(players.answer(whole(2, b(), stale_answer), t2));
+        let s = players.state(later);
+        assert_eq!(s.title.as_deref(), Some("Second"));
+        assert_eq!(s.elapsed, Duration::from_secs(16));
+
+        // Question 3 still in flight when the read lands: the read leaves
+        // the time alone and question 3's answer then says where.
+        let mut players = playing(a(), t0);
+        invalidate(&mut players);
+        players.changed(P, status("Playing"), &[], t1);
+        assert!(players.answer(whole(2, b(), stale_answer), t2));
+        assert_eq!(players.state(t2).title.as_deref(), Some("Second"));
+        let t3 = t2 + Duration::from_millis(100);
+        assert!(players.answer(position(3, Duration::from_secs(1), t3), t3));
+        let s = players.state(later);
+        assert_eq!(s.elapsed, Duration::from_millis(10_900));
+    }
+
+    fn track_a() -> OwnedValue {
+        meta(&[
+            ("mpris:trackid", id("/t/1")),
+            ("xesam:title", text("First")),
+        ])
+    }
+
+    fn track_b() -> OwnedValue {
+        meta(&[
+            ("mpris:trackid", id("/t/2")),
+            ("xesam:title", text("Second")),
+        ])
+    }
+
+    fn status(s: &str) -> Props {
+        Props::from([(
+            "PlaybackStatus".to_string(),
+            OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap(),
+        )])
+    }
+
+    /// A whole read asked when the player's latest question was `asked`,
+    /// answering playing `m`.
+    fn whole_read(
+        asked: u64,
+        m: OwnedValue,
+        position: Option<(u64, Option<Duration>, Instant)>,
+    ) -> Read {
+        let mut props = status("Playing");
+        props.insert("Metadata".to_string(), m);
+        Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            asked,
+            identity: None,
+            props: Some(Ok(props)),
+            position,
+        }
     }
 
     /// A read asked before a track change answering after it (with the
@@ -1009,6 +1115,7 @@ mod tests {
         let pos = Read {
             name: P.into(),
             owner: ":1.5".into(),
+            asked: ask.asked,
             identity: None,
             props: None,
             position: Some((ask.position.unwrap(), Some(Duration::from_secs(3)), t2)),
@@ -1017,6 +1124,8 @@ mod tests {
         let stale = Read {
             name: P.into(),
             owner: ":1.5".into(),
+            // Asked before the track change (question 2).
+            asked: 1,
             identity: None,
             props: Some(Ok(Props::from([
                 (
