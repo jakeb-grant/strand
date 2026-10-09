@@ -27,7 +27,8 @@
 //! written through logind), [`network`] (NetworkManager), [`bluetooth`]
 //! (BlueZ), [`notifications`] (the shell's own notification server),
 //! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu);
-//! and [`apps`] (desktop entries, fuzzy search, frecency, launching).
+//! [`apps`] (desktop entries, fuzzy search, frecency, launching); and
+//! [`auth`] (the lock screen's password check, through `strand-auth`).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -37,6 +38,7 @@ extern crate self as strand_services;
 pub mod apps;
 #[cfg(feature = "pipewire")]
 pub mod audio;
+pub mod auth;
 pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
@@ -94,6 +96,7 @@ pub struct Builtin {
     pub wm: Client<wm::Wm>,
     #[cfg(feature = "pipewire")]
     pub audio: Client<audio::AudioStore>,
+    pub auth: Client<auth::Auth>,
 }
 
 impl Builtin {
@@ -116,6 +119,7 @@ impl Builtin {
             wm: services.register(rt),
             #[cfg(feature = "pipewire")]
             audio: services.register(rt),
+            auth: services.register(rt),
         }
     }
 
@@ -138,6 +142,7 @@ impl Builtin {
             self.wm.dynamic(),
             #[cfg(feature = "pipewire")]
             self.audio.dynamic(),
+            self.auth.dynamic(),
         ]
     }
 }

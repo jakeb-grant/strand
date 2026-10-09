@@ -20,6 +20,9 @@ pipewire = ["dep:pipewire"]
 [dependencies]
 strand-core.workspace = true
 strand-services-macros.workspace = true
+# `auth`: the lock screen's PAM helper client (the helper is a process
+# of its own; only it links libpam).
+strand-auth.workspace = true
 # The schema texts it serves (shared with the LSP, which does not link
 # this runtime).
 strand-services-schema.workspace = true

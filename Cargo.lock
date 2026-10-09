@@ -2358,6 +2358,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "strand-auth",
  "strand-core",
  "strand-icons",
  "strand-introspect",

@@ -3242,16 +3242,25 @@ transparent huge pages for life.
 
 - **M4 additions** (planned; docs/m4-plan.md). One owner per file: tray
   to S-surface, auth to S-lock, audio and wm to S-effects.
-  - `auth` stops being provisional: S-lock moves it out of
-    builtin.schema (deleting the `provisional service auth` block) into
-    `strand-services-schema/src/auth.schema` (`busy`, `failed`,
-    `submit(password)`), with an `AUTH` constant and a `schemas()`
-    entry, as earlier services left builtin.schema. Its store runs a
+  - `auth` stops being provisional (`services/auth.rs`, as built in
+    M4 wave 1): its schema is `strand-services-schema/src/auth.schema`
+    (`busy`, `failed`, `submit(password)`), with an `AUTH` constant and
+    a `schemas()` entry, and it is registered in `Builtin`. Like every
+    other builtin service it keeps its `provisional service auth` stub
+    in builtin.schema, which the extension replaces, so the compiler's
+    own tests and the grammar's lock example still check without the
+    service crates (decisions.md, m4-lock-w1). Its store runs a
     `strand_auth::Client` built with `child::restore_in_child` as the
-    helper's `pre_exec`; the password
-    is zeroized once sent, and a success hands an
-    `strand_auth::UnlockToken` to the binary, which passes it to the
-    surface manager's unlock.
+    helper's `pre_exec`, started with the store and killed when it
+    stops; a submit runs on a blocking task, `busy` meanwhile, and one
+    arriving during a check is dropped. The password is a
+    `strand_auth::Password` from the moment it arrives, wiped once
+    sent. A success hands the `strand_auth::UnlockToken` to the
+    `auth::UnlockSink` the binary sets with `auth::configure`
+    (`AuthConfig { helper, timeout, sink }`), which passes it to the
+    surface manager's unlock; anything else sets `failed`, and a check
+    that could not be made is a warning diagnostic, as is the `login`
+    fallback (once per process).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
     (realfft) runs on the audio thread only while a reader is visible,
     and stops while the source is silent.
