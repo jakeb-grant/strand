@@ -1,0 +1,36 @@
+[package]
+name = "strand-auth"
+description = "The lock screen's PAM helper and the client that spawns it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# The whole security boundary of the lock screen (docs/architecture.md,
+# "Crate graph"): the lib depends on libc and zeroize and no Strand
+# crate; the `strand-auth` binary adds a hand-written PAM FFI and is the
+# only code in the workspace that links libpam.
+
+[features]
+default = []
+# Test hooks, never in a default or release build
+# (tests/no_faults.rs): `STRAND_FAULT` injection points in the helper
+# (`auth_crash`, `auth_hang`, `auth_garbage`), a private PAM confdir
+# (`STRAND_AUTH_PAM_CONFDIR`, through `pam_start_confdir`) and
+# `Client::with_test_env`, which passes those through the client's
+# scrubbed environment.
+faults = []
+
+[dependencies]
+libc = "0.2.190"
+zeroize = "1.9.1"
+
+[dev-dependencies]
+# The crate's own tests run with its test hooks on (a dev-dependency
+# on itself only adds the feature to test builds).
+strand-auth = { path = ".", features = ["faults"] }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

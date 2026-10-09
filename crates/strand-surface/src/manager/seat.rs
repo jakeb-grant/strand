@@ -341,7 +341,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: &[u32],
         _: &[Keysym],
     ) {
-        if let Some(id) = self.surface_for(surface) {
+        if let Some(id) = self.keyboard_target(surface) {
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
@@ -357,7 +357,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: u32,
     ) {
         self.stop_repeat();
-        let id = self.surface_for(surface).or(self.keyboard_focus);
+        let id = self.keyboard_target(surface).or(self.keyboard_focus);
         if self.keyboard_focus == id {
             self.keyboard_focus = None;
         }

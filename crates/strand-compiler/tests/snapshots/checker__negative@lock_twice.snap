@@ -1,0 +1,23 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::lock_twice
+
+  × a config has one `lock`
+   ╭─[lock.strand:1:1]
+ 1 │ lock Other {
+   · ──┬─
+   ·   ╰── a second `lock`
+ 2 │   text "also locked"
+   ╰────
+  help: the session has one lock screen: put its content in one `lock`
+
+Error: 
+  × see also shell.strand
+   ╭─[shell.strand:1:1]
+ 1 │ lock {
+   · ──┬─
+   ·   ╰── the first `lock` is here
+ 2 │   text "locked"
+   ╰────

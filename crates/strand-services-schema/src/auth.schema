@@ -1,0 +1,14 @@
+/// The lock screen's password check: a PAM helper of its own
+/// (`strand-auth`, a separate process) checks each password with the
+/// `strand` PAM service, or `login` when `/etc/pam.d/strand` is missing.
+/// Only a success unlocks the session lock; anything else leaves it
+/// locked.
+service auth {
+  /// A password is being checked.
+  busy: bool
+  /// The last password was refused, or could not be checked.
+  failed: bool
+  /// Checks `password`: `input { type: password; on activate {
+  /// auth.submit(secret) } }`. Ignored while one is being checked.
+  action submit(password: text)
+}

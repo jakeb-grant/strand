@@ -75,9 +75,11 @@ mod outputs;
 mod popup;
 mod protocols;
 mod seat;
+mod session_lock;
 
 use catcher::{Catcher, wants_catcher};
 use layer::to_sctk_layer;
+pub use session_lock::{LOCK_FALLBACK_NODE, LockError};
 
 /// How long an unmapped surface whose paint drew nothing, while its
 /// painter still wants a frame, waits before it is painted again (no frame
@@ -449,6 +451,9 @@ enum Role {
         /// and obey xdg-shell's topmost-grab rule.
         grabbed: bool,
     },
+    /// (M4) A session lock surface showing the lock's content
+    /// (`session_lock.rs`).
+    Lock(session_lock::LockSurface),
 }
 
 impl Role {
@@ -456,13 +461,14 @@ impl Role {
         match self {
             Role::Layer(l) => l.wl_surface(),
             Role::Popup { popup, .. } => popup.wl_surface(),
+            Role::Lock(l) => l.wl(),
         }
     }
 
     fn popup_parent(&self) -> Option<SurfaceId> {
         match self {
             Role::Popup { parent, .. } => Some(*parent),
-            Role::Layer(_) => None,
+            Role::Layer(_) | Role::Lock(_) => None,
         }
     }
 
@@ -645,6 +651,8 @@ pub struct State<H: SurfaceHost + 'static> {
     stats: Stats,
     expiry_timer: Option<RegistrationToken>,
     deadline_timers: HashMap<SurfaceId, RegistrationToken>,
+    /// (M4) The session lock (`session_lock.rs`).
+    session_lock: session_lock::SessionLock,
 }
 
 impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
@@ -745,6 +753,13 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         let presentation = globals
             .bind::<WpPresentation, _, _>(&qh, 1..=1, StrandGlobal)
             .ok();
+        let session_lock = globals
+            .bind::<wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1, _, _>(
+                &qh,
+                1..=1,
+                StrandGlobal,
+            )
+            .ok();
 
         WaylandSource::new(conn.clone(), queue)
             .insert(handle.clone())
@@ -805,6 +820,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             stats: Stats::default(),
             expiry_timer: None,
             deadline_timers: HashMap::new(),
+            session_lock: session_lock::SessionLock::new(session_lock),
         };
         Ok(Self {
             event_loop,
@@ -973,6 +989,11 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// Applies a change reported by `Renderer::take_surface_changes`.
     pub fn apply_surface_change(&mut self, node: NodeId, change: SurfaceChange) {
+        // A `lock` is never a layer surface and never unlocks by a spec
+        // change (`session_lock.rs`).
+        let Some(change) = self.lock_spec_change(node, change) else {
+            return;
+        };
         match change {
             SurfaceChange::Created(spec) => {
                 self.specs.insert(node, spec);
@@ -1076,6 +1097,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         for node in nodes {
             self.reconcile(node);
         }
+        // The lock covers every output, with or without its spec.
+        self.sync_lock_surfaces();
     }
 
     /// Creates and destroys `node`'s surfaces so there is exactly one on
@@ -1086,6 +1109,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         if spec.kind == NodeKind::Popup {
             self.reconcile_popup(node, &spec);
+            return;
+        }
+        if spec.kind == NodeKind::Lock {
+            self.reconcile_lock();
             return;
         }
         let mapped = match layer_config(&spec) {

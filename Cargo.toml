@@ -11,6 +11,7 @@ repository = "https://github.com/jakeb-grant/strand"
 publish = false
 
 [workspace.dependencies]
+strand-auth = { path = "crates/strand-auth" }
 strand-compiler = { path = "crates/strand-compiler" }
 strand-core = { path = "crates/strand-core" }
 strand-icons = { path = "crates/strand-icons" }

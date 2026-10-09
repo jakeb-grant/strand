@@ -1,0 +1,10 @@
+// expect: check::lock_prop
+// Props a lock cannot honour are warnings, not silently dropped.
+export state locked = false
+lock {
+  open: <-> locked
+  screens: focused
+  layer: top
+  keyboard: on_demand
+  text "locked"
+}

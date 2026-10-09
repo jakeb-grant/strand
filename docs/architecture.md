@@ -293,6 +293,19 @@ when `/etc/pam.d/strand` is missing (decisions.md, m4-owner); every
 other PAM error fails closed. A `faults` cargo feature (off in default
 and release builds) adds `STRAND_FAULT` injection points here and in
 `strand`.
+As built (decisions.md, m4-lock-w1): `protocol` (frames of a `u32`
+length, a kind and at most 1 KiB: `HELLO` with the version and the
+service, `SUBMIT`, `VERDICT` with success, denied or error and PAM's
+text), `Password`, `Client` (`new`, `with_timeout`, `submit`,
+`helper_pid`, `spawns`, `service`; `faults` adds `with_test_env`),
+`Verdict { Unlocked(UnlockToken), Denied { message }, Failed(AuthError)
+}`, `default_helper()` (beside the executable, then the libexec paths)
+and `take_service_warning()` (the `login` fallback's warning, once per
+process). A timeout or a bad frame kills the helper and everything it
+started; the next password starts another. Under `faults` the helper
+also takes a private PAM confdir (`STRAND_AUTH_PAM_CONFDIR`,
+`pam_start_confdir`), which the tier-A tests use; the crate's own tests
+turn `faults` on through a dev-dependency on itself.
 
 `strand-gpu` (M4) holds every GPU crate: wgpu, vello_gpu and, through
 wgpu, naga's runtime use. Its only Strand dependency is `strand-scene`.
@@ -2088,6 +2101,20 @@ Public interfaces other crates and later stages build on:
     lock's `open` false, and a config write of `false` while locked is
     ignored with a warning. `lock_shown()` follows `ToLogic::LockState`,
     the compositor's state, not the `open` prop.
+    As built (m4-lock wave 1): `Instance::set_session_lock(SessionLock)`
+    takes the report (`Locked`, `Finished`, `Unlocked`; the binary maps
+    strand-surface's `LockState` onto it, since the compiler does not
+    depend on strand-surface). While `Locked`, the `lock`'s `open`
+    binding sends `true` whatever the config wrote, so the content stays
+    shown and live, with the notice `IGNORED_CLOSE` once per lock
+    session; after `Unlocked` the instance writes `false` through a
+    two-way `open` (a one-way one is left alone). `lock_shown()` is
+    true while `Locked`, false after `Finished` or `Unlocked`, and,
+    before any report since the lock last opened (a host with no session
+    lock included), true while a `lock` on the scene is not `open:
+    false`. The code is `instantiate/lock.rs`; `check/lock.rs` makes a
+    second `lock` an error (`check::lock_twice`) and `screens`, `layer`,
+    `anchor` and `keyboard` on a lock warnings (`check::lock_prop`).
   - `compositor-rules`: a query over a `Build` listing the surfaces whose
     tree has `blur`, with their namespaces (`strand-<Name>`), for
     `strand compositor-rules` (S-surface owns it).
@@ -2341,6 +2368,31 @@ and the connection):
     colour on the rest. `State::unlock(strand_auth::UnlockToken)` is the
     only way to unlock; `finished` without `locked` is a diagnostic and
     the lock counts as not shown.
+    As built (m4-lock wave 1): the module is
+    `src/manager/session_lock.rs` (the manager's other concerns live
+    there too). The content surface is a `Role::Lock` surface the host
+    paints like any other (`SurfaceHost::surface_attached` with the
+    spec's node, or `LOCK_FALLBACK_NODE` when `State::lock()` was called
+    with no `lock` spec: the seam for render's built-in fallback);
+    `State::lock_content()` names it. The other outputs get a
+    manager-painted 1×1 shm buffer scaled by `wp_viewporter` (a
+    full-size one without it) in `set_lock_color`'s colour, and a keyboard focus on one of them is
+    delivered as the content's. A spec closing (`open: false`) or going
+    away never unlocks: the surfaces stay and only `unlock` releases the
+    lock; a closed spec re-arms it, so an open spec locks again only
+    after it closed. `Finished` after `Locked` sends nothing (the
+    protocol leaves the session's state to the compositor) and asks for
+    a new lock at once, once per lock session, so a session the
+    compositor keeps locked gets its password field back; the host
+    hears `Finished`, then `Locked` or `Finished` for the new lock. The tests take a session lock
+    only inside the lock VM (`scripts/lockvm/scenarios/`).
+    Nothing locks until `State::enable_session_lock()`: before it an
+    open `lock` spec is a warning and `State::lock()` returns
+    `LockError::NotEnabled`. The binary calls it only once `auth`'s
+    tokens reach `State::unlock` (wave 2, `run/lock.rs`), so no build
+    can take a lock it cannot release. A token given while the lock is
+    pending is kept and spent when `locked` arrives (`destroy` would be
+    a protocol error if `locked` is already on the wire).
   - Drag and drop (`dnd.rs`): a `wl_data_device` per seat produces
     `InputEvent::Drag*` (external files, apps and text as
     `DropPayload::External`); `State::start_drag(surface, node)` starts
@@ -3272,16 +3324,25 @@ transparent huge pages for life.
 
 - **M4 additions** (planned; docs/m4-plan.md). One owner per file: tray
   to S-surface, auth to S-lock, audio and wm to S-effects.
-  - `auth` stops being provisional: S-lock moves it out of
-    builtin.schema (deleting the `provisional service auth` block) into
-    `strand-services-schema/src/auth.schema` (`busy`, `failed`,
-    `submit(password)`), with an `AUTH` constant and a `schemas()`
-    entry, as earlier services left builtin.schema. Its store runs a
+  - `auth` stops being provisional (`services/auth.rs`, as built in
+    M4 wave 1): its schema is `strand-services-schema/src/auth.schema`
+    (`busy`, `failed`, `submit(password)`), with an `AUTH` constant and
+    a `schemas()` entry, and it is registered in `Builtin`. Like every
+    other builtin service it keeps its `provisional service auth` stub
+    in builtin.schema, which the extension replaces, so the compiler's
+    own tests and the grammar's lock example still check without the
+    service crates (decisions.md, m4-lock-w1). Its store runs a
     `strand_auth::Client` built with `child::restore_in_child` as the
-    helper's `pre_exec`; the password
-    is zeroized once sent, and a success hands an
-    `strand_auth::UnlockToken` to the binary, which passes it to the
-    surface manager's unlock.
+    helper's `pre_exec`, started with the store and killed when it
+    stops; a submit runs on a blocking task, `busy` meanwhile, and one
+    arriving during a check is dropped. The password is a
+    `strand_auth::Password` from the moment it arrives, wiped once
+    sent. A success hands the `strand_auth::UnlockToken` to the
+    `auth::UnlockSink` the binary sets with `auth::configure`
+    (`AuthConfig { helper, timeout, sink }`), which passes it to the
+    surface manager's unlock; anything else sets `failed`, and a check
+    that could not be made is a warning diagnostic, as is the `login`
+    fallback (once per process).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
     (realfft) runs on the audio thread only while a reader is visible,
     and stops while the source is silent.

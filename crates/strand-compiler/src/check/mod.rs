@@ -25,6 +25,7 @@ mod collect;
 mod cycles;
 pub mod dbus;
 mod expr;
+mod lock;
 pub mod paths;
 mod prepin;
 mod stmt;
@@ -580,6 +581,7 @@ impl<'a> Checker<'a> {
 
     fn finish(mut self) -> Checked {
         let files = std::mem::take(&mut self.out_files);
+        self.diags.extend(lock::check(self.modules));
         // Stable order: by file, then position.
         self.diags.sort_by_key(|d| {
             (

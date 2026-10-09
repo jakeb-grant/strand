@@ -282,11 +282,23 @@ jobs:
               # crate. Keep this list in step with the lock code.
               - 'crates/strand-auth/**'
               - 'crates/**/*session_lock*'
+              # Lock logic in shared surface-manager files that only the
+              # lock VM exercises: the deferred configure ack and no bare
+              # commit on `Role::Lock` (commit.rs), the pixel surfaces'
+              # keyboard focus (seat.rs), lock routing in
+              # `apply_surface_change`/`reconcile` (mod.rs), no popup on a
+              # lock surface (popup.rs).
+              - 'crates/strand-surface/src/manager/commit.rs'
+              - 'crates/strand-surface/src/manager/seat.rs'
+              - 'crates/strand-surface/src/manager/mod.rs'
+              - 'crates/strand-surface/src/manager/popup.rs'
               - 'crates/**/*lock_fallback*'
               - 'crates/strand/src/lock.rs'
               - 'crates/strand/src/run/lock.rs'
               - 'crates/strand/tests/lock.rs'
               - 'crates/strand/src/services/auth*'
+              - 'crates/strand-services/src/auth.rs'
+              - 'crates/strand-services/tests/auth.rs'
               - 'crates/strand-services-schema/src/auth.schema'
               - 'crates/strand-compiler/src/check/lock.rs'
               - 'scripts/lockvm/**'
@@ -309,11 +321,20 @@ jobs:
           sudo udevadm settle || true
           ls -l /dev/kvm
           test -r /dev/kvm -a -w /dev/kvm || { echo "::error::/dev/kvm is not read-writable"; exit 1; }
-      # The harness's smoke: boot, the test user, headless sway, pam_unix
-      # through /etc/pam.d/strand with the right and a wrong password.
-      - name: Lock VM smoke
+      # S-lock's scenarios (scripts/lockvm/scenarios/all.sh): the session
+      # lock on headless sway and the shipping helper against real
+      # pam_unix, built here (the guest is the runner's Ubuntu release).
+      - uses: ./.github/actions/setup
         if: steps.run.outputs.go == 'true'
-        run: scripts/container/lockvm.sh
+        with:
+          tier: headers
+          cache-save: "false"
+      - name: Build the lock VM scenarios' binaries
+        if: steps.run.outputs.go == 'true'
+        run: bash scripts/lockvm/scenarios/build.sh
+      - name: Lock VM scenarios
+        if: steps.run.outputs.go == 'true'
+        run: scripts/container/lockvm.sh bash scripts/lockvm/scenarios/all.sh
         env:
           LOCKVM_TIMEOUT: "300"
 

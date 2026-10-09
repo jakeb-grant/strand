@@ -176,11 +176,17 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.sync_popup_keyboard();
             return;
         };
-        let wl = self.compositor.create_surface(&self.qh);
         let parent_xdg = match &ps.role {
             Role::Popup { popup, .. } => Some(popup.xdg_surface().clone()),
             Role::Layer(_) => None,
+            // A lock surface cannot parent an xdg_popup.
+            Role::Lock(_) => {
+                log::debug!("{}: popups do not open on a lock screen", spec.namespace());
+                self.sync_popup_keyboard();
+                return;
+            }
         };
+        let wl = self.compositor.create_surface(&self.qh);
         let popup = match Popup::from_surface(
             parent_xdg.as_ref(),
             &positioner,
@@ -284,7 +290,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     pub(super) fn root_layer(&self, mut id: SurfaceId) -> Option<SurfaceId> {
         for _ in 0..64 {
             match &self.surfaces.get(&id)?.role {
-                Role::Layer(_) => return Some(id),
+                Role::Layer(_) | Role::Lock(_) => return Some(id),
                 Role::Popup { parent, .. } => id = *parent,
             }
         }
