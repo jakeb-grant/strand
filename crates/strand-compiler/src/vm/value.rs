@@ -218,6 +218,13 @@ pub enum Value {
     Node(Rc<NodeState>),
     /// A token reference or expression, resolved by the render thread.
     Token(Rc<TokenExpr>),
+    /// (M4) A time-bound value (`t`, `wave(…)`, `noise(t)` and
+    /// arithmetic on them, tokens included): a [`TokenExpr`] that reads
+    /// time ([`TokenExpr::reads_time`]), evaluated by the render thread
+    /// per node per frame. It only flows into props: reaching logic (a
+    /// comparison, a condition, `match`, a store, a call that computes,
+    /// text) is an error value ([`time_in_logic`]).
+    Time(Rc<TokenExpr>),
     Call(Rc<CallValue>),
     /// `enter { … }` / `exit { … }` props.
     Pose(Rc<Vec<(String, Value)>>),
@@ -308,6 +315,28 @@ impl Value {
         Value::Token(Rc::new(e))
     }
 
+    /// A symbolic value: [`Value::Time`] when `e` reads time, else
+    /// [`Value::Token`].
+    pub fn symbolic(e: TokenExpr) -> Self {
+        if e.reads_time() {
+            Value::Time(Rc::new(e))
+        } else {
+            Value::Token(Rc::new(e))
+        }
+    }
+
+    /// (M4) True if a time-bound value sits anywhere inside.
+    pub fn has_time(&self) -> bool {
+        match self {
+            Value::Time(_) => true,
+            Value::List(v) | Value::Commas(v) | Value::Spaced(v) => v.iter().any(Value::has_time),
+            Value::Call(c) => c.args.iter().any(Value::has_time),
+            Value::Pose(p) => p.iter().any(|(_, v)| v.has_time()),
+            Value::Record(r) => r.fields.iter().any(Value::has_time),
+            _ => false,
+        }
+    }
+
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
@@ -372,7 +401,7 @@ impl Value {
     /// True if a token reference sits anywhere inside.
     pub fn has_tokens(&self) -> bool {
         match self {
-            Value::Token(_) => true,
+            Value::Token(_) | Value::Time(_) => true,
             Value::List(v) | Value::Commas(v) | Value::Spaced(v) => v.iter().any(Value::has_tokens),
             Value::Call(c) => c.args.iter().any(Value::has_tokens),
             Value::Pose(p) => p.iter().any(|(_, v)| v.has_tokens()),
@@ -460,7 +489,7 @@ impl Value {
             }
             Value::Fn(_) => "fn".into(),
             Value::Node(_) => "node".into(),
-            Value::Token(t) => format!("{t:?}"),
+            Value::Token(t) | Value::Time(t) => format!("{t:?}"),
             Value::Call(c) => format!(
                 "{}({})",
                 c.name,
@@ -506,7 +535,7 @@ pub fn fits(types: &TypeTable, ty: &crate::ty::Ty, v: &Value) -> bool {
             (Prim::Duration, Value::Num(_, u)) => matches!(u, Num::Int | Num::Float | Num::Ms),
             (
                 Prim::Int | Prim::Float | Prim::Length | Prim::Percent | Prim::Angle,
-                Value::Token(_),
+                Value::Token(_) | Value::Time(_),
             ) => true,
             (
                 Prim::Int
@@ -518,8 +547,11 @@ pub fn fits(types: &TypeTable, ty: &crate::ty::Ty, v: &Value) -> bool {
                 _,
             ) => false,
             (Prim::Text | Prim::Path, v) => matches!(v, Value::Text(_)),
-            (Prim::Color, v) => matches!(v, Value::Color(_) | Value::Token(_)),
-            (Prim::Paint, v) => matches!(v, Value::Color(_) | Value::Token(_) | Value::Call(_)),
+            (Prim::Color, v) => matches!(v, Value::Color(_) | Value::Token(_) | Value::Time(_)),
+            (Prim::Paint, v) => matches!(
+                v,
+                Value::Color(_) | Value::Token(_) | Value::Time(_) | Value::Call(_)
+            ),
             _ => true,
         },
         (Ty::Enum(e), v) => {
@@ -532,6 +564,16 @@ pub fn fits(types: &TypeTable, ty: &crate::ty::Ty, v: &Value) -> bool {
         },
         _ => true,
     }
+}
+
+/// (M4) The error a time-bound value gets where logic would need its
+/// value now: it changes every frame on the render thread, so logic can
+/// only pass it on to a prop (design.md, "Motion and time").
+pub fn time_in_logic(what: &str) -> strand_core::Error {
+    strand_core::Error::failed(format!(
+        "a time-bound value (`t`, `wave(…)`, `noise(t)`) cannot be used {what}: it changes \
+         every frame on the render thread, so only props can read it"
+    ))
 }
 
 /// An `f32` from a widget as the `f64` with the shortest decimal form
@@ -726,6 +768,7 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
         | Value::Text(_)
         | Value::Color(_)
         | Value::Token(_)
+        | Value::Time(_)
         | Value::Palette(_)
         | Value::Service(_) => (v.clone(), false),
         Value::Enum(e, i) => {

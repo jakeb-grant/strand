@@ -15,7 +15,7 @@ use strand_core::{Error, Runtime};
 use strand_scene::{Channel, Color, TokenExpr};
 
 use super::builtins;
-use super::value::{Closure, NodeState, Num, PendingOp, Value, ValueKey};
+use super::value::{Closure, NodeState, Num, PendingOp, Value, ValueKey, time_in_logic};
 use super::{Env, Vm};
 use crate::hir::{AssignOp, LocalId};
 use crate::lower::{
@@ -253,6 +253,9 @@ impl Machine {
                 Op::Index => {
                     let index = self.pop();
                     let base = self.pop();
+                    if index.has_time() {
+                        return Err(time_in_logic("as an index"));
+                    }
                     self.stack.push(builtins::index(&base, &index));
                 }
                 Op::Unary(op) => {
@@ -266,9 +269,18 @@ impl Machine {
                 }
                 Op::Jump(t) => self.pc = *t as usize,
                 Op::JumpIfFalse(t) => {
-                    if !self.pop().truthy() {
+                    let v = self.pop();
+                    if v.has_time() {
+                        return Err(time_in_logic("as a condition"));
+                    }
+                    if !v.truthy() {
                         self.pc = *t as usize;
                     }
+                }
+                Op::AndJump(_) | Op::OrJump(_)
+                    if self.stack.last().is_some_and(Value::has_time) =>
+                {
+                    return Err(time_in_logic("as a condition"));
                 }
                 Op::AndJump(t) => {
                     if self.stack.last().is_some_and(|v| !v.truthy()) {
@@ -329,6 +341,14 @@ impl Machine {
                     let recv = self.pop();
                     let name = &chunk.names[*name as usize];
                     let v = if *action {
+                        if a.params
+                            .iter()
+                            .flatten()
+                            .chain(&a.rest)
+                            .any(Value::has_time)
+                        {
+                            return Err(time_in_logic("as an action's argument"));
+                        }
                         let target = match &recv {
                             Value::Service(s) => super::ActionTarget::Service(s),
                             v => super::ActionTarget::Item(v),
@@ -372,6 +392,14 @@ impl Machine {
                     args,
                 } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
+                    if a.params
+                        .iter()
+                        .flatten()
+                        .chain(&a.rest)
+                        .any(Value::has_time)
+                    {
+                        return Err(time_in_logic("in a handler: it cannot be stored"));
+                    }
                     let place = &chunk.places[*place as usize];
                     let indices = self.pop_indices(place);
                     mutate(
@@ -424,6 +452,9 @@ impl Machine {
                 }
                 Op::Match(p) => {
                     let v = self.pop();
+                    if v.has_time() {
+                        return Err(time_in_logic("in `match`"));
+                    }
                     let m = matches(&chunk.patterns[*p as usize], &chunk.consts, &v);
                     self.stack.push(Value::Bool(m));
                 }
@@ -440,6 +471,9 @@ impl Machine {
                 }
                 Op::Store { place, op } => {
                     let value = self.pop();
+                    if value.has_time() {
+                        return Err(time_in_logic("in a handler: it cannot be stored"));
+                    }
                     let place = &chunk.places[*place as usize];
                     let indices = self.pop_indices(place);
                     store(vm, rt, place, indices, &self.env, *op, value)?;

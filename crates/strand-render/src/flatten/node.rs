@@ -65,7 +65,11 @@ impl<'a> Flattener<'a> {
         if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
             tokens.push(t);
         }
-        let scope = TokenScope::new(&tokens);
+        // Time-bound props (M4) are evaluated at this node's own time.
+        let timed_scope = inh.timed || crate::time::overrides_read_time(node);
+        let timed = timed_scope || crate::time::reads_time(node);
+        let time = timed.then(|| self.anim.time_of(node.id));
+        let scope = TokenScope::new(&tokens).with_time(time);
         let mut props: Vec<(Prop, Cow<'a, PropValue>)> = node
             .props
             .iter()
@@ -82,6 +86,9 @@ impl<'a> Flattener<'a> {
                 None => return Rect::default(),
             }
         };
+        if timed {
+            self.out.clocks.push(node.id);
+        }
         // Springs: this frame's values of the props in flight.
         let inherited = inh.color.unwrap_or_else(|| default_color(&scope));
         self.anim
@@ -669,6 +676,7 @@ impl<'a> Flattener<'a> {
             clip: child_clip,
             offset,
             inert,
+            timed: timed_scope,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {

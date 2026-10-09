@@ -3418,3 +3418,121 @@ fn a_field_path_from_a_service_is_a_field_write() {
     assert_eq!(writes.len(), 1, "{writes:?}");
     assert_eq!(writes[0].path, "audio.sink.muted");
 }
+
+/// Time-bound values (M4) reach the scene as token expressions with
+/// time leaves: a whole prop as `PropValue::Token`, a comma shorthand
+/// item in place, and a number inside a composite value (a border's
+/// width, a conic gradient's `from`) as a template's numeric slot.
+/// Render evaluates them per node per frame (`TokenScope::with_time`).
+#[test]
+fn time_values_convert_to_token_time_leaves() {
+    use strand_scene::{BinOp, Border, Paint, TimeContext, TokenExpr, TokenScope, TokenTable};
+    let src = "bar B {\n  box { rotate: t * 20deg; opacity: 0.5 + 0.5 * wave(2s) }\n  box { glow: 10 * wave(2s), $accent.alpha(0.4) }\n  box { border: 1.5 + noise(t), conic(from: t * 40deg, $accent, #000000, $accent) }\n  box { bg: $accent.alpha(wave(1s)) }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 4, "{}", shell.scene.render());
+    let prop = |i: usize, p: Prop| shell.scene.prop(boxes[i], p).cloned();
+
+    // `rotate: t * 20deg`: the expression itself, `t` a leaf.
+    assert_eq!(
+        prop(0, Prop::Rotate),
+        Some(PropValue::Token(TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(TokenExpr::Time),
+            rhs: Box::new(TokenExpr::value(PropValue::Number(20.0))),
+        }))
+    );
+    for (i, p) in [
+        (0, Prop::Rotate),
+        (0, Prop::Opacity),
+        (1, Prop::Glow),
+        (2, Prop::Border),
+        (3, Prop::Bg),
+    ] {
+        let v = prop(i, p).unwrap_or_else(|| panic!("box {i} has no {p:?}"));
+        assert!(v.reads_time(), "box {i} {p:?} reads time: {v:?}");
+    }
+
+    // Evaluated where render evaluates them: per node, at its `t`.
+    let mut table = TokenTable::default();
+    table.insert("accent", PropValue::Color(strand_scene::Color::WHITE));
+    let levels = [&table];
+    let at = |t: f32, v: &PropValue| {
+        TokenScope::new(&levels)
+            .with_time(Some(TimeContext::at(t)))
+            .resolve(v)
+            .map(|c| c.into_owned())
+    };
+    assert_eq!(
+        at(1.5, &prop(0, Prop::Rotate).unwrap()),
+        Some(PropValue::Number(30.0))
+    );
+    // `wave(2s)` is 0 at `t = 0` and 1 half a period in.
+    assert_eq!(
+        at(0.0, &prop(0, Prop::Opacity).unwrap()),
+        Some(PropValue::Number(0.5))
+    );
+    assert_eq!(
+        at(1.0, &prop(0, Prop::Opacity).unwrap()),
+        Some(PropValue::Number(1.0))
+    );
+
+    // The comma shorthand keeps each item in place.
+    let Some(PropValue::List(glow)) = at(1.0, &prop(1, Prop::Glow).unwrap()) else {
+        panic!("{:?}", prop(1, Prop::Glow))
+    };
+    assert_eq!(glow[0], PropValue::Number(10.0));
+
+    // A border's width and a conic's `from` are numeric template slots;
+    // its colours are the colour slots, as before.
+    let Some(PropValue::Token(TokenExpr::Template {
+        value,
+        colors,
+        numbers,
+    })) = prop(2, Prop::Border)
+    else {
+        panic!("{:?}", prop(2, Prop::Border))
+    };
+    assert!(matches!(
+        *value,
+        PropValue::Border(Border {
+            paint: Paint::Conic { .. },
+            ..
+        })
+    ));
+    assert_eq!(colors.len(), 3);
+    assert_eq!(numbers.len(), 2, "width, then `from`: {numbers:?}");
+    assert!(
+        numbers
+            .iter()
+            .all(|n| n.as_ref().is_some_and(TokenExpr::reads_time))
+    );
+    let border = TokenExpr::Template {
+        value,
+        colors,
+        numbers,
+    };
+    let Some(PropValue::Border(Border {
+        width,
+        paint: Paint::Conic { from, stops },
+    })) = at(2.0, &PropValue::Token(border))
+    else {
+        panic!("the border resolves")
+    };
+    // `noise` is 0 at whole `x`.
+    assert_eq!((width, from), (1.5, 80.0));
+    assert_eq!(stops[0].color, strand_scene::Color::WHITE);
+
+    // A colour method with a time argument is a time value too.
+    let Some(PropValue::Color(c)) = at(0.5, &prop(3, Prop::Bg).unwrap()) else {
+        panic!("{:?}", prop(3, Prop::Bg))
+    };
+    assert!(
+        (c.a - 1.0).abs() < 1e-6,
+        "wave(1s) is 1 at half a period: {c:?}"
+    );
+}

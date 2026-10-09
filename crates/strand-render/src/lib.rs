@@ -17,6 +17,7 @@
 
 mod anim;
 mod cache;
+mod clock;
 mod flatten;
 pub mod image;
 pub mod input;
@@ -24,6 +25,7 @@ mod layout;
 mod markup;
 mod raster;
 mod renderer;
+mod time;
 mod tree;
 pub mod widgets;
 

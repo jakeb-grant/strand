@@ -161,6 +161,9 @@ pub struct Flattened {
     /// surface: their rounded boxes in buffer pixels, with the radius
     /// (the blur ladder's first rung, M4).
     pub blur: Vec<BlurRegion>,
+    /// (M4) Drawn nodes that read time (`t`, `wave(…)`, `noise(t)`): they
+    /// repaint every frame of their clock while drawn.
+    pub clocks: Vec<NodeId>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -249,6 +252,9 @@ struct Inherited<'a> {
     offset: (f32, f32),
     /// Inside a subtree playing its exit pose: drawn, never hit.
     inert: bool,
+    /// (M4) A `tokens` override in scope reads time: every node under it
+    /// is evaluated at its own time.
+    timed: bool,
 }
 
 /// What flattening reads besides the tree, layout and springs.
@@ -305,6 +311,7 @@ pub fn flatten(
         clip: full,
         offset: (0.0, 0.0),
         inert: false,
+        timed: false,
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.
@@ -354,6 +361,9 @@ fn inherit<'a>(node: &'a Node, inh: &mut Inherited<'a>) {
     if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
         inh.tokens.push(t);
     }
+    inh.timed |= crate::time::overrides_read_time(node);
+    // A nested surface's ancestors are read at rest (`t = 0`): their
+    // own clocks belong to the surface that draws them.
     let scope = TokenScope::new(&inh.tokens);
     let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
     if let Some(PropValue::Color(c)) = get(Prop::Color).as_deref() {

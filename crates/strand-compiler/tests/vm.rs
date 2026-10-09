@@ -393,12 +393,25 @@ fn lambdas_take_named_arguments() {
     assert_eq!(get(&inst, "z"), Value::text("w:2"));
 }
 
-/// Time signals do not animate before the renderer evaluates them (M4):
-/// a read of `t`, `wave(…)` or `noise(…)` is warned about once per name,
-/// at its first use, and reported once as a notice in the boot tick.
+/// Time-bound values (M4) stay symbolic on the logic thread: `t`,
+/// `wave(…)` and `noise(t)` and arithmetic on them are
+/// [`Value::Time`] expressions render evaluates per node per frame, with
+/// no warning; `noise` of a constant is a number now. Reaching logic (a
+/// handler storing one, a comparison, a condition, `match`, text) is an
+/// error value, as a token in arithmetic without numbers is.
 #[test]
-fn time_signals_are_warned_about_once() {
-    let src = "let a = t * 2\nlet b = t + 1\nlet c = 10 * wave(2s)\nlet d = noise(3)\n";
+fn time_values_in_handlers_are_error_values() {
+    use strand_scene::{BinOp, PropValue, TokenExpr};
+    let src = "state x = 0.0
+state log = \"\"
+let spin = t * 20deg
+let glow = 10 * wave(2s, phase: 0.25)
+let jitter = noise(t * 3)
+let still = noise(3)
+let late = t > 2
+let said = join(\" \", t)
+let picked = match wave(1s) { 0 => \"zero\", _ => \"other\" }
+bar B {\n  box { rotate: spin; on click { x = t } }\n  box { on click { log = \"ok\" } }\n}\n";
     let mut map = SourceMap::new();
     map.add("t.strand", src.to_string());
     let c = strand_compiler::compile(&map);
@@ -407,16 +420,75 @@ fn time_signals_are_warned_about_once() {
         &c.program,
         strand_compiler::schema::Schema::builtin(),
     ));
-    let codes: Vec<_> = p.warnings.iter().map(|d| d.code).collect();
-    assert_eq!(codes, ["lower::time_signal"; 3], "{:#?}", p.warnings);
-    let first_t = p.warnings[0].primary_span().unwrap();
-    assert_eq!(&src[first_t.start as usize..first_t.end as usize], "t");
-    assert_eq!(first_t.start, 8, "the first `t`");
+    assert!(p.warnings.is_empty(), "no warning: {:#?}", p.warnings);
     let rt = Runtime::new();
     let host = Rc::new(SchemaHost::mock(&rt, &p.types));
-    let inst = Instance::new(&rt, p, host, strand_compiler::instantiate::Storage::none());
+    let inst = Instance::new(
+        &rt,
+        p,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
     let u = inst.flush();
-    assert_eq!(u.notices.len(), 3, "{:?}", u.notices);
-    assert!(u.notices[0].contains("`t` reads 0"), "{:?}", u.notices);
-    assert!(inst.flush().notices.is_empty(), "once");
+    assert!(u.notices.is_empty(), "{:?}", u.notices);
+    let num = |n: f32| TokenExpr::value(PropValue::Number(n));
+    assert_eq!(
+        get(&inst, "spin"),
+        Value::Time(Rc::new(TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(TokenExpr::Time),
+            rhs: Box::new(num(20.0)),
+        }))
+    );
+    assert_eq!(
+        get(&inst, "glow"),
+        Value::Time(Rc::new(TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(num(10.0)),
+            rhs: Box::new(TokenExpr::Wave {
+                period: std::time::Duration::from_secs(2),
+                phase: Box::new(num(0.25)),
+            }),
+        }))
+    );
+    assert!(
+        matches!(get(&inst, "jitter"), Value::Time(e) if matches!(&*e, TokenExpr::Noise(_))),
+        "noise of `t` is a time value"
+    );
+    assert_eq!(
+        get(&inst, "still"),
+        Value::float(strand_scene::tokens::noise(3.0) as f64),
+        "noise of a constant is computed now, as render would"
+    );
+    for (name, what) in [
+        ("late", "with `>`"),
+        ("said", "in `join"),
+        ("picked", "in `match`"),
+    ] {
+        let err = inst.value_of("t", name).unwrap_err().to_string();
+        assert!(
+            err.contains("time-bound value") && err.contains(what),
+            "{name}: {err}"
+        );
+    }
+    // A handler storing one fails (its task returns the error); the
+    // other handler still runs.
+    let list = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![list]))
+        .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    assert_eq!(boxes.len(), 2);
+    inst.event(boxes[0], "click", Vec::new());
+    let u = inst.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(
+        u.errors[0].to_string().contains("cannot be stored"),
+        "{:?}",
+        u.errors
+    );
+    assert_eq!(get(&inst, "x"), Value::float(0.0), "nothing stored");
+    inst.event(boxes[1], "click", Vec::new());
+    assert!(inst.flush().errors.is_empty());
+    assert_eq!(get(&inst, "log"), Value::text("ok"));
 }

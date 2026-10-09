@@ -154,6 +154,8 @@ pub(crate) struct Animator {
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
+    /// (M4) When each node that reads time appeared ([`crate::time`]).
+    times: crate::time::NodeTimes,
 }
 
 impl Animator {
@@ -177,6 +179,14 @@ impl Animator {
     /// Something drawn since [`Animator::begin`] is still moving.
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    /// (M4) The time context of `id` in the frame being drawn: its own
+    /// `t` since it appeared, frozen at `t = 0` under `reduced_motion` or
+    /// in a frame with no clock.
+    pub fn time_of(&mut self, id: NodeId) -> strand_scene::TimeContext {
+        let frozen = self.snapping();
+        self.times.context(id, self.time, self.commit, frozen)
     }
 
     /// Everything snaps: `reduced_motion`, or a frame at time zero (no
@@ -266,6 +276,7 @@ impl Animator {
 
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
+        self.times.forget(id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
@@ -316,6 +327,7 @@ impl Animator {
 
     /// Drops the state of nodes `keep` rejects (gone from the tree).
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        self.times.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));

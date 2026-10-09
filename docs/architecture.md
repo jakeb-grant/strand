@@ -1633,23 +1633,24 @@ Public interfaces other crates and later stages build on:
   block that binds locals and around each `for`, whose `IterNext` drops
   the previous iteration's locals, so a loop keeps a frame of constant
   size; a lambda captures only its free locals (`lower::Lambda::free`).
-- **Time-bound values (M4 plan, not built yet).** `t`, `wave(…)` and
-  `noise(…)` read 0 (`noise` once) on the logic thread today, with one
-  `lower::time_signal` warning per name (`Program::warnings`, reported
-  as boot-tick notices). They are to travel like tokens: `Value` gains a
-  symbolic variant holding a `strand_scene::TokenExpr` with the time
-  leaves (`Time`, `Wave`, `Noise`, `Index`, `Count`: `strand-scene`, "M4
-  vocabulary"; the warning goes), so `t * 20deg` or `10 * wave(2s)`
-  stays an expression; arithmetic on it builds the tree as
-  `builtins::binary` already does for `TokenExpr`, and `convert` maps it
-  to `PropValue::Token` (a `Template` with numeric slots when it sits
-  inside a composite value), which render evaluates per frame (`t` per
-  node, from its appearance; a reload that keeps the node keeps its `t`,
-  a remount restarts it). A prop holding one is a frame-driven prop
-  for render's frame scheduling; nothing else in the emitter changes.
-  `noise(x)` is a time value only when `x` is. A time-bound value
-  reaching logic (a handler, a comparison, `match`) is an error value,
-  as a token in arithmetic without numbers is now.
+- **Time-bound values** (m4-runtime F1). `t`, `wave(…)` and
+  `noise(…)` travel like tokens: `Value::Time` holds a
+  `strand_scene::TokenExpr` with time leaves (`Time`, `Wave`, `Noise`,
+  `Index`, `Count`: `strand-scene`, "M4 vocabulary"), so `t * 20deg` or
+  `10 * wave(2s)` stays an expression (`Value::symbolic` picks `Time` or
+  `Token` by `TokenExpr::reads_time`); arithmetic builds the tree as
+  `builtins::binary` does for tokens (`%` is `BinOp::Rem`), colour
+  methods on one stay symbolic, and `convert` maps it to
+  `PropValue::Token`, or to a `Template` slot inside a composite value
+  (numbers in `PropValue::numbers_mut` order). Render evaluates it per
+  node per frame (`strand-render`'s `time.rs`). `noise(x)` is a time
+  value only when `x` is; of a constant it is `strand_scene::tokens::
+  noise`. A time-bound value reaching logic is an error value
+  (`vm::value::time_in_logic`): a comparison, `!`, `&&`/`||`, a
+  condition, `match`, an index, a computing builtin (`join`, `pct`,
+  `min`, …), a service method or action argument, or a handler storing
+  it (`tests/vm.rs::time_values_in_handlers_are_error_values`). The old
+  `lower::time_signal` warning is gone.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
   - `declare(rt, &lower::CustomService, types)`: a no-code service the

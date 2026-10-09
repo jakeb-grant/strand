@@ -9,7 +9,7 @@ use strand_scene::{BinOp, Color, Oklch, TokenExpr, TokenMethod};
 
 use super::Vm;
 use super::exec::{Args, EventCtx};
-use super::value::{AsyncValue, CallValue, NodeState, Num, PendingOp, Value};
+use super::value::{AsyncValue, CallValue, NodeState, Num, PendingOp, Value, time_in_logic};
 use crate::hir::{BinaryOp, UnaryOp};
 use crate::ty::{Prim, Ty, TypeTable};
 
@@ -17,11 +17,12 @@ fn fail(msg: impl Into<String>) -> Error {
     Error::failed(msg.into())
 }
 
-/// A builtin value: `t` (seconds since the node appeared). Time signals
-/// are the render thread's (M4); until then `t` reads 0.
+/// A builtin value: `t` (seconds since the node appeared), a time-bound
+/// value the render thread evaluates per node per frame (M4): it stays
+/// symbolic here ([`Value::Time`]).
 pub(crate) fn value(name: &str) -> Value {
     match name {
-        "t" => Value::float(0.0),
+        "t" => Value::Time(Rc::new(TokenExpr::Time)),
         _ => Value::Null,
     }
 }
@@ -213,9 +214,10 @@ pub(crate) fn index(base: &Value, index: &Value) -> Value {
 
 pub(crate) fn unary(op: UnaryOp, v: Value) -> Result<Value, Error> {
     Ok(match (op, v) {
+        (UnaryOp::Not, v) if v.has_time() => return Err(time_in_logic("in a condition")),
         (UnaryOp::Not, v) => Value::Bool(!v.truthy()),
         (UnaryOp::Neg, Value::Num(n, u)) => Value::Num(-n, u),
-        (UnaryOp::Neg, Value::Token(t)) => Value::token(TokenExpr::Binary {
+        (UnaryOp::Neg, Value::Token(t) | Value::Time(t)) => Value::symbolic(TokenExpr::Binary {
             op: BinOp::Sub,
             lhs: Box::new(TokenExpr::value(strand_scene::PropValue::Number(0.0))),
             rhs: Box::new((*t).clone()),
@@ -246,7 +248,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
 
 fn token_of(v: &Value) -> Option<TokenExpr> {
     match v {
-        Value::Token(t) => Some((**t).clone()),
+        Value::Token(t) | Value::Time(t) => Some((**t).clone()),
         Value::Num(n, Num::Percent) => Some(TokenExpr::value(strand_scene::PropValue::Number(
             (*n / 100.0) as f32,
         ))),
@@ -258,6 +260,11 @@ fn token_of(v: &Value) -> Option<TokenExpr> {
 
 pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error> {
     use BinaryOp::*;
+    // A time-bound value only does arithmetic (which stays symbolic):
+    // comparing it, or using it as a condition, needs its value now.
+    if !matches!(op, Add | Sub | Mul | Div | Rem) && (a.has_time() || b.has_time()) {
+        return Err(time_in_logic(&format!("with `{}`", op.as_str())));
+    }
     Ok(match op {
         Eq => Value::Bool(equal(a, b)),
         Ne => Value::Bool(!equal(a, b)),
@@ -279,17 +286,23 @@ pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error>
             v => v.clone(),
         },
         Add | Sub | Mul | Div | Rem => {
-            if matches!(a, Value::Token(_)) || matches!(b, Value::Token(_)) {
+            let symbolic = |v: &Value| matches!(v, Value::Token(_) | Value::Time(_));
+            if symbolic(a) || symbolic(b) {
                 let (Some(l), Some(r)) = (token_of(a), token_of(b)) else {
-                    return Err(fail("arithmetic on a token needs numbers"));
+                    return Err(fail(if a.has_time() || b.has_time() {
+                        "arithmetic on a time-bound value needs numbers"
+                    } else {
+                        "arithmetic on a token needs numbers"
+                    }));
                 };
                 let op = match op {
                     Add => BinOp::Add,
                     Sub => BinOp::Sub,
                     Mul => BinOp::Mul,
-                    _ => BinOp::Div,
+                    Div => BinOp::Div,
+                    _ => BinOp::Rem,
                 };
-                return Ok(Value::token(TokenExpr::Binary {
+                return Ok(Value::symbolic(TokenExpr::Binary {
                     op,
                     lhs: Box::new(l),
                     rhs: Box::new(r),
@@ -397,34 +410,31 @@ pub(crate) fn total_compare(a: &Value, b: &Value) -> Ordering {
 // ---------------------------------------------------------------------------
 // Builtin functions
 
+/// True for a builtin function that computes with its arguments now (so
+/// a time-bound argument is an error there), false for the ones whose
+/// result stays symbolic or becomes a call-shaped value render reads.
+fn computes(name: &str) -> bool {
+    matches!(
+        name,
+        "pct"
+            | "dur"
+            | "join"
+            | "material"
+            | "import"
+            | "rgb"
+            | "min"
+            | "max"
+            | "clamp"
+            | "sleep"
+            | "propagate"
+    )
+}
+
 fn call_value(name: &str, args: Vec<Value>) -> Value {
     Value::Call(Rc::new(CallValue {
         name: name.to_string(),
         args,
     }))
-}
-
-/// `noise(x)`: smooth 1D value noise in `0..=1`, the same for the same
-/// `x`.
-pub fn noise(x: f64) -> f64 {
-    fn hash(i: i64) -> f64 {
-        let mut h = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        h ^= h >> 31;
-        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        h ^= h >> 29;
-        (h >> 11) as f64 / (1u64 << 53) as f64
-    }
-    if !x.is_finite() {
-        return 0.5;
-    }
-    let i = x.floor();
-    let f = x - i;
-    let s = f * f * (3.0 - 2.0 * f);
-    // `as` saturates for huge `x`; the next cell wraps instead of
-    // overflowing.
-    let i = i as i64;
-    let (a, b) = (hash(i), hash(i.wrapping_add(1)));
-    a + (b - a) * s
 }
 
 /// `pct(0.42)` is `42%`.
@@ -459,6 +469,19 @@ pub(crate) fn call(
 ) -> Result<Value, Error> {
     let types = vm.types();
     let num = |i: usize| args.num(i);
+    // A time-bound argument stays symbolic only where render can take
+    // it: `wave`, `noise`, `oklch(from …)` channels and call-shaped
+    // values (gradients, filters, curves); a function that computes
+    // with its arguments now would need its value now.
+    let timed = args
+        .params
+        .iter()
+        .flatten()
+        .chain(&args.rest)
+        .any(Value::has_time);
+    if timed && computes(name) {
+        return Err(time_in_logic(&format!("in `{name}(…)`")));
+    }
     Ok(match name {
         "pct" => match args.get(0) {
             Some(Value::Num(f, _)) => Value::text(pct(*f)),
@@ -566,10 +589,12 @@ pub(crate) fn call(
                             return Ok(Value::Color(c));
                         }
                     }
-                    Value::token(e)
+                    Value::symbolic(e)
                 } else {
                     Value::Null
                 }
+            } else if timed {
+                return Err(time_in_logic("in `oklch(l, c, h)`; use `oklch(from …)`"));
             } else {
                 let c = Color::from_oklch(Oklch {
                     l: num(0).unwrap_or(0.0),
@@ -600,9 +625,30 @@ pub(crate) fn call(
             );
             Value::float(x.max(lo).min(hi.max(lo)))
         }
-        // `wave` is a time signal, the render thread's (M4): 0 until then.
-        "wave" => Value::float(0.0),
-        "noise" => Value::float(noise(num(0).unwrap_or(0.0))),
+        // Time signals, evaluated by the render thread per node per frame
+        // (M4): `wave(period, phase: 0)` always reads time; `noise(x)`
+        // only when `x` does, and is computed now otherwise (the same
+        // gradient noise render evaluates).
+        "wave" => {
+            let Some(period) = args.get(0).and_then(Value::as_duration) else {
+                return Err(fail("`wave` needs a duration"));
+            };
+            let phase = match args.get(1) {
+                None | Some(Value::Null) => TokenExpr::value(strand_scene::PropValue::Number(0.0)),
+                Some(v) => token_of(v).ok_or_else(|| fail("`wave`'s phase is a number"))?,
+            };
+            Value::Time(Rc::new(TokenExpr::Wave {
+                period,
+                phase: Box::new(phase),
+            }))
+        }
+        "noise" => match args.get(0) {
+            Some(x @ (Value::Time(_) | Value::Token(_))) => match token_of(x) {
+                Some(e) => Value::symbolic(TokenExpr::Noise(Box::new(e))),
+                None => Value::Null,
+            },
+            _ => Value::float(strand_scene::tokens::noise(num(0).unwrap_or(0.0) as f32) as f64),
+        },
         "sleep" => {
             let Some(d) = args.get(0).and_then(Value::as_duration) else {
                 return Err(Error::failed(format!(
@@ -651,12 +697,23 @@ pub(crate) fn method(
     name: &str,
     args: Args,
 ) -> Result<Value, Error> {
+    let timed = args
+        .params
+        .iter()
+        .flatten()
+        .chain(&args.rest)
+        .any(Value::has_time);
     match recv {
         Value::Null => Ok(Value::Null),
+        Value::Service(_) if timed => Err(time_in_logic(&format!("as an argument of `{name}`"))),
         Value::Service(s) => vm.host.call(rt, s, name, &args.into_vec()),
-        Value::Token(_) | Value::Color(_) if TokenMethod::from_name(name).is_some() => {
+        Value::Token(_) | Value::Time(_) | Value::Color(_)
+            if TokenMethod::from_name(name).is_some() =>
+        {
             color_method(recv, name, &args)
         }
+        Value::Time(_) => Err(time_in_logic(&format!("with `.{name}`"))),
+        _ if timed => Err(time_in_logic(&format!("as an argument of `.{name}`"))),
         Value::Text(t) => text_method(t, name, &args),
         Value::Num(n, u) => num_method(*n, *u, name, &args),
         Value::List(items) => list_method(vm, rt, items, name, args),
@@ -729,8 +786,8 @@ fn color_method(recv: &Value, name: &str, args: &Args) -> Result<Value, Error> {
     let Some(method) = TokenMethod::from_name(name) else {
         return Ok(Value::Null);
     };
-    let symbolic =
-        matches!(recv, Value::Token(_)) || args.params.iter().flatten().any(Value::has_tokens);
+    let symbolic = matches!(recv, Value::Token(_) | Value::Time(_))
+        || args.params.iter().flatten().any(Value::has_tokens);
     if symbolic {
         let receiver = token_of(recv).ok_or_else(|| fail("not a colour"))?;
         let targs = args
@@ -739,7 +796,7 @@ fn color_method(recv: &Value, name: &str, args: &Args) -> Result<Value, Error> {
             .flatten()
             .map(|a| token_of(a).ok_or_else(|| fail(format!("`{name}` needs colours and numbers"))))
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(Value::token(receiver.call(method, targs)));
+        return Ok(Value::symbolic(receiver.call(method, targs)));
     }
     let Value::Color(c) = recv else {
         return Ok(Value::Null);
@@ -928,21 +985,6 @@ mod tests {
             binary(BinaryOp::Eq, &Value::int(1), &Value::float(1.0)).unwrap(),
             Value::Bool(true)
         );
-    }
-
-    #[test]
-    fn noise_is_smooth_and_bounded() {
-        for i in 0..100 {
-            let x = i as f64 * 0.37;
-            let n = noise(x);
-            assert!((0.0..=1.0).contains(&n));
-            assert!((noise(x + 1e-6) - n).abs() < 1e-3);
-        }
-        assert_eq!(noise(2.0), noise(2.0));
-        // Huge inputs saturate the cell index: no overflow panic.
-        for x in [1e23, -1e23, f64::MAX, f64::MIN, 9.3e18] {
-            assert!((0.0..=1.0).contains(&noise(x)), "{x}");
-        }
     }
 
     #[test]

@@ -242,10 +242,14 @@ impl Renderer {
         // pose a time-zero preview could not play: a surface just
         // attached, a node just created).
         let pending = self.anim.busy(&self.tree, root) || swapping;
-        let cached = if s.animating || pending {
+        // A node reading time repaints every frame of its clock.
+        let ticking = self.clocks.running(surface);
+        let cached = if s.animating || pending || ticking {
             None
         } else {
-            s.cache.take()
+            // A scene with time-bound nodes was evaluated at another
+            // frame's time (or a preview's): never reused.
+            s.cache.take().filter(|f| f.clocks.is_empty())
         };
         let prev = s.painted_time;
         let fresh = cached.is_none();
@@ -258,6 +262,15 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        if fresh {
+            // Its clocks run while it draws them: not frozen (reduced
+            // motion, a frame with no clock), and not after it detached.
+            let frozen = self.anim.reduced() || target.time.is_zero();
+            let clocks = if frozen { Vec::new() } else { f.clocks.clone() };
+            self.clocks.drawn(surface, clocks);
+            let surfaces = &self.surfaces;
+            self.clocks.retain(|s| surfaces.contains_key(&s));
+        }
         // A theme crossfade on this surface paints every frame in full,
         // over the old frame taken before the first one is drawn.
         self.take_snapshot(surface, target);
@@ -374,6 +387,6 @@ impl Renderer {
             && self
                 .surfaces
                 .get(&surface)
-                .is_some_and(|s| s.dirty || !s.valid || s.animating)
+                .is_some_and(|s| s.dirty || !s.valid || s.animating || self.clocks.running(surface))
     }
 }

@@ -311,6 +311,8 @@ pub struct Renderer {
     timer: Option<std::sync::mpsc::Sender<Option<Instant>>>,
     /// The due time last sent to `timer`.
     timer_due: Option<Instant>,
+    /// (M4) Per-surface clocks: nodes reading time each surface drew.
+    clocks: crate::clock::Clocks,
 }
 
 /// How long the pointer rests on a node before its `tooltip` shows.
@@ -388,6 +390,7 @@ impl Renderer {
             timer: None,
             timer_due: None,
             waker,
+            clocks: crate::clock::Clocks::default(),
         }
     }
 
@@ -579,6 +582,13 @@ impl Renderer {
             Some(PropValue::Bool(true))
         );
         let on = self.reduced_motion || token;
+        if on != self.anim.reduced() {
+            // Time signals stop at `t = 0` (or run again): every surface
+            // flattens afresh (one frame each).
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
         if on && !self.anim.reduced() {
             // Springs in flight snap at the next frame: sizes too, which
             // only a layout pass lets go of.

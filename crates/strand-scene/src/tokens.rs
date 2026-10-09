@@ -71,6 +71,8 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    /// `%`: the remainder, with the sign of the left side (as the VM's).
+    Rem,
 }
 
 /// A token expression, evaluated by the render thread against the current
@@ -414,6 +416,13 @@ impl TokenTable {
     /// Evaluates an expression.
     pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
         TokenScope::new(&[self]).eval(e)
+    }
+
+    /// (M4) True if an entry reads time (`set { $spin: t * 20deg }`):
+    /// every node in its scope is frame-driven.
+    pub fn reads_time(&self) -> bool {
+        self.tokens.values().any(PropValue::reads_time)
+            || self.derived.values().any(TokenExpr::reads_time)
     }
 }
 
@@ -854,6 +863,7 @@ impl<'a> TokenScope<'a> {
                     BinOp::Sub => a - b,
                     BinOp::Mul => a * b,
                     BinOp::Div => a / b,
+                    BinOp::Rem => a % b,
                 };
                 v.is_finite().then_some(PropValue::Number(v))
             }

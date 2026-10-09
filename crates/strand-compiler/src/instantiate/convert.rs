@@ -6,7 +6,12 @@
 //! $shadow` a shadow, `"Inter" 13px 500` a font. Values holding tokens
 //! stay symbolic: a colour slot filled by a token becomes a
 //! [`TokenExpr::Template`], a comma shorthand keeps `PropValue::Token`
-//! items, so render evaluates them every frame.
+//! items, so render evaluates them every frame. Time-bound values (M4:
+//! `t`, `wave(…)`, `noise(t)`) travel the same way: a whole prop as a
+//! `PropValue::Token`, a number inside a composite value (a border's
+//! width, a gradient's angle or `from`, a shadow's offsets and blur) as a
+//! template's numeric slot, so `border: 1.5, conic(from: t * 40deg, …)`
+//! is one value render evaluates per node per frame.
 
 use std::time::Duration;
 
@@ -18,8 +23,8 @@ use strand_scene::{
 use crate::ty::{EnumId, Prim, Ty, TypeTable};
 use crate::vm::value::{CallValue, Num, Value, duration_ms, f32_to_f64, fits};
 
-/// Colour slots of a composite value: a placeholder colour in the value,
-/// the token that fills it here.
+/// Colour (or number) slots of a composite value: a placeholder in the
+/// value, the token or time-bound expression that fills it here.
 type Slots = Vec<Option<TokenExpr>>;
 
 fn number(v: &Value) -> Option<f32> {
@@ -29,25 +34,52 @@ fn number(v: &Value) -> Option<f32> {
     }
 }
 
-/// A colour or token colour: the placeholder and its slot.
-fn color_slot(v: &Value) -> Option<(Color, Option<TokenExpr>)> {
+/// A number or a symbolic one (a token, a time-bound value such as `t *
+/// 40deg`): the placeholder and its slot.
+fn number_slot(v: &Value) -> Option<(f32, Option<TokenExpr>)> {
     match v {
-        Value::Color(c) => Some((*c, None)),
-        Value::Token(t) => Some((Color::BLACK, Some((**t).clone()))),
+        Value::Num(n, _) => Some((*n as f32, None)),
+        Value::Token(t) | Value::Time(t) => Some((0.0, Some((**t).clone()))),
         _ => None,
     }
 }
 
-/// A paint (colour or gradient) with its colour slots.
-fn paint(v: &Value) -> Option<(Paint, Slots)> {
+/// A colour or token colour: the placeholder and its slot.
+fn color_slot(v: &Value) -> Option<(Color, Option<TokenExpr>)> {
+    match v {
+        Value::Color(c) => Some((*c, None)),
+        Value::Token(t) | Value::Time(t) => Some((Color::BLACK, Some((**t).clone()))),
+        _ => None,
+    }
+}
+
+/// A paint's slots: its colours, and its numbers in
+/// [`PropValue::numbers_mut`] order (a gradient's angle or `from`, then
+/// its stops' offsets, which are never symbolic).
+struct PaintSlots {
+    colors: Slots,
+    numbers: Slots,
+}
+
+/// A paint (colour or gradient) with its slots.
+fn paint(v: &Value) -> Option<(Paint, PaintSlots)> {
     if let Some((c, slot)) = color_slot(v) {
-        return Some((Paint::Solid(c), vec![slot]));
+        let slots = PaintSlots {
+            colors: vec![slot],
+            numbers: Vec::new(),
+        };
+        return Some((Paint::Solid(c), slots));
     }
     let Value::Call(c) = v else {
         return None;
     };
     // A gradient has colour stops; `radial(center, 40%)` is a mask.
-    if !c.args.iter().any(|a| color_slot(a).is_some()) {
+    let stop_args = match c.name.as_str() {
+        "linear" | "conic" => c.args.get(1..).unwrap_or(&[]),
+        "radial" => &c.args[..],
+        _ => return None,
+    };
+    if !stop_args.iter().any(|a| color_slot(a).is_some()) {
         return None;
     }
     let stops = |vals: &[Value]| -> (Vec<GradientStop>, Slots) {
@@ -63,54 +95,83 @@ fn paint(v: &Value) -> Option<(Paint, Slots)> {
             .collect();
         (stops, colors.into_iter().map(|(_, s)| s).collect())
     };
-    match c.name.as_str() {
-        "linear" => {
-            let angle = c.args.first().and_then(number).unwrap_or(180.0);
-            let (stops, slots) = stops(c.args.get(1..).unwrap_or(&[]));
-            Some((Paint::Linear { angle, stops }, slots))
-        }
-        "radial" => {
-            let (stops, slots) = stops(&c.args);
-            Some((Paint::Radial { stops }, slots))
-        }
-        "conic" => {
-            let from = c.args.first().and_then(number).unwrap_or(0.0);
-            let (stops, slots) = stops(c.args.get(1..).unwrap_or(&[]));
-            Some((Paint::Conic { from, stops }, slots))
-        }
-        _ => None,
-    }
+    let (lead, lead_slot) = c
+        .args
+        .first()
+        .and_then(number_slot)
+        .map_or((None, None), |(n, s)| (Some(n), s));
+    let (stops, colors) = stops(stop_args);
+    let (paint, numbers) = match c.name.as_str() {
+        "linear" => (
+            Paint::Linear {
+                angle: lead.unwrap_or(180.0),
+                stops,
+            },
+            vec![lead_slot],
+        ),
+        "conic" => (
+            Paint::Conic {
+                from: lead.unwrap_or(0.0),
+                stops,
+            },
+            vec![lead_slot],
+        ),
+        _ => (Paint::Radial { stops }, Vec::new()),
+    };
+    Some((paint, PaintSlots { colors, numbers }))
 }
 
-/// A value whose colours may be tokens: plain, or a template.
-fn templated(value: PropValue, slots: Slots) -> PropValue {
-    if slots.iter().any(Option::is_some) {
+/// A value whose colours or numbers may be tokens or time-bound: plain,
+/// or a template (numbers' trailing empty slots dropped).
+fn templated(value: PropValue, colors: Slots, mut numbers: Slots) -> PropValue {
+    while numbers.last().is_some_and(Option::is_none) {
+        numbers.pop();
+    }
+    if colors.iter().any(Option::is_some) || !numbers.is_empty() {
         PropValue::Token(TokenExpr::Template {
             value: Box::new(value),
-            colors: slots,
-            numbers: Vec::new(),
+            colors,
+            numbers,
         })
     } else {
         value
     }
 }
 
-/// One shadow from `x y blur [spread] color`.
-fn shadow(items: &[Value]) -> Option<(Shadow, Option<TokenExpr>)> {
-    let nums: Vec<f32> = items.iter().filter_map(number).collect();
-    let (color, slot) = items
-        .iter()
-        .find_map(color_slot)
+/// One shadow from `x y blur [spread] color`, with its colour slot and
+/// its four number slots. The colour is the last part when that is a
+/// colour, a token or a time-bound value (`$accent.alpha(wave(1s))`);
+/// every other part is a number, possibly symbolic (`8 * wave(2s)`).
+fn shadow(items: &[Value]) -> Option<(Shadow, Option<TokenExpr>, Slots)> {
+    // The colour: the last part if it can be one, else the first plain
+    // colour or token (`$shadow 0 2px 8px` reads as CSS does).
+    let at = match items.last() {
+        Some(last) if color_slot(last).is_some() => Some(items.len() - 1),
+        _ => items
+            .iter()
+            .position(|v| matches!(v, Value::Color(_) | Value::Token(_))),
+    };
+    let (color, slot) = at
+        .and_then(|i| color_slot(&items[i]))
         .unwrap_or((Color::BLACK.with_alpha(0.3), None));
+    let nums: Vec<(f32, Option<TokenExpr>)> = items
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != at)
+        .filter_map(|(_, v)| number_slot(v))
+        .collect();
+    let n = |i: usize| nums.get(i).cloned().unwrap_or((0.0, None));
+    let (x, y, blur, spread) = (n(0), n(1), n(2), n(3));
     Some((
         Shadow {
-            x: nums.first().copied().unwrap_or(0.0),
-            y: nums.get(1).copied().unwrap_or(0.0),
-            blur: nums.get(2).copied().unwrap_or(0.0),
-            spread: nums.get(3).copied().unwrap_or(0.0),
+            x: x.0,
+            y: y.0,
+            blur: blur.0,
+            spread: spread.0,
             color,
         },
         slot,
+        vec![x.1, y.1, blur.1, spread.1],
     ))
 }
 
@@ -121,10 +182,11 @@ fn shadows(v: &Value) -> Option<PropValue> {
     };
     let mut out = Vec::new();
     let mut slots = Vec::new();
+    let mut numbers = Vec::new();
     for item in list {
-        let (s, slot) = match item {
+        let (s, slot, nums) = match item {
             Value::Spaced(parts) => shadow(parts)?,
-            Value::Token(t) if out.is_empty() => {
+            Value::Token(t) | Value::Time(t) if out.is_empty() => {
                 // `shadow: $elevation.md`: the token is the whole list.
                 return Some(PropValue::Token((**t).clone()));
             }
@@ -132,8 +194,9 @@ fn shadows(v: &Value) -> Option<PropValue> {
         };
         out.push(s);
         slots.push(slot);
+        numbers.extend(nums);
     }
-    Some(templated(PropValue::Shadow(out), slots))
+    Some(templated(PropValue::Shadow(out), slots, numbers))
 }
 
 fn font(parts: &[Value]) -> Option<PropValue> {
@@ -168,7 +231,7 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
     Some(match v {
         Value::Null | Value::Unit => PropValue::Unset,
         Value::Async(a) => return a.usable().and_then(|v| convert(types, ty, v, border_pair)),
-        Value::Token(t) => PropValue::Token((**t).clone()),
+        Value::Token(t) | Value::Time(t) => PropValue::Token((**t).clone()),
         Value::Bool(b) => PropValue::Bool(*b),
         Value::Num(x, u) => {
             let n = *x as f32;
@@ -244,11 +307,14 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
 }
 
 fn border(items: &[Value]) -> Option<PropValue> {
-    let width = items.first().and_then(number).unwrap_or(1.0);
+    let (width, width_slot) = items.first().and_then(number_slot).unwrap_or((1.0, None));
     let (p, slots) = items.get(1).and_then(paint)?;
+    let mut numbers = vec![width_slot];
+    numbers.extend(slots.numbers);
     Some(templated(
         PropValue::Border(Border { width, paint: p }),
-        slots,
+        slots.colors,
+        numbers,
     ))
 }
 
@@ -263,7 +329,7 @@ fn variant(types: &TypeTable, e: EnumId, i: u32) -> Option<String> {
 
 fn call(types: &TypeTable, c: &CallValue) -> Option<PropValue> {
     if let Some((p, slots)) = paint(&Value::Call(std::rc::Rc::new(c.clone()))) {
-        return Some(templated(PropValue::Paint(p), slots));
+        return Some(templated(PropValue::Paint(p), slots.colors, slots.numbers));
     }
     if let Some(t) = transition_of_call(types, c) {
         return Some(PropValue::Transition(t));

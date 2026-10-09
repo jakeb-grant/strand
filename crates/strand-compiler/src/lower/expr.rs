@@ -425,7 +425,6 @@ impl Lowerer<'_> {
                 c.emit(Op::Service(n), span);
             }
             ExprKind::Value(v) => {
-                self.note_time(v, span);
                 let n = c.name(v);
                 c.emit(Op::Value(n), span);
             }
@@ -640,7 +639,6 @@ impl Lowerer<'_> {
                 c.emit(Op::CallFn { def: *d, args: map }, span);
             }
             Callee::Builtin { name, overload } => {
-                self.note_time(name, span);
                 let sig = self
                     .schema
                     .functions

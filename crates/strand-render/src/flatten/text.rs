@@ -328,6 +328,7 @@ pub fn natural_texts(
         clip: Rect::default(),
         offset: (0.0, 0.0),
         inert: false,
+        timed: false,
     };
     let mut ancestors = Vec::new();
     let mut up = node.parent;

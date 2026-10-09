@@ -1880,3 +1880,98 @@ fn the_midnight_tick_damages_only_the_centred_clock() {
     eprintln!("worst midnight tick: {worst} px²");
     assert!(worst <= 2 * 2000, "{worst}");
 }
+
+// ---- (M4) Time signals and per-node clocks ---------------------------
+
+const T0: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `rotate: t * 90deg`: a time-bound value as logic sends it.
+fn spin(deg_per_s: f32) -> PropValue {
+    PropValue::Token(TokenExpr::Binary {
+        op: BinOp::Mul,
+        lhs: Box::new(TokenExpr::Time),
+        rhs: Box::new(TokenExpr::value(num(deg_per_s))),
+    })
+}
+
+/// A 200×40 bar: a static square on the left, and a square whose
+/// `rotate` follows `t` on the right (the props of the second given).
+fn timed_bar(props: Vec<(Prop, PropValue)>) -> (SceneDiff, NodeId, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let still = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#a6e3a1")),
+        ],
+    );
+    let mut own = vec![
+        (Prop::X, num(150.0)),
+        (Prop::Y, num(10.0)),
+        (Prop::Size, num(20.0)),
+        (Prop::Bg, color("#f38ba8")),
+    ];
+    own.extend(props);
+    let timed = b.node(NodeKind::Box, Some(root), own);
+    (b.diff, still, timed)
+}
+
+/// The frame `k` refreshes after `T0` at `hz`.
+fn at_hz(hz: u32, k: u32) -> std::time::Duration {
+    T0 + std::time::Duration::from_nanos(1_000_000_000 * k as u64 / hz as u64)
+}
+
+/// design.md: a time signal repaints only its node, only while visible.
+/// The node is evaluated at its own `t` every frame (from its first
+/// painted frame), the surface wants every frame while it is drawn, and
+/// each frame's damage stays on the node; the partial repaint equals a
+/// full one. A quarter second in, the square is turned 22.5° (ref
+/// `time_rotate.png`).
+#[test]
+fn a_time_signal_node_damages_only_itself() {
+    let (diff, _, timed) = timed_bar(vec![(Prop::Rotate, spin(90.0))]);
+    let mut r = renderer();
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(BAR, root);
+    let mut buf = Buffer::new(200, 40, Scale::ONE);
+    buf.paint_at(&mut r, BAR, 0, T0);
+    let node = drawn_box(&r, timed, (150.0, 10.0), 6);
+    for k in 1..=15 {
+        assert!(r.wants_frame(BAR), "frame {k}: the clock runs");
+        let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        assert!(!d.is_empty(), "frame {k} repaints the node");
+        for rect in d.rects() {
+            assert!(
+                node.contains_rect(*rect),
+                "frame {k}: damage {rect:?} outside the node {node:?}"
+            );
+        }
+    }
+    // 15 frames at 60 Hz: t = 0.25 s, 22.5°.
+    assert_matches_ref("time_rotate", &buf, 0);
+    // The same frame painted afresh: partial repaints add up exactly.
+    let (diff, _, _) = timed_bar(vec![(Prop::Rotate, PropValue::Angle(22.5))]);
+    let mut full_r = renderer();
+    full_r.apply(diff);
+    full_r.attach_surface(BAR, full_r.tree().roots()[0]);
+    let mut full = Buffer::new(200, 40, Scale::ONE);
+    full.paint(&mut full_r, BAR, 0);
+    assert!(buf.pixels == full.pixels, "partial differs from full");
+}
+
+/// The box `id` is drawn in at 1× (its laid-out box moved by its `x`,
+/// `y`), grown by `m` pixels.
+fn drawn_box(r: &Renderer, id: NodeId, (x, y): (f32, f32), m: i32) -> Rect {
+    let b = r.boxes(BAR).unwrap().rects[&id];
+    let (x0, y0) = ((b.x + x).floor() as i32 - m, (b.y + y).floor() as i32 - m);
+    let (x1, y1) = (
+        (b.x + x + b.w).ceil() as i32 + m,
+        (b.y + y + b.h).ceil() as i32 + m,
+    );
+    Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)
+}
