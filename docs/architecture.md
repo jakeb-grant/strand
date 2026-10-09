@@ -2047,7 +2047,10 @@ Public interfaces other crates and later stages build on:
     the compositor's state, not the `open` prop.
   - `compositor-rules`: a query over a `Build` listing the surfaces whose
     tree has `blur`, with their namespaces (`strand-<Name>`), for
-    `strand compositor-rules` (S-surface owns it).
+    `strand compositor-rules` (S-surface owns it). It lives in the binary
+    (`strand/src/rules.rs`, `blur_rules(&Build) -> Vec<Rule>`) and walks
+    the lowered program's public tree: a layer surface's own `blur` gives
+    `blur`, a nested popup's gives `blur_popups` on its layer.
   - Checks live in per-stream submodules (`check/{surfaces, effects,
     lists, lock}.rs`); `attach` and `scrim` are allowed only on `popup`
     and `panel`.
