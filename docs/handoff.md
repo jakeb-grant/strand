@@ -203,7 +203,9 @@ keeps one D-Bus connection per bus.
 - [ ] Local checks pass through the container suite (CLAUDE.md):
   `scripts/container/run.sh ci` exits 0 (timing steps may warn;
   `STRAND_STRICT_TIMING=1` to enforce them), and
-  `scripts/container/matrix.sh` for the compositors job.
+  `scripts/container/matrix.sh` for the compositors job. `run.sh ci`
+  passed on 2026-10-08 at `b87865a` (laptop/gates: reload_latency warned);
+  `matrix.sh` was not re-run then.
 - [x] Open decisions 1–4 answered and recorded in `docs/decisions.md`
   (laptop-decisions); the audio read again and COSMIC too (laptop-open).
 - [x] Remote branches `wave4/*` and the merged `laptop/*` streams

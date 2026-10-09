@@ -75,7 +75,7 @@ step() {
 # miss, its verdicts.
 key_numbers() {
   grep -a -E 'theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^test .* FAILED$|^test result:' "$1" |
-    sed 's/\x1b\[[0-9;]*m//g' | head -60
+    sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | head -60
 }
 
 # timing_step NAME MINUTES CMD...: a wall-clock latency gate. As `step`
@@ -88,7 +88,11 @@ timing_step() {
   n=$((n + 1))
   skipped "$name" && return 0
   echo
-  echo "=== [$n] $job: $name (advisory unless STRAND_STRICT_TIMING=1)"
+  if [ "$STRICT_TIMING" = 1 ]; then
+    echo "=== [$n] $job: $name (strict: STRAND_STRICT_TIMING=1)"
+  else
+    echo "=== [$n] $job: $name (advisory: STRAND_STRICT_TIMING=1 enforces it)"
+  fi
   local start=$SECONDS status=0 log="$LOGS/step-$n.log"
   timeout --foreground "${minutes}m" "$@" 2>&1 | tee "$log"
   status=${PIPESTATUS[0]}
