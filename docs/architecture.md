@@ -2338,7 +2338,10 @@ and the connection):
     away never unlocks: the surfaces stay and only `unlock` releases the
     lock; a closed spec re-arms it, so an open spec locks again only
     after it closed. `Finished` after `Locked` sends nothing (the
-    compositor keeps the session locked). The tests take a session lock
+    protocol leaves the session's state to the compositor) and asks for
+    a new lock at once, once per lock session, so a session the
+    compositor keeps locked gets its password field back; the host
+    hears `Finished`, then `Locked` or `Finished` for the new lock. The tests take a session lock
     only inside the lock VM (`scripts/lockvm/scenarios/`).
     Nothing locks until `State::enable_session_lock()`: before it an
     open `lock` spec is a warning and `State::lock()` returns

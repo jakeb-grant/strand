@@ -33,6 +33,13 @@
 //! - `finished` without `locked` is a diagnostic and the lock counts as
 //!   not shown; it is not asked for again until the spec closes and
 //!   opens, so a compositor that refuses is not asked in a loop.
+//! - `finished` after `locked` (the compositor ended a lock it held) is
+//!   answered by asking for a new lock at once, once per lock session
+//!   ([`after_finished`]): the protocol leaves it to the compositor
+//!   whether the session stays locked, and if it does, the user needs a
+//!   password field again, not the compositor's blank fallback. A
+//!   compositor that ends that one too, or refuses it, is not asked
+//!   again until the spec closes and opens.
 //! - The protocol forbids committing a lock surface before acking its
 //!   first configure, committing one with no buffer, and committing at a
 //!   size other than the acked one: the content surface acks a configure
@@ -126,6 +133,9 @@ pub(super) struct SessionLock {
     warned_disabled: bool,
     /// A token that came while the lock was pending: spent on `locked`.
     deferred: Option<UnlockToken>,
+    /// A lock was asked for again after `finished` followed `locked`, in
+    /// this lock session (until an unlock or the spec closing).
+    asked_again: bool,
 }
 
 impl SessionLock {
@@ -142,6 +152,7 @@ impl SessionLock {
             enabled: false,
             warned_disabled: false,
             deferred: None,
+            asked_again: false,
         }
     }
 }
@@ -197,6 +208,27 @@ impl Solid {
         }
         self.lock_surface.destroy();
         self.wl.destroy();
+    }
+}
+
+/// What `finished` leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterFinished {
+    /// No new lock until the spec closes and opens.
+    Spent,
+    /// Ask for a new lock now.
+    AskAgain,
+}
+
+/// The rule for `finished`: after `locked`, the compositor ended a lock
+/// it held, and it may keep the session locked, so a new lock is asked
+/// for, once per lock session; a refusal (`finished` before `locked`)
+/// or a second end is spent.
+fn after_finished(was_locked: bool, asked_again: bool) -> AfterFinished {
+    if was_locked && !asked_again {
+        AfterFinished::AskAgain
+    } else {
+        AfterFinished::Spent
     }
 }
 
@@ -302,6 +334,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let _spent = token;
         lock.unlock_and_destroy();
+        self.session_lock.asked_again = false;
         // After the unlock request, so the compositor never shows its own
         // fallback colour between them.
         self.destroy_lock_surfaces();
@@ -450,6 +483,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         if !spec.open {
             self.session_lock.spent = false;
+            self.session_lock.asked_again = false;
         } else if !self.session_lock.spent && !self.lock_active() {
             match self.lock() {
                 Ok(()) => {}
@@ -719,13 +753,14 @@ impl<H: SurfaceHost + 'static> State<H> {
                 if !ours {
                     return;
                 }
-                match std::mem::take(&mut self.session_lock.phase) {
+                let was_locked = match std::mem::take(&mut self.session_lock.phase) {
                     Phase::Pending(l) => {
                         log::warn!(
                             "the compositor refused the session lock (another locker holds it, \
                              or its policy): the lock is not shown"
                         );
                         l.destroy();
+                        false
                     }
                     Phase::Locked(_) => {
                         // The compositor ended the lock itself. After
@@ -733,19 +768,32 @@ impl<H: SurfaceHost + 'static> State<H> {
                         // `unlock_and_destroy`, which only a token may
                         // send: the unused object is left alone.
                         log::warn!("the compositor ended the session lock");
+                        true
                     }
-                    Phase::Idle => {}
-                }
+                    Phase::Idle => false,
+                };
                 // A token for a lock the compositor never held unlocks
                 // nothing.
                 self.session_lock.deferred = None;
                 self.destroy_lock_surfaces();
                 self.session_lock.spent = true;
                 if self.session_lock.spec_gone {
+                    // A lock asked for again shows the fallback.
                     self.session_lock.node = None;
                     self.session_lock.spec_gone = false;
                 }
                 self.host.lock_changed(LockState::Finished);
+                if after_finished(was_locked, self.session_lock.asked_again)
+                    == AfterFinished::AskAgain
+                {
+                    // The session may still be locked: put the password
+                    // field back with a new lock (fail closed).
+                    self.session_lock.asked_again = true;
+                    log::warn!("session lock: asking for a new lock");
+                    if let Err(e) = self.lock() {
+                        log::warn!("{e}");
+                    }
+                }
             }
             _ => {}
         }
@@ -829,5 +877,21 @@ impl<H: SurfaceHost + 'static> Dispatch2<wl_buffer::WlBuffer, State<H>> for Soli
         _: &Connection,
         _: &QueueHandle<State<H>>,
     ) {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AfterFinished, after_finished};
+
+    #[test]
+    fn finished_after_locked_asks_for_a_new_lock_once() {
+        // The compositor ended a lock it held: ask again.
+        assert_eq!(after_finished(true, false), AfterFinished::AskAgain);
+        // It ended the one asked for again too: no loop.
+        assert_eq!(after_finished(true, true), AfterFinished::Spent);
+        // A refusal is never asked again, whatever came before.
+        assert_eq!(after_finished(false, false), AfterFinished::Spent);
+        assert_eq!(after_finished(false, true), AfterFinished::Spent);
     }
 }
