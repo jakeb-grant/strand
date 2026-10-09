@@ -274,19 +274,16 @@ impl BlurFallback {
     }
 
     /// The diagnostic for a frame of the surface `ns` that asks for blur:
-    /// once, and only when the compositor is known not to blur. A node
-    /// with `blur_fallback: none` draws nothing in its place, which is
-    /// the user's choice rather than a fallback, so the text says so.
+    /// once, and only when the compositor is known not to blur. The
+    /// reason says what `blur` draws instead and that `blur_fallback:
+    /// none` turns it off (that is the user's choice, not a fallback).
     fn frame(&mut self, ns: &str) -> Option<String> {
         if self.said {
             return None;
         }
         let reason = strand_surface::caps::blur_fallback_reason(&self.caps?, self.hyprland)?;
         self.said = true;
-        Some(format!(
-            "the compositor does not blur behind {ns}: {reason}; `blur` draws its tint \
-             instead (nothing where `blur_fallback: none`)"
-        ))
+        Some(format!("no blur behind {ns}: {reason}"))
     }
 }
 
