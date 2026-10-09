@@ -269,6 +269,8 @@ async fn follow<S: crate::Service>(
 ) -> Result<(), ServiceError> {
     let mut sub = subscribe()?;
     let mut calls = tokio::task::JoinSet::new();
+    // The adapter's degradation last seen (`Sources::degraded`).
+    let mut degraded: Option<String> = None;
     loop {
         tokio::select! {
             Some(_) = calls.join_next(), if !calls.is_empty() => {}
@@ -283,15 +285,46 @@ async fn follow<S: crate::Service>(
             },
             b = sub.recv() => match b {
                 None => return Err(ServiceError("the compositor service ended".into())),
-                Some(batch) => match apply(&mut cx, batch) {
-                    None => return Ok(()),
-                    Some(true) => {
-                        cx.ready();
+                Some(batch) => {
+                    report_degraded(&mut cx, &sub, &batch, &mut degraded);
+                    match apply(&mut cx, batch) {
+                        None => return Ok(()),
+                        Some(true) => {
+                            cx.ready();
+                        }
+                        Some(false) => {}
                     }
-                    Some(false) => {}
-                },
+                }
             },
         }
+    }
+}
+
+/// A batch whose `Sources` say the adapter does not understand the
+/// compositor (a new reason) becomes a [`crate::ServiceDiagnostic`]
+/// (`Cx::warn`: logged and sent to `strand watch`; not an overlay notice,
+/// as the service retries it itself), raised by one store only
+/// ([`WmSubscription::reports`]). Its end is logged by the service.
+fn report_degraded<S: crate::Service>(
+    cx: &mut Cx<S>,
+    sub: &WmSubscription,
+    batch: &[WmChange],
+    last: &mut Option<String>,
+) {
+    let Some(sources) = batch.iter().rev().find_map(|c| match c {
+        WmChange::Sources(s) => Some(s),
+        _ => None,
+    }) else {
+        return;
+    };
+    if sources.degraded == *last {
+        return;
+    }
+    last.clone_from(&sources.degraded);
+    if let Some(why) = &sources.degraded
+        && sub.reports()
+    {
+        cx.warn(why.clone());
     }
 }
 

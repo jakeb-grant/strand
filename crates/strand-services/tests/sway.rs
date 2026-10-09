@@ -258,7 +258,15 @@ struct FakeSway {
     socket: std::path::PathBuf,
     events: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Replies that replace the fixture's, by message type (a sway that
+    /// changed, or a broken one).
+    overrides: Overrides,
 }
+
+type Overrides = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u32, Reply>>>;
+
+/// A reply payload.
+type Reply = Vec<u8>;
 
 fn frame(ty: u32, payload: &[u8]) -> Vec<u8> {
     let mut out = b"i3-ipc".to_vec();
@@ -291,12 +299,15 @@ impl FakeSway {
         let tree = std::fs::read_to_string(fixture("sway-1.9/tree.json")).unwrap();
         let tree = with_raw(&tree, "TITLE_HERE", title);
         let workspaces = std::fs::read(fixture("sway-1.9/workspaces.json")).unwrap();
+        let overrides = Overrides::default();
+        let replies = overrides.clone();
         tokio::spawn(async move {
             while let Ok((conn, _)) = listener.accept().await {
                 count.fetch_add(1, Ordering::SeqCst);
                 let (mut r, w) = conn.into_split();
                 let w = std::sync::Arc::new(tokio::sync::Mutex::new(w));
                 let (tree, workspaces, rx) = (tree.clone(), workspaces.clone(), rx.clone());
+                let replies = replies.clone();
                 tokio::spawn(async move {
                     loop {
                         let mut header = [0u8; 14];
@@ -307,10 +318,14 @@ impl FakeSway {
                         let ty = u32::from_ne_bytes(header[10..14].try_into().unwrap());
                         let mut payload = vec![0u8; len as usize];
                         r.read_exact(&mut payload).await.unwrap();
+                        let overridden = replies.lock().unwrap().get(&ty).cloned();
                         let reply: Vec<u8> = match ty {
+                            _ if overridden.is_some() => overridden.unwrap_or_default(),
                             0 => br#"[{"success": true}]"#.to_vec(),
                             1 => workspaces.clone(),
                             4 => tree.clone(),
+                            // get_version
+                            7 => br#"{"major": 1, "minor": 9, "patch": 0, "human_readable": "1.9", "loaded_config_file_name": "/etc/sway/config"}"#.to_vec(),
                             2 => {
                                 // The subscriber: reply, then forward events.
                                 let w = w.clone();
@@ -343,7 +358,23 @@ impl FakeSway {
             socket,
             events: tx,
             connections,
+            overrides,
         }
+    }
+
+    /// Answers messages of type `ty` with `reply` from now on; `None`:
+    /// the fixture's again.
+    fn set_reply(&self, ty: u32, reply: Option<&[u8]>) {
+        let mut o = self.overrides.lock().unwrap();
+        match reply {
+            Some(r) => o.insert(ty, r.to_vec()),
+            None => o.remove(&ty),
+        };
+    }
+
+    /// An event frame of type `ty` (with the event bit) and `payload`.
+    fn send_event(&self, ty: u32, payload: &[u8]) {
+        self.events.send(frame(0x8000_0000 | ty, payload)).unwrap();
     }
 
     /// A `window` `title` event for the fixture's window, its new title in
@@ -564,5 +595,116 @@ async fn wlr_management_serves_sway_without_its_adapter() {
     assert_eq!(c.quiet_for(Duration::from_millis(500)).await, 0);
     drop(a);
     drop(b);
+    service.abort();
+}
+
+fn fake_sway_service(fake: &FakeSway) -> WmConfig {
+    WmConfig {
+        backend: Some(Backend::Sway {
+            socket: fake.socket.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    }
+}
+
+fn degraded(m: &wm::Mirror) -> Option<&str> {
+    m.sources.degraded.as_deref()
+}
+
+/// A sway whose `get_tree` has another shape: an event this version cannot
+/// decode asks for a re-read (as before), the re-read's reply is not
+/// understood, and the adapter is degraded: the protocols serve (no
+/// display here: nothing), the reason names sway's version. Once sway
+/// answers as expected, its state is back.
+#[tokio::test]
+async fn a_sway_reply_of_another_shape_degrades_until_it_is_read_again() {
+    let fake = FakeSway::start(b"foot");
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.set_reply(4, Some(br#"{"nodes": 5}"#));
+    fake.send_event(0, br#"{"change": "brand_new_change"}"#);
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap().to_string();
+    assert!(why.contains("sway 1.9"), "{why}");
+    assert!(why.contains("the reply to GetTree"), "{why}");
+    assert!(!c.mirror.sources.connected);
+    assert!(c.mirror.workspaces.is_empty() && c.mirror.windows.is_empty());
+    assert_eq!(c.mirror.name, "sway");
+
+    fake.set_reply(4, None);
+    c.until_within(15, "recovered", |m| {
+        m.sources.connected && degraded(m).is_none() && m.window_by_app("foot").is_some()
+    })
+    .await;
+    service.abort();
+}
+
+/// An event type this adapter does not know is ignored; a known one it
+/// cannot decode (a new change kind) is re-read, harmlessly; payloads
+/// that are no JSON at all are re-read too, and eight in a row degrade.
+#[tokio::test]
+async fn an_unknown_sway_event_is_harmless_but_a_stream_of_no_events_is_not() {
+    let fake = FakeSway::start(b"foot");
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.send_event(0x63, br#"{"anything": true}"#);
+    fake.send_event(3, br#"{"change": "brand_new_change", "container": {}}"#);
+    for _ in 0..7 {
+        fake.send_event(3, b"not json");
+    }
+    fake.send_event(0x63, b"{}");
+    assert_eq!(
+        c.quiet_for(Duration::from_millis(300)).await,
+        0,
+        "the same state"
+    );
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+    for _ in 0..8 {
+        fake.send_event(3, b"not json");
+    }
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap();
+    assert!(
+        why.contains("event stream") && why.contains("sway 1.9"),
+        "{why}"
+    );
+    service.abort();
+}
+
+/// sway that cannot parse the adapter's command (`parse_error`) refuses
+/// the one syntax it has: the action fails and the adapter degrades.
+#[tokio::test]
+async fn a_sway_refusing_the_command_syntax_degrades() {
+    let fake = FakeSway::start(b"foot");
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| {
+        m.sources.connected && m.window_by_app("foot").is_some()
+    })
+    .await;
+    fake.set_reply(
+        0,
+        Some(br#"[{"success": false, "parse_error": true, "error": "Unknown/invalid command 'focus'"}]"#),
+    );
+    let id = c.mirror.window_by_app("foot").unwrap().id.clone();
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(id));
+    req_tx.send(r).unwrap();
+    assert!(matches!(done.await, Err(wm::WmError::Rejected(_))));
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap();
+    assert!(
+        why.contains("command syntax") && why.contains("sway 1.9"),
+        "{why}"
+    );
+    assert!(c.mirror.windows.is_empty());
     service.abort();
 }

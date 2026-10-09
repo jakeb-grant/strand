@@ -22,8 +22,13 @@
 //! `workspaces`, `windows` and `wm` stores (and `screens.focused`).
 //!
 //! Lost sockets reconnect with backoff (100 ms doubling to 10 s); while an
-//! adapter is away the last state stays. Nothing polls: an idle compositor
-//! wakes nothing.
+//! adapter is away the last state stays. An adapter that is connected but
+//! cannot understand the compositor (a reply it cannot read, an event
+//! stream that is not one, actions refused in every dialect: see
+//! [`understood`]) is degraded instead: the protocols serve the state as
+//! when it cannot connect, [`Sources::degraded`] says why, and it is
+//! retried on the same backoff. Nothing polls: an idle compositor wakes
+//! nothing.
 
 mod backoff;
 #[cfg(test)]
@@ -39,6 +44,7 @@ pub mod protocol;
 mod schema;
 mod service;
 mod sway;
+mod understood;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -215,8 +221,15 @@ pub(crate) struct IpcSnapshot {
 #[derive(Debug)]
 pub(crate) enum AdapterMsg {
     State(IpcSnapshot),
-    Reloaded { failed: Option<bool> },
+    Reloaded {
+        failed: Option<bool>,
+    },
     Connected(bool),
+    /// Connected, but the compositor was not understood
+    /// ([`understood`]): the state comes from the protocols, as when the
+    /// adapter cannot connect, until its next `State`. The diagnostic's
+    /// text (the compositor, its version, what).
+    Degraded(String),
 }
 
 pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
@@ -577,6 +590,9 @@ pub(crate) async fn drive<S>(
         // The adapter has reported a failed attempt: the protocols may be
         // published on their own until it comes up.
         let mut adapter_failed = false;
+        // The adapter is connected but does not understand the
+        // compositor: why (its state is dropped meanwhile).
+        let mut degraded: Option<String> = None;
         let mut proto = ProtocolState::default();
         let mut proto_ready = protocol.is_none();
         let mut requests_open = true;
@@ -592,12 +608,32 @@ pub(crate) async fn drive<S>(
                         let mut next = Some(msg);
                         while let Some(msg) = next.take() {
                             match msg {
-                                AdapterMsg::State(s) => ipc = Some(s),
+                                AdapterMsg::State(s) => {
+                                    ipc = Some(s);
+                                    if degraded.take().is_some() {
+                                        log::info!(
+                                            "the compositor IPC adapter understands the \
+                                             compositor again"
+                                        );
+                                    }
+                                }
                                 AdapterMsg::Connected(c) => {
                                     connected = c;
                                     adapter_failed |= !c;
                                 }
                                 AdapterMsg::Reloaded { failed } => reloads.push(failed),
+                                // As when it cannot connect: the protocols'
+                                // state (and ids, with a `Reset`), and
+                                // their actions.
+                                AdapterMsg::Degraded(why) => {
+                                    ipc = None;
+                                    connected = false;
+                                    adapter_failed = true;
+                                    if degraded.as_deref() != Some(why.as_str()) {
+                                        log::warn!("{why}");
+                                        degraded = Some(why);
+                                    }
+                                }
                             }
                             next = arx.try_recv().ok();
                         }
@@ -649,6 +685,7 @@ pub(crate) async fn drive<S>(
                 toplevel_list: proto.toplevel_list,
                 toplevel_management: proto.toplevel_management,
                 workspace_protocol: proto.workspace_manager,
+                degraded: degraded.clone(),
             };
             changes.extend(publisher.sources(sources));
             for failed in reloads {

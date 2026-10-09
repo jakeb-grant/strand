@@ -534,3 +534,214 @@ async fn titles_cut_at_hyprlands_event_cap_are_reread() {
     assert!(c.mirror.sources.connected);
     service.abort();
 }
+
+/// Whether the adapter is degraded, and why.
+fn degraded(m: &wm::Mirror) -> Option<&str> {
+    m.sources.degraded.as_deref()
+}
+
+/// A reply of another shape (a newer Hyprland renamed `address`) is not
+/// understood: the adapter is degraded at once, and the service serves the
+/// standard protocols exactly as when the adapter cannot connect (here no
+/// display, so nothing: not the last, frozen state), saying why with
+/// Hyprland's version. It is retried on the backoff schedule, not in a
+/// loop, and the state comes back, ids reset, once Hyprland is read again.
+#[tokio::test]
+async fn a_hyprland_reply_of_another_shape_degrades_until_it_is_read_again() {
+    let fake = FakeHyprland::start();
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    assert_eq!(degraded(&c.mirror), None);
+
+    fake.set_reply(
+        "j/clients",
+        br#"[{"addr": "0x55d0c0a1c3d0", "mapped": true, "workspace": {"id": 2, "name": "2"}}]"#,
+    );
+    fake.send("openwindow>>55d0c0a1c3d0,2,foot,foot\n");
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap().to_string();
+    assert!(why.contains("Hyprland 0.56.2"), "{why}");
+    assert!(
+        why.contains("j/clients") && why.contains("missing field `address`"),
+        "{why}"
+    );
+    assert!(why.contains("standard Wayland protocols"), "{why}");
+    assert!(!c.mirror.sources.connected);
+    assert!(
+        c.mirror.workspaces.is_empty() && c.mirror.windows.is_empty(),
+        "the protocols' state, not the last one: {:?}",
+        c.mirror
+    );
+    assert_eq!(c.mirror.name, "Hyprland");
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(1));
+    req_tx.send(r).unwrap();
+    assert_eq!(
+        done.await,
+        Err(WmError::NotConnected),
+        "no IPC ids to act on"
+    );
+
+    // Retried on the backoff (100, 200, 400, 800 ms…), not in a loop.
+    let reads = |fake: &FakeHyprland| {
+        fake.requests()
+            .iter()
+            .filter(|r| *r == "j/monitors")
+            .count()
+    };
+    let before = reads(&fake);
+    c.quiet_for(Duration::from_millis(1000)).await;
+    let attempts = reads(&fake) - before;
+    assert!((1..=5).contains(&attempts), "{attempts} attempts in 1 s");
+    assert_eq!(degraded(&c.mirror), Some(why.as_str()), "said once");
+    let said = c
+        .log
+        .iter()
+        .filter(|ch| matches!(ch, wm::WmChange::Sources(s) if s.degraded.is_some()))
+        .count();
+    assert_eq!(said, 1, "every failed retry says the same: no new batch");
+
+    // Hyprland is read again (fixed, or upgraded): its state is back.
+    fake.clear_replies();
+    c.until_within(15, "recovered", |m| {
+        m.sources.connected && degraded(m).is_none() && !m.workspaces.is_empty()
+    })
+    .await;
+    assert!(c.mirror.window_by_app("kitty").is_some());
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+
+    // Then idle again: no polling.
+    let before = fake.requests().len();
+    assert_eq!(c.quiet_for(Duration::from_millis(500)).await, 0);
+    assert_eq!(fake.requests().len(), before);
+    service.abort();
+}
+
+/// An event name this adapter does not know (a newer Hyprland's) is
+/// ignored, as before: no read, no degradation. A line that is no event
+/// at all (no `>>`) costs a re-read; only `MAX_STRIKES` (8) of them in a
+/// row, with no event between, mean the stream is not Hyprland's.
+#[tokio::test]
+async fn an_unknown_hyprland_event_is_harmless_but_a_stream_of_no_events_is_not() {
+    let fake = FakeHyprland::start();
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    let before = fake.requests().len();
+    fake.send("brandnewevent>>1,2,3\nanothernewone>>\n");
+    assert_eq!(c.quiet_for(Duration::from_millis(200)).await, 0);
+    assert_eq!(fake.requests().len(), before, "no read");
+
+    // Seven lines that are no event, then an event: re-read, harmless.
+    fake.send(&format!(
+        "{}activelayout>>kb,us\n",
+        "not an event\n".repeat(7)
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while fake.requests().len() < before + 4 {
+        assert!(tokio::time::Instant::now() < deadline, "no re-read");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    c.quiet_for(Duration::from_millis(200)).await;
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+
+    // Eight in a row.
+    fake.send(&"not an event\n".repeat(8));
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap();
+    assert!(
+        why.contains("Hyprland 0.56.2") && why.contains("event stream"),
+        "{why}"
+    );
+    assert!(why.contains("`not an event`"), "{why}");
+    service.abort();
+}
+
+/// A Hyprland that refuses both dispatch dialects' syntax (here every
+/// dispatch is `Invalid dispatcher`, as if both were renamed): the action
+/// fails, the adapter degrades, and the protocols take the actions. The
+/// refusal holds for that version: retries that find it stay degraded
+/// (the state does not flip back and forth); another version is tried
+/// again, and recovers.
+#[tokio::test]
+async fn a_hyprland_refusing_both_dispatch_dialects_degrades_until_its_version_changes() {
+    let fake = FakeHyprland::start();
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.set_reply("dispatch ", b"Invalid dispatcher");
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
+    req_tx.send(r).unwrap();
+    assert_eq!(
+        done.await,
+        Err(WmError::Rejected("Invalid dispatcher".into()))
+    );
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap().to_string();
+    assert!(why.contains("Hyprland 0.56.2"), "{why}");
+    assert!(why.contains("both dialects"), "{why}");
+    let dispatches: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.starts_with("dispatch"))
+        .collect();
+    assert_eq!(
+        dispatches,
+        [
+            r#"dispatch hl.dsp.focus({ workspace = "3" })"#,
+            "dispatch workspace 3"
+        ]
+    );
+    assert!(c.mirror.workspaces.is_empty());
+
+    // The same Hyprland, retried: still degraded, never up in between.
+    let versions =
+        |fake: &FakeHyprland| fake.requests().iter().filter(|r| *r == "j/version").count();
+    let before = versions(&fake);
+    let up = c.log.len();
+    c.quiet_for(Duration::from_millis(1500)).await;
+    assert!(versions(&fake) > before, "the retries ask for the version");
+    assert_eq!(degraded(&c.mirror), Some(why.as_str()));
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(s) if s.connected)),
+        "no flip back to the IPC state"
+    );
+
+    // Upgraded: another version, which understands the dispatches.
+    fake.clear_reply("dispatch ");
+    fake.set_reply("j/version", br#"{"version": "0.57.0", "tag": "v0.57.0"}"#);
+    c.until_within(15, "recovered", |m| {
+        m.sources.connected && degraded(m).is_none() && !m.workspaces.is_empty()
+    })
+    .await;
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    service.abort();
+}

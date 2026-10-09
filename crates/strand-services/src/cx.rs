@@ -39,6 +39,8 @@ pub enum Envelope<P> {
     Notice(String),
     /// The run's notice no longer holds ([`Cx::resolve`]).
     Resolved,
+    /// A failure the run survives and retries ([`Cx::warn`]).
+    Warning(String),
     /// The first read is complete.
     Ready,
     /// The body returned (with its error, if any).
@@ -379,6 +381,17 @@ impl<S: Service> Cx<S> {
     /// away. `false` once stopped.
     pub fn resolve(&mut self) -> bool {
         self.out.send(Envelope::Resolved)
+    }
+
+    /// Report a failure the run survives and retries on its own (the
+    /// compositor adapter does not understand the compositor, and the
+    /// standard protocols serve meanwhile): a [`crate::ServiceDiagnostic`]
+    /// with `notice: false`, as a failed run's, which the host logs and
+    /// sends to `strand watch` but does not put on the overlay. Repeats of
+    /// the last one are dropped as a failed run's are. `false` once
+    /// stopped.
+    pub fn warn(&mut self, message: impl Into<String>) -> bool {
+        self.out.send(Envelope::Warning(message.into()))
     }
 
     /// Whether [`Cx::ready`] was called.

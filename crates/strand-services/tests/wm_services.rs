@@ -457,3 +457,112 @@ fn the_windows_store_follows_wlr_management_without_an_adapter() {
     s.shutdown();
     wm::configure(None);
 }
+
+/// The stores over a Hyprland adapter that stops understanding Hyprland
+/// (a `j/clients` of another shape, as a newer release might send), on a
+/// display that offers the standard protocols (a headless sway's
+/// wlr-foreign-toplevel-management): the windows store switches to the
+/// protocol's windows, exactly as with no adapter, one
+/// `ServiceDiagnostic` (not an overlay notice) names Hyprland, its
+/// version and what was not understood, and once Hyprland is understood
+/// again the adapter's windows come back without a restart.
+#[test]
+fn a_hyprland_the_adapter_cannot_read_falls_back_to_the_protocols_with_a_diagnostic() {
+    let _serial = serial();
+    let Some(sway) = Sway::start("hyprland_degraded_to_wlr") else {
+        return;
+    };
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let fake = common::hyprland::FakeHyprland::start();
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: Some(WaylandTarget::Socket(sway.socket())),
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let windows = || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .map(|w| {
+                w.all
+                    .into_iter()
+                    .map(|w| (w.id, w.app_id))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    b.windows.acquire(&rt);
+    b.workspaces.acquire(&rt);
+    b.wm.acquire(&rt);
+    let diagnostics = RefCell::new(Vec::new());
+    let until = |what: &str, cond: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            s.pump(&rt);
+            rt.flush();
+            diagnostics.borrow_mut().extend(s.take_diagnostics());
+            if cond() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    until("boot", &|| {
+        windows().iter().any(|(id, _)| id == "0x55d0c0a1b2c0")
+    });
+    let _w = TestWindow::open(&sway.socket(), "strand-fallback", "fallback");
+
+    fake.set_reply(
+        "j/clients",
+        br#"[{"addr": "0x55d0c0a1c3d0", "mapped": true, "workspace": {"id": 2, "name": "2"}}]"#,
+    );
+    fake.send("openwindow>>55d0c0a1c3d0,2,foot,foot\n");
+    until("the protocol's windows", &|| {
+        let w = windows();
+        w.iter()
+            .any(|(id, app)| id.starts_with("wlr-") && app == "strand-fallback")
+            && !w.iter().any(|(id, _)| id.starts_with("0x"))
+    });
+    assert_eq!(
+        b.wm.cells().snapshot(&rt).unwrap().name,
+        "Hyprland",
+        "wm.name stays the adapter's, as when it cannot connect"
+    );
+    let diagnostics = diagnostics.borrow().clone();
+    let degraded: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("does not understand"))
+        .collect();
+    assert_eq!(degraded.len(), 1, "one store reports it: {diagnostics:?}");
+    let d = degraded[0];
+    assert!(!d.notice && !d.resolved, "{d:?}");
+    assert!(
+        ["windows", "workspaces", "wm"].contains(&d.service.as_str()),
+        "{d:?}"
+    );
+    assert!(
+        d.message.contains("Hyprland 0.56.2")
+            && d.message.contains("j/clients")
+            && d.message.contains("missing field `address`"),
+        "{d:?}"
+    );
+
+    // Hyprland is understood again: its windows (and ids) are back.
+    fake.clear_replies();
+    until("the adapter's windows", &|| {
+        let w = windows();
+        w.iter().any(|(id, _)| id == "0x55d0c0a1b2c0")
+            && !w.iter().any(|(id, _)| id.starts_with("wlr-"))
+    });
+    s.shutdown();
+    wm::configure(None);
+}

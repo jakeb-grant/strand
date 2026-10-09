@@ -419,6 +419,16 @@ impl WmSubscription {
         self.queue.lock().batches.len()
     }
 
+    /// Whether this is the oldest live subscription: the one store that
+    /// raises the service's diagnostics (`Sources::degraded`), so a
+    /// problem of the one shared service is reported once, not by every
+    /// store that shows it. When it leaves, the next oldest takes over.
+    pub fn reports(&self) -> bool {
+        self.hub
+            .upgrade()
+            .is_some_and(|h| lock(&h).subs.first().map(|(id, _)| *id) == Some(self.id))
+    }
+
     /// Runs an action and resolves to its outcome: `Ok` or a [`WmError`],
     /// `NotConnected` when the service has stopped (or stops before the
     /// request runs, such as the last [`WmHub`] dropped while it was

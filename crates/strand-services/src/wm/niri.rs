@@ -7,6 +7,11 @@
 //! `{"Err":"…"}`); after `"EventStream"` the socket only carries events
 //! (`{"WorkspacesChanged":{…}}`, …). Formats are niri 26.04's
 //! (`niri-ipc/src/lib.rs`). Unknown events and fields are ignored.
+//! A known event whose data has another shape is followed by a re-read;
+//! a reply the adapter cannot read (or an `Err` to a query), eight lines
+//! in a row that are no JSON, or an action niri cannot parse (`error
+//! parsing request`) degrade the adapter (`understood`), naming niri's
+//! version (`"Version"`).
 //!
 //! Every request gets a connection of its own: niri before 25.05 reads
 //! one request per connection and closes it (`src/ipc/server.rs`,
@@ -27,35 +32,47 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::backoff::Backoff;
 use super::lines::next_line;
 use super::model::{Window, WmState, Workspace};
+use super::understood::{self, Refused, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+// The fields the adapter needs are required (ids, a workspace's index):
+// a reply or event without one is not understood, instead of read as
+// zero (`understood`). The rest default, and unknown fields are ignored.
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
 pub(crate) struct NWorkspace {
     pub id: u64,
     pub idx: u64,
+    #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
     pub output: Option<String>,
+    #[serde(default)]
     pub is_urgent: bool,
+    #[serde(default)]
     pub is_active: bool,
+    #[serde(default)]
     pub is_focused: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
 pub(crate) struct NWindow {
     pub id: u64,
+    #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
     pub app_id: Option<String>,
+    #[serde(default)]
     pub workspace_id: Option<u64>,
+    #[serde(default)]
     pub is_focused: bool,
+    #[serde(default)]
     pub is_urgent: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
 struct NOutput {
     name: String,
 }
@@ -65,6 +82,9 @@ struct NOutput {
 pub(crate) enum Effect {
     None,
     Changed,
+    /// An event the adapter knows whose data it cannot read (niri changed
+    /// its shape): the state must be read again.
+    Requery,
     /// `ConfigLoaded { failed }` (not the one every new stream starts with).
     Reloaded(bool),
 }
@@ -83,23 +103,42 @@ fn parse<T: for<'de> Deserialize<'de>>(v: &Value) -> Option<T> {
     T::deserialize(v).ok()
 }
 
+/// The value under `name` in a reply's `Ok`, as `T`, or what was not
+/// understood.
+fn parse_reply<T: for<'de> Deserialize<'de>>(name: &str, v: &Value) -> Result<T, String> {
+    T::deserialize(v).map_err(|e| {
+        format!(
+            "the reply to {name} ({e}: `{}`)",
+            understood::excerpt(&v.to_string())
+        )
+    })
+}
+
 impl State {
     /// The state the replies to `"Workspaces"`, `"Windows"` and
     /// `"FocusedOutput"` report (each the value under its name in the
-    /// reply's `Ok`; `null` when niri has no focused output).
+    /// reply's `Ok`; `null` when niri has no focused output), or what in
+    /// them was not understood.
     pub(crate) fn from_replies(
         workspaces: &Value,
         windows: &Value,
         focused_output: &Value,
-    ) -> Self {
-        Self {
-            workspaces: parse(workspaces).unwrap_or_default(),
-            windows: parse(windows).unwrap_or_default(),
-            focused_output: parse::<Option<NOutput>>(focused_output)
-                .flatten()
+    ) -> Result<Self, String> {
+        Ok(Self {
+            workspaces: parse_reply("Workspaces", workspaces)?,
+            windows: parse_reply("Windows", windows)?,
+            focused_output: parse_reply::<Option<NOutput>>("FocusedOutput", focused_output)?
                 .map(|o| o.name),
             seen_config: false,
-        }
+        })
+    }
+
+    /// The state read again (`from_replies`), keeping what only the
+    /// stream tells.
+    fn reread(&mut self, fresh: Self) {
+        let seen_config = self.seen_config;
+        *self = fresh;
+        self.seen_config = seen_config;
     }
 
     /// Applies one event line's JSON (`{"Name": {fields}}`).
@@ -110,7 +149,7 @@ impl State {
         match name.as_str() {
             "WorkspacesChanged" => {
                 let Some(ws) = body.get("workspaces").and_then(parse::<Vec<NWorkspace>>) else {
-                    return Effect::None;
+                    return Effect::Requery;
                 };
                 self.workspaces = ws;
                 if let Some(f) = self.workspaces.iter().find(|w| w.is_focused) {
@@ -124,7 +163,9 @@ impl State {
                     .get("focused")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                let Some(id) = id else { return Effect::None };
+                let Some(id) = id else {
+                    return Effect::Requery;
+                };
                 let Some(output) = self
                     .workspaces
                     .iter()
@@ -151,7 +192,7 @@ impl State {
                     body.get("id").and_then(Value::as_u64),
                     body.get("urgent").and_then(Value::as_bool),
                 ) else {
-                    return Effect::None;
+                    return Effect::Requery;
                 };
                 match self.workspaces.iter_mut().find(|w| w.id == id) {
                     Some(w) if w.is_urgent != urgent => {
@@ -163,14 +204,14 @@ impl State {
             }
             "WindowsChanged" => {
                 let Some(w) = body.get("windows").and_then(parse::<Vec<NWindow>>) else {
-                    return Effect::None;
+                    return Effect::Requery;
                 };
                 self.windows = w;
                 Effect::Changed
             }
             "WindowOpenedOrChanged" => {
                 let Some(win) = body.get("window").and_then(parse::<NWindow>) else {
-                    return Effect::None;
+                    return Effect::Requery;
                 };
                 if win.is_focused {
                     for w in &mut self.windows {
@@ -185,7 +226,7 @@ impl State {
             }
             "WindowClosed" => {
                 let Some(id) = body.get("id").and_then(Value::as_u64) else {
-                    return Effect::None;
+                    return Effect::Requery;
                 };
                 let before = self.windows.len();
                 self.windows.retain(|w| w.id != id);
@@ -196,7 +237,15 @@ impl State {
                 }
             }
             "WindowFocusChanged" => {
-                let id = body.get("id").and_then(Value::as_u64);
+                // `null`: no window has the focus.
+                let id = match body.get("id") {
+                    Some(Value::Null) => None,
+                    Some(v) => match v.as_u64() {
+                        Some(n) => Some(n),
+                        None => return Effect::Requery,
+                    },
+                    None => return Effect::Requery,
+                };
                 for w in &mut self.windows {
                     w.is_focused = Some(w.id) == id;
                 }
@@ -207,7 +256,7 @@ impl State {
                     body.get("id").and_then(Value::as_u64),
                     body.get("urgent").and_then(Value::as_bool),
                 ) else {
-                    return Effect::None;
+                    return Effect::Requery;
                 };
                 match self.windows.iter_mut().find(|w| w.id == id) {
                     Some(w) if w.is_urgent != urgent => {
@@ -342,8 +391,9 @@ impl Conn {
             .map(|l| String::from_utf8_lossy(&l).into_owned()))
     }
 
-    /// Sends one request; the reply's `Ok` value, or its `Err` text.
-    async fn send(&mut self, request: &Value) -> io::Result<Result<Value, String>> {
+    /// Sends one request; the reply's `Ok` value, or its `Err` text. A
+    /// reply that is neither is not understood.
+    async fn send(&mut self, request: &Value) -> Result<Result<Value, String>, SessionEnd> {
         let run = async {
             let mut line = request.to_string();
             line.push('\n');
@@ -353,6 +403,7 @@ impl Conn {
                 .await?
                 .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "niri closed"))?;
             decode_reply(&reply)
+                .map_err(|e| SessionEnd::reply(format!("the reply to {} ({e})", short(request))))
         };
         tokio::time::timeout(REQUEST_TIMEOUT, run)
             .await
@@ -360,26 +411,50 @@ impl Conn {
     }
 }
 
+/// A request's name for a diagnostic: `"Windows"` is `Windows`, an action
+/// `{"Action":{"FocusWindow":…}}` is `Action FocusWindow`.
+fn short(request: &Value) -> String {
+    match request {
+        Value::String(s) => s.clone(),
+        Value::Object(o) => o
+            .iter()
+            .next()
+            .map(|(k, v)| match v.as_object().and_then(|i| i.keys().next()) {
+                Some(inner) => format!("{k} {inner}"),
+                None => k.clone(),
+            })
+            .unwrap_or_default(),
+        other => other.to_string(),
+    }
+}
+
 /// One reply line: its `Ok` value, or its `Err` text (niri 26.04 answers
-/// a request it cannot parse `{"Err":"error parsing request"}`).
-fn decode_reply(line: &str) -> io::Result<Result<Value, String>> {
+/// a request it cannot parse `{"Err":"error parsing request"}`); `Err`
+/// says why a line is neither.
+fn decode_reply(line: &str) -> Result<Result<Value, String>, String> {
     let reply: Value =
-        serde_json::from_str(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        serde_json::from_str(line).map_err(|e| format!("{e}: `{}`", understood::excerpt(line)))?;
     if let Some(ok) = reply.get("Ok") {
         Ok(Ok(ok.clone()))
     } else if let Some(err) = reply.get("Err") {
         Ok(Err(err.as_str().unwrap_or("error").to_string()))
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "niri reply is neither Ok nor Err",
+        Err(format!(
+            "neither Ok nor Err: `{}`",
+            understood::excerpt(line)
         ))
     }
 }
 
+/// Whether niri's `Err` says it could not parse the request: the syntax
+/// the adapter writes is not niri's (any more).
+fn refuses_syntax(err: &str) -> bool {
+    err.starts_with("error parsing request")
+}
+
 /// One request on a connection of its own; the reply's `Ok` value or its
 /// `Err` text.
-async fn request(socket: &Path, request: &Value) -> io::Result<Result<Value, String>> {
+async fn request(socket: &Path, request: &Value) -> Result<Result<Value, String>, SessionEnd> {
     let connect = tokio::time::timeout(REQUEST_TIMEOUT, Conn::connect(socket));
     let mut conn = connect
         .await
@@ -387,26 +462,57 @@ async fn request(socket: &Path, request: &Value) -> io::Result<Result<Value, Str
     conn.send(request).await
 }
 
-/// A query (`"Workspaces"`, …): the value under its name in the reply.
-async fn get(socket: &Path, name: &str) -> io::Result<Value> {
+/// A query (`"Workspaces"`, …): the value under its name in the reply. An
+/// `Err` is not understood: niri cannot parse a request it has always
+/// answered.
+async fn get(socket: &Path, name: &str) -> Result<Value, SessionEnd> {
     match request(socket, &json!(name)).await? {
         Ok(v) => Ok(v.get(name).cloned().unwrap_or(Value::Null)),
-        Err(e) => Err(io::Error::other(format!("{name}: {e}"))),
+        Err(e) => Err(SessionEnd::reply(format!(
+            "the request {name} (niri answered `{}`)",
+            understood::excerpt(&e)
+        ))),
     }
 }
 
+/// Reads the whole state.
+async fn query(socket: &Path) -> Result<State, SessionEnd> {
+    let workspaces = get(socket, "Workspaces").await?;
+    let windows = get(socket, "Windows").await?;
+    let focused_output = get(socket, "FocusedOutput").await?;
+    State::from_replies(&workspaces, &windows, &focused_output).map_err(SessionEnd::reply)
+}
+
+/// The version niri reports (`"Version"`), for a diagnostic.
+async fn version(socket: &Path) -> Option<String> {
+    match request(socket, &json!("Version")).await {
+        Ok(Ok(v)) => v.get("Version")?.as_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+/// The adapter: connects, reads, follows events; reconnects with backoff,
+/// and degrades (`understood`) while niri is not understood.
 pub(crate) async fn run(
     socket: PathBuf,
     tx: UnboundedSender<AdapterMsg>,
     mut cmds: UnboundedReceiver<Cmd>,
 ) {
     let mut backoff = Backoff::new();
+    let mut refused = None;
     loop {
-        match session(&socket, &tx, &mut cmds, &mut backoff).await {
+        let msg = match session(&socket, &tx, &mut cmds, &mut backoff, &mut refused).await {
             Ok(()) => return,
-            Err(e) => log::warn!("niri IPC: {e}; reconnecting"),
-        }
-        if tx.send(AdapterMsg::Connected(false)).is_err() {
+            Err(SessionEnd::Io(e)) => {
+                log::warn!("niri IPC: {e}; reconnecting");
+                AdapterMsg::Connected(false)
+            }
+            Err(SessionEnd::NotUnderstood(n)) => {
+                let v = version(&socket).await;
+                understood::degraded("niri", n, v, &mut refused)
+            }
+        };
+        if tx.send(msg).is_err() {
             return;
         }
         backoff.wait(&mut cmds).await;
@@ -418,17 +524,26 @@ async fn session(
     tx: &UnboundedSender<AdapterMsg>,
     cmds: &mut UnboundedReceiver<Cmd>,
     backoff: &mut Backoff,
-) -> io::Result<()> {
+    refused: &mut Option<Refused>,
+) -> Result<(), SessionEnd> {
     // The event stream first, so nothing between the reads and it is lost;
     // its first events restate everything anyway.
     let mut events = Conn::connect(socket).await?;
     if let Err(e) = events.send(&json!("EventStream")).await? {
-        return Err(io::Error::other(format!("EventStream: {e}")));
+        return Err(SessionEnd::reply(format!(
+            "the request EventStream (niri answered `{}`)",
+            understood::excerpt(&e)
+        )));
     }
-    let workspaces = get(socket, "Workspaces").await?;
-    let windows = get(socket, "Windows").await?;
-    let focused_output = get(socket, "FocusedOutput").await?;
-    let mut state = State::from_replies(&workspaces, &windows, &focused_output);
+    let mut state = query(socket).await?;
+    // Actions this niri refused stay refused until it reports another
+    // version.
+    if let Some(r) = refused.as_ref() {
+        if r.holds_for(version(socket).await.as_deref()) {
+            return Err(SessionEnd::actions(r.what.clone()));
+        }
+        *refused = None;
+    }
     backoff.connected();
     if tx.send(AdapterMsg::Connected(true)).is_err()
         || tx.send(AdapterMsg::State(state.snapshot())).is_err()
@@ -436,30 +551,48 @@ async fn session(
         return Ok(());
     }
     let mut cmds_open = true;
+    let mut strikes = Strikes::default();
     loop {
         tokio::select! {
             line = events.next_line() => {
                 let Some(line) = line? else {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "event stream closed"));
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "event stream closed").into());
                 };
                 let mut changed = false;
+                let mut requery = false;
                 let mut reloads = Vec::new();
-                let mut handle = |line: &str| match serde_json::from_str::<Value>(line) {
-                    Ok(v) => match state.apply(&v) {
-                        Effect::None => {}
-                        Effect::Changed => changed = true,
-                        Effect::Reloaded(f) => reloads.push(f),
-                    },
-                    Err(e) => log::warn!("niri IPC: bad event: {e}"),
+                let mut handle = |line: &str| -> Result<(), SessionEnd> {
+                    match serde_json::from_str::<Value>(line) {
+                        Ok(v) => {
+                            strikes.event();
+                            match state.apply(&v) {
+                                Effect::None => {}
+                                Effect::Changed => changed = true,
+                                Effect::Requery => requery = true,
+                                Effect::Reloaded(f) => reloads.push(f),
+                            }
+                        }
+                        // Not JSON: no event at all (`understood`). Read
+                        // again, and count it.
+                        Err(e) => {
+                            log::warn!("niri IPC: bad event: {e}");
+                            strikes.garbage("niri", line.as_bytes())?;
+                            requery = true;
+                        }
+                    }
+                    Ok(())
                 };
-                handle(&line);
+                handle(&line)?;
                 while let Some(next) = futures_lite::future::poll_once(events.next_line()).await {
                     match next? {
-                        Some(l) => handle(&l),
+                        Some(l) => handle(&l)?,
                         None => break,
                     }
                 }
-                if changed && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                if requery {
+                    state.reread(query(socket).await?);
+                }
+                if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
                     return Ok(());
                 }
                 for failed in reloads {
@@ -470,16 +603,35 @@ async fn session(
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
                 Some((action, reply)) => {
+                    let mut refused_syntax = None;
                     let result = match state.action_for(&action) {
                         Ok(req) => match request(socket, &req).await {
                             Ok(Ok(_)) => Ok(()),
-                            Ok(Err(e)) => Err(WmError::Rejected(e)),
-                            Err(e) => Err(WmError::Io(e.to_string())),
+                            Ok(Err(e)) => {
+                                if refuses_syntax(&e) {
+                                    refused_syntax = Some(format!(
+                                        "the action syntax (`{}` answered `{}`)",
+                                        understood::excerpt(&req.to_string()),
+                                        understood::excerpt(&e)
+                                    ));
+                                }
+                                Err(WmError::Rejected(e))
+                            }
+                            Err(SessionEnd::Io(e)) => Err(WmError::Io(e.to_string())),
+                            Err(end @ SessionEnd::NotUnderstood(_)) => {
+                                if let Some(r) = reply {
+                                    let _ = r.send(Err(WmError::Io(end.to_string())));
+                                }
+                                return Err(end);
+                            }
                         },
                         Err(e) => Err(e),
                     };
                     if let Some(r) = reply {
                         let _ = r.send(result);
+                    }
+                    if let Some(what) = refused_syntax {
+                        return Err(SessionEnd::actions(what));
                     }
                 }
                 None => cmds_open = false,
@@ -538,6 +690,54 @@ mod tests {
         assert!(!s.snapshot().state.windows[0].focused);
         assert_eq!(ev(&mut s, r#"{"WindowClosed":{"id":7}}"#), Effect::Changed);
         assert!(s.snapshot().state.windows.is_empty());
+    }
+
+    /// An event the adapter knows whose data has another shape asks for a
+    /// re-read; one it does not know changes nothing; a reply of another
+    /// shape is not understood.
+    #[test]
+    fn shapes_niri_changed_are_reread_or_not_understood() {
+        let mut s = State::default();
+        let ev = |s: &mut State, j: &str| s.apply(&serde_json::from_str(j).unwrap());
+        for changed in [
+            r#"{"WorkspacesChanged":{"spaces":[]}}"#,
+            r#"{"WorkspacesChanged":{"workspaces":[{"idx":1}]}}"#,
+            r#"{"WindowsChanged":{"windows":[{"id":"7"}]}}"#,
+            r#"{"WindowOpenedOrChanged":{"win":{}}}"#,
+            r#"{"WindowClosed":{"window_id":7}}"#,
+            r#"{"WindowFocusChanged":{}}"#,
+            r#"{"WindowFocusChanged":{"id":"7"}}"#,
+            r#"{"WorkspaceActivated":{"focused":true}}"#,
+            r#"{"WindowUrgencyChanged":{"id":7}}"#,
+        ] {
+            assert_eq!(ev(&mut s, changed), Effect::Requery, "{changed}");
+        }
+        assert_eq!(
+            ev(&mut s, r#"{"WindowFocusChanged":{"id":null}}"#),
+            Effect::Changed,
+            "null is no focus"
+        );
+        assert_eq!(ev(&mut s, r#"{"BrandNewEvent":{"id":1}}"#), Effect::None);
+        let e = State::from_replies(&json!([{"idx": 1}]), &json!([]), &Value::Null).unwrap_err();
+        assert!(
+            e.starts_with("the reply to Workspaces (missing field `id`"),
+            "{e}"
+        );
+        assert!(State::from_replies(&json!([]), &json!({"windows": []}), &Value::Null).is_err());
+        assert!(State::from_replies(&json!([]), &json!([]), &Value::Null).is_ok());
+        assert!(
+            decode_reply("not json")
+                .unwrap_err()
+                .ends_with(": `not json`")
+        );
+        assert!(decode_reply(r#"{"Okay":1}"#).is_err());
+        assert!(refuses_syntax("error parsing request"));
+        assert!(!refuses_syntax("no such window"));
+        assert_eq!(short(&json!("Windows")), "Windows");
+        assert_eq!(
+            short(&json!({"Action": {"FocusWindow": {"id": 1}}})),
+            "Action FocusWindow"
+        );
     }
 
     #[test]
@@ -600,6 +800,7 @@ mod tests {
             &reply("reply-windows.json", "Windows"),
             &reply("reply-focused-output.json", "FocusedOutput"),
         )
+        .unwrap()
     }
 
     /// The captured event stream, replayed burst by burst, keeps the same

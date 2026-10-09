@@ -25,6 +25,19 @@ for the reasoning behind each item below.
   2026-10-08), and so are the later ones: the audio read again is kept
   with no upstream report, and COSMIC is out of scope (decisions.md
   laptop-open).
+- Branch `laptop/resilience` (from `laptop/integration2`; decisions.md
+  laptop-resilience) makes the compositor adapters resilient to a
+  compositor that changed: an adapter that is connected but cannot read
+  a reply, the event stream, or has its action syntax refused in every
+  dialect degrades to the standard protocols (as when it cannot connect),
+  raises one non-notice `ServiceDiagnostic` naming the compositor, its
+  version and what was not understood (`Cx::warn`; log and
+  `strand watch`, not the overlay), and retries on its backoff; it
+  recovers on its own. Hyprland dispatches send Lua first and fall back
+  to classic on `Invalid dispatcher`, keeping the dialect that worked for
+  the session. CI's `compositors` job now also runs nightly against
+  `archlinux:latest`, and its step summary lists each compositor's
+  version and result.
 
 ## Owner decisions (answered 2026-10-08)
 
@@ -64,6 +77,15 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### CI
 
+- Nightly compositors (laptop-resilience): the scheduled run also runs
+  the `compositors` job (named `compositors (nightly: archlinux:latest
+  Hyprland, niri, sway, labwc)`), so an Arch upgrade that breaks an
+  adapter shows as a red nightly; the job's summary tables each
+  compositor's `pacman -Q` version and result, and each failure is an
+  annotation `compositors: <kind> <version>`. The matrix test helper
+  `compositor_matrix.rs` still drives Hyprland through `hyprctl` with the
+  classic syntax (outside `strand-services`); that is its own check of
+  the compositor, not the adapter's.
 - Done on `laptop/ci` (decisions.md laptop-ci): the `check` job is split
   into `lint`, `test`, `budgets`, `acceptance` and `timing`; the timing
   gates build on a `timing` profile (release without LTO); `theme_swap_bench`

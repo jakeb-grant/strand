@@ -25,6 +25,9 @@ pub struct FakeHyprland {
     scene: Arc<Mutex<&'static str>>,
     /// Answers dispatches as Hyprland with a Lua config (0.55 on) does.
     lua: Arc<Mutex<bool>>,
+    /// Replies that replace the fixture's for requests starting with a
+    /// prefix (a Hyprland that changed, or a broken one).
+    overrides: Overrides,
     requests: Arc<Mutex<Vec<String>>>,
     events: UnboundedSender<Ev>,
 }
@@ -46,6 +49,7 @@ impl FakeHyprland {
         std::fs::create_dir_all(requests.parent().unwrap()).unwrap();
         let scene = Arc::new(Mutex::new("boot"));
         let lua = Arc::new(Mutex::new(false));
+        let overrides = Overrides::default();
         let log = Arc::new(Mutex::new(Vec::new()));
         let s1 = UnixListener::bind(&requests).unwrap();
         let s2 = UnixListener::bind(&events).unwrap();
@@ -53,6 +57,7 @@ impl FakeHyprland {
             let scene = scene.clone();
             let lua = lua.clone();
             let log = log.clone();
+            let overrides = overrides.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut conn, _)) = s1.accept().await else {
@@ -63,7 +68,9 @@ impl FakeHyprland {
                     let n = conn.read(&mut buf).await.unwrap();
                     let req = String::from_utf8_lossy(&buf[..n]).into_owned();
                     let one = |req: &str| {
-                        if *lua.lock().unwrap() {
+                        if let Some(reply) = overrides.reply(req) {
+                            reply
+                        } else if *lua.lock().unwrap() {
                             answer_lua(*scene.lock().unwrap(), req)
                         } else {
                             answer(*scene.lock().unwrap(), req)
@@ -111,6 +118,7 @@ impl FakeHyprland {
             backend,
             scene,
             lua,
+            overrides,
             requests: log,
             events: tx,
         }
@@ -140,6 +148,45 @@ impl FakeHyprland {
 
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Answers requests starting with `prefix` (a whole request such as
+    /// `j/clients`, or `dispatch ` for every dispatch, a batch's commands
+    /// included) with `reply` from now on, instead of the fixture's.
+    pub fn set_reply(&self, prefix: &str, reply: &[u8]) {
+        let mut o = self.overrides.0.lock().unwrap();
+        o.retain(|(p, _)| p != prefix);
+        o.push((prefix.to_string(), reply.to_vec()));
+    }
+
+    /// The fixture's replies again, for requests starting with `prefix`.
+    pub fn clear_reply(&self, prefix: &str) {
+        self.overrides
+            .0
+            .lock()
+            .unwrap()
+            .retain(|(p, _)| p != prefix);
+    }
+
+    /// The fixture's replies again.
+    pub fn clear_replies(&self) {
+        self.overrides.0.lock().unwrap().clear();
+    }
+}
+
+/// Replies that replace the fixture's, by request prefix.
+#[derive(Clone, Default)]
+pub struct Overrides(Arc<Mutex<Vec<Override>>>);
+
+/// A request prefix and its reply.
+type Override = (String, Vec<u8>);
+
+impl Overrides {
+    fn reply(&self, req: &str) -> Option<Vec<u8>> {
+        let o = self.0.lock().unwrap();
+        o.iter()
+            .find(|(p, _)| req.starts_with(p.as_str()))
+            .map(|(_, r)| r.clone())
     }
 }
 
@@ -171,6 +218,8 @@ pub fn answer(scene: &str, req: &str) -> Vec<u8> {
         }
         "j/clients" => file("clients.json"),
         "j/activewindow" => file("activewindow.json"),
+        // Captured from a live 0.56.2 (`version.json` there).
+        "j/version" => std::fs::read(fixture("hyprland-0.56.2-captured/version.json")).unwrap(),
         // `dispatchRequest` (src/debug/HyprCtl.cpp, 0.54.3 and a hyprlang
         // config on 0.56.2): the first word is the dispatcher; a Lua
         // form's (`hl.dsp.focus({`) is none.

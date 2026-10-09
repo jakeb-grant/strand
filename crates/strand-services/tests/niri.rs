@@ -30,6 +30,9 @@ struct FakeNiri {
     socket: std::path::PathBuf,
     requests: Arc<Mutex<Vec<String>>>,
     events: broadcast::Sender<Ev>,
+    /// Replies that replace the fixture's, by request line (a niri that
+    /// changed, or a broken one).
+    overrides: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl FakeNiri {
@@ -38,11 +41,13 @@ impl FakeNiri {
         let socket = dir.path().join("niri.wayland-1.4242.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let overrides: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
         let (events, _) = broadcast::channel(64);
         let start = bursts("niri-26.04/events.txt")["stream-start"].clone();
         {
             let requests = requests.clone();
             let events = events.clone();
+            let overrides = overrides.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((conn, _)) = listener.accept().await else {
@@ -50,6 +55,7 @@ impl FakeNiri {
                     };
                     let requests = requests.clone();
                     let mut sub = events.subscribe();
+                    let overrides = overrides.clone();
                     let start = start.clone();
                     tokio::spawn(async move {
                         let (r, mut w) = conn.into_split();
@@ -59,7 +65,14 @@ impl FakeNiri {
                             let file = |n: &str| {
                                 std::fs::read_to_string(fixture("niri-26.04").join(n)).unwrap()
                             };
+                            let overridden = overrides
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .find(|(p, _)| req.starts_with(p.as_str()))
+                                .map(|(_, r)| r.clone());
                             let reply = match req.as_str() {
+                                _ if overridden.is_some() => overridden.unwrap_or_default(),
                                 "\"EventStream\"" => {
                                     // The reply, the replicated state, then
                                     // events until told to drop.
@@ -80,6 +93,9 @@ impl FakeNiri {
                                 "\"Workspaces\"" => file("reply-workspaces.json"),
                                 "\"Windows\"" => file("reply-windows.json"),
                                 "\"FocusedOutput\"" => file("reply-focused-output.json"),
+                                "\"Version\"" => {
+                                    "{\"Ok\":{\"Version\":\"26.04 (8ed0da4)\"}}\n".into()
+                                }
                                 r if r.starts_with("{\"Action\"") => {
                                     "{\"Ok\":\"Handled\"}\n".into()
                                 }
@@ -98,6 +114,7 @@ impl FakeNiri {
             socket,
             requests,
             events,
+            overrides,
         }
     }
 
@@ -107,6 +124,16 @@ impl FakeNiri {
 
     fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Answers request lines starting with `req` (`"Windows"`, `{"Action"`) with
+    /// `reply` (a line) from now on; `None`: the fixture's again.
+    fn set_reply(&self, req: &str, reply: Option<&str>) {
+        let mut o = self.overrides.lock().unwrap();
+        o.retain(|(p, _)| p != req);
+        if let Some(r) = reply {
+            o.push((req.to_string(), r.to_string()));
+        }
     }
 }
 
@@ -390,4 +417,151 @@ fn the_stores_follow_niri() {
     });
     s.shutdown();
     wm::configure(None);
+}
+
+fn niri_service(
+    fake: &FakeNiri,
+) -> (
+    WmConfig,
+    Collector,
+    impl FnMut(Vec<wm::WmChange>) + Send + 'static,
+) {
+    let (sink, c) = Collector::new();
+    let config = WmConfig {
+        backend: Some(Backend::Niri {
+            socket: fake.socket.clone(),
+        }),
+        wayland: None,
+        events: None,
+        ..Default::default()
+    };
+    (config, c, sink)
+}
+
+fn degraded(m: &wm::Mirror) -> Option<&str> {
+    m.sources.degraded.as_deref()
+}
+
+/// A niri whose reply has another shape (windows without their `id`):
+/// an event the adapter knows but cannot read asks for a re-read, the
+/// re-read's reply is not understood, and the adapter is degraded: the
+/// protocols serve (here no display: nothing), the reason names niri's
+/// version. Once niri answers as expected again, its state is back.
+#[tokio::test]
+async fn a_niri_reply_of_another_shape_degrades_until_it_is_read_again() {
+    let fake = FakeNiri::start();
+    let (config, mut c, sink) = niri_service(&fake);
+    let (_req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.set_reply(
+        "\"Windows\"",
+        Some("{\"Ok\":{\"Windows\":[{\"title\":\"no id\"}]}}\n"),
+    );
+    // A known event whose data has changed shape: read again.
+    fake.send("{\"WindowsChanged\":{\"list\":[]}}\n");
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap().to_string();
+    assert!(why.contains("niri 26.04 (8ed0da4)"), "{why}");
+    assert!(
+        why.contains("the reply to Windows") && why.contains("missing field `id`"),
+        "{why}"
+    );
+    assert!(!c.mirror.sources.connected);
+    assert!(c.mirror.workspaces.is_empty() && c.mirror.windows.is_empty());
+    assert_eq!(c.mirror.name, "niri");
+
+    fake.set_reply("\"Windows\"", None);
+    c.until_within(15, "recovered", |m| {
+        m.sources.connected && degraded(m).is_none() && !m.workspaces.is_empty()
+    })
+    .await;
+    assert!(!c.mirror.windows.is_empty());
+    service.abort();
+}
+
+/// An event niri added that this adapter does not know changes nothing
+/// and costs nothing; a known one whose data has another shape costs one
+/// read; lines that are no JSON at all are re-read too, and only eight in
+/// a row degrade the adapter.
+#[tokio::test]
+async fn an_unknown_niri_event_is_harmless_but_a_stream_of_no_events_is_not() {
+    let fake = FakeNiri::start();
+    let (config, mut c, sink) = niri_service(&fake);
+    let (_req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    let before = fake.requests().len();
+    fake.send("{\"BrandNewEvent\":{\"id\":1}}\n");
+    assert_eq!(c.quiet_for(Duration::from_millis(200)).await, 0);
+    assert_eq!(fake.requests().len(), before, "no read");
+
+    fake.send("{\"WindowFocusChanged\":{\"window\":3}}\n");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while fake.requests().len() < before + 3 {
+        assert!(tokio::time::Instant::now() < deadline, "no re-read");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    c.quiet_for(Duration::from_millis(200)).await;
+    assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.connected);
+
+    fake.send(&format!(
+        "{}{{\"BrandNewEvent\":{{}}}}\n",
+        "not json\n".repeat(7)
+    ));
+    c.quiet_for(Duration::from_millis(300)).await;
+    assert_eq!(degraded(&c.mirror), None, "seven, then an event");
+    fake.send(&"not json\n".repeat(8));
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    let why = degraded(&c.mirror).unwrap();
+    assert!(
+        why.contains("event stream") && why.contains("niri 26.04"),
+        "{why}"
+    );
+    service.abort();
+}
+
+/// A niri that cannot parse the adapter's actions (`error parsing
+/// request`, its answer to a request it does not know) refuses the one
+/// syntax it has: the adapter degrades, and stays so for that version.
+#[tokio::test]
+async fn a_niri_refusing_the_action_syntax_degrades_until_its_version_changes() {
+    let fake = FakeNiri::start();
+    let (config, mut c, sink) = niri_service(&fake);
+    let (req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.set_reply("{\"Action\"", Some("{\"Err\":\"error parsing request\"}\n"));
+    let id = c.mirror.workspaces[0].0;
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(id));
+    req_tx.send(r).unwrap();
+    assert_eq!(
+        done.await,
+        Err(WmError::Rejected("error parsing request".into()))
+    );
+    c.until("degraded", |m| degraded(m).is_some()).await;
+    assert!(degraded(&c.mirror).unwrap().contains("action syntax"));
+    let up = c.log.len();
+    c.quiet_for(Duration::from_millis(1000)).await;
+    assert!(degraded(&c.mirror).is_some());
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(s) if s.connected)),
+        "the same niri stays degraded"
+    );
+    fake.set_reply("{\"Action\"", None);
+    fake.set_reply(
+        "\"Version\"",
+        Some("{\"Ok\":{\"Version\":\"26.10 (0000000)\"}}\n"),
+    );
+    c.until_within(15, "recovered", |m| {
+        m.sources.connected && degraded(m).is_none() && !m.workspaces.is_empty()
+    })
+    .await;
+    service.abort();
 }

@@ -2198,7 +2198,10 @@ transparent huge pages for life.
   (`service: String`, the registered name);
   a body raises what the user must act on with `Cx::notice(message)`
   (another notification server owning the name, naming its process:
-  `notice: true`, raised before `Cx::ready`). `Services::take_diagnostics()`
+  `notice: true`, raised before `Cx::ready`); a failure the run survives
+  and retries itself is `Cx::warn(message)` (`notice: false`, as a failed
+  run's: the compositor adapter that does not understand its
+  compositor). `Services::take_diagnostics()`
   hands them out after a pump, one per distinct message (a retry failing
   the same way is not repeated until a run stays up `RETRY_MAX` or ends
   cleanly). A notice no longer holding (a later run ready without
@@ -2300,10 +2303,11 @@ transparent huge pages for life.
   first publish), `FocusedWorkspace`, `FocusedWindow`, `FocusedScreen`
   (for `screens.focused`), `Name` (the adapter's compositor, else
   `desktop`: the first entry of `XDG_CURRENT_DESKTOP`), `ConfigReloaded {
-  failed }` and `Sources` (adapter, connected, which protocols exist;
-  always in the first batch). The state goes out once the adapter's
-  first state arrives, or once the protocols have spoken when there is
-  no adapter or it has failed to connect.
+  failed }` and `Sources` (adapter, connected, which protocols exist, why the
+  adapter is degraded; always in the first batch). The state goes out
+  once the adapter's first state arrives, or once the protocols have
+  spoken when there is no adapter or it has failed to connect or is
+  degraded.
   `wm.config_reloaded` has one owner: the `wm` store emits it from the
   batch's `WmChange::ConfigReloaded`. The copy sent to `events` as
   `ChangeEvent::Compositor(ConfigReloaded)` is only the live-reload
@@ -2313,7 +2317,7 @@ transparent huge pages for life.
   through `wm::WmHub::new(config, runtime_handle)` (or
   `WmHub::fresh(make_config, runtime_handle)`, which makes the config at
   each start): `subscribe() ->
-  WmSubscription` (`recv`, `try_recv`, `queued`, `request(WmAction)`)
+  WmSubscription` (`recv`, `try_recv`, `queued`, `request(WmAction)`, `reports()`)
   starts it on the first subscriber, gives a later one the current state
   as one batch (never a past reload), and stops it when the last
   subscription drops (or the last `WmHub` does; `recv` then ends with
@@ -2354,7 +2358,9 @@ transparent huge pages for life.
   arrives in the stream). `maximize()` and `fullscreen()` toggle: per
   adapter, Hyprland's `hl.dsp.window.fullscreen({ mode, window })` (a
   `[[BATCH]]` of `focuswindow` and `fullscreen 1|0` in the classic
-  dialect), niri's `MaximizeWindowToEdges`/`FullscreenWindow` by id,
+  dialect; Lua first, the classic form when Hyprland answers the Lua one
+  `Invalid dispatcher`, the dialect understood kept per connection),
+  niri's `MaximizeWindowToEdges`/`FullscreenWindow` by id,
   sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
@@ -2389,7 +2395,25 @@ transparent huge pages for life.
   `key`, title, app id, `activated`/`minimized`/`maximized`/`fullscreen`
   and output names, `workspaces`, and which of the three globals are
   bound); `wm::merge` joins the two (`docs/decisions.md`, wave4-wm,
-  laptop-toplevel and laptop-open). An adapter whose IPC reports no
+  laptop-toplevel and laptop-open). An adapter that is connected but cannot understand its
+  compositor (`wm::understood`: a reply to a state request that is not
+  the JSON it reads or lacks a field it needs, at once; eight
+  event-stream messages in a row that are no event, each re-read; an
+  action whose syntax the compositor refuses in every dialect, which
+  holds until the compositor reports another version) sends
+  `AdapterMsg::Degraded(text)` instead of `Connected(false)`: the run
+  drops the adapter's state and serves the protocols exactly as when it
+  cannot connect (their ids with a `Reset`, their actions), sets
+  `Sources::degraded: Option<String>` (the compositor, its version from
+  `j/version`, niri's `"Version"` or sway's `get_version`, and what
+  was not understood; `connected` false), and the adapter retries on its
+  backoff; its next state clears it. The oldest subscription
+  (`WmSubscription::reports()`) raises each new `degraded` text as a
+  `ServiceDiagnostic` with `Cx::warn` (logged and sent to `strand
+  watch`; not an overlay notice, as the service retries it itself).
+  An event the adapter does not know is ignored; a known event whose
+  data it cannot read is followed by a re-read (decisions.md,
+  laptop-resilience). An adapter whose IPC reports no
   window state (niri) takes `maximized` and `fullscreen` from the wlr
   protocol, joined by app id (and title for twins). The source order is the adapter, then the wlr
   protocol (window ids `wlr-<key>`, `ManagedToplevel::window_id`; focus,

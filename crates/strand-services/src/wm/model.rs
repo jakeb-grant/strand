@@ -177,6 +177,13 @@ pub struct Sources {
     pub toplevel_management: bool,
     /// The compositor advertises `ext_workspace_manager_v1`.
     pub workspace_protocol: bool,
+    /// The adapter is connected but does not understand the compositor
+    /// (a reply it cannot read, an event stream that is not one, actions
+    /// refused in every dialect): why, naming the compositor and its
+    /// version. Meanwhile the state comes from the protocols, as when the
+    /// adapter cannot connect (`connected` is false), and the stores
+    /// raise it as a `ServiceDiagnostic`.
+    pub degraded: Option<String>,
 }
 
 /// One change to what the services show. A batch is what one compositor
