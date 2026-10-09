@@ -33,7 +33,7 @@
     "xdgDescription": "",
     "contentType": "none",
     "tearingHint": false,
-    "stableId": "a"
+    "stableId": "18000001"
 },{
     "address": "0x55d0c0a1e5f0",
     "mapped": true,
@@ -69,5 +69,5 @@
     "xdgDescription": "",
     "contentType": "none",
     "tearingHint": false,
-    "stableId": "b"
+    "stableId": "18000002"
 }]

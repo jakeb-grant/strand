@@ -1,0 +1,49 @@
+# Hyprland 0.56.2 .socket2.sock bursts picked from the live capture (SOURCE.txt),
+# applied in this order to the state in before/.
+
+## title
+# The focused terminal's title changes: Hyprland restates the active window.
+windowtitle>>557a6df4c490
+windowtitlev2>>557a6df4c490,◑ term one
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+
+## switch
+# Super+3: the active window first, then the workspace.
+activewindow>>com.mitchellh.ghostty,top
+activewindowv2>>557a6e37b040
+workspace>>3
+workspacev2>>3,3
+
+## switch-back
+# Super+1.
+activewindow>>com.mitchellh.ghostty,◑ term one
+activewindowv2>>557a6df4c490
+workspace>>1
+workspacev2>>1,1
+
+## new-workspace
+# Super+5: workspace 5 is created, the focus leaves every window, then the switch.
+createworkspace>>5
+createworkspacev2>>5,5
+activewindow>>,
+activewindowv2>>
+workspace>>5
+workspacev2>>5,5
+
+## open
+# A terminal opens there: its title and an urgent hint come before openwindow,
+# then it takes the focus.
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,Ghostty
+urgent>>557a6e504f50
+openwindow>>557a6e504f50,5,com.mitchellh.ghostty,Ghostty
+activewindow>>com.mitchellh.ghostty,Ghostty
+activewindowv2>>557a6e504f50
+
+## retitle
+# Its shell sets the title.
+windowtitle>>557a6e504f50
+windowtitlev2>>557a6e504f50,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557a6e504f50

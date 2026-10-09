@@ -464,7 +464,12 @@ pub(crate) async fn request(path: &Path, command: &str) -> io::Result<String> {
 
 async fn request_json<T: for<'de> Deserialize<'de>>(path: &Path, command: &str) -> io::Result<T> {
     let text = request(path, command).await?;
-    serde_json::from_str(&text).map_err(|e| {
+    parse_reply(command, &text)
+}
+
+/// The JSON reply `text` to `command`.
+fn parse_reply<T: for<'de> Deserialize<'de>>(command: &str, text: &str) -> io::Result<T> {
+    serde_json::from_str(text).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -875,5 +880,201 @@ mod tests {
                 "{failed:?}"
             );
         }
+    }
+
+    // ---- traffic captured from a live Hyprland 0.56.2 ----------------------
+
+    const CAPTURED: &str = "hyprland-0.56.2-captured";
+
+    /// The state `query` reads from the four replies captured in `dir`.
+    fn from_captured(dir: &str) -> State {
+        let read =
+            |name: &str| crate::wm::captured::fixture(&format!("{CAPTURED}/{dir}/{name}.json"));
+        let mut s = State::default();
+        s.replace(
+            parse_reply("j/monitors", &read("monitors")).unwrap(),
+            parse_reply("j/workspaces", &read("workspaces")).unwrap(),
+            parse_reply("j/clients", &read("clients")).unwrap(),
+            Some(parse_reply::<Client>("j/activewindow", &read("activewindow")).unwrap()),
+        );
+        s
+    }
+
+    fn lines(text: &str) -> impl Iterator<Item = &str> {
+        text.lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    }
+
+    /// Bursts from the live session, on the state read before them: what
+    /// patches in place does, what needs a re-read asks for one, and a
+    /// new window's urgent hint, which Hyprland sends before the window
+    /// takes the focus, does not stay.
+    #[test]
+    fn captured_bursts_patch_or_ask_for_a_read() {
+        use Effect::{Changed, None as Nothing, Requery};
+        let mut s = from_captured("before");
+        let snap = s.snapshot().state;
+        assert_eq!(
+            snap.workspaces.iter().map(|w| w.id).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(snap.windows.len(), 4);
+        // Hyprland's stableIds are 8 hex digits; each window keeps its own
+        // as the toplevel identifier it is joined by.
+        let ids = s.snapshot().toplevel_ids;
+        let pairs: Vec<(&str, &str)> = ids.iter().map(|(a, i)| (a.as_str(), i.as_str())).collect();
+        assert_eq!(
+            pairs,
+            [
+                ("0x557a6e2e3d90", "18000004"),
+                ("0x557a6e37b040", "18000008"),
+                ("0x557a6e3f20d0", "1800000a"),
+                ("0x557a6df4c490", "18000003"),
+            ],
+            "every stableId"
+        );
+        let text = crate::wm::captured::fixture(&format!("{CAPTURED}/bursts.txt"));
+        let bursts = crate::wm::captured::bursts(&text);
+        let names: Vec<&str> = bursts.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "title",
+                "switch",
+                "switch-back",
+                "new-workspace",
+                "open",
+                "retitle"
+            ]
+        );
+        for (name, lines) in &bursts {
+            let effects: Vec<Effect> = lines.iter().map(|l| s.apply_line(l.as_bytes())).collect();
+            let snap = s.snapshot().state;
+            let focused = snap.workspaces.iter().find(|w| w.focused).map(|w| w.id);
+            let window = |a: &str| snap.windows.iter().find(|w| w.id == a).cloned();
+            match name.as_str() {
+                "title" => {
+                    // The restated active window changes nothing.
+                    assert_eq!(effects, [Nothing, Changed, Nothing, Nothing]);
+                    assert_eq!(window("0x557a6df4c490").unwrap().title, "◑ term one");
+                }
+                "switch" => {
+                    assert_eq!(effects, [Nothing, Changed, Nothing, Changed]);
+                    assert_eq!(focused, Some(3));
+                    assert!(window("0x557a6e37b040").unwrap().focused);
+                }
+                "switch-back" => {
+                    assert_eq!(effects, [Nothing, Changed, Nothing, Changed]);
+                    assert_eq!(focused, Some(1));
+                    assert!(window("0x557a6df4c490").unwrap().focused);
+                }
+                "new-workspace" => {
+                    // A workspace the state does not hold: read again.
+                    assert_eq!(
+                        effects,
+                        [Requery, Requery, Nothing, Changed, Nothing, Requery]
+                    );
+                    assert!(snap.windows.iter().all(|w| !w.focused));
+                }
+                "open" => {
+                    assert_eq!(
+                        effects,
+                        [Nothing, Requery, Changed, Requery, Nothing, Changed]
+                    );
+                    // Focused in the same burst: not left urgent.
+                    assert_eq!(s.active.as_deref(), Some("0x557a6e504f50"));
+                    assert!(s.urgent.is_empty(), "{:?}", s.urgent);
+                    // The adapter reads again at the end of the burst:
+                    // the replies read after the session hold the window.
+                    let (urgent, minimized) = (s.urgent.clone(), s.minimized.clone());
+                    s = from_captured("after");
+                    s.urgent = urgent;
+                    s.minimized = minimized;
+                    assert!(
+                        s.snapshot()
+                            .state
+                            .windows
+                            .iter()
+                            .any(|w| w.id == "0x557a6e504f50")
+                    );
+                }
+                "retitle" => {
+                    assert_eq!(effects, [Nothing, Changed, Nothing, Nothing]);
+                    let w = window("0x557a6e504f50").unwrap();
+                    assert_eq!(w.title, "user@host:~");
+                    assert!(w.focused && !w.urgent);
+                    assert_eq!(w.workspace, Some(5));
+                }
+                other => panic!("unknown burst {other}"),
+            }
+        }
+    }
+
+    /// The whole live stream from the state read before it: about 37
+    /// minutes of titles, focus and switches patch in place without one
+    /// read (and leave every window that then stays untouched with the
+    /// title the later replies give); the new workspace and window ask for
+    /// a read; after it, the rest patches to exactly what the replies read
+    /// after the session say. The replies and the stream are separate
+    /// captures with unrecorded gaps between them (SOURCE.txt): the replay
+    /// treats the gaps as empty, and the title and final-state checks are
+    /// what would catch one that was not.
+    #[test]
+    fn captured_stream_ends_where_hyprland_does() {
+        let text = crate::wm::captured::fixture(&format!("{CAPTURED}/stream.txt"));
+        let all: Vec<&str> = lines(&text).collect();
+        assert!(all.len() > 3000, "{}", all.len());
+        let structural = all
+            .iter()
+            .position(|l| l.starts_with("createworkspace"))
+            .expect("the new workspace");
+        let mut s = from_captured("before");
+        for (i, line) in all[..structural].iter().enumerate() {
+            let e = s.apply_line(line.as_bytes());
+            assert!(
+                matches!(e, Effect::None | Effect::Changed),
+                "line {i} asked for a read: {line} ({e:?})"
+            );
+        }
+        let after = from_captured("after");
+        let titled = |s: &State, a: &str| {
+            s.clients
+                .iter()
+                .find(|c| c.address == a)
+                .map(|c| c.title.clone())
+        };
+        for c in &from_captured("before").clients {
+            assert_eq!(
+                titled(&s, &c.address),
+                titled(&after, &c.address),
+                "{}",
+                c.address
+            );
+        }
+        // The burst with the new workspace and window, up to the focus of
+        // the window: then the adapter reads again.
+        let open = all[structural..]
+            .iter()
+            .position(|l| l.starts_with("activewindowv2>>") && l.len() > "activewindowv2>>".len())
+            .map(|i| structural + i + 1)
+            .expect("the new window's focus");
+        let effects: Vec<Effect> = all[structural..open]
+            .iter()
+            .map(|l| s.apply_line(l.as_bytes()))
+            .collect();
+        assert!(effects.contains(&Effect::Requery), "{effects:?}");
+        let (urgent, minimized) = (s.urgent.clone(), s.minimized.clone());
+        let mut s2 = from_captured("after");
+        s2.urgent = urgent;
+        s2.minimized = minimized;
+        for (i, line) in all[open..].iter().enumerate() {
+            let e = s2.apply_line(line.as_bytes());
+            assert!(
+                matches!(e, Effect::None | Effect::Changed),
+                "line {} asked for a read: {line} ({e:?})",
+                open + i
+            );
+        }
+        assert_eq!(s2.snapshot(), after.snapshot());
     }
 }

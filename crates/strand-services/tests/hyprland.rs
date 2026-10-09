@@ -77,9 +77,14 @@ async fn hyprland_adapter_follows_replayed_traffic() {
             .is_some_and(|w| w.app_id == "foot")
     })
     .await;
+    // Hyprland sends the new window's title and an urgent hint before
+    // `openwindow` (as captured): the unknown window costs no extra read,
+    // and the hint does not outlive the focus that follows it.
     assert_eq!(fake.requests().len(), 8, "one re-read for the burst");
     let ws2 = c.mirror.workspace("2").unwrap();
     assert!(ws2.occupied && ws2.focused);
+    assert!(!ws2.urgent, "the focus ends the urgent hint");
+    assert!(!c.mirror.window_by_app("foot").unwrap().urgent);
     assert_eq!(ws2.windows[0].id, "0x55d0c0a1c3d0");
 
     // Title: patched, titles with commas kept whole.

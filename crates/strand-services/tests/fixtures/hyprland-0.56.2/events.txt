@@ -1,21 +1,32 @@
 # Hyprland 0.56.2 .socket2.sock traffic for the scenario in SOURCE.txt.
 
 ## switch
-# Super+2: the focus moves to the empty workspace 2 (no window).
-workspace>>2
-workspacev2>>2,2
+# Super+2: the focus moves to the empty workspace 2 (no window). The active
+# window comes first, then the workspace (as captured from a live 0.56.2,
+# hyprland-0.56.2-captured/bursts.txt "switch").
 activewindow>>,
 activewindowv2>>
+workspace>>2
+workspacev2>>2,2
 
 ## open
 # foot starts on workspace 2 and takes the focus (replies now: opened/).
+# Its title and an urgent hint come before openwindow, then the focus (as
+# captured, hyprland-0.56.2-captured/bursts.txt "open").
+windowtitle>>55d0c0a1c3d0
+windowtitlev2>>55d0c0a1c3d0,foot
+urgent>>55d0c0a1c3d0
 openwindow>>55d0c0a1c3d0,2,foot,foot
 activewindow>>foot,foot
 activewindowv2>>55d0c0a1c3d0
 
 ## title
+# foot has the focus: Hyprland restates the active window after its title
+# (as captured, hyprland-0.56.2-captured/bursts.txt "title").
 windowtitle>>55d0c0a1c3d0
 windowtitlev2>>55d0c0a1c3d0,~/src, strand
+activewindow>>foot,~/src, strand
+activewindowv2>>55d0c0a1c3d0
 
 ## urgent
 urgent>>55d0c0a1b2c0

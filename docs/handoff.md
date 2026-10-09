@@ -104,10 +104,18 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### Verification gaps
 
-- A second monitor on Hyprland, niri and sway is not checked live; the
-  compositor matrix covers one output.
-- The Hyprland 0.56.2 and niri 26.04 IPC fixtures were rebuilt from source,
-  not captured from real sessions. Diff them against `socat` captures.
+- A second monitor is checked live on sway and Hyprland (CI, vkms) by the
+  compositor matrix; niri runs on one output (nested winit cannot add
+  one), and Hyprland cannot run locally (decisions.md laptop-verify).
+- The Hyprland 0.56.2 and niri 26.04 IPC fixtures are now checked against
+  real captures (`*-captured` fixtures; `scripts/capture-hyprland.sh`,
+  `scripts/container/capture-niri.sh`). The Hyprland capture lacks a
+  second monitor, close, move, fullscreen, reload and special workspaces.
+  It was put together from three separate captures with unrecorded gaps
+  between them (its SOURCE.txt). A capture from
+  `scripts/capture-hyprland.sh` during a busy session would close that
+  gap: it reads its replies while the stream is quiet and records in
+  `marks.txt` the stream line where each set falls.
 
 ### Known limits, recorded and not M3 blockers
 

@@ -843,9 +843,10 @@ async fn workspace_changes_apply_at_the_managers_done() {
 async fn hyprland_windows_join_the_toplevel_list_by_stable_id() {
     let hypr = common::hyprland::FakeHyprland::start();
     let fake = Fake::start(true);
-    // kitty's stableId in the fixture is "a"; pavucontrol's "b" has no
+    // kitty's stableId in the fixture is "18000001" (8 hex digits, as a
+    // live Hyprland 0.56.2 sends it); pavucontrol's "18000002" has no
     // toplevel here.
-    fake.cmd(Cmd::AddToplevel("a", "~ (protocol)", "kitty"));
+    fake.cmd(Cmd::AddToplevel("18000001", "~ (protocol)", "kitty"));
     std::thread::sleep(Duration::from_millis(50));
     let (sink, mut c) = Collector::new();
     let (_req_tx, req_rx) = unbounded_channel();
@@ -870,7 +871,7 @@ async fn hyprland_windows_join_the_toplevel_list_by_stable_id() {
             .title,
         "Volume Control"
     );
-    fake.cmd(Cmd::SetTitle("a", "vim (protocol)"));
+    fake.cmd(Cmd::SetTitle("18000001", "vim (protocol)"));
     c.until("retitled", |m| {
         m.window_by_app("kitty")
             .is_some_and(|w| w.title == "vim (protocol)")

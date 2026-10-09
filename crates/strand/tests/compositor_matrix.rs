@@ -16,12 +16,20 @@
 //! darker than empty ones, the focused window's title), and a click on
 //! a dot must switch the compositor.
 //!
+//! With a second output (scripts/compositor-matrix.sh makes one for sway
+//! and Hyprland; nested niri has one), the stores must agree on every
+//! output and on which one has the focus, through a switch to the other
+//! output from outside, a window there, `ws.focus()` and `win.focus()`
+//! across outputs; and each output's bar must draw that output's
+//! workspaces and take its own clicks.
+//!
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
 //! (`SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`, `NIRI_SOCKET`) point at
 //! it; `STRAND_MATRIX_NIRI_CONFIG` is the config file niri watches (the
-//! reload edits it). Without `STRAND_MATRIX` the tests print that they
-//! were skipped.
+//! reload edits it); `STRAND_MATRIX_OUTPUTS` is how many outputs the
+//! script set up (checked). Without `STRAND_MATRIX` the tests print that
+//! they were skipped.
 //! Screenshots go to `$STRAND_SHOTS` when it is set.
 
 mod support;
@@ -76,10 +84,22 @@ enum Kind {
 struct Live {
     kind: Kind,
     output: String,
-    /// The output's logical size (the virtual pointer's layout).
+    /// The output's logical size.
     w: u32,
     h: u32,
     socket: PathBuf,
+}
+
+/// One enabled output as the compositor reports it, in layout (logical)
+/// coordinates.
+#[derive(Clone, Debug, PartialEq)]
+struct Output {
+    name: String,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    focused: bool,
 }
 
 /// One workspace as the compositor reports it.
@@ -117,13 +137,26 @@ fn live() -> Option<Live> {
         h: 0,
         socket,
     };
-    let (output, w, h) = live.output();
-    live.output = output;
-    live.w = w;
-    live.h = h;
+    let outputs = live.outputs();
+    let o = outputs
+        .iter()
+        .find(|o| o.focused)
+        .or(outputs.first())
+        .expect("an output")
+        .clone();
+    live.output = o.name;
+    live.w = o.w;
+    live.h = o.h;
+    let all: Vec<String> = outputs
+        .iter()
+        .map(|o| format!("{} {}x{}+{}+{}", o.name, o.w, o.h, o.x, o.y))
+        .collect();
     eprintln!(
-        "matrix: {kind:?} on {} ({}x{})",
-        live.output, live.w, live.h
+        "matrix: {kind:?} on {} ({}x{}); outputs: {}",
+        live.output,
+        live.w,
+        live.h,
+        all.join(", ")
     );
     Some(live)
 }
@@ -159,60 +192,101 @@ fn text(v: &Value) -> String {
 }
 
 impl Live {
-    /// The output the bar is checked on (the focused one) and its
-    /// logical size.
-    fn output(&self) -> (String, u32, u32) {
-        let logical = |w: &Value, h: &Value, scale: &Value| {
-            let s = scale.as_f64().unwrap_or(1.0).max(0.1);
-            (
-                (w.as_f64().unwrap_or(0.0) / s).round() as u32,
-                (h.as_f64().unwrap_or(0.0) / s).round() as u32,
-            )
-        };
-        match self.kind {
-            Kind::Sway => {
-                let v = json("swaymsg", &["-t", "get_outputs", "-r"]);
-                let all = v.as_array().cloned().unwrap_or_default();
-                let o = all
-                    .iter()
-                    .find(|o| o["focused"] == true)
-                    .or(all.first())
-                    .expect("an output");
-                (
-                    text(&o["name"]),
-                    o["rect"]["width"].as_u64().unwrap_or(0) as u32,
-                    o["rect"]["height"].as_u64().unwrap_or(0) as u32,
-                )
-            }
-            Kind::Hyprland => {
-                let v = json("hyprctl", &["-j", "monitors"]);
-                let all = v.as_array().cloned().unwrap_or_default();
-                let o = all
-                    .iter()
-                    .find(|o| o["focused"] == true)
-                    .or(all.first())
-                    .expect("a monitor");
-                let (w, h) = logical(&o["width"], &o["height"], &o["scale"]);
-                (text(&o["name"]), w, h)
-            }
+    /// The enabled outputs, left to right (then top to bottom), in layout
+    /// coordinates, and which one has the focus.
+    fn outputs(&self) -> Vec<Output> {
+        let int = |v: &Value| v.as_f64().unwrap_or(0.0).round() as i32;
+        let mut all: Vec<Output> = match self.kind {
+            Kind::Sway => json("swaymsg", &["-t", "get_outputs", "-r"])
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|o| o["active"] != false)
+                .map(|o| {
+                    let r = &o["rect"];
+                    Output {
+                        name: text(&o["name"]),
+                        x: int(&r["x"]),
+                        y: int(&r["y"]),
+                        w: int(&r["width"]) as u32,
+                        h: int(&r["height"]) as u32,
+                        focused: o["focused"] == true,
+                    }
+                })
+                .collect(),
+            Kind::Hyprland => json("hyprctl", &["-j", "monitors"])
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["disabled"] != true)
+                .map(|m| {
+                    // `width`/`height` are the mode's pixels; `x`/`y` are
+                    // already logical.
+                    let s = m["scale"].as_f64().unwrap_or(1.0).max(0.1);
+                    let logical = |v: &Value| (v.as_f64().unwrap_or(0.0) / s).round() as u32;
+                    Output {
+                        name: text(&m["name"]),
+                        x: int(&m["x"]),
+                        y: int(&m["y"]),
+                        w: logical(&m["width"]),
+                        h: logical(&m["height"]),
+                        focused: m["focused"] == true,
+                    }
+                })
+                .collect(),
             Kind::Niri => {
-                let v = json("niri", &["msg", "--json", "outputs"]);
-                let o = v
+                let focused = json("niri", &["msg", "--json", "focused-output"]);
+                json("niri", &["msg", "--json", "outputs"])
                     .as_object()
-                    .and_then(|m| m.values().next())
-                    .expect("an output");
-                let l = &o["logical"];
-                (
-                    text(&o["name"]),
-                    l["width"].as_u64().unwrap_or(0) as u32,
-                    l["height"].as_u64().unwrap_or(0) as u32,
-                )
+                    .into_iter()
+                    .flat_map(|m| m.values())
+                    .filter(|o| !o["logical"].is_null())
+                    .map(|o| {
+                        let l = &o["logical"];
+                        Output {
+                            name: text(&o["name"]),
+                            x: int(&l["x"]),
+                            y: int(&l["y"]),
+                            w: int(&l["width"]) as u32,
+                            h: int(&l["height"]) as u32,
+                            focused: focused["name"] == o["name"],
+                        }
+                    })
+                    .collect()
             }
-        }
+        };
+        all.sort_by_key(|o| (o.x, o.y));
+        all
+    }
+
+    /// Where `(x, y)` on output `name` is for a virtual pointer's absolute
+    /// motion, which spans the whole layout: the point and the layout's
+    /// extent, as `motion_absolute` takes them.
+    fn layout_point(&self, name: &str, x: u32, y: u32) -> (u32, u32, u32, u32) {
+        let outs = self.outputs();
+        let left = outs.iter().map(|o| o.x).min().unwrap_or(0);
+        let top = outs.iter().map(|o| o.y).min().unwrap_or(0);
+        let right = outs.iter().map(|o| o.x + o.w as i32).max().unwrap_or(0);
+        let bottom = outs.iter().map(|o| o.y + o.h as i32).max().unwrap_or(0);
+        let o = outs
+            .iter()
+            .find(|o| o.name == name)
+            .unwrap_or_else(|| panic!("no output {name}: {outs:?}"));
+        (
+            (o.x - left) as u32 + x,
+            (o.y - top) as u32 + y,
+            (right - left) as u32,
+            (bottom - top) as u32,
+        )
     }
 
     /// The compositor's own report, for the output under test.
     fn real(&self) -> Real {
+        self.real_on(&self.output)
+    }
+
+    /// The compositor's own report, for output `output`.
+    fn real_on(&self, output: &str) -> Real {
         match self.kind {
             Kind::Sway => {
                 let tree = json("swaymsg", &["-t", "get_tree", "-r"]);
@@ -245,7 +319,7 @@ impl Live {
                         }
                         let mut count = 0;
                         walk(ws, &mut count, &mut window);
-                        if text(&o["name"]) != self.output {
+                        if text(&o["name"]) != output {
                             continue;
                         }
                         let name = text(&ws["name"]);
@@ -280,7 +354,7 @@ impl Live {
                         let name = text(&w["name"]);
                         !(name == "special" || name.starts_with("special:"))
                     })
-                    .filter(|w| text(&w["monitor"]) == self.output)
+                    .filter(|w| text(&w["monitor"]) == output)
                     .map(|w| {
                         (
                             w["id"].as_i64().unwrap_or(0),
@@ -323,7 +397,7 @@ impl Live {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(|w| text(&w["output"]) == self.output)
+                    .filter(|w| text(&w["output"]) == output)
                     .map(|w| {
                         (
                             w["idx"].as_u64().unwrap_or(0),
@@ -396,9 +470,12 @@ impl Live {
         }
     }
 
-    /// The workspace to switch to that is not the focused one: the
-    /// first empty one after it (niri always keeps one; sway and
-    /// Hyprland make one by switching to it).
+    /// The workspace to switch to that is not the focused one, on the
+    /// output under test: niri's empty one (it always keeps one, and its
+    /// names are indices on the focused output); for sway and Hyprland a
+    /// new one, made by switching to it, named by the first number no
+    /// output uses (workspace 2 may already be another output's, and
+    /// switching to it would move the focus there).
     fn other(&self, real: &Real) -> String {
         if self.kind == Kind::Niri {
             let empty = real
@@ -408,8 +485,14 @@ impl Live {
                 .expect("niri's empty workspace");
             return empty.name.clone();
         }
+        let used: Vec<String> = self
+            .outputs()
+            .iter()
+            .flat_map(|o| self.real_on(&o.name).workspaces)
+            .map(|w| w.name)
+            .collect();
         let mut n = 2;
-        while real.workspaces.iter().any(|w| w.name == n.to_string()) {
+        while used.contains(&n.to_string()) {
             n += 1;
         }
         n.to_string()
@@ -453,6 +536,11 @@ fn until(what: &str, mut f: impl FnMut() -> Result<(), String>) {
 
 /// What the stores say about the output under test, in their order.
 fn stored(b: &Builtin, rt: &Runtime, live: &Live) -> Result<Real, String> {
+    stored_on(b, rt, &live.output)
+}
+
+/// What the stores say about output `output`, in their order.
+fn stored_on(b: &Builtin, rt: &Runtime, output: &str) -> Result<Real, String> {
     let ws = b
         .workspaces
         .cells()
@@ -467,7 +555,7 @@ fn stored(b: &Builtin, rt: &Runtime, live: &Live) -> Result<Real, String> {
         workspaces: ws
             .all
             .iter()
-            .filter(|w| w.screen == live.output)
+            .filter(|w| w.screen == output)
             .map(|w| RealWs {
                 name: w.name.clone(),
                 focused: w.focused,
@@ -908,17 +996,65 @@ struct Bar<'a> {
     shots: Option<PathBuf>,
     n: u32,
     strand: Proc,
+    _bus: Option<PrivateBus>,
 }
 
-impl Bar<'_> {
+impl<'a> Bar<'a> {
+    /// `strand run` with design.md's bar (one instance per output) in a
+    /// home of its own under `dir`.
+    fn launch(live: &'a Live, dir: &std::path::Path) -> Self {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let home = dir.join("home");
+        let config = home.join(".config/strand");
+        std::fs::create_dir_all(&config).unwrap();
+        for (name, text) in FILES {
+            std::fs::write(config.join(name), text).unwrap();
+        }
+        // The bar's other services (the tray, the portal) on a bus of
+        // their own; battery and audio have no daemon here and stay at
+        // their defaults.
+        let bus = PrivateBus::start();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_strand"));
+        cmd.arg("run")
+            .arg(&config)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("PIPEWIRE_RUNTIME_DIR", dir.join("no-pipewire"))
+            .env_remove("PIPEWIRE_REMOTE")
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null());
+        match &bus {
+            Some(bus) => drop(cmd.envs(bus.env())),
+            None => drop(
+                cmd.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                    .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent"),
+            ),
+        }
+        let log = dir.join("strand.log");
+        cmd.stderr(std::fs::File::create(&log).unwrap());
+        Bar {
+            live,
+            dir: dir.to_path_buf(),
+            log,
+            shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+            n: 0,
+            strand: Proc(cmd.spawn().unwrap()),
+            _bus: bus,
+        }
+    }
+
     fn log_text(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
-    fn shot(&self) -> Option<Img> {
+    /// Output `output` as grim captures it.
+    fn shot(&self, output: &str) -> Option<Img> {
         let path = self.dir.join("shot.ppm");
         let ok = Command::new("grim")
-            .args(["-t", "ppm", "-o", &self.live.output])
+            .args(["-t", "ppm", "-o", output])
             .arg(&path)
             .stderr(Stdio::null())
             .status()
@@ -929,23 +1065,35 @@ impl Bar<'_> {
         Img::ppm(&std::fs::read(&path).ok()?)
     }
 
-    fn keep(&mut self, name: &str) {
+    fn keep(&mut self, output: &str, name: &str) {
         let Some(dir) = &self.shots else {
             return;
         };
         self.n += 1;
         let _ = std::fs::create_dir_all(dir);
         let kind = format!("{:?}", self.live.kind).to_lowercase();
+        // The output in the name when it is not the one under test.
+        let name = if output == self.live.output {
+            name.to_string()
+        } else {
+            format!("{name}-{output}")
+        };
         let _ = Command::new("grim")
-            .args(["-t", "png", "-o", &self.live.output])
+            .args(["-t", "png", "-o", output])
             .arg(dir.join(format!("matrix-{kind}-{:02}-{name}.png", self.n)))
             .status();
     }
 
-    /// The bar draws the compositor's state (twice in a row, so a dot
-    /// mid-animation does not count): that state and the dots' left
-    /// edges.
+    /// The bar on the output under test draws the compositor's state.
     fn shows(&mut self, what: &str) -> (Real, Vec<usize>) {
+        let output = self.live.output.clone();
+        self.shows_on(&output, what)
+    }
+
+    /// The bar on `output` draws the compositor's state for that output
+    /// (twice in a row, so a dot mid-animation does not count): that
+    /// state and the dots' left edges.
+    fn shows_on(&mut self, output: &str, what: &str) -> (Real, Vec<usize>) {
         let mut seen = 0;
         let mut last = None;
         let deadline = Instant::now() + PATIENCE;
@@ -953,9 +1101,9 @@ impl Bar<'_> {
             if let Ok(Some(status)) = self.strand.0.try_wait() {
                 panic!("strand exited ({status}): {}", self.log_text());
             }
-            let real = self.live.real();
+            let real = self.live.real_on(output);
             let want = expected(&real);
-            let got = match self.shot() {
+            let got = match self.shot(output) {
                 Some(img) => drawn(&img),
                 None => Err("grim failed".into()),
             };
@@ -963,8 +1111,8 @@ impl Bar<'_> {
                 Ok((dots, title, xs)) if (&dots, title) == (&want.0, want.1) => {
                     seen += 1;
                     if seen == 2 {
-                        eprintln!("matrix: the bar shows {what}: {real}");
-                        self.keep(what);
+                        eprintln!("matrix: the bar on {output} shows {what}: {real}");
+                        self.keep(output, what);
                         return (real, xs);
                     }
                 }
@@ -976,9 +1124,9 @@ impl Bar<'_> {
                 }
             }
             if Instant::now() >= deadline {
-                self.keep(&format!("{what}-timeout"));
+                self.keep(output, &format!("{what}-timeout"));
                 panic!(
-                    "never: the bar shows {what}\n{}\n{}",
+                    "never: the bar on {output} shows {what}\n{}\n{}",
                     last.unwrap_or_default(),
                     self.log_text()
                 );
@@ -988,7 +1136,6 @@ impl Bar<'_> {
     }
 }
 
-/// Whether the compositor offers `interface`.
 /// Whether the bar's click must be tested (`STRAND_MATRIX_REQUIRE_CLICK`
 /// set and not `0`, as in CI): without a virtual pointer the test fails
 /// instead of skipping the click.
@@ -996,6 +1143,7 @@ fn click_required() -> bool {
     std::env::var("STRAND_MATRIX_REQUIRE_CLICK").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
+/// Whether the compositor offers `interface`.
 fn offers(live: &Live, interface: &str) -> bool {
     use wayland_client::Connection;
     use wayland_client::globals::registry_queue_init;
@@ -1013,6 +1161,48 @@ fn offers(live: &Live, interface: &str) -> bool {
         .with_list(|l| l.iter().any(|g| g.interface == interface))
 }
 
+/// A virtual pointer, when the compositor offers one; `None` (and a
+/// message) when it does not and the click is not required, a failure
+/// when it is.
+fn pointer(live: &Live) -> Option<support::pointer::Pointer> {
+    if offers(live, "zwlr_virtual_pointer_manager_v1") {
+        let mut pointer = support::pointer::Pointer::new(&live.socket);
+        // (A new virtual pointer's first button may reach no surface: one
+        // on the desktop of the output under test first.)
+        let (x, y, w, h) = live.layout_point(&live.output, live.w / 2, live.h - 40);
+        pointer.click(x, y, w, h);
+        std::thread::sleep(Duration::from_millis(200));
+        return Some(pointer);
+    }
+    // CI (scripts/compositor-matrix-ci.sh) requires the click: a
+    // compositor that stops offering the protocol fails there.
+    let msg = format!(
+        "matrix: {:?} offers no zwlr_virtual_pointer_manager_v1: the click is not tested here",
+        live.kind
+    );
+    assert!(
+        !click_required(),
+        "{msg} (STRAND_MATRIX_REQUIRE_CLICK is set)"
+    );
+    eprintln!("{msg}");
+    None
+}
+
+/// Clicks `(x, y)` on output `output`, then moves the pointer off the bar
+/// onto that output's desktop (staying on the output: with the focus
+/// following the mouse, crossing to another output would move the focus).
+fn click_on(pointer: &mut support::pointer::Pointer, live: &Live, output: &str, x: u32, y: u32) {
+    let (px, py, w, h) = live.layout_point(output, x, y);
+    pointer.click(px, py, w, h);
+    let o = live
+        .outputs()
+        .into_iter()
+        .find(|o| o.name == output)
+        .unwrap_or_else(|| panic!("no output {output}"));
+    let (px, py, w, h) = live.layout_point(output, o.w / 2, o.h - 40);
+    pointer.motion(px, py, w, h);
+}
+
 #[test]
 fn the_design_bar_shows_the_live_compositor() {
     let Some(live) = live() else {
@@ -1020,38 +1210,6 @@ fn the_design_bar_shows_the_live_compositor() {
         return;
     };
     let dir = std::env::temp_dir().join(format!("strand-matrix-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let home = dir.join("home");
-    let config = home.join(".config/strand");
-    std::fs::create_dir_all(&config).unwrap();
-    for (name, text) in FILES {
-        std::fs::write(config.join(name), text).unwrap();
-    }
-    // The bar's other services (the tray, the portal) on a bus of their
-    // own; battery and audio have no daemon here and stay at their
-    // defaults.
-    let bus = PrivateBus::start();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_strand"));
-    cmd.arg("run")
-        .arg(&config)
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("XDG_CACHE_HOME", dir.join("cache"))
-        .env("XDG_STATE_HOME", dir.join("state"))
-        .env("PIPEWIRE_RUNTIME_DIR", dir.join("no-pipewire"))
-        .env_remove("PIPEWIRE_REMOTE")
-        .env_remove("STRAND_MOCK")
-        .stdin(Stdio::null());
-    match &bus {
-        Some(bus) => drop(cmd.envs(bus.env())),
-        None => drop(
-            cmd.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
-                .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent"),
-        ),
-    }
-    let log = dir.join("strand.log");
-    cmd.stderr(std::fs::File::create(&log).unwrap());
 
     // A window first: its workspace occupied and focused, its title in
     // the bar.
@@ -1064,14 +1222,7 @@ fn the_design_bar_shows_the_live_compositor() {
             Err(format!("{real}"))
         }
     });
-    let mut bar = Bar {
-        live: &live,
-        dir: dir.clone(),
-        log,
-        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
-        n: 0,
-        strand: Proc(cmd.spawn().unwrap()),
-    };
+    let mut bar = Bar::launch(&live, &dir);
     let (real, _) = bar.shows("a-window");
     let home_ws = real
         .workspaces
@@ -1087,31 +1238,334 @@ fn the_design_bar_shows_the_live_compositor() {
 
     // A click on the window's workspace's dot switches the compositor
     // (`ws.focus()`), when it has a virtual pointer to click with.
-    if offers(&live, "zwlr_virtual_pointer_manager_v1") {
-        let x = xs[home_ws] + 4;
-        let mut pointer = support::pointer::Pointer::new(&live.socket);
-        // (A new virtual pointer's first button may reach no surface:
-        // one on the desktop first.)
-        let (w, h) = (live.w, live.h);
-        pointer.click(w / 2, h - 40, w, h);
-        std::thread::sleep(Duration::from_millis(200));
-        pointer.click(x as u32, BAR_Y as u32, w, h);
-        pointer.motion(w / 2, h - 40, w, h);
+    if let Some(mut pointer) = pointer(&live) {
+        let x = xs[home_ws] as u32 + 4;
+        click_on(&mut pointer, &live, &live.output, x, BAR_Y as u32);
         let (real, _) = bar.shows("clicked");
         assert!(real.workspaces[home_ws].focused, "{real}");
-    } else {
-        // CI (scripts/compositor-matrix-ci.sh) requires the click: a
-        // compositor that stops offering the protocol fails there.
-        let msg = format!(
-            "matrix: {:?} offers no zwlr_virtual_pointer_manager_v1: the click is not tested here",
-            live.kind
-        );
-        assert!(
-            !click_required(),
-            "{msg} (STRAND_MATRIX_REQUIRE_CLICK is set)"
-        );
-        eprintln!("{msg}");
     }
+    drop(bar);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- a second output ---------------------------------------------------------
+
+/// The outputs, checked against `STRAND_MATRIX_OUTPUTS` (how many
+/// scripts/compositor-matrix.sh set up) when it is set.
+fn expected_outputs(live: &Live) -> Vec<Output> {
+    let outs = live.outputs();
+    if let Some(n) = std::env::var("STRAND_MATRIX_OUTPUTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        assert_eq!(outs.len(), n, "STRAND_MATRIX_OUTPUTS={n}: {outs:?}");
+    }
+    outs
+}
+
+/// The other output than the one under test, or `None` (and a message)
+/// with one output.
+fn second_output(live: &Live) -> Option<String> {
+    let outs = expected_outputs(live);
+    let second = outs.iter().find(|o| o.name != live.output);
+    if second.is_none() {
+        eprintln!(
+            "matrix: {:?} has one output ({}): the second-output checks did not run",
+            live.kind, live.output
+        );
+    }
+    second.map(|o| o.name.clone())
+}
+
+/// The compositor's focused output.
+fn focused_output(live: &Live) -> Option<String> {
+    live.outputs()
+        .into_iter()
+        .find(|o| o.focused)
+        .map(|o| o.name)
+}
+
+/// The stores agree with the compositor on every output: each output's
+/// workspaces, the focused window and workspace, and which output has the
+/// focus (the focused workspace's `screen`). Each output's report.
+fn agree_all(
+    rt: &Runtime,
+    s: &Services,
+    b: &Builtin,
+    live: &Live,
+    what: &str,
+) -> Vec<(String, Real)> {
+    let mut last = Vec::new();
+    until(what, || {
+        s.pump(rt);
+        rt.flush();
+        let outs = live.outputs();
+        let mut all = Vec::new();
+        for o in &outs {
+            let real = live.real_on(&o.name);
+            let ours = stored_on(b, rt, &o.name)?;
+            if ours != real {
+                return Err(format!(
+                    "{0}: compositor: {real}\n{0}: stores:     {ours}",
+                    o.name
+                ));
+            }
+            all.push((o.name.clone(), real));
+        }
+        let screen = outs.iter().find(|o| o.focused).map(|o| o.name.clone());
+        let ours = b
+            .workspaces
+            .cells()
+            .snapshot(rt)
+            .map_err(|e| format!("{e:?}"))?
+            .focused
+            .map(|w| w.screen);
+        if ours != screen {
+            return Err(format!(
+                "the focused output: compositor {screen:?}, stores {ours:?}"
+            ));
+        }
+        last = all;
+        Ok(())
+    });
+    for (o, real) in &last {
+        eprintln!("matrix: {what}: {o}: {real}");
+    }
+    last
+}
+
+/// The first workspace the compositor lists on `output` (a new output
+/// has one).
+fn shown_on(all: &[(String, Real)], output: &str) -> String {
+    let (_, real) = all
+        .iter()
+        .find(|(o, _)| o == output)
+        .unwrap_or_else(|| panic!("no report for {output}"));
+    real.workspaces
+        .first()
+        .unwrap_or_else(|| panic!("{output} has no workspace: {real}"))
+        .name
+        .clone()
+}
+
+#[test]
+fn the_stores_report_every_output() {
+    let Some(live) = live() else {
+        skipped("the live compositor second-output stores test");
+        return;
+    };
+    let Some(second) = second_output(&live) else {
+        return;
+    };
+    let first = live.output.clone();
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.workspaces.acquire(&rt);
+    b.windows.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    let boot = agree_all(&rt, &s, &b, &live, "boot, every output");
+    let home = boot
+        .iter()
+        .find(|(o, _)| *o == first)
+        .and_then(|(_, r)| r.workspaces.iter().find(|w| w.focused))
+        .expect("a focused workspace on the output under test")
+        .name
+        .clone();
+    let there = shown_on(&boot, &second);
+
+    // The focus moves to the second output from outside (a switch to the
+    // workspace it shows).
+    live.switch(&there);
+    agree_all(&rt, &s, &b, &live, "the second output focused from outside");
+    assert_eq!(focused_output(&live).as_deref(), Some(second.as_str()));
+
+    // A window opens there: its workspace is the second output's.
+    let win = TestWindow::open(&live.socket, "strand-matrix-second", "on the second output");
+    let all = agree_all(&rt, &s, &b, &live, "a window on the second output");
+    let (_, real) = all.iter().find(|(o, _)| *o == second).unwrap();
+    assert!(
+        real.workspaces
+            .iter()
+            .any(|w| w.name == there && w.occupied),
+        "{real}"
+    );
+    let window = b
+        .windows
+        .cells()
+        .snapshot(&rt)
+        .unwrap()
+        .all
+        .into_iter()
+        .find(|w| w.app_id == "strand-matrix-second")
+        .expect("the window in windows.all");
+    let ws = workspace_named(&b, &rt, &there);
+    assert_eq!(window.workspace, Some(ws.id), "the window's workspace");
+    assert_eq!(ws.screen, second, "the window's workspace's screen");
+
+    // `ws.focus()` on the first output's workspace moves the focus back.
+    let item = workspace_named(&b, &rt, &home);
+    b.workspaces
+        .act(&rt, WorkspaceAction::Focus { item })
+        .unwrap();
+    agree_all(&rt, &s, &b, &live, "ws.focus() on the first output");
+    assert_eq!(focused_output(&live).as_deref(), Some(first.as_str()));
+
+    // `win.focus()` on the window there moves it to the second output.
+    b.windows
+        .act(&rt, WindowAction::Focus { item: window })
+        .unwrap();
+    let all = agree_all(&rt, &s, &b, &live, "win.focus() on the second output");
+    assert_eq!(focused_output(&live).as_deref(), Some(second.as_str()));
+    let (_, real) = all.iter().find(|(o, _)| *o == second).unwrap();
+    assert_eq!(
+        real.window,
+        Some((
+            "strand-matrix-second".to_string(),
+            "on the second output".to_string()
+        ))
+    );
+
+    // It closes; back on the first output.
+    drop(win);
+    agree_all(&rt, &s, &b, &live, "the window closed");
+    let item = workspace_named(&b, &rt, &home);
+    b.workspaces
+        .act(&rt, WorkspaceAction::Focus { item })
+        .unwrap();
+    agree_all(&rt, &s, &b, &live, "back on the first output");
+    s.shutdown();
+}
+
+#[test]
+fn the_design_bar_is_on_every_output() {
+    let Some(live) = live() else {
+        skipped("the live compositor second-output bar test");
+        return;
+    };
+    let Some(second) = second_output(&live) else {
+        return;
+    };
+    let first = live.output.clone();
+    let dir = std::env::temp_dir().join(format!("strand-matrix-two-{}", std::process::id()));
+    let focused_on = |output: &str| {
+        until(&format!("the focus on {output}"), || {
+            match focused_output(&live) {
+                Some(o) if o == output => Ok(()),
+                other => Err(format!("focused: {other:?}")),
+            }
+        })
+    };
+    let focused_ws = |output: &str| -> String {
+        let real = live.real_on(output);
+        real.workspaces
+            .iter()
+            .find(|w| w.focused)
+            .unwrap_or_else(|| panic!("no focused workspace on {output}: {real}"))
+            .name
+            .clone()
+    };
+
+    // An occupied workspace on each output, and the second output showing
+    // another, empty one. Moving the pointer onto an output's bar focuses
+    // the workspace that output shows (sway and Hyprland: the focus
+    // follows the mouse), so only a click on a dot it does not show
+    // proves that the bar took the click.
+    let _a = TestWindow::open(&live.socket, "strand-matrix", "first output");
+    until("the first window", || match live.real().window {
+        Some(_) => Ok(()),
+        None => Err(format!("{}", live.real())),
+    });
+    let home = focused_ws(&first);
+    let there = live.real_on(&second).workspaces[0].name.clone();
+    live.switch(&there);
+    focused_on(&second);
+    let _c = TestWindow::open(&live.socket, "strand-matrix-second", "second output");
+    until("the second window", || match live.real_on(&second).window {
+        Some((app, _)) if app == "strand-matrix-second" => Ok(()),
+        other => Err(format!("{other:?}")),
+    });
+    let shown_second = live.other(&live.real_on(&second));
+    live.switch(&shown_second);
+    live.switch(&home);
+    focused_on(&first);
+
+    // Each output's bar draws that output's workspaces; both the title.
+    let mut bar = Bar::launch(&live, &dir);
+    let (real, _) = bar.shows_on(&first, "two-outputs");
+    assert!(
+        real.workspaces.iter().any(|w| w.name == home && w.focused),
+        "{real}"
+    );
+    let (real, xs) = bar.shows_on(&second, "two-outputs");
+    let i_there = real
+        .workspaces
+        .iter()
+        .position(|w| w.name == there)
+        .unwrap_or_else(|| panic!("{there} on {second}: {real}"));
+    assert!(
+        real.workspaces[i_there].occupied && !real.workspaces[i_there].focused,
+        "{real}"
+    );
+    assert!(
+        real.workspaces.iter().any(|w| w.name == shown_second),
+        "{real}"
+    );
+
+    let Some(mut pointer) = pointer(&live) else {
+        // No click: a switch from outside moves the pill between bars.
+        live.switch(&there);
+        let (real, _) = bar.shows_on(&second, "two-switched");
+        assert!(real.workspaces[i_there].focused, "{real}");
+        drop(bar);
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+
+    // A click on the second output's bar, on the workspace it does not
+    // show: that output and that workspace take the focus.
+    click_on(
+        &mut pointer,
+        &live,
+        &second,
+        xs[i_there] as u32 + 4,
+        BAR_Y as u32,
+    );
+    let (real, _) = bar.shows_on(&second, "two-clicked-second");
+    assert!(real.workspaces[i_there].focused, "{real}");
+    assert_eq!(focused_output(&live).as_deref(), Some(second.as_str()));
+    let (real, _) = bar.shows_on(&first, "two-clicked-second");
+    assert!(real.workspaces.iter().all(|w| !w.focused), "{real}");
+
+    // The same on the first output: it shows a new, empty workspace, the
+    // focus is on the second output, and a click on the first output's
+    // occupied workspace focuses it.
+    live.switch(&home);
+    focused_on(&first);
+    let shown_first = live.other(&live.real_on(&first));
+    live.switch(&shown_first);
+    live.switch(&there);
+    focused_on(&second);
+    let (real, xs) = bar.shows_on(&first, "two-switched");
+    let i_home = real
+        .workspaces
+        .iter()
+        .position(|w| w.name == home)
+        .unwrap_or_else(|| panic!("{home} on {first}: {real}"));
+    assert!(!real.workspaces[i_home].focused, "{real}");
+    click_on(
+        &mut pointer,
+        &live,
+        &first,
+        xs[i_home] as u32 + 4,
+        BAR_Y as u32,
+    );
+    let (real, _) = bar.shows_on(&first, "two-clicked-first");
+    assert!(real.workspaces[i_home].focused, "{real}");
+    assert_eq!(focused_output(&live).as_deref(), Some(first.as_str()));
+    let (real, _) = bar.shows_on(&second, "two-clicked-first");
+    assert!(real.workspaces.iter().all(|w| !w.focused), "{real}");
     drop(bar);
     let _ = std::fs::remove_dir_all(&dir);
 }

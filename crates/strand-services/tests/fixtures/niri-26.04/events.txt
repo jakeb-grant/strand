@@ -17,9 +17,10 @@
 {"WindowFocusTimestampChanged":{"id":11,"focus_timestamp":{"secs":1001,"nanos":5000000}}}
 
 ## open
-# Firefox opens on "chat" and takes the focus.
-{"WindowOpenedOrChanged":{"window":{"id":12,"title":"Mozilla Firefox","app_id":"firefox","pid":2303,"workspace_id":2,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[2,1],"tile_size":[1272.0,1400.0],"window_size":[1268,1396],"tile_pos_in_workspace_view":[36.0,16.0],"window_offset_in_tile":[2.0,2.0]},"focus_timestamp":{"secs":900,"nanos":120000000}}}}
+# Firefox opens on "chat" and takes the focus (the active window first, as
+# captured).
 {"WorkspaceActiveWindowChanged":{"workspace_id":2,"active_window_id":12}}
+{"WindowOpenedOrChanged":{"window":{"id":12,"title":"Mozilla Firefox","app_id":"firefox","pid":2303,"workspace_id":2,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[2,1],"tile_size":[1272.0,1400.0],"window_size":[1268,1396],"tile_pos_in_workspace_view":[36.0,16.0],"window_offset_in_tile":[2.0,2.0]},"focus_timestamp":{"secs":900,"nanos":120000000}}}}
 {"WindowLayoutsChanged":{"changes":[[11,{"pos_in_scrolling_layout":[1,1],"tile_size":[1272.0,1400.0],"window_size":[1268,1396],"tile_pos_in_workspace_view":[26.0,16.0],"window_offset_in_tile":[2.0,2.0]}],[12,{"pos_in_scrolling_layout":[2,1],"tile_size":[1272.0,1400.0],"window_size":[1268,1396],"tile_pos_in_workspace_view":[36.0,16.0],"window_offset_in_tile":[2.0,2.0]}]]}}
 
 ## urgent
@@ -43,6 +44,9 @@
 {"ConfigLoaded":{"failed":true}}
 
 ## close
-{"WindowClosed":{"id":12}}
+# Firefox (focused) closes: niri moves the focus first, then reports the close
+# (as captured, niri-26.04-captured/events.txt "close-focused").
 {"WorkspaceActiveWindowChanged":{"workspace_id":2,"active_window_id":11}}
 {"WindowFocusChanged":{"id":11}}
+{"WindowClosed":{"id":12}}
+{"WindowFocusTimestampChanged":{"id":11,"focus_timestamp":{"secs":1010,"nanos":5000000}}}

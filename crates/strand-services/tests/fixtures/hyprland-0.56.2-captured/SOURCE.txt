@@ -1,0 +1,79 @@
+Hyprland 0.56.2 IPC traffic captured from a live session, not
+reconstructed: the owner's laptop, Hyprland 0.56.2 (efb5099, version.json)
+with one 1920x1200 panel (eDP-1), 2026-10-08, read-only (no dispatch,
+keyword or reload was sent). Requests were written byte for byte as the
+adapter writes them (`j/monitors` etc. over .socket.sock, socat).
+
+The fixture is put together from three separate captures, not from one
+run of scripts/capture-hyprland.sh (which takes the same kind of capture
+and took the third one; it now also records, in marks.txt, the stream
+line at which each set of replies was read, which the first two captures
+did not):
+
+1. before/: the replies to j/monitors, j/workspaces, j/clients and
+   j/activewindow, read at 18:55:05. Four windows on workspaces 1-4.
+   A 90 s event capture began right after them (18:55:14 to 18:56:44).
+   It is not in this fixture, and it held only title changes of one
+   terminal (0x557a6df4c490, 376 lines). Its lines 5-8 are bursts.txt
+   "title".
+2. stream.txt: a second, longer read of .socket2.sock taken while the
+   owner worked, every line as it came: about 900 title changes of a
+   terminal (a spinner in its title), 17 workspace switches, then a new
+   workspace 5 with a terminal opened on it, then that terminal's titles.
+   It started about 18:56. The start time was not written to a file, so
+   it is not known whether the 90 s capture overlaps it. Its last line
+   was written at 19:33:05, and when the read stopped was not recorded.
+   So there is an unrecorded gap at each end: between before/ and the
+   stream's first line, and between its last line and after/.
+3. after/: scripts/capture-hyprland.sh, subscribed to .socket2.sock from
+   19:35:04 to 19:39:04, with the four replies read at the start and at
+   the end. The two sets were identical and no event came between them.
+   Five windows, workspace 5 focused.
+
+bursts.txt  six bursts picked from the capture, applied in order to
+         before/ by the test.
+
+The replay test (captured_stream_ends_where_hyprland_does) runs the stream
+from before/ across the first gap and reaches after/ across the second,
+so it treats both gaps as empty. Two of its checks would catch a gap that
+was not: every window the stream does not touch must have the same title
+after the first part of the stream as in after/, and after the re-read
+the rest of the stream must patch to exactly after/. A change in the
+first gap that the re-read replaces (a window moved and the stream later
+re-read) would not be seen.
+
+Scrubbed: window titles that named the owner's work were replaced, the
+same way in replies and events: two terminal session titles by "term
+one" and "term two" (their spinner glyphs ◐ ◑ ✳ kept), a browser page
+by "Example · page - Google Chrome", an editor's file by "project —
+notes.txt", a project directory by "project", user@host for the
+shell's prompt title, and a program name by "top" or "agent".
+Not scrubbed, as captured: window classes (public app ids such as
+com.mitchellh.ghostty, dev.zed.Zed, google-chrome), addresses, stableIds,
+pids, the monitor.
+
+What differs from the reconstruction (tests/fixtures/hyprland-0.56.2).
+Its switch, title and open bursts were reordered to match; it has no
+switch to a new workspace, so that order is replayed only from
+bursts.txt here:
+- A switch sends activewindow/activewindowv2 before workspace/
+  workspacev2.
+- A switch to a new workspace starts with createworkspace/
+  createworkspacev2.
+- A title change of the focused window is followed by activewindow and
+  activewindowv2 for the same window.
+- A new window's windowtitle/windowtitlev2 and an urgent hint come before
+  its openwindow; it then takes the focus.
+- stableId is 8 hex digits ("18000003"), not a short placeholder. The
+  adapter reads it: it is the ext-foreign-toplevel-list-v1 identifier
+  windows are joined by. The reconstruction now uses the same form
+  ("18000001"...).
+- Shapes the adapter does not read: "scale": 1 (not 1.00), and the
+  *BlockedBy lists as enum names ("WINDOWED", "CANDIDATE", ...).
+The adapter needed no change for the captured data: src/wm/hyprland.rs's tests
+captured_bursts_patch_or_ask_for_a_read and
+captured_stream_ends_where_hyprland_does replay this data.
+
+Not covered by this capture: a second monitor (the laptop had one),
+closewindow, movewindow, fullscreen, configreloaded and special
+workspaces; the compositor matrix (CI's vkms leg) covers the live path.

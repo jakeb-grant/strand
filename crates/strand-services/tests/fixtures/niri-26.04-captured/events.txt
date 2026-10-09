@@ -1,0 +1,90 @@
+# niri 26.04 (8ed0da4) event-stream traffic, captured (see SOURCE.txt).
+
+## stream-start
+# The reply to "EventStream", then the replicated state. Workspaces arrive unordered;
+# "chat" is named in the config, so it is idx 1. Replies at this point: boot/.
+{"Ok":"Handled"}
+{"WorkspacesChanged":{"workspaces":[{"id":2,"idx":2,"name":null,"output":"winit","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null},{"id":1,"idx":1,"name":"chat","output":"winit","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":null}]}}
+{"WindowsChanged":{"windows":[]}}
+{"KeyboardLayoutsChanged":{"keyboard_layouts":{"names":["English (US)"],"current_idx":0}}}
+{"OverviewOpenedOrClosed":{"is_open":false}}
+{"ConfigLoaded":{"failed":false}}
+{"CastsChanged":{"casts":[]}}
+
+## open-term
+# foot --app-id term opens on "chat" and takes the focus: no WindowFocusChanged.
+{"WorkspaceActiveWindowChanged":{"workspace_id":1,"active_window_id":2}}
+{"WindowOpenedOrChanged":{"window":{"id":2,"title":"~","app_id":"term","pid":183,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":3268,"nanos":779010852}}}}
+
+## open-editor
+# foot --app-id editor, a second column, focused.
+{"WorkspaceActiveWindowChanged":{"workspace_id":1,"active_window_id":3}}
+{"WindowOpenedOrChanged":{"window":{"id":3,"title":"notes.txt","app_id":"editor","pid":211,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[2,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":3270,"nanos":774900738}}}}
+
+## open-titled
+# foot --app-id titled, then it sets its title (OSC 2) a second later.
+# Replies after this burst: opened/.
+{"WorkspaceActiveWindowChanged":{"workspace_id":1,"active_window_id":4}}
+{"WindowOpenedOrChanged":{"window":{"id":4,"title":"first","app_id":"titled","pid":239,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[3,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":3272,"nanos":792229407}}}}
+{"WindowOpenedOrChanged":{"window":{"id":4,"title":"second, with a comma","app_id":"titled","pid":239,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[3,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":3272,"nanos":792229407}}}}
+
+## focus-term
+# niri msg action focus-window --id 2.
+{"WorkspaceActiveWindowChanged":{"workspace_id":1,"active_window_id":2}}
+{"WindowFocusChanged":{"id":2}}
+{"WindowFocusTimestampChanged":{"id":2,"focus_timestamp":{"secs":3276,"nanos":817072485}}}
+
+## move-term-to-2
+# niri msg action move-window-to-workspace 2: focus follows; niri adds workspace 3.
+# Replies after this burst: moved/.
+{"WorkspacesChanged":{"workspaces":[{"id":1,"idx":1,"name":"chat","output":"winit","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":3},{"id":2,"idx":2,"name":null,"output":"winit","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":2},{"id":3,"idx":3,"name":null,"output":"winit","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}]}}
+{"WindowOpenedOrChanged":{"window":{"id":2,"title":"~","app_id":"term","pid":183,"workspace_id":2,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":3276,"nanos":817072485}}}}
+{"WindowLayoutsChanged":{"changes":[[3,{"pos_in_scrolling_layout":[1,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]}],[4,{"pos_in_scrolling_layout":[2,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]}]]}}
+
+## focus-chat
+# niri msg action focus-workspace chat.
+{"WorkspaceActivated":{"id":1,"focused":true}}
+{"WindowFocusChanged":{"id":3}}
+{"WindowFocusTimestampChanged":{"id":3,"focus_timestamp":{"secs":3278,"nanos":886266525}}}
+
+## focus-empty
+# niri msg action focus-workspace 3 (empty): the focus goes to no window.
+{"WorkspaceActivated":{"id":3,"focused":true}}
+{"WindowFocusChanged":{"id":null}}
+
+## focus-chat-again
+# Back to "chat". Then three raw requests that change nothing and send no event:
+# {"Action":{"FocusWindow":{"id":3}}} (action-ok.json), FocusWorkspace Id 99
+# (action-err.json: niri says Ok even so) and "NoSuchRequest" (request-unknown.json).
+{"WorkspaceActivated":{"id":1,"focused":true}}
+{"WindowFocusChanged":{"id":3}}
+{"WindowFocusTimestampChanged":{"id":3,"focus_timestamp":{"secs":3280,"nanos":937493324}}}
+
+## close-focused
+# niri msg action close-window on editor (3): the focus moves before the close.
+# Replies after this burst: closed/.
+{"WorkspaceActiveWindowChanged":{"workspace_id":1,"active_window_id":4}}
+{"WindowFocusChanged":{"id":4}}
+{"WindowLayoutsChanged":{"changes":[[4,{"pos_in_scrolling_layout":[1,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]}]]}}
+{"WindowClosed":{"id":3}}
+{"WindowFocusTimestampChanged":{"id":4,"focus_timestamp":{"secs":3285,"nanos":61963652}}}
+
+## reload
+# An edit of the config file niri watches.
+{"ConfigLoaded":{"failed":false}}
+
+## reload-failed
+# A line that is not KDL.
+{"ConfigLoaded":{"failed":true}}
+
+## reload-fixed
+# The bad line removed.
+{"ConfigLoaded":{"failed":false}}
+
+## close-rest
+# Both remaining foot windows killed; workspace 2 goes. Replies after: end/.
+{"WorkspacesChanged":{"workspaces":[{"id":1,"idx":1,"name":"chat","output":"winit","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":4},{"id":3,"idx":2,"name":null,"output":"winit","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}]}}
+{"WindowClosed":{"id":2}}
+{"WorkspaceActiveWindowChanged":{"workspace_id":1,"active_window_id":null}}
+{"WindowClosed":{"id":4}}
+{"WindowFocusChanged":{"id":null}}

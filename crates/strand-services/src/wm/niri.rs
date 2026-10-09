@@ -84,6 +84,24 @@ fn parse<T: for<'de> Deserialize<'de>>(v: &Value) -> Option<T> {
 }
 
 impl State {
+    /// The state the replies to `"Workspaces"`, `"Windows"` and
+    /// `"FocusedOutput"` report (each the value under its name in the
+    /// reply's `Ok`; `null` when niri has no focused output).
+    pub(crate) fn from_replies(
+        workspaces: &Value,
+        windows: &Value,
+        focused_output: &Value,
+    ) -> Self {
+        Self {
+            workspaces: parse(workspaces).unwrap_or_default(),
+            windows: parse(windows).unwrap_or_default(),
+            focused_output: parse::<Option<NOutput>>(focused_output)
+                .flatten()
+                .map(|o| o.name),
+            seen_config: false,
+        }
+    }
+
     /// Applies one event line's JSON (`{"Name": {fields}}`).
     pub(crate) fn apply(&mut self, event: &Value) -> Effect {
         let Some((name, body)) = event.as_object().and_then(|o| o.iter().next()) else {
@@ -229,9 +247,15 @@ impl State {
                 ..Default::default()
             })
             .collect();
-        let windows = self
-            .windows
-            .iter()
+        // By id, which niri hands out in increasing order: the order the
+        // windows opened. The "Windows" reply lists them in niri's own
+        // map order (captured: 4, 2, 3), the events in arrival order, so
+        // without this a fresh read (boot, reconnect) and a running stream
+        // disagree, and a reconnect reorders `windows.all`.
+        let mut windows: Vec<&NWindow> = self.windows.iter().collect();
+        windows.sort_by_key(|w| w.id);
+        let windows = windows
+            .into_iter()
             .map(|w| Window {
                 id: w.id.to_string(),
                 title: w.title.clone().unwrap_or_default(),
@@ -316,22 +340,28 @@ impl Conn {
                 .next_line()
                 .await?
                 .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "niri closed"))?;
-            let reply: Value = serde_json::from_str(&reply)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            if let Some(ok) = reply.get("Ok") {
-                Ok(Ok(ok.clone()))
-            } else if let Some(err) = reply.get("Err") {
-                Ok(Err(err.as_str().unwrap_or("error").to_string()))
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "niri reply is neither Ok nor Err",
-                ))
-            }
+            decode_reply(&reply)
         };
         tokio::time::timeout(REQUEST_TIMEOUT, run)
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "niri did not answer"))?
+    }
+}
+
+/// One reply line: its `Ok` value, or its `Err` text (niri 26.04 answers
+/// a request it cannot parse `{"Err":"error parsing request"}`).
+fn decode_reply(line: &str) -> io::Result<Result<Value, String>> {
+    let reply: Value =
+        serde_json::from_str(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if let Some(ok) = reply.get("Ok") {
+        Ok(Ok(ok.clone()))
+    } else if let Some(err) = reply.get("Err") {
+        Ok(Err(err.as_str().unwrap_or("error").to_string()))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "niri reply is neither Ok nor Err",
+        ))
     }
 }
 
@@ -383,16 +413,10 @@ async fn session(
     if let Err(e) = events.send(&json!("EventStream")).await? {
         return Err(io::Error::other(format!("EventStream: {e}")));
     }
-    let mut state = State::default();
-    if let Some(w) = parse(&get(socket, "Workspaces").await?) {
-        state.workspaces = w;
-    }
-    if let Some(w) = parse(&get(socket, "Windows").await?) {
-        state.windows = w;
-    }
-    state.focused_output = parse::<Option<NOutput>>(&get(socket, "FocusedOutput").await?)
-        .flatten()
-        .map(|o| o.name);
+    let workspaces = get(socket, "Workspaces").await?;
+    let windows = get(socket, "Windows").await?;
+    let focused_output = get(socket, "FocusedOutput").await?;
+    let mut state = State::from_replies(&workspaces, &windows, &focused_output);
     backoff.connected();
     if tx.send(AdapterMsg::Connected(true)).is_err()
         || tx.send(AdapterMsg::State(state.snapshot())).is_err()
@@ -521,5 +545,151 @@ mod tests {
             s.action_for(&WmAction::FocusWindow("3".into())),
             Err(WmError::UnknownWindow("3".into()))
         );
+    }
+
+    // ---- traffic captured from a real niri 26.04 -------------------------
+
+    const CAPTURED: &str = "niri-26.04-captured";
+
+    /// The state a fresh connection reads at checkpoint `dir`, as
+    /// `session` builds it from the three replies.
+    fn from_captured_replies(dir: &str) -> State {
+        let reply = |file: &str, name: &str| -> Value {
+            let line = crate::wm::captured::fixture(&format!("{CAPTURED}/{dir}/{file}"));
+            let ok = decode_reply(line.trim_end()).unwrap().unwrap();
+            ok.get(name).cloned().unwrap_or(Value::Null)
+        };
+        State::from_replies(
+            &reply("reply-workspaces.json", "Workspaces"),
+            &reply("reply-windows.json", "Windows"),
+            &reply("reply-focused-output.json", "FocusedOutput"),
+        )
+    }
+
+    /// The captured event stream, replayed burst by burst, keeps the same
+    /// state a fresh read of the replies captured at each checkpoint
+    /// gives; and the reloads are what niri said they were.
+    #[test]
+    fn captured_events_agree_with_captured_replies() {
+        let text = crate::wm::captured::fixture(&format!("{CAPTURED}/events.txt"));
+        let bursts = crate::wm::captured::bursts(&text);
+        let names: Vec<&str> = bursts.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names[0], "stream-start");
+        let mut s = State::default();
+        let mut checked = Vec::new();
+        for (name, lines) in &bursts {
+            let mut lines = lines.iter().map(String::as_str);
+            if name == "stream-start" {
+                // The reply to "EventStream" (read by `Conn::send`), then
+                // the replicated state.
+                assert_eq!(
+                    decode_reply(lines.next().unwrap()).unwrap(),
+                    Ok(json!("Handled"))
+                );
+            }
+            let mut effects = Vec::new();
+            for line in lines {
+                let v: Value = serde_json::from_str(line)
+                    .unwrap_or_else(|e| panic!("{name}: not JSON ({e}): {line}"));
+                effects.push(s.apply(&v));
+            }
+            let reloads: Vec<&Effect> = effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Reloaded(_)))
+                .collect();
+            match name.as_str() {
+                "reload" | "reload-fixed" => assert_eq!(reloads, [&Effect::Reloaded(false)]),
+                "reload-failed" => assert_eq!(reloads, [&Effect::Reloaded(true)]),
+                _ => assert!(reloads.is_empty(), "{name}: {effects:?}"),
+            }
+            let checkpoint = match name.as_str() {
+                "stream-start" => Some("boot"),
+                "open-titled" => Some("opened"),
+                "move-term-to-2" => Some("moved"),
+                "close-focused" => Some("closed"),
+                "close-rest" => Some("end"),
+                _ => None,
+            };
+            if let Some(dir) = checkpoint {
+                assert_eq!(
+                    s.snapshot(),
+                    from_captured_replies(dir).snapshot(),
+                    "after `{name}`: the events and the replies in {dir}/"
+                );
+                checked.push(dir);
+            }
+            // What the bar shows, burst by burst.
+            let snap = s.snapshot().state;
+            let ws: Vec<&str> = snap.workspaces.iter().map(|w| w.name.as_str()).collect();
+            let focused_ws = snap.workspaces.iter().find(|w| w.focused).map(|w| w.id);
+            let focused_win = snap
+                .windows
+                .iter()
+                .find(|w| w.focused)
+                .map(|w| (w.app_id.as_str(), w.title.as_str()));
+            match name.as_str() {
+                "stream-start" => {
+                    // Unordered in the stream; "chat" is named in the
+                    // config, so niri puts it first.
+                    assert_eq!(ws, ["chat", "2"]);
+                    assert_eq!(focused_ws, Some(1));
+                    assert_eq!(snap.focused_screen.as_deref(), Some("winit"));
+                }
+                "open-titled" => {
+                    assert_eq!(focused_win, Some(("titled", "second, with a comma")));
+                    assert_eq!(snap.windows.len(), 3);
+                }
+                "focus-term" => assert_eq!(focused_win, Some(("term", "~"))),
+                "move-term-to-2" => {
+                    assert_eq!(ws, ["chat", "2", "3"]);
+                    assert_eq!(focused_ws, Some(2));
+                    assert_eq!(focused_win, Some(("term", "~")));
+                    let term = snap.windows.iter().find(|w| w.app_id == "term").unwrap();
+                    assert_eq!(term.workspace, Some(2));
+                }
+                "focus-chat" => {
+                    assert_eq!(focused_ws, Some(1));
+                    assert_eq!(focused_win, Some(("editor", "notes.txt")));
+                }
+                "focus-empty" => {
+                    assert_eq!(focused_ws, Some(3));
+                    assert_eq!(focused_win, None);
+                }
+                "close-focused" => {
+                    assert_eq!(focused_win, Some(("titled", "second, with a comma")));
+                    assert!(!snap.windows.iter().any(|w| w.app_id == "editor"));
+                }
+                "close-rest" => {
+                    assert_eq!(ws, ["chat", "2"]);
+                    assert!(snap.windows.is_empty());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(checked, ["boot", "opened", "moved", "closed", "end"]);
+    }
+
+    /// niri's replies to requests that change nothing: an action is
+    /// `Handled` even for a workspace that does not exist (which is why
+    /// `action_for` checks the id first), and a request niri cannot parse
+    /// is an `Err`.
+    #[test]
+    fn captured_action_replies() {
+        let reply = |f: &str| {
+            let line = crate::wm::captured::fixture(&format!("{CAPTURED}/{f}"));
+            decode_reply(line.trim_end()).unwrap()
+        };
+        assert_eq!(reply("action-ok.json"), Ok(json!("Handled")));
+        assert_eq!(reply("action-err.json"), Ok(json!("Handled")));
+        assert_eq!(
+            reply("request-unknown.json"),
+            Err("error parsing request".to_string())
+        );
+        let s = from_captured_replies("moved");
+        assert_eq!(
+            s.action_for(&WmAction::FocusWorkspace(99)),
+            Err(WmError::UnknownWorkspace(99))
+        );
+        assert!(s.action_for(&WmAction::FocusWorkspace(3)).is_ok());
     }
 }
