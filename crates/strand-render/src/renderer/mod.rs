@@ -29,6 +29,7 @@ mod text;
 mod tooltip;
 mod wake;
 
+pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use text::TextBackend;
 use text::{TextSlot, TextState};
 use tooltip::Tooltip;
@@ -232,6 +233,9 @@ pub struct Renderer {
     busy_window: Duration,
     /// Scroll offsets and list row heights, by `scroll`/`list` node.
     scrolls: HashMap<NodeId, ScrollState>,
+    /// (M4) List windows asked of logic, touchpad scrolls, gap stats
+    /// (`lists.rs`).
+    lists: lists::Lists,
     /// Layout passes run (tests: paint-only changes run none).
     layout_passes: u64,
     /// Laid-out sizes not yet handed to logic (`self.width`), and the
@@ -359,6 +363,7 @@ impl Renderer {
             new_text_wait: NEW_TEXT_WAIT,
             busy_window: BUSY_WINDOW,
             scrolls: HashMap::new(),
+            lists: lists::Lists::default(),
             layout_passes: 0,
             facts: Vec::new(),
             facts_sent: HashMap::new(),

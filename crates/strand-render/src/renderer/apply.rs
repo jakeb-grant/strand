@@ -312,6 +312,7 @@ impl Renderer {
         // so nothing asked for here can already be answered).
         self.update();
         self.born.clear();
+        self.lists.still.clear();
         self.closing_now.clear();
         errors
     }
@@ -325,15 +326,35 @@ impl Renderer {
     pub(super) fn animate_op(&mut self, op: &SceneOp) -> bool {
         let reduced = self.anim.reduced();
         match op {
-            // (M4) S-lists makes a list window's rows (`window: true`)
-            // play no enter, exit or FLIP; until then they animate like
-            // any node.
+            // A row a list's window mounts (`window: true`) comes into
+            // the window as it scrolls: it plays no enter pose, and its
+            // siblings no FLIP (they sit at their global indexes).
+            SceneOp::Create {
+                id, window: true, ..
+            } => {
+                if self.tree.is_ghost(*id) {
+                    self.anim.forget(*id);
+                }
+                self.lists.still.insert(*id);
+            }
+            // Content created under such a row comes with it, at rest.
+            SceneOp::Create {
+                id,
+                parent: Some(parent),
+                window: false,
+                ..
+            } if self.lists.still.contains(parent) => {
+                if self.tree.is_ghost(*id) {
+                    self.anim.forget(*id);
+                }
+                self.lists.still.insert(*id);
+            }
             SceneOp::Create {
                 id,
                 parent,
                 kind: _,
                 index: _,
-                window: _,
+                window: false,
             } => {
                 // Logic reused the id of a ghost: the tree unmounts the
                 // ghost, and its motions must not carry over.
@@ -355,7 +376,10 @@ impl Renderer {
                 }
                 self.flip(*parent);
             }
-            SceneOp::Remove { id, window: _ } => {
+            // A row the window unmounts left the view long ago: it goes
+            // at once, with no exit and no FLIP.
+            SceneOp::Remove { window: true, .. } => {}
+            SceneOp::Remove { id, window: false } => {
                 let Some(node) = self.tree.get(*id).filter(|_| self.tree.contains_live(*id)) else {
                     return false;
                 };
@@ -416,7 +440,7 @@ impl Renderer {
                     return false;
                 }
                 let root = self.tree.root_of(*id);
-                let animates = !reduced && self.shown(root);
+                let animates = !reduced && self.shown(root) && !self.lists.still.contains(id);
                 if animates && crate::anim::ANIMATED.contains(prop) {
                     let tables = scope_tables(&self.tree, *id);
                     let scope = TokenScope::new(&tables);

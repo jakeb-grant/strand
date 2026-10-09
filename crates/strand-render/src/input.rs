@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 
 use strand_scene::input::button;
 use strand_scene::{
-    ButtonState, InputEvent, KeyInput, LogicalPoint, LogicalRect, Modifiers, NodeId, NodeKind,
-    Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
+    AxisSource, ButtonState, InputEvent, KeyInput, LogicalPoint, LogicalRect, Modifiers, NodeId,
+    NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
 };
 
-use crate::renderer::Renderer;
+use crate::renderer::{Renderer, ScrollInput, ScrollKind};
 use crate::tree::SceneTree;
 use crate::widgets::{Caret, Edit};
 
@@ -97,6 +97,21 @@ pub trait InputScene {
         let _ = (surface, at, dy);
         None
     }
+    /// (M4) A scroll from the pointer: a wheel step springs, touchpad
+    /// motion follows at once, a lift may fling (see
+    /// [`Renderer::scroll_input`]). By default a wheel or touch scroll is
+    /// [`InputScene::scroll`] and a lift does nothing.
+    fn scroll_input(
+        &mut self,
+        surface: SurfaceId,
+        at: LogicalPoint,
+        input: ScrollInput,
+    ) -> Option<NodeId> {
+        match input.kind {
+            ScrollKind::Lift => None,
+            _ => self.scroll(surface, at, input.dy),
+        }
+    }
     fn tree(&self) -> Option<&SceneTree> {
         None
     }
@@ -148,6 +163,14 @@ impl InputScene for Renderer {
     }
     fn scroll(&mut self, surface: SurfaceId, at: LogicalPoint, dy: f32) -> Option<NodeId> {
         Renderer::scroll(self, surface, at, dy)
+    }
+    fn scroll_input(
+        &mut self,
+        surface: SurfaceId,
+        at: LogicalPoint,
+        input: ScrollInput,
+    ) -> Option<NodeId> {
+        Renderer::scroll_input(self, surface, at, input)
     }
     fn tree(&self) -> Option<&SceneTree> {
         Some(Renderer::tree(self))
@@ -500,8 +523,20 @@ impl Router {
                 horizontal,
                 vertical,
                 position,
+                source,
+                time,
                 ..
             } => {
+                // A wheel (detents, or its high-resolution pixels) springs
+                // the offset; a touchpad or other continuous source moves
+                // it at once, and its lift (`axis_stop`) may fling.
+                let kind = match source {
+                    Some(AxisSource::Wheel | AxisSource::WheelTilt) => ScrollKind::Wheel,
+                    Some(AxisSource::Finger | AxisSource::Continuous) => ScrollKind::Touch,
+                    None if vertical.value120 != 0 => ScrollKind::Wheel,
+                    None => ScrollKind::Touch,
+                };
+                let lift = vertical.stop && kind == ScrollKind::Touch;
                 // An axis frame with no motion (a finger lifted:
                 // `axis_stop` alone) scrolls nothing and wakes no handler.
                 // Detents alone (a wheel whose frame carries no pixel
@@ -514,13 +549,30 @@ impl Router {
                     }
                 };
                 let (dy, dx) = (px(vertical), px(horizontal));
+                let lifted = |scene: &mut dyn InputScene| {
+                    if lift {
+                        let input = ScrollInput {
+                            dy: 0.0,
+                            kind: ScrollKind::Lift,
+                            time: *time,
+                        };
+                        scene.scroll_input(surface, *position, input);
+                    }
+                };
                 if dy == 0.0 && dx == 0.0 {
+                    lifted(scene);
                     return;
                 }
                 let under = chain(scene, *position);
                 if dy != 0.0 {
-                    scene.scroll(surface, *position, dy as f32);
+                    let input = ScrollInput {
+                        dy: dy as f32,
+                        kind,
+                        time: *time,
+                    };
+                    scene.scroll_input(surface, *position, input);
                 }
+                lifted(scene);
                 // The handler counts detents (a wheel's own, else pixels
                 // over the legacy step).
                 let notches = |a: &strand_scene::AxisDelta, px: f64| {

@@ -902,14 +902,22 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     logic sets `Prop::RowCount` (`Number`: all rows) and `Prop::RowFirst`
     (`Number`: the global index of the first mounted row). `SceneOp::Create`
     and `Remove` gain `window: bool`, true for a row the list window mounts
-    or unmounts: render plays no `enter`, `exit` or FLIP for it (until
-    S-lists does that, render mounts such rows like any other).
-    `SceneDiff::create` and `SceneDiff::remove` send `false`. Render
-    lays rows out at their global indexes (unmounted rows keep their
-    extent), scrolls by a paint offset with no relayout, and reports the
-    rows it wants (view plus overscan) with `Renderer::take_list_windows()
-    -> Vec<(NodeId, Range<u32>)>`, which the binary sends as
-    `ToLogic::ListWindow`.
+    or unmounts: render plays no `enter`, `exit` or FLIP for it (nor
+    for what the same diff creates under it), and an unmounted row
+    leaves no ghost. `SceneDiff::create` and `SceneDiff::remove` send
+    `false`. Render lays rows out at their global indexes (unmounted
+    rows take the measured rows' mean height), scrolls by a paint offset
+    with no relayout while the view stays within the rows laid out,
+    never shows past the mounted rows, and reports the rows it wants
+    (view plus overscan) with `Renderer::take_list_windows() ->
+    Vec<(NodeId, Range<u32>)>`, which the binary sends as
+    `ToLogic::ListWindow`. Pointer scrolling enters as
+    `Renderer::scroll_input(surface, point, ScrollInput { dy, kind:
+    ScrollKind::{Wheel, Touch, Lift}, time })` (the Router maps
+    `AxisSource` and `stop` to it); `Renderer::list_frames() ->
+    ListFrames { frames, gaps }` counts painted frames with a list in
+    view and those that showed an unmounted gap (the M4 exit's
+    per-frame check).
   - **Drag and drop** (design.md, "Drag and drop"). `Prop::Drag` on a
     source reaches render as `PropValue::Keyword` naming the type of the
     dragged value; `Prop::Accepts`, set by the compiler and never written

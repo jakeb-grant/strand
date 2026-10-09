@@ -30,9 +30,13 @@ pub mod widgets;
 pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
 pub use flatten::BLUR_TINT;
 pub use input::{Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};
-pub use layout::{Boxes, CH_EM, LIST_ROW_ESTIMATE, MAX_CONTENT_SIZE, RootSize, ScrollState};
+pub use layout::{
+    Boxes, CH_EM, FLING_DECAY, LAYOUT_OVERSCAN, LIST_ROW_ESTIMATE, ListBox, ListWindow,
+    MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
+};
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT, QUERY_WAIT,
     RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,
 };
+pub use renderer::{ListFrames, ScrollInput, ScrollKind};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

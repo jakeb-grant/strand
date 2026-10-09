@@ -2126,3 +2126,207 @@ fn an_exit_seen_on_one_of_two_outputs_plays_there() {
     assert!(reds[0] > 100, "{reds:?}");
     assert!(reds[..4].windows(2).all(|w| w[1] < w[0]), "{reds:?}");
 }
+
+/// A list of `n` 30 px red-edged rows in a 200 px viewport.
+fn scroll_stage(n: usize, row_props: Vec<(Prop, PropValue)>) -> (Stage, NodeId, Vec<NodeId>) {
+    let mut lst = None;
+    let mut rows = Vec::new();
+    let st = Stage::new(120, 200, |b, root| {
+        let l = b.node(NodeKind::List, Some(root), vec![(Prop::Height, num(200.0))]);
+        lst = Some(l);
+        for _ in 0..n {
+            let mut props = vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))];
+            props.extend(row_props.iter().cloned());
+            rows.push(b.node(NodeKind::Box, Some(l), props));
+        }
+    });
+    (st, lst.unwrap(), rows)
+}
+
+fn wheel(dy: f32, time: u32) -> strand_render::ScrollInput {
+    strand_render::ScrollInput {
+        dy,
+        kind: strand_render::ScrollKind::Wheel,
+        time,
+    }
+}
+
+fn touch(dy: f32, time: u32) -> strand_render::ScrollInput {
+    strand_render::ScrollInput {
+        dy,
+        kind: strand_render::ScrollKind::Touch,
+        time,
+    }
+}
+
+/// Wheel steps spring the offset (`$motion.spatial`): the first frame
+/// after a step is on its way, every frame moves further without
+/// overshooting far, and it settles at the step's sum. A second step in
+/// flight retargets from where it is, with its velocity. Rows move by a
+/// paint offset: no layout pass runs while the view stays within the
+/// rows laid out, and the frames stop once it lands.
+#[test]
+fn wheel_steps_spring_the_offset() {
+    let (mut st, lst, _) = scroll_stage(200, vec![]);
+    let at = LogicalPoint::new(60.0, 100.0);
+    let passes = st.r.layout_passes();
+    assert_eq!(st.r.scroll_input(S, at, wheel(45.0, 0)), Some(lst));
+    assert!(st.r.wants_frame(S));
+    let mut seen = Vec::new();
+    for k in 1..4 {
+        st.paint(frame(k));
+        seen.push(st.r.scroll_offset(lst).unwrap());
+    }
+    assert!(seen[0] > 0.0 && seen[0] < 45.0, "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[1] > w[0]), "{seen:?}");
+    // A second step mid-flight: the target is 90, and the offset keeps
+    // going from where it was.
+    st.r.scroll_input(S, at, wheel(45.0, 50));
+    st.paint(frame(4));
+    let now = st.r.scroll_offset(lst).unwrap();
+    assert!(now > seen[2] && now < 90.0, "{now} after {seen:?}");
+    let mut k = 5;
+    let mut top = now;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        top = top.max(st.r.scroll_offset(lst).unwrap());
+        k += 1;
+        assert!(k < 200, "never settled");
+    }
+    assert_eq!(st.r.scroll_offset(lst), Some(90.0));
+    // `$motion.spatial` is damped 0.9: it may overshoot a hair.
+    assert!(top < 92.0, "overshot to {top}");
+    assert_eq!(st.r.layout_passes(), passes, "scrolling laid nothing out");
+    // The rows are drawn where the offset puts them: row 3 (90..120)
+    // at the top.
+    assert_eq!(st.red_top(60), Some(0));
+    let boxes = st.r.boxes(S).unwrap();
+    let row3 = st.r.tree().get(lst).unwrap().children[3];
+    assert_eq!(boxes.rects[&row3].y, 0.0);
+
+    // Under `reduced_motion` a step lands at once.
+    st.r.set_reduced_motion(true);
+    st.r.scroll_input(S, at, wheel(30.0, 400));
+    st.paint(frame(k));
+    assert_eq!(st.r.scroll_offset(lst), Some(120.0));
+    assert!(!st.r.wants_frame(S));
+}
+
+/// A touchpad moves the offset with the fingers, and lifting them while
+/// moving flings it: the velocity decays (`FLING_DECAY`), each frame
+/// moves less than the one before, and it stops by itself, about
+/// `velocity × FLING_DECAY` further on. A list scrolled past what it laid
+/// out lays out only the rows that came into view, each once.
+#[test]
+fn a_touchpad_fling_decays_and_stops() {
+    let (mut st, lst, _) = scroll_stage(400, vec![]);
+    let at = LogicalPoint::new(60.0, 100.0);
+    // 10 px every 10 ms: 1,000 px/s.
+    for i in 0..4 {
+        st.r.scroll_input(S, at, touch(10.0, 1000 + i * 10));
+    }
+    st.paint(frame(1));
+    assert_eq!(st.r.scroll_offset(lst), Some(40.0), "follows the fingers");
+    let lift = strand_render::ScrollInput {
+        dy: 0.0,
+        kind: strand_render::ScrollKind::Lift,
+        time: 1030,
+    };
+    assert_eq!(st.r.scroll_input(S, at, lift), Some(lst));
+    let mut offs = vec![40.0];
+    let mut k = 2;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        offs.push(st.r.scroll_offset(lst).unwrap());
+        k += 1;
+        assert!(k < 400, "the fling never stopped");
+    }
+    let steps: Vec<f32> = offs.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(steps[1] > 0.0, "{offs:?}");
+    assert!(
+        steps.windows(2).all(|w| w[1] <= w[0] + 0.01),
+        "each frame moves less: {steps:?}"
+    );
+    let travel = offs.last().unwrap() - 40.0;
+    let expect = 1000.0 * strand_render::FLING_DECAY;
+    assert!(
+        (travel - expect).abs() < 0.15 * expect,
+        "flung {travel} px, about {expect} expected"
+    );
+    // Rows came into view and were laid out once each.
+    let rows_in = st.r.scroll_rows_laid_out();
+    assert!(rows_in > 0 && rows_in <= 400 / 30 + 12, "{rows_in}");
+    // A lift with the fingers at rest flings nothing.
+    st.r.scroll_input(S, at, touch(5.0, 5000));
+    let still = strand_render::ScrollInput { time: 5200, ..lift };
+    assert_eq!(st.r.scroll_input(S, at, still), None);
+}
+
+/// Rows a list's window mounts and unmounts as it scrolls (`window:
+/// true`) play no `enter` or `exit` pose, and their siblings no FLIP: a
+/// row mounted that way is drawn at rest on its first frame, one
+/// unmounted that way leaves at once with no ghost, and the rows around
+/// them stay where their global indexes put them. A row the data adds
+/// (`window: false`) still enters.
+#[test]
+fn window_mounts_do_not_play_poses() {
+    let enter = (
+        Prop::Enter,
+        pose(vec![(Prop::Opacity, num(0.0)), (Prop::X, num(60.0))]),
+    );
+    let (mut st, lst, rows) = scroll_stage(4, vec![enter.clone()]);
+    let mut d = SceneDiff::new();
+    d.set(lst, Prop::RowCount, num(100.0))
+        .set(lst, Prop::RowFirst, num(0.0));
+    st.apply(d);
+    st.settle(1);
+    // The window moves down a row: row 0 goes, a row comes in below.
+    let new = NodeId::new(500, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: rows[0],
+        window: true,
+    });
+    d.push(SceneOp::Create {
+        id: new,
+        kind: NodeKind::Box,
+        parent: Some(lst),
+        index: 3,
+        window: true,
+    });
+    d.set(new, Prop::Height, num(30.0))
+        .set(new, Prop::Bg, color("#ff0000"))
+        .set(new, Prop::Enter, enter.1.clone())
+        .set(lst, Prop::RowFirst, num(1.0));
+    st.apply(d);
+    assert!(st.r.tree().get(rows[0]).is_none(), "no ghost");
+    st.paint(frame(30));
+    // At rest on its first frame (its enter pose would draw it clear and
+    // 60 px to the right), and the rows sit 30 px apart from global row
+    // 1 (the view, still asked for the top, shows the mounted rows'
+    // first: row 1 at the top).
+    let r1 = st.rect(rows[1]);
+    let rn = st.rect(new);
+    assert_eq!((r1.y, rn.y), (0.0, 90.0), "{r1:?} {rn:?}");
+    assert_eq!(st.red_from(100), Some(0));
+    assert_eq!(st.buf.px(10, 100), [0, 0, 255, 255]);
+    assert_eq!(st.red_from(10), Some(0), "row 1 did not glide");
+    assert_eq!(st.r.list_frames().gaps, 0);
+    // A row the data inserts enters.
+    let data = NodeId::new(501, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Create {
+        id: data,
+        kind: NodeKind::Box,
+        parent: Some(lst),
+        index: 1,
+        window: false,
+    });
+    d.set(data, Prop::Height, num(30.0))
+        .set(data, Prop::Bg, color("#ff0000"))
+        .set(data, Prop::Enter, enter.1)
+        .set(lst, Prop::RowCount, num(101.0));
+    st.apply(d);
+    st.paint(frame(31));
+    assert!(st.r.wants_frame(S), "a data row enters");
+}

@@ -47,8 +47,11 @@ mod list;
 mod style;
 mod text;
 
-pub use list::ScrollState;
 use list::rows_height;
+pub use list::{
+    FLING_DECAY, LAYOUT_OVERSCAN, ListBox, ListWindow, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
+};
+pub(crate) use list::{layout_margin, relayout_list, scrolls_content, translate_under};
 pub(crate) use text::TextSizes;
 use text::measure_leaf;
 
@@ -86,6 +89,9 @@ pub struct Boxes {
     /// A list measured rows whose heights differed from its estimate:
     /// one more pass places everything where it belongs.
     pub(crate) unsettled: bool,
+    /// (M4) Each `scroll` and `list` laid out: the offset these boxes
+    /// show it at and which of its rows they hold.
+    pub lists: HashMap<NodeId, ListBox>,
 }
 
 /// How the root is sized.
@@ -557,7 +563,17 @@ impl<'a> Build<'a> {
                     st.offset = 0.0;
                 }
                 st.offset = st.offset.clamp(0.0, (st.content - st.viewport).max(0.0));
+                st.shown = st.offset;
                 dy = st.offset;
+                out.lists.insert(
+                    id,
+                    ListBox {
+                        applied: dy,
+                        laid: None,
+                        content: LogicalRect::new(ox + x0, oy + y0, w, h),
+                        bounds: (0.0, (st.content - st.viewport).max(0.0)),
+                    },
+                );
             }
             if let Ok(kids) = self.taffy.children(tn) {
                 for k in kids {
