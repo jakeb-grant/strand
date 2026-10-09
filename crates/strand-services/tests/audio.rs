@@ -794,6 +794,68 @@ fn it_starts_without_pipewire_and_connects_when_it_appears() {
     w.until(10, "connected", ready);
 }
 
+/// The backoff's attempts while disconnected come at 0.1, 0.3, 0.7, 1.5,
+/// 3.1, 6.3 and 12.7 s; after the last one the doubling has passed 10 s.
+const BACKOFF_SPENT: Duration = Duration::from_millis(13_500);
+
+/// Starts a thread on `pw` with its daemon down and inotify denied to it;
+/// returns it and when it started, after its first (empty) batch.
+fn start_without_inotify(pw: &mut PipeWire) -> (Watch, Instant, String) {
+    pw.kill_daemon();
+    let remote = pw.config().remote.expect("an absolute socket");
+    strand_services::audio::deny_inotify(&remote, true);
+    let started = Instant::now();
+    let mut w = Watch::start(pw.config());
+    let first = w.rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(first[0], AudioChange::Connected(false));
+    w.take(first);
+    (w, started, remote)
+}
+
+#[test]
+fn without_inotify_it_reconnects_on_its_timer() {
+    let Some(mut pw) = PipeWire::start("without_inotify_it_reconnects_on_its_timer") else {
+        return;
+    };
+    let (mut w, started, remote) = start_without_inotify(&mut pw);
+    // No watch: once the doubling passed 10 s, the timer keeps going at
+    // 10 s (with a watch it would stop and wait for the socket), so the
+    // daemon is reached within 10 s of appearing.
+    std::thread::sleep((started + BACKOFF_SPENT).saturating_duration_since(Instant::now()));
+    let back = Instant::now();
+    pw.start_daemon();
+    w.until(20, "reconnected on the timer", ready);
+    assert!(
+        back.elapsed() < Duration::from_secs(10) + Duration::from_secs(5),
+        "reconnected {:?} after the daemon came back",
+        back.elapsed()
+    );
+    strand_services::audio::deny_inotify(&remote, false);
+}
+
+#[test]
+fn a_watch_that_inotify_refused_comes_back() {
+    let Some(mut pw) = PipeWire::start("a_watch_that_inotify_refused_comes_back") else {
+        return;
+    };
+    let (mut w, started, remote) = start_without_inotify(&mut pw);
+    // inotify has an instance again (another program freed one): the
+    // next attempt (at 1.5 s) makes the watch.
+    std::thread::sleep(Duration::from_millis(1_000));
+    strand_services::audio::deny_inotify(&remote, false);
+    // Past the doubling, only the socket's creation wakes the thread: its
+    // next timer attempt would come 9 s after the daemon is back.
+    std::thread::sleep((started + BACKOFF_SPENT).saturating_duration_since(Instant::now()));
+    let back = Instant::now();
+    pw.start_daemon();
+    w.until(10, "reconnected", ready);
+    assert!(
+        back.elapsed() < Duration::from_secs(6),
+        "reconnected {:?} after the daemon came back: the watch was not made again",
+        back.elapsed()
+    );
+}
+
 /// The readings of `target` after `from` (an index into `w.levels`).
 fn readings(w: &Watch, from: usize, target: LevelTarget) -> Vec<Levels> {
     w.levels[from..]

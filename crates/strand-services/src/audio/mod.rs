@@ -24,7 +24,9 @@
 //!   frame (1/60 s, the loudest of the cycles in between), read on
 //!   PipeWire's data thread so the loop wakes at most once a frame;
 //! - reconnects when the daemon restarts (100 ms doubling backoff, and an
-//!   inotify watch on the socket's directory while disconnected), keeping
+//!   inotify watch on the socket's directory while disconnected; with no
+//!   inotify instance to be had, attempts every 10 s, and the watch is
+//!   tried again on each until it can be made), keeping
 //!   the last devices meanwhile: a new connection's first state waits for
 //!   the session manager (its `default` metadata, and the defaults shown
 //!   before) for up to [`SETTLE`], so a restart shows no empty default or
@@ -84,6 +86,8 @@ pub use service::{
     ANSWER_WAIT, AudioDeviceAction, AudioStore, AudioStoreCells, LevelTap, configure, tap_levels,
 };
 pub use thread::{ECHOES, FRAME, GRACE, SETTLE, UNANSWERED};
+#[doc(hidden)]
+pub use thread::deny_inotify;
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -13,13 +13,13 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pipewire::context::ContextRc;
 use pipewire::core::{CoreRc, PW_ID_CORE};
 use pipewire::device::{Device, DeviceListener};
-use pipewire::loop_::{Timeout, TimerSource};
+use pipewire::loop_::{IoSource, Loop, Timeout, TimerSource};
 use pipewire::main_loop::MainLoopRc;
 use pipewire::metadata::{Metadata, MetadataListener};
 use pipewire::node::{Node, NodeListener};
@@ -212,23 +212,11 @@ pub(crate) fn run(
             q.borrow_mut().push_back(Work::MetersWake);
         })
     });
-    let watch = SocketWatch::new(config.remote.as_deref());
-    let _watch_source = watch.as_ref().map(|w| {
-        let q = q.clone();
-        let name = w.name.clone();
-        lp.add_io(WatchFd(w.fd.clone()), IoFlags::IN, move |fd| {
-            let seen = drain_inotify(&fd.0, &name);
-            let mut q = q.borrow_mut();
-            q.extend(seen.gone.into_iter().map(Work::WatchGone));
-            if seen.hit {
-                q.push_back(Work::SocketAppeared);
-            }
-        })
-    });
 
     let mut driver = Driver {
         config,
         q,
+        lp,
         context,
         timer: &timer,
         flush: &flush,
@@ -236,7 +224,9 @@ pub(crate) fn run(
         deadline: &deadline,
         deadline_at: None,
         wake,
-        watch,
+        watch: None,
+        watch_source: None,
+        watch_failed: false,
         host,
         session: None,
         sessions: 0,
@@ -251,6 +241,7 @@ pub(crate) fn run(
         grace_until: Instant::now() + GRACE,
         quit: false,
     };
+    driver.ensure_watch();
     driver.connect();
     driver.drain();
     while !driver.quit {
@@ -293,18 +284,44 @@ struct SocketWatch {
     wd: Option<i32>,
 }
 
+/// Sockets whose watch gets no inotify instance, as with the per-user
+/// instance limit reached ([`deny_inotify`]).
+static NO_INOTIFY: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Tests of the fallback without inotify: while denied, a thread
+/// connecting to `remote` (its [`AudioConfig::remote`]) cannot create
+/// the socket watch's inotify instance (`EMFILE`, as with the per-user
+/// instance limit reached). Other threads are not affected.
+#[doc(hidden)]
+pub fn deny_inotify(remote: &str, deny: bool) {
+    let mut denied = NO_INOTIFY.lock().unwrap_or_else(|e| e.into_inner());
+    denied.retain(|r| r != remote);
+    if deny {
+        denied.push(remote.to_owned());
+    }
+}
+
+fn inotify_init(remote: Option<&str>) -> rustix::io::Result<OwnedFd> {
+    let denied = NO_INOTIFY.lock().unwrap_or_else(|e| e.into_inner());
+    if remote.is_some_and(|r| denied.iter().any(|d| d == r)) {
+        return Err(rustix::io::Errno::MFILE);
+    }
+    drop(denied);
+    inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)
+}
+
 impl SocketWatch {
-    fn new(remote: Option<&str>) -> Option<SocketWatch> {
+    /// The watch of the socket's directory (not yet watching): `None`
+    /// when the socket has no path to watch (no runtime directory), an
+    /// error when inotify gives no instance.
+    fn new(remote: Option<&str>) -> Option<rustix::io::Result<SocketWatch>> {
         let (dir, name) = socket_path(remote)?;
-        let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)
-            .map_err(|e| log::warn!("audio: no inotify for the PipeWire socket: {e}"))
-            .ok()?;
-        Some(SocketWatch {
+        Some(inotify_init(remote).map(|fd| SocketWatch {
             fd: Rc::new(fd),
             dir,
             name,
             wd: None,
-        })
+        }))
     }
 
     fn watch(&mut self) -> bool {
@@ -672,6 +689,8 @@ struct Defaults {
 struct Driver<'l> {
     config: AudioConfig,
     q: Queue,
+    /// The loop, for the socket watch's io source.
+    lp: &'l Loop,
     context: ContextRc,
     timer: &'l TimerSource<'l>,
     /// The meters' frame timer, and when it fires (armed only while a
@@ -683,7 +702,12 @@ struct Driver<'l> {
     deadline_at: Option<Instant>,
     /// The meters' eventfd (`None`: no meters).
     wake: Option<Arc<OwnedFd>>,
+    /// The socket's watch while disconnected ([`Driver::ensure_watch`]),
+    /// and its source on the loop.
     watch: Option<SocketWatch>,
+    watch_source: Option<IoSource<'l, WatchFd>>,
+    /// The last attempt to create the watch failed (said once).
+    watch_failed: bool,
     /// Who gets the changes, and gives commands of its own.
     host: Box<dyn Host>,
     session: Option<Session>,
@@ -1037,9 +1061,54 @@ impl Driver<'_> {
     }
 
     fn watching(&mut self) {
+        self.ensure_watch();
         if let Some(w) = &mut self.watch {
             w.watch();
         }
+    }
+
+    /// Creates the socket's watch if there is none: at start, and again
+    /// each time the thread waits for the socket, so a watch that could
+    /// not get an inotify instance (the per-user limit, 128 by default,
+    /// reached by other programs) comes back once one is free. Until then
+    /// attempts go on on the timer, at most [`MAX`] apart. The only other
+    /// kernel notice of a created name is fanotify, unprivileged only
+    /// since Linux 5.13 and under a per-user limit of its own, so a
+    /// bounded wait is the fallback.
+    fn ensure_watch(&mut self) {
+        if self.watch.is_some() {
+            return;
+        }
+        let w = match SocketWatch::new(self.config.remote.as_deref()) {
+            None => return,
+            Some(Ok(w)) => w,
+            Some(Err(e)) => {
+                if !std::mem::replace(&mut self.watch_failed, true) {
+                    log::warn!(
+                        "audio: no inotify for the PipeWire socket ({e}): retrying every {} s while disconnected",
+                        MAX.as_secs()
+                    );
+                }
+                return;
+            }
+        };
+        if std::mem::replace(&mut self.watch_failed, false) {
+            log::info!("audio: watching the PipeWire socket again");
+        }
+        let q = self.q.clone();
+        let name = w.name.clone();
+        self.watch_source = Some(
+            self.lp
+                .add_io(WatchFd(w.fd.clone()), IoFlags::IN, move |fd| {
+                    let seen = drain_inotify(&fd.0, &name);
+                    let mut q = q.borrow_mut();
+                    q.extend(seen.gone.into_iter().map(Work::WatchGone));
+                    if seen.hit {
+                        q.push_back(Work::SocketAppeared);
+                    }
+                }),
+        );
+        self.watch = Some(w);
     }
 
     fn schedule_retry(&mut self) {
