@@ -19,10 +19,12 @@ closed under faults.
   rendering stays on the CPU, bundled effects use their CPU versions, a
   `shader` node draws nothing, and the inspector and `strand report` say
   why. GPU crates stay cold until something needs them, so the PSS budget
-  is unchanged. The release binary's `.text` gate becomes the spike's
-  measured size plus about 10%, recorded in decisions.md with the number; a
-  CPU-only build (`--no-default-features`) keeps the 15 MiB gate. A cargo
-  feature to build without the GPU may exist, on by default.
+  is unchanged. The release binary's `.text` gate becomes 18.5 MiB, the
+  spike's measured size plus 9.7% (decisions.md, m4-gpu-spike); a
+  CPU-only build (`--no-default-features`: no wgpu, vello_gpu, naga or
+  libwayland-client) keeps the 15 MiB gate. The `strand` feature `gpu`,
+  on by default, turns on render's `gpu`, surface's `gpu` and the
+  compiler's `shaders` (architecture.md, "Crate graph").
 - **Bundled effect syntax**: `filter: bloom(r) | crt() | chromatic(px) |
   wobble(amp)` and `backdrop: glass()` (design.md, "Bundled GPU
   effects"). 0b lands each signature in builtin.schema; after 0b the
@@ -92,7 +94,7 @@ closed under faults.
 | S-lock | 1, 2 | `crates/strand-auth/**`; `services/auth.rs`; `strand-services-schema/src/auth.schema` and its `AUTH` entry in that crate's `lib.rs`; the removal of builtin.schema's `provisional service auth` block (after 0b); `strand-surface/src/session_lock.rs`, `tests/session_lock.rs`; `strand-render/src/lock_fallback.rs`; `strand/src/run/lock.rs`; `strand/tests/lock.rs`; `check/lock.rs`; `scripts/lockvm/scenarios/*` | lock screen; lock backgrounds |
 | S-lists | 1, 2 | `strand-render/src/{list.rs, scroll.rs, input.rs, renderer/lists.rs, anim/pages.rs}`; `instantiate/mount.rs`; `strand-surface/src/dnd.rs`, `tests/dnd.rs`; `strand/src/run/lists.rs`; `strand/src/mock.rs` | virtualised lists; drag and drop; pages |
 | S-effects | 1, 2, 3 | `strand-render/src/{effects/**, shapes/, media/, backdrop.rs, widgets.rs (arc, graph, meter), image.rs (animated frames), anim/{keyframes,morph,stagger}.rs, renderer/feed.rs}`; `services/audio/*`; `services/wm` Capture; `check/effects.rs`; `strand/src/run/feeds.rs` | effects catalogue items; `backdrop: blur()`; M1 keyframes playback |
-| S-gpu | 2, 3 | `crates/strand-gpu/**`; `strand-render/src/{promote.rs, canvas.rs, renderer/backend.rs}`; `strand-surface/src/gpu_handoff.rs`; `check/shaders.rs`; `strand/src/live.rs` (shader arms); `strand/src/run/gpu.rs`; `strand/tests/{gpu_cold,gpu_idle}.rs` | GPU promotion; shaders and canvas; bundled GPU effects; M1 shader and canvas drawing; the `.wgsl` part of M1's loader box |
+| S-gpu | 2, 3 | `crates/strand-gpu/**`; `strand-render/src/{promote.rs, canvas.rs, renderer/backend.rs}`; `strand-surface/src/gpu_handoff.rs`; `check/shaders.rs`; the `gpu`/`shaders` features in member `Cargo.toml`s; `strand/src/live.rs` (shader arms); `strand/src/run/gpu.rs`; `strand/tests/{gpu_cold,gpu_idle}.rs` | GPU promotion; shaders and canvas; bundled GPU effects; M1 shader and canvas drawing; the `.wgsl` part of M1's loader box |
 
 Per-file ownership in shared crates: tray to S-surface, auth to S-lock,
 audio and wm to S-effects. `strand/src/main.rs` belongs to S-surface; the
@@ -112,6 +114,12 @@ shared, changed by small PRs that S-runtime reviews. The module maps are
 in architecture.md.
 
 ### S-infra
+
+As landed, S-infra differs from the list below in four places
+(decisions.md, m4-infra): `gpu.sh` runs in the check image, whose Mesa
+drives the laptop's GPU; `LP_NUM_THREADS` stays unset; the lock VM is a
+baked Ubuntu disk image booted with a direct kernel, not virtme-ng; and
+its TCG override is `LOCKVM_TCG=1`.
 
 - Lavapipe (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and
   `libpam0g-dev` in `scripts/container/Dockerfile` and
@@ -152,8 +160,11 @@ in architecture.md.
 
 - **F0**: the render splits above.
 - **0b**: every M4 `strand-scene` type (architecture.md, `strand-scene`,
-  "M4 vocabulary"), every `SurfaceHost` and `InputEvent` addition, and
-  every M4 schema entry, with stubs where behaviour is pending;
+  "M4 vocabulary", and 0c's `Backend`, `Effect::Shader`/`ShaderPass`,
+  `ShaderCode`, `Prop::Shader` and the `shader::PRELUDE` stub from
+  "`strand-gpu`"), every `SurfaceHost` and `InputEvent` addition
+  (`gpu_release` included), and every M4 schema entry, with stubs where
+  behaviour is pending;
   `scene_catalogue.rs` stays green.
 - **F1** time-bound values end to end: the VM's symbolic value,
   `convert` to `TokenExpr` time leaves, a time value reaching logic is an
@@ -196,8 +207,12 @@ in architecture.md.
   and `scrim` only on `popup` and `panel`.
 - Tray menu popups: nested side placement, a recursive menu fixture, real
   click coordinates (the route is S-surface's decision).
-- With S-gpu in 0c: which thread commits pose state while a surface is
-  GPU-owned.
+- Settled in 0c (architecture.md, "`strand-gpu`", "Surface hand-off"):
+  while a surface is presented by the GPU, the GPU thread is its only
+  committer, the manager sets pending state without committing, and
+  poses are painted rather than delegated; S-surface builds the
+  manager's side (`hand_off`, `take_back`, `gpu_release`) with S-gpu's
+  `gpu_handoff.rs`.
 
 ### S-lock
 
@@ -262,26 +277,35 @@ in architecture.md.
 
 ### S-gpu
 
-- **Spike (wave 0, after the infra image)**: wgpu 30 on lavapipe
-  presenting to a layer surface on a sway 1.9 started inside the container
-  (never the host session). Sway runs `WLR_RENDERER=pixman`, so there is no
-  linux-dmabuf and lavapipe must present over Mesa's wl_shm WSI path;
-  fallback is render offscreen and read back into shm. Measure: wayland-backend
-  `client_system` (needed for raw handles; it switches the backend for
-  every crate, so keep it under strand-surface's GPU feature), the `.text`
-  of naga, wgpu and vello_gpu, and whether lavapipe unmaps after the device
-  drops. Results go to decisions.md and feed 0c.
-- `strand-gpu`: a GPU thread, device lifecycle, display lists lowered to
-  vello_gpu (masks lowered on the CPU), shader passes composited as
-  external textures, full-damage presentation, a GPU crossfade.
-- `gpu_handoff.rs`: one `wl_surface` handed between shm and the WSI.
-- Promotion as a pure state machine: ≥0.2 Mpx damage for >500 ms, switch
-  only when settled, device dropped 30 s after the last GPU frame with one
-  timer wake. 0c decides whether a shader appearing on a CPU surface is
-  drawn offscreen and read back (no switch) or waits for the springs.
-- `check::shaders` (naga parse, validate, `u_*` reflection by name and
-  type), replacing the interim `uniform_ty`; `u_*` props emitted as one
-  `Prop::Uniforms`; `live.rs` handles `Role::Shader`.
+- **Spike (wave 0, done)**: decisions.md, m4-gpu-spike. Lavapipe
+  presents to a pixman sway through Mesa's wl_shm WSI; the laptop's ANV
+  cannot (it needs linux-dmabuf), so offscreen render plus shm readback is
+  the universal fallback. Lavapipe keeps about 80 MiB mapped after the
+  device drops (the same every cycle); ANV unmaps everything. The GPU
+  code adds 3.0 MiB of `.text`. 0c turned this into architecture.md,
+  "`strand-gpu`", which is the interface this stream builds to.
+- `strand-gpu`: the `strand-gpu` thread, device lifecycle, render's
+  display lists lowered (in `renderer/backend.rs`) to `strand_gpu::Frame`
+  and built into vello_gpu scenes on the GPU thread (masks rasterised on
+  the CPU), shader passes, `GpuPresent` and `GpuReadback` modes,
+  full-damage presentation, a GPU crossfade. A software adapter counts as
+  no device unless `STRAND_GPU_SOFTWARE=1` (ask the integrator to set it
+  beside `STRAND_REQUIRE_GPU=1`).
+- `gpu_handoff.rs`: one `wl_surface` handed between shm and the WSI; while
+  presented the GPU thread is its only committer and poses are painted,
+  not delegated.
+- Promotion as a pure state machine: ≥0.2 Mpx damage for >500 ms, the
+  same reversed to demote, switch only when settled, device dropped 30 s
+  after the last GPU frame with one timer wake. A shader on a CPU surface
+  is drawn offscreen and read back, with no switch.
+- `check::shaders` (feature `shaders`: naga parse and validate of the
+  prelude plus the file, `u_*` reflection by name and type), replacing
+  the interim `uniform_ty`; `Prop::Shader` carries the checked text;
+  `u_*` props emitted as one `Prop::Uniforms`; `live.rs` handles
+  `Role::Shader`.
+- The `gpu` and `shaders` features and their `Cargo.toml` edits
+  (root `Cargo.toml` through the integrator); `ToLogic::GpuStatus` in
+  `run/mod.rs` by a small PR S-runtime reviews.
 - Canvas: the VM records a `DrawList`; render draws it with vello_cpu.
 - Wave 3: the 8 bundled effects with S-effects' CPU fallbacks.
 
@@ -314,9 +338,12 @@ effects; and spike → hand-off → promotion → the idle-drop exit test.
 - **`gpu_cold.rs`** cannot keep walking `Cargo.lock`, which lists optional
   dependencies whatever is enabled; it uses `cargo metadata` (or `cargo
   tree -e normal`) per feature set.
-- **GPU idle**: the strict checks are "GPU thread gone, no wakeups, PSS
-  back within tolerance". Lavapipe and LLVM mappings may stay after
-  `vkDestroyInstance`; that is a spike measurement, not a gate.
+- **GPU idle**: the strict checks on lavapipe are "GPU thread gone, no
+  wakeups, no PSS growth across cycles" (after the second cycle within 3
+  MiB of after the first). Lavapipe and LLVM stay mapped after the
+  device drops (decisions.md, m4-gpu-spike), so PSS back to the pre-GPU
+  baseline is checked only on the advisory hardware leg, within about
+  6 MiB.
 - **GPU pixels** differ from vello_cpu's antialiasing, so GPU-vs-CPU frames
   get their own documented tolerance, not `assert_matches_ref`'s.
 - **"No frame shows a gap"** cannot be proved with grim, which samples
@@ -336,12 +363,13 @@ effects; and spike → hand-off → promotion → the idle-drop exit test.
 Proposed readings of what design.md leaves open. The owning stream
 records each in decisions.md when it builds it.
 
-- **GPU**: the shader ABI (one `@fragment` entry from the file, the vertex
-  stage from Strand; each `u_*` prop matches `var<uniform> u_name` by name
-  and type; built-ins `time`, `size`, `scale`, `pointer`; lengths in px ×
-  scale, angles in radians, durations in seconds, colours premultiplied
-  linear `vec4`; a uniform with no prop is a warning and zero-filled, a
-  prop the file lacks an error with a did-you-mean). Canvas follows a
+- **GPU**: the shader ABI is fixed in architecture.md ("`strand-gpu`",
+  0c): one `@fragment` entry from the file and the vertex stage from
+  Strand; Strand's `@group(0)` (`time`, `size`, `scale`, `pointer`, an
+  input texture) and the file's `u_*` uniforms in `@group(1)`; lengths in
+  px × scale, angles in radians, durations in seconds, colours
+  premultiplied linear `vec4`; a uniform with no prop is a warning and
+  zero-filled, a prop the file lacks an error with a did-you-mean. Canvas follows a
   canvas-2D-like state model recorded on the logic thread, with `c.width`
   and `c.height` from layout facts. Visible means laid out on a mapped,
   frame-receiving surface, inside its clip, opacity > 0, not in a closed
@@ -414,16 +442,20 @@ records each in decisions.md when it builds it.
 - `strand-render/src/promote.rs` unit tests: `::promotes_after_500ms_of_large_damage`,
   `::switches_only_when_settled`, `::drops_after_30s_with_one_wake`.
 - `strand/tests/gpu_idle.rs::gpu_is_released_when_idle` (headless sway,
-  lavapipe WSI, `STRAND_REQUIRE_GPU=1`): a shader shown promotes, hidden
-  demotes; after the shortened idle window the GPU thread is gone, nothing
-  wakes, PSS is back within tolerance, and frames match the CPU frame
-  within the GPU tolerance.
-- `strand/tests/gpu_cold.rs` (rewritten): GPU crates reached only through
-  `strand-gpu`, and their code stays cold until promotion.
-- `strand/tests/budgets.rs`: no libvulkan mapped before promotion;
-  promoted-then-dropped returns memory (+20–40 MB while promoted); the
-  release `.text` gate at the measured size; the CPU-only build at 15 MiB.
-- Advisory: `gpu.sh` runs the same tests on renderD128.
+  lavapipe WSI, `STRAND_REQUIRE_GPU=1`, `STRAND_GPU_SOFTWARE=1`): a large
+  animation promotes and a shader shown on a small surface reads back;
+  hidden, they demote; after the shortened idle window the GPU thread is
+  gone and nothing wakes; a second cycle grows PSS by at most 3 MiB over
+  the first; frames match the CPU frame within the GPU tolerance.
+- `strand/tests/gpu_cold.rs` (rewritten): wgpu, vello_gpu and naga reach
+  `strand` only through `strand-gpu` (naga also through the compiler's
+  `shaders`), none with `--no-default-features`, and their code stays
+  cold until something needs it.
+- `strand/tests/budgets.rs`: no libvulkan mapped before promotion; the
+  release `.text` gate at 18.5 MiB; the CPU-only build at 15 MiB.
+- Advisory: `gpu.sh` runs the same tests on renderD128, plus PSS after
+  the drop within about 6 MiB of the pre-GPU baseline and the promoted
+  cost against design.md's +20–40 MB.
 
 ### Lock fails closed under faults (S-lock)
 
