@@ -17,6 +17,7 @@
 //!
 //! See `docs/architecture.md`, "strand-surface" and "Render loop".
 
+pub mod blur;
 pub mod caps;
 pub mod clock;
 pub mod input;

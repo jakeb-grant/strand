@@ -121,6 +121,15 @@ impl Shell {
                 width,
                 height,
             } => inst.set_size(node, width, height),
+            ToLogic::Notice(text) => {
+                if let Some(s) = &mut self.server {
+                    s.broadcast(&json!({
+                        "event": "notices",
+                        "kept_over_default": [],
+                        "notices": [text],
+                    }));
+                }
+            }
             ToLogic::Shutdown => {}
         }
     }

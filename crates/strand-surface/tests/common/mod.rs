@@ -525,13 +525,6 @@ impl SurfaceHost for TestHost {
     }
 }
 
-/// Bumps the content version so every surface paints again.
-impl TestHost {
-    pub fn touch(&mut self) {
-        self.version += 1;
-    }
-}
-
 /// A `panel` or `osd` of `w`×`h` at `anchor` with default `screens`
 /// (focused), as the renderer would report it.
 pub fn layer_spec(kind: NodeKind, name: &str, anchor: &str, w: f32, h: f32) -> SurfaceSpec {

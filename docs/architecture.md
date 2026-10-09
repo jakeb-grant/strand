@@ -2256,7 +2256,7 @@ and the connection):
   surface goes), then the popup and the popups nested in it are destroyed
   (innermost first, as any surface's are), and it is not shown again until
   its spec closes. `Painter::blur_region` is read for the blur ladder
-  (M4); nothing is sent yet.
+  (M4, below).
 - **M4 additions** (docs/m4-plan.md). 0b landed the host hooks as no-op
   defaults (`compositor_caps`, `gpu_release`, `lock_changed(LockState)`,
   `LockState` beside `SurfaceHost`); the manager calls them as the
@@ -2290,10 +2290,21 @@ and the connection):
     instead of a second surface being made).
   - Fillets: placement puts an `attach`ed box at gap 0 from that edge;
     the overhang render adds for the fillets grows the buffer only.
-  - Blur ladder (`blur.rs`): `Painter::blur_region` becomes a logical
-    `wl_region` inside the manager (rounded corners as about 1 px
-    bands), cached and sent with `ext_background_effect_v1` only when
-    the shape changes, null when empty.
+  - Blur ladder (`blur.rs`, `manager/effect.rs`): after each paint
+    `Painter::blur_region` becomes a logical `wl_region`
+    (`blur::region_rects`: inside every rounded shape, rounded inward,
+    the middle one rectangle and about 1 px bands down each rounded
+    corner), cached per surface and sent with
+    `ext_background_effect_surface_v1.set_blur_region` (made with the
+    first region) on that frame's buffer commit only when it changed,
+    null once empty; nothing while the compositor does not blur, and
+    sent again with a bare commit when it starts. `SurfaceInfo::
+    blur_region` and `Stats::blur_updates` show it. Rung 3 is the
+    binary's: the first frame that asks for blur on a compositor that
+    cannot blur logs one warning with the reason
+    (`caps::blur_fallback_reason`, naming `strand compositor-rules` on
+    Hyprland) and sends it to `strand watch` as a notice
+    (`ToLogic::Notice`).
   - Popups: a `popup` nested in a popup may open to the side
     (`anchor:`, right by default, flipping left), for tray submenus.
   - Session lock (`session_lock.rs`): `State::lock()` asks

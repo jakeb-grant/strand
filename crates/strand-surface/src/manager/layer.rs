@@ -196,6 +196,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             ack_pending: false,
             repaint: true,
             opaque: Vec::new(),
+            blur: None,
+            blur_sent: Some(Vec::new()),
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -240,6 +242,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         if let Some(v) = s.viewport.take() {
             v.destroy();
+        }
+        if let Some(b) = s.blur.take() {
+            b.destroy();
         }
         // Dropping the layer surface destroys it and its wl_surface.
         drop(s);

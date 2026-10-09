@@ -131,6 +131,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.stats.paints += 1;
         self.stats.paints += 1;
         let wants_more = self.host.wants_frame(id);
+        // What this frame asks the compositor to blur, sent with its
+        // commit when it changed (the blur ladder's first rung).
+        let blur = self
+            .blurs()
+            .then(|| crate::blur::region_rects(&self.host.blur_region(id), scale));
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
         let wl = s.wl().clone();
         if damage.is_empty() {
             // Nothing drawn, nothing recorded: the buffer keeps its age.
@@ -237,6 +245,12 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.stats.opaque_updates += 1;
             }
         }
+        if let Some(rects) = blur {
+            self.set_blur(id, rects);
+        }
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
         s.commit_seq += 1;
         if let Some(p) = &self.presentation {
             let tag = FeedbackTag {

@@ -27,6 +27,10 @@ pub struct Host {
     /// while the surface manager called in (a configure, a paint, text
     /// collected meanwhile) to the manager at once.
     wake: Option<calloop::ping::Ping>,
+    /// The node each surface shows (for the blur fallback's diagnostic).
+    roots: HashMap<SurfaceId, NodeId>,
+    /// The blur ladder's last rung: says once why `blur` draws its tint.
+    blur_fallback: BlurFallback,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -242,6 +246,34 @@ fn monitor_bounds(m: &Monitor) -> Option<strand_scene::LogicalSize> {
         .map(|(w, h)| strand_scene::LogicalSize::new(w as f32, h as f32))
 }
 
+/// The blur ladder's last rung (design.md, "Blur ladder"): when the
+/// compositor cannot blur, `blur` draws its tint, and the first frame
+/// that asks for blur says why, once (a warning and a `strand watch`
+/// notice; the inspector's per-node answer is M5's). The reason is the
+/// compositor's, the same for every node with `blur`.
+#[derive(Debug, Default)]
+struct BlurFallback {
+    /// The compositor's capabilities (`None`: not reported yet).
+    caps: Option<CompositorCaps>,
+    /// Hyprland runs the session: the reason names `strand
+    /// compositor-rules`.
+    hyprland: bool,
+    said: bool,
+}
+
+impl BlurFallback {
+    /// The diagnostic for a frame of the surface `ns` that asks for blur:
+    /// once, and only when the compositor is known not to blur.
+    fn frame(&mut self, ns: &str) -> Option<String> {
+        if self.said {
+            return None;
+        }
+        let reason = strand_surface::caps::blur_fallback_reason(&self.caps?, self.hyprland)?;
+        self.said = true;
+        Some(format!("blur on {ns} draws its tint fallback: {reason}"))
+    }
+}
+
 impl Host {
     pub fn new(mut renderer: Renderer, log_damage: bool) -> Self {
         // A compositor answers a resize: a content-sized surface waits for
@@ -252,8 +284,33 @@ impl Host {
             log_damage,
             logic: None,
             wake: None,
+            roots: HashMap::new(),
+            blur_fallback: BlurFallback {
+                hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
+                ..BlurFallback::default()
+            },
             #[cfg(test)]
             probe: None,
+        }
+    }
+
+    /// Says once, as a warning and a `strand watch` notice, why `blur`
+    /// falls back to its tint, the first time a frame of `surface` asks
+    /// the compositor to blur and it cannot.
+    fn note_blur_fallback(&mut self, surface: SurfaceId) {
+        if self.blur_fallback.said || self.renderer.blur_region(surface).is_empty() {
+            return;
+        }
+        let ns = self
+            .roots
+            .get(&surface)
+            .and_then(|n| self.renderer.surface_spec(*n))
+            .map_or_else(|| format!("surface {}", surface.0), |s| s.namespace());
+        if let Some(text) = self.blur_fallback.frame(&ns) {
+            log::warn!("{text}");
+            if let Some(f) = &self.logic {
+                f.send(ToLogic::Notice(text));
+            }
         }
     }
 
@@ -319,6 +376,7 @@ impl Host {
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
+        self.note_blur_fallback(surface);
         self.forward_facts();
         self.wake_if_changed();
         #[cfg(test)]
@@ -373,6 +431,7 @@ impl SurfaceHost for Host {
             );
         }
         self.renderer.attach_surface(surface, node);
+        self.roots.insert(surface, node);
         self.renderer
             .set_surface_bounds(surface, monitor.and_then(monitor_bounds));
         if let Some(f) = &mut self.logic {
@@ -408,6 +467,7 @@ impl SurfaceHost for Host {
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.renderer.detach_surface(surface);
+        self.roots.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -469,6 +529,7 @@ impl SurfaceHost for Host {
         // The blur ladder's first rung: with `ext-background-effect-v1`
         // confirmed, `blur` draws no tint (the compositor blurs).
         self.renderer.set_compositor_blur(caps.background_effect);
+        self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).
         if let Some(p) = &self.wake {
@@ -496,6 +557,35 @@ mod tests {
             logical_size: Some((1920, 1080)),
             position: None,
         }
+    }
+
+    /// The blur ladder's last rung says why once: not before the
+    /// compositor's capabilities are known, never when it blurs, and on
+    /// Hyprland it names `strand compositor-rules`.
+    #[test]
+    fn the_blur_fallback_is_said_once_with_its_reason() {
+        let mut b = BlurFallback::default();
+        assert_eq!(b.frame("strand-Top"), None, "capabilities unknown");
+        b.caps = Some(CompositorCaps {
+            background_effect: true,
+            ..CompositorCaps::default()
+        });
+        assert_eq!(b.frame("strand-Top"), None, "the compositor blurs");
+        b.caps = Some(CompositorCaps::default());
+        let text = b.frame("strand-Top").unwrap();
+        assert!(text.contains("strand-Top") && text.contains("ext-background-effect-v1"));
+        assert!(!text.contains("compositor-rules"));
+        assert_eq!(b.frame("strand-Dock"), None, "once");
+        let mut b = BlurFallback {
+            hyprland: true,
+            caps: Some(CompositorCaps::default()),
+            ..BlurFallback::default()
+        };
+        assert!(
+            b.frame("strand-Top")
+                .unwrap()
+                .contains("strand compositor-rules")
+        );
     }
 
     #[test]

@@ -131,3 +131,128 @@ fn a_bare_compositor_reports_no_capabilities() {
         "{caps:?}"
     );
 }
+
+/// Paints the panel once more (new content) and waits for its commit.
+fn repaint(mgr: &mut SurfaceManager<TestHost>) {
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let before = mgr.state().surface(id).unwrap().stats.commits;
+    // A square moved: new content to paint.
+    let x = before as f32 * 3.0 % 300.0;
+    mgr.state_mut()
+        .host_mut()
+        .set_square(Some(strand_scene::LogicalRect::new(x, 10.0, 20.0, 20.0)));
+    mgr.state_mut().poll();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| i.stats.commits > before)
+        })
+        .unwrap();
+    assert!(ok, "the panel did not paint again");
+}
+
+fn rounded(w: u32, h: u32, r: f32) -> strand_scene::BlurRegion {
+    strand_scene::BlurRegion {
+        rect: strand_scene::Rect::new(0, 0, w, h),
+        radii: [r; 4],
+        radius: 24.0,
+    }
+}
+
+/// Waits until the fake's panel has had `n` blur regions committed.
+fn wait_blur_sets(fake: &Fake, mgr: &mut SurfaceManager<TestHost>, n: usize) {
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.layer("strand-Dash")
+                .first()
+                .is_some_and(|s| s.blur_sets.len() >= n)
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "expected {n} blur regions: {:?}",
+        fake.layer("strand-Dash")
+    );
+}
+
+/// The blur ladder's first rung: a node with `blur` asks the compositor
+/// to blur behind its rounded box. The region goes with the frame's
+/// commit, follows the rounded corners (the corner pixel is out, the
+/// edges' middles are in), is sent again only when the shape changes
+/// (frames with the same shape send nothing), and is set to null once
+/// nothing asks for blur.
+#[test]
+fn the_blur_region_follows_the_rounded_shape_and_changes_only_with_it() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    mgr.state_mut().host_mut().blur = vec![rounded(400, 300, 16.0)];
+    show_panel(&fake, &mut mgr);
+    wait_blur_sets(&fake, &mut mgr, 1);
+    let rec = &fake.layer("strand-Dash")[0];
+    let region = rec.blur.clone().expect("a blur region");
+    assert!(region.contains(200, 150) && region.contains(200, 0) && region.contains(0, 150));
+    assert!(!region.contains(0, 0) && !region.contains(399, 299) && !region.contains(2, 2));
+    let full = 400 * 300;
+    let corners = 4.0 * (16.0f64 * 16.0) * (1.0 - std::f64::consts::PI / 4.0);
+    let missing = full as f64 - region.area() as f64;
+    assert!(
+        missing >= corners && missing < corners + 4.0 * 2.0 * 16.0,
+        "the region leaves out about the corners: {missing} px (the corners are {corners})"
+    );
+    // The commit that carried it attached a buffer (it rode the frame).
+    assert!(rec.buffer_commits >= 1);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert!(info.blur_region.as_ref().is_some_and(|r| !r.is_empty()));
+    // Frames with the same shape send nothing.
+    for _ in 0..3 {
+        repaint(&mut mgr);
+    }
+    common::pump(&mut mgr, Duration::from_millis(50));
+    assert_eq!(fake.layer("strand-Dash")[0].blur_sets.len(), 1);
+    assert_eq!(mgr.state().surface(id).unwrap().stats.blur_updates, 1);
+    // A new radius is a new shape.
+    mgr.state_mut().host_mut().blur = vec![rounded(400, 300, 4.0)];
+    repaint(&mut mgr);
+    wait_blur_sets(&fake, &mut mgr, 2);
+    let region = fake.layer("strand-Dash")[0].blur.clone().unwrap();
+    assert!(region.contains(2, 2) && !region.contains(0, 0));
+    // Nothing asks for blur: null.
+    mgr.state_mut().host_mut().blur.clear();
+    repaint(&mut mgr);
+    wait_blur_sets(&fake, &mut mgr, 3);
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.blur_sets.last(), Some(&None), "a null region");
+    assert!(rec.blur.is_none());
+    repaint(&mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    assert_eq!(fake.layer("strand-Dash")[0].blur_sets.len(), 3);
+}
+
+/// Without the blur capability nothing is sent (render draws the tint);
+/// when the compositor starts blurring, the region of the last frame is
+/// sent at once, with a commit of its own.
+#[test]
+fn no_blur_region_until_the_compositor_blurs() {
+    let fake = Fake::compositor(SurfaceGlobals {
+        background_effect: Some(0),
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    mgr.state_mut().host_mut().blur = vec![rounded(400, 300, 12.0)];
+    show_panel(&fake, &mut mgr);
+    repaint(&mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    assert!(fake.layer("strand-Dash")[0].blur_sets.is_empty());
+    fake.cmd(Cmd::SetEffectCapabilities(1));
+    wait_blur_sets(&fake, &mut mgr, 1);
+    assert!(fake.layer("strand-Dash")[0].blur.is_some());
+    // A surface whose frames ask for no blur never sends a region.
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    show_panel(&fake, &mut mgr);
+    repaint(&mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    let rec = &fake.layer("strand-Dash")[0];
+    assert!(rec.blur_sets.is_empty(), "{rec:?}");
+    assert_eq!(mgr.state().stats().blur_updates, 0);
+}

@@ -40,8 +40,9 @@ use wayland_client::protocol::{
     wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
 };
 use wayland_client::{Connection, Proxy, QueueHandle};
-use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
-    self, ExtBackgroundEffectManagerV1,
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::{self, ExtBackgroundEffectManagerV1},
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 use wayland_protocols::wp::fractional_scale::v1::client::{
@@ -76,6 +77,7 @@ use strand_scene::{KeyInput, Modifiers};
 
 mod catcher;
 mod commit;
+mod effect;
 mod layer;
 mod outputs;
 mod popup;
@@ -323,6 +325,9 @@ pub struct Stats {
     /// Popups created with an `xdg_popup.grab` (opened within
     /// [`GRAB_WINDOW`] of a press).
     pub grabs: u64,
+    /// `ext_background_effect_surface_v1.set_blur_region` requests (sent
+    /// only when the region changes).
+    pub blur_updates: u64,
 }
 
 /// A snapshot of one surface.
@@ -354,6 +359,9 @@ pub struct SurfaceInfo {
     pub last_damage: Vec<Rect>,
     /// The opaque region last sent, in surface-local logical pixels.
     pub opaque_region: Vec<Rect>,
+    /// The blur region last sent (`ext-background-effect-v1`), in
+    /// surface-local logical pixels: `None` until one was sent.
+    pub blur_region: Option<Vec<crate::blur::BlurRect>>,
     /// Input passes through (an `osd`: empty input region).
     pub click_through: bool,
     /// The input region: `None` the whole surface, `Some(None)` empty,
@@ -416,6 +424,11 @@ struct Surface {
     repaint: bool,
     /// Last opaque region sent, in logical pixels.
     opaque: Vec<Rect>,
+    /// Its `ext_background_effect_surface_v1`, made with the first blur
+    /// region it sends, and that region's rectangles as last sent
+    /// (`None`: unknown, sent again with the next frame).
+    blur: Option<ExtBackgroundEffectSurfaceV1>,
+    blur_sent: Option<Vec<crate::blur::BlurRect>>,
     last_damage: Vec<Rect>,
     click_through: bool,
     /// The input region last sent: `None` the whole surface, `Some(None)`
@@ -544,6 +557,7 @@ impl Surface {
             buffers: self.buffers.slots.len(),
             last_damage: self.last_damage.clone(),
             opaque_region: self.opaque.clone(),
+            blur_region: self.blur.as_ref().and(self.blur_sent.clone()),
             click_through: self.click_through,
             input_region: self.input_region,
             click_away: false,
@@ -595,7 +609,6 @@ pub struct State<H: SurfaceHost + 'static> {
     alpha_modifier: Option<WpAlphaModifierV1>,
     #[allow(dead_code)]
     single_pixel: Option<WpSinglePixelBufferManagerV1>,
-    #[allow(dead_code)]
     background_effect: Option<ExtBackgroundEffectManagerV1>,
     /// What the compositor offers, and the capabilities last reported
     /// through [`SurfaceHost::compositor_caps`] (`None`: not yet).
@@ -996,9 +1009,15 @@ impl<H: SurfaceHost + 'static> State<H> {
         if self.reported_caps == Some(caps) {
             return;
         }
+        let blur_changed = self
+            .reported_caps
+            .is_some_and(|old| old.background_effect != caps.background_effect);
         self.reported_caps = Some(caps);
         log::debug!("compositor capabilities: {caps:?}");
         self.host.compositor_caps(&caps);
+        if blur_changed {
+            self.blur_capability_changed();
+        }
     }
 
     /// Handles a [`Request`] (also what the repaint channel delivers).
