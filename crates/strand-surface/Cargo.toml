@@ -24,7 +24,11 @@ png = "0.18.1"
 rustix = { version = "1.1.5", features = ["process"] }
 strand-render.workspace = true
 strand-text.workspace = true
-wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+# tests/session_lock_finished.rs: a fake compositor for the lock paths
+# sway 1.9 cannot drive.
+wayland-server = "0.31.14"
+wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client", "server"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 
 [lints]

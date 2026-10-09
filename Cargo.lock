@@ -2406,6 +2406,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "wayland-server",
 ]
 
 [[package]]

@@ -19,7 +19,8 @@
 //!
 //! Fail-closed rules:
 //! - Only [`State::unlock`], which takes a [`strand_auth::UnlockToken`],
-//!   releases the lock. The spec closing (`open: false`) or going away
+//!   releases a lock the compositor holds (the other `unlock_and_destroy`
+//!   answers `finished`, on an object the compositor already gave up). The spec closing (`open: false`) or going away
 //!   (a reload, logic gone) changes nothing: the lock surfaces stay and
 //!   the content surface keeps its id, so the binary can paint the
 //!   built-in fallback there ([`State::lock_content`]).
@@ -34,7 +35,10 @@
 //!   not shown; it is not asked for again until the spec closes and
 //!   opens, so a compositor that refuses is not asked in a loop.
 //! - `finished` after `locked` (the compositor ended a lock it held) is
-//!   answered by asking for a new lock at once, once per lock session
+//!   answered as the protocol asks, with `unlock_and_destroy` on that
+//!   finished object (the compositor no longer uses it, so this releases
+//!   the object, not the session), then by asking for a new lock at
+//!   once, once per lock session
 //!   ([`after_finished`]): the protocol leaves it to the compositor
 //!   whether the session stays locked, and if it does, the user needs a
 //!   password field again, not the compositor's blank fallback. A
@@ -762,12 +766,19 @@ impl<H: SurfaceHost + 'static> State<H> {
                         l.destroy();
                         false
                     }
-                    Phase::Locked(_) => {
-                        // The compositor ended the lock itself. After
-                        // `locked` the protocol allows only
-                        // `unlock_and_destroy`, which only a token may
-                        // send: the unused object is left alone.
+                    Phase::Locked(l) => {
+                        // The compositor ended the lock itself. The
+                        // protocol's reply to `finished` after `locked`
+                        // is `unlock_and_destroy` (`destroy` would be a
+                        // protocol error): the compositor no longer uses
+                        // this object, so it only releases it. Without
+                        // the reply the object stays alive, and a
+                        // compositor that counts it as the session's
+                        // locker until it goes refuses the new lock
+                        // asked for below. The new lock follows it in
+                        // the same flush.
                         log::warn!("the compositor ended the session lock");
+                        l.unlock_and_destroy();
                         true
                     }
                     Phase::Idle => false,
