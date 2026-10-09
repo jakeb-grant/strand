@@ -208,6 +208,10 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
   no host config change; the owner allowed `/dev/kvm` for that container
   only (m4-owner). That needs QEMU in an image of the container
   suite; GitHub's runners would need their own KVM setup to run it in CI.
+- Harnesses (m4-infra): `scripts/container/lockvm.sh [CMD]` runs CMD as
+  root in a KVM guest with real PAM, sway and user `tester` (no CMD: the
+  smoke); `scripts/container/gpu.sh [CMD]` runs CMD on the laptop's GPU
+  (renderD128 only, advisory); `run.sh` and CI run the GPU tier on lavapipe.
 - The rest of M4 (blur protocols, drag and drop, tray menus, page
   transitions, the effects catalogue, 2,000-row scrolling) can run
   headless as M2 did.
