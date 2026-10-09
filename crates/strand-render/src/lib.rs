@@ -17,6 +17,7 @@
 
 mod anim;
 mod cache;
+mod fillet;
 mod flatten;
 pub mod image;
 pub mod input;

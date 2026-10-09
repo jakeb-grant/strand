@@ -412,10 +412,16 @@ impl<'a> Flattener<'a> {
             {
                 self.out.opaque = opaque_bands(phys, &r).clipped(self.surface);
             }
-            let shape = if radii_zero(&r) {
-                FillShape::Rect(frame)
+            let fillet = self.fillet.filter(|f| f.node == node.id);
+            let (shape, reach) = if let Some(f) = fillet {
+                // `attach:`: square on the edge, with its fillets.
+                let path = crate::fillet::path(frame, r, f.edge);
+                let reach = cover(path.bounding_box()).union(phys);
+                (FillShape::Path(path), reach)
+            } else if radii_zero(&r) {
+                (FillShape::Rect(frame), phys)
             } else {
-                FillShape::Path(box_path.clone())
+                (FillShape::Path(box_path.clone()), phys)
             };
             self.push(
                 Item::Fill {
@@ -423,7 +429,7 @@ impl<'a> Flattener<'a> {
                     paint,
                     frame,
                 },
-                phys,
+                reach,
                 &mut sig,
                 &mut ink,
             );

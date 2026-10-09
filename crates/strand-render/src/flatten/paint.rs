@@ -60,7 +60,7 @@ pub(super) fn paint_of(v: Option<&PropValue>) -> Option<Paint> {
 /// shorter side. The comma shorthand (`radius: $radius.lg, $radius.lg,
 /// 0, 0`) is a `List` of one to four of those, expanded like CSS. NaN and
 /// negative radii are square.
-pub(super) fn corners_of(v: Option<&PropValue>, w: f32, h: f32) -> Corners {
+pub(crate) fn corners_of(v: Option<&PropValue>, w: f32, h: f32) -> Corners {
     let one = |v: &PropValue| match v {
         PropValue::Number(n) | PropValue::Length(Length::Px(n)) => Some(*n),
         PropValue::Length(Length::Percent(p)) => Some(w.min(h) * p / 100.0),
@@ -95,7 +95,7 @@ pub(super) fn corners_of(v: Option<&PropValue>, w: f32, h: f32) -> Corners {
 
 /// Scales radii to physical pixels and shrinks them like CSS so adjacent
 /// corners never overlap (`radius: full` becomes a pill).
-pub(super) fn radii(c: Corners, w: f64, h: f64, s: f64) -> RoundedRectRadii {
+pub(crate) fn radii(c: Corners, w: f64, h: f64, s: f64) -> RoundedRectRadii {
     let (tl, tr, br, bl) = (
         (c.top_left as f64 * s).max(0.0),
         (c.top_right as f64 * s).max(0.0),

@@ -185,12 +185,15 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
     let o = spec.overhang;
     let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
     let [ot, or, ob, ol] = overhang;
+    // `attach: <edge>` (a panel): flush against that edge, gap 0.
+    let attach = spec.attach.filter(|_| spec.kind == NodeKind::Panel);
+    let flush = |e: Edge, v: f32| if attach == Some(e) { 0 } else { px(v) };
     // The box keeps its place: each margin moves out by the overhang.
     let margin = [
-        px(m.top) - ot,
-        px(m.right) - or,
-        px(m.bottom) - ob,
-        px(m.left) - ol,
+        flush(Edge::Top, m.top) - ot,
+        flush(Edge::Right, m.right) - or,
+        flush(Edge::Bottom, m.bottom) - ob,
+        flush(Edge::Left, m.left) - ol,
     ];
     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
         let edge = spec.edge.unwrap_or(Edge::Top);
@@ -232,7 +235,7 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
         let (Some(w), Some(h)) = (spec.width, spec.height) else {
             return Err(PlacementError::AutoSize(spec.kind));
         };
-        let anchors = match spec.anchor {
+        let mut anchors = match spec.anchor {
             Anchor::Center => Anchors::default(),
             Anchor::Top => Anchors::new(true, false, false, false),
             Anchor::Bottom => Anchors::new(false, true, false, false),
@@ -243,6 +246,15 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
             Anchor::BottomLeft => Anchors::new(false, true, true, false),
             Anchor::BottomRight => Anchors::new(false, true, false, true),
         };
+        // Attached: anchored to that edge (not the opposite one); the
+        // anchor's other axis stays.
+        match attach {
+            Some(Edge::Top) => (anchors.top, anchors.bottom) = (true, false),
+            Some(Edge::Bottom) => (anchors.top, anchors.bottom) = (false, true),
+            Some(Edge::Left) => (anchors.left, anchors.right) = (true, false),
+            Some(Edge::Right) => (anchors.left, anchors.right) = (false, true),
+            None => {}
+        }
         (
             anchors,
             size(w) + (ol + or) as u32,
@@ -352,7 +364,9 @@ pub fn popup_config(
     let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
     let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
     let bar_edge = (parent.kind == NodeKind::Bar).then(|| parent.edge.unwrap_or(Edge::Top));
-    let side = match bar_edge {
+    // `attach: <edge>` names the popup's side that touches its anchor,
+    // so it opens away from it, at gap 0.
+    let side = match spec.attach.or(bar_edge) {
         Some(Edge::Top) | None => PopupSide::Below,
         Some(Edge::Bottom) => PopupSide::Above,
         Some(Edge::Left) => PopupSide::Right,
@@ -379,7 +393,13 @@ pub fn popup_config(
         PopupSide::Right => m.left,
         PopupSide::Left => m.right,
     };
-    let gap = if gap == 0.0 { 6 } else { px(gap) };
+    let gap = if spec.attach.is_some() {
+        0
+    } else if gap == 0.0 {
+        6
+    } else {
+        px(gap)
+    };
     if spec.tooltip {
         // A tooltip sits just under what it describes, bars included.
         if bar_edge.is_some() {
@@ -738,5 +758,90 @@ mod tests {
         let c = popup_config(&tip, &bar).unwrap();
         assert_eq!(c.anchor_rect, (100, 12, 60, 20));
         assert!(!c.grab && c.as_layer().click_through);
+    }
+
+    /// `attach: top` on a panel: anchored to the top edge whatever its
+    /// `anchor:` said about that axis (the other axis stays), its top
+    /// margin gone (the box flush with the edge), the others kept.
+    #[test]
+    fn an_attached_panel_is_flush_with_its_edge() {
+        let s = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("bottom_right")),
+                (Prop::Attach, kw("top")),
+                (Prop::Margin, PropValue::Insets(Insets::all(8.0))),
+                (Prop::Width, PropValue::Number(400.0)),
+                (Prop::Height, PropValue::Number(300.0)),
+            ],
+        );
+        let mut s2 = s.clone();
+        s2.overhang = Insets {
+            top: 0.0,
+            right: 16.0,
+            bottom: 0.0,
+            left: 16.0,
+        };
+        let c = layer_config(&s).unwrap();
+        assert_eq!(c.anchors, Anchors::new(true, false, false, true));
+        assert_eq!(c.margin, [0, 8, 8, 8]);
+        // The fillets' overhang moves the side margins out; the box stays.
+        let c = layer_config(&s2).unwrap();
+        assert_eq!(c.margin, [0, -8, 8, -8]);
+        assert_eq!(c.width, 432);
+        for (edge, anchors) in [
+            ("bottom", Anchors::new(false, true, false, true)),
+            ("left", Anchors::new(false, true, true, false)),
+            ("right", Anchors::new(false, true, false, true)),
+        ] {
+            let mut t = s.clone();
+            t.attach = Edge::from_name(edge);
+            assert_eq!(layer_config(&t).unwrap().anchors, anchors, "{edge}");
+        }
+        let mut centred = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Attach, kw("left")),
+                (Prop::Width, PropValue::Number(100.0)),
+                (Prop::Height, PropValue::Number(100.0)),
+            ],
+        );
+        assert_eq!(
+            layer_config(&centred).unwrap().anchors,
+            Anchors::new(false, false, true, false)
+        );
+        centred.attach = None;
+        assert_eq!(layer_config(&centred).unwrap().anchors, Anchors::default());
+    }
+
+    /// `attach:` on a popup names its side that touches the anchor: it
+    /// opens away from it, at gap 0 (whatever its margin), even away from
+    /// a bar's usual side.
+    #[test]
+    fn an_attached_popup_touches_its_anchor() {
+        use strand_scene::{LogicalRect, NodeId};
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
+        let mut p = spec(
+            NodeKind::Popup,
+            &[
+                (Prop::Attach, kw("top")),
+                (Prop::Margin, PropValue::Insets(Insets::all(10.0))),
+            ],
+        );
+        p.parent = Some(NodeId::new(1, 0));
+        p.width = Some(200.0);
+        p.height = Some(120.0);
+        p.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+        let c = popup_config(&p, &bar).unwrap();
+        assert_eq!((c.side, c.gap), (PopupSide::Below, 0));
+        for (edge, side) in [
+            ("bottom", PopupSide::Above),
+            ("left", PopupSide::Right),
+            ("right", PopupSide::Left),
+        ] {
+            p.attach = Edge::from_name(edge);
+            let c = popup_config(&p, &bar).unwrap();
+            assert_eq!((c.side, c.gap), (side, 0), "{edge}");
+        }
     }
 }

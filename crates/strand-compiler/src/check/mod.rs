@@ -28,6 +28,7 @@ mod expr;
 pub mod paths;
 mod prepin;
 mod stmt;
+mod surfaces;
 mod tokens;
 mod tree;
 

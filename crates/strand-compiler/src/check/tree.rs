@@ -177,6 +177,7 @@ impl<'a> Checker<'a> {
         }
         self.collect_ids(&s.body.items);
         let (props, children) = self.tree_items(&s.body.items, Place::Element { root: true });
+        self.surface_props(&kind, &props, &children);
         self.pop_scope();
         self.pop_scope();
         self.nodes.pop();
@@ -997,6 +998,7 @@ impl<'a> Checker<'a> {
         if kind == "segmented" {
             self.segmented_value(&props);
         }
+        self.surface_props(kind, &props, &children);
         self.element_tail(kind, schema, &children);
         Node::Element(hir::Element {
             node,

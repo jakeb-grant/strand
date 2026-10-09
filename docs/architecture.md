@@ -2299,8 +2299,13 @@ and the connection):
     visible scrim. A popup's `scrim` is that layer surface itself,
     coloured, on its root layer surface's layer and output (popups stack
     above layer surfaces), taking no clicks (the grab closes it).
-  - Fillets: placement puts an `attach`ed box at gap 0 from that edge;
-    the overhang render adds for the fillets grows the buffer only.
+  - Fillets: placement puts an `attach`ed box at gap 0 from that edge
+    (a panel anchored to it, its margin there 0; a popup opening away
+    from its attached side); the overhang render adds for the fillets
+    grows the buffer only. Render's `fillet.rs` finds the target, draws
+    it, grows the overhang along the edge and drops it past the edge,
+    through one call each in `flatten` (the target's fill) and the two
+    places a surface's overhang is set (`specs.rs`, `layout_pass.rs`).
   - Blur ladder (`blur.rs`, `manager/effect.rs`): after each paint
     `Painter::blur_region` becomes a logical `wl_region`
     (`blur::region_rects`: inside every rounded shape, rounded inward,
