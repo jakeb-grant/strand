@@ -160,7 +160,7 @@ Exit: [x] runs on Hyprland, niri and sway · [x] 100 reloads with no reconnects 
 
 ## M4 Power features (weeks 35–44)
 
-Exit: [ ] smooth 2,000-row scrolling · [ ] GPU released when idle · [ ] lock fails closed under faults
+Exit: [x] smooth 2,000-row scrolling (m4-lists: logic mounts only the window — `crates/strand-compiler/tests/instantiate.rs::a_2000_row_list_mounts_only_its_window`; rows laid out at global indexes, only those in view — `crates/strand-render/tests/layout.rs::a_2000_row_list_lays_out_only_its_window`; wheel steps spring, flings decay, window mounts play no poses — `crates/strand-render/tests/motion.rs::wheel_steps_spring_the_offset`, `::a_touchpad_fling_decays_and_stops`, `::window_mounts_do_not_play_poses`; `nav` past the window — `crates/strand-render/tests/input.rs::nav_selects_rows_beyond_the_mounted_window`; per-frame work at injected 60 and 144 Hz with logic's window diffs, p95 about 1.2 and 0.8 ms against 3.5 ms (this plan's number) on the `timing` profile, no frame with a gap — `crates/strand-render/tests/list_scroll_bench.rs` (advisory in `scripts/container/ci.sh`'s timing steps; its GitHub `timing` job line is the integrator's); on headless sway over 2,000 mock apps, every frame's `gaps=0` and End landing on the last app — `crates/strand/tests/demo.rs::the_design_launcher_scrolls_2000_apps`; decisions.md m4-lists-w1) · [ ] GPU released when idle · [ ] lock fails closed under faults
 
 Plan: streams, waves, owners and the tests behind each box are in `docs/m4-plan.md`.
 
