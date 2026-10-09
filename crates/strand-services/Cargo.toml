@@ -79,14 +79,14 @@ wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 pipewire = { version = "0.10.1", features = ["v1_0_0"], optional = true }
 
 [dev-dependencies]
+# The fake compositor tests/protocol.rs and the wm protocol client's unit
+# tests run against (shared with strand-surface's tests).
+strand-fake-wayland = { path = "../strand-fake-wayland" }
 # Tests point the icon lookup at a theme of their own.
 strand-icons.workspace = true
 tempfile = "3.27.0"
 tokio = { version = "1.53", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util", "test-util"] }
 rustix = { version = "1.1.5", features = ["event", "process", "fs", "shm"] }
-wayland-server = "0.31.14"
-wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging"] }
-wayland-protocols-wlr = { version = "0.3.12", features = ["client", "server"] }
 
 [lints]
 workspace = true

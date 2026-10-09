@@ -1,0 +1,20 @@
+[package]
+name = "strand-fake-wayland"
+description = "A fake Wayland compositor for tests: toplevels, workspaces and layer surfaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Tests only: strand-services' protocol client and strand-surface's
+# manager dev-depend on it; nothing ships it.
+[dependencies]
+wayland-server = "0.31.14"
+wayland-protocols = { version = "0.32.13", features = ["server", "staging"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
+rustix = { version = "1.1.5", features = ["event"] }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
