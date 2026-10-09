@@ -596,6 +596,13 @@ impl Keyframes {
             easing: Easing::Linear,
         }
     }
+
+    /// Every value its stops set, in order.
+    pub fn stop_values(&self) -> impl Iterator<Item = &PropValue> {
+        self.stops
+            .iter()
+            .flat_map(|(_, props)| props.iter().map(|(_, v)| v))
+    }
 }
 
 impl PropValue {
@@ -608,6 +615,7 @@ impl PropValue {
             }
             PropValue::Pose(props) => props.iter().any(|(_, v)| v.has_tokens()),
             PropValue::Uniforms(entries) => entries.iter().any(|(_, v)| v.has_tokens()),
+            PropValue::Keyframes(k) => k.stop_values().any(PropValue::has_tokens),
             _ => false,
         }
     }
@@ -623,6 +631,7 @@ impl PropValue {
             }
             PropValue::Pose(props) => props.iter().any(|(_, v)| v.reads_time()),
             PropValue::Uniforms(entries) => entries.iter().any(|(_, v)| v.reads_time()),
+            PropValue::Keyframes(k) => k.stop_values().any(PropValue::reads_time),
             _ => false,
         }
     }

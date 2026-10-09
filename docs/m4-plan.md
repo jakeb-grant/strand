@@ -169,7 +169,8 @@ its TCG override is `LOCKVM_TCG=1`.
 - **F1** time-bound values end to end: the VM's symbolic value,
   `convert` to `TokenExpr` time leaves, a time value reaching logic is an
   error value, the `lower::time_signal` warning goes, render evaluates
-  time per node per frame, `reduced_motion` samples every time leaf at 0.
+  time per node per frame, `reduced_motion` samples every time leaf at
+  `t = 0` with a letter's `index` and `count` kept (`TimeContext::frozen`).
 - **F2** per-node clocks with frame caps, through `Renderer::next_wake`
   (the surface needs no change).
 - **F3** the effect-layer display-list item, lowered to vello_cpu
@@ -366,7 +367,8 @@ records each in decisions.md when it builds it.
 - **GPU**: the shader ABI is fixed in architecture.md ("`strand-gpu`",
   0c): one `@fragment` entry from the file and the vertex stage from
   Strand; Strand's `@group(0)` (`time`, `size`, `scale`, `pointer`, an
-  input texture) and the file's `u_*` uniforms in `@group(1)`; lengths in
+  input texture) and the file's `u_*` uniforms in `@group(1)`, one
+  `var<uniform>` per binding; lengths in
   px × scale, angles in radians, durations in seconds, colours
   premultiplied linear `vec4`; a uniform with no prop is a warning and
   zero-filled, a prop the file lacks an error with a did-you-mean. Canvas follows a

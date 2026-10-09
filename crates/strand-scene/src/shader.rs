@@ -13,8 +13,9 @@
 /// node appeared, `scale`, `size` in buffer pixels, `pointer` in buffer
 /// pixels relative to the box, or -1 when outside), `strand_input` (a
 /// filter's subtree, a glass backdrop, or 1×1 transparent) and
-/// `strand_sampler`. The file declares its `u_*` uniforms in `@group(1)`
-/// at any binding and one `@fragment` entry taking [`StrandVertex`]
+/// `strand_sampler`. The file declares each `u_*` uniform as its own
+/// `var<uniform>` in `@group(1)`, at a binding of its choice (one value
+/// per binding: [`UniformSlot`]), and one `@fragment` entry taking [`StrandVertex`]
 /// (`uv` in 0..1 over the box) and returning a premultiplied
 /// `vec4<f32>`. Diagnostics subtract [`PRELUDE_LINES`] from line numbers.
 ///
@@ -39,8 +40,8 @@ struct StrandVertex {
 pub const PRELUDE_LINES: u32 = 13;
 
 /// The WGSL type of a `u_*` uniform, as reflected by the checker. Values
-/// arrive as `f32`s: lengths in px × scale, angles in radians, durations
-/// in seconds, colours premultiplied linear `vec4`.
+/// arrive as `f32`s in buffer units: lengths in px × scale, angles in
+/// radians, durations in seconds, colours premultiplied linear `vec4`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum UniformType {
     F32,
@@ -83,13 +84,22 @@ impl UniformType {
     }
 }
 
-/// One `u_*` uniform of a file: its name as written, its type and where
-/// it sits in the packed uniform data (in `f32`s from the start of the
-/// file's `@group(1)` data, following WGSL's uniform layout rules).
+/// One `u_*` uniform of a file: its own `var<uniform>` at
+/// `@group(1) @binding(binding)`.
+///
+/// There is no packed WGSL block: each binding is its own buffer
+/// binding, which the GPU thread fills from `ShaderPass::uniforms` at
+/// the device's uniform-offset alignment. `offset` only says where the
+/// slot's `ty.floats()` values sit in that dense `f32` array: slots in
+/// binding order, each starting where the previous one ends (no padding),
+/// as [`ShaderCode::packed`] lays them out.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UniformSlot {
     pub name: String,
     pub ty: UniformType,
+    /// The `@binding(n)` the file declared it at, in `@group(1)`.
+    pub binding: u32,
+    /// Its first `f32` in `ShaderPass::uniforms`.
     pub offset: u32,
 }
 
@@ -103,7 +113,8 @@ pub struct ShaderCode {
     pub path: String,
     /// The file's text, without [`PRELUDE`].
     pub wgsl: String,
-    /// Its `u_*` uniforms, in slot order (by `offset`).
+    /// Its `u_*` uniforms in binding order, `offset`s dense (see
+    /// [`UniformSlot`]).
     pub uniforms: Vec<UniformSlot>,
 }
 
@@ -116,7 +127,29 @@ impl ShaderCode {
         s
     }
 
-    /// How many `f32`s the packed uniforms take (the last slot's end).
+    /// Slots for `(name, ty, binding)` as reflected, sorted by binding
+    /// with dense offsets: what the checker stores in
+    /// [`ShaderCode::uniforms`].
+    pub fn packed(mut uniforms: Vec<(String, UniformType, u32)>) -> Vec<UniformSlot> {
+        uniforms.sort_by_key(|u| u.2);
+        let mut offset = 0;
+        uniforms
+            .into_iter()
+            .map(|(name, ty, binding)| {
+                let slot = UniformSlot {
+                    name,
+                    ty,
+                    binding,
+                    offset,
+                };
+                offset += ty.floats();
+                slot
+            })
+            .collect()
+    }
+
+    /// How many `f32`s `ShaderPass::uniforms` holds (the last slot's
+    /// end).
     pub fn uniform_floats(&self) -> u32 {
         self.uniforms
             .iter()
@@ -177,24 +210,32 @@ mod tests {
     fn checked_code_travels_shared() {
         let code = Arc::new(ShaderCode {
             path: "aurora.wgsl".into(),
-            wgsl: "@group(1) @binding(0) var<uniform> u_speed: f32;\n".into(),
-            uniforms: vec![
-                UniformSlot {
-                    name: "u_speed".into(),
-                    ty: UniformType::F32,
-                    offset: 0,
-                },
-                UniformSlot {
-                    name: "u_tint".into(),
-                    ty: UniformType::Vec4,
-                    offset: 4,
-                },
-            ],
+            wgsl: "@group(1) @binding(0) var<uniform> u_speed: f32;\n\
+                   @group(1) @binding(3) var<uniform> u_tint: vec4<f32>;\n\
+                   @group(1) @binding(1) var<uniform> u_dir: vec2<f32>;\n"
+                .into(),
+            // As reflected, in declaration order.
+            uniforms: ShaderCode::packed(vec![
+                ("u_speed".into(), UniformType::F32, 0),
+                ("u_tint".into(), UniformType::Vec4, 3),
+                ("u_dir".into(), UniformType::Vec2, 1),
+            ]),
         });
         assert!(code.module().starts_with(PRELUDE));
         assert!(code.module().ends_with(&code.wgsl));
-        assert_eq!(code.uniform_floats(), 8);
-        assert_eq!(code.uniform("u_tint").map(|u| u.offset), Some(4));
+        // Binding order, offsets dense: no WGSL block padding, since each
+        // binding is its own buffer binding.
+        let layout: Vec<_> = code
+            .uniforms
+            .iter()
+            .map(|u| (u.name.as_str(), u.binding, u.offset))
+            .collect();
+        assert_eq!(
+            layout,
+            [("u_speed", 0, 0), ("u_dir", 1, 1), ("u_tint", 3, 3)]
+        );
+        assert_eq!(code.uniform_floats(), 7);
+        assert_eq!(code.uniform("u_tint").map(|u| u.offset), Some(3));
         assert_eq!(code.uniform("u_nope"), None);
         let v = PropValue::Shader(code.clone());
         assert_eq!(v, PropValue::Shader(Arc::new((*code).clone())));

@@ -831,8 +831,12 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     value. A scope reads a per-node `TimeContext { t, index, count }`
     through `TokenScope::with_time(Option<TimeContext>)` (`resolve`,
     `eval` and `lookup` keep their signatures; an override's right-hand
-    side keeps the node's time); without one, every time leaf reads 0, as
-    it does under `reduced_motion`. `wave` is `0.5 − 0.5·cos(2π(t/period
+    side keeps the node's time). Every leaf is evaluated at the context's
+    `t`; without one `t`, `index` and `count` read 0. Under
+    `reduced_motion` render passes `TimeContext::frozen(index, count)`:
+    the clock stops at `t = 0` and a letter keeps its `index` and
+    `count`, so time signals hold their value at `t = 0` and per-letter
+    layout (`x: index * 8`) stays. `wave` is `0.5 − 0.5·cos(2π(t/period
     + phase))` (0 to 1, 0 at `t = 0`, phase in periods) and `noise` 1-D
     gradient noise in −1..1, 0 at whole `x`
     (`strand_scene::tokens::noise`). A prop holding a time leaf is
@@ -869,9 +873,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `multiply`, `overlay`, `difference`), `Mask(Mask)` (`Fade { edge, len
     }`, `Radial { at: Anchor, size }`, `Shape(name)`), `Opacity(f32)` and
     `Shader(ShaderPass)` (a bundled GPU effect or a `.wgsl` file's pass;
-    see "`strand-gpu`"). `Effect::reach() -> Insets` is how far it
-    spreads damage: three standard deviations for a blur, a bundled
-    pass's own, nothing for the rest. Render's display list gains `Item::Layer { effects, bounds,
+    see "`strand-gpu`"). `Effect::reach(scale) -> Insets` is how far it
+    spreads damage in logical pixels on a surface at `scale`: three
+    standard deviations for a blur, a bundled pass's own (its uniforms
+    are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains `Item::Layer { effects, bounds,
     items }`, a group whose damage grows by its effects' reach, lowered by
     each backend its own way (vello_cpu `push_layer`; masks always on the
     CPU), and `Item::Raster { node, bounds }`, a CPU raster node
@@ -2365,9 +2370,11 @@ device; one device per process, shared by every surface. The adapter is
 requested without a surface, so readback works whatever the WSI can do.
 A software adapter (`DeviceType::Cpu`, lavapipe) counts as no device:
 it would draw on the CPU and keep about 80 MiB mapped after the drop.
-`STRAND_GPU_SOFTWARE=1` accepts it; the lavapipe tier sets it
-beside `STRAND_REQUIRE_GPU=1` (CI's env and `run.sh`'s defaults), and a
-user never needs it. The adapter is requested with
+`STRAND_GPU_SOFTWARE=1` accepts it, and a user never needs it. The
+lavapipe tier is to set it beside `STRAND_REQUIRE_GPU=1`; that is
+pending: CI's env, `run.sh` and `ci.sh` set only `STRAND_REQUIRE_GPU`
+today, and the integrator adds `STRAND_GPU_SOFTWARE=1` with S-gpu's
+first test that needs it. The adapter is requested with
 `PowerPreference::HighPerformance`, so a hardware adapter wins when both
 exist. The thread waits on its
 channel and on presents, never on a timer: it does not decide when to
@@ -2398,8 +2405,9 @@ binary carries out):
   { reason }`. Every promoted surface goes back to the CPU at once (it
   cannot wait for a settled frame) with a full repaint. Render asks
   again at most once per 30 s while demand lasts.
-- Under `reduced_motion` time leaves read 0, so a shader's clock stops
-  and its pass runs only when its uniforms change.
+- Under `reduced_motion` the clock stops at `t = 0`
+  (`TimeContext::frozen`), so a shader's `time` reads 0 and its pass
+  runs only when its uniforms change.
 
 **Backends** (`strand_scene::Backend`, what `Renderer::set_backend(surface,
 Backend)` is told once the GPU thread answers):
@@ -2476,17 +2484,24 @@ that builds each one records its knobs) or `File(Arc<ShaderCode>)`. `ShaderInput
 `shader` node draws in its box), `Content` (a `filter:` pass gets its
 subtree's pixels: the F4 cached group) or `Backdrop` (`backdrop:
 glass()` gets what is under it in the surface). Render packs `uniforms`
-each frame from the springing `Prop::Uniforms` in the code's slot order.
+each frame from the springing `Prop::Uniforms` in the code's slot order,
+in buffer units (the ABI's, below), so they are what the GPU uploads.
 The reach of a bundled pass is its own (bloom's radius, chromatic's
 offset, wobble's amplitude: each effect's builder puts it in uniform
-slot 0, which `Bundled::reach` reads); a file's pass draws inside its
+slot 0, which `Bundled::reach(uniforms, scale)` reads and divides by
+the scale back to logical pixels); a file's pass draws inside its
 box. As landed in 0b, `Bundled` has nine variants for the eight
 effects, CRT and chromatic aberration being two spellings (`bloom`,
 `glass`, `particles`, `tilt`, `wobble`, `crt`, `chromatic`, `aurora`,
 `backdrop_blur`), and `ShaderCode { path, wgsl, uniforms:
-Vec<UniformSlot { name, ty: UniformType, offset } > }` holds the file
-without the prelude (`ShaderCode::module()` prepends it; offsets are in
-`f32`s and follow WGSL's uniform layout, filled by the checker).
+Vec<UniformSlot { name, ty: UniformType, binding, offset } > }` holds
+the file without the prelude (`ShaderCode::module()` prepends it). The
+checker fills the slots with `ShaderCode::packed`: in binding order,
+`offset` the slot's first `f32` in `ShaderPass::uniforms`, dense (each
+slot starts where the previous one ends). There is no packed WGSL
+block, so no WGSL layout rule applies: the GPU thread copies each
+slot's floats to its own binding's range, aligned to the device's
+`min_uniform_buffer_offset_alignment`.
 
 The ABI (the prelude `strand_scene::shader::PRELUDE`, prepended by the
 checker and by the GPU thread alike): Strand supplies the vertex stage
@@ -2497,7 +2512,9 @@ Strand` (`time` in seconds since the node appeared, `size` in buffer
 pixels, `scale`, `pointer` in buffer pixels relative to the box or -1
 when outside), `strand_input` (`texture_2d<f32>`, 1×1 transparent for
 `None`) and `strand_sampler`. `@group(1)` holds the file's `u_*`
-uniforms at any binding. Values arrive as `f32`: lengths in px × scale,
+uniforms, each its own `var<uniform>` of type `f32` or `vec2`–`vec4<f32>`
+at a binding the file picks (one value per binding, not a struct).
+Values arrive as `f32` in buffer units: lengths in px × scale,
 angles in radians, durations in seconds, colours premultiplied linear
 `vec4`.
 

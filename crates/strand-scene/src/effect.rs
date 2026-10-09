@@ -48,14 +48,21 @@ impl Bundled {
     /// How far the pass draws past its bounds, in logical pixels: its
     /// first uniform for `bloom` (the radius), `chromatic` (the offset)
     /// and `wobble` (the amplitude), which the effect's builder puts in
-    /// slot 0; the others draw inside their bounds.
-    pub fn reach(self, uniforms: &[f32]) -> f32 {
+    /// slot 0; the others draw inside their bounds. `uniforms` are buffer
+    /// values (lengths in px × `scale`, the ABI's units), so the length
+    /// is divided by `scale`; a scale that is not positive counts as 1.
+    pub fn reach(self, uniforms: &[f32], scale: f32) -> f32 {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
         match self {
             Bundled::Bloom | Bundled::Chromatic | Bundled::Wobble => uniforms
                 .first()
                 .copied()
                 .filter(|v| v.is_finite())
-                .map_or(0.0, |v| v.abs()),
+                .map_or(0.0, |v| v.abs() / scale),
             Bundled::Glass
             | Bundled::Particles
             | Bundled::Tilt
@@ -90,7 +97,9 @@ pub enum ShaderInput {
 
 /// A shader run as an effect: a bundled GPU effect or a `.wgsl` file's
 /// pass. Render packs `uniforms` each frame from the springing
-/// [`crate::Prop::Uniforms`] in the code's slot order.
+/// [`crate::Prop::Uniforms`] in the code's slot order, in buffer units
+/// (lengths in px × the surface's scale; see
+/// [`crate::shader::UniformType`]), so they are what the GPU uploads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShaderPass {
     pub code: ShaderRef,
@@ -99,11 +108,11 @@ pub struct ShaderPass {
 }
 
 impl ShaderPass {
-    /// How far the pass draws past its bounds, in logical pixels (a
-    /// file's pass draws inside its box).
-    pub fn reach(&self) -> f32 {
+    /// How far the pass draws past its bounds, in logical pixels, on a
+    /// surface at `scale` (a file's pass draws inside its box).
+    pub fn reach(&self, scale: f32) -> f32 {
         match &self.code {
-            ShaderRef::Bundled(b) => b.reach(&self.uniforms),
+            ShaderRef::Bundled(b) => b.reach(&self.uniforms, scale),
             ShaderRef::File(_) => 0.0,
         }
     }
@@ -171,13 +180,14 @@ pub enum Effect {
 
 impl Effect {
     /// How far the effect spreads damage past its group's bounds, in
-    /// logical pixels: three standard deviations for a blur (where a
-    /// Gaussian has fallen under 1/255), a bundled pass's own reach, and
-    /// nothing for colour, blend, mask and opacity.
-    pub fn reach(&self) -> Insets {
+    /// logical pixels, on a surface at `scale`: three standard deviations
+    /// for a blur (where a Gaussian has fallen under 1/255), a bundled
+    /// pass's own reach (its uniforms are in buffer units), and nothing
+    /// for colour, blend, mask and opacity.
+    pub fn reach(&self, scale: f32) -> Insets {
         let r = match self {
             Effect::Blur { radius } if radius.is_finite() => (3.0 * radius.abs()).ceil(),
-            Effect::Shader(pass) => pass.reach(),
+            Effect::Shader(pass) => pass.reach(scale),
             Effect::Blur { .. }
             | Effect::ColorMatrix(_)
             | Effect::Blend(_)
@@ -189,8 +199,8 @@ impl Effect {
 
     /// The reach of a stack of effects, applied in order: each spreads
     /// what the ones inside it reached.
-    pub fn reach_of(effects: &[Effect]) -> Insets {
-        let total = effects.iter().map(|e| e.reach().top).sum();
+    pub fn reach_of(effects: &[Effect], scale: f32) -> Insets {
+        let total = effects.iter().map(|e| e.reach(scale).top).sum();
         Insets::all(total)
     }
 }
@@ -213,13 +223,19 @@ mod tests {
 
     #[test]
     fn reach_grows_damage_by_each_effect() {
-        assert_eq!(Effect::Blur { radius: 10.0 }.reach(), Insets::all(30.0));
-        assert_eq!(Effect::Blur { radius: 0.4 }.reach(), Insets::all(2.0));
-        assert_eq!(Effect::Blur { radius: f32::NAN }.reach(), Insets::all(0.0));
-        assert_eq!(Effect::Opacity(0.5).reach(), Insets::default());
-        assert_eq!(Effect::Blend(BlendMode::Screen).reach(), Insets::default());
+        assert_eq!(Effect::Blur { radius: 10.0 }.reach(1.0), Insets::all(30.0));
+        assert_eq!(Effect::Blur { radius: 0.4 }.reach(1.0), Insets::all(2.0));
         assert_eq!(
-            Effect::ColorMatrix(IDENTITY_MATRIX).reach(),
+            Effect::Blur { radius: f32::NAN }.reach(1.0),
+            Insets::all(0.0)
+        );
+        assert_eq!(Effect::Opacity(0.5).reach(1.0), Insets::default());
+        assert_eq!(
+            Effect::Blend(BlendMode::Screen).reach(1.0),
+            Insets::default()
+        );
+        assert_eq!(
+            Effect::ColorMatrix(IDENTITY_MATRIX).reach(1.0),
             Insets::default()
         );
         assert_eq!(
@@ -227,7 +243,7 @@ mod tests {
                 edge: Edge::Bottom,
                 len: 24.0
             })
-            .reach(),
+            .reach(1.0),
             Insets::default()
         );
         let pass = |b, u: &[f32]| {
@@ -238,12 +254,15 @@ mod tests {
             })
         };
         assert_eq!(
-            pass(Bundled::Bloom, &[12.0, 0.5]).reach(),
+            pass(Bundled::Bloom, &[12.0, 0.5]).reach(1.0),
             Insets::all(12.0)
         );
-        assert_eq!(pass(Bundled::Chromatic, &[-3.0]).reach(), Insets::all(3.0));
-        assert_eq!(pass(Bundled::Wobble, &[]).reach(), Insets::all(0.0));
-        assert_eq!(pass(Bundled::Crt, &[9.0]).reach(), Insets::all(0.0));
+        assert_eq!(
+            pass(Bundled::Chromatic, &[-3.0]).reach(1.0),
+            Insets::all(3.0)
+        );
+        assert_eq!(pass(Bundled::Wobble, &[]).reach(1.0), Insets::all(0.0));
+        assert_eq!(pass(Bundled::Crt, &[9.0]).reach(1.0), Insets::all(0.0));
         let file = Effect::Shader(ShaderPass {
             code: ShaderRef::File(Arc::new(ShaderCode {
                 path: "a.wgsl".into(),
@@ -253,11 +272,21 @@ mod tests {
             uniforms: Arc::from([5.0f32].as_slice()),
             input: ShaderInput::None,
         });
-        assert_eq!(file.reach(), Insets::default());
+        assert_eq!(file.reach(1.0), Insets::default());
         assert_eq!(
-            Effect::reach_of(&[Effect::Blur { radius: 2.0 }, pass(Bundled::Bloom, &[4.0])]),
+            Effect::reach_of(
+                &[Effect::Blur { radius: 2.0 }, pass(Bundled::Bloom, &[4.0])],
+                1.0
+            ),
             Insets::all(10.0)
         );
+        // Uniforms are buffer values: bloom(12) at scale 2 packs 24 and
+        // still reaches 12 logical pixels; at 0.5 it packs 6.
+        assert_eq!(pass(Bundled::Bloom, &[24.0]).reach(2.0), Insets::all(12.0));
+        assert_eq!(pass(Bundled::Bloom, &[6.0]).reach(0.5), Insets::all(12.0));
+        assert_eq!(pass(Bundled::Bloom, &[6.0]).reach(0.0), Insets::all(6.0));
+        // A blur's radius is logical already.
+        assert_eq!(Effect::Blur { radius: 10.0 }.reach(2.0), Insets::all(30.0));
         assert_eq!(ShaderInput::default(), ShaderInput::None);
     }
 

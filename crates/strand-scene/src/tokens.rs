@@ -142,8 +142,12 @@ pub enum TokenExpr {
 
 /// (M4) What a node's time leaves read: [`TokenExpr::Time`],
 /// [`TokenExpr::Index`] and [`TokenExpr::Count`]. Render builds one per
-/// node per frame ([`TokenScope::with_time`]); without one, and under
-/// `reduced_motion`, every time leaf reads 0.
+/// node per frame ([`TokenScope::with_time`]). Every leaf is evaluated
+/// at the context's `t`: without a context it is the default (`t`,
+/// `index` and `count` all 0), and under `reduced_motion` it is
+/// [`TimeContext::frozen`], so a time signal holds its value at `t = 0`
+/// (`wave(…)` with phase 0 and `noise(t * k)` read 0) while per-letter
+/// layout (`x: index * 8`) is kept.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct TimeContext {
     /// Seconds since the node appeared.
@@ -161,6 +165,16 @@ impl TimeContext {
             t,
             index: 0,
             count: 0,
+        }
+    }
+
+    /// `reduced_motion`'s context: the clock stopped at `t = 0`, a
+    /// letter's `index` and `count` kept (0 and 0 outside `letters`).
+    pub const fn frozen(index: u32, count: u32) -> Self {
+        Self {
+            t: 0.0,
+            index,
+            count,
         }
     }
 }
@@ -544,8 +558,9 @@ impl<'a> TokenScope<'a> {
 
     /// (M4) The same scope reading `time` for its time leaves (a node's
     /// clock and, in a `letters` block, the letter's index and count).
-    /// Render passes `None` under `reduced_motion`, which freezes every
-    /// time signal at 0.
+    /// `None` reads as [`TimeContext::default`]. Under `reduced_motion`
+    /// render passes [`TimeContext::frozen`], which stops the clock at
+    /// `t = 0` and keeps a letter's `index` and `count`.
     pub fn with_time(self, time: Option<TimeContext>) -> Self {
         Self { time, ..self }
     }
@@ -553,6 +568,12 @@ impl<'a> TokenScope<'a> {
     /// (M4) What this scope's time leaves read.
     pub fn time(&self) -> Option<TimeContext> {
         self.time
+    }
+
+    /// The context time leaves read: with none, `t`, `index` and `count`
+    /// are all 0.
+    fn clock(&self) -> TimeContext {
+        self.time.unwrap_or_default()
     }
 
     /// Evaluates the token at `path` in this scope.
@@ -646,6 +667,27 @@ impl<'a> TokenScope<'a> {
                     })
                     .collect::<Option<_>>()?,
             ),
+            PropValue::Keyframes(k) => {
+                let stops = k
+                    .stops
+                    .iter()
+                    .map(|(at, props)| {
+                        props
+                            .iter()
+                            .map(|(p, v)| {
+                                self.resolve_in(v, depth, budget)
+                                    .map(|v| (*p, v.into_owned()))
+                            })
+                            .collect::<Option<_>>()
+                            .map(|props| (*at, props))
+                    })
+                    .collect::<Option<_>>()?;
+                PropValue::Keyframes(std::sync::Arc::new(crate::protocol::Keyframes {
+                    stops,
+                    name: k.name.clone(),
+                    ..**k
+                }))
+            }
             v => v.clone(),
         }))
     }
@@ -833,28 +875,20 @@ impl<'a> TokenScope<'a> {
                 }
                 Some(v)
             }
-            TokenExpr::Time => Some(PropValue::Number(self.time.map_or(0.0, |c| c.t))),
-            TokenExpr::Index => Some(PropValue::Number(self.time.map_or(0.0, |c| c.index as f32))),
-            TokenExpr::Count => Some(PropValue::Number(self.time.map_or(0.0, |c| c.count as f32))),
+            TokenExpr::Time => Some(PropValue::Number(self.clock().t)),
+            TokenExpr::Index => Some(PropValue::Number(self.clock().index as f32)),
+            TokenExpr::Count => Some(PropValue::Number(self.clock().count as f32)),
             TokenExpr::Wave { period, phase } => {
-                let Some(ctx) = self.time else {
-                    return Some(PropValue::Number(0.0));
-                };
                 let phase = num(phase)?;
                 let period = period.as_secs_f32();
                 if period <= 0.0 {
                     return None;
                 }
-                let turns = ctx.t / period + phase;
+                let turns = self.clock().t / period + phase;
                 let v = 0.5 - 0.5 * (std::f32::consts::TAU * turns).cos();
                 v.is_finite().then_some(PropValue::Number(v))
             }
-            TokenExpr::Noise(x) => {
-                if self.time.is_none() {
-                    return Some(PropValue::Number(0.0));
-                }
-                Some(PropValue::Number(noise(num(x)?)))
-            }
+            TokenExpr::Noise(x) => Some(PropValue::Number(noise(num(x)?))),
         }
     }
 }
@@ -1081,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_time_context_every_time_leaf_reads_zero() {
+    fn without_a_time_context_time_leaves_read_t_zero() {
         let t = table();
         let levels = [&t];
         let scope = TokenScope::new(&levels);
@@ -1090,15 +1124,53 @@ mod tests {
             TokenExpr::Time,
             TokenExpr::Index,
             TokenExpr::Count,
-            wave(1600, n(0.25)),
+            wave(1600, n(0.0)),
             TokenExpr::Noise(Box::new(mul(TokenExpr::Time, n(3.3)))),
-            TokenExpr::Noise(Box::new(n(0.5))),
         ] {
             assert_eq!(number(scope, &e), 0.0, "{e:?}");
-            // `reduced_motion`: render passes `None` explicitly.
             assert_eq!(number(scope.with_time(None), &e), 0.0, "{e:?}");
         }
+        // Every leaf is its value at t = 0: a phased wave holds its phase,
+        // noise of a constant is that noise.
+        assert!((number(scope, &wave(1600, n(0.25))) - 0.5).abs() < 1e-6);
+        let still = TokenExpr::Noise(Box::new(n(0.5)));
+        assert_eq!(number(scope, &still), noise(0.5));
         assert_eq!(t.eval(&TokenExpr::Time), Some(PropValue::Number(0.0)));
+    }
+
+    #[test]
+    fn reduced_motion_stops_the_clock_and_keeps_letters() {
+        let t = table();
+        let levels = [&t];
+        let frozen = TokenScope::new(&levels).with_time(Some(TimeContext::frozen(3, 8)));
+        let moving = TokenScope::new(&levels).with_time(Some(TimeContext {
+            t: 1.7,
+            index: 3,
+            count: 8,
+        }));
+        assert_eq!(number(frozen, &TokenExpr::Time), 0.0);
+        assert_eq!(number(frozen, &wave(2000, n(0.0))), 0.0);
+        assert_eq!(
+            number(
+                frozen,
+                &TokenExpr::Noise(Box::new(mul(TokenExpr::Time, n(3.3))))
+            ),
+            0.0
+        );
+        // `letters { x: index * 8 }` and `index / count` keep their layout.
+        let x = mul(TokenExpr::Index, n(8.0));
+        assert_eq!(number(frozen, &x), 24.0);
+        assert_eq!(number(frozen, &x), number(moving, &x));
+        let share = TokenExpr::Binary {
+            op: BinOp::Div,
+            lhs: Box::new(TokenExpr::Index),
+            rhs: Box::new(TokenExpr::Count),
+        };
+        assert_eq!(number(frozen, &share), 0.375);
+        // A staggered wave is still: the same value at any frozen frame.
+        let stagger = wave(1000, mul(TokenExpr::Index, n(0.1)));
+        let expect = 0.5 - 0.5 * (std::f32::consts::TAU * 0.3).cos();
+        assert!((number(frozen, &stagger) - expect).abs() < 1e-6);
     }
 
     #[test]
@@ -1223,6 +1295,51 @@ mod tests {
             PropValue::Token(TokenExpr::path("nope")),
         )]);
         assert!(t.resolve(&broken).is_none());
+    }
+
+    #[test]
+    fn keyframe_stops_resolve_and_read_time() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use crate::protocol::Keyframes;
+
+        let t = table();
+        let levels = [&t];
+        // keyframes pulse { 0% { bg: $fg } 50% { x: t * 2 } }
+        let mut k = Keyframes::new("pulse", 4, Duration::from_millis(600));
+        k.repeat = None;
+        k.stops = vec![
+            (
+                0.0,
+                vec![(Prop::Bg, PropValue::Token(TokenExpr::path("fg")))],
+            ),
+            (
+                0.5,
+                vec![(Prop::X, PropValue::Token(mul(TokenExpr::Time, n(2.0))))],
+            ),
+        ];
+        let v = PropValue::Keyframes(Arc::new(k.clone()));
+        assert!(v.has_tokens());
+        assert!(v.reads_time(), "a stop reading `t` is frame-driven");
+        let scope = TokenScope::new(&levels).with_time(Some(TimeContext::at(1.5)));
+        let PropValue::Keyframes(out) = scope.resolve(&v).unwrap().into_owned() else {
+            panic!("still keyframes");
+        };
+        assert_eq!(
+            out.stops,
+            vec![
+                (0.0, vec![(Prop::Bg, PropValue::Color(Color::WHITE))]),
+                (0.5, vec![(Prop::X, PropValue::Number(3.0))]),
+            ]
+        );
+        assert_eq!(
+            (&out.name, out.seq, out.repeat, out.duration),
+            (&k.name, k.seq, None, k.duration)
+        );
+        // A stop that fails fails the whole value.
+        k.stops[0].1[0].1 = PropValue::Token(TokenExpr::path("nope"));
+        assert!(t.resolve(&PropValue::Keyframes(Arc::new(k))).is_none());
     }
 
     #[test]
