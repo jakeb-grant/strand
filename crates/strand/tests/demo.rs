@@ -1490,7 +1490,17 @@ fn the_design_launcher_scrolls_2000_apps() {
     let over = (x as u32, ((top + bottom) / 2) as u32);
     pointer.motion(over.0, over.1, w, h);
     std::thread::sleep(Duration::from_millis(200));
-    let before = damage_lines(&log).len();
+    // A damage line's count `name=` (render's list frames so far).
+    let field = |l: &str, name: &str| -> u64 {
+        l.split_whitespace()
+            .find_map(|f| f.strip_prefix(name)?.strip_prefix('='))
+            .and_then(|g| g.parse().ok())
+            .unwrap_or_else(|| panic!("no {name}= in {l}"))
+    };
+    let lines = damage_lines(&log);
+    let before = lines.len();
+    let stalls_before = lines.last().map_or(0, |l| field(l, "stalls"));
+    assert_eq!(lines.last().map(|l| field(l, "top")), Some(0));
     for _ in 0..60 {
         pointer.wheel(10, over.0, over.1, w, h);
         std::thread::sleep(Duration::from_millis(25));
@@ -1500,19 +1510,22 @@ fn the_design_launcher_scrolls_2000_apps() {
     let scrolled = lines.len() - before;
     assert!(scrolled >= 20, "{scrolled} frames while scrolling");
     // Every frame reports render's gap count, and none showed a gap.
-    let gaps: Vec<u64> = lines
-        .iter()
-        .map(|l| {
-            l.split_whitespace()
-                .find_map(|f| f.strip_prefix("gaps="))
-                .and_then(|g| g.parse().ok())
-                .unwrap_or_else(|| panic!("no gaps= in {l}"))
-        })
-        .collect();
+    let gaps: Vec<u64> = lines.iter().map(|l| field(l, "gaps")).collect();
     assert!(
         gaps.iter().all(|g| *g == 0),
         "frames showed a gap: {gaps:?}"
     );
+    // The view went far past the rows logic mounted at first (rows 0..32,
+    // `DEFAULT_LIST_WINDOW`): the wheel's windows reached logic and its
+    // rows came back, about 190 rows down.
+    let last = lines.last().expect("frames");
+    let top = field(last, "top");
+    assert!(top >= 100, "the view stopped at row {top}: {last}");
+    // And no frame held the view at the mounted rows' edge waiting for
+    // them.
+    let stalls = field(last, "stalls") - stalls_before;
+    eprintln!("wheel: {scrolled} frames, top row {top}, {stalls} stalled");
+    assert_eq!(stalls, 0, "frames stalled for logic's rows");
     // Settled far down: the rows still fill the list, none selected
     // (the selected first row is far above).
     let b2 = boxed(&shot).expect("the launcher is still open");
@@ -1557,11 +1570,13 @@ fn the_design_launcher_scrolls_2000_apps() {
     );
     let lines = damage_lines(&log);
     assert!(
-        lines
-            .iter()
-            .all(|l| l.split_whitespace().any(|f| f == "gaps=0")),
+        lines.iter().all(|l| field(l, "gaps") == 0),
         "a frame showed a gap"
     );
+    // The last rows are in view: the first of them about eight rows
+    // (420 px of 48 px rows) above the last app.
+    let top = field(lines.last().expect("frames"), "top");
+    assert!((1988..2000).contains(&top), "top row {top}");
     drop(keyboard);
     drop(strand);
 }
