@@ -7,13 +7,24 @@ for the reasoning behind each item below.
 
 ## State
 
-- `main` is at the wave 4 merge (`503967f`): M0, M1, M2 and M3 are complete
-  and CI is green on it (run 37821722003, `check` and `compositors`).
+- `main` is at the laptop integration merge (`b87865a`, "Merge
+  laptop/trim into laptop/integration"): M0, M1, M2 and M3 are complete
+  and CI is green on it (run 37887410210: `lint`, `test`, `budgets`,
+  `acceptance`, `timing` and `compositors`).
 - `docs/features.md`: M0 21/21, M1 56/59, M2 30/30, M3 14/14 (exit line
   included), M4 0/17, M5 0/9. The three open M1 boxes are owned by later
   milestones (below).
-- Work is paused at the owner's request. The open decisions that blocked
-  M4 are settled (below, 2026-10-08).
+- Work moved from the cloud dev container to the owner's laptop, where
+  every build and test runs through the container suite
+  (`scripts/container/`, CLAUDE.md; decisions.md laptop-container). Its
+  wall-clock timing steps are advisory there; GitHub's `timing` job is
+  the latency reference (decisions.md laptop-open).
+- The `wave4/*` and `laptop/*` remote branches merged into `main` are
+  deleted (as of 2026-10-08 only `origin/main` remained).
+- The four open decisions that blocked M4 are answered (below,
+  2026-10-08), and so are the later ones: the audio read again is kept
+  with no upstream report, and COSMIC is out of scope (decisions.md
+  laptop-open).
 
 ## Owner decisions (answered 2026-10-08)
 
@@ -74,7 +85,10 @@ and the full shell warns above 64 MB and fails above 70 MB
     `peak_meters_run_only_while_asked_for` timeouts (12 of 70 loaded
     runs), 0 of 40 after; CI's
     `devices_volume_mute_and_the_default_arrive` has the same shape but
-    did not reproduce itself (0 of 300).
+    did not reproduce itself (0 of 300). Reviewed by the owner and kept;
+    no upstream report: the dropped update is a side effect of
+    `module-metadata`'s deliberate replay filter, not a PipeWire bug
+    (decisions.md laptop-open).
   - Fixed at the cause: `strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
     (raced the text worker; the test holds the worker now).
   - Fixed: `strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
@@ -119,18 +133,16 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### Known limits, recorded and not M3 blockers
 
-- No IPC adapter for labwc, COSMIC, wayfire or river. Since branch
+- No IPC adapter for labwc, wayfire or river. Since branch
   `laptop/toplevel`, `zwlr_foreign_toplevel_management_v1` is the fallback
   for windows: `windows.focused`, `minimized`, `fullscreen` and
   `win.focus()`/`close()`/`minimize()` work on labwc (checked live in the
   compositor matrix) and should on wayfire and river (not run here).
-  Still limited: COSMIC offers only `ext-foreign-toplevel-list`, so
-  `windows.focused` is null and window actions answer `Unsupported`
-  there; no window has a `workspace` without an adapter (no standard
-  protocol relates the two); the wlr protocol has no identifier, so a
-  window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is joined
-  by app id and title and is missing while twins disagree; maximize and
-  fullscreen toggles are not language actions (decisions.md
+  Still limited: no window has a `workspace` without an adapter (no
+  standard protocol relates the two); the wlr protocol has no identifier,
+  so a window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is
+  joined by app id and title and is missing while twins disagree;
+  maximize and fullscreen toggles are not language actions (decisions.md
   laptop-toplevel); `wm.config_reloaded` never fires without IPC; and
   the design bar's pixel test does not run on labwc (only the stores
   test does).
@@ -151,6 +163,12 @@ and the full shell warns above 64 MB and fails above 70 MB
   device that reused its id by `node.name` (`Write::held`); a device
   replugged under its freed id with the same node name counts as the same
   device.
+
+Out of scope, not a limit (owner's decision, 2026-10-08; decisions.md
+laptop-open): COSMIC, a full desktop with its own shell; people who build
+a custom shell run bare compositors. Strand still runs there; with only
+`ext-foreign-toplevel-list`, `windows.focused` stays null and window
+actions answer `Unsupported`.
 
 Closed on `laptop/services` (2026-10-08; decisions.md, laptop-services):
 `DeviceRef::Id` carries `object.serial`; the audio thread no longer stays
@@ -180,16 +198,18 @@ keeps one D-Bus connection per bus.
 
 ## Handoff checklist
 
-- [ ] CI green on `main`'s head (`gh run list --repo jakeb-grant/strand -L 3`).
-- [ ] Local checks from `CLAUDE.md` pass: `cargo fmt --all`,
-  `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo test --workspace` with `STRAND_REQUIRE_SWAY=1`,
-  `STRAND_REQUIRE_DBUS=1` and `STRAND_REQUIRE_PIPEWIRE=1`
-  (needs sway, grim, dbus-daemon, python3-dbusmock, pipewire, wireplumber).
+- [x] CI green on `main`'s head (`gh run list --repo jakeb-grant/strand -L 3`):
+  run 37887410210 on `b87865a`.
+- [ ] Local checks pass through the container suite (CLAUDE.md):
+  `scripts/container/run.sh ci` exits 0 (timing steps may warn;
+  `STRAND_STRICT_TIMING=1` to enforce them), and
+  `scripts/container/matrix.sh` for the compositors job. `run.sh ci`
+  passed on 2026-10-08 at `b87865a` (laptop/gates: reload_latency warned);
+  `matrix.sh` was not re-run then.
 - [x] Open decisions 1–4 answered and recorded in `docs/decisions.md`
-  (laptop-decisions).
-- [ ] Remote branches `wave4/core`, `wave4/exit-ci` and `wave4/wm` deleted.
-  Each is fully contained in `main` (0 commits missing as of 2026-10-08).
+  (laptop-decisions); the audio read again and COSMIC too (laptop-open).
+- [x] Remote branches `wave4/*` and the merged `laptop/*` streams
+  deleted.
 - [ ] README status, `docs/features.md` and `docs/m3-report.md` still
   agree with the code.
 - [ ] `scripts/m3-shots.sh` re-run if the shell's look changed; the images

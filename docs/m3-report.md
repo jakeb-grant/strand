@@ -496,7 +496,10 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   `audio::REREAD` (250 ms) after client churn or a cleared default:
   0 of 40 loaded runs fail, and
   `a_lost_default_update_comes_back_on_a_read_again` loses a set and a
-  clear on purpose and shows the read bringing both back.
+  clear on purpose and shows the read bringing both back. The owner
+  reviewed the read again and keeps it; no report goes upstream (the
+  drop is a side effect of a deliberate PipeWire choice; decisions.md
+  laptop-open).
 - A CI flake in the debug workspace step: run 37810171999 (`522f6ae`)
   failed `crates/strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
   with "round 3 (style 3): a blank frame". Style 3 deletes a file and

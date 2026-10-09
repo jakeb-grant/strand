@@ -62,6 +62,42 @@ const BUDGET: Duration = Duration::from_millis(5);
 /// quarter of a 60 Hz frame), optimised.
 const BLEND_BUDGET: Duration = Duration::from_micros(4_000);
 
+/// The start of every wall-clock gate's failure message: the laptop's
+/// container suite warns, instead of failing, only on failures that all
+/// carry it (`scripts/container/gate-misses.sh`; decisions.md
+/// laptop-open). Functional assertions never carry it.
+const GATE_MISS: &str = "timing gate missed";
+
+/// A test's wall-clock gate verdicts, collected while it runs and held
+/// once at its end (`Gates::hold`), after every functional assertion
+/// and clean-up: a gate missed early (advisory on the laptop) never
+/// stops the functional checks after it, which stay strict, and the
+/// one failure names every clause that missed (decisions.md
+/// laptop-open, "gate verdicts are held at the end").
+#[derive(Default)]
+struct Gates(Vec<String>);
+
+impl Gates {
+    /// Records a miss, stated by `miss`, unless `met`.
+    fn check(&mut self, met: bool, miss: impl FnOnce() -> String) {
+        if !met {
+            self.0.push(miss());
+        }
+    }
+
+    /// The failure message, marker first, if any gate missed.
+    fn verdict(&self) -> Option<String> {
+        (!self.0.is_empty()).then(|| format!("{GATE_MISS}: {}", self.0.join("\n")))
+    }
+
+    /// Fails with `verdict`'s message if any gate missed.
+    fn hold(self) {
+        if let Some(miss) = self.verdict() {
+            panic!("{miss}");
+        }
+    }
+}
+
 /// Swaps measured per case: `optimised` where the gate is the budget
 /// (a median of 31 moves only when most of them do), half as many in a
 /// debug build, whose gate is a check of the work's shape and whose run
@@ -335,14 +371,18 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
         };
         report.push((median, from, to));
     }
-    let gate = gate();
-    for (median, from, to) in report {
-        assert!(
-            median < gate,
-            "{from} → {to}: {median:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
-        );
-    }
+    // The clean-up's storage check runs before the gates are held.
     finish(shell, dir, storage);
+    let gate = gate();
+    let mut gates = Gates::default();
+    for (median, from, to) in report {
+        gates.check(median < gate, || {
+            format!(
+                "{from} → {to}: {median:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
+            )
+        });
+    }
+    gates.hold();
 }
 
 /// A table for the crossfade: the built-in base tokens over a Material
@@ -519,6 +559,8 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
     let gate = gate();
     // Blending is held to its budget in optimised builds only (below).
     let blend_gated = !cfg!(debug_assertions);
+    // Held after both ages have run their functional checks.
+    let mut gates = Gates::default();
     for double in [false, true] {
         let age = if double { 2 } else { 1 };
         let (m, blend) = {
@@ -537,19 +579,18 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
             );
             (m, blend)
         };
-        assert!(
-            m < gate,
-            "age {age}: {m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
-        );
+        gates.check(m < gate, || {
+            format!("age {age}: {m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)")
+        });
         // A per-byte loop runs some twenty times slower unoptimised: the
         // blend is held to its budget in optimised builds only (CI).
         if blend_gated {
-            assert!(
-                blend < BLEND_BUDGET,
-                "{blend:?} blending a frame, over {BLEND_BUDGET:?}"
-            );
+            gates.check(blend < BLEND_BUDGET, || {
+                format!("age {age}: {blend:?} blending a frame, over {BLEND_BUDGET:?}")
+            });
         }
     }
+    gates.hold();
 }
 
 /// Light and dark tables of the default seed, both with
@@ -720,21 +761,46 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
             report.push((scopes, stiffness, apply, each, whole));
         }
     }
+    // Held after every case has run its functional checks.
+    let mut gates = Gates::default();
     for (scopes, stiffness, apply, each, whole) in report {
+        let case = format!("{scopes} scopes, spring({stiffness}, 1)");
         if whole_gated(scopes, stiffness) {
-            assert!(
-                whole < gate,
-                "{scopes} scopes, spring({stiffness}, 1): {whole:?} of work in all, over {gate:?}"
-            );
+            gates.check(whole < gate, || {
+                format!("{case}: {whole:?} of work in all, over {gate:?}")
+            });
         }
         let apply_gate = apply_gate(scopes);
-        assert!(
-            apply < apply_gate,
-            "{scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {apply_gate:?}"
-        );
-        assert!(
-            each < gate_frame,
-            "{scopes} scopes, spring({stiffness}, 1): {each:?} per frame, over {gate_frame:?}"
-        );
+        gates.check(apply < apply_gate, || {
+            format!("{case}: apply {apply:?}, over {apply_gate:?}")
+        });
+        gates.check(each < gate_frame, || {
+            format!("{case}: {each:?} per frame, over {gate_frame:?}")
+        });
     }
+    gates.hold();
+}
+
+/// Gate verdicts are held at the end: met gates pass; misses are all
+/// named in one failure that starts with the marker.
+#[test]
+fn gate_verdicts_are_held_until_the_end() {
+    // Checked through `verdict`, not a caught panic: a marked panic in
+    // the log would count as a gate miss in `gate-misses.sh`.
+    let mut gates = Gates::default();
+    gates.check(true, || unreachable!("a met gate states no miss"));
+    assert_eq!(gates.verdict(), None);
+    gates.check(false, || "first".into());
+    gates.check(true, || unreachable!("a met gate states no miss"));
+    gates.check(false, || "second".into());
+    assert_eq!(gates.verdict(), Some(format!("{GATE_MISS}: first\nsecond")));
+    Gates::default().hold();
+}
+
+/// The container suite's gate-miss check reads the marker these gates'
+/// failures start with.
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
 }

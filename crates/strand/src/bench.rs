@@ -71,6 +71,12 @@ use crate::live::Worker;
 use crate::run::tests::p95;
 use crate::run::{Live, ToLogic, logic};
 
+/// The start of every wall-clock gate's failure message here and in
+/// `run.rs`: the laptop's container suite warns, instead of failing, only
+/// on failures that all carry it (`scripts/container/gate-misses.sh`;
+/// decisions.md laptop-open). Functional assertions never carry it.
+pub(crate) const GATE_MISS: &str = "timing gate missed";
+
 /// A headless sway of the test's own, killed on drop (also the reload
 /// fuzzer's).
 pub(crate) struct Sway {
@@ -870,7 +876,7 @@ fn reload_latency_to_the_presented_frame() {
             ));
         }
     }
-    assert!(failed.is_empty(), "{}", failed.join("\n"));
+    assert!(failed.is_empty(), "{GATE_MISS}: {}", failed.join("\n"));
 }
 
 /// The vblank model is the exact p95 of each sample plus a uniform wait
@@ -887,4 +893,12 @@ fn the_monitor_model_is_the_exact_p95() {
         on_a_monitor(&shifted, 16.667),
         on_a_monitor(&s, 16.667) + 1.5
     ));
+}
+
+/// The container suite's gate-miss check reads the marker these gates'
+/// failures start with.
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
 }
