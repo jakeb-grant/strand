@@ -654,6 +654,28 @@ mod tests {
         assert_eq!(s.types.record(stub).fields.len(), 2);
     }
 
+    /// A field and an action may share a name (`Window`'s `fullscreen` and
+    /// `fullscreen()`); their one `DocKey::Member` holds both docs, field
+    /// first. Overloads of a function keep their first doc, as before.
+    #[test]
+    fn a_field_and_an_action_of_one_name_share_their_docs() {
+        let mut s = Schema::builtin().clone();
+        s.extend(
+            "record Lamp key id {\n  id: text\n  /// It is on.\n  lit: bool\n  \
+             /// `l.lit()` turns it on, or off when it is on.\n  action lit()\n}\n\
+             /// Rounds.\nfn halve(x: int) -> int\n/// Other.\nfn halve(x: int, y: int) -> int\n",
+        )
+        .unwrap();
+        let lamp = s.types.find_record("Lamp").unwrap();
+        assert!(s.types.record(lamp).field("lit").is_some());
+        assert!(s.types.record(lamp).method("lit").is_some());
+        assert_eq!(
+            s.doc(&DocKey::Member("Lamp".into(), "lit".into())),
+            Some("It is on.\n\n`l.lit()` turns it on, or off when it is on.")
+        );
+        assert_eq!(s.doc(&DocKey::Function("halve".into())), Some("Rounds."));
+    }
+
     #[test]
     fn a_failed_extend_changes_nothing() {
         let mut s = Schema::builtin().clone();
