@@ -428,6 +428,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 **Layout**
 
 - **Containers** on [taffy](https://github.com/DioxusLabs/taffy) 0.14: `row`, `col`, `stack`, `grid`, `scroll`, `list` (virtualised), `split` (start/centre/end with a truly centred middle), `spacer`. Flex props plus `min_*`/`max_*`. `place: absolute` when you really want coordinates.
+- **Shrinking.** In a full row or column, children give way by `shrink` (a flex factor, default 1 as in CSS). An `image` or `icon` sized in absolute lengths (`size`, `width` or `height` in px or `ch`, none of them a percentage) defaults to `shrink: 0` instead, as a CSS replaced element keeps its automatic minimum size: a 32 px icon stays 32 px beside a long label that is cut. A percentage size is relative to the container, so that image gives way as any box does; an explicit `shrink:` overrides either default.
 - **Container queries.** `when self.width < 300 { … }`, with 4 px hysteresis so it can't flicker, and at most one extra pass per frame.
 - **Hit testing** uses the rounded shape. `hit: grow(6)` enlarges it for tiny targets. Shadows enlarge the buffer but not the input region.
 
