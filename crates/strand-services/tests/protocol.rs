@@ -69,6 +69,8 @@ struct Toplevel {
     output: usize,
     activated: bool,
     minimized: bool,
+    maximized: bool,
+    fullscreen: bool,
     handles: Vec<ExtForeignToplevelHandleV1>,
     wlr: Vec<ZwlrForeignToplevelHandleV1>,
 }
@@ -82,6 +84,8 @@ impl Toplevel {
             output,
             activated: false,
             minimized: false,
+            maximized: false,
+            fullscreen: false,
             handles: Vec::new(),
             wlr: Vec::new(),
         }
@@ -89,12 +93,17 @@ impl Toplevel {
 
     /// Its wlr state array.
     fn wlr_state(&self) -> Vec<u8> {
+        use zwlr_foreign_toplevel_handle_v1::State;
         let mut values = Vec::new();
-        if self.activated {
-            values.push(u32::from(zwlr_foreign_toplevel_handle_v1::State::Activated));
-        }
-        if self.minimized {
-            values.push(u32::from(zwlr_foreign_toplevel_handle_v1::State::Minimized));
+        for (on, state) in [
+            (self.activated, State::Activated),
+            (self.minimized, State::Minimized),
+            (self.maximized, State::Maximized),
+            (self.fullscreen, State::Fullscreen),
+        ] {
+            if on {
+                values.push(u32::from(state));
+            }
         }
         values.iter().flat_map(|v| v.to_ne_bytes()).collect()
     }
@@ -615,6 +624,26 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, String> for Server {
                 if let Some(t) = state.toplevels.iter_mut().find(|t| t.ident == *ident) {
                     t.minimized = true;
                     t.activated = false;
+                    t.send_wlr_state();
+                }
+            }
+            Request::SetMaximized
+            | Request::UnsetMaximized
+            | Request::SetFullscreen { .. }
+            | Request::UnsetFullscreen => {
+                let (what, max, on) = match request {
+                    Request::SetMaximized => ("maximize", true, true),
+                    Request::UnsetMaximized => ("unmaximize", true, false),
+                    Request::SetFullscreen { .. } => ("fullscreen", false, true),
+                    _ => ("unfullscreen", false, false),
+                };
+                log(what);
+                if let Some(t) = state.toplevels.iter_mut().find(|t| t.ident == *ident) {
+                    if max {
+                        t.maximized = on;
+                    } else {
+                        t.fullscreen = on;
+                    }
                     t.send_wlr_state();
                 }
             }
@@ -1292,6 +1321,34 @@ async fn wlr_management_serves_focus_state_and_window_actions() {
     })
     .await;
     assert_eq!(c.mirror.focused_window, None);
+
+    // `win.maximize()` and `win.fullscreen()` toggle from the state the
+    // compositor sent: set, then unset.
+    for (action, what) in [
+        (
+            WmAction::MaximizeWindow as fn(String) -> WmAction,
+            "maximized",
+        ),
+        (WmAction::FullscreenWindow, "fullscreen"),
+    ] {
+        for on in [true, false] {
+            let (r, done) = WmRequest::new(action(firefox.id.clone()));
+            req_tx.send(r).unwrap();
+            assert_eq!(done.await, Ok(()));
+            c.until(what, |m| {
+                m.window_by_app("firefox").is_some_and(|w| {
+                    let state = if what == "maximized" {
+                        w.maximized
+                    } else {
+                        w.fullscreen
+                    };
+                    state == on
+                })
+            })
+            .await;
+        }
+    }
+
     let (r, done) = WmRequest::new(WmAction::CloseWindow(firefox.id.clone()));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Ok(()));
@@ -1299,7 +1356,15 @@ async fn wlr_management_serves_focus_state_and_window_actions() {
         .await;
     assert_eq!(
         *fake.wlr_requests.lock().unwrap(),
-        ["activate tl-1", "minimize tl-1", "close tl-2"]
+        [
+            "activate tl-1",
+            "minimize tl-1",
+            "maximize tl-2",
+            "unmaximize tl-2",
+            "fullscreen tl-2",
+            "unfullscreen tl-2",
+            "close tl-2"
+        ]
     );
 
     // A title change is one keyed update; an unknown window is refused.

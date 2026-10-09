@@ -16,6 +16,8 @@ record Window key id {
   focused: bool
   /// It is minimised.
   minimized: bool
+  /// It is maximised.
+  maximized: bool
   /// It is fullscreen.
   fullscreen: bool
   /// It asks for attention.
@@ -26,6 +28,11 @@ record Window key id {
   action close()
   /// Minimises it.
   action minimize()
+  /// `win.maximize()` maximises it, or restores it when it is maximised.
+  action maximize()
+  /// `win.fullscreen()` makes it fullscreen, or restores it when it is
+  /// fullscreen.
+  action fullscreen()
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.

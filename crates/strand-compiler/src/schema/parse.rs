@@ -236,6 +236,10 @@ struct Parser {
     doc_at: HashMap<usize, String>,
     /// Docs found, by what they document.
     docs: Vec<(DocKey, String)>,
+    /// Record members declared as a field, and as a method: a name in
+    /// both has its two docs joined.
+    fields_named: HashSet<DocKey>,
+    methods_named: HashSet<DocKey>,
 }
 
 type PResult<T> = Result<T, SchemaError>;
@@ -549,6 +553,7 @@ impl Parser {
         match name.as_str() {
             "fn" | "action" if !self.at(":") => {
                 let sig = self.sig(name == "action")?;
+                self.methods_named.insert(key(&sig.name));
                 self.document(key(&sig.name), doc);
                 return Ok(RawMember::Method(sig));
             }
@@ -564,6 +569,7 @@ impl Parser {
             }
             _ => {}
         }
+        self.fields_named.insert(key(&name));
         self.document(key(&name), doc);
         self.expect(":")?;
         let ty = self.ty()?;
@@ -881,6 +887,8 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
         errors: Vec::new(),
         doc_at,
         docs: Vec::new(),
+        fields_named: HashSet::new(),
+        methods_named: HashSet::new(),
     };
     let items = p.items();
     let mut errors = std::mem::take(&mut p.errors);
@@ -900,7 +908,22 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
             });
         }
     }
+    // A field and an action may share a name (`fullscreen: bool` and
+    // `action fullscreen()` on `Window`) and so one `DocKey::Member`: the
+    // hover of either shows both docs, in declaration order. Any other
+    // repeated key keeps its first doc.
+    let mut joined: Vec<(DocKey, String)> = Vec::new();
     for (key, doc) in std::mem::take(&mut p.docs) {
+        if !(p.fields_named.contains(&key) && p.methods_named.contains(&key)) {
+            schema.docs.entry(key).or_insert(doc);
+        } else if let Some((_, d)) = joined.iter_mut().find(|(k, _)| *k == key) {
+            d.push_str("\n\n");
+            d.push_str(&doc);
+        } else {
+            joined.push((key, doc));
+        }
+    }
+    for (key, doc) in joined {
         schema.docs.entry(key).or_insert(doc);
     }
     // Records refused in pass 1 (declared twice), so pass 2 leaves the

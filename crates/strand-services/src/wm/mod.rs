@@ -72,6 +72,12 @@ pub enum WmAction {
     CloseWindow(String),
     /// `win.minimize()`.
     MinimizeWindow(String),
+    /// `win.maximize()`: maximise the window, or restore it when it is
+    /// maximised (a toggle).
+    MaximizeWindow(String),
+    /// `win.fullscreen()`: make the window fullscreen, or restore it when
+    /// it is fullscreen (a toggle).
+    FullscreenWindow(String),
 }
 
 /// Why an action did not run.
@@ -199,6 +205,10 @@ pub(crate) struct IpcSnapshot {
     pub state: WmState,
     /// `(window id, toplevel identifier)`.
     pub toplevel_ids: Vec<(String, String)>,
+    /// The adapter reports `maximized` and `fullscreen` itself (Hyprland,
+    /// sway). niri's IPC does not, so its windows take them from
+    /// `zwlr_foreign_toplevel_management_v1` ([`wlr_window_states`]).
+    pub window_states: bool,
 }
 
 /// What an adapter tells the service.
@@ -223,7 +233,7 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// numbered by [`ProtoWorkspace::key`]. Windows come from
 /// `zwlr_foreign_toplevel_management_v1` when it is bound (ids
 /// `wlr-<key>`, [`ManagedToplevel::window_id`]; `focused` is `activated`,
-/// with `minimized` and `fullscreen`; the list identifier joined by
+/// with `minimized`, `maximized` and `fullscreen`; the list identifier joined by
 /// `join_managed` as [`Window::toplevel`]), else from
 /// `ext-foreign-toplevel-list-v1` by identifier, with no state; never with
 /// a workspace. `ext-workspace-v1` says which workspace each output shows
@@ -233,7 +243,23 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// screen, or, with no such screen known, the one active workspace; with
 /// several outputs and no activated window none is (and no screen is
 /// focused).
+///
+/// This is the merge for an adapter that reports `maximized` and
+/// `fullscreen` itself; [`merge_with`] takes them from the wlr protocol
+/// for one that does not (niri).
 pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolState) -> WmState {
+    merge_with(ipc, ids, true, proto)
+}
+
+/// [`merge`], where `ipc_states` says whether the adapter reports
+/// `maximized` and `fullscreen`; when it does not, its windows take them
+/// from `zwlr_foreign_toplevel_management_v1` ([`wlr_window_states`]).
+pub(crate) fn merge_with(
+    ipc: Option<&WmState>,
+    ids: &[(String, String)],
+    ipc_states: bool,
+    proto: &ProtocolState,
+) -> WmState {
     let mut s = match ipc {
         Some(ipc) => {
             let mut s = ipc.clone();
@@ -276,6 +302,9 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
                     w.app_id = t.app_id.clone();
                 }
             }
+            if !ipc_states {
+                wlr_window_states(&mut s.windows, proto);
+            }
             s
         }
         None => {
@@ -313,6 +342,7 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
                         app_id: m.app_id.clone(),
                         focused: m.activated,
                         minimized: m.minimized,
+                        maximized: m.maximized,
                         fullscreen: m.fullscreen,
                         toplevel,
                         ..Default::default()
@@ -381,6 +411,57 @@ fn join_managed(managed: &[ManagedToplevel], list: &[Toplevel]) -> Vec<Option<St
             listed.get(nth).map(|t| t.identifier.clone())
         })
         .collect()
+}
+
+/// `maximized` and `fullscreen` for an adapter's windows from
+/// `zwlr_foreign_toplevel_management_v1`, for an adapter whose IPC does
+/// not report them (niri: its `Window` has neither). Neither side carries
+/// an identifier the other knows, so a window pairs with the wlr toplevel
+/// of the same app id when each side shows exactly one with that app id;
+/// otherwise (twins) the n-th window with that app id and title pairs
+/// with the n-th wlr toplevel with them when both sides show as many (the
+/// adapter's windows in the order they opened, niri's ids; the wlr
+/// toplevels in the order they were announced). An unpaired window has
+/// neither state. Pairing a lone app by its app id alone keeps its state
+/// through a title change that has reached one protocol before the other.
+fn wlr_window_states(windows: &mut [Window], proto: &ProtocolState) {
+    if !proto.toplevel_management {
+        return;
+    }
+    let states: Vec<Option<(bool, bool)>> = windows
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let apps: Vec<&ManagedToplevel> = proto
+                .managed
+                .iter()
+                .filter(|m| m.app_id == w.app_id)
+                .collect();
+            let app_windows = windows.iter().filter(|o| o.app_id == w.app_id).count();
+            let m = match (apps.as_slice(), app_windows) {
+                ([m], 1) => Some(*m),
+                _ => {
+                    let twins: Vec<usize> = (0..windows.len())
+                        .filter(|j| windows[*j].app_id == w.app_id && windows[*j].title == w.title)
+                        .collect();
+                    let managed: Vec<&ManagedToplevel> =
+                        apps.into_iter().filter(|m| m.title == w.title).collect();
+                    if twins.len() == managed.len() {
+                        twins
+                            .iter()
+                            .position(|j| *j == i)
+                            .and_then(|n| managed.get(n).copied())
+                    } else {
+                        None
+                    }
+                }
+            };
+            m.map(|m| (m.maximized, m.fullscreen))
+        })
+        .collect();
+    for (w, state) in windows.iter_mut().zip(states) {
+        (w.maximized, w.fullscreen) = state.unwrap_or_default();
+    }
 }
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -542,9 +623,10 @@ pub(crate) async fn drive<S>(
                 Some(_) => ipc.is_some() || (proto_ready && adapter_failed),
             };
             if ready {
-                let mut state = merge(
+                let mut state = merge_with(
                     ipc.as_ref().map(|i| &i.state),
                     ipc.as_ref().map_or(&[][..], |i| &i.toplevel_ids[..]),
+                    ipc.as_ref().is_none_or(|i| i.window_states),
                     &proto,
                 );
                 state.name = match kind {
@@ -632,6 +714,8 @@ fn route(
         WmAction::FocusWindow(id) => (id, WindowOp::Activate),
         WmAction::CloseWindow(id) => (id, WindowOp::Close),
         WmAction::MinimizeWindow(id) => (id, WindowOp::Minimize),
+        WmAction::MaximizeWindow(id) => (id, WindowOp::Maximize),
+        WmAction::FullscreenWindow(id) => (id, WindowOp::Fullscreen),
     };
     // Window actions: `zwlr_foreign_toplevel_management_v1`, whose ids the
     // windows shown carry whenever it is bound (`merge`).
@@ -780,6 +864,11 @@ mod tests {
         assert_eq!(s.windows[0].toplevel.as_deref(), Some("x-foot"));
         assert_eq!(s.windows[1].toplevel.as_deref(), Some("x-ff"));
         assert!(s.windows[1].minimized && s.windows[1].fullscreen);
+        assert!(!s.windows[1].maximized);
+        let mut maxed = proto.clone();
+        maxed.managed[0].maximized = true;
+        let s2 = merge(None, &[], &maxed);
+        assert!(s2.windows[0].maximized && !s2.windows[0].fullscreen);
         assert_eq!(
             s.windows[0].workspace, None,
             "the protocols place no window"
@@ -849,6 +938,89 @@ mod tests {
         assert_eq!(join_managed(&m, &[]), [None, None, None]);
     }
 
+    fn ipc_window(id: &str, app: &str, title: &str) -> Window {
+        Window {
+            id: id.into(),
+            title: title.into(),
+            app_id: app.into(),
+            workspace: Some(1),
+            ..Default::default()
+        }
+    }
+
+    /// An adapter whose IPC says neither maximized nor fullscreen (niri)
+    /// takes them from the wlr protocol: a lone app by its app id (even
+    /// while its title differs between the two), twins by app id and
+    /// title in order, nothing while twins disagree. An adapter that
+    /// reports them (Hyprland, sway) keeps its own.
+    #[test]
+    fn an_adapter_without_window_states_takes_them_from_wlr() {
+        let ipc = WmState {
+            name: "niri".into(),
+            workspaces: vec![Workspace {
+                id: 1,
+                name: "1".into(),
+                focused: true,
+                active: true,
+                screen: "DP-1".into(),
+                ..Default::default()
+            }],
+            windows: vec![
+                ipc_window("10", "firefox", "Strand"),
+                ipc_window("11", "foot", "~"),
+                ipc_window("12", "foot", "~"),
+            ],
+            focused_screen: Some("DP-1".into()),
+        };
+        let mut ff = managed(1, "firefox", "Strand (old title)", "DP-1");
+        ff.maximized = true;
+        let foot_a = managed(2, "foot", "~", "DP-1");
+        let mut foot_b = managed(3, "foot", "~", "DP-1");
+        foot_b.fullscreen = true;
+        let proto = ProtocolState {
+            connected: true,
+            toplevel_management: true,
+            managed: vec![ff, foot_a, foot_b],
+            ..Default::default()
+        };
+        let states = |s: &WmState| -> Vec<(bool, bool)> {
+            s.windows
+                .iter()
+                .map(|w| (w.maximized, w.fullscreen))
+                .collect()
+        };
+        let s = merge_with(Some(&ipc), &[], false, &proto);
+        assert_eq!(
+            states(&s),
+            [(true, false), (false, false), (false, true)],
+            "{s:?}"
+        );
+        assert!(
+            s.workspaces[0].windows[2].fullscreen,
+            "the workspace's copy too"
+        );
+        // One foot twin renamed on the wlr side only: twins no longer
+        // agree, so neither foot has a state; firefox keeps its own.
+        let mut renamed = proto.clone();
+        renamed.managed[2].title = "vim".into();
+        let s = merge_with(Some(&ipc), &[], false, &renamed);
+        assert_eq!(states(&s), [(true, false), (false, false), (false, false)]);
+        // No wlr protocol: neither state.
+        let none = ProtocolState {
+            toplevel_management: false,
+            ..proto.clone()
+        };
+        let s = merge_with(Some(&ipc), &[], false, &none);
+        assert_eq!(states(&s), [(false, false); 3]);
+        // An adapter that reports them keeps its own.
+        let mut own = ipc.clone();
+        own.windows[1].fullscreen = true;
+        assert_eq!(
+            states(&merge(Some(&own), &[], &proto)),
+            [(false, false), (false, true), (false, false)]
+        );
+    }
+
     /// Window actions with no adapter: wlr management takes them on its
     /// ids; without it they are `Unsupported`; an unknown id is
     /// `UnknownWindow`; with an adapter that has not come up they are
@@ -897,6 +1069,23 @@ mod tests {
             ask(WmAction::MinimizeWindow("wlr-3".into()), true, &read_only).await,
             Err(WmError::NotConnected)
         );
+        // `win.maximize()` and `win.fullscreen()` route the same way:
+        // to the wlr protocol, refused on the read-only list.
+        for action in [WmAction::MaximizeWindow, WmAction::FullscreenWindow] {
+            assert_eq!(
+                ask(action("wlr-3".into()), false, &proto).await,
+                Err(WmError::NotConnected),
+                "routed to the protocol thread"
+            );
+            assert_eq!(
+                ask(action("wlr-9".into()), false, &proto).await,
+                Err(WmError::UnknownWindow("wlr-9".into()))
+            );
+            assert!(matches!(
+                ask(action("wlr-3".into()), false, &read_only).await,
+                Err(WmError::Unsupported(_))
+            ));
+        }
     }
 
     #[test]

@@ -236,6 +236,15 @@ async fn niri_adapter_follows_replayed_traffic() {
     let (r, done) = WmRequest::new(WmAction::CloseWindow("12".into()));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Ok(()));
+    // `win.maximize()`, `win.fullscreen()`: niri's toggles by window id.
+    for action in [
+        WmAction::MaximizeWindow("12".into()),
+        WmAction::FullscreenWindow("12".into()),
+    ] {
+        let (r, done) = WmRequest::new(action);
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+    }
     let (r, done) = WmRequest::new(WmAction::FocusWindow("99".into()));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Err(WmError::UnknownWindow("99".into())));
@@ -245,6 +254,8 @@ async fn niri_adapter_follows_replayed_traffic() {
         "{reqs:?}"
     );
     assert!(reqs.contains(&r#"{"Action":{"CloseWindow":{"id":12}}}"#.to_string()));
+    assert!(reqs.contains(&r#"{"Action":{"MaximizeWindowToEdges":{"id":12}}}"#.to_string()));
+    assert!(reqs.contains(&r#"{"Action":{"FullscreenWindow":{"id":12}}}"#.to_string()));
 
     fake.send(&bursts["close"]);
     c.until("close", |m| m.window_by_app("firefox").is_none())

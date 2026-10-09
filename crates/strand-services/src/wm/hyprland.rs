@@ -31,6 +31,11 @@
 //! hl.dispatch(workspace 3)"]:1: ')' expected near '3'`. The adapter sends
 //! the classic form until Hyprland answers with that Lua error, then the
 //! Lua form for the rest of the connection (decisions.md, wave4-exit-ci).
+//! `win.maximize()` and `win.fullscreen()` are Hyprland's own fullscreen
+//! toggles (modes 1 and 0): `hl.dsp.window.fullscreen({ mode = …, window
+//! = … })` in Lua; the classic `fullscreen` dispatcher acts on the focused
+//! window only, so its form is a `[[BATCH]]` that focuses the window
+//! first (decisions.md, laptop-open).
 //!
 //! `j/clients` reports each window's `stableId`, the same `{:x}` string
 //! Hyprland sends as its `ext-foreign-toplevel-list-v1` identifier
@@ -101,12 +106,23 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    fn is_fullscreen(&self) -> bool {
+    /// The internal fullscreen mode: 0 none, 1 maximized, 2 fullscreen
+    /// (0.56.2's `eFullscreenMode`; 0.42 to 0.5x had the same values as
+    /// bits, 3 for both). A bool before 0.42: `true` is fullscreen.
+    fn fullscreen_mode(&self) -> i64 {
         match &self.fullscreen {
-            serde_json::Value::Bool(b) => *b,
-            serde_json::Value::Number(n) => n.as_i64().is_some_and(|n| n != 0),
-            _ => false,
+            serde_json::Value::Bool(b) => i64::from(*b) * 2,
+            serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
+            _ => 0,
         }
+    }
+
+    fn is_fullscreen(&self) -> bool {
+        self.fullscreen_mode() & 2 != 0
+    }
+
+    fn is_maximized(&self) -> bool {
+        self.fullscreen_mode() == 1
     }
 }
 
@@ -364,6 +380,7 @@ impl State {
                     workspace: (!special && c.workspace.id != -1).then_some(c.workspace.id),
                     focused: self.active.as_deref() == Some(c.address.as_str()),
                     minimized: special || self.minimized.contains(&c.address),
+                    maximized: c.is_maximized(),
                     fullscreen: c.is_fullscreen(),
                     urgent: self.urgent.contains(&c.address),
                     // Set by `merge` from `toplevel_ids`.
@@ -379,6 +396,7 @@ impl State {
                 focused_screen: focused_mon.map(|m| m.name.clone()),
             },
             toplevel_ids,
+            window_states: true,
         }
     }
 
@@ -431,6 +449,28 @@ impl State {
             WmAction::MinimizeWindow(_) => Err(WmError::Unsupported(
                 "Hyprland has no minimise; move the window to a special workspace",
             )),
+            // Hyprland's own toggles: maximized is its fullscreen mode 1,
+            // fullscreen mode 0 (the dispatcher's argument; the mode
+            // `j/clients` then reports is 1 or 2). The Lua dispatcher takes
+            // the window; the classic `fullscreen` acts on the focused
+            // window only, so the classic form focuses it first, in one
+            // batch.
+            WmAction::MaximizeWindow(a) | WmAction::FullscreenWindow(a) => {
+                self.client(a)?;
+                let maximize = matches!(action, WmAction::MaximizeWindow(_));
+                Ok(if lua {
+                    format!(
+                        "dispatch hl.dsp.window.fullscreen({{ mode = \"{}\", window = {} }})",
+                        if maximize { "maximized" } else { "fullscreen" },
+                        lua_string(&format!("address:{a}"))
+                    )
+                } else {
+                    format!(
+                        "[[BATCH]]dispatch focuswindow address:{a};dispatch fullscreen {}",
+                        if maximize { 1 } else { 0 }
+                    )
+                })
+            }
         }
     }
 
@@ -616,10 +656,15 @@ async fn dispatch(
 /// nothing) no live Hyprland has been seen to answer for a success, so a
 /// dispatch that did nothing is not taken for one (decisions.md,
 /// wave4-exit-ci). scripts/compositor-matrix.sh prints a live reply.
+///
+/// A `[[BATCH]]` request is answered with each command's reply, joined by
+/// a blank line and a newline (`"\n\n\n"`, `dispatchBatch` in
+/// `src/debug/HyprCtl.cpp`): it worked when every one is `ok`.
 fn dispatch_reply(reply: &str) -> Result<(), WmError> {
-    match reply.trim() {
-        "ok" => Ok(()),
-        r => Err(WmError::Rejected(r.to_string())),
+    if reply.split("\n\n\n").all(|r| r.trim() == "ok") {
+        Ok(())
+    } else {
+        Err(WmError::Rejected(reply.trim().to_string()))
     }
 }
 
@@ -880,6 +925,75 @@ mod tests {
                 "{failed:?}"
             );
         }
+        // A batch: every command's reply, joined by "\n\n\n".
+        assert!(dispatch_reply("ok\n\n\nok").is_ok());
+        assert!(dispatch_reply("ok\n\n\nNo such window found").is_err());
+        assert!(dispatch_reply("ok\n\n\n").is_err(), "a reply missing");
+    }
+
+    /// `win.maximize()` and `win.fullscreen()` are Hyprland's own
+    /// fullscreen toggles for the window: a dispatcher object naming it in
+    /// Lua; a batch that focuses it first in the classic dialect (whose
+    /// `fullscreen` acts on the focused window).
+    #[test]
+    fn maximize_and_fullscreen_are_hyprlands_toggles() {
+        let s = state();
+        let max = WmAction::MaximizeWindow("0xa1".into());
+        let full = WmAction::FullscreenWindow("0xa1".into());
+        assert_eq!(
+            s.dispatch_for(&max, true).unwrap(),
+            r#"dispatch hl.dsp.window.fullscreen({ mode = "maximized", window = "address:0xa1" })"#
+        );
+        assert_eq!(
+            s.dispatch_for(&full, true).unwrap(),
+            r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0xa1" })"#
+        );
+        assert_eq!(
+            s.dispatch_for(&max, false).unwrap(),
+            "[[BATCH]]dispatch focuswindow address:0xa1;dispatch fullscreen 1"
+        );
+        assert_eq!(
+            s.dispatch_for(&full, false).unwrap(),
+            "[[BATCH]]dispatch focuswindow address:0xa1;dispatch fullscreen 0"
+        );
+        for lua in [false, true] {
+            assert_eq!(
+                s.dispatch_for(&WmAction::MaximizeWindow("0xb2".into()), lua),
+                Err(WmError::UnknownWindow("0xb2".into()))
+            );
+        }
+        // Hyprland 0.56.2 refuses a classic batch on a Lua config command
+        // by command, the first with the Lua parser's error.
+        assert!(wants_lua(
+            "error: [string \"return hl.dispatch(focuswindow address:0xa1)\"]:1: ')' expected \
+             near 'address:0xa1'\n\n\nerror: [string \"return hl.dispatch(fullscreen 1)\"]:1: \
+             ')' expected near '1'"
+        ));
+    }
+
+    /// `j/clients`' `fullscreen` is the internal mode: 0 none, 1 maximized,
+    /// 2 fullscreen (3, both bits, from 0.42 to 0.5x, is fullscreen); a
+    /// bool before 0.42.
+    #[test]
+    fn the_fullscreen_mode_is_maximized_or_fullscreen() {
+        let mut s = state();
+        for (mode, maximized, fullscreen) in [
+            (serde_json::json!(0), false, false),
+            (serde_json::json!(1), true, false),
+            (serde_json::json!(2), false, true),
+            (serde_json::json!(3), false, true),
+            (serde_json::json!(true), false, true),
+            (serde_json::json!(false), false, false),
+        ] {
+            s.clients[0].fullscreen = mode.clone();
+            let w = &s.snapshot().state.windows[0];
+            assert_eq!(
+                (w.maximized, w.fullscreen),
+                (maximized, fullscreen),
+                "{mode}"
+            );
+        }
+        assert!(s.snapshot().window_states);
     }
 
     // ---- traffic captured from a live Hyprland 0.56.2 ----------------------

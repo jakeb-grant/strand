@@ -62,10 +62,23 @@ impl FakeHyprland {
                     let mut buf = vec![0u8; 1023];
                     let n = conn.read(&mut buf).await.unwrap();
                     let req = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let reply = if *lua.lock().unwrap() {
-                        answer_lua(*scene.lock().unwrap(), &req)
-                    } else {
-                        answer(*scene.lock().unwrap(), &req)
+                    let one = |req: &str| {
+                        if *lua.lock().unwrap() {
+                            answer_lua(*scene.lock().unwrap(), req)
+                        } else {
+                            answer(*scene.lock().unwrap(), req)
+                        }
+                    };
+                    // `[[BATCH]]a;b`: each command's reply, joined by
+                    // "\n\n\n" (`dispatchBatch`, src/debug/HyprCtl.cpp).
+                    let reply = match req.strip_prefix("[[BATCH]]") {
+                        Some(batch) => batch
+                            .split(';')
+                            .map(|r| String::from_utf8_lossy(&one(r.trim())).into_owned())
+                            .collect::<Vec<_>>()
+                            .join("\n\n\n")
+                            .into_bytes(),
+                        None => one(&req),
                     };
                     log.lock().unwrap().push(req);
                     let _ = conn.write_all(&reply).await;

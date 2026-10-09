@@ -240,6 +240,8 @@ impl State {
                 focused_screen: None,
             },
             toplevel_ids,
+            // `fullscreen_mode`; sway has no maximize, so never maximized.
+            window_states: true,
         }
     }
 
@@ -264,6 +266,15 @@ impl State {
             WmAction::FocusWindow(id) => format!("[con_id={}] focus", window(id)?),
             WmAction::CloseWindow(id) => format!("[con_id={}] kill", window(id)?),
             WmAction::MinimizeWindow(id) => format!("[con_id={}] move scratchpad", window(id)?),
+            WmAction::MaximizeWindow(_) => {
+                return Err(WmError::Unsupported(
+                    "sway has no maximize (a tiling window fills its container; \
+                     use win.fullscreen())",
+                ));
+            }
+            WmAction::FullscreenWindow(id) => {
+                format!("[con_id={}] fullscreen toggle", window(id)?)
+            }
         })
     }
 }
@@ -454,6 +465,39 @@ mod tests {
         assert_eq!(snap.windows.len(), 1);
         assert_eq!(snap.windows[0].title, "caf\u{fffd}");
         assert_eq!(snap.windows[0].app_id, "foot");
+    }
+
+    /// `win.fullscreen()` is sway's own toggle on the container; sway has
+    /// no maximize, so `win.maximize()` is `Unsupported` and no window is
+    /// ever `maximized`.
+    #[test]
+    fn fullscreen_toggles_and_maximize_is_unsupported() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sway-1.9/tree.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let tree: Node = decode(text.into_bytes()).unwrap();
+        let mut state = State::default();
+        state.set_tree(&tree);
+        let snap = state.snapshot();
+        assert!(snap.window_states);
+        let w = &snap.state.windows[0];
+        assert!(!w.maximized);
+        assert_eq!(
+            state
+                .command_for(&WmAction::FullscreenWindow(w.id.clone()))
+                .unwrap(),
+            format!("[con_id={}] fullscreen toggle", w.id)
+        );
+        assert!(matches!(
+            state.command_for(&WmAction::MaximizeWindow(w.id.clone())),
+            Err(WmError::Unsupported(_))
+        ));
+        assert_eq!(
+            state.command_for(&WmAction::FullscreenWindow("0".into())),
+            Err(WmError::UnknownWindow("0".into()))
+        );
     }
 
     #[tokio::test]
