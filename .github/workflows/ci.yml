@@ -282,6 +282,16 @@ jobs:
               # crate. Keep this list in step with the lock code.
               - 'crates/strand-auth/**'
               - 'crates/**/*session_lock*'
+              # Lock logic in shared surface-manager files that only the
+              # lock VM exercises: the deferred configure ack and no bare
+              # commit on `Role::Lock` (commit.rs), the pixel surfaces'
+              # keyboard focus (seat.rs), lock routing in
+              # `apply_surface_change`/`reconcile` (mod.rs), no popup on a
+              # lock surface (popup.rs).
+              - 'crates/strand-surface/src/manager/commit.rs'
+              - 'crates/strand-surface/src/manager/seat.rs'
+              - 'crates/strand-surface/src/manager/mod.rs'
+              - 'crates/strand-surface/src/manager/popup.rs'
               - 'crates/**/*lock_fallback*'
               - 'crates/strand/src/lock.rs'
               - 'crates/strand/src/run/lock.rs'
