@@ -181,8 +181,13 @@ jobs:
   # node even for headless outputs, so the runner loads vkms (a virtual
   # KMS card, rendered by Mesa's llvmpipe) and passes it in; niri runs
   # nested (winit) in a headless sway; sway runs headless.
+  # It runs nightly too: archlinux:latest installs the current Hyprland,
+  # niri, sway and labwc, so an upstream release that breaks an adapter
+  # fails here within a day without a push. A failure names the
+  # compositor and its package version (an annotation and the job
+  # summary; decisions.md laptop-resilience).
   compositors:
-    if: github.event_name != 'schedule'
+    name: ${{ github.event_name == 'schedule' && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -230,6 +235,10 @@ jobs:
           docker run --rm --device /dev/dri -v "$PWD:$PWD" -w "$PWD" \
             -e STRAND_DRM_CARD=${{ steps.drm.outputs.card }} \
             archlinux:latest bash scripts/compositor-matrix-ci.sh "${{ steps.build.outputs.test }}"
+      # Each compositor's package version and result, on the run's page.
+      - name: Compositor versions and results
+        if: always()
+        run: cat target/matrix/summary.md >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

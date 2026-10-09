@@ -14,7 +14,10 @@
 # The bar's click is required (STRAND_MATRIX_REQUIRE_CLICK=1): a
 # compositor without zwlr_virtual_pointer_manager_v1 fails, not skips it.
 # Exit status is non-zero when any compositor failed; logs and shots are
-# in target/matrix/<compositor>.
+# in target/matrix/<compositor>. A failure is reported with the
+# compositor's package version (a GitHub annotation), and
+# target/matrix/summary.md lists each compositor's version and result
+# (the job summary): the nightly run says which release broke what.
 
 set -uo pipefail
 
@@ -33,6 +36,8 @@ pacman -Syu --noconfirm --needed \
   fontconfig libxkbcommon wayland pipewire libcap >/tmp/pacman.log 2>&1 ||
   { tail -40 /tmp/pacman.log; exit 1; }
 pacman -Q sway niri hyprland labwc grim seatd mesa
+# The package version of a compositor of the matrix, for its result line.
+version_of() { pacman -Q "$1" 2>/dev/null | cut -d' ' -f2; }
 # sway is installed with file capabilities (cap_sys_nice, for its
 # realtime scheduling); Docker's bounding set lacks them, so exec(2) of
 # it fails with EPERM ("env: 'sway': Operation not permitted", run 206).
@@ -68,7 +73,16 @@ if [ -n "${STRAND_DRM_CARD:-}" ]; then
 fi
 
 failed=()
+summary="$ROOT/target/matrix/summary.md"
+{
+  echo "### Compositor matrix (archlinux:latest)"
+  echo
+  echo "| compositor | package version | result |"
+  echo "|---|---|---|"
+} >"$summary"
 for kind in $MATRIX; do
+  version=$(version_of "$kind")
+  version=${version:-unknown}
   echo "::group::$kind"
   runuser -u "$user" -- env \
     HOME="/home/$user" USER="$user" \
@@ -79,7 +93,7 @@ for kind in $MATRIX; do
   status=$?
   echo "::endgroup::"
   if [ "$status" != 0 ]; then
-    echo "::error::the compositor matrix failed on $kind (exit $status)"
+    echo "::error title=compositors: $kind $version::the compositor matrix failed on $kind $version (archlinux:latest, exit $status)"
     for log in "$ROOT/target/matrix/$kind"/*.log; do
       [ -f "$log" ] || continue
       case "$log" in
@@ -87,12 +101,16 @@ for kind in $MATRIX; do
         *) echo "--- tail of $log"; tail -80 "$log" ;;
       esac
     done
-    failed+=("$kind")
+    failed+=("$kind $version")
+    echo "| $kind | $version | FAILED (exit $status) |" >>"$summary"
+  else
+    echo "| $kind | $version | passed |" >>"$summary"
   fi
 done
+chown "$uid" "$summary" 2>/dev/null || true
 
 if [ "${#failed[@]}" -gt 0 ]; then
-  echo "failed: ${failed[*]}"
+  echo "failed: $(IFS=,; echo "${failed[*]}")"
   exit 1
 fi
 echo "the compositor matrix passed: $MATRIX"
