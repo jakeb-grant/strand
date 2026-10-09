@@ -1004,7 +1004,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   - Virtualised `nav`: `Router::selected_index(list) -> Option<u32>` is
     the selection's global index, mounted or not. Keys move it by index
     (Up, Down, Page_Up/Prior and Page_Down/Next by
-    `InputScene::rows_in_view`, Home, End); a row not mounted is
+    `InputScene::rows_in_view`, Home and End, which in an `input` are
+    Ctrl+Home and Ctrl+End: plain ones move its caret); a row not mounted is
     scrolled to with `InputScene::reveal_index(list, index)` and the
     selection lands in `Router::settle` once logic mounts it (Return
     pressed meanwhile activates it then). `Router::observe` keeps a

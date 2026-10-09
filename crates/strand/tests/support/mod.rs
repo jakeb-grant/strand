@@ -235,6 +235,17 @@ pub mod keyboard {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
 
+        /// Presses and releases a named key with Control held (the
+        /// keymap's real `Control` modifier, sent as the modifier state).
+        pub fn press_ctrl(&mut self, name: &str) {
+            const CONTROL: u32 = 1 << 2;
+            self.keyboard.modifiers(CONTROL, 0, 0, 0);
+            self.queue.roundtrip(&mut Client).unwrap();
+            self.press(name);
+            self.keyboard.modifiers(0, 0, 0, 0);
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+
         /// Types `text` (lowercase letters), each key pressed and
         /// released.
         pub fn type_text(&mut self, text: &str) {

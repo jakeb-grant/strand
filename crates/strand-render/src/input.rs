@@ -1100,6 +1100,10 @@ impl Router {
                 .or_else(|| self.selected.get(&list).and_then(|r| w.index_of(*r)));
             let last = w.count.saturating_sub(1);
             let page = scene.rows_in_view(list).unwrap_or(1).max(1);
+            // In an `input`, Home and End move its caret (Shift extends
+            // the selection); Ctrl+Home and Ctrl+End go to the list's
+            // ends. On a focused list they go there with any modifiers.
+            let ends = kind != Some(NodeKind::Input) || key.modifiers.ctrl;
             let to = match key.name.as_str() {
                 "Down" | "KP_Down" => Some(cur.map_or(w.first, |i| (i + 1).min(last))),
                 "Up" | "KP_Up" => Some(cur.map_or(w.first, |i| i.saturating_sub(1))),
@@ -1109,8 +1113,8 @@ impl Router {
                 "Page_Up" | "Prior" | "KP_Page_Up" | "KP_Prior" => {
                     Some(cur.map_or(w.first, |i| i.saturating_sub(page)))
                 }
-                "Home" | "KP_Home" => Some(0),
-                "End" | "KP_End" => Some(last),
+                "Home" | "KP_Home" if ends => Some(0),
+                "End" | "KP_End" if ends => Some(last),
                 "Return" | "KP_Enter" => {
                     if let Some(a) = self.away.get_mut(&list) {
                         // On its way: activated when it lands.

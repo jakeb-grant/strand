@@ -1527,9 +1527,10 @@ fn the_design_launcher_scrolls_2000_apps() {
         sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_scrolled.png"));
     }
 
-    // End selects the last app: not mounted, it is scrolled to, mounted
-    // by logic and drawn selected at the bottom of the list.
-    keyboard.press("End");
+    // Ctrl+End selects the last app (plain End moves the search's
+    // caret): not mounted, it is scrolled to, mounted by logic and drawn
+    // selected at the bottom of the list.
+    keyboard.press_ctrl("End");
     let shot = poll::until(
         || Shot::take(&sway, "HEADLESS-1"),
         |s| {

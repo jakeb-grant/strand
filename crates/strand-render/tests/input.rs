@@ -809,6 +809,7 @@ fn a_removed_input_playing_its_exit_loses_focus_at_once() {
 /// again when it comes back, with no first-row reselection in between.
 #[test]
 fn nav_selects_rows_beyond_the_mounted_window() {
+    use strand_render::widgets::Caret;
     use strand_scene::{Color, Modifiers, NodeKind, SceneDiff, SceneOp};
     let data = std::fs::read(strand_text::test_font_path()).unwrap();
     let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
@@ -866,16 +867,36 @@ fn nav_selects_rows_beyond_the_mounted_window() {
     paint(&mut r);
     let mut f = R::default();
     f.attached(s, panel);
-    let key = |name: &str| InputEvent::Key {
+    let key_with = |name: &str, modifiers: Modifiers| InputEvent::Key {
         surface: s,
         key: KeyInput {
             name: name.into(),
             text: String::new(),
             state: ButtonState::Pressed,
             repeat: false,
-            modifiers: Modifiers::default(),
+            modifiers,
             time: 0,
         },
+    };
+    let key = |name: &str| key_with(name, Modifiers::default());
+    // In the `input`, Ctrl+Home and Ctrl+End go to the list's ends.
+    let ctrl = |name: &str| {
+        key_with(
+            name,
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        )
+    };
+    let shift = |name: &str| {
+        key_with(
+            name,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        )
     };
     let flag = |node, on| Intent::Flag {
         node,
@@ -912,9 +933,14 @@ fn nav_selects_rows_beyond_the_mounted_window() {
     assert_eq!(picked(f.drain()), [flag(row(0), false), flag(row(5), true)]);
     assert_eq!(f.router.selected_index(list), Some(5));
 
-    // End: row 1,999 is not mounted. The selection leaves row 5 and is
-    // on its way; the list scrolls there and asks logic for that window.
+    // Plain End in the input moves its caret, not the selection.
     f.input(&key("End"), &mut r);
+    assert!(picked(f.drain()).is_empty());
+    assert_eq!(f.router.selected_index(list), Some(5));
+
+    // Ctrl+End: row 1,999 is not mounted. The selection leaves row 5 and is
+    // on its way; the list scrolls there and asks logic for that window.
+    f.input(&ctrl("End"), &mut r);
     assert_eq!(picked(f.drain()), [flag(row(5), false)]);
     assert_eq!(f.router.selected(list), None);
     assert_eq!(f.router.selected_index(list), Some(1999));
@@ -977,9 +1003,9 @@ fn nav_selects_rows_beyond_the_mounted_window() {
     f.router.observe(&d);
     assert!(r.apply(d).is_empty());
     assert_eq!(picked(f.router.settle(&mut r)), [flag(row(1998), true)]);
-    // Home goes to row 0 (not mounted) and Down moves on from where it
+    // Ctrl+Home goes to row 0 (not mounted) and Down moves on from where it
     // is heading: row 1.
-    f.input(&key("Home"), &mut r);
+    f.input(&ctrl("Home"), &mut r);
     f.input(&key("Down"), &mut r);
     assert_eq!(f.router.selected_index(list), Some(1));
     let mut d = SceneDiff::new();
@@ -991,13 +1017,38 @@ fn nav_selects_rows_beyond_the_mounted_window() {
     assert_eq!(f.router.selected(list), Some(row(1)));
     // A new query starts the results over at the top, even while a
     // selection is on its way.
-    f.input(&key("End"), &mut r);
+    f.input(&ctrl("End"), &mut r);
     let mut d = SceneDiff::new();
     d.set(input, Prop::Text, PropValue::Text("q".into()));
     f.router.observe(&d);
     assert!(r.apply(d).is_empty());
     f.router.settle(&mut r);
     assert_eq!(f.router.selected(list), Some(row(0)));
+    assert_eq!(f.router.selected_index(list), Some(0));
+
+    // Home, End and Shift with them edit the query's caret, as in any
+    // `input`, and leave the selection where it is.
+    let mut d = SceneDiff::new();
+    d.set(input, Prop::Text, PropValue::Text("abc".into()));
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    f.drain();
+    f.input(&key("Home"), &mut r);
+    assert_eq!(InputScene::caret(&r, input), Some(Caret::at(0)));
+    f.input(&shift("End"), &mut r);
+    assert_eq!(
+        InputScene::caret(&r, input),
+        Some(Caret { pos: 3, anchor: 0 })
+    );
+    f.input(&key("KP_End"), &mut r);
+    assert_eq!(InputScene::caret(&r, input), Some(Caret::at(3)));
+    f.input(&shift("Home"), &mut r);
+    assert_eq!(
+        InputScene::caret(&r, input),
+        Some(Caret { pos: 0, anchor: 3 })
+    );
+    assert!(picked(f.drain()).is_empty());
     assert_eq!(f.router.selected_index(list), Some(0));
 }
 
