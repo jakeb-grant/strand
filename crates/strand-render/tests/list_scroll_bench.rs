@@ -6,7 +6,11 @@
 //! fast swipe several rows a frame), then a fling, then wheel steps
 //! (springs), while a stand-in for logic answers every window the list
 //! asks for (`take_list_windows`) with the diff `set_list_window` sends
-//! (rows unmounted and mounted with `window: true`, `row_first`).
+//! (rows unmounted and mounted with `window: true`, `row_first`), each
+//! [`LOGIC_LAG`] after it was asked, as a busy logic thread would. No
+//! frame may hold the view back at the mounted rows' edge waiting for
+//! them (`ListFrames::stalls`): the window's overscan must cover the lag
+//! at a fast swipe's speed.
 //!
 //! A frame's work is what the render thread does for it: applying the
 //! window diff that arrived before it, if any, and painting it (scroll
@@ -38,6 +42,10 @@ const BUDGET: Duration = Duration::from_micros(3_500);
 const ROWS: u32 = 2000;
 /// The rows logic mounts before render first asks (`DEFAULT_LIST_WINDOW`).
 const FIRST_WINDOW: u32 = 32;
+/// How long logic takes to answer a window: from the frame that asked
+/// to the first frame its rows can be in (three 60 Hz frames: the
+/// request's hop, a mount of a window's worth of rows, the diff's hop).
+const LOGIC_LAG: Duration = Duration::from_millis(50);
 
 /// The start of every wall-clock gate's failure message: the laptop's
 /// container suite warns, instead of failing, only on failures that all
@@ -83,6 +91,9 @@ struct Launcher {
     /// Window diffs applied, and rows created by them.
     windows: usize,
     created: usize,
+    /// Windows asked for and not answered yet: when each was asked
+    /// (frame time) and the rows.
+    asked: std::collections::VecDeque<(Duration, std::ops::Range<u32>)>,
 }
 
 impl Launcher {
@@ -122,6 +133,7 @@ impl Launcher {
             next_id: 2,
             windows: 0,
             created: 0,
+            asked: std::collections::VecDeque::new(),
         };
         for i in 0..FIRST_WINDOW {
             let row = me.row(&mut b.diff, i, u32::MAX, false);
@@ -177,12 +189,36 @@ impl Launcher {
         row
     }
 
-    /// Logic's answer to the windows render asked for: the diff
-    /// `set_list_window` sends. Returns it, or `None` if nothing was
-    /// asked.
-    fn answer(&mut self) -> Option<SceneDiff> {
-        let asked = self.r.take_list_windows();
-        let (_, want) = asked.into_iter().find(|(l, _)| *l == self.list)?;
+    /// The windows render asked for after the frame at `now`, queued
+    /// for logic.
+    fn ask(&mut self, now: Duration) {
+        for (l, want) in self.r.take_list_windows() {
+            if l == self.list {
+                self.asked.push_back((now, want));
+            }
+        }
+    }
+
+    /// Logic's answers due by frame time `now` ([`LOGIC_LAG`] after
+    /// each was asked; `None`: every one), in order: the diffs
+    /// `set_list_window` sends.
+    fn answers(&mut self, now: Option<Duration>) -> Vec<SceneDiff> {
+        let mut out = Vec::new();
+        while let Some((at, _)) = self.asked.front() {
+            if now.is_some_and(|n| *at + LOGIC_LAG > n) {
+                break;
+            }
+            let Some((_, want)) = self.asked.pop_front() else {
+                break;
+            };
+            out.push(self.answer(want));
+        }
+        out
+    }
+
+    /// Logic's answer to window `want`: the diff `set_list_window`
+    /// sends.
+    fn answer(&mut self, want: std::ops::Range<u32>) -> SceneDiff {
         let start = want.start.min(ROWS - 1);
         let end = want.end.clamp(start + 1, ROWS);
         let mut d = SceneDiff::new();
@@ -217,7 +253,7 @@ impl Launcher {
         self.mounted = front.into_iter().chain(kept).chain(back).collect();
         d.set(self.list, Prop::RowFirst, num(start as f32));
         self.windows += 1;
-        Some(d)
+        d
     }
 }
 
@@ -242,16 +278,18 @@ fn run(hz: u32, swipe: f32, frames: u32) -> (Frames, f32, Launcher) {
     // The first frame: everything laid out and shaped once (not a
     // scrolling frame).
     assert!(!l.buf.paint_at(&mut l.r, S, 0, t0).is_empty());
-    if let Some(d) = l.answer() {
+    l.ask(t0);
+    for d in l.answers(None) {
         assert!(l.r.apply(d).is_empty());
         l.buf.paint_at(&mut l.r, S, 1, t0 + period);
+        l.ask(t0 + period);
     }
     let mut work = Vec::new();
     let mut k = 2u32;
     let mut frame = |l: &mut Launcher, input: Option<ScrollInput>, k: u32| {
         let t = t0 + period * k;
         let start = Instant::now();
-        if let Some(d) = l.answer() {
+        for d in l.answers(Some(t)) {
             assert!(l.r.apply(d).is_empty());
         }
         if let Some(input) = input {
@@ -259,6 +297,7 @@ fn run(hz: u32, swipe: f32, frames: u32) -> (Frames, f32, Launcher) {
         }
         let damage = l.buf.paint_at(&mut l.r, S, 1, t);
         work.push(start.elapsed());
+        l.ask(t);
         damage
     };
     let ms = |k: u32| ((t0 + period * k).as_millis() & 0xffff_ffff) as u32;
@@ -297,17 +336,13 @@ fn run(hz: u32, swipe: f32, frames: u32) -> (Frames, f32, Launcher) {
         k += 1;
     }
     loop {
-        if l.r.wants_frame(S) {
+        if l.r.wants_frame(S) || !l.asked.is_empty() {
             frame(&mut l, None, k);
             k += 1;
             assert!(k < 100_000, "never settled");
             continue;
         }
-        // At rest: a window still asked for is answered and drawn.
-        let Some(d) = l.answer() else {
-            break;
-        };
-        assert!(l.r.apply(d).is_empty());
+        break;
     }
     work.sort();
     let shown = l.r.scroll_offset(l.list).unwrap_or(0.0);
@@ -327,6 +362,12 @@ fn scrolling_2000_rows_stays_within_the_frame_budget() {
         // and its rows are drawn where they belong.
         let stats = l.r.list_frames();
         assert_eq!(stats.gaps, 0, "{hz} Hz: frames showed a gap");
+        // Nor held the view back for rows logic had not sent yet, with
+        // logic answering LOGIC_LAG late.
+        assert_eq!(
+            stats.stalls, 0,
+            "{hz} Hz: frames stalled at the mounted rows' edge: {stats:?}"
+        );
         assert!(stats.frames as usize >= work.0.len(), "{hz} Hz: {stats:?}");
         assert!(l.windows >= 5, "{hz} Hz: {} windows", l.windows);
         let swiped = swipe * frames as f32;
@@ -344,10 +385,11 @@ fn scrolling_2000_rows_stays_within_the_frame_budget() {
         );
         let (median, p95, worst) = (work.at(0.5), work.at(0.95), work.at(1.0));
         eprintln!(
-            "list scroll {hz} Hz: {} frames, median {median:?}, p95 {p95:?}, worst {worst:?}; {} windows, {} rows mounted by them; {}",
+            "list scroll {hz} Hz: {} frames, median {median:?}, p95 {p95:?}, worst {worst:?}; {} windows answered {LOGIC_LAG:?} late, {} rows mounted by them, {} stalled frames; {}",
             work.0.len(),
             l.windows,
             l.created,
+            stats.stalls,
             if GATED {
                 format!("gate {BUDGET:?} at p95")
             } else {

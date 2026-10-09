@@ -2275,11 +2275,16 @@ fn window_mounts_do_not_play_poses() {
         pose(vec![(Prop::Opacity, num(0.0)), (Prop::X, num(60.0))]),
     );
     let (mut st, lst, rows) = scroll_stage(4, vec![enter.clone()]);
+    // A view of four rows, so the mounted rows fill it once it has
+    // shrunk (while it shrinks from 200 px, frames show the unmounted
+    // rows below: a gap, counted before the window moves).
     let mut d = SceneDiff::new();
     d.set(lst, Prop::RowCount, num(100.0))
-        .set(lst, Prop::RowFirst, num(0.0));
+        .set(lst, Prop::RowFirst, num(0.0))
+        .set(lst, Prop::Height, num(120.0));
     st.apply(d);
     st.settle(1);
+    let gaps = st.r.list_frames().gaps;
     // The window moves down a row: row 0 goes, a row comes in below.
     let new = NodeId::new(500, 0);
     let mut d = SceneDiff::new();
@@ -2311,7 +2316,7 @@ fn window_mounts_do_not_play_poses() {
     assert_eq!(st.red_from(100), Some(0));
     assert_eq!(st.buf.px(10, 100), [0, 0, 255, 255]);
     assert_eq!(st.red_from(10), Some(0), "row 1 did not glide");
-    assert_eq!(st.r.list_frames().gaps, 0);
+    assert_eq!(st.r.list_frames().gaps, gaps);
     // A row the data inserts enters.
     let data = NodeId::new(501, 0);
     let mut d = SceneDiff::new();

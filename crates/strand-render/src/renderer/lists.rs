@@ -40,12 +40,19 @@ pub struct ScrollInput {
     pub time: u32,
 }
 
-/// Frames painted with a list in view, and those whose view showed
-/// content with no row there (rows still being mounted or laid out).
+/// Frames painted with a list in view, those whose view showed content
+/// with no row there (rows still being mounted or laid out), and those
+/// whose view was held back at the edge of the mounted rows while the
+/// scroll went on (logic's rows late): the view stalls there, then
+/// jumps when they land.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListFrames {
     pub frames: u64,
     pub gaps: u64,
+    pub stalls: u64,
+    /// The global index of the first row the last of these frames
+    /// showed, in the last list checked (by node id).
+    pub top_row: u32,
 }
 
 /// The renderer's list state besides each node's [`ScrollState`].
@@ -294,9 +301,9 @@ impl Renderer {
         out
     }
 
-    /// Frames painted with a list in view so far, and how many showed a
-    /// gap where its content had rows (the M4 exit's "no frame shows a
-    /// gap").
+    /// Frames painted with a list in view so far, how many showed a gap
+    /// where its content had rows (the M4 exit's "no frame shows a
+    /// gap"), and how many held the view back at the mounted rows' edge.
     pub fn list_frames(&self) -> ListFrames {
         self.lists.stats
     }
@@ -453,7 +460,14 @@ impl Renderer {
         };
         let mut any = false;
         let mut gap = false;
-        for (id, lb) in &boxes.lists {
+        let mut stall = false;
+        let mut top = None;
+        let mut ids: Vec<NodeId> = boxes.lists.keys().copied().collect();
+        ids.sort();
+        for id in &ids {
+            let Some(lb) = boxes.lists.get(id) else {
+                continue;
+            };
             let Some(node) = self.tree.get(*id).filter(|n| n.kind == NodeKind::List) else {
                 continue;
             };
@@ -465,6 +479,12 @@ impl Renderer {
                 continue;
             }
             any = true;
+            // Shown short of where the scroll is: held at the mounted
+            // rows' edge.
+            let max = (st.content - st.viewport).max(0.0);
+            if (st.offset.clamp(0.0, max) - lb.applied).abs() > 0.5 {
+                stall = true;
+            }
             // The part of the view the content reaches.
             let bottom = view.y + view.h.min(st.content - lb.applied);
             let mut spans: Vec<(f32, f32)> = node
@@ -473,6 +493,13 @@ impl Renderer {
                 .filter_map(|r| boxes.rects.get(r))
                 .map(|r| (r.y, r.y + r.h))
                 .collect();
+            if let Some(j) = node
+                .children
+                .iter()
+                .position(|r| boxes.rects.get(r).is_some_and(|r| r.y + r.h > view.y + 0.5))
+            {
+                top = Some(row_first(node) + j as u32);
+            }
             spans.sort_by(|a, b| a.0.total_cmp(&b.0));
             // Rows stand apart by the list's `gap`; a hole is wider.
             let slack = node
@@ -493,9 +520,16 @@ impl Renderer {
             }
         }
         if any {
-            self.lists.stats.frames += 1;
+            let stats = &mut self.lists.stats;
+            stats.frames += 1;
             if gap {
-                self.lists.stats.gaps += 1;
+                stats.gaps += 1;
+            }
+            if stall {
+                stats.stalls += 1;
+            }
+            if let Some(t) = top {
+                stats.top_row = t;
             }
         }
     }

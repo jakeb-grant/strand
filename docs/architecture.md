@@ -915,9 +915,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `Renderer::scroll_input(surface, point, ScrollInput { dy, kind:
     ScrollKind::{Wheel, Touch, Lift}, time })` (the Router maps
     `AxisSource` and `stop` to it); `Renderer::list_frames() ->
-    ListFrames { frames, gaps }` counts painted frames with a list in
-    view and those that showed an unmounted gap (the M4 exit's
-    per-frame check).
+    ListFrames { frames, gaps, stalls, top_row }` counts painted frames
+    (cached ones too) with a list in view, those that showed an
+    unmounted gap, and those whose view was held at the mounted rows'
+    edge short of the scroll's offset (logic's rows late), and gives the
+    global index of the first row the last one showed (the M4 exit's
+    per-frame checks; the binary's `STRAND_LOG=damage` lines carry them
+    as `gaps=`, `stalls=` and `top=`).
   - **Directional pages** (design.md, "Pages"). Logic sets
     `Prop::RowFirst` on a `pages` node in the diff that swaps the page:
     one more than before when the new page comes after the old one in

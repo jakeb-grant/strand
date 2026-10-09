@@ -267,9 +267,9 @@ impl Renderer {
         // A cached scene was drawn at rest.
         let animating =
             fresh && (self.anim.active() || self.swap_moving(surface) || self.scrolling(surface));
-        if fresh {
-            self.check_list_gaps(surface);
-        }
+        // Every painted frame, cached or not, is checked for a list
+        // showing a gap or held at its mounted rows.
+        self.check_list_gaps(surface);
         if fresh {
             // Exits under this surface it did not draw (a row scrolled
             // out of view) end: nobody sees them, unless another surface

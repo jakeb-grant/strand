@@ -588,6 +588,10 @@ fn a_2000_row_list_lays_out_only_its_window() {
     let shown = r.scroll_offset(lst).unwrap();
     assert!((shown - 500.0 * 32.0).abs() < 0.6, "{shown}");
     assert_eq!(r.list_frames().gaps, 0);
+    // The view is held at the mounted rows, short of the offset (the
+    // top): a stalled frame, showing row 500 first.
+    let stats = r.list_frames();
+    assert_eq!((stats.frames, stats.stalls, stats.top_row), (1, 1, 500));
     assert_matches_ref("layout_list_window", &buf, TOLERANCE);
     // The view sits at the top of the content, far from what it shows:
     // logic is asked for the rows around row 0, once.
@@ -610,6 +614,11 @@ fn a_2000_row_list_lays_out_only_its_window() {
         "last mounted row at the bottom: {last:?}"
     );
     assert_eq!(r.list_frames().gaps, 0);
+    // Held at the last mounted row while the offset is far below: the
+    // frame stalled, its first row about 12.5 rows above row 531.
+    let stats = r.list_frames();
+    assert_eq!(stats.stalls, 2, "{stats:?}");
+    assert!((518..=520).contains(&stats.top_row), "{stats:?}");
     let b = r.boxes(S).unwrap();
     assert!(b.rows_laid_out <= 17, "{}", b.rows_laid_out);
     let asked = r.take_list_windows();
@@ -617,6 +626,53 @@ fn a_2000_row_list_lays_out_only_its_window() {
     let want = &asked[0].1;
     let at = (40_000.0f32 / 32.0) as u32;
     assert!(want.start < at && want.end > at + 12, "{want:?}");
+    // Logic answers with rows from 1,240: the view goes where the
+    // offset is, and the frame no longer stalls.
+    let mut d = SceneDiff::new();
+    for row in &rows {
+        d.push(SceneOp::Remove {
+            id: *row,
+            window: true,
+        });
+    }
+    let mut next = 10_000;
+    for (k, i) in (1240u32..1272).enumerate() {
+        let row = NodeId::new(next, 0);
+        next += 1;
+        d.push(SceneOp::Create {
+            id: row,
+            kind: NodeKind::Row,
+            parent: Some(lst),
+            index: k as u32,
+            window: true,
+        });
+        // As tall as the rows before (an estimate that changed would
+        // move the offset's row).
+        d.set(row, Prop::Pad, num(4.0))
+            .set(row, Prop::Height, num(32.0));
+        let t = NodeId::new(next, 0);
+        next += 1;
+        d.push(SceneOp::Create {
+            id: t,
+            kind: NodeKind::Text,
+            parent: Some(row),
+            index: 0,
+            window: true,
+        });
+        d.set(t, Prop::Text, text(&format!("Row {i}")));
+    }
+    d.set(lst, Prop::RowFirst, num(1240.0));
+    assert!(r.apply(d).is_empty());
+    buf.paint(&mut r, S, 1);
+    let stats = r.list_frames();
+    assert_eq!((stats.stalls, stats.gaps), (2, 0), "{stats:?}");
+    let offset = r.scroll_state(lst).unwrap().offset;
+    assert!(
+        (r.scroll_offset(lst).unwrap() - offset).abs() < 0.6,
+        "shown where the offset is: {:?} {stats:?}",
+        r.scroll_state(lst)
+    );
+    assert!((1245..=1255).contains(&stats.top_row), "{stats:?}");
 }
 
 /// Hit testing uses the rounded shape (a pill's corner is not the pill),
