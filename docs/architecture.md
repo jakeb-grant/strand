@@ -275,7 +275,24 @@ strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
   ^-- strand-services (the `auth` service), strand-surface (the unlock
       gate), strand (the main thread's fallback client); both `Client`
       owners pass `child::restore_in_child` in as the spawn's `pre_exec`
+
+strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
+                     on wayland-server: toplevels, workspaces, layer
+                     surfaces and the M4 surface globals; no Strand crate
+  ^-- dev-dependency of strand-services (the wm protocol client's tests)
+      and strand-surface (the manager's tests, tests/fake.rs)
 ```
+
+`strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
+crate depends on it outside `[dev-dependencies]`, and it depends on no
+Strand crate, so it adds no runtime edge to the graph above. It serves
+the toplevel and workspace protocols strand-services' wm client speaks
+(`ext-foreign-toplevel-list-v1`, `ext-workspace-v1`, optionally
+`zwlr_foreign_toplevel_management_v1`), and `wl_compositor`, `wl_shm`,
+layer shell, the viewporter, single-pixel buffers, the alpha modifier
+and `ext-background-effect-v1` for strand-surface, recording what each
+surface committed for the tests to assert on (decisions.md,
+m4-surface-w1).
 
 `strand-auth` (M4) is the lock's whole security boundary, small enough to
 review alone. Its lib depends on `libc` and `zeroize` and no Strand
