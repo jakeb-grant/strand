@@ -2280,6 +2280,44 @@ fn a_list_with_more_than_its_for_mounts_every_row() {
     assert!(shell.scene.prop(list, Prop::RowCount).is_none());
 }
 
+/// A list is windowed only when each item of its `for` makes exactly one
+/// row (render and `nav` count each child as a row): an item of two
+/// nodes, an `if` or a component of two roots mounts every row, while a
+/// component with one root is windowed.
+#[test]
+fn a_list_whose_items_are_not_one_row_mounts_every_row() {
+    use strand_compiler::instantiate::DEFAULT_LIST_WINDOW;
+    let mut rows = String::from("state rows = [");
+    for i in 0..40 {
+        rows.push_str(&format!("\"r{i}\", "));
+    }
+    rows.push_str("]\n");
+    let windowed = |body: &str, extra: &str| {
+        let src = format!("{rows}{extra}bar B {{ list {{ for r in rows key r {{ {body} }} }} }}\n");
+        let shell = boot(&[("t.strand", &src)], |rt, host| {
+            screens(rt, host, &["DP-1"])
+        });
+        let list = shell.scene.of_kind(NodeKind::List)[0];
+        let n = shell.scene.children(list).len();
+        (shell.scene.prop(list, Prop::RowCount).is_some(), n)
+    };
+    assert_eq!(windowed("text r\n text r", ""), (false, 80));
+    assert_eq!(windowed("if r != \"r3\" { text r }", ""), (false, 39));
+    assert_eq!(
+        windowed("Two(r)", "component Two(s: text) { text s\n text s }\n"),
+        (false, 80)
+    );
+    assert_eq!(
+        windowed("One(r)", "component One(s: text) { row { text s } }\n"),
+        (true, DEFAULT_LIST_WINDOW)
+    );
+    // `let`s and handlers beside the one row are fine.
+    assert_eq!(
+        windowed("let u = r\n row { text u }", ""),
+        (true, DEFAULT_LIST_WINDOW)
+    );
+}
+
 /// A fault in a file's top-level handler is located but freezes
 /// nothing: freezing the config's root would stop every bar (design.md:
 /// a fault freezes only its own component).

@@ -18,8 +18,8 @@ use super::convert;
 use super::emit::{Binding, FragId, NodeEntry, PropOut};
 use crate::hir::{DefId, LocalId, PoseKind, TimerKind};
 use crate::lower::{
-    ChunkId, Element, ElementKind, Event, For, ForKey, Handler, Node, Prop, StateInit, Surface,
-    Timer, TokenDef,
+    ChunkId, Element, ElementKind, Event, For, ForKey, Handler, Node, Program, Prop, StateInit,
+    Surface, Timer, TokenDef,
 };
 use crate::ty::Ty;
 use crate::vm::value::{NodeState, Slot, Value, ValueKey};
@@ -198,8 +198,11 @@ struct ListWindow {
 }
 
 /// The `for` of a `list` whose only content is that `for` (handlers,
-/// `when`s and poses aside): such a list mounts only its window.
-fn window_for(kind: NodeKind, children: &[Node]) -> Option<&For> {
+/// `when`s and poses aside), each of whose items makes exactly one row:
+/// such a list mounts only its window. Render and the Router count each
+/// child of the list as a row at `row_first` + its place, so an item
+/// making two nodes, or none, would put every index off.
+fn window_for<'a>(prog: &Program, kind: NodeKind, children: &'a [Node]) -> Option<&'a For> {
     if kind != NodeKind::List {
         return None;
     }
@@ -216,7 +219,42 @@ fn window_for(kind: NodeKind, children: &[Node]) -> Option<&For> {
             _ => {}
         }
     }
-    found
+    found.filter(|f| one_node(prog, &f.body.nodes, 0))
+}
+
+/// True if `nodes` always mount exactly one scene node at their top: one
+/// element that is not mounted on demand or a surface of its own, or a
+/// component whose body does the same (followed to a few levels); no
+/// `if`, `match`, `for` or slot beside it, whose node count can change.
+fn one_node(prog: &Program, nodes: &[Node], depth: u32) -> bool {
+    let mut n = 0;
+    for node in nodes {
+        match node {
+            Node::Element(e) => {
+                let one = match &e.kind {
+                    ElementKind::Builtin(NodeKind::Page | NodeKind::Tooltip) => false,
+                    ElementKind::Builtin(k) => !k.is_surface(),
+                    ElementKind::Component(d) => {
+                        depth < 8
+                            && prog
+                                .components
+                                .get(d)
+                                .is_some_and(|c| one_node(prog, &c.body.nodes, depth + 1))
+                    }
+                    ElementKind::Unknown(_) => false,
+                };
+                if !one {
+                    return false;
+                }
+                n += 1;
+            }
+            Node::For(_) | Node::Surface(_) | Node::If { .. } | Node::Match { .. } | Node::Slot => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    n == 1
 }
 
 /// Applies one keyed diff to a whole list.
@@ -1321,7 +1359,7 @@ impl Ctx {
         let ec = ElemCtx { scene: id, state };
         if kind.is_surface() {
             self.mount_surface_body(rt, e, env, frag, ec, services.cloned());
-        } else if let Some(f) = window_for(kind, &e.children) {
+        } else if let Some(f) = window_for(&self.vm.prog, kind, &e.children) {
             // A `for` that is the list's direct child: only its window's
             // rows are mounted.
             for n in e.children.iter() {
