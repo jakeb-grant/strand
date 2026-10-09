@@ -1082,6 +1082,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
+    /// The layer that layer surface `id` is on (`None` for a popup).
+    fn layer_of(&self, id: SurfaceId) -> Option<Layer> {
+        let s = self.surfaces.get(&id)?;
+        matches!(s.role, Role::Layer(_)).then_some(s.config.layer)
+    }
+
     /// The surfaces showing `node`.
     pub fn surfaces_of(&self, node: NodeId) -> Vec<SurfaceId> {
         self.surfaces

@@ -7,15 +7,23 @@ use super::*;
 impl<H: SurfaceHost + 'static> State<H> {
     /// Pushes a changed spec to `node`'s live surfaces in place.
     pub(super) fn reconfigure(&mut self, node: NodeId) {
-        let Some(spec) = self.specs.get(&node) else {
+        let Some(spec) = self.specs.get(&node).cloned() else {
             return;
         };
+        let spec = &spec;
         if spec.kind == NodeKind::Popup {
             self.reconfigure_popups(node);
             return;
         }
         let new = layer_config(spec);
         let under = wants_under(spec);
+        // The layer its catcher goes on: one below the surface's with a
+        // scrim, else the surface's own.
+        let under_layer = new
+            .as_ref()
+            .ok()
+            .and_then(|c| Under::of_layer(spec, c))
+            .map(|u| u.layer);
         let ids = self.surfaces_of(node);
         for id in ids {
             match (under, self.under_of(id)) {
@@ -29,6 +37,15 @@ impl<H: SurfaceHost + 'static> State<H> {
                 (Some((clicks, _)), Some((had, _))) if clicks != had => {
                     self.destroy_surface(id);
                     continue;
+                }
+                // A scrim that comes or goes on a surface whose layer
+                // stays (one the user put on `overlay` or `bottom`)
+                // moves its catcher: a layer is fixed at creation.
+                (Some(_), Some(_))
+                    if under_layer != self.catcher_layer(id)
+                        && new.as_ref().ok().map(|c| c.layer) == self.layer_of(id) =>
+                {
+                    self.recreate_catcher(id, spec)
                 }
                 (Some((_, scrim)), Some(_)) => self.recolor_scrim(id, scrim),
                 (None, Some(_)) => self.destroy_catcher(id),

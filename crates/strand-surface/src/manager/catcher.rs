@@ -34,6 +34,8 @@ use strand_scene::Color;
 /// output (popups stack above layer surfaces).
 pub(super) struct Catcher {
     pub(super) layer: LayerSurface,
+    /// The layer it was made on (fixed at creation).
+    pub(super) on_layer: Layer,
     /// On the output of the surface it serves, with a hole for it.
     pub(super) primary: bool,
     /// The output it is on (the global's name), if one was asked for.
@@ -248,6 +250,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.catcher_of.insert(wl.id(), id);
         Catcher {
             layer,
+            on_layer: under.layer,
             primary,
             output: global,
             viewport,
@@ -346,6 +349,19 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.update_catcher(id);
     }
 
+    /// Makes layer surface `id`'s catchers again for `spec` (its scrim
+    /// came or went, so the primary one changes layer).
+    pub(super) fn recreate_catcher(&mut self, id: SurfaceId, spec: &SurfaceSpec) {
+        let Some(s) = self.surfaces.get(&id) else {
+            return;
+        };
+        let (node, output) = (s.node, s.output);
+        match Under::of_layer(spec, &s.config) {
+            Some(under) => self.create_catcher(id, node, &under, output),
+            None => self.destroy_catcher(id),
+        }
+    }
+
     /// Recolours surface `id`'s scrim in place (its catcher stays).
     pub(super) fn recolor_scrim(&mut self, id: SurfaceId, scrim: Option<Color>) {
         let Some(c) = self
@@ -367,11 +383,16 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// What surface `id`'s primary catcher is: `(clicks, scrim)`.
     pub(super) fn under_of(&self, id: SurfaceId) -> Option<(bool, Option<Color>)> {
-        self.catchers
-            .get(&id)?
-            .iter()
-            .find(|c| c.primary)
-            .map(|c| (c.clicks, c.scrim))
+        self.primary_catcher(id).map(|c| (c.clicks, c.scrim))
+    }
+
+    /// The layer surface `id`'s primary catcher is on.
+    pub(super) fn catcher_layer(&self, id: SurfaceId) -> Option<Layer> {
+        self.primary_catcher(id).map(|c| c.on_layer)
+    }
+
+    fn primary_catcher(&self, id: SurfaceId) -> Option<&Catcher> {
+        self.catchers.get(&id)?.iter().find(|c| c.primary)
     }
 
     /// Sets catcher `id`'s input region: all of it but the box of the

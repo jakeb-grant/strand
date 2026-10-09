@@ -451,3 +451,99 @@ fn the_scrim_is_the_click_away_catcher() {
     assert!(ok);
     assert_eq!(mgr.state().surface(id).unwrap().scrim, Some(DIM));
 }
+
+/// A click-away panel the user put on `overlay` keeps its layer when it
+/// gains a scrim, so its catcher moves: from the panel's layer (a
+/// transparent catcher) to the one below (the scrim), and back when the
+/// scrim goes. The panel itself is never made again. On sway 1.9 a
+/// coloured catcher left on the panel's own layer would dim the panel.
+#[test]
+fn a_scrim_toggled_on_an_overlay_panel_moves_its_catcher() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let spec = |color| {
+        let mut s = scrim_spec(color, true);
+        s.layer = Some(strand_scene::Layer::Overlay);
+        s
+    };
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec(None)));
+    // zwlr_layer_shell_v1: bottom 1, top 2, overlay 3.
+    let rec = wait_layer(&fake, &mut mgr, "strand-Dash-click-away", |s| {
+        s.configured.is_some()
+    });
+    assert_eq!(rec.layer, Some(3), "transparent, on the panel's layer");
+    let panel = wait_layer(&fake, &mut mgr, "strand-Dash", |s| s.buffer.is_some());
+    assert_eq!(panel.layer, Some(3));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let panels = fake
+        .surfaces()
+        .iter()
+        .filter(|s| s.namespace.as_deref() == Some("strand-Dash"))
+        .count();
+
+    // A scrim: the catcher goes one layer down, coloured.
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec: spec(Some(DIM)),
+            recreate: false,
+        },
+    );
+    let rec = wait_layer(
+        &fake,
+        &mut mgr,
+        "strand-Dash-click-away",
+        |s| matches!(s.buffer, Some(strand_fake_wayland::BufferKind::SinglePixel([0, 0, 0, a])) if a > 0),
+    );
+    assert_eq!(rec.layer, Some(2), "the scrim below the panel");
+    assert_eq!(
+        fake.layer("strand-Dash-click-away").len(),
+        1,
+        "{:?}",
+        fake.surfaces()
+    );
+    assert_eq!(
+        fake.layer("strand-Dash")[0].layer,
+        Some(3),
+        "the panel stays"
+    );
+    assert_eq!(mgr.state().surfaces_of(PANEL), [id]);
+
+    // No scrim: back on the panel's layer, transparent.
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec: spec(None),
+            recreate: false,
+        },
+    );
+    wait_layer(&fake, &mut mgr, "strand-Dash-click-away", |s| {
+        s.layer == Some(3)
+            && matches!(
+                s.buffer,
+                Some(strand_fake_wayland::BufferKind::SinglePixel([_, _, _, 0]))
+            )
+    });
+    assert_eq!(
+        fake.layer("strand-Dash-click-away").len(),
+        1,
+        "{:?}",
+        fake.surfaces()
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.click_away && i.scrim.is_none())
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    assert_eq!(
+        fake.surfaces()
+            .iter()
+            .filter(|s| s.namespace.as_deref() == Some("strand-Dash"))
+            .count(),
+        panels,
+        "the panel was never made again"
+    );
+}
