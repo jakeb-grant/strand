@@ -51,6 +51,12 @@ pub struct Options {
     /// Poll every directory instead of using inotify (tests, or a user who
     /// knows their filesystem drops events).
     pub force_polling: bool,
+    /// Where ancestor watches stop: an ancestor of a watched directory
+    /// under this one is watched lightly only strictly below it (design.md,
+    /// "Watch directories, not files"). `$HOME` by default, canonical;
+    /// outside it, or with `None`, ancestors are watched up to the root
+    /// of the mount holding the directory.
+    pub home: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -64,6 +70,7 @@ impl Default for Options {
             content_sweep: Duration::from_secs(30),
             sweep_max_bytes: 1 << 20,
             force_polling: false,
+            home: paths::home_dir(),
         }
     }
 }
@@ -1856,10 +1863,11 @@ impl<B: Backend> Core<B> {
     /// wanted directory that does not exist is replaced by its nearest
     /// existing ancestor, watched for names only ([`WatchKind::Parent`]),
     /// and the first missing path below that ancestor is remembered in
-    /// `waiting`. Every ancestor of a wanted directory is watched lightly
+    /// `waiting`. The ancestors of a wanted directory are watched lightly
     /// ([`WatchKind::Ancestor`]), so that one of them being moved or
     /// deleted is seen even though the descriptors below follow the moved
-    /// inodes and report nothing. With `verify`, every watched directory
+    /// inodes and report nothing: strictly below `$HOME` for a directory
+    /// under it, else up to its mount's root ([`paths::watched_ancestors`]). With `verify`, every watched directory
     /// is stat'ed, and one whose inode changed behind our back is watched
     /// again and what lies below it re-checked at the next flush (a full
     /// rescan does that); without it, only directories not yet watched
@@ -1898,11 +1906,16 @@ impl<B: Backend> Core<B> {
             }
         }
         let named: Vec<PathBuf> = desired.keys().cloned().collect();
+        // Mount roots, asked once per path in this sync.
+        let mut roots: HashMap<PathBuf, bool> = HashMap::new();
+        let mut mount_root = |p: &Path| {
+            *roots
+                .entry(p.to_path_buf())
+                .or_insert_with(|| paths::is_mount_root(p))
+        };
         for d in named {
-            for a in d.ancestors().skip(1) {
-                desired
-                    .entry(a.to_path_buf())
-                    .or_insert(WatchKind::Ancestor);
+            for a in paths::watched_ancestors(&d, self.opts.home.as_deref(), &mut mount_root) {
+                desired.entry(a).or_insert(WatchKind::Ancestor);
             }
         }
         let stale: Vec<PathBuf> = self
@@ -2482,16 +2495,19 @@ mod tests {
         std::fs::create_dir_all(&z).unwrap();
         let prefs = z.join("prefs.toml");
         std::fs::write(&prefs, "a = 1").unwrap();
-        let mut core = Core::new(Silent::default(), Options::default(), None);
+        // Outside `$HOME`: up to the root of the temp dir's mount.
+        let opts = Options {
+            home: None,
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts, None);
         core.add_file(&prefs, Role::Settings, None);
         assert_eq!(core.watched_dirs(), vec![z.clone()]);
-        for a in [
-            root.join("x/y"),
-            root.join("x"),
-            root.clone(),
-            PathBuf::from("/"),
-        ] {
-            assert_eq!(core.kinds.get(&a), Some(&WatchKind::Ancestor), "{a:?}");
+        let up = paths::watched_ancestors(&z, None, paths::is_mount_root);
+        assert!(up.starts_with(&[root.join("x/y"), root.join("x"), root.clone()]));
+        assert!(up.last().is_some_and(|m| paths::is_mount_root(m)), "{up:?}");
+        for a in &up {
+            assert_eq!(core.kinds.get(a), Some(&WatchKind::Ancestor), "{a:?}");
         }
         std::fs::rename(root.join("x"), root.join("w")).unwrap();
         // What the light watch on `root` reports.
@@ -2510,6 +2526,132 @@ mod tests {
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(core.watched_dirs(), vec![z]);
         assert_eq!(core.kinds.get(&root), Some(&WatchKind::Ancestor));
+        // Nothing above the mount's root.
+        if let Some(above) = up.last().and_then(|m| m.parent()) {
+            for a in above.ancestors() {
+                assert_eq!(core.kinds.get(a), None, "{a:?}");
+            }
+        }
+    }
+
+    /// Under `$HOME`, ancestors are watched strictly below it: `~/.config`
+    /// yes, `~` and above no (atomic renames in `~`, such as a shell
+    /// saving its history, would wake the watcher). A move of a watched
+    /// directory's parent, or of a directory above that below `~`, is
+    /// still seen.
+    #[test]
+    fn ancestor_watches_stop_below_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        let conf = home.join(".config");
+        let z = conf.join("x/y/z");
+        std::fs::create_dir_all(&z).unwrap();
+        let prefs = z.join("prefs.toml");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let opts = Options {
+            home: Some(home.clone()),
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts, None);
+        core.add_file(&prefs, Role::Settings, None);
+        assert_eq!(core.watched_dirs(), vec![z.clone()]);
+        for a in [conf.join("x/y"), conf.join("x"), conf.clone()] {
+            assert_eq!(core.kinds.get(&a), Some(&WatchKind::Ancestor), "{a:?}");
+        }
+        for a in home.ancestors() {
+            assert_eq!(core.kinds.get(a), None, "no watch on ~ or above: {a:?}");
+        }
+
+        // `z`'s parent moved: the light watch on `x` reports it.
+        std::fs::rename(conf.join("x/y"), conf.join("x/q")).unwrap();
+        core.on_raw(Raw::Gone(conf.join("x/y")), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Removed);
+        assert_eq!(core.watched_dirs(), vec![conf.join("x")]);
+        std::fs::rename(conf.join("x/q"), conf.join("x/y")).unwrap();
+        core.on_raw(Raw::Dir(conf.join("x/y")), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].kind, ChangeKind::Created, "{b:#?}");
+        assert_eq!(core.watched_dirs(), vec![z.clone()]);
+
+        // `~/.config/x` moved: the light watch on `~/.config` reports it.
+        std::fs::rename(conf.join("x"), conf.join("w")).unwrap();
+        core.on_raw(Raw::Gone(conf.join("x")), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].kind, ChangeKind::Removed, "{b:#?}");
+        for a in home.ancestors() {
+            assert_eq!(core.kinds.get(a), None, "no watch on ~ or above: {a:?}");
+        }
+
+        // A file in `~` itself: `~` is watched for it, nothing above.
+        let rc = home.join("rc.toml");
+        std::fs::write(&rc, "a = 1").unwrap();
+        core.add_file(&rc, Role::Settings, None);
+        assert_eq!(core.kinds.get(&home), Some(&WatchKind::Completed));
+        for a in home.ancestors().skip(1) {
+            assert_eq!(core.kinds.get(a), None, "{a:?}");
+        }
+    }
+
+    /// Outside `$HOME`, ancestors are watched up to and including the root
+    /// of the mount holding the directory, and none when the directory is
+    /// a mount's root.
+    #[test]
+    fn ancestor_watches_stop_at_the_mount_root() {
+        let p = |s: &str| PathBuf::from(s);
+        let roots = [p("/"), p("/mnt/data")];
+        let root = |a: &Path| roots.iter().any(|r| r == a);
+        let home = p("/home/u");
+        assert_eq!(
+            paths::watched_ancestors(&p("/mnt/data/cfg/strand"), Some(&home), root),
+            vec![p("/mnt/data/cfg"), p("/mnt/data")]
+        );
+        assert_eq!(
+            paths::watched_ancestors(&p("/mnt/data"), Some(&home), root),
+            Vec::<PathBuf>::new()
+        );
+        assert_eq!(
+            paths::watched_ancestors(&p("/etc/xdg/strand"), None, root),
+            vec![p("/etc/xdg"), p("/etc"), p("/")]
+        );
+        // Under `$HOME` the mount roots are not asked: `~` is the stop.
+        assert_eq!(
+            paths::watched_ancestors(&p("/home/u/.config/strand"), Some(&home), |_| true),
+            vec![p("/home/u/.config")]
+        );
+        assert_eq!(
+            paths::watched_ancestors(&home, Some(&home), root),
+            Vec::<PathBuf>::new()
+        );
+
+        // The real thing: `/` is a mount's root, a fresh temp dir is not.
+        assert!(paths::is_mount_root(Path::new("/")));
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        assert!(!paths::is_mount_root(&base));
+        // `/dev/shm` is a tmpfs of its own in CI and the container suite.
+        let shm = Path::new("/dev/shm");
+        if !paths::is_mount_root(shm) {
+            eprintln!("/dev/shm is not a mount root here: the live clause is skipped");
+            return;
+        }
+        let tmp = tempfile::tempdir_in(shm).unwrap();
+        let z = std::fs::canonicalize(tmp.path()).unwrap().join("x/z");
+        std::fs::create_dir_all(&z).unwrap();
+        let prefs = z.join("prefs.toml");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let opts = Options {
+            home: Some(base),
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts, None);
+        core.add_file(&prefs, Role::Settings, None);
+        assert_eq!(core.kinds.get(shm), Some(&WatchKind::Ancestor));
+        assert_eq!(core.kinds.get(z.parent().unwrap()), Some(&WatchKind::Ancestor));
+        for a in [Path::new("/dev"), Path::new("/")] {
+            assert_eq!(core.kinds.get(a), None, "{a:?}");
+        }
     }
 
     /// A cache tree is walked before its watches exist: it is walked again

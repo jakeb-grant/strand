@@ -158,6 +158,76 @@ const NO_EVENT_MAGICS: &[u64] = &[
 /// Content-addressed stores whose paths never change once written.
 const STORES: &[&str] = &["/nix/store", "/gnu/store"];
 
+/// Whether `dir` is the root of a mount (`/`, a tmpfs `/tmp`, a separate
+/// `/home`): `statx`'s `STATX_ATTR_MOUNT_ROOT` (Linux 5.8), else a device
+/// that differs from its parent's, or a directory that is its own parent.
+/// A path that cannot be stat'ed is not a mount root.
+pub fn is_mount_root(dir: &Path) -> bool {
+    use rustix::fs::{AtFlags, CWD, StatxAttributes, StatxFlags};
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(x) = rustix::fs::statx(
+        CWD,
+        dir,
+        AtFlags::NO_AUTOMOUNT | AtFlags::SYMLINK_NOFOLLOW,
+        StatxFlags::empty(),
+    ) && x.stx_attributes_mask.contains(StatxAttributes::MOUNT_ROOT)
+    {
+        return x.stx_attributes.contains(StatxAttributes::MOUNT_ROOT);
+    }
+    let Ok(me) = std::fs::symlink_metadata(dir) else {
+        return false;
+    };
+    let Ok(up) = std::fs::metadata(dir.join("..")) else {
+        return false;
+    };
+    me.dev() != up.dev() || me.ino() == up.ino()
+}
+
+/// The ancestors of the watched directory `dir` that hold a light
+/// `WatchKind::Ancestor` watch, nearest first (design.md, "Watch
+/// directories, not files"). Under `home` (`$HOME`, canonical), only
+/// those strictly below it: `~/.config` yes, `~` and above no, since
+/// atomic renames in `~` (a shell saving its history) would wake the
+/// watcher thread, and nobody moves `$HOME` in a session. Elsewhere, up
+/// to and including the root of the mount holding `dir` (whose children
+/// moving is still seen); none when `dir` is that root. `mount_root`
+/// answers [`is_mount_root`] (a fake in tests).
+pub fn watched_ancestors(
+    dir: &Path,
+    home: Option<&Path>,
+    mut mount_root: impl FnMut(&Path) -> bool,
+) -> Vec<PathBuf> {
+    if let Some(home) = home.filter(|h| dir.starts_with(h)) {
+        return dir
+            .ancestors()
+            .skip(1)
+            .take_while(|a| *a != home && a.starts_with(home))
+            .map(Path::to_path_buf)
+            .collect();
+    }
+    let mut out = Vec::new();
+    if mount_root(dir) {
+        return out;
+    }
+    for a in dir.ancestors().skip(1) {
+        out.push(a.to_path_buf());
+        if mount_root(a) {
+            break;
+        }
+    }
+    out
+}
+
+/// `$HOME` when it is set to an absolute path, canonical when it exists
+/// (watched directories are canonical, and `/home` may be a link).
+pub fn home_dir() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if !home.is_absolute() {
+        return None;
+    }
+    Some(std::fs::canonicalize(&home).unwrap_or(home))
+}
+
 /// Classify the filesystem holding `dir`.
 pub fn fs_kind(dir: &Path) -> FsKind {
     let read_only = rustix::fs::statvfs(dir)

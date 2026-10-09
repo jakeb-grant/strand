@@ -2556,7 +2556,12 @@ It does not depend on `strand-compiler` or `strand-core`.
   created and not yet closed, and no `CLOSE_WRITE` yet) is never read;
   after 5 s (`Options::stalled_write`) with no further event and no
   change to its modification time it is read anyway with
-  `Notice::StalledWrite(path)`, and read again when it is closed. A file
+  `Notice::StalledWrite(path)`, and read again when it is closed. The
+  ancestors of each watched directory get a light watch (names moved or
+  deleted) up to `Options::home` (default `$HOME`, canonical), strictly
+  below it, or outside it up to the root of the mount holding the
+  directory (design.md, "Watch directories, not files"; decisions.md
+  laptop-decisions). A file
   a write may have reached while it was being read (its stamp moved, a
   `MODIFY`, creation or removal for it queued by then, outside the config
   directories also a `CLOSE_WRITE`, or modified less than 15 ms before

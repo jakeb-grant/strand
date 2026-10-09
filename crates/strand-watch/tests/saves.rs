@@ -1596,3 +1596,37 @@ fn a_moved_ancestor_directory_is_seen() {
     let b = one_batch(&fx);
     assert_modified(&b.changes[0], &prefs, "a = 3\n");
 }
+
+/// Under `$HOME` (here the temp dir holding the fixture) ancestors are
+/// watched only strictly below it, and the move of a watched directory's
+/// parent there is still seen by real inotify events.
+#[test]
+fn a_moved_parent_below_home_is_seen() {
+    let home = fs::canonicalize(std::env::temp_dir()).unwrap();
+    let fx = fixture_with(
+        Options {
+            home: Some(home),
+            ..Options::default()
+        },
+        |_| {},
+    );
+    let z = fx.base.join("x/y/z");
+    fs::create_dir_all(&z).unwrap();
+    let prefs = z.join("prefs.toml");
+    fs::write(&prefs, "a = 1\n").unwrap();
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    // `z`'s parent moved: `x`, below `$HOME`, holds the light watch.
+    fs::rename(fx.base.join("x/y"), fx.base.join("x/q")).unwrap();
+    let b = until(&fx.rx, "the removal", |b| {
+        has(b, &prefs, ChangeKind::Removed)
+    });
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    fs::rename(fx.base.join("x/q"), fx.base.join("x/y")).unwrap();
+    until(&fx.rx, "the return", |b| has(b, &prefs, ChangeKind::Created));
+    // `x` itself moved: seen from the fixture's base, the highest
+    // ancestor below `$HOME`.
+    fs::rename(fx.base.join("x"), fx.base.join("w")).unwrap();
+    until(&fx.rx, "the second removal", |b| {
+        has(b, &prefs, ChangeKind::Removed)
+    });
+}
