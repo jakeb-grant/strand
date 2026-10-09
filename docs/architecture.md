@@ -2556,7 +2556,12 @@ It does not depend on `strand-compiler` or `strand-core`.
   created and not yet closed, and no `CLOSE_WRITE` yet) is never read;
   after 5 s (`Options::stalled_write`) with no further event and no
   change to its modification time it is read anyway with
-  `Notice::StalledWrite(path)`, and read again when it is closed. A file
+  `Notice::StalledWrite(path)`, and read again when it is closed. The
+  ancestors of each watched directory get a light watch (names moved or
+  deleted) up to `Options::home` (default `$HOME`, canonical), strictly
+  below it, or outside it up to the root of the mount holding the
+  directory (design.md, "Watch directories, not files"; decisions.md
+  laptop-decisions). A file
   a write may have reached while it was being read (its stamp moved, a
   `MODIFY`, creation or removal for it queued by then, outside the config
   directories also a `CLOSE_WRITE`, or modified less than 15 ms before
@@ -2573,9 +2578,10 @@ It does not depend on `strand-compiler` or `strand-core`.
   hops, cache trees) hears completed writes and names only, so writers
   there cost one wakeup per file closed. The config root's parent and
   the stand-in for a missing directory are watched for names only, and
-  every ancestor of a watched directory holds a light watch (moves and
-  deletions of its children only), so moving any directory on the way
-  reports the files below as `Removed`.
+  each ancestor in the range above holds a light watch (its own move or
+  deletion and its children's only), so moving any directory in that
+  range reports the files below as `Removed`; moving `$HOME` itself, or
+  a directory above it, is not seen.
   `rescan()` is `strand reload`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write

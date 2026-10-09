@@ -384,12 +384,14 @@ impl Desktop {
         });
 
         // The runtime directory under /tmp (a short socket path); the
-        // config and data outside it. The watcher watches every ancestor
-        // of the config for children moved or deleted, so no ancestor may
-        // be a directory other tests make and remove their own in: not
-        // /tmp, nor the target's `tmp` (`CARGO_TARGET_TMPDIR`), which
-        // every test binary of the workspace shares, but a directory
-        // beside it that only this binary (its tests serialised) uses.
+        // config and data outside it. The watcher watches the ancestors of
+        // what it watches for children moved or deleted (below HOME only,
+        // decisions.md laptop-decisions; up to the mount root elsewhere),
+        // so no ancestor of HOME should be a directory other tests make
+        // and remove their own in: not /tmp, nor the target's `tmp`
+        // (`CARGO_TARGET_TMPDIR`), which every test binary of the
+        // workspace shares, but a directory beside it that only this
+        // binary (its tests serialised) uses.
         let tmp = TmpDir::new(
             std::env::temp_dir().join(format!("strand-budgets-{name}-{}", std::process::id())),
         );
@@ -1599,13 +1601,13 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         break;
     }
     desk.alive("after the idle window");
-    // The retry's premise, shown: a directory made and removed beside
-    // HOME, in an ancestor of the config the watcher watches for names
-    // going, wakes the watcher thread, and the monitor sees it.
+    // The retry's premise, shown: a directory made and removed in
+    // `~/.config`, the config's parent, which the watcher watches for
+    // names, wakes the watcher thread, and the monitor sees it.
     let beside = desk
         .home
         .0
-        .with_file_name(format!("beside-{}", std::process::id()));
+        .join(format!(".config/beside-{}", std::process::id()));
     let _ = monitor.events();
     let before = per_thread(pid);
     std::fs::create_dir(&beside).unwrap();
@@ -1615,14 +1617,31 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     let seen = monitor.events();
     assert!(
         seen.iter().any(|e| e.contains("/beside-")),
-        "the monitor missed a name removed beside HOME: {seen:?} ({})",
+        "the monitor missed a name removed in ~/.config: {seen:?} ({})",
         monitor.describe()
     );
     assert!(
         after
             .iter()
             .any(|(t, n)| t.ends_with(" strand-watch") && before.get(t) != Some(n)),
-        "the watcher slept through a name removed beside HOME: {before:?} -> {after:?}"
+        "the watcher slept through a name removed in ~/.config: {before:?} -> {after:?}"
+    );
+    // Ancestor watches stop below HOME (decisions.md, laptop-decisions):
+    // a name made beside HOME, in its parent, is in no directory strand
+    // watches, so the mirror hears nothing.
+    let above = desk
+        .home
+        .0
+        .with_file_name(format!("beside-{}", std::process::id()));
+    let _ = monitor.events();
+    std::fs::create_dir(&above).unwrap();
+    std::fs::remove_dir(&above).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    let seen = monitor.events();
+    assert!(
+        !seen.iter().any(|e| e.contains("/beside-")),
+        "strand watches HOME's parent: {seen:?} ({})",
+        monitor.describe()
     );
     settled(
         &mut desk,

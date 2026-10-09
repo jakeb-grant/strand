@@ -214,15 +214,15 @@ All green in the debug workspace run here and in CI's `check` job.
 The design bar's window was flaky before review r1: about one full
 workspace run in five failed with `woke while idle over 10s:
 ["… strand-watch: 20 -> 21"]`. The cause is outside the shell.
-`strand-watch` watches every ancestor of each watched directory for
-names going (`WatchKind::Ancestor`) and the nearest existing ancestor of
-a missing cache directory for names coming (`WatchKind::Parent`). The
-test's HOME lies under the worktree's `target/`, whose ancestors other
-agents' builds and tests write to, and the missing `~/.fonts`,
-`~/.icons` and `.local/share/fonts` made HOME itself a `Parent` watch.
-Any name made or removed there woke the watcher thread once (it reads
-the event, finds it is not one of its paths and sleeps again: no logic
-wake, no frame). The test now:
+At M3, `strand-watch` watched every ancestor of each watched directory
+for names going (`WatchKind::Ancestor`) and the nearest existing
+ancestor of a missing cache directory for names coming
+(`WatchKind::Parent`). The test's HOME lies under the worktree's
+`target/`, whose ancestors other agents' builds and tests write to,
+and the missing `~/.fonts`, `~/.icons` and `.local/share/fonts` made
+HOME itself a `Parent` watch. Any name made or removed there woke the
+watcher thread once (it reads the event, finds it is not one of its
+paths and sleeps again: no logic wake, no frame). The test now:
 
 - creates the font and icon directories the cache sources name, so HOME
   is no longer a `Parent` watch;
@@ -238,13 +238,21 @@ wake, no frame). The test now:
   would start more than 45 s into the minute, so the window never covers
   the minute tick (the mirror's directory walk, first placed after the
   settle, pushed one debug CI window over it: run 37764216530);
-- proves the premise after the window: a directory made and removed
-  beside HOME must show in the mirror and wake the watcher thread.
+- proves the premise after the window: a directory made and removed in
+  `~/.config`, the config root's parent, must show in the mirror and
+  wake the watcher thread; one made and removed beside HOME must not
+  show in the mirror (since decisions.md laptop-decisions; at M3 the
+  control used the directory beside HOME, then a watched ancestor).
 
-On a real desktop the same wake happens once per atomic write in `~` or
-`~/.config` (a shell's history, `mimeapps.list`); whether the ancestor
-watches need to reach `/` and `/home` is left to the `strand-watch`
-owner (Open).
+At M3 the same wake happened on a real desktop once per atomic write in
+`~` or `~/.config` (a shell's history, `mimeapps.list`), and whether the
+ancestor watches needed to reach `/` and `/home` was left to the
+`strand-watch` owner. Answered since (2026-10-08, decisions.md
+laptop-decisions): under `$HOME` the ancestor watches stop strictly below
+it, and outside it at the root of the mount holding the directory, so an
+atomic write in `~` no longer wakes the watcher unless `~` is watched
+for another reason (a link living there); one in `~/.config` still does
+while `~/.config` is the config root's parent.
 
 ## Portal latency clause
 
@@ -360,26 +368,17 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
 
 - A second output on Hyprland, niri and sway is not checked live (see
   the matrix).
-- `strand-watch` wakes its thread once for each name made or removed in
-  any ancestor of a watched directory (up to `/`): on a desktop, every
-  atomic save in `~` or `~/.config`. No logic wake or frame follows, but
-  the idle test has to tell these wakes apart (Idle wakeups). Whether
-  the ancestor watches above the config root's parent are needed is the
-  `strand-watch` owner's call.
-- The token clause of the M1 latency bench has under 0.2 ms of p95
-  headroom on this machine and fails about two runs in three here (CI
-  passes it). The size opt-levels are not the cause (measured above:
-  `strand` at opt-level 3 fails as often and costs the bar ~2.1 MB);
-  the ~19 ms headless token reload is the path to profile (M1 owners).
-- The owner's confirmation of the ~27 release opt-level overrides
-  (`[profile.release.package]`, decisions.md wave4-exitMemory and
-  wave4-exitReport review r2). The memory targets and ceilings
-  themselves are owner-confirmed (decisions.md wave4-core, commit
-  607bd10) and no longer open.
-- The strand-render owner's acknowledgement of the layout default this
-  step added: an `image` or `icon` sized in absolute lengths defaults to
-  `shrink: 0` (a percentage size still gives way); decisions.md
-  wave3-pixels `shrink` note and wave4-exitReport reviews r1 and r2.
+- Answered since (2026-10-08, decisions.md laptop-decisions; handoff.md):
+  the four owner decisions this report left open. The ancestor watches
+  now stop below `$HOME` (outside it, at the mount's root), so atomic
+  saves in `~` no longer wake `strand-watch` through one. The latency gate keeps
+  its 35 ms budget and 50 rounds; the cloud container is no longer the
+  reference machine, and the laptop passed three runs with a per-stage
+  profile recorded. The ~27 release opt-level overrides are signed off,
+  with the caveat that the memory figures need the workspace's release
+  profile (README). The `shrink: 0` default for an absolutely sized
+  `image` or `icon` is acknowledged and written into design.md's
+  layout section.
 - Closed since: wave 3's strand-text change that stopped faux bold at
   weight 500 (CSS `font-synthesis-weight`) was left for its owner's
   sign-off; it is reviewed and kept (decisions.md wave4-core, carried

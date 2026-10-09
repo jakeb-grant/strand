@@ -12,30 +12,37 @@ for the reasoning behind each item below.
 - `docs/features.md`: M0 21/21, M1 56/59, M2 30/30, M3 14/14 (exit line
   included), M4 0/17, M5 0/9. The three open M1 boxes are owned by later
   milestones (below).
-- Work is paused at the owner's request. Do not start M4 until the open
-  decisions below are settled.
+- Work is paused at the owner's request. The open decisions that blocked
+  M4 are settled (below, 2026-10-08).
 
-## Open decisions for the owner
+## Owner decisions (answered 2026-10-08)
 
-1. **Release build settings.** `Cargo.toml` has 27 `[profile.release.package]`
-   `opt-level` overrides: event-rate crates are built for size and the
-   per-frame and reload paths stay at 3. This is what holds the bar under
-   its memory target. The owner has not signed them off.
-   (decisions.md wave4-exitMemory and wave4-exitReport review r2)
-2. **Reload latency gate headroom.** The token-edit clause of the M1
-   latency bench has under 0.2 ms of p95 headroom on the dev container and
-   fails about two runs in three there; CI passes it. The size opt-levels
-   are not the cause. Either profile the ~19 ms headless token reload or
-   decide how the gate should treat runner noise. (m3-report Open)
-3. **Layout default to acknowledge.** An `image` or `icon` sized in absolute
-   lengths now defaults to `shrink: 0`, which fixed the launcher's icon
-   alignment. It is a language-visible default the strand-render owner
-   should confirm. (decisions.md wave3-pixels `shrink` note, wave4-exitReport)
-4. **`strand-watch` ancestor watches.** The watcher wakes its own thread for
-   every name created or removed in any ancestor of a watched directory, up
-   to `/` (on a desktop, every atomic save in `~` or `~/.config`). No logic
-   wake or frame follows. Decide whether watches above the config root's
-   parent are needed. (m3-report Open)
+All four are answered; each is recorded in `docs/decisions.md` under
+"laptop-decisions".
+
+1. **Release build settings: signed off.** The 27
+   `[profile.release.package]` `opt-level` overrides stay as they are.
+   Caveat: the memory figures hold for builds that read the workspace's
+   release profile (`cargo build --release`, `cargo install --path` or
+   `--git` of this repository). A registry package, a build as a
+   dependency of another workspace, or a distribution's own profile flags
+   do not get them. README's "Building and installing" says so.
+2. **Reload latency gate: kept.** Still design.md's 35 ms (token) and
+   50 ms (markup) at p95, with 50 rounds; the cloud dev container is no
+   longer the reference machine. On the laptop, three runs passed with
+   1.0–1.6 ms of token headroom. A per-stage profile shows about 2.6 ms
+   of work and thread wakes outside the 15 ms coalesce, with no dominant
+   stage. A slow run is every stage a little slower plus wake-up tails
+   (the laptop was on battery, `powersave`). No code changed.
+3. **`shrink: 0` for absolutely sized `image`/`icon`: acknowledged** and
+   written into design.md's layout section ("Shrinking"), with the
+   percentage carve-out and the CSS replaced-element precedent.
+4. **`strand-watch` ancestor watches: stop below `$HOME`.** Under
+   `$HOME` only ancestors strictly below it are watched (`~/.config`
+   yes, `~` no); outside it, up to the root of the mount holding the
+   directory. Done in `strand-watch` (`Options::home`,
+   `paths::watched_ancestors`) with tests; design.md's "Watch
+   directories, not files" gives the reason.
 
 Settled, do not reopen: the memory gates are owner-confirmed. The
 two-monitor bar warns above a 34 MB target and fails above a 38 MB ceiling,
@@ -122,7 +129,8 @@ and the full shell warns above 64 MB and fails above 70 MB
   `cargo test --workspace` with `STRAND_REQUIRE_SWAY=1`,
   `STRAND_REQUIRE_DBUS=1` and `STRAND_REQUIRE_PIPEWIRE=1`
   (needs sway, grim, dbus-daemon, python3-dbusmock, pipewire, wireplumber).
-- [ ] Open decisions 1–4 answered and recorded in `docs/decisions.md`.
+- [x] Open decisions 1–4 answered and recorded in `docs/decisions.md`
+  (laptop-decisions).
 - [ ] Remote branches `wave4/core`, `wave4/exit-ci` and `wave4/wm` deleted.
   Each is fully contained in `main` (0 commits missing as of 2026-10-08).
 - [ ] README status, `docs/features.md` and `docs/m3-report.md` still
