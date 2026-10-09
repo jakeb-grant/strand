@@ -684,7 +684,7 @@ pub struct Fake {
     tx: mpsc::Sender<Cmd>,
     stop: Arc<AtomicBool>,
     /// While set, the fake reads nothing from its clients (a compositor
-    /// busy elsewhere).
+    /// busy elsewhere); the events it queues still go out.
     pub paused: Arc<AtomicBool>,
     pub activated: Arc<Mutex<Vec<String>>>,
     pub wlr_requests: Arc<Mutex<Vec<String>>>,
@@ -764,6 +764,7 @@ impl Fake {
                         .unwrap();
                 }
                 if thread_paused.load(Ordering::SeqCst) {
+                    let _ = display.flush_clients();
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     continue;
                 }
