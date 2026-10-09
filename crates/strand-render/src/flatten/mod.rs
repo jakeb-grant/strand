@@ -383,10 +383,12 @@ fn map_rect(a: kurbo::Affine, r: Rect) -> Rect {
 /// Applies a node's inherited props (`tokens`, `color`, `font`, `weight`)
 /// to `inh`, as its children see them.
 fn inherit<'a>(node: &'a Node, inh: &mut Inherited<'a>) {
+    if let Some(global) = inh.tokens.first() {
+        inh.timed |= crate::time::overrides_read_time(node, global);
+    }
     if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
         inh.tokens.push(t);
     }
-    inh.timed |= crate::time::overrides_read_time(node);
     // A nested surface's ancestors are read at rest (`t = 0`): their
     // own clocks belong to the surface that draws them.
     let scope = TokenScope::new(&inh.tokens);

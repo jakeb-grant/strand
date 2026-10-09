@@ -550,7 +550,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   derived inside the subtree. `TokenTable::freeze()` evaluates every
   token of a table once in its own scope and keeps the values; a lookup
   in a scope whose global table is frozen (and an override's right-hand
-  side reading it) reads them. Render freezes the tree's table when a
+  side reading it) reads them, except a token that reads time
+  (`TokenTable::time_paths`, through other tokens too), which each
+  lookup evaluates at the asking scope's time. Render freezes the tree's table when a
   `SetTokens` lands and in each frame a swap moves the roots; a clone is
   not frozen, equality ignores it, `insert`s thaw it, and a direct write
   to its pub fields needs a `freeze()` again (or `thaw()`). `enter`/`exit` are props whose
@@ -842,7 +844,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     (`strand_scene::tokens::noise`). A prop holding a time leaf is
     frame-driven (`PropValue::reads_time`, `TokenExpr::reads_time`;
     `noise(x)` only when `x` reads `t`): its node repaints each frame of
-    its clock while visible, and only it.
+    its clock while visible, and only it. So is a prop or override that
+    references a global token reading time (`$pulse: 8 * wave(2s)` in a
+    token set): render asks `reads_time_with(&|p|
+    global.time_reads(p))`.
   - **Per-node clocks with frame caps.** A node that reads time or plays
     frames (an animated image at its own rate, `grain` at 12 fps,
     `shimmer` at 30, others at refresh) has a clock; a clock that is not

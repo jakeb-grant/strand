@@ -2329,3 +2329,86 @@ fn all_idle_clocks_stop_the_frame_loop() {
     r.set_reduced_motion(false);
     assert!(r.wants_frame(BAR), "motion back: the clock runs again");
 }
+
+/// The bar of [`timed_bar`] painted afresh with its timed square turned
+/// `deg` degrees, for comparing a clocked frame against.
+fn turned(deg: f32) -> Buffer {
+    let (diff, _, _) = timed_bar(vec![(Prop::Rotate, PropValue::Angle(deg))]);
+    let mut r = renderer();
+    r.apply(diff);
+    r.attach_surface(BAR, r.tree().roots()[0]);
+    let mut full = Buffer::new(200, 40, Scale::ONE);
+    full.paint(&mut r, BAR, 0);
+    full
+}
+
+/// A global token that reads time (`$spin: t * 90deg` in a token set),
+/// read through another token (`$turn: $spin`) or through an override
+/// (`set { $local: $spin }`), makes its reader frame-driven at the
+/// reader's own `t`, as a time value written on the node does; the table
+/// stays frozen for every token that does not read time.
+#[test]
+fn global_tokens_that_read_time_drive_their_readers() {
+    let mut table = TokenTable::default();
+    table.insert("ok", color("#f38ba8"));
+    table.insert("spin", spin(90.0));
+    table.insert_derived("turn", TokenExpr::path("spin"));
+    table.insert_derived("ok.dim", TokenExpr::path("ok"));
+    let paths = table.time_paths();
+    assert!(
+        paths.contains("spin") && paths.contains("turn"),
+        "{paths:?}"
+    );
+    assert!(!paths.contains("ok") && !paths.contains("ok.dim"));
+
+    let (mut diff, _, timed) = timed_bar(vec![(
+        Prop::Rotate,
+        PropValue::Token(TokenExpr::path("turn")),
+    )]);
+    diff.set_tokens(table.clone(), Transition::Instant);
+    let (mut r, mut buf) = clocked(diff);
+    let node = drawn_box(&r, timed, (150.0, 10.0), 6);
+    for k in 1..=15 {
+        assert!(
+            r.wants_frame(BAR),
+            "frame {k}: the token's reader has a clock"
+        );
+        let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        assert!(!d.is_empty(), "frame {k} repaints the reader");
+        for rect in d.rects() {
+            assert!(node.contains_rect(*rect), "frame {k}: {rect:?}");
+        }
+    }
+    // 15 frames at 60 Hz: t = 0.25 s, 22.5°.
+    assert!(buf.pixels == turned(22.5).pixels, "drawn at its own t");
+
+    // Through an override of the same table: the subtree reads time.
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut local = TokenTable::default();
+    local.insert_derived("local", TokenExpr::path("spin"));
+    let group = b.node(
+        NodeKind::Stack,
+        Some(root),
+        vec![(Prop::Tokens, PropValue::Tokens(Box::new(local)))],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(group),
+        vec![
+            (Prop::X, num(150.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, PropValue::Token(TokenExpr::path("ok.dim"))),
+            (Prop::Rotate, PropValue::Token(TokenExpr::path("local"))),
+        ],
+    );
+    b.diff.set_tokens(table, Transition::Instant);
+    let (mut r, mut buf) = clocked(b.diff);
+    let still = buf.pixels.clone();
+    for k in 1..=15 {
+        assert!(r.wants_frame(BAR), "frame {k}: the override reads time");
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+    }
+    assert!(buf.pixels != still, "the square turned");
+}

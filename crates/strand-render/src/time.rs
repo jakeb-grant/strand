@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use strand_scene::{NodeId, Prop, PropValue, TimeContext};
+use strand_scene::{NodeId, Prop, PropValue, TimeContext, TokenTable};
 
 use crate::tree::Node;
 
@@ -101,17 +101,21 @@ fn letter(_id: NodeId) -> (u32, u32) {
 }
 
 /// True if a prop of `node` reads time (its `tokens` override aside: see
-/// [`overrides_read_time`]).
-pub(crate) fn reads_time(node: &Node) -> bool {
+/// [`overrides_read_time`]), directly or through a token of the global
+/// table that does (`glow: $pulse` with `$pulse: 8 * wave(2s)`).
+pub(crate) fn reads_time(node: &Node, global: &TokenTable) -> bool {
+    let timed = |p: &str| global.time_reads(p);
     node.props
         .iter()
-        .any(|e| e.prop != Prop::Tokens && e.value.reads_time())
+        .any(|e| e.prop != Prop::Tokens && e.value.reads_time_with(&timed))
 }
 
 /// True if `node`'s `tokens` override reads time (`set { $spin: t *
-/// 20deg }`): every node in its scope is evaluated at its own time.
-pub(crate) fn overrides_read_time(node: &Node) -> bool {
-    matches!(node.get(Prop::Tokens), Some(PropValue::Tokens(t)) if t.reads_time())
+/// 20deg }`, or `set { $glow: $pulse }` of a global `$pulse` that does):
+/// every node in its scope is evaluated at its own time.
+pub(crate) fn overrides_read_time(node: &Node, global: &TokenTable) -> bool {
+    let timed = |p: &str| global.time_reads(p);
+    matches!(node.get(Prop::Tokens), Some(PropValue::Tokens(t)) if t.reads_time_with(&timed))
 }
 
 #[cfg(test)]

@@ -66,8 +66,9 @@ impl<'a> Flattener<'a> {
             tokens.push(t);
         }
         // Time-bound props (M4) are evaluated at this node's own time.
-        let timed_scope = inh.timed || crate::time::overrides_read_time(node);
-        let timed = timed_scope || crate::time::reads_time(node);
+        let global = &self.tree.tokens;
+        let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
+        let timed = timed_scope || crate::time::reads_time(node, global);
         // Its clock: the rate its time props and its own animation run at.
         let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
         let (time, next) = match rate {
@@ -304,8 +305,9 @@ impl<'a> Flattener<'a> {
         // A hidden node's clock stops (its subtree is not visited, so
         // theirs do too), unless what hides it follows time.
         let follows = |p: Prop| {
-            node.get(p)
-                .is_some_and(|v| v.reads_time() || timed_scope && v.has_tokens())
+            node.get(p).is_some_and(|v| {
+                v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
+            })
         };
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
