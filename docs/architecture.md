@@ -2578,9 +2578,10 @@ It does not depend on `strand-compiler` or `strand-core`.
   hops, cache trees) hears completed writes and names only, so writers
   there cost one wakeup per file closed. The config root's parent and
   the stand-in for a missing directory are watched for names only, and
-  every ancestor of a watched directory holds a light watch (moves and
-  deletions of its children only), so moving any directory on the way
-  reports the files below as `Removed`.
+  each ancestor in the range above holds a light watch (its own move or
+  deletion and its children's only), so moving any directory in that
+  range reports the files below as `Removed`; moving `$HOME` itself, or
+  a directory above it, is not seen.
   `rescan()` is `strand reload`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write

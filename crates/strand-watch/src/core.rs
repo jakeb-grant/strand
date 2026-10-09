@@ -2486,10 +2486,11 @@ mod tests {
         assert_eq!(polled_stamp(&root.join("missing"), denied), None);
     }
 
-    /// Every ancestor of a watched directory is watched lightly, so moving
-    /// one away (the descriptors below follow the inodes and say nothing)
-    /// is seen: the file is reported removed, and back again when the
-    /// directory returns.
+    /// The ancestors of a watched directory outside `$HOME` are watched
+    /// lightly up to the root of its mount, so moving one away (the
+    /// descriptors below follow the inodes and say nothing) is seen: the
+    /// file is reported removed, and back again when the directory
+    /// returns. The `$HOME` boundary is `ancestor_watches_stop_below_home`.
     #[test]
     fn a_moved_ancestor_is_seen() {
         let (_tmp, root) = cfg_dir();

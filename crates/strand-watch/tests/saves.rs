@@ -1597,38 +1597,100 @@ fn a_moved_ancestor_directory_is_seen() {
     assert_modified(&b.changes[0], &prefs, "a = 3\n");
 }
 
-/// Under `$HOME` (here the temp dir holding the fixture) ancestors are
-/// watched only strictly below it, and the move of a watched directory's
-/// parent there is still seen by real inotify events.
+/// The `(device, inode)` of every directory an inotify instance of this
+/// process watches, from `/proc/self/fdinfo` (`sdev` is the kernel's
+/// `major << 20 | minor`).
+fn inotify_watched() -> std::collections::HashSet<(u64, u64)> {
+    let mut out = std::collections::HashSet::new();
+    for fd in fs::read_dir("/proc/self/fd").unwrap().flatten() {
+        let is_inotify =
+            fs::read_link(fd.path()).is_ok_and(|l| l.to_string_lossy() == "anon_inode:inotify");
+        if !is_inotify {
+            continue;
+        }
+        let info = Path::new("/proc/self/fdinfo").join(fd.file_name());
+        let Ok(text) = fs::read_to_string(info) else {
+            continue;
+        };
+        for line in text.lines().filter(|l| l.starts_with("inotify wd:")) {
+            let field = |key: &str| {
+                line.split_whitespace()
+                    .find_map(|w| w.strip_prefix(key))
+                    .and_then(|v| u64::from_str_radix(v, 16).ok())
+            };
+            if let (Some(ino), Some(sdev)) = (field("ino:"), field("sdev:")) {
+                out.insert((sdev, ino));
+            }
+        }
+    }
+    out
+}
+
+/// `dir`'s `(device, inode)` in `inotify_watched`'s encoding.
+fn dev_ino(dir: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::metadata(dir).unwrap();
+    let dev = m.dev();
+    let kdev = (u64::from(rustix::fs::major(dev)) << 20) | u64::from(rustix::fs::minor(dev));
+    (kdev, m.ino())
+}
+
+/// Under `$HOME` ancestors are watched only strictly below it, by real
+/// inotify. `$HOME` holds no watch, so moving it is not heard (with every
+/// ancestor watched, as before the owner's decision, `$HOME`'s own move
+/// and its parent's watch both reported it); moving a watched directory's
+/// parent below it is seen, and so is moving `$HOME`'s child, `x` here as
+/// `~/.config` would be, through the light watch on `x` itself.
 #[test]
 fn a_moved_parent_below_home_is_seen() {
-    let home = fs::canonicalize(std::env::temp_dir()).unwrap();
+    let root_tmp = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(root_tmp.path()).unwrap();
+    let home = root.join("h");
     let fx = fixture_with(
         Options {
-            home: Some(home),
+            home: Some(home.clone()),
             ..Options::default()
         },
         |_| {},
     );
-    let z = fx.base.join("x/y/z");
+    let z = home.join("x/y/z");
     fs::create_dir_all(&z).unwrap();
     let prefs = z.join("prefs.toml");
     fs::write(&prefs, "a = 1\n").unwrap();
     fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    let watched = inotify_watched();
+    for d in [&z, &home.join("x/y"), &home.join("x")] {
+        assert!(watched.contains(&dev_ino(d)), "{d:?} is not watched");
+    }
+    for d in [&home, &root] {
+        assert!(!watched.contains(&dev_ino(d)), "{d:?} holds a watch");
+    }
+
+    // `$HOME` moved and back: nothing watches it or its parent.
+    fs::rename(&home, root.join("h2")).unwrap();
+    fs::rename(root.join("h2"), &home).unwrap();
+    no_batch(&fx);
+
     // `z`'s parent moved: `x`, below `$HOME`, holds the light watch.
-    fs::rename(fx.base.join("x/y"), fx.base.join("x/q")).unwrap();
+    fs::rename(home.join("x/y"), home.join("x/q")).unwrap();
     let b = until(&fx.rx, "the removal", |b| {
         has(b, &prefs, ChangeKind::Removed)
     });
     assert_eq!(b.changes.len(), 1, "{b:#?}");
-    fs::rename(fx.base.join("x/q"), fx.base.join("x/y")).unwrap();
+    fs::rename(home.join("x/q"), home.join("x/y")).unwrap();
     until(&fx.rx, "the return", |b| {
         has(b, &prefs, ChangeKind::Created)
     });
-    // `x` itself moved: seen from the fixture's base, the highest
-    // ancestor below `$HOME`.
-    fs::rename(fx.base.join("x"), fx.base.join("w")).unwrap();
+
+    // `x` itself moved: its own light watch hears it go. `$HOME` then
+    // stands in for the missing directory (names coming only), so `x`
+    // coming back is seen too.
+    fs::rename(home.join("x"), home.join("w")).unwrap();
     until(&fx.rx, "the second removal", |b| {
         has(b, &prefs, ChangeKind::Removed)
+    });
+    fs::rename(home.join("w"), home.join("x")).unwrap();
+    until(&fx.rx, "the second return", |b| {
+        has(b, &prefs, ChangeKind::Created)
     });
 }

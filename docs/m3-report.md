@@ -214,15 +214,15 @@ All green in the debug workspace run here and in CI's `check` job.
 The design bar's window was flaky before review r1: about one full
 workspace run in five failed with `woke while idle over 10s:
 ["… strand-watch: 20 -> 21"]`. The cause is outside the shell.
-`strand-watch` watches every ancestor of each watched directory for
-names going (`WatchKind::Ancestor`) and the nearest existing ancestor of
-a missing cache directory for names coming (`WatchKind::Parent`). The
-test's HOME lies under the worktree's `target/`, whose ancestors other
-agents' builds and tests write to, and the missing `~/.fonts`,
-`~/.icons` and `.local/share/fonts` made HOME itself a `Parent` watch.
-Any name made or removed there woke the watcher thread once (it reads
-the event, finds it is not one of its paths and sleeps again: no logic
-wake, no frame). The test now:
+At M3, `strand-watch` watched every ancestor of each watched directory
+for names going (`WatchKind::Ancestor`) and the nearest existing
+ancestor of a missing cache directory for names coming
+(`WatchKind::Parent`). The test's HOME lies under the worktree's
+`target/`, whose ancestors other agents' builds and tests write to,
+and the missing `~/.fonts`, `~/.icons` and `.local/share/fonts` made
+HOME itself a `Parent` watch. Any name made or removed there woke the
+watcher thread once (it reads the event, finds it is not one of its
+paths and sleeps again: no logic wake, no frame). The test now:
 
 - creates the font and icon directories the cache sources name, so HOME
   is no longer a `Parent` watch;
@@ -238,13 +238,21 @@ wake, no frame). The test now:
   would start more than 45 s into the minute, so the window never covers
   the minute tick (the mirror's directory walk, first placed after the
   settle, pushed one debug CI window over it: run 37764216530);
-- proves the premise after the window: a directory made and removed
-  beside HOME must show in the mirror and wake the watcher thread.
+- proves the premise after the window: a directory made and removed in
+  `~/.config`, the config root's parent, must show in the mirror and
+  wake the watcher thread; one made and removed beside HOME must not
+  show in the mirror (since decisions.md laptop-decisions; at M3 the
+  control used the directory beside HOME, then a watched ancestor).
 
-On a real desktop the same wake happens once per atomic write in `~` or
-`~/.config` (a shell's history, `mimeapps.list`); whether the ancestor
-watches need to reach `/` and `/home` is left to the `strand-watch`
-owner (Open).
+At M3 the same wake happened on a real desktop once per atomic write in
+`~` or `~/.config` (a shell's history, `mimeapps.list`), and whether the
+ancestor watches needed to reach `/` and `/home` was left to the
+`strand-watch` owner. Answered since (2026-10-08, decisions.md
+laptop-decisions): under `$HOME` the ancestor watches stop strictly below
+it, and outside it at the root of the mount holding the directory, so an
+atomic write in `~` no longer wakes the watcher unless `~` is watched
+for another reason (a link living there); one in `~/.config` still does
+while `~/.config` is the config root's parent.
 
 ## Portal latency clause
 
