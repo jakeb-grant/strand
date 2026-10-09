@@ -1,0 +1,45 @@
+niri 26.04 IPC traffic captured from a running niri, not reconstructed:
+niri 26.04-1 (8ed0da4, archlinux) nested in a headless sway 1.12 in the
+compositor-matrix image, with foot 1.28 windows, recorded 2026-10-08 by
+scripts/container/capture-niri.sh (the scenario is
+capture-niri-session.sh). Requests were written exactly as the adapter
+writes them ("Workspaces\n" etc. over $NIRI_SOCKET, socat), and every
+byte niri answered is kept as it came: one line of compact JSON each.
+
+Nested niri has one output, "winit" (transform "Flipped180"), so this
+capture has no second monitor; tests/fixtures/niri-26.04 (reconstructed)
+is the two-output scenario.
+
+events.txt: the event stream. `## stream-start` is the reply to
+"EventStream" plus the state niri replicates to a new stream; every
+other `## name` is the burst one action caused (grouped by the
+timestamp of the action, which precedes its events). `#` lines and
+blank lines are markers, not traffic. Three actions sent no event and
+have no section: their replies are action-ok.json ({"Action":
+{"FocusWindow":{"id":3}}}, already focused), action-err.json
+(FocusWorkspace {"Id":99}, a workspace that does not exist: niri still
+answers {"Ok":"Handled"}) and request-unknown.json ("NoSuchRequest":
+{"Err":"error parsing request"}).
+
+boot/ opened/ moved/ closed/ end/: the replies to "Workspaces",
+"Windows" and "FocusedOutput" (moved/ also "Outputs") read right after
+the burst named in events.txt. src/wm/niri.rs's tests replay the events
+and compare the state with these replies at each checkpoint.
+
+What differs from the reconstruction (and what was changed for it):
+- "Windows" lists windows in niri's map order (4, 2, 3 in opened/), not
+  by id or opening order; events add them in arrival order. The adapter
+  now orders windows by id (niri's ids increase) so both paths agree.
+- A new window: WorkspaceActiveWindowChanged comes before its
+  WindowOpenedOrChanged, and no WindowFocusChanged is sent although it
+  takes the focus (is_focused in the window). Reconstructed fixture
+  reordered.
+- Closing the focused window: WorkspaceActiveWindowChanged and
+  WindowFocusChanged (the neighbour) come before WindowClosed, then
+  WindowFocusTimestampChanged. Reconstructed fixture reordered.
+- The stream's first WorkspacesChanged is unordered (2 before 1); a
+  workspace named in the config is idx 1 on its output.
+- tile_pos_in_workspace_view is null (not read by the adapter).
+- When two windows close together the order of the last burst varies
+  between runs (WorkspacesChanged's active_window_id, an extra
+  WorkspaceActiveWindowChanged); the end/ replies agree either way.

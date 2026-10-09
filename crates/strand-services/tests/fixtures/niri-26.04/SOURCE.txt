@@ -1,7 +1,9 @@
 niri 26.04 IPC traffic, reconstructed from niri's source at tag v26.04
-(the files cited below), not captured from a running niri. M3's exit box
-"runs on Hyprland, niri and sway" is where real captures replace or
-validate these files.
+(the files cited below), not captured from a running niri. Checked
+against a real niri 26.04 (niri-26.04-captured, 2026-10-08): the shapes
+match; two bursts were reordered to what niri sends (open: the active
+window first; close: the focus moves before WindowClosed). This file
+keeps the two-output scenario a nested niri cannot show.
 
 niri writes each reply and event as one line of compact JSON
 (serde_json::to_writer plus "\n", src/ipc/server.rs at tag v26.04). The

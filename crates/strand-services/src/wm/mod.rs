@@ -26,6 +26,8 @@
 //! wakes nothing.
 
 mod backoff;
+#[cfg(test)]
+mod captured;
 pub mod detect;
 mod hub;
 mod hyprland;
