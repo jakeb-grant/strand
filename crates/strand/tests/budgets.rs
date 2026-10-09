@@ -1866,13 +1866,24 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     let before = desk.surfaces();
     desk.strand_set("launcher.open", "true");
     desk.wait_surfaces(before, "the launcher");
+    // The icons are looked up and decoded off the frame path, so a quiet
+    // second can pass before they draw (CI run 37895260781: 1.08 s after
+    // it). Wait for them, bounded, so the launcher is measured with its
+    // icons; the check below still names the cause if they never come.
+    let icons_by = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < icons_by
+        && shot(&desk, "the launcher").bands(MARK, 48, 48) < apps.marked.min(3)
+    {
+        desk.alive("waiting for the launcher's icons");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     settled(&mut desk, "the launcher", limit);
     let launcher = pss_kb(pid);
     let open = shot(&desk, "the launcher");
     let rows = open.bands(MARK, 48, 48);
     if rows < apps.marked.min(3) {
-        // CI run 37796294304 failed here once (not reproduced in 50 runs
-        // on the laptop, 25 of them on two loaded cores): name the cause.
+        // CI runs 37796294304 and 37895260781 failed here (icons late, the
+        // second showed; the wait above is the fix): name the cause.
         // What is on screen now, then whether the icons come late (a
         // screenshot every 250 ms for 5 s, and the frames meanwhile) or
         // never.
