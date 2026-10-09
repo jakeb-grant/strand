@@ -2094,13 +2094,17 @@ fn one_item_change_reruns_one_item() {
     assert!(shell.scene.find_text("changed").is_some());
 }
 
-/// A 2,000-row `list` mounts every row on the logic side: render lays
-/// out only the rows in view, and mounting stays eager until M4
-/// (decisions.md, wave3-pixels). The cost that keeps that viable: a
-/// mount of 2,000 rows with a `when hover` each, and one changed row
-/// re-running only its own bindings and sending one op.
+/// A 2,000-row `list` whose direct child is a `for` mounts only its
+/// window (M4: virtualised lists). At boot that is the first
+/// `DEFAULT_LIST_WINDOW` rows; `set_list_window` (render's
+/// `ToLogic::ListWindow`) mounts and unmounts rows by key, marking those
+/// ops `window` so render plays no pose or FLIP, while a row that stays
+/// in the window keeps its node; `row_count` and `row_first` say where
+/// the mounted rows are. A change to a mounted row is its one op and
+/// re-runs only its bindings; a change outside the window sends no op.
 #[test]
-fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
+fn a_2000_row_list_mounts_only_its_window() {
+    use strand_compiler::instantiate::DEFAULT_LIST_WINDOW;
     let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
     for i in 0..2000 {
         src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
@@ -2112,29 +2116,168 @@ fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
     let mut shell = boot(&[("t.strand", &src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
-    let mounted = t.elapsed();
-    assert_eq!(shell.scene.of_kind(NodeKind::Row).len(), 2000);
-    eprintln!("mounted 2,000 list rows in {mounted:?}");
-    let before = shell.rt.stats().computations;
+    eprintln!("mounted a 2,000-row list in {:?}", t.elapsed());
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    let rows = |shell: &Shell| shell.scene.children(list).to_vec();
+    let num = |shell: &Shell, p: Prop| match shell.scene.prop(list, p) {
+        Some(PropValue::Number(n)) => *n,
+        v => panic!("{p:?}: {v:?}"),
+    };
+    let labels = |shell: &Shell| -> Vec<String> {
+        rows(shell)
+            .iter()
+            .map(
+                |r| match shell.scene.prop(shell.scene.children(*r)[0], Prop::Text) {
+                    Some(PropValue::Text(t)) => t.clone(),
+                    v => panic!("{v:?}"),
+                },
+            )
+            .collect()
+    };
+    assert_eq!(
+        shell.scene.of_kind(NodeKind::Row).len(),
+        DEFAULT_LIST_WINDOW
+    );
+    assert_eq!(num(&shell, Prop::RowCount), 2000.0);
+    assert_eq!(num(&shell, Prop::RowFirst), 0.0);
+    // Mounted with the list, its first rows are not the window's doing.
+    assert!(shell.boot.iter().all(|op| !matches!(
+        op,
+        SceneOp::Create { window: true, .. } | SceneOp::Remove { window: true, .. }
+    )));
+    assert_eq!(labels(&shell)[0], "r0");
+
+    // Render asks for rows 100..120: by key, with no poses.
+    assert!(shell.inst.set_list_window(list, 100, 20));
+    let u = shell.flush();
+    let (mut created, mut removed) = (0, 0);
+    for op in &u.diff.ops {
+        match op {
+            SceneOp::Create { parent, window, .. } if *parent == Some(list) => {
+                assert!(window, "{op:?}");
+                created += 1;
+            }
+            SceneOp::Remove { window, .. } => {
+                assert!(window, "{op:?}");
+                removed += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((created, removed), (20, DEFAULT_LIST_WINDOW));
+    assert_eq!(num(&shell, Prop::RowFirst), 100.0);
+    assert_eq!(
+        labels(&shell),
+        (100..120).map(|i| format!("r{i}")).collect::<Vec<_>>()
+    );
+
+    // Overlapping: the ten rows that stay keep their nodes.
+    let kept = rows(&shell)[10..].to_vec();
+    shell.inst.set_list_window(list, 110, 20);
+    let u = shell.flush();
+    let creates = u
+        .diff
+        .ops
+        .iter()
+        .filter(|op| matches!(op, SceneOp::Create { parent, .. } if *parent == Some(list)))
+        .count();
+    assert_eq!(creates, 10);
+    assert_eq!(rows(&shell)[..10], kept[..]);
+    assert_eq!(labels(&shell)[0], "r110");
+
+    // The same window again: nothing.
+    shell.inst.set_list_window(list, 110, 20);
+    assert!(shell.flush().diff.ops.is_empty());
+
+    // A row in the window changes: one op, its own bindings only. One
+    // outside it: none.
     let row = shell.inst.vm().types().find_record("Row").expect("Row");
-    let rows: Vec<Value> = (0..2000)
-        .map(|i| {
-            let label = if i == 1500 {
-                "changed".to_string()
-            } else {
-                format!("r{i}")
-            };
-            Value::record(row, vec![Value::int(i), Value::text(label)])
-        })
-        .collect();
-    shell
-        .inst
-        .set_value("t", "rows", Value::list(rows))
-        .unwrap();
+    let all = |changed: &[usize]| {
+        Value::list(
+            (0..2000)
+                .map(|i| {
+                    let label = if changed.contains(&i) {
+                        "changed".to_string()
+                    } else {
+                        format!("r{i}")
+                    };
+                    Value::record(row, vec![Value::int(i as i64), Value::text(label)])
+                })
+                .collect(),
+        )
+    };
+    let before = shell.rt.stats().computations;
+    shell.inst.set_value("t", "rows", all(&[115])).unwrap();
     let u = shell.flush();
     let runs = shell.rt.stats().computations - before;
     assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
     assert!(runs < 20, "{runs} computations for one changed row");
+    assert_eq!(labels(&shell)[5], "changed");
+    shell
+        .inst
+        .set_value("t", "rows", all(&[115, 1500]))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.diff.ops.is_empty(), "{:?}", u.diff);
+    assert_eq!(
+        shell
+            .scene
+            .texts()
+            .iter()
+            .filter(|t| *t == "changed")
+            .count(),
+        1
+    );
+
+    // A row the data inserts in the window is the data's (it enters);
+    // the row it pushes out is the window's. `row_count` follows.
+    let mut list_v: Vec<Value> = (0..2000)
+        .map(|i| Value::record(row, vec![Value::int(i), Value::text(format!("r{i}"))]))
+        .collect();
+    list_v.insert(
+        112,
+        Value::record(row, vec![Value::int(5000), Value::text("new")]),
+    );
+    shell
+        .inst
+        .set_value("t", "rows", Value::list(list_v))
+        .unwrap();
+    let u = shell.flush();
+    let new = shell.scene.find_text("new").expect("the new row mounts");
+    let new_row = shell.scene.parent(new).unwrap();
+    for op in &u.diff.ops {
+        match op {
+            SceneOp::Create { id, window, .. } if *id == new_row => assert!(!window),
+            SceneOp::Remove { window, .. } => assert!(window, "{op:?}"),
+            _ => {}
+        }
+    }
+    assert_eq!(num(&shell, Prop::RowCount), 2001.0);
+    assert_eq!(rows(&shell).len(), 20);
+    assert_eq!(labels(&shell)[2], "new");
+
+    // A window past the end shows the last rows.
+    shell.inst.set_list_window(list, 5000, 20);
+    shell.flush();
+    assert_eq!(num(&shell, Prop::RowFirst), 1981.0);
+    assert_eq!(labels(&shell).last().unwrap(), "r1999");
+}
+
+/// A `list` holding more than its `for` (a header row) is not windowed:
+/// every row mounts, as in any container.
+#[test]
+fn a_list_with_more_than_its_for_mounts_every_row() {
+    let mut src = String::from("state rows = [");
+    for i in 0..40 {
+        src.push_str(&format!("\"r{i}\", "));
+    }
+    src.push_str("]\nbar B { list { text \"head\"\n for r in rows key r { text r } } }\n");
+    let shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(shell.scene.children(list).len(), 41);
+    assert!(shell.scene.prop(list, Prop::RowCount).is_none());
 }
 
 /// A fault in a file's top-level handler is located but freezes

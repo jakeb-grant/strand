@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use strand_core::{Error, KeyedSource, Runtime};
-use strand_scene::{NodeKind, Prop as SceneProp, PropValue, TokenTable, Transition};
+use strand_scene::{NodeKind, Prop as SceneProp, PropValue, SceneOp, TokenTable, Transition};
 
 use super::Ctx;
 use super::convert;
@@ -82,6 +82,21 @@ type ReadDiffs = Rc<
     ) -> Result<Option<(u64, Vec<strand_core::VecDiff<ValueKey, Value>>)>, Error>,
 >;
 
+/// Applies a keyed list's diffs to what is mounted.
+type KeyedApply = dyn Fn(&Runtime, Vec<strand_core::VecDiff<ValueKey, Value>>);
+
+/// What a keyed list does with an item that leaves.
+type Leave = dyn Fn(&Runtime, Item);
+
+/// What a keyed list does with an item that arrives at an index.
+type Arrive = dyn Fn(&Runtime, usize, ValueKey, Value) -> Item;
+
+/// Mounts a virtualised list's window; the keys it had before a change.
+type SyncWindow = dyn Fn(&Runtime, Option<&std::collections::HashSet<ValueKey>>);
+
+/// Moves a virtualised list's window: its first row and how many.
+pub(crate) type SetWindow = dyn Fn(&Runtime, usize, usize);
+
 /// Where a keyed list's items come from.
 enum ListSource {
     /// A list expression with each item's key, published as keyed diffs
@@ -147,6 +162,86 @@ struct Keyed {
     /// What a [`ListSource::Memo`] reads: chunks evaluated in the list's
     /// scope, and nodes it reads directly (declared edges).
     reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
+    /// (M4) The `list` scene node whose direct child the `for` is: only
+    /// the rows of its window are mounted ([`Instance::set_list_window`]).
+    ///
+    /// [`Instance::set_list_window`]: super::Instance::set_list_window
+    window: Option<strand_scene::NodeId>,
+}
+
+/// Rows a virtualised list mounts before render has asked for a window
+/// (`ToLogic::ListWindow`): about two launcher viewports of rows.
+pub const DEFAULT_LIST_WINDOW: usize = 32;
+
+/// The most rows a list window mounts, whatever render asks (a 4096 px
+/// surface of 16 px rows with a viewport of overscan on each side).
+pub const MAX_LIST_WINDOW: usize = 1024;
+
+/// A virtualised list's rows: every item, and the window of them that
+/// is mounted.
+struct ListWindow {
+    /// The `list` scene node.
+    list: strand_scene::NodeId,
+    /// Every item, in order.
+    all: RefCell<Vec<(ValueKey, Value)>>,
+    /// The window render asked for: the global index of its first row,
+    /// and how many.
+    first: Cell<usize>,
+    count: Cell<usize>,
+    /// The global index of the first mounted row (the window clamped to
+    /// the list): mounted item `i` is `all[shown + i]`.
+    shown: Cell<usize>,
+}
+
+/// The `for` of a `list` whose only content is that `for` (handlers,
+/// `when`s and poses aside): such a list mounts only its window.
+fn window_for(kind: NodeKind, children: &[Node]) -> Option<&For> {
+    if kind != NodeKind::List {
+        return None;
+    }
+    let mut found = None;
+    for n in children {
+        match n {
+            Node::For(f) if found.is_none() => found = Some(f),
+            Node::For(_)
+            | Node::Element(_)
+            | Node::Surface(_)
+            | Node::If { .. }
+            | Node::Match { .. }
+            | Node::Slot => return None,
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Applies one keyed diff to a whole list.
+fn apply_to(all: &mut Vec<(ValueKey, Value)>, d: strand_core::VecDiff<ValueKey, Value>) {
+    use strand_core::VecDiff as D;
+    match d {
+        D::Reset { items } => *all = items,
+        D::Insert { index, key, value } => {
+            let at = index.min(all.len());
+            all.insert(at, (key, value));
+        }
+        D::Update { index, value, .. } => {
+            if let Some(e) = all.get_mut(index) {
+                e.1 = value;
+            }
+        }
+        D::Remove { index, .. } => {
+            if index < all.len() {
+                all.remove(index);
+            }
+        }
+        D::Move { from, to, .. } => {
+            if from < all.len() {
+                let x = all.remove(from);
+                let to = to.min(all.len());
+                all.insert(to, x);
+            }
+        }
+    }
 }
 
 impl Ctx {
@@ -239,7 +334,7 @@ impl Ctx {
                 frag,
                 (*file, *span),
             ),
-            Node::For(f) => self.mount_for(rt, f, env, frag),
+            Node::For(f) => self.mount_for(rt, f, env, frag, None),
             Node::Slot => {
                 let mut cur = Some(env.clone());
                 while let Some(e) = cur {
@@ -1222,6 +1317,17 @@ impl Ctx {
         let ec = ElemCtx { scene: id, state };
         if kind.is_surface() {
             self.mount_surface_body(rt, e, env, frag, ec, services.cloned());
+        } else if let Some(f) = window_for(kind, &e.children) {
+            // A `for` that is the list's direct child: only its window's
+            // rows are mounted.
+            for n in e.children.iter() {
+                match n {
+                    Node::For(x) if std::ptr::eq(x, f) => {
+                        self.mount_for(rt, f, env, frag, Some(id));
+                    }
+                    _ => self.mount_node(rt, n, env, frag, Some(&ec)),
+                }
+            }
         } else {
             self.mount_nodes(rt, &e.children, env, frag, Some(&ec));
         }
@@ -1813,6 +1919,7 @@ impl Ctx {
             park,
             reads,
             tag,
+            window,
         } = k;
         let prefix: Rc<str> = format!("{}/{tag}", env.ident()).into();
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
@@ -1992,8 +2099,9 @@ impl Ctx {
             // The list's scope keeps its forgetter alive.
             rt.on_cleanup(move || drop(forget));
         }
-        let apply = {
+        let plain = {
             let (ctx, items) = (self.clone(), items.clone());
+            let (leave, arrive) = (leave.clone(), arrive.clone());
             Rc::new(
                 move |rt: &Runtime, diffs: Vec<strand_core::VecDiff<ValueKey, Value>>| {
                     for d in diffs {
@@ -2055,6 +2163,10 @@ impl Ctx {
                 },
             )
         };
+        let apply: Rc<KeyedApply> = match window {
+            None => plain,
+            Some(list) => self.windowed(rt, list, frag, items, leave, arrive),
+        };
         let r = read.clone();
         match rt.untrack(|rt| r(rt, None)) {
             Ok(Some((v, diffs))) => {
@@ -2079,6 +2191,163 @@ impl Ctx {
             let _ = rt.reads_from(effect.id(), &list_id.get().into_iter().collect::<Vec<_>>());
             self.site(rt, effect.id(), what.as_str(), at.0, at.1, &env2, None);
         });
+    }
+
+    /// The diff applier of a virtualised list (a `for` that is the
+    /// direct child of `list`): every item is kept in a [`ListWindow`],
+    /// and only the rows of the window render asked for are mounted, by
+    /// key, so a row that stays in the window keeps its node and state.
+    /// A change to a mounted row is that row's ops and a change outside
+    /// the window sends no row op. Rows the window mounts or unmounts
+    /// (not ones the data added or removed) are marked `window`, so render
+    /// plays no pose or FLIP for them; `row_count` and `row_first` on the
+    /// list say where the mounted rows are.
+    fn windowed(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        list: strand_scene::NodeId,
+        frag: FragId,
+        items: Rc<RefCell<Vec<Item>>>,
+        leave: Rc<Leave>,
+        arrive: Rc<Arrive>,
+    ) -> Rc<KeyedApply> {
+        let win = Rc::new(ListWindow {
+            list,
+            all: RefCell::default(),
+            first: Cell::new(0),
+            count: Cell::new(DEFAULT_LIST_WINDOW),
+            shown: Cell::new(0),
+        });
+        // Mounts the window's rows against the mounted ones. `existed`:
+        // the keys the list had before this change (`None`: it did not
+        // change, the window moved), so a row that arrives with it is
+        // the data's, not the window's.
+        let sync: Rc<SyncWindow> = {
+            let (ctx, win, items) = (self.clone(), win.clone(), items.clone());
+            Rc::new(move |rt, existed| {
+                let (want, len, lo, alive) = {
+                    let all = win.all.borrow();
+                    let len = all.len();
+                    let count = win.count.get();
+                    // A window past the end shows the list's last rows.
+                    let mut lo = win.first.get().min(len);
+                    if lo == len {
+                        lo = len.saturating_sub(count);
+                    }
+                    let hi = (lo + count).min(len);
+                    // Mounted rows still in the list: leaving the window
+                    // is the window's doing.
+                    let mounted: std::collections::HashSet<ValueKey> =
+                        items.borrow().iter().map(|it| it.key.clone()).collect();
+                    let alive: std::collections::HashSet<ValueKey> = all
+                        .iter()
+                        .filter(|(k, _)| mounted.contains(k))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    (all[lo..hi].to_vec(), len, lo, alive)
+                };
+                let start = ctx.em.borrow().ops.len();
+                let marked: RefCell<std::collections::HashSet<strand_scene::NodeId>> =
+                    RefCell::default();
+                let old: Vec<Item> = items.borrow_mut().drain(..).collect();
+                let placed = ctx.reconcile(
+                    rt,
+                    frag,
+                    old,
+                    want,
+                    |rt, it, v| {
+                        if let Some(c) = it.cell {
+                            let _ = c.set(rt, v);
+                        }
+                    },
+                    |rt, it| {
+                        if alive.contains(&it.key) {
+                            marked
+                                .borrow_mut()
+                                .extend(ctx.em.borrow().top_nodes(it.frag));
+                        }
+                        leave(rt, it);
+                    },
+                    |rt, at, k, v| {
+                        let by_window = existed.is_none_or(|e| e.contains(&k));
+                        let it = arrive(rt, at, k, v);
+                        if by_window {
+                            marked
+                                .borrow_mut()
+                                .extend(ctx.em.borrow().top_nodes(it.frag));
+                        }
+                        it
+                    },
+                );
+                *items.borrow_mut() = placed;
+                win.shown.set(lo);
+                let marked = marked.into_inner();
+                let mut em = ctx.em.borrow_mut();
+                if !marked.is_empty() {
+                    for op in &mut em.ops[start..] {
+                        match op {
+                            SceneOp::Create {
+                                id, parent, window, ..
+                            } if *parent == Some(win.list) && marked.contains(id) => *window = true,
+                            SceneOp::Remove { id, window } if marked.contains(id) => *window = true,
+                            _ => {}
+                        }
+                    }
+                }
+                em.set(
+                    win.list,
+                    SceneProp::RowCount,
+                    PropValue::Number(len as f32),
+                    Transition::Instant,
+                );
+                em.set(
+                    win.list,
+                    SceneProp::RowFirst,
+                    PropValue::Number(lo as f32),
+                    Transition::Instant,
+                );
+            })
+        };
+        // Render's window requests, while the list is mounted.
+        {
+            let (win, sync) = (win.clone(), sync.clone());
+            let set: Rc<SetWindow> = Rc::new(move |rt, first, count| {
+                win.first.set(first);
+                win.count.set(count.clamp(1, MAX_LIST_WINDOW));
+                sync(rt, None);
+            });
+            self.list_windows.borrow_mut().insert(list, set);
+            let ctx = Rc::downgrade(self);
+            rt.on_cleanup(move || {
+                if let Some(ctx) = ctx.upgrade() {
+                    ctx.list_windows.borrow_mut().remove(&list);
+                }
+            });
+        }
+        Rc::new(move |rt: &Runtime, diffs| {
+            // The keys before the first change that adds, removes or
+            // moves rows; until then mounted row `i` is `all[shown + i]`.
+            let mut before: Option<std::collections::HashSet<ValueKey>> = None;
+            for d in diffs {
+                if let strand_core::VecDiff::Update { index, value, .. } = &d
+                    && before.is_none()
+                {
+                    let shown = win.shown.get();
+                    let cell = index
+                        .checked_sub(shown)
+                        .and_then(|i| items.borrow().get(i).and_then(|it| it.cell));
+                    if let Some(c) = cell {
+                        let _ = c.set(rt, value.clone());
+                    }
+                } else if before.is_none() {
+                    before = Some(win.all.borrow().iter().map(|(k, _)| k.clone()).collect());
+                }
+                apply_to(&mut win.all.borrow_mut(), d);
+            }
+            if let Some(b) = before {
+                sync(rt, Some(&b));
+            }
+        })
     }
 
     /// A whole new list (a first publish, or a reader that fell behind
@@ -2147,7 +2416,14 @@ impl Ctx {
         out
     }
 
-    fn mount_for(self: &Rc<Self>, rt: &Runtime, f: &For, env: &Rc<Env>, parent: FragId) {
+    fn mount_for(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        f: &For,
+        env: &Rc<Env>,
+        parent: FragId,
+        window: Option<strand_scene::NodeId>,
+    ) {
         let source = match self.keyed_source(rt, f, env) {
             Some(k) => ListSource::Keyed(k),
             None if let Some(view) = self.keyed_chain(rt, f, env) => ListSource::Derived(view),
@@ -2197,6 +2473,7 @@ impl Ctx {
                 ),
                 at: (f.file, f.span),
                 park: false,
+                window,
                 tag: format!("f{}", self.sid(f.file, f.span)),
                 reads: (
                     std::iter::once(f.iter)
@@ -2568,6 +2845,7 @@ impl Ctx {
                 what: "bar on every screen".to_string(),
                 at: (s.element.file, s.element.span),
                 park: true,
+                window: None,
                 tag,
                 reads: (
                     pick.into_iter().collect(),

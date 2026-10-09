@@ -17,7 +17,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     box
     text text="0%"
     box margin=[8, 8, 0]
-    list
+    list row_count=3 row_first=0
       text text="Firefox"
       text text="Foot"
       text text="Files"
