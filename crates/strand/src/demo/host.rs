@@ -262,15 +262,31 @@ struct BlurFallback {
 }
 
 impl BlurFallback {
+    /// True while a frame that asks for blur would be said: not yet said,
+    /// and the compositor is known not to blur. Checked before anything
+    /// is asked of the renderer, so a compositor that blurs (or one not
+    /// reported yet) costs a paint nothing.
+    fn pending(&self) -> bool {
+        !self.said
+            && self.caps.is_some_and(|c| {
+                strand_surface::caps::blur_fallback_reason(&c, self.hyprland).is_some()
+            })
+    }
+
     /// The diagnostic for a frame of the surface `ns` that asks for blur:
-    /// once, and only when the compositor is known not to blur.
+    /// once, and only when the compositor is known not to blur. A node
+    /// with `blur_fallback: none` draws nothing in its place, which is
+    /// the user's choice rather than a fallback, so the text says so.
     fn frame(&mut self, ns: &str) -> Option<String> {
         if self.said {
             return None;
         }
         let reason = strand_surface::caps::blur_fallback_reason(&self.caps?, self.hyprland)?;
         self.said = true;
-        Some(format!("blur on {ns} draws its tint fallback: {reason}"))
+        Some(format!(
+            "the compositor does not blur behind {ns}: {reason}; `blur` draws its tint \
+             instead (nothing where `blur_fallback: none`)"
+        ))
     }
 }
 
@@ -298,7 +314,7 @@ impl Host {
     /// falls back to its tint, the first time a frame of `surface` asks
     /// the compositor to blur and it cannot.
     fn note_blur_fallback(&mut self, surface: SurfaceId) {
-        if self.blur_fallback.said || self.renderer.blur_region(surface).is_empty() {
+        if !self.blur_fallback.pending() || self.renderer.blur_region(surface).is_empty() {
             return;
         }
         let ns = self
@@ -565,16 +581,21 @@ mod tests {
     #[test]
     fn the_blur_fallback_is_said_once_with_its_reason() {
         let mut b = BlurFallback::default();
+        assert!(!b.pending());
         assert_eq!(b.frame("strand-Top"), None, "capabilities unknown");
         b.caps = Some(CompositorCaps {
             background_effect: true,
             ..CompositorCaps::default()
         });
+        assert!(!b.pending());
         assert_eq!(b.frame("strand-Top"), None, "the compositor blurs");
         b.caps = Some(CompositorCaps::default());
+        assert!(b.pending());
         let text = b.frame("strand-Top").unwrap();
         assert!(text.contains("strand-Top") && text.contains("ext-background-effect-v1"));
+        assert!(text.contains("blur_fallback: none"), "{text}");
         assert!(!text.contains("compositor-rules"));
+        assert!(!b.pending(), "said");
         assert_eq!(b.frame("strand-Dock"), None, "once");
         let mut b = BlurFallback {
             hyprland: true,
