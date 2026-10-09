@@ -919,9 +919,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     view and those that showed an unmounted gap (the M4 exit's
     per-frame check).
   - **Directional pages** (design.md, "Pages"). Logic sets
-    `Prop::RowFirst` on a `pages` node to the shown page's place in
-    source order (its source offset: only the order is meaningful), in
-    the diff that swaps the page. Render keeps the old page as a ghost,
+    `Prop::RowFirst` on a `pages` node in the diff that swaps the page:
+    one more than before when the new page comes after the old one in
+    mount order (source order, a `for`'s item order), one less when
+    before (only the direction is meaningful). Render keeps the old page as a ghost,
     and at the end of the diff slides the new page in from the right and
     the old one out to the left when `row_first` grew (mirrored when it
     shrank), each by its own width (the `slide(edge)` preset); a page

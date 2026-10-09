@@ -241,6 +241,8 @@ pub(crate) struct Ctx {
     /// (M4) Mounted virtualised lists, by `list` node: what moves each
     /// one's window ([`Instance::set_list_window`]).
     pub list_windows: RefCell<HashMap<NodeId, Rc<mount::SetWindow>>>,
+    /// (M4) The order of each `pages`' pages (directional transitions).
+    pub pages: RefCell<mount::PagesOrder>,
 }
 
 impl VmHooks for Ctx {
@@ -532,6 +534,7 @@ impl Ctx {
             handover: RefCell::default(),
             outlined: RefCell::default(),
             list_windows: RefCell::default(),
+            pages: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;

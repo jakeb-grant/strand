@@ -70,10 +70,50 @@ struct Switch {
     /// What `pick` reads: chunks in the scope, and nodes directly.
     reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
     at: (crate::source::FileId, crate::syntax::Span),
-    /// A `page`: its `pages` node and its place in source order, set as
-    /// the `pages`' `row_first` when it is shown (render slides pages by
-    /// it).
-    page: Option<(strand_scene::NodeId, f32)>,
+    /// A `page`: its `pages` node. When the page is shown its place
+    /// among that `pages`' pages ([`PagesOrder`]) is set as the `pages`'
+    /// `row_first` (render slides pages by it).
+    page: Option<strand_scene::NodeId>,
+}
+
+/// (M4) The order of the pages of each `pages`, for directional
+/// transitions. A page's place is its switch fragment's place in the
+/// fragment tree: source order for pages written out, item order for
+/// pages a `for` makes, and the order they mount in across `if`s,
+/// `match`es and components from other files. `row_first` on the
+/// `pages` moves by one towards the side the new page is on, so render
+/// slides forward or back.
+#[derive(Default)]
+pub(crate) struct PagesOrder {
+    next: u64,
+    /// Each mounted page's switch fragment, by a token of its own
+    /// (fragment ids are reused).
+    live: HashMap<u64, FragId>,
+    /// Per `pages`: the page shown last (its token, its fragment's place
+    /// then) and the `row_first` it set.
+    shown: HashMap<strand_scene::NodeId, (u64, Vec<usize>, f32)>,
+}
+
+/// Where fragment `frag` is in the fragment tree: its index among its
+/// parent's children at each level, from the top. Two places compare in
+/// mount order.
+fn frag_path(em: &super::emit::Emitter, frag: FragId) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut cur = frag;
+    while let Some(p) = em.frag(cur).and_then(|f| f.parent) {
+        let Some(pf) = em.frag(p) else {
+            break;
+        };
+        out.push(
+            pf.children
+                .iter()
+                .position(|c| *c == cur)
+                .unwrap_or(usize::MAX),
+        );
+        cur = p;
+    }
+    out.reverse();
+    out
 }
 
 type ListFn = Box<dyn Fn(&Runtime) -> Result<Vec<(ValueKey, Value)>, Error>>;
@@ -1872,9 +1912,39 @@ impl Ctx {
             what: format!("{} in {}", kind.name(), self.module_of(e.file)),
             reads,
             at: (e.file, e.span),
-            page: (kind == NodeKind::Page).then_some((host, e.span.start as f32)),
+            page: (kind == NodeKind::Page).then_some(host),
         };
         self.mount_branches(rt, branches, env, parent);
+    }
+
+    /// The `row_first` a `pages` gets as its page `token` (switch
+    /// fragment `frag`) is shown: the last one's, one more when the page
+    /// comes after the one shown before it, one less when before, 0 for
+    /// the first page shown.
+    fn page_order(&self, pages: strand_scene::NodeId, token: u64, frag: FragId) -> f32 {
+        let em = self.em.borrow();
+        let path = frag_path(&em, frag);
+        let mut po = self.pages.borrow_mut();
+        let order = match po.shown.get(&pages) {
+            None => 0.0,
+            Some((t, _, v)) if *t == token => *v,
+            Some((t, was, v)) => {
+                // The last page where it is now, or where it was if it
+                // has gone.
+                let old = po
+                    .live
+                    .get(t)
+                    .map_or_else(|| was.clone(), |f| frag_path(&em, *f));
+                match path.cmp(&old) {
+                    std::cmp::Ordering::Greater => v + 1.0,
+                    std::cmp::Ordering::Less => v - 1.0,
+                    std::cmp::Ordering::Equal => *v,
+                }
+            }
+        };
+        po.shown.insert(pages, (token, path, order));
+        po.shown.retain(|p, _| em.nodes.contains_key(p));
+        order
     }
 
     /// Mounts the branch `pick` chooses now, and swaps branches when it
@@ -1893,6 +1963,22 @@ impl Ctx {
         } = s;
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
         let (block, ()) = rt.scope(|_| ());
+        // A page: its place among its `pages`' pages, while it is mounted.
+        let token = page.map(|_| {
+            let mut po = self.pages.borrow_mut();
+            po.next += 1;
+            let token = po.next;
+            po.live.insert(token, frag);
+            let me = Rc::downgrade(self);
+            let _ = rt.with_owner(block.id(), |rt| {
+                rt.on_cleanup(move || {
+                    if let Some(me) = me.upgrade() {
+                        me.pages.borrow_mut().live.remove(&token);
+                    }
+                })
+            });
+            token
+        });
         let current: Rc<Cell<Option<Option<usize>>>> = Rc::new(Cell::new(None));
         let branches = Rc::new(branches);
         let show = {
@@ -1900,7 +1986,8 @@ impl Ctx {
             Rc::new(move |rt: &Runtime, which: Option<usize>| {
                 ctx.unmount(rt, frag, true);
                 // A page shown: its `pages` slides by its place.
-                if let (Some((pages, order)), Some(_)) = (page, which) {
+                if let (Some(pages), Some(token), Some(_)) = (page, token, which) {
+                    let order = ctx.page_order(pages, token, frag);
                     ctx.em.borrow_mut().set(
                         pages,
                         SceneProp::RowFirst,

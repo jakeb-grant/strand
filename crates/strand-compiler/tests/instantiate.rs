@@ -3276,6 +3276,68 @@ fn pages_and_tooltips_mount_on_demand() {
     assert_eq!(first(&shell), on_a);
 }
 
+/// Directional pages go by the pages' order as mounted, not by where
+/// each `page` is written: pages a `for` makes follow their items (they
+/// all share one span), also once the items are reordered. `row_first`
+/// on the `pages` moves by one towards the new page's side. (A `page`
+/// must sit directly in its `pages`, through `if`, `match` or `for`
+/// only: the checker refuses one in a component, so pages never come
+/// from another file.)
+#[test]
+fn pages_from_a_for_slide_by_their_items_order() {
+    let main = "state tabs = [\"x\", \"y\", \"z\"]\n\
+                state cur = \"x\"\n\
+                bar B {\n\
+                  pages current: cur {\n\
+                    page \"a\" { text \"PA\" }\n\
+                    for p in tabs key p { page p { text p } }\n\
+                    if true { page \"w\" { text \"PW\" } }\n\
+                  }\n\
+                }\n";
+    let mut shell = boot(&[("t.strand", main)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let pages = shell.scene.of_kind(NodeKind::Pages)[0];
+    let first = |shell: &Shell| match shell.scene.prop(pages, Prop::RowFirst) {
+        Some(PropValue::Number(f)) => *f,
+        other => panic!("row_first {other:?}"),
+    };
+    let show = |shell: &mut Shell, page: &str| {
+        let before = first(shell);
+        shell.inst.set_value("t", "cur", Value::text(page)).unwrap();
+        shell.flush();
+        let text = match page {
+            "a" => "PA",
+            "w" => "PW",
+            p => p,
+        };
+        let scene = shell.scene.render();
+        assert!(shell.scene.find_text(text).is_some(), "{page}: {scene}");
+        first(shell) - before
+    };
+    shell.text_node("x");
+    // Forward along the `for`'s items, then back.
+    assert!(show(&mut shell, "z") > 0.0);
+    assert!(show(&mut shell, "y") < 0.0);
+    assert!(show(&mut shell, "a") < 0.0);
+    assert!(show(&mut shell, "x") > 0.0);
+    // The page in the `if` comes after the `for`'s.
+    assert!(show(&mut shell, "w") > 0.0);
+    assert!(show(&mut shell, "z") < 0.0);
+    // Items reordered: their pages follow.
+    shell
+        .inst
+        .set_value(
+            "t",
+            "tabs",
+            Value::list(vec![Value::text("z"), Value::text("y"), Value::text("x")]),
+        )
+        .unwrap();
+    shell.flush();
+    assert!(show(&mut shell, "x") > 0.0);
+    assert!(show(&mut shell, "z") < 0.0);
+}
+
 /// A `popup`'s content is mounted when it opens and unmounted when it
 /// closes (the schema's `on_demand`): its nodes leave the scene and the
 /// scopes under it go, while the `state`s of the components in it (a

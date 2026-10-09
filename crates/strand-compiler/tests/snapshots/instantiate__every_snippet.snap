@@ -32,7 +32,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     input nav=node 25
     list
     box drag="Pin { app: firefox, label: Firefox }"
-    pages current=wifi row_first=3489
+    pages current=wifi row_first=0
       page name=wifi
         text text="Wi-Fi"
     box tooltip="A tooltip"
