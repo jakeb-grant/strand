@@ -22,15 +22,21 @@
 //! `j/clients` get the same mapping, so a re-read after a
 //! `windowtitlev2` does not change a title back (a spurious `Update`).
 //!
-//! Actions are `dispatch` requests in one of two dialects. Before 0.55
-//! (hyprlang configs) a dispatcher and its argument (`dispatch workspace
-//! 3`); with a Lua config (0.55 on, the only kind from 0.56) the request's
-//! argument is evaluated as `return hl.dispatch(<argument>)`, so it must
-//! be a dispatcher object (`dispatch hl.dsp.focus({ workspace = "3" })`)
-//! and the classic form is answered `error: [string "return
-//! hl.dispatch(workspace 3)"]:1: ')' expected near '3'`. The adapter sends
-//! the classic form until Hyprland answers with that Lua error, then the
-//! Lua form for the rest of the connection (decisions.md, wave4-exit-ci).
+//! Actions are `dispatch` requests in one of two dialects. Before 0.55,
+//! and on 0.55 with a hyprlang config, a dispatcher and its argument
+//! (`dispatch workspace 3`); with a Lua config (0.55 on, the only kind
+//! from 0.56) the request's argument is evaluated as `return
+//! hl.dispatch(<argument>)`, so it must be a dispatcher object (`dispatch
+//! hl.dsp.focus({ workspace = "3" })`). Each dialect's Hyprland refuses
+//! the other's form in its own words: a Lua Hyprland answers a classic
+//! form with the Lua parser's error (`error: [string "return
+//! hl.dispatch(workspace 3)"]:1: ')' expected near '3'`), a classic one
+//! answers a Lua form `Invalid dispatcher` (the dispatcher name it reads
+//! is `hl.dsp.focus({`; `dispatchRequest` in `src/debug/HyprCtl.cpp`,
+//! 0.54.3 and 0.56.2 alike). The adapter sends the Lua form first and,
+//! when Hyprland refuses it that way, the classic form, keeping whichever
+//! was understood for the rest of the connection (decisions.md,
+//! wave4-exit-ci and laptop-resilience).
 //! `win.maximize()` and `win.fullscreen()` are Hyprland's own fullscreen
 //! toggles (modes 1 and 0): `hl.dsp.window.fullscreen({ mode = …, window
 //! = … })` in Lua; the classic `fullscreen` dispatcher acts on the focused
@@ -400,9 +406,14 @@ impl State {
         }
     }
 
-    /// The `dispatch` request for an action, in the classic dialect or,
-    /// with `lua`, as a Lua dispatcher object (see the module docs).
-    pub(crate) fn dispatch_for(&self, action: &WmAction, lua: bool) -> Result<String, WmError> {
+    /// The `dispatch` request for an action in `dialect` (see the module
+    /// docs).
+    pub(crate) fn dispatch_for(
+        &self,
+        action: &WmAction,
+        dialect: Dialect,
+    ) -> Result<String, WmError> {
+        let lua = dialect == Dialect::Lua;
         match action {
             WmAction::FocusWorkspace(id) => {
                 let ws = self
@@ -573,8 +584,8 @@ async fn session(
         return Ok(());
     }
     let mut cmds_open = true;
-    // The dispatch dialect: classic until Hyprland answers in Lua.
-    let mut lua = false;
+    // The dispatch dialect: Lua until Hyprland refuses it.
+    let mut dialect = Dialect::Lua;
     loop {
         tokio::select! {
             line = next_line(&mut reader, &mut buf) => {
@@ -619,11 +630,7 @@ async fn session(
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
                 Some((action, reply)) => {
-                    let mut result = dispatch(requests, state, &action, lua).await;
-                    if !lua && matches!(&result, Err(WmError::Rejected(r)) if wants_lua(r)) {
-                        lua = true;
-                        result = dispatch(requests, state, &action, lua).await;
-                    }
+                    let result = dispatch_either(requests, state, &action, &mut dialect).await;
                     if let Some(r) = reply {
                         let _ = r.send(result);
                     }
@@ -634,14 +641,35 @@ async fn session(
     }
 }
 
-/// Sends `action` as a `dispatch` request in the dialect `lua` says.
+/// Sends `action` in `dialect`; when Hyprland refuses that dialect's form
+/// ([`refuses_dialect`]), in the other one, which becomes the
+/// connection's when it is understood.
+async fn dispatch_either(
+    requests: &Path,
+    state: &State,
+    action: &WmAction,
+    dialect: &mut Dialect,
+) -> Result<(), WmError> {
+    let first = dispatch(requests, state, action, *dialect).await;
+    if !matches!(&first, Err(WmError::Rejected(r)) if refuses_dialect(r)) {
+        return first;
+    }
+    let other = dialect.other();
+    let second = dispatch(requests, state, action, other).await;
+    if !matches!(&second, Err(WmError::Rejected(r)) if refuses_dialect(r)) {
+        *dialect = other;
+    }
+    second
+}
+
+/// Sends `action` as a `dispatch` request in `dialect`.
 async fn dispatch(
     requests: &Path,
     state: &State,
     action: &WmAction,
-    lua: bool,
+    dialect: Dialect,
 ) -> Result<(), WmError> {
-    let req = state.dispatch_for(action, lua)?;
+    let req = state.dispatch_for(action, dialect)?;
     match request(requests, &req).await {
         Ok(r) => dispatch_reply(&r),
         Err(e) => Err(WmError::Io(e.to_string())),
@@ -669,9 +697,48 @@ fn dispatch_reply(reply: &str) -> Result<(), WmError> {
 }
 
 /// Whether a dispatch was refused because Hyprland evaluates dispatches
-/// as Lua (a Lua config): `error: [string "return hl.dispatch(…)"]:1: …`.
+/// as Lua (a Lua config): `error: [string "return hl.dispatch(…)"]:1: …`,
+/// Lua's own error for the chunk Hyprland made of the request (it could
+/// not parse or run it).
 fn wants_lua(reply: &str) -> bool {
     reply.starts_with("error") && reply.contains("hl.dispatch(")
+}
+
+/// Whether a dispatch was refused because Hyprland reads it as a classic
+/// dispatcher and its argument (before 0.55, or a hyprlang config): a Lua
+/// form's first word (`hl.dsp.focus({`) names no dispatcher, which
+/// `dispatchRequest` (`src/debug/HyprCtl.cpp`, 0.54.3 to 0.56.2) answers
+/// `Invalid dispatcher`.
+fn wants_classic(reply: &str) -> bool {
+    reply.trim() == "Invalid dispatcher"
+}
+
+/// Whether `reply` refuses the dialect a dispatch was sent in rather than
+/// the action: one of its commands' replies (a batch has one per command)
+/// says Hyprland reads requests in the other dialect.
+fn refuses_dialect(reply: &str) -> bool {
+    reply
+        .split("\n\n\n")
+        .any(|r| wants_lua(r.trim()) || wants_classic(r))
+}
+
+/// The two `dispatch` dialects (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    /// A dispatcher object, `hl.dsp.focus({ workspace = "3" })`: a Lua
+    /// config (0.55 on; the only kind from 0.56).
+    Lua,
+    /// A dispatcher and its argument, `workspace 3`: a hyprlang config.
+    Classic,
+}
+
+impl Dialect {
+    fn other(self) -> Self {
+        match self {
+            Self::Lua => Self::Classic,
+            Self::Classic => Self::Lua,
+        }
+    }
 }
 
 /// `s` as a Lua string literal.
@@ -859,20 +926,21 @@ mod tests {
     fn dispatches_name_the_target() {
         let s = state();
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(2), false).unwrap(),
+            s.dispatch_for(&WmAction::FocusWorkspace(2), Dialect::Classic)
+                .unwrap(),
             "dispatch workspace 2"
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), false)
+            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), Dialect::Classic)
                 .unwrap(),
             "dispatch focuswindow address:0xa1"
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(9), false),
+            s.dispatch_for(&WmAction::FocusWorkspace(9), Dialect::Classic),
             Err(WmError::UnknownWorkspace(9))
         );
         assert!(matches!(
-            s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into()), false),
+            s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into()), Dialect::Classic),
             Err(WmError::Unsupported(_))
         ));
     }
@@ -883,16 +951,17 @@ mod tests {
     fn lua_dispatches_are_dispatcher_objects() {
         let s = state();
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(2), true).unwrap(),
+            s.dispatch_for(&WmAction::FocusWorkspace(2), Dialect::Lua)
+                .unwrap(),
             r#"dispatch hl.dsp.focus({ workspace = "2" })"#
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), true)
+            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), Dialect::Lua)
                 .unwrap(),
             r#"dispatch hl.dsp.focus({ window = "address:0xa1" })"#
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::CloseWindow("0xa1".into()), true)
+            s.dispatch_for(&WmAction::CloseWindow("0xa1".into()), Dialect::Lua)
                 .unwrap(),
             r#"dispatch hl.dsp.window.close({ window = "address:0xa1" })"#
         );
@@ -903,6 +972,38 @@ mod tests {
         ));
         assert!(!wants_lua("No such window found"));
         assert!(!wants_lua("ok"));
+    }
+
+    /// Each dialect's Hyprland refuses the other's form in its own words;
+    /// those replies, and only those, send the dispatch again in the other
+    /// dialect. An action's own failure does not.
+    #[test]
+    fn dialect_refusals_are_told_from_failed_actions() {
+        // Hyprland 0.54.3 (and 0.55/0.56 with a hyprlang config) to a Lua
+        // form: `dispatchRequest` finds no dispatcher `hl.dsp.focus({`.
+        assert!(refuses_dialect("Invalid dispatcher"));
+        assert!(refuses_dialect("Invalid dispatcher\n"));
+        // Hyprland 0.56.2 with a Lua config to a classic form, with the
+        // note it appends when the argument has no `(`.
+        assert!(refuses_dialect(
+            "error: [string \"return hl.dispatch(workspace 3)\"]:1: ')' expected near '3'\n\n \
+             → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might \
+             need to be updated."
+        ));
+        // A batch refused command by command, or in its second command
+        // only (a classic Hyprland without that dispatcher).
+        assert!(refuses_dialect("ok\n\n\nInvalid dispatcher"));
+        for failed in [
+            "No such window found",
+            "ok",
+            "",
+            "error: no window",
+            "false",
+        ] {
+            assert!(!refuses_dialect(failed), "{failed:?}");
+        }
+        assert_eq!(Dialect::Lua.other(), Dialect::Classic);
+        assert_eq!(Dialect::Classic.other(), Dialect::Lua);
     }
 
     /// A dispatch succeeds only on `ok`, the one success reply seen from
@@ -941,24 +1042,24 @@ mod tests {
         let max = WmAction::MaximizeWindow("0xa1".into());
         let full = WmAction::FullscreenWindow("0xa1".into());
         assert_eq!(
-            s.dispatch_for(&max, true).unwrap(),
+            s.dispatch_for(&max, Dialect::Lua).unwrap(),
             r#"dispatch hl.dsp.window.fullscreen({ mode = "maximized", window = "address:0xa1" })"#
         );
         assert_eq!(
-            s.dispatch_for(&full, true).unwrap(),
+            s.dispatch_for(&full, Dialect::Lua).unwrap(),
             r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0xa1" })"#
         );
         assert_eq!(
-            s.dispatch_for(&max, false).unwrap(),
+            s.dispatch_for(&max, Dialect::Classic).unwrap(),
             "[[BATCH]]dispatch focuswindow address:0xa1;dispatch fullscreen 1"
         );
         assert_eq!(
-            s.dispatch_for(&full, false).unwrap(),
+            s.dispatch_for(&full, Dialect::Classic).unwrap(),
             "[[BATCH]]dispatch focuswindow address:0xa1;dispatch fullscreen 0"
         );
-        for lua in [false, true] {
+        for dialect in [Dialect::Classic, Dialect::Lua] {
             assert_eq!(
-                s.dispatch_for(&WmAction::MaximizeWindow("0xb2".into()), lua),
+                s.dispatch_for(&WmAction::MaximizeWindow("0xb2".into()), dialect),
                 Err(WmError::UnknownWindow("0xb2".into()))
             );
         }

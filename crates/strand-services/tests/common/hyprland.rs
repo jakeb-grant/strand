@@ -171,10 +171,23 @@ pub fn answer(scene: &str, req: &str) -> Vec<u8> {
         }
         "j/clients" => file("clients.json"),
         "j/activewindow" => file("activewindow.json"),
-        r if r.starts_with("dispatch ") => b"ok".to_vec(),
+        // `dispatchRequest` (src/debug/HyprCtl.cpp, 0.54.3 and a hyprlang
+        // config on 0.56.2): the first word is the dispatcher; a Lua
+        // form's (`hl.dsp.focus({`) is none.
+        r if r.starts_with("dispatch ") => {
+            let dispatcher = r["dispatch ".len()..].split(' ').next().unwrap_or("");
+            if CLASSIC_DISPATCHERS.contains(&dispatcher) {
+                b"ok".to_vec()
+            } else {
+                b"Invalid dispatcher".to_vec()
+            }
+        }
         _ => b"unknown request".to_vec(),
     }
 }
+
+/// The classic dispatchers the adapter sends.
+const CLASSIC_DISPATCHERS: &[&str] = &["workspace", "focuswindow", "closewindow", "fullscreen"];
 
 /// [`answer`] with a Lua config (Hyprland 0.55 on): a dispatch's argument
 /// is evaluated as `return hl.dispatch(<argument>)`, so only a dispatcher
