@@ -301,7 +301,22 @@ impl Host {
         }
     }
 
-    //// Hands laid-out sizes that changed to logic (`self.width`).
+    /// Asks logic for the rows of virtualised lists that scrolled past
+    /// their mounted rows (`ToLogic::ListWindow`).
+    pub(crate) fn forward_list_windows(&mut self) {
+        let Some(f) = &self.logic else {
+            return;
+        };
+        for (list, rows) in self.renderer.take_list_windows() {
+            f.send(ToLogic::ListWindow {
+                list,
+                first: rows.start,
+                count: rows.end.saturating_sub(rows.start),
+            });
+        }
+    }
+
+    /// Hands laid-out sizes that changed to logic (`self.width`).
     pub(crate) fn forward_facts(&mut self) {
         let facts = self.renderer.take_layout_facts();
         if !facts.is_empty()
@@ -319,6 +334,9 @@ impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
         self.forward_facts();
+        // Virtualised lists scrolled past their mounted rows ask logic
+        // for the rows they show.
+        self.forward_list_windows();
         self.wake_if_changed();
         #[cfg(test)]
         if let Some(p) = &self.probe {
@@ -335,8 +353,10 @@ impl Painter for Host {
                 .collect();
             // One line per painted frame, parsed by scripts/m0-exit.sh;
             // strand-surface commits it unless `frame_dropped` follows.
+            // `gaps=`: frames so far that showed a list's unmounted rows
+            // (always 0; the M4 exit's per-frame check).
             eprintln!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={}",
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={}",
                 surface.0,
                 target.size.w,
                 target.size.h,
@@ -344,6 +364,7 @@ impl Painter for Host {
                 target.age,
                 damage.area(),
                 rects.join(","),
+                self.renderer.list_frames().gaps,
             );
         }
         damage
@@ -447,6 +468,15 @@ impl SurfaceHost for Host {
         // A scroll lays out again: its sizes go with it.
         self.forward_facts();
         self.wake_if_changed();
+        // Input that moved something with no logic diff to follow (a key
+        // scrolling a list to the row it selects) still needs a frame.
+        let wants = self
+            .logic
+            .as_ref()
+            .is_some_and(|f| f.surfaces.keys().any(|s| self.renderer.wants_frame(*s)));
+        if wants && let Some(p) = &self.wake {
+            p.ping();
+        }
     }
 
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {

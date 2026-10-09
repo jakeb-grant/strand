@@ -121,6 +121,9 @@ impl Shell {
                 width,
                 height,
             } => inst.set_size(node, width, height),
+            ToLogic::ListWindow { list, first, count } => {
+                super::lists::set_window(inst, list, first, count);
+            }
             ToLogic::Shutdown => {}
         }
     }

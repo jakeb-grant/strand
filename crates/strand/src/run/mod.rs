@@ -73,6 +73,7 @@ use crate::overlay::{self, Click, Overlay};
 use crate::system;
 use strand_watch::{CacheKind, Role};
 
+mod lists;
 mod lock;
 mod logic;
 mod shell;
@@ -213,6 +214,14 @@ pub enum ToLogic {
         node: NodeId,
         prop: strand_scene::Prop,
         value: strand_scene::PropValue,
+    },
+    /// The rows a virtualised `list` wants mounted: its view plus
+    /// overscan, as global row indexes (`Renderer::take_list_windows`),
+    /// applied with `Instance::set_list_window`.
+    ListWindow {
+        list: NodeId,
+        first: u32,
+        count: u32,
     },
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.

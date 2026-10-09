@@ -11,6 +11,11 @@
 //! [`MOCK_TIME`] in UTC. Either mock takes the IPC command `mock`
 //! ([`command`]): a notification arriving, a volume, mute or brightness
 //! change, as the M3 services will report them.
+//!
+//! `STRAND_MOCK_APPS=<n>` gives either mock `n` installed apps instead of
+//! three (`App 0001` …, cycling the three icons and comments), so the
+//! design's launcher has a long list to scroll (the M4 exit's 2,000-row
+//! scrolling).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +33,13 @@ pub(crate) struct Mock {
     /// `acceptance`: no notifications at boot, workspaces on a second
     /// screen, the clock frozen.
     pub acceptance: bool,
+    /// `STRAND_MOCK_APPS`: how many apps are installed (`None`: the
+    /// three of the default desktop).
+    pub apps: Option<usize>,
 }
+
+/// The most apps `STRAND_MOCK_APPS` installs.
+pub(crate) const MAX_MOCK_APPS: usize = 100_000;
 
 /// Whether `STRAND_MOCK` (`desktop` or `acceptance`) asks for a mock.
 pub(crate) fn requested() -> Option<Mock> {
@@ -39,7 +50,15 @@ pub(crate) fn requested() -> Option<Mock> {
         _ => return None,
     };
     let screen = std::env::var("STRAND_MOCK_SCREEN").unwrap_or_else(|_| "HEADLESS-1".into());
-    Some(Mock { screen, acceptance })
+    let apps = std::env::var("STRAND_MOCK_APPS")
+        .ok()
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .map(|n| n.min(MAX_MOCK_APPS));
+    Some(Mock {
+        screen,
+        acceptance,
+        apps,
+    })
 }
 
 /// The wall time the acceptance mock's clock is frozen at.
@@ -168,14 +187,26 @@ pub(crate) fn desktop(rt: &Runtime, host: &SchemaHost, mock: &Mock) {
             ],
         )
     };
-    set(
-        "apps.all",
-        Value::list(vec![
-            app("firefox", "Firefox", "web-browser", "Browse the web"),
-            app("foot", "Foot", "utilities-terminal", "Terminal emulator"),
-            app("files", "Files", "system-file-manager", "Manage files"),
-        ]),
-    );
+    let three = [
+        ("firefox", "Firefox", "web-browser", "Browse the web"),
+        ("foot", "Foot", "utilities-terminal", "Terminal emulator"),
+        ("files", "Files", "system-file-manager", "Manage files"),
+    ];
+    let apps = match mock.apps {
+        None => three
+            .iter()
+            .map(|(id, name, icon, comment)| app(id, name, icon, comment))
+            .collect(),
+        Some(n) => (0..n)
+            .map(|i| {
+                let (_, _, icon, comment) = three[i % three.len()];
+                let id = format!("app-{:04}", i + 1);
+                let name = format!("App {:04}", i + 1);
+                app(&id, &name, icon, comment)
+            })
+            .collect(),
+    };
+    set("apps.all", Value::list(apps));
 }
 
 /// The sink's icon name for a volume and mute state, as PipeWire's
@@ -321,12 +352,38 @@ mod tests {
         assert_eq!(volume_icon(0.9, false), "audio-volume-high-symbolic");
     }
 
+    /// `STRAND_MOCK_APPS` installs that many apps, named in order.
+    #[test]
+    fn the_apps_knob_installs_that_many_apps() {
+        let rt = Runtime::new();
+        let types = strand_compiler::schema::Schema::builtin().types.clone();
+        let host = SchemaHost::new(&rt, &types, None);
+        let mock = Mock {
+            apps: Some(2000),
+            screen: "HEADLESS-1".into(),
+            acceptance: false,
+        };
+        desktop(&rt, &host, &mock);
+        let all = host.get(&rt, "apps.all").unwrap();
+        let all = all.as_list().unwrap();
+        assert_eq!(all.len(), 2000);
+        let name = |i: usize| {
+            all[i]
+                .field(&types, "name")
+                .and_then(Value::as_text)
+                .map(str::to_string)
+        };
+        assert_eq!(name(0).as_deref(), Some("App 0001"));
+        assert_eq!(name(1999).as_deref(), Some("App 2000"));
+    }
+
     #[test]
     fn mock_commands_reach_the_services() {
         let rt = Runtime::new();
         let types = strand_compiler::schema::Schema::builtin().types.clone();
         let host = SchemaHost::new(&rt, &types, None);
         let mock = Mock {
+            apps: None,
             screen: "HEADLESS-1".into(),
             acceptance: true,
         };
