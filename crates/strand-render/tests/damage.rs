@@ -2166,7 +2166,9 @@ fn shimmer_bar(capped: bool) -> (SceneDiff, NodeId) {
 /// frame each refresh the renderer wants one; otherwise the loop sleeps
 /// until [`Renderer::next_wake`], runs `update`, and the frame it then
 /// asks for lands on the first refresh after the wake. Returns the
-/// presentation times of the frames that drew something.
+/// presentation times of every frame painted. Each must draw something:
+/// a frame the renderer asks for between a capped clock's ticks has
+/// empty damage, and fails here rather than going uncounted.
 fn host_loop(r: &mut Renderer, buf: &mut Buffer, hz: u32) -> Vec<std::time::Duration> {
     use std::time::{Duration, Instant};
     let end = T0 + Duration::from_millis(500);
@@ -2176,9 +2178,9 @@ fn host_loop(r: &mut Renderer, buf: &mut Buffer, hz: u32) -> Vec<std::time::Dura
         if r.wants_frame(BAR) {
             last = at_hz(hz, k);
             at = Instant::now();
-            if !buf.paint_at(r, BAR, 1, last).is_empty() {
-                drawn.push(last);
-            }
+            let damage = buf.paint_at(r, BAR, 1, last);
+            assert!(!damage.is_empty(), "frame at {last:?} painted nothing");
+            drawn.push(last);
             k += 1;
             continue;
         }
