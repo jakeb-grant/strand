@@ -949,7 +949,21 @@ fn the_design_bar_is_laid_out_start_centre_end() {
     let ws = sway.msg(&["-t", "get_workspaces"]).unwrap();
     let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
     assert_eq!(ws[0]["rect"]["y"], 44, "{ws}");
-    let shot = Shot::take(&sway, "HEADLESS-1");
+    // The tray icon is looked up and decoded off the frame path: wait for
+    // it, bounded (CI run 37897160375 shot the bar before it drew, its
+    // last ink the text's at 2509).
+    let ends_at_icon = |s: &Shot| {
+        (16..s.w - 16)
+            .rev()
+            .find(|&x| (14..38).any(|y| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 300))
+            .is_some_and(|last| (s.w - 26..=s.w - 18).contains(&last))
+    };
+    let mut shot = Shot::take(&sway, "HEADLESS-1");
+    let icon_by = Instant::now() + Duration::from_secs(10);
+    while !ends_at_icon(&shot) && Instant::now() < icon_by {
+        std::thread::sleep(Duration::from_millis(100));
+        shot = Shot::take(&sway, "HEADLESS-1");
+    }
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(
             &["-g", "0,0 2560x70"],
