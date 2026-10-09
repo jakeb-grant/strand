@@ -191,7 +191,7 @@ impl Animator {
     }
 
     /// (M4) The time context of `id` in the frame being drawn: its own
-    /// `t` since it appeared, in whole ticks of `rate` when capped,
+    /// `t` since it was first drawn, in whole ticks of `rate` when capped,
     /// frozen at `t = 0` under `reduced_motion` or in a frame with no
     /// clock. Also when the clock next ticks (`None`: every frame).
     pub fn time_of(
@@ -204,8 +204,20 @@ impl Animator {
             crate::clock::Rate::Refresh => None,
             crate::clock::Rate::Every(p) => Some(p),
         };
+        // Read only: the clock starts once the node is drawn
+        // ([`Animator::start_clock`]), so a node hidden at first counts
+        // `t` from when it shows. Unstarted, it reads as starting now.
         self.times
-            .context(id, self.time, self.commit, frozen, period, self.slack)
+            .context(id, self.time, false, frozen, period, self.slack)
+    }
+
+    /// (M4) `id` is drawn (or hidden only by something that follows
+    /// time) in the frame being drawn: its clock starts here if this
+    /// frame will be painted and the clocks are not frozen.
+    pub fn start_clock(&mut self, id: NodeId) {
+        if self.commit && !self.snapping() {
+            self.times.begin(id, self.time);
+        }
     }
 
     /// Everything snaps: `reduced_motion`, or a frame at time zero (no

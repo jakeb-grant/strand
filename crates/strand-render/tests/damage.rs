@@ -2412,3 +2412,33 @@ fn global_tokens_that_read_time_drive_their_readers() {
     }
     assert!(buf.pixels != still, "the square turned");
 }
+
+/// decisions.md (m4-runtime-w1, F1): `t` counts from the first committed
+/// frame that drew the node. A time-reading node hidden by `opacity: 0`
+/// draws nothing and starts no clock; shown a second later, it reads
+/// `t = 0` there and a quarter second on (`t * 36deg`: 9°), not the time
+/// since its first hidden frame.
+#[test]
+fn a_hidden_node_starts_its_clock_when_it_shows() {
+    let (diff, _, timed) = timed_bar(vec![(Prop::Rotate, spin(36.0)), (Prop::Opacity, num(0.0))]);
+    let (mut r, mut buf) = clocked(diff);
+    assert!(!r.wants_frame(BAR), "hidden: no clock");
+    let shown = T0 + std::time::Duration::from_secs(1);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: timed,
+        prop: Prop::Opacity,
+        value: num(1.0),
+        transition: Transition::Instant,
+    });
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, BAR, 1, shown);
+    assert!(buf.pixels == turned(0.0).pixels, "t = 0 when it shows");
+    buf.paint_at(
+        &mut r,
+        BAR,
+        1,
+        shown + std::time::Duration::from_millis(250),
+    );
+    assert!(buf.pixels == turned(9.0).pixels, "t = 0.25 s: 9°");
+}

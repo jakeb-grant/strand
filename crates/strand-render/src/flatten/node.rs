@@ -41,6 +41,16 @@ impl<'a> Flattener<'a> {
         self.out.items.push(DisplayItem { item, bounds });
     }
 
+    /// (M4) `id` is drawn, or hidden only by something that follows
+    /// time: its clock (if it has one) runs from this frame, and the
+    /// surface keeps it.
+    fn run_clock(&mut self, id: strand_scene::NodeId, clock: Option<crate::clock::Clock>) {
+        if clock.is_some() {
+            self.anim.start_clock(id);
+        }
+        self.out.clocks.extend(clock);
+    }
+
     /// Pushes a group marker; returns its index so a push marker's bounds
     /// can be set to its group's once known.
     pub(super) fn marker(&mut self, item: Item) -> usize {
@@ -312,7 +322,7 @@ impl<'a> Flattener<'a> {
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
             if follows(Prop::Opacity) {
-                self.out.clocks.extend(clock);
+                self.run_clock(node.id, clock);
             }
             return Rect::default();
         }
@@ -322,7 +332,7 @@ impl<'a> Flattener<'a> {
         let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
         if zoom <= 0.0 {
             if follows(Prop::Scale) {
-                self.out.clocks.extend(clock);
+                self.run_clock(node.id, clock);
             }
             return Rect::default();
         }
@@ -792,7 +802,7 @@ impl<'a> Flattener<'a> {
                 .intersect(inh.clip)
                 .is_some_and(|r| !r.is_empty());
         if !subtree.is_empty() || moves || effect {
-            self.out.clocks.extend(clock);
+            self.run_clock(node.id, clock);
         }
         if let Some(i) = opacity_group {
             self.out.items[i].bounds = subtree;

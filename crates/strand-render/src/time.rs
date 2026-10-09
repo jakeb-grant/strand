@@ -71,6 +71,12 @@ impl NodeTimes {
         (cx, next)
     }
 
+    /// Starts the clock of `id` at `frame` if it has none (its first
+    /// painted frame that drew it).
+    pub(crate) fn begin(&mut self, id: NodeId, frame: Duration) {
+        self.start.entry(id).or_insert(frame);
+    }
+
     /// When the clock of `id` started, if it has.
     #[cfg(test)]
     pub(crate) fn start(&self, id: NodeId) -> Option<Duration> {
