@@ -1306,6 +1306,11 @@ fn clamp_i32(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
 }
 
+/// A popup that declares a scrim.
+fn nested_scrim_of(spec: &SurfaceSpec) -> bool {
+    spec.kind == NodeKind::Popup && spec.scrim.is_some()
+}
+
 #[cfg(test)]
 mod hook_tests {
     use super::*;
@@ -1338,9 +1343,4 @@ mod hook_tests {
         }
         assert_eq!(host.surface_pose(SurfaceId(1)), None);
     }
-}
-
-/// A popup that declares a scrim.
-fn nested_scrim_of(spec: &SurfaceSpec) -> bool {
-    spec.kind == NodeKind::Popup && spec.scrim.is_some()
 }
