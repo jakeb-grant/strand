@@ -221,8 +221,10 @@ its hand-off rules land in wave 0c, after the GPU spike.
   `strand_auth::Client` of its own. SIGINT and SIGTERM end `strand run`
   only while no lock is shown.
 - The PAM helper is a process, not a thread: the `strand-auth` binary,
-  fork+exec'd over a socketpair with `child::restore_in_child()` as its
-  `pre_exec`, one per lock session, respawned when it dies. Only it links
+  fork+exec'd over a socketpair by `strand_auth::Client`, one per lock
+  session, respawned when it dies. The `Client`'s owner hands it
+  `strand_services::child::restore_in_child` as its `pre_exec` hook,
+  since `strand-auth` depends on no Strand crate. Only the helper links
   libpam.
 - Spectrum bins and thumbnail frames are produced off the main thread
   (the audio thread, the `strand-toplevel` thread) and reach render
@@ -256,15 +258,18 @@ strand-services' stores to strand-compiler's VM.
 strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
              bin: the PAM helper, the only code that links libpam
   ^-- strand-services (the `auth` service), strand-surface (the unlock
-      gate), strand (the main thread's fallback client, spawning the bin)
+      gate), strand (the main thread's fallback client); both `Client`
+      owners pass `child::restore_in_child` in as the spawn's `pre_exec`
 ```
 
 `strand-auth` (M4) is the lock's whole security boundary, small enough to
 review alone. Its lib depends on `libc` and `zeroize` and no Strand
 crate; its binary adds a hand-written PAM FFI and nothing else. The lib
 holds the framed request/reply protocol over a socketpair, a blocking
-`Client` (spawn, `submit(password) -> Verdict`, timeout, respawn on a
-dead helper), password buffers that zeroize on drop, and `UnlockToken`:
+`Client` (`Client::new(helper: PathBuf, pre_exec: fn())`, which spawns
+the helper and runs `pre_exec` in the child between fork and exec;
+`submit(password) -> Verdict`, timeout, respawn on a dead helper, with
+the same hook), password buffers that zeroize on drop, and `UnlockToken`:
 a value only `Client` mints, from a success reply, which is `Send` and
 neither `Clone` nor constructible elsewhere. `strand-surface` releases
 a session lock only for an `UnlockToken`, so no other code path can
@@ -811,7 +816,10 @@ be built and tested without the language, and the language without pixels.
     produces the external one: `Node(NodeId)` (a `drag:` source in Strand;
     logic maps it back to its value) or `External { kind: DropKind, files:
     Vec<PathBuf>, text: String, app_id: Option<String> }`, `DropKind` being
-    `Files`, `App` or `Text`, matching builtin.schema's `record Drop`.
+    `Files`, `App` or `Text`. builtin.schema's `record Drop` has `app:
+    App?`, not an id: logic resolves `app_id` to the `App` through the
+    `apps` service when it builds the `Drop` value (null when no
+    installed app has that id).
     `strand_render::input::NodeEvent` gains `Drop { payload, at: u32 }`
     (`at` a global row index) for `on drop(p, at)`.
   - **Surface poses** (design.md, "Compositor-animated poses").
@@ -832,7 +840,9 @@ be built and tested without the language, and the language without pixels.
     (`set_compositor_blur`, `set_compositor_poses`).
   - **Scrims and fillets.** `SurfaceSpec` gains `scrim: Option<Color>`
     (`scrim:` resolved through tokens; `popup` and `panel` only, checked by
-    the compiler). `attach: top` fillets are drawn outside the box beside
+    the compiler). A scrim is a single-pixel buffer (design.md), so 0b
+    narrows builtin.schema's `scrim: paint` to `scrim: color` and a
+    gradient scrim is a type error. `attach: top` fillets are drawn outside the box beside
     the attached edge: render adds the fillet radius to `overhang` on the
     two sides along that edge, so the input region stays the box, and
     placement puts the box at gap 0 from the attached edge. Fillets take
@@ -2819,9 +2829,13 @@ transparent huge pages for life.
 
 - **M4 additions** (planned; docs/m4-plan.md). One owner per file: tray
   to S-surface, auth to S-lock, audio and wm to S-effects.
-  - `auth` stops being provisional (`auth.schema`: `busy`, `failed`,
-    `submit(password)`). Its store runs a `strand_auth::Client`, which
-    spawns the helper with `child::restore_in_child()`; the password
+  - `auth` stops being provisional: S-lock moves it out of
+    builtin.schema (deleting the `provisional service auth` block) into
+    `strand-services-schema/src/auth.schema` (`busy`, `failed`,
+    `submit(password)`), with an `AUTH` constant and a `schemas()`
+    entry, as earlier services left builtin.schema. Its store runs a
+    `strand_auth::Client` built with `child::restore_in_child` as the
+    helper's `pre_exec`; the password
     is zeroized once sent, and a success hands an
     `strand_auth::UnlockToken` to the binary, which passes it to the
     surface manager's unlock.

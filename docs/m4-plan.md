@@ -25,8 +25,9 @@ closed under faults.
   feature to build without the GPU may exist, on by default.
 - **Bundled effect syntax**: `filter: bloom(r) | crt() | chromatic(px) |
   wobble(amp)` and `backdrop: glass()` (design.md, "Bundled GPU
-  effects"). The stream that builds each records its knobs in
-  decisions.md and builtin.schema.
+  effects"). 0b lands each signature in builtin.schema; after 0b the
+  stream that builds an effect edits only that effect's declaration
+  there (its knobs) and records them in decisions.md.
 - **A missing `/etc/pam.d/strand`** falls back to `login` with a one-time
   warning; every later PAM error fails closed.
 - **`/dev/kvm`** is allowed for the lock VM container only
@@ -77,7 +78,7 @@ closed under faults.
     gpu}.rs`.
   - Compiler checks go into per-stream submodules: `check/{shaders,
     surfaces, effects, lists, lock}.rs`. 0b lands every M4 entry in
-    `builtin.schema`.
+    `builtin.schema` and narrows `scrim: paint` to `scrim: color`.
 
 ## Streams
 
@@ -88,7 +89,7 @@ closed under faults.
 | S-gpu spike | 0, after the infra image | a scratch crate, nothing merged | the 0c inputs |
 | S-runtime | 0 (F0, 0b), 1 | `strand-scene/**`; `strand-render/src/{flatten/, raster/, clock.rs, time.rs, layers.rs, offscreen.rs, renderer/{frame,wake}.rs}`; `instantiate/convert.rs`, `lower/` (time); `builtin.schema` in 0b | Runtime box; time signals in the catalogue |
 | S-surface | 0 (S0), 1, 2 | `strand-surface/src/{manager/*, placement.rs, caps.rs, solid.rs, blur.rs}`; `strand-render/src/{pose.rs, fillet.rs, renderer/pose.rs}`; `strand/src/demo/host.rs`; `services/tray.rs`; `tray.schema`; `check/surfaces.rs`; `strand compositor-rules` in `main.rs` | poses; popups and tray menus; `open: <-> x`; the blur ladder's protocol rungs; scrims and fillets |
-| S-lock | 1, 2 | `crates/strand-auth/**`; `services/auth.rs`; `auth.schema`; `strand-surface/src/session_lock.rs`, `tests/session_lock.rs`; `strand-render/src/lock_fallback.rs`; `strand/src/run/lock.rs`; `strand/tests/lock.rs`; `check/lock.rs`; `scripts/lockvm/scenarios/*` | lock screen; lock backgrounds |
+| S-lock | 1, 2 | `crates/strand-auth/**`; `services/auth.rs`; `strand-services-schema/src/auth.schema` and its `AUTH` entry in that crate's `lib.rs`; the removal of builtin.schema's `provisional service auth` block (after 0b); `strand-surface/src/session_lock.rs`, `tests/session_lock.rs`; `strand-render/src/lock_fallback.rs`; `strand/src/run/lock.rs`; `strand/tests/lock.rs`; `check/lock.rs`; `scripts/lockvm/scenarios/*` | lock screen; lock backgrounds |
 | S-lists | 1, 2 | `strand-render/src/{list.rs, scroll.rs, input.rs, renderer/lists.rs, anim/pages.rs}`; `instantiate/mount.rs`; `strand-surface/src/dnd.rs`, `tests/dnd.rs`; `strand/src/run/lists.rs`; `strand/src/mock.rs` | virtualised lists; drag and drop; pages |
 | S-effects | 1, 2, 3 | `strand-render/src/{effects/**, shapes/, media/, backdrop.rs, widgets.rs (arc, graph, meter), image.rs (animated frames), anim/{keyframes,morph,stagger}.rs, renderer/feed.rs}`; `services/audio/*`; `services/wm` Capture; `check/effects.rs`; `strand/src/run/feeds.rs` | effects catalogue items; `backdrop: blur()`; M1 keyframes playback |
 | S-gpu | 2, 3 | `crates/strand-gpu/**`; `strand-render/src/{promote.rs, canvas.rs, renderer/backend.rs}`; `strand-surface/src/gpu_handoff.rs`; `check/shaders.rs`; `strand/src/live.rs` (shader arms); `strand/src/run/gpu.rs`; `strand/tests/{gpu_cold,gpu_idle}.rs` | GPU promotion; shaders and canvas; bundled GPU effects; M1 shader and canvas drawing; the `.wgsl` part of M1's loader box |
@@ -181,7 +182,7 @@ GPU and auth-spawn hooks there are small PRs it reviews.
 - `attach:` fillets: placement gap 0; `check/surfaces.rs` allows `attach`
   and `scrim` only on `popup` and `panel`.
 - Tray menu popups: nested side placement, a recursive menu fixture, real
-  click coordinates (`x`/`y` on the tray actions).
+  click coordinates (the route is S-surface's decision).
 - With S-gpu in 0c: which thread commits pose state while a surface is
   GPU-owned.
 
@@ -336,7 +337,8 @@ records each in decisions.md when it builds it.
   false; a config write of false while locked is ignored with a warning. A
   lock is triggered by `strand set` on bound state; no `strand lock`, no
   logind listener. "Forked helper" is fork+exec of `strand-auth` over a
-  socketpair (`restore_in_child` in pre_exec, closed fds, scrubbed env;
+  socketpair (`restore_in_child` in pre_exec, handed to `Client::new` by
+  its owner, closed fds, scrubbed env;
   one helper per lock session, respawned on crash; `pam_authenticate` then
   `pam_acct_mgmt`, no `setcred`). Config content on the focused output,
   single-pixel buffers elsewhere. Faults: logic ended or hung, the lock
