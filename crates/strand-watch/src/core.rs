@@ -2648,7 +2648,10 @@ mod tests {
         let mut core = Core::new(Silent::default(), opts, None);
         core.add_file(&prefs, Role::Settings, None);
         assert_eq!(core.kinds.get(shm), Some(&WatchKind::Ancestor));
-        assert_eq!(core.kinds.get(z.parent().unwrap()), Some(&WatchKind::Ancestor));
+        assert_eq!(
+            core.kinds.get(z.parent().unwrap()),
+            Some(&WatchKind::Ancestor)
+        );
         for a in [Path::new("/dev"), Path::new("/")] {
             assert_eq!(core.kinds.get(a), None, "{a:?}");
         }

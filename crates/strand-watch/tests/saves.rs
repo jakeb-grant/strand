@@ -1622,7 +1622,9 @@ fn a_moved_parent_below_home_is_seen() {
     });
     assert_eq!(b.changes.len(), 1, "{b:#?}");
     fs::rename(fx.base.join("x/q"), fx.base.join("x/y")).unwrap();
-    until(&fx.rx, "the return", |b| has(b, &prefs, ChangeKind::Created));
+    until(&fx.rx, "the return", |b| {
+        has(b, &prefs, ChangeKind::Created)
+    });
     // `x` itself moved: seen from the fixture's base, the highest
     // ancestor below `$HOME`.
     fs::rename(fx.base.join("x"), fx.base.join("w")).unwrap();
