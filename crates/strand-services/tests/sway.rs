@@ -383,7 +383,7 @@ async fn sway_titles_that_are_not_utf8_keep_the_connection() {
 /// from it.
 #[tokio::test]
 async fn wlr_management_serves_sway_without_its_adapter() {
-    let Some(sway) = Sway::start("wlr_management_serves_sway_without_its_adapter") else {
+    let Some(sway) = Sway::start("wlr_no_adapter") else {
         return;
     };
     let (sink, mut c) = Collector::new();

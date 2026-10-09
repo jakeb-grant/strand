@@ -265,9 +265,23 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
         threads_named("strand-toplevel") == 1 && wm::live_runs() == runs + 1
     });
     s.shutdown();
-    assert_eq!(threads_named("strand-toplevel"), 0, "after the shutdown");
+    assert_eq!(
+        threads_named("strand-toplevel"),
+        0,
+        "after the shutdown; this process's threads: {:?}",
+        thread_names()
+    );
     assert_eq!(wm::live_runs(), runs);
     wm::configure(None);
+}
+
+/// The names of this process's threads (a failure's witness).
+fn thread_names() -> Vec<String> {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
+        .map(|comm| comm.trim_end().to_string())
+        .collect()
 }
 
 /// This process's threads named `name`.
@@ -364,8 +378,7 @@ fn the_compositor_stores_follow_hyprland() {
 #[test]
 fn the_windows_store_follows_wlr_management_without_an_adapter() {
     let _serial = serial();
-    let Some(sway) = Sway::start("the_windows_store_follows_wlr_management_without_an_adapter")
-    else {
+    let Some(sway) = Sway::start("windows_store_wlr") else {
         return;
     };
     wm::configure(Some(WmConfig {
@@ -391,7 +404,12 @@ fn the_windows_store_follows_wlr_management_without_an_adapter() {
             .and_then(|w| w.focused)
             .map(|f| f.app_id)
     };
+    // One at a time: each maps (and takes the focus) on its own thread,
+    // so two opened together may map in either order.
     let a = TestWindow::open(&sway.socket(), "strand-a", "alpha");
+    until(&rt, &s, "a focused", || {
+        focused_app().as_deref() == Some("strand-a")
+    });
     let _b = TestWindow::open(&sway.socket(), "strand-b", "beta");
     until(&rt, &s, "b focused", || {
         focused_app().as_deref() == Some("strand-b")
