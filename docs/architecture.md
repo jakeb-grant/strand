@@ -2344,7 +2344,9 @@ and the connection):
     open `lock` spec is a warning and `State::lock()` returns
     `LockError::NotEnabled`. The binary calls it only once `auth`'s
     tokens reach `State::unlock` (wave 2, `run/lock.rs`), so no build
-    can take a lock it cannot release.
+    can take a lock it cannot release. A token given while the lock is
+    pending is kept and spent when `locked` arrives (`destroy` would be
+    a protocol error if `locked` is already on the wire).
   - Drag and drop (`dnd.rs`): a `wl_data_device` per seat produces
     `InputEvent::Drag*` (external files, apps and text as
     `DropPayload::External`); `State::start_drag(surface, node)` starts

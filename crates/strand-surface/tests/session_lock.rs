@@ -511,3 +511,48 @@ fn nothing_locks_until_the_session_lock_is_enabled() {
     assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE]);
     assert!(lock.state_mut().unlock(token()));
 }
+
+/// A token that arrives before `locked` is dispatched (the password
+/// check runs on another thread while the lock comes up) is kept and
+/// unlocks once `locked` arrives: the pending lock is never destroyed,
+/// which is a protocol error once `locked` is on the wire and would end
+/// the connection with the session locked.
+#[test]
+fn a_token_before_locked_unlocks_once_locked() {
+    let test = "a_token_before_locked_unlocks_once_locked";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let token = token();
+    let conn = sway.connect();
+    let host = LockHost {
+        fill: BLUE,
+        ..LockHost::default()
+    };
+    let mut lock = SurfaceManager::with_connection(conn.clone(), host, Config::default())
+        .expect("the lock client connects");
+    lock.state_mut().enable_session_lock();
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    // The lock request reaches sway, and its answer waits unread.
+    conn.flush().unwrap();
+    pump(&mut desk, Duration::from_millis(1500));
+    assert!(lock.state().lock_active());
+    assert!(!lock.state().is_locked(), "`locked` not dispatched yet");
+    assert!(lock.state_mut().unlock(token), "the token is kept");
+    assert!(lock.state().lock_active(), "still pending");
+    wait_lock(&mut lock, LockState::Unlocked);
+    assert_eq!(
+        lock.state().host().locks,
+        [LockState::Locked, LockState::Unlocked]
+    );
+    assert!(!lock.state().lock_active());
+    settle(&mut lock, &mut desk, Duration::from_millis(500));
+    lock.dispatch(Some(Duration::from_millis(100)))
+        .expect("the lock client's connection survives");
+    assert_eq!(shot(&sway, "HEADLESS-1")[0], RED, "the desktop shows again");
+}

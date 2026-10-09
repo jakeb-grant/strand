@@ -23,6 +23,10 @@
 //!   (a reload, logic gone) changes nothing: the lock surfaces stay and
 //!   the content surface keeps its id, so the binary can paint the
 //!   built-in fallback there ([`State::lock_content`]).
+//! - A token that arrives before `locked` is kept and spent the moment
+//!   `locked` is dispatched: `destroy` is a protocol error once the
+//!   compositor has sent `locked`, and it may be on the wire already, so
+//!   a pending lock is never destroyed for a token. `finished` drops it.
 //! - Dropping the manager or losing the connection sends nothing: the
 //!   compositor keeps the session locked (the protocol forbids unlocking
 //!   when the client dies).
@@ -120,6 +124,8 @@ pub(super) struct SessionLock {
     enabled: bool,
     /// The not-enabled warning was given.
     warned_disabled: bool,
+    /// A token that came while the lock was pending: spent on `locked`.
+    deferred: Option<UnlockToken>,
 }
 
 impl SessionLock {
@@ -135,6 +141,7 @@ impl SessionLock {
             color: Color::BLACK,
             enabled: false,
             warned_disabled: false,
+            deferred: None,
         }
     }
 }
@@ -275,21 +282,26 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// for an [`UnlockToken`] (`strand_auth`'s client mints one from the
     /// PAM helper's success). False when no lock was asked for or held.
     /// The lock is not asked for again until its spec closes.
+    ///
+    /// While the lock is pending (asked for, no `locked` dispatched yet)
+    /// the token is kept and the unlock happens when `locked` arrives;
+    /// a `finished` instead drops it. `destroy` is never sent for a
+    /// token: if `locked` is already on the wire it is a protocol error
+    /// (`invalid_destroy`) that would end the connection and leave the
+    /// session locked with no lock client.
     pub fn unlock(&mut self, token: UnlockToken) -> bool {
-        let _spent = token;
-        let unlocked = match std::mem::take(&mut self.session_lock.phase) {
+        let lock = match std::mem::take(&mut self.session_lock.phase) {
+            Phase::Locked(lock) => lock,
             Phase::Idle => return false,
-            // The protocol: `unlock_and_destroy` once `locked` was sent,
-            // `destroy` before (the compositor never locked).
-            Phase::Locked(lock) => {
-                lock.unlock_and_destroy();
-                true
-            }
             Phase::Pending(lock) => {
-                lock.destroy();
-                false
+                self.session_lock.phase = Phase::Pending(lock);
+                self.session_lock.deferred = Some(token);
+                log::info!("session lock: unlocking once the compositor has locked");
+                return true;
             }
         };
+        let _spent = token;
+        lock.unlock_and_destroy();
         // After the unlock request, so the compositor never shows its own
         // fallback colour between them.
         self.destroy_lock_surfaces();
@@ -300,9 +312,6 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         if let Err(e) = self.conn.flush() {
             log::warn!("flushing the unlock failed: {e}");
-        }
-        if !unlocked {
-            log::info!("session lock: released before the compositor locked");
         }
         self.host.lock_changed(LockState::Unlocked);
         true
@@ -701,6 +710,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                 if let Phase::Pending(l) = std::mem::take(&mut self.session_lock.phase) {
                     self.session_lock.phase = Phase::Locked(l);
                     self.host.lock_changed(LockState::Locked);
+                    if let Some(token) = self.session_lock.deferred.take() {
+                        self.unlock(token);
+                    }
                 }
             }
             ext_session_lock_v1::Event::Finished => {
@@ -724,6 +736,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                     }
                     Phase::Idle => {}
                 }
+                // A token for a lock the compositor never held unlocks
+                // nothing.
+                self.session_lock.deferred = None;
                 self.destroy_lock_surfaces();
                 self.session_lock.spent = true;
                 if self.session_lock.spec_gone {
