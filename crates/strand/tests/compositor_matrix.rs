@@ -2086,25 +2086,43 @@ fn occupied_and_empty_dots_are_told_apart() {
 
 // ---- surfaces: capabilities, the blur region, scrims, Hyprland's rules ------
 
-/// A surface host that paints every surface the test blue and asks for
-/// the blur region it is given, recording the capabilities reported.
+/// A surface host that paints every surface the test blue (or as
+/// `fills` says) and asks for the blur region it is given, recording the
+/// capabilities reported.
 #[derive(Default)]
 struct BlueHost {
     caps: Vec<strand_scene::CompositorCaps>,
     blur: Vec<strand_scene::BlurRegion>,
+    fills: std::collections::HashMap<strand_scene::SurfaceId, Fill>,
+}
+
+/// How [`BlueHost`] paints a surface other than blue.
+#[derive(Copy, Clone, PartialEq)]
+enum Fill {
+    /// Black and white columns two pixels wide: sharp unless blurred.
+    Stripes,
+    /// White at 60 % (above Hyprland's `ignore_alpha 0.5`).
+    Glass,
 }
 
 impl strand_scene::Painter for BlueHost {
     fn paint(
         &mut self,
-        _: strand_scene::SurfaceId,
+        id: strand_scene::SurfaceId,
         target: &mut strand_scene::PaintTarget<'_>,
     ) -> strand_scene::Damage {
         let (w, stride) = (target.size.w as usize, target.stride as usize);
+        let fill = self.fills.get(&id).copied();
         for row in target.pixels.chunks_exact_mut(stride) {
-            for px in row[..w * 4].chunks_exact_mut(4) {
-                // ARGB8888, little-endian: the blue of the surface tests.
-                px.copy_from_slice(&[0xe0, 0x60, 0x20, 0xff]);
+            for (x, px) in row[..w * 4].chunks_exact_mut(4).enumerate() {
+                // ARGB8888, little-endian, premultiplied.
+                px.copy_from_slice(&match fill {
+                    // The blue of the surface tests.
+                    None => [0xe0, 0x60, 0x20, 0xff],
+                    Some(Fill::Stripes) if (x / 2) % 2 == 0 => [0, 0, 0, 0xff],
+                    Some(Fill::Stripes) => [0xff; 4],
+                    Some(Fill::Glass) => [0x99; 4],
+                });
             }
         }
         strand_scene::Damage::full(target.size)
@@ -2164,7 +2182,8 @@ fn grab(output: Option<&str>, dir: &std::path::Path) -> Option<Img> {
 /// blurs, a panel's rounded blur region is sent; a panel's scrim dims a
 /// wallpaper surface beneath it and not the panel, and so does a scrim on
 /// a panel's popup (neither the panel nor the popup); and on Hyprland the layer rules
-/// `strand compositor-rules` prints evaluate without errors.
+/// `strand compositor-rules` prints evaluate without errors and blur the
+/// surface they name.
 #[test]
 fn surfaces_meet_the_live_compositor() {
     use strand_scene::{
@@ -2479,5 +2498,95 @@ fn surfaces_meet_the_live_compositor() {
             !errors.to_lowercase().contains("layer_rule"),
             "config errors: {errors}"
         );
+
+        // hyprctl answers 0 for a rule it did not take, so the proof is
+        // a blurred pixel: `strand-Dash` (the rule's namespace), white
+        // at 60 % over sharp stripes and asking for no blur of its own
+        // (no ext-background-effect region), shows the stripes blurred
+        // only if Hyprland applied the rule; beside it they stay sharp.
+        const STRIPES: NodeId = NodeId::new(12, 0);
+        const DASH: NodeId = NodeId::new(13, 0);
+        let wall: std::collections::HashMap<Prop, PropValue> = [
+            (Prop::Name, PropValue::Text("Stripes".into())),
+            (Prop::Layer, PropValue::Keyword("background".into())),
+            (Prop::Width, PropValue::Number(ow as f32)),
+            (Prop::Height, PropValue::Number(oh as f32)),
+        ]
+        .into_iter()
+        .collect();
+        let dash: std::collections::HashMap<Prop, PropValue> = [
+            (Prop::Name, PropValue::Text("Dash".into())),
+            (Prop::Anchor, PropValue::Keyword("top_right".into())),
+            (Prop::Width, PropValue::Number(300.0)),
+            (Prop::Height, PropValue::Number(200.0)),
+        ]
+        .into_iter()
+        .collect();
+        for (node, props, fill) in [(STRIPES, &wall, Fill::Stripes), (DASH, &dash, Fill::Glass)] {
+            mgr.state_mut().apply_surface_change(
+                node,
+                SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p))),
+            );
+            let id = mgr.state().surfaces_of(node)[0];
+            mgr.state_mut().host_mut().fills.insert(id, fill);
+        }
+        let ok = mgr
+            .dispatch_until(PATIENCE, |s| {
+                [STRIPES, DASH].iter().all(|n| {
+                    s.surfaces()
+                        .iter()
+                        .any(|i| i.node == *n && i.stats.commits > 0)
+                })
+            })
+            .expect("dispatch");
+        assert!(
+            ok,
+            "{kind}: the stripes and Dash: {:?}",
+            mgr.state().surfaces()
+        );
+        // The largest step between a pixel and the one two to its right
+        // (black against white in sharp stripes), along row `y`.
+        let contrast = |img: &Img, x0: usize, y: usize| {
+            (x0..x0 + 160)
+                .map(|x| dist(img.px(x, y), img.px(x + 2, y)))
+                .max()
+                .unwrap_or(0)
+        };
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+            let img = grab(output.as_deref(), dir.path()).expect("grim");
+            let (inside, beside) = (
+                contrast(&img, ow - 240, 100),
+                contrast(&img, ow / 4, oh / 2),
+            );
+            if beside > 600 && inside < 120 {
+                eprintln!(
+                    "matrix: hyprland blurs strand-Dash by its layer rule: contrast {inside} \
+                     under it, {beside} beside it"
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                    let mut cmd = Command::new("grim");
+                    if let Some(o) = &output {
+                        cmd.args(["-o", o]);
+                    }
+                    let _ = cmd
+                        .arg(PathBuf::from(shots).join("matrix-hyprland-layer-rule-failed.png"))
+                        .status();
+                }
+                panic!(
+                    "hyprland: the layer rule did not blur strand-Dash: contrast {inside} under \
+                     it (want < 120), {beside} beside it (want > 600)\n{lua}"
+                );
+            }
+        }
+        for node in [DASH, STRIPES] {
+            mgr.state_mut()
+                .apply_surface_change(node, SurfaceChange::Removed);
+        }
+        let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
     }
 }
