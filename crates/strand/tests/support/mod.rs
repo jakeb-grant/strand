@@ -1,5 +1,6 @@
 //! Helpers shared by the sway tests (`demo.rs`, `acceptance.rs`): a
-//! virtual pointer and a virtual keyboard on the headless seat.
+//! virtual pointer and a virtual keyboard on the headless seat, and a
+//! bounded poll for what arrives off the frame path.
 
 #![allow(dead_code)]
 
@@ -244,6 +245,33 @@ pub mod keyboard {
                 self.queue.roundtrip(&mut Client).unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
+        }
+    }
+}
+
+/// Content that arrives off the frame path (icons looked up and decoded
+/// by a worker, text shaped by the text worker, a service's value) is
+/// waited for by what the test can see, bounded, never by a fixed sleep
+/// before one screenshot (CI runs 37895260781 and 37897160375 shot the
+/// launcher and the bar before their icons drew).
+pub mod poll {
+    use std::time::{Duration, Instant};
+
+    /// How long content arriving off the frame path is waited for.
+    pub const ASYNC: Duration = Duration::from_secs(10);
+
+    /// Calls `look` (a screenshot, or a reading of one) every 100 ms
+    /// until `ok` holds for what it returned or [`ASYNC`] has passed, and
+    /// returns the last look either way: the caller asserts on it, so a
+    /// condition that never holds fails with the caller's own message.
+    pub fn until<T>(mut look: impl FnMut() -> T, ok: impl Fn(&T) -> bool) -> T {
+        let deadline = Instant::now() + ASYNC;
+        loop {
+            let seen = look();
+            if ok(&seen) || Instant::now() >= deadline {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }

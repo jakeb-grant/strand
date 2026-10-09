@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod support;
-use support::{keyboard, pointer};
+use support::{keyboard, pointer, poll};
 
 struct Proc(Child);
 
@@ -385,32 +385,45 @@ impl Shot {
             .any(|x| (0..bar_h).any(|y| self.px(x, y)[0] > 0x90))
     }
 
-    /// The bar shows its clock centred, its end text at the right edge and
-    /// nothing in between (a layout aligned for another width would put
-    /// the clock or the end text elsewhere).
-    fn assert_aligned(&self, output: &str, scale: f64) {
+    /// What keeps the bar from showing its clock centred, its end text at
+    /// the right edge and nothing in between (a layout aligned for another
+    /// width would put the clock or the end text elsewhere), if anything.
+    fn misaligned(&self, output: &str, scale: f64) -> Option<String> {
         let bar_h = (32.0 * scale).round() as usize;
-        assert!(self.h > bar_h, "{output}: {}x{}", self.w, self.h);
+        if self.h <= bar_h {
+            return Some(format!("{output}: {}x{}", self.w, self.h));
+        }
         let (w, c) = (self.w, self.w / 2);
         let near = (60.0 * scale) as usize;
         let edge = (110.0 * scale) as usize;
-        assert_eq!(
-            self.px(c, 1),
-            [0x1e, 0x1e, 0x2e],
-            "{output}: bar background"
+        if self.px(c, 1) != [0x1e, 0x1e, 0x2e] {
+            return Some(format!("{output}: bar background {:?}", self.px(c, 1)));
+        }
+        if !self.lit(c - near..c + near, bar_h) {
+            return Some(format!("{output}: no clock at the centre"));
+        }
+        if !self.lit(w - edge..w - 1, bar_h) {
+            return Some(format!("{output}: no end text at the edge"));
+        }
+        if self.lit(edge..c - near, bar_h) || self.lit(c + near..w - edge, bar_h) {
+            return Some(format!(
+                "{output}: text drawn away from start, centre and end"
+            ));
+        }
+        None
+    }
+
+    /// The bar on `output` aligned ([`Shot::misaligned`]), once its text
+    /// has drawn: the text is shaped off the frame path, so screenshots
+    /// are taken until it shows, bounded ([`poll::until`]).
+    fn assert_aligned(sway: &Sway, output: &str, scale: f64) {
+        let shot = poll::until(
+            || Shot::take(sway, output),
+            |s| s.misaligned(output, scale).is_none(),
         );
-        assert!(
-            self.lit(c - near..c + near, bar_h),
-            "{output}: no clock at the centre"
-        );
-        assert!(
-            self.lit(w - edge..w - 1, bar_h),
-            "{output}: no end text at the edge"
-        );
-        assert!(
-            !self.lit(edge..c - near, bar_h) && !self.lit(c + near..w - edge, bar_h),
-            "{output}: text drawn away from start, centre and end"
-        );
+        if let Some(why) = shot.misaligned(output, scale) {
+            panic!("{why}");
+        }
     }
 }
 
@@ -468,10 +481,11 @@ fn demo_bar_on_two_outputs_then_idle() {
         boot.iter().any(|l| l.contains("buffer=2560x40 ")),
         "{boot:?}"
     );
-    // Let late text settle before looking.
+    // Let late text settle before looking (and before the PSS readout
+    // below); text later still is waited for, bounded.
     std::thread::sleep(Duration::from_millis(700));
-    Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
-    Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
+    Shot::assert_aligned(&sway, "HEADLESS-1", 1.0);
+    Shot::assert_aligned(&sway, "HEADLESS-2", 1.25);
 
     // The memory gate, on the two-monitor bar.
     assert_thp_off(pid);
@@ -562,9 +576,9 @@ fn demo_bar_on_two_outputs_then_idle() {
         std::thread::sleep(Duration::from_millis(50));
     }
     std::thread::sleep(Duration::from_millis(700));
-    Shot::take(&sway, "HEADLESS-3").assert_aligned("HEADLESS-3", 1.0);
-    Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
-    Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
+    Shot::assert_aligned(&sway, "HEADLESS-3", 1.0);
+    Shot::assert_aligned(&sway, "HEADLESS-1", 1.0);
+    Shot::assert_aligned(&sway, "HEADLESS-2", 1.25);
     drop(strand);
 }
 
@@ -839,14 +853,17 @@ fn strand_run_boots_the_hello_bar_on_every_output() {
         .collect();
     assert_eq!(surfaces.len(), 2, "{surfaces:?}");
     // Each bar draws its text (where in the bar is render's layout, M2):
-    // pixels in the bar's rows unlike the desktop below it.
+    // pixels in the bar's rows unlike the desktop below it. The text is
+    // shaped off the frame path: shots until it shows, bounded.
     std::thread::sleep(Duration::from_millis(700));
     for (output, scale) in [("HEADLESS-1", 1.0), ("HEADLESS-2", 1.25)] {
-        let shot = Shot::take(&sway, output);
         let bar_h = (32.0 * scale) as usize;
-        let desktop = shot.px(shot.w - 1, bar_h + 8);
-        let drawn = (0..shot.w).any(|x| (0..bar_h).any(|y| shot.px(x, y) != desktop));
-        assert!(drawn, "{output}: the bar drew nothing");
+        let drawn = |shot: &Shot| {
+            let desktop = shot.px(shot.w - 1, bar_h + 8);
+            (0..shot.w).any(|x| (0..bar_h).any(|y| shot.px(x, y) != desktop))
+        };
+        let shot = poll::until(|| Shot::take(&sway, output), drawn);
+        assert!(drawn(&shot), "{output}: the bar drew nothing");
     }
     // A monitor plugged in later gets its own bar.
     sway.msg(&["create_output"]).unwrap();
@@ -958,12 +975,7 @@ fn the_design_bar_is_laid_out_start_centre_end() {
             .find(|&x| (14..38).any(|y| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 300))
             .is_some_and(|last| (s.w - 26..=s.w - 18).contains(&last))
     };
-    let mut shot = Shot::take(&sway, "HEADLESS-1");
-    let icon_by = Instant::now() + Duration::from_secs(10);
-    while !ends_at_icon(&shot) && Instant::now() < icon_by {
-        std::thread::sleep(Duration::from_millis(100));
-        shot = Shot::take(&sway, "HEADLESS-1");
-    }
+    let shot = poll::until(|| Shot::take(&sway, "HEADLESS-1"), ends_at_icon);
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(
             &["-g", "0,0 2560x70"],
@@ -1136,6 +1148,32 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
             std::thread::sleep(Duration::from_millis(150));
         }
     };
+    // The rows of ink in its `image h.app.icon { size: 32 }` column (pad
+    // 12 + row pad 8, 32 wide) below the input, from the box's left edge
+    // (`left`), top and bottom: the mock apps' icons (Adwaita's
+    // `-symbolic` ones).
+    let dark =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 200;
+    let icon_bands_at = |s: &Shot, left: usize, top: usize, bottom: usize| {
+        let inked: Vec<usize> = (top + 48..bottom)
+            .filter(|&y| (left + 20..left + 52).any(|x| dark(s, x, y)))
+            .collect();
+        inked.windows(2).filter(|p| p[1] > p[0] + 1).count() + usize::from(!inked.is_empty())
+    };
+    // The icons are looked up and decoded off the frame path, so the box
+    // can settle before they draw (as budgets.rs found on CI): shots
+    // until the three show, bounded, before the box is read.
+    let icons_shown = |s: &Shot| {
+        let x = s.w / 2 + 250;
+        let rows: Vec<usize> = (60..s.h).filter(|&y| bright_in(s, x, y)).collect();
+        let (Some(&top), Some(&bottom)) = (rows.first(), rows.last()) else {
+            return false;
+        };
+        (0..s.w)
+            .find(|&x| bright_in(s, x, (top + bottom) / 2))
+            .is_some_and(|left| icon_bands_at(s, left, top, bottom) >= 3)
+    };
+    poll::until(|| Shot::take(&sway, "HEADLESS-1"), icons_shown);
     let shot = settled(Shot::take(&sway, "HEADLESS-1").w / 2 + 250);
     let bright = |x: usize, y: usize| bright_in(&shot, x, y);
     // The launcher's box on a column clear of its text: its light rows
@@ -1159,19 +1197,11 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(&[], &PathBuf::from(&dir).join("design_launcher.png"));
     }
-    // The box's left edge, and the rows of ink in its `image h.app.icon
-    // { size: 32 }` column (pad 12 + row pad 8, 32 wide), below the
-    // input: the mock apps' three icons (Adwaita's `-symbolic` ones).
+    // The box's left edge, and the mock apps' three icons in its icon
+    // column.
     let mid = (top + bottom) / 2;
     let left = (0..shot.w).find(|&x| bright(x, mid)).unwrap();
-    let dark =
-        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 200;
-    let icon_bands = |s: &Shot, top: usize, bottom: usize| {
-        let inked: Vec<usize> = (top + 48..bottom)
-            .filter(|&y| (left + 20..left + 52).any(|x| dark(s, x, y)))
-            .collect();
-        inked.windows(2).filter(|p| p[1] > p[0] + 1).count() + usize::from(!inked.is_empty())
-    };
+    let icon_bands = |s: &Shot, top: usize, bottom: usize| icon_bands_at(s, left, top, bottom);
     assert_eq!(icon_bands(&shot, top, bottom), 3, "three app icons");
 
     let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
@@ -1402,15 +1432,38 @@ fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
     // The bar, the toasts and the OSD.
     wait_for("three surfaces", &mut strand, &|| surfaces(&log).len() >= 3);
     std::thread::sleep(Duration::from_millis(700));
-    let shot = Shot::take(&sway, "HEADLESS-1");
     let sum = |p: [u8; 3]| p.iter().map(|c| *c as u32).sum::<u32>();
+    let blue = |p: [u8; 3]| p[2] as i32 - p[0] as i32 > 60;
+    // The icons and images below are looked up and decoded off the frame
+    // path: shots until every one shows (the checks below, unasserted),
+    // bounded, then the checks.
+    let widgets_drawn = |shot: &Shot| {
+        let (w, h) = (shot.w, shot.h);
+        let inked = |xs: std::ops::Range<usize>, ys: std::ops::Range<usize>| {
+            ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+                .filter(|&(x, y)| sum(shot.px(x, y)) < 200)
+                .count()
+        };
+        let osd_row = (h - 140..h - 96).find(|&y| {
+            (w / 2 - 80..w / 2 + 80)
+                .filter(|&x| blue(shot.px(x, y)))
+                .count()
+                > 40
+        });
+        let slot = w - 12 - 380 + 12;
+        osd_row.is_some_and(|y| inked(w / 2 - 125..w / 2 - 95, y - 10..y + 10) > 0)
+            && inked(w - 42 - 10..w - 42 + 10, 60..110) > 0
+            && inked(slot..slot + 36, 60..118) > 40
+            && inked(slot..slot + 36, 122..185) > 40
+            && inked(w - 40..w - 16, 16..36) > 0
+    };
+    let shot = poll::until(|| Shot::take(&sway, "HEADLESS-1"), widgets_drawn);
     let (w, h) = (shot.w, shot.h);
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(&[], &PathBuf::from(&dir).join("design_shells.png"));
     }
     // The OSD's meter: a run of `$accent` (a saturated blue on the light
     // theme) along the middle of its pill, 96 px above the bottom.
-    let blue = |p: [u8; 3]| p[2] as i32 - p[0] as i32 > 60;
     let osd_row = (h - 140..h - 96).find(|&y| {
         (w / 2 - 80..w / 2 + 80)
             .filter(|&x| blue(shot.px(x, y)))
@@ -1910,19 +1963,21 @@ fn strand_run_reloads_live_with_state_kept() {
     let mark = damage_count();
     let fresh = |from: usize| damage_after(from, "buffer=2560x32 ");
 
+    // What a reload changes is drawn after its event: shots until it
+    // shows, bounded, then the check.
+    let bg_reaches = |want: [u8; 3]| poll::until(|| bg(&sway), |c| *c == want);
+
     // 1. A token edit: the table swaps, the bar keeps its state.
     save(&file, &hello("#208040", "$bar.bg", ""));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["token"]), "{ev}");
-    settle();
-    assert_eq!(bg(&sway), [0x20, 0x80, 0x40]);
+    assert_eq!(bg_reaches([0x20, 0x80, 0x40]), [0x20, 0x80, 0x40]);
 
     // 2. A prop edit: patched in place.
     save(&file, &hello("#208040", "#802020", ""));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["prop"]), "{ev}");
-    settle();
-    assert_eq!(bg(&sway), [0x80, 0x20, 0x20]);
+    assert_eq!(bg_reaches([0x80, 0x20, 0x20]), [0x80, 0x20, 0x20]);
 
     // 3. A node added, then removed: more ink on the bar, then exactly
     // as before. The added `end` section lays out in the split's end
@@ -1943,8 +1998,8 @@ fn strand_run_reloads_live_with_state_kept() {
     save(&file, &hello("#208040", "#802020", added));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["node-added"]), "{ev}");
-    settle();
-    let with = end_ink(&sway);
+    // (Its text is shaped off the frame path.)
+    let with = poll::until(|| end_ink(&sway), |with| *with > before);
     assert!(
         with > before,
         "no ink for the added node: {with} <= {before}"
@@ -1952,8 +2007,11 @@ fn strand_run_reloads_live_with_state_kept() {
     save(&file, &hello("#208040", "#802020", ""));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["node-removed"]), "{ev}");
-    settle();
-    assert_eq!(end_ink(&sway), before, "the removed node's ink stays");
+    assert_eq!(
+        poll::until(|| end_ink(&sway), |ink| *ink == before),
+        before,
+        "the removed node's ink stays"
+    );
 
     // 4. Broken: held back, the last good bar stays; after 250 ms the
     // overlay (a 960 px wide panel) opens.
