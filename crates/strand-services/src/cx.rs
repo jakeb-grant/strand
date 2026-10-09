@@ -127,8 +127,16 @@ pub struct Write {
     pub path: Vec<Step>,
     /// The value written at `path`.
     pub value: Data,
-    /// The field's whole new value, or the item's.
+    /// The field's whole new value, or the item's (the list's item under
+    /// `key` now, with the write applied).
     pub field_value: Data,
+    /// An item write: the item as the writer held it (`s` in `s.volume =
+    /// v`), which may be older than the list's item under the same key: a
+    /// record kept past its item leaving (a popup's), whose key the
+    /// service has since given to another item, as PipeWire reuses ids.
+    /// A service whose keys are reused tells them apart with it. `None`
+    /// for a field write.
+    pub held: Option<Box<Data>>,
     /// The write's tag: [`Cx::report`] it back so the echo is ignored.
     pub generation: Generation,
 }

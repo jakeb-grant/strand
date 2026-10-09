@@ -11,7 +11,10 @@
 //!   default sink (`DeviceRef::DefaultSink`, resolved when the action
 //!   runs, so a write that starts the service lands once PipeWire has
 //!   synced); `s.volume = v` for `s` in `audio.sinks` is a write of the
-//!   item's device by id. A write is answered ([`Cx::report`], tagged)
+//!   item's device by id and `object.serial` (the serial the store shows
+//!   under that id; a write made on an item of another device, one that
+//!   left while its id was reused, names another `node.name` and changes
+//!   nothing). A write is answered ([`Cx::report`], tagged)
 //!   by the first batch that shows its value on its device, so the
 //!   logic thread ignores the echoes of a slider's earlier writes and
 //!   settles on the answer of its last; a write PipeWire refused, or
@@ -28,7 +31,7 @@
 //!   `spectrum` element's hook), and only while a reader of the service
 //!   is visible: hidden, every meter stops.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -255,6 +258,9 @@ struct StoreHost {
     stopped: bool,
     /// Its entry in the taps' poke list.
     loop_id: u64,
+    /// Each listed device's `object.serial`, by id
+    /// ([`AudioChange::Serials`]).
+    serials: BTreeMap<u32, u64>,
 }
 
 impl Drop for StoreHost {
@@ -273,6 +279,35 @@ fn holds(d: &AudioDevice, attr: Attr) -> bool {
 }
 
 impl StoreHost {
+    /// `item` (the record a write was made on, [`Write::held`]) is device
+    /// `d`: it has its `node.name` (or no name to compare). A device's
+    /// node name does not change while it lives; one that took a freed
+    /// id has its own.
+    fn names(item: &Data, d: &AudioDevice) -> bool {
+        match item.field("name") {
+            Some(Data::Text(name)) => **name == *d.name,
+            _ => true,
+        }
+    }
+
+    /// The action `make_default()` on `item`: on its device by id and
+    /// serial, or `None` when its id holds another device now.
+    fn make_default(&self, item: &AudioDevice) -> Option<AudioAction> {
+        let s = self.cx.state();
+        let now = s.sinks.iter().chain(&s.sources).find(|d| d.id == item.id);
+        if now.is_some_and(|d| d.name != item.name) {
+            log::debug!(
+                "audio: make_default() on {} from a device that left",
+                item.id
+            );
+            return None;
+        }
+        Some(AudioAction::MakeDefault(DeviceRef::Id {
+            id: item.id,
+            serial: self.serials.get(&item.id).copied(),
+        }))
+    }
+
     fn device(s: &AudioStore, shown: Shown) -> Option<&AudioDevice> {
         match shown {
             Shown::Default(true) => Some(&s.sink),
@@ -312,19 +347,37 @@ impl StoreHost {
         let device = match shown {
             Shown::Default(true) => DeviceRef::DefaultSink,
             Shown::Default(false) => DeviceRef::DefaultSource,
-            Shown::Item(_, id) => DeviceRef::Id(id),
+            Shown::Item(_, id) => DeviceRef::Id {
+                id,
+                serial: self.serials.get(&id).copied(),
+            },
         };
         let leaf = match w.path.as_slice() {
             [Step::Field(f)] => f.as_str(),
             _ => "",
         };
         let current = Self::device(self.cx.state(), shown).cloned();
+        // An item of the device that held the id before (a popup's item
+        // kept past its device leaving, the id reused since): it is not
+        // this device's write.
+        let stale = matches!(shown, Shown::Item(..))
+            && w.held
+                .as_ref()
+                .zip(current.as_ref())
+                .is_some_and(|(held, d)| !Self::names(held, d));
         let number = match &w.value {
             Data::Float(v) => Some(*v),
             Data::Int(n) => Some(*n as f64),
             _ => None,
         };
         let action = match (leaf, number, &w.value) {
+            _ if stale => {
+                log::debug!(
+                    "audio: a write of {} from a device that left: {device:?}",
+                    w.field
+                );
+                None
+            }
             ("volume", Some(v), _) if v.is_finite() => {
                 // As the loop clamps: 0 to 1, or to an amplified volume.
                 let top = current.as_ref().map_or(1.0, |d| d.volume.max(1.0));
@@ -506,6 +559,7 @@ impl Host for StoreHost {
                     patches.push(AudioStorePatch::Source(d.unwrap_or_default()))
                 }
                 AudioChange::Levels(l) => deliver(&l),
+                AudioChange::Serials(s) => self.serials = s,
             }
         }
         if patches.is_empty() {
@@ -530,11 +584,10 @@ impl Host for StoreHost {
                 Ok(Msg::Action(AudioDeviceAction::MakeDefault { item })) => {
                     // The outcome arrives in the stream; the loop logs a
                     // refusal (nobody waits for its reply).
-                    let (tx, _) = oneshot::channel();
-                    cmds.push(Cmd::Action(
-                        AudioAction::MakeDefault(DeviceRef::Id(item.id)),
-                        tx,
-                    ));
+                    if let Some(action) = self.make_default(&item) {
+                        let (tx, _) = oneshot::channel();
+                        cmds.push(Cmd::Action(action, tx));
+                    }
                 }
                 Ok(Msg::Call(c, _)) => match c {},
                 Ok(Msg::Visible(_) | Msg::Watch { .. }) => {}
@@ -608,6 +661,7 @@ impl AudioStore {
             levels: BTreeSet::new(),
             stopped: false,
             loop_id,
+            serials: BTreeMap::new(),
         };
         // Messages sent before the notify hook was set are read now.
         let _ = tx.send(Cmd::Poke);

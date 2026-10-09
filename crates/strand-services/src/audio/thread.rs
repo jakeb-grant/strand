@@ -1727,14 +1727,25 @@ fn state_of(s: &Session) -> AudioState {
 }
 
 fn node_mut(s: &mut Session, d: DeviceRef) -> Result<&mut NodeEntry, AudioError> {
-    let id = match d {
-        DeviceRef::DefaultSink => default_id(s, Direction::Sink),
-        DeviceRef::DefaultSource => default_id(s, Direction::Source),
-        DeviceRef::Id(id) => Some(id),
+    let (id, serial) = match d {
+        DeviceRef::DefaultSink => (default_id(s, Direction::Sink), None),
+        DeviceRef::DefaultSource => (default_id(s, Direction::Source), None),
+        DeviceRef::Id { id, serial } => (Some(id), serial),
     };
     id.and_then(|id| s.nodes.get_mut(&id))
-        .filter(|n| n.ready)
+        .filter(|n| n.ready && serial_matches(n.serial.as_deref(), serial))
         .ok_or(AudioError::UnknownDevice(d))
+}
+
+/// A node whose `object.serial` reads `node` is the device a reference
+/// with `wanted` names: any node when the reference has no serial, and
+/// (as [`AudioState::serials`] compares them) a node without a readable
+/// serial too.
+fn serial_matches(node: Option<&str>, wanted: Option<u64>) -> bool {
+    match (node.and_then(|v| v.parse::<u64>().ok()), wanted) {
+        (Some(have), Some(want)) => have == want,
+        _ => true,
+    }
 }
 
 /// Writes volume or mute to node `id`: through its card's active route
@@ -1753,7 +1764,7 @@ fn write(s: &Session, id: u32, props: &Props) -> Result<Written, AudioError> {
     let n = s
         .nodes
         .get(&id)
-        .ok_or(AudioError::UnknownDevice(DeviceRef::Id(id)))?;
+        .ok_or(AudioError::UnknownDevice(DeviceRef::id(id)))?;
     let via = write_via(n.link, |device| {
         let profile_device = n.link?.profile_device;
         s.devices.get(&device)?.routes.active(profile_device)
@@ -1782,6 +1793,18 @@ fn write(s: &Session, id: u32, props: &Props) -> Result<Written, AudioError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reference_with_a_serial_names_only_that_device() {
+        assert!(serial_matches(Some("100"), Some(100)));
+        // The id now holds another device.
+        assert!(!serial_matches(Some("205"), Some(100)));
+        // No serial in the reference: whatever holds the id.
+        assert!(serial_matches(Some("205"), None));
+        // A node without a readable serial compares as unchanged.
+        assert!(serial_matches(None, Some(100)));
+        assert!(serial_matches(Some("x"), Some(100)));
+    }
 
     #[test]
     fn writes_go_through_the_active_route_of_a_card_node() {

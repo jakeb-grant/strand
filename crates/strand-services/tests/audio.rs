@@ -277,21 +277,21 @@ fn writes_land_where_wpctl_reads_them() {
     );
 
     // Out of range is clamped; not a number is refused.
-    w.act(AudioAction::SetVolume(DeviceRef::Id(a.id), 1.7))
+    w.act(AudioAction::SetVolume(DeviceRef::id(a.id), 1.7))
         .unwrap();
     w.until(5, "a at 1", |m| {
         m.sink_named("strand-sink-a")
             .is_some_and(|d| d.volume == 1.0)
     });
     assert_eq!(pw.volume(a.id).0, 1.0);
-    w.act(AudioAction::SetVolume(DeviceRef::Id(a.id), -1.0))
+    w.act(AudioAction::SetVolume(DeviceRef::id(a.id), -1.0))
         .unwrap();
     w.until(5, "a at 0", |m| {
         m.sink_named("strand-sink-a")
             .is_some_and(|d| d.volume == 0.0)
     });
     assert!(matches!(
-        w.act(AudioAction::SetVolume(DeviceRef::Id(a.id), f64::NAN)),
+        w.act(AudioAction::SetVolume(DeviceRef::id(a.id), f64::NAN)),
         Err(AudioError::InvalidVolume(v)) if v.is_nan()
     ));
 
@@ -314,9 +314,9 @@ fn writes_land_where_wpctl_reads_them() {
         w.sink("strand-sink-b").icon,
         "audio-volume-overamplified-symbolic"
     );
-    w.act(AudioAction::SetVolume(DeviceRef::Id(b.id), 2.0))
+    w.act(AudioAction::SetVolume(DeviceRef::id(b.id), 2.0))
         .unwrap();
-    w.act(AudioAction::SetVolume(DeviceRef::Id(b.id), 1.25))
+    w.act(AudioAction::SetVolume(DeviceRef::id(b.id), 1.25))
         .unwrap();
     w.until(5, "b at 1.25", |m| {
         m.sink_named("strand-sink-b")
@@ -338,7 +338,7 @@ fn writes_land_where_wpctl_reads_them() {
     assert_eq!(source.icon, "microphone-sensitivity-muted-symbolic");
 
     // `dev.make_default()`.
-    w.act(AudioAction::MakeDefault(DeviceRef::Id(b.id)))
+    w.act(AudioAction::MakeDefault(DeviceRef::id(b.id)))
         .unwrap();
     w.until(5, "b as the default", |m| {
         m.sink.as_ref().is_some_and(|d| d.id == b.id)
@@ -372,13 +372,13 @@ fn writes_land_where_wpctl_reads_them() {
     });
     assert_eq!(pw.volume(b.id).0, 0.7);
     // Steps clamp as writes do.
-    w.act(AudioAction::StepVolume(DeviceRef::Id(b.id), 5.0))
+    w.act(AudioAction::StepVolume(DeviceRef::id(b.id), 5.0))
         .unwrap();
     w.until(5, "b at 1", |m| {
         m.sink_named("strand-sink-b")
             .is_some_and(|d| d.volume == 1.0)
     });
-    w.act(AudioAction::StepVolume(DeviceRef::Id(b.id), -5.0))
+    w.act(AudioAction::StepVolume(DeviceRef::id(b.id), -5.0))
         .unwrap();
     w.until(5, "b at 0", |m| {
         m.sink_named("strand-sink-b")
@@ -395,7 +395,7 @@ fn writes_land_where_wpctl_reads_them() {
         .iter()
         .map(|v| {
             w.audio
-                .request(AudioAction::SetVolume(DeviceRef::Id(b.id), *v))
+                .request(AudioAction::SetVolume(DeviceRef::id(b.id), *v))
         })
         .collect();
     for r in replies {
@@ -416,13 +416,126 @@ fn writes_land_where_wpctl_reads_them() {
 
     // Unknown devices.
     assert_eq!(
-        w.act(AudioAction::SetMuted(DeviceRef::Id(99_999), true)),
-        Err(AudioError::UnknownDevice(DeviceRef::Id(99_999)))
+        w.act(AudioAction::SetMuted(DeviceRef::id(99_999), true)),
+        Err(AudioError::UnknownDevice(DeviceRef::id(99_999)))
     );
     assert_eq!(
-        w.act(AudioAction::MakeDefault(DeviceRef::Id(99_999))),
-        Err(AudioError::UnknownDevice(DeviceRef::Id(99_999)))
+        w.act(AudioAction::MakeDefault(DeviceRef::id(99_999))),
+        Err(AudioError::UnknownDevice(DeviceRef::id(99_999)))
     );
+}
+
+/// `pw-cli create-node` of a lingering null sink named `name`.
+fn create_sink(pw: &PipeWire, name: &str) {
+    pw.run(
+        "pw-cli",
+        &[
+            "create-node",
+            "adapter",
+            &format!(
+                "{{ factory.name=support.null-audio-sink node.name={name} \
+                 media.class=Audio/Sink audio.position=[FL FR] object.linger=true }}"
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_reference_never_reaches_a_device_that_reused_its_id() {
+    let Some(pw) = PipeWire::start("a_reference_never_reaches_a_device_that_reused_its_id") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    let a = w.sink("strand-sink-a");
+    // The stream carries every device's serial.
+    let DeviceRef::Id {
+        serial: Some(serial_a),
+        ..
+    } = w.mirror.device_ref(a.id)
+    else {
+        panic!("no serial for sink a: {:#?}", w.mirror)
+    };
+    assert_eq!(
+        w.act(AudioAction::SetMuted(
+            DeviceRef::device(a.id, serial_a),
+            true
+        )),
+        Ok(())
+    );
+    w.until(5, "a muted", |m| {
+        m.sink_named("strand-sink-a").is_some_and(|d| d.muted)
+    });
+    // Another serial under a's id is another device: refused.
+    let other = DeviceRef::device(a.id, serial_a + 1_000_000);
+    assert_eq!(
+        w.act(AudioAction::SetMuted(other, false)),
+        Err(AudioError::UnknownDevice(other))
+    );
+    assert!(pw.volume(a.id).1, "a write with another serial landed");
+
+    // A device leaves and PipeWire gives its id to a new one: a reference
+    // taken before (an open popup's) is refused, and the new device is
+    // untouched. PipeWire hands out freed ids again, so devices are made
+    // and destroyed until one lands on the old id.
+    create_sink(&pw, "strand-reuse-0");
+    w.until(5, "the first device", |m| {
+        m.sink_named("strand-reuse-0").is_some()
+    });
+    let first = w.sink("strand-reuse-0");
+    let stale = w.mirror.device_ref(first.id);
+    assert!(matches!(
+        stale,
+        DeviceRef::Id {
+            serial: Some(_),
+            ..
+        }
+    ));
+    pw.run("pw-cli", &["destroy", &first.id.to_string()]);
+    w.until(5, "the first device gone", |m| {
+        m.sink_named("strand-reuse-0").is_none()
+    });
+    let mut tried = Vec::new();
+    let reused = (1..=40).find_map(|i| {
+        let name = format!("strand-reuse-{i}");
+        create_sink(&pw, &name);
+        w.until(5, "a new device", |m| m.sink_named(&name).is_some());
+        let d = w.sink(&name);
+        if d.id == first.id {
+            return Some(d);
+        }
+        tried.push(d.id);
+        pw.run("pw-cli", &["destroy", &d.id.to_string()]);
+        w.until(5, "the new device gone", |m| m.sink_named(&name).is_none());
+        None
+    });
+    let Some(reused) = reused else {
+        panic!(
+            "PipeWire never reused id {} (new devices got {tried:?})",
+            first.id
+        )
+    };
+    assert_ne!(w.mirror.device_ref(reused.id), stale, "the same serial");
+    for action in [
+        AudioAction::SetMuted(stale, true),
+        AudioAction::SetVolume(stale, 0.2),
+        AudioAction::StepVolume(stale, -0.5),
+        AudioAction::MakeDefault(stale),
+    ] {
+        assert_eq!(
+            w.act(action.clone()),
+            Err(AudioError::UnknownDevice(stale)),
+            "{action:?}"
+        );
+    }
+    assert_eq!(pw.volume(reused.id), (1.0, false), "a stale write landed");
+    assert_ne!(w.mirror.sink.as_ref().map(|d| d.id), Some(reused.id));
+    // A reference taken now reaches it.
+    w.act(AudioAction::SetMuted(w.mirror.device_ref(reused.id), true))
+        .unwrap();
+    w.until(5, "the new device muted", |m| {
+        m.sinks.iter().any(|(k, d)| *k == reused.id && d.muted)
+    });
 }
 
 #[test]
@@ -466,7 +579,7 @@ fn a_daemon_restart_reconnects() {
     let after = w.sink("strand-sink-a");
     assert_eq!(after.description, before.description);
     // And it works.
-    w.act(AudioAction::SetVolume(DeviceRef::Id(after.id), 0.5))
+    w.act(AudioAction::SetVolume(DeviceRef::id(after.id), 0.5))
         .unwrap();
     w.until(5, "a at 0.5", |m| {
         m.sink_named("strand-sink-a")
@@ -775,7 +888,7 @@ fn peak_meters_run_only_while_asked_for() {
                     .is_some_and(|l| l.device == a.id && l.peak() > 0.4)
             })
     });
-    w.act(AudioAction::MakeDefault(DeviceRef::Id(b.id)))
+    w.act(AudioAction::MakeDefault(DeviceRef::id(b.id)))
         .unwrap();
     w.until(10, "b as the default", |m| {
         m.sink.as_ref().is_some_and(|d| d.id == b.id)

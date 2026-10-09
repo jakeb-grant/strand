@@ -102,8 +102,36 @@ pub enum DeviceRef {
     DefaultSink,
     /// The default input (`audio.source`).
     DefaultSource,
-    /// A device by id (an item of `audio.sinks` or `audio.sources`).
-    Id(u32),
+    /// A device by id (an item of `audio.sinks` or `audio.sources`) and,
+    /// when known, its `object.serial`. PipeWire reuses a freed id for
+    /// an object it creates later; serials are never reused, so a
+    /// reference with a serial is refused ([`AudioError::UnknownDevice`])
+    /// once its id holds another device, and never reaches that device.
+    /// Without a serial it is whatever device holds the id when the
+    /// action runs. [`AudioState::device_ref`] and [`Mirror::device_ref`]
+    /// build one from the stream's serials ([`AudioChange::Serials`]).
+    Id {
+        /// The PipeWire global id.
+        id: u32,
+        /// Its `object.serial`; `None`: any device holding `id`.
+        serial: Option<u64>,
+    },
+}
+
+impl DeviceRef {
+    /// Whatever device holds `id` when the action runs.
+    pub fn id(id: u32) -> Self {
+        Self::Id { id, serial: None }
+    }
+
+    /// The device with `id` and `object.serial` `serial`, only while it
+    /// holds that id.
+    pub fn device(id: u32, serial: u64) -> Self {
+        Self::Id {
+            id,
+            serial: Some(serial),
+        }
+    }
 }
 
 /// A write or action on a device.
