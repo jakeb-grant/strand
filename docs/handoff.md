@@ -107,6 +107,10 @@ and the full shell warns above 64 MB and fails above 70 MB
 - A second monitor is checked live on sway and Hyprland (CI, vkms) by the
   compositor matrix; niri runs on one output (nested winit cannot add
   one), and Hyprland cannot run locally (decisions.md laptop-verify).
+- `win.maximize()` and `win.fullscreen()` passed live on sway, niri and
+  labwc (`compositor_matrix.rs::window_state_actions_follow_the_compositor`).
+  On Hyprland they are checked only against 0.56.2's source and the
+  fakes until CI's vkms leg runs that test (decisions.md, laptop-open).
 - The Hyprland 0.56.2 and niri 26.04 IPC fixtures are now checked against
   real captures (`*-captured` fixtures; `scripts/capture-hyprland.sh`,
   `scripts/container/capture-niri.sh`). The Hyprland capture lacks a
@@ -121,17 +125,17 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 - No IPC adapter for labwc, COSMIC, wayfire or river. Since branch
   `laptop/toplevel`, `zwlr_foreign_toplevel_management_v1` is the fallback
-  for windows: `windows.focused`, `minimized`, `fullscreen` and
-  `win.focus()`/`close()`/`minimize()` work on labwc (checked live in the
-  compositor matrix) and should on wayfire and river (not run here).
+  for windows: `windows.focused`, `minimized`, `maximized`, `fullscreen`
+  and `win.focus()`/`close()`/`minimize()`/`maximize()`/`fullscreen()`
+  work on labwc (checked live in the compositor matrix) and should on
+  wayfire and river (not run here).
   Still limited: COSMIC offers only `ext-foreign-toplevel-list`, so
   `windows.focused` is null and window actions answer `Unsupported`
   there; no window has a `workspace` without an adapter (no standard
   protocol relates the two); the wlr protocol has no identifier, so a
   window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is joined
-  by app id and title and is missing while twins disagree; maximize and
-  fullscreen toggles are not language actions (decisions.md
-  laptop-toplevel); `wm.config_reloaded` never fires without IPC; and
+  by app id and title and is missing while twins disagree;
+  `wm.config_reloaded` never fires without IPC; and
   the design bar's pixel test does not run on labwc (only the stores
   test does).
 - Notifications: ActivationToken (spec 1.2) needs an xdg-activation token

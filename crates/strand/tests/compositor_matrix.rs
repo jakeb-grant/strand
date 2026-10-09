@@ -30,6 +30,10 @@
 //! close requests as the truth, and the workspaces labwc reports over
 //! `ext-workspace-v1`.
 //!
+//! On all four, `window_state_actions_follow_the_compositor` turns a
+//! window's fullscreen and maximize on and off through the `windows` store
+//! and checks the compositor's report and the window's own configures.
+//!
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
 //! (`SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`, `NIRI_SOCKET`) point at
@@ -57,7 +61,10 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use strand_core::Runtime;
 use strand_services::testing::PrivateBus;
-use strand_services::wm::{WindowAction, WorkspaceAction, WorkspaceItem};
+use strand_services::wm::{
+    self, WindowAction, WindowItem, WmAction, WmConfig, WmError, WmRequest, WorkspaceAction,
+    WorkspaceItem,
+};
 use strand_services::{Applied, Builtin, Buses, Cells, Data, Services};
 use window::TestWindow;
 
@@ -1050,6 +1057,191 @@ fn the_stores_follow_a_compositor_without_ipc() {
         "an idle labwc woke the host"
     );
     drop(first);
+    s.shutdown();
+}
+
+// ---- window state actions ----------------------------------------------------
+
+/// What the compositor itself says about the test window `app`:
+/// `(maximized, fullscreen)`, or `None` when its IPC does not say.
+/// sway: `fullscreen_mode` (no maximize); Hyprland: `j/clients`'
+/// `fullscreen` mode (1 maximized, 2 fullscreen). niri's IPC reports
+/// neither and labwc has no IPC: there the compositor's own word is the
+/// `xdg_toplevel` configure it sends the window.
+fn compositor_says(kind: &str, app: &str) -> Option<(bool, bool)> {
+    match kind {
+        "sway" => {
+            fn find(n: &Value, app: &str) -> Option<i64> {
+                if n["app_id"] == app {
+                    return n["fullscreen_mode"].as_i64();
+                }
+                ["nodes", "floating_nodes"]
+                    .iter()
+                    .filter_map(|k| n[*k].as_array())
+                    .flatten()
+                    .find_map(|c| find(c, app))
+            }
+            let mode = find(&json("swaymsg", &["-t", "get_tree", "-r"]), app)?;
+            Some((false, mode != 0))
+        }
+        "hyprland" => {
+            let clients = json("hyprctl", &["-j", "clients"]);
+            let c = clients
+                .as_array()?
+                .iter()
+                .find(|c| c["class"] == app)?
+                .clone();
+            let mode = c["fullscreen"].as_i64()?;
+            Some((mode == 1, mode & 2 != 0))
+        }
+        _ => None,
+    }
+}
+
+/// The reply to `action` from a `wm::run` of its own (the stores log a
+/// failed action, they do not return it), once that run shows `app`'s
+/// window: the window's id there is the stores' (the same adapter).
+fn reply_to(app: &str, action: fn(String) -> WmAction) -> Result<(), WmError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mirror = Arc::new(std::sync::Mutex::new(wm::Mirror::default()));
+        let m = mirror.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = tokio::spawn(wm::run(
+            WmConfig::from_env(None),
+            move |batch: Vec<wm::WmChange>| {
+                let mut m = m.lock().unwrap();
+                for c in &batch {
+                    m.apply(c).unwrap();
+                }
+            },
+            rx,
+        ));
+        let deadline = Instant::now() + PATIENCE;
+        let id = loop {
+            let found = mirror
+                .lock()
+                .unwrap()
+                .window_by_app(app)
+                .map(|w| w.id.clone());
+            if let Some(id) = found {
+                break id;
+            }
+            assert!(Instant::now() < deadline, "{app} never showed in wm::run");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let (req, reply) = WmRequest::new(action(id));
+        tx.send(req).unwrap();
+        let out = tokio::time::timeout(PATIENCE, reply).await.unwrap();
+        service.abort();
+        out
+    })
+}
+
+/// `win.fullscreen()` and `win.maximize()` through the `windows` store,
+/// on and off, against the compositor's own truth ([`compositor_says`])
+/// and the window's own view (its configures), on every compositor of the
+/// matrix: fullscreen everywhere; maximize on Hyprland (its maximized
+/// fullscreen mode), niri (maximize-to-edges) and labwc (the wlr
+/// protocol); `Unsupported` on sway, which has no maximize, and nothing
+/// changes there.
+#[test]
+fn window_state_actions_follow_the_compositor() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the window state actions test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.workspaces.acquire(&rt);
+    b.windows.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    const APP: &str = "strand-winstate";
+    let win = TestWindow::open(&socket, APP, "window state");
+    let item = || {
+        s.pump(&rt);
+        rt.flush();
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.all.into_iter().find(|w| w.app_id == APP))
+    };
+    until("the window in windows.all", || {
+        item().map(|_| ()).ok_or_else(|| "not yet".to_string())
+    });
+    // One state, three views: the store's, the compositor's, the window's.
+    let check = |what: &str, maximized: bool, fullscreen: bool| {
+        until(what, || {
+            let w = item().ok_or("the window is gone")?;
+            let ours = (w.maximized, w.fullscreen);
+            let client = (
+                // Hyprland tells every xdg toplevel it is maximized when
+                // it maps (to keep client decorations off,
+                // src/protocols/XDGShell.cpp at v0.56.2), so there the
+                // window's own maximized says nothing; its IPC does.
+                if kind == "hyprland" {
+                    maximized
+                } else {
+                    win.maximized.load(Ordering::SeqCst)
+                },
+                win.fullscreen.load(Ordering::SeqCst),
+            );
+            let theirs = compositor_says(&kind, APP).unwrap_or(client);
+            let want = (maximized, fullscreen);
+            if ours == want && theirs == want && client == want {
+                Ok(())
+            } else {
+                Err(format!(
+                    "want {want:?}; windows.all {ours:?}; {kind} {theirs:?}; the window {client:?}"
+                ))
+            }
+        });
+        eprintln!("matrix: {what}: maximized {maximized}, fullscreen {fullscreen}");
+    };
+    check("before", false, false);
+    let act = |action: fn(WindowItem) -> WindowAction| {
+        let w = item().expect("the window");
+        b.windows.act(&rt, action(w)).unwrap();
+    };
+
+    // `win.fullscreen()`: on, then off.
+    act(|item| WindowAction::Fullscreen { item });
+    check("win.fullscreen()", false, true);
+    act(|item| WindowAction::Fullscreen { item });
+    check("win.fullscreen() again", false, false);
+
+    // `win.maximize()`.
+    if kind == "sway" {
+        assert!(
+            matches!(
+                reply_to(APP, WmAction::MaximizeWindow),
+                Err(WmError::Unsupported(_))
+            ),
+            "sway has no maximize"
+        );
+        act(|item| WindowAction::Maximize { item });
+        std::thread::sleep(Duration::from_millis(500));
+        check("win.maximize() on sway changes nothing", false, false);
+    } else {
+        act(|item| WindowAction::Maximize { item });
+        check("win.maximize()", true, false);
+        act(|item| WindowAction::Maximize { item });
+        check("win.maximize() again", false, false);
+    }
+    // Both replies from the compositor's own path: `Ok`.
+    assert_eq!(reply_to(APP, WmAction::FullscreenWindow), Ok(()));
+    check("win.fullscreen() by request", false, true);
+    assert_eq!(reply_to(APP, WmAction::FullscreenWindow), Ok(()));
+    check("and back", false, false);
+    drop(win);
     s.shutdown();
 }
 
