@@ -919,7 +919,20 @@ mod tests {
             [1, 2, 3, 4]
         );
         assert_eq!(snap.windows.len(), 4);
-        assert_eq!(s.snapshot().toplevel_ids.len(), 4, "every stableId");
+        // Hyprland's stableIds are 8 hex digits; each window keeps its own
+        // as the toplevel identifier it is joined by.
+        let ids = s.snapshot().toplevel_ids;
+        let pairs: Vec<(&str, &str)> = ids.iter().map(|(a, i)| (a.as_str(), i.as_str())).collect();
+        assert_eq!(
+            pairs,
+            [
+                ("0x557a6e2e3d90", "18000004"),
+                ("0x557a6e37b040", "18000008"),
+                ("0x557a6e3f20d0", "1800000a"),
+                ("0x557a6df4c490", "18000003"),
+            ],
+            "every stableId"
+        );
         let text = crate::wm::captured::fixture(&format!("{CAPTURED}/bursts.txt"));
         let bursts = crate::wm::captured::bursts(&text);
         let names: Vec<&str> = bursts.iter().map(|(n, _)| n.as_str()).collect();
@@ -997,12 +1010,15 @@ mod tests {
         }
     }
 
-    /// The whole 40-minute live stream from the state read before it: 38
+    /// The whole live stream from the state read before it: about 37
     /// minutes of titles, focus and switches patch in place without one
     /// read (and leave every window that then stays untouched with the
     /// title the later replies give); the new workspace and window ask for
     /// a read; after it, the rest patches to exactly what the replies read
-    /// after the session say.
+    /// after the session say. The replies and the stream are separate
+    /// captures with unrecorded gaps between them (SOURCE.txt): the replay
+    /// treats the gaps as empty, and the title and final-state checks are
+    /// what would catch one that was not.
     #[test]
     fn captured_stream_ends_where_hyprland_does() {
         let text = crate::wm::captured::fixture(&format!("{CAPTURED}/stream.txt"));

@@ -1,6 +1,8 @@
-# Hyprland 0.56.2 .socket2.sock, captured from a live session for 40 minutes
-# (2026-10-08 18:56-19:36), every line as it came, titles scrubbed (SOURCE.txt).
-# The replies in before/ were read just before, those in after/ just after.
+# Hyprland 0.56.2 .socket2.sock, captured from a live session (2026-10-08,
+# from about 18:56; last line 19:33:05), every line as it came, titles
+# scrubbed. Not gap-free: before/ was read at 18:55:05 and after/ at
+# 19:35:04-19:39:04, in separate captures, and the time between them and
+# this stream was not recorded. See SOURCE.txt.
 
 ## stream
 windowtitle>>557a6df4c490

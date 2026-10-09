@@ -101,9 +101,13 @@ decisions.md laptop-verify). CI is the only Hyprland run.
 **IPC fixtures checked against real sessions (laptop/verify).** niri
 26.04 was captured in the matrix image (`scripts/container/capture-niri.sh`,
 `tests/fixtures/niri-26.04-captured`); Hyprland 0.56.2 from the owner's
-live session, read-only (`scripts/capture-hyprland.sh`,
-`tests/fixtures/hyprland-0.56.2-captured`, titles and classes scrubbed
-as its SOURCE.txt says). Differences found: niri lists windows in map
+live session, read-only (`tests/fixtures/hyprland-0.56.2-captured`).
+Window titles that named the owner's work were scrubbed. Window classes
+are public app ids and were kept as captured. The fixture was put
+together from three separate captures: the replies before, a long
+event stream, and the replies after. There are unrecorded gaps between
+them, and its SOURCE.txt gives the times. `scripts/capture-hyprland.sh`
+takes a gap-free capture of the same kind. Differences found: niri lists windows in map
 order, so the adapter now sorts them by id; both reconstructed event
 streams had bursts in the wrong order (fixed in their `events.txt`).
 The Hyprland adapter needed no change. Regression tests:
