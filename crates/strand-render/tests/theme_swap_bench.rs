@@ -148,7 +148,7 @@ fn quantiles_are_nearest_rank() {
     assert_eq!(quantile(&v, 0.95), Duration::from_millis(38));
     let mut calls = 0;
     let got = measured(
-        "self-check",
+        "self-check of measured() (retries expected)",
         || {
             calls += 1;
             calls
@@ -158,7 +158,7 @@ fn quantiles_are_nearest_rank() {
     assert_eq!((got, calls), (2, 2));
     let mut calls = 0;
     let got = measured(
-        "self-check",
+        "self-check of measured() (retries expected)",
         || {
             calls += 1;
             calls

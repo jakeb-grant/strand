@@ -46,9 +46,11 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### CI
 
-- Split the single `check` job; give the timing gates a lighter release
-  profile; consolidate test binaries to cut link time; make
-  `theme_swap_bench` robust to runner noise.
+- Done on `laptop/ci` (decisions.md laptop-ci): the `check` job is split
+  into `lint`, `test`, `budgets`, `acceptance` and `timing`; the timing
+  gates build on a `timing` profile (release without LTO); `theme_swap_bench`
+  gates medians of more swaps with up to three attempts. Consolidating
+  test binaries was measured (about 39 s of linking in all) and not done.
 - Flakes seen once each, with diagnostics added so a recurrence names its
   cause (none reproduced locally; all in m3-report Open):
   - `strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`
