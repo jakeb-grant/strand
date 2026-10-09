@@ -944,9 +944,15 @@ impl Ctx {
     /// `content`, the content's scope) are moved to `keep` before the
     /// content is unmounted, and noted in [`Ctx::closed`] so the content
     /// mounted again takes them back ([`Ctx::reopen_cell`]).
-    fn keep_cells(&self, rt: &Runtime, content: strand_core::NodeId, keep: strand_core::NodeId) {
+    fn keep_cells(
+        &self,
+        rt: &Runtime,
+        content: strand_core::NodeId,
+        keep: strand_core::NodeId,
+    ) -> usize {
         let reg = self.registry.borrow();
         let mut closed = self.closed.borrow_mut();
+        let mut kept = 0;
         for (key, rec) in reg.cells.iter() {
             let holder = rec.holder().id();
             let mut cur = rt.owner_of(holder).ok().flatten();
@@ -958,8 +964,10 @@ impl Ctx {
             }
             if cur.is_some() && rt.reparent(holder, Some(keep)).is_ok() {
                 closed.insert(key.clone());
+                kept += 1;
             }
         }
+        kept
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1494,7 +1502,7 @@ impl Ctx {
                             // Unmounted, its components' cells kept.
                             mounted.set(false);
                             let old = block.get();
-                            me.keep_cells(rt, old.id(), keep.id());
+                            let _ = me.keep_cells(rt, old.id(), keep.id());
                             me.unmount(rt, inner, true);
                             old.dispose(rt);
                             let fresh = match outer {
@@ -2338,6 +2346,9 @@ impl Ctx {
     /// direct child of `list`): every item is kept in a [`ListWindow`],
     /// and only the rows of the window render asked for are mounted, by
     /// key, so a row that stays in the window keeps its node and state.
+    /// A row the window unmounts keeps the cells of its `state`s (as a
+    /// closed popup does) until it is mounted again, so it comes back as
+    /// it was, or until the data drops its key.
     /// A change to a mounted row is that row's ops and a change outside
     /// the window sends no row op. Rows the window mounts or unmounts
     /// (not ones the data added or removed) are marked `window`, so render
@@ -2359,13 +2370,32 @@ impl Ctx {
             count: Cell::new(DEFAULT_LIST_WINDOW),
             shown: Cell::new(0),
         });
+        // The cells of rows the window unmounted, by key: one scope per
+        // row that had any, under one disposed with the list.
+        let (keep_root, ()) = rt.scope(|_| ());
+        let kept: Rc<RefCell<HashMap<ValueKey, strand_core::Scope>>> = Rc::default();
         // Mounts the window's rows against the mounted ones. `existed`:
         // the keys the list had before this change (`None`: it did not
         // change, the window moved), so a row that arrives with it is
         // the data's, not the window's.
         let sync: Rc<SyncWindow> = {
-            let (ctx, win, items) = (self.clone(), win.clone(), items.clone());
+            let (ctx, win, items, kept) = (self.clone(), win.clone(), items.clone(), kept.clone());
             Rc::new(move |rt, existed| {
+                // Rows whose key the data dropped: their kept cells go.
+                if existed.is_some() && !kept.borrow().is_empty() {
+                    let gone: Vec<strand_core::Scope> = {
+                        let all = win.all.borrow();
+                        let keys: std::collections::HashSet<&ValueKey> =
+                            all.iter().map(|(k, _)| k).collect();
+                        let mut kept = kept.borrow_mut();
+                        let dropped: Vec<ValueKey> =
+                            kept.keys().filter(|k| !keys.contains(k)).cloned().collect();
+                        dropped.iter().filter_map(|k| kept.remove(k)).collect()
+                    };
+                    for s in gone {
+                        s.dispose(rt);
+                    }
+                }
                 let (want, len, lo, alive) = {
                     let all = win.all.borrow();
                     let len = all.len();
@@ -2406,12 +2436,36 @@ impl Ctx {
                             marked
                                 .borrow_mut()
                                 .extend(ctx.em.borrow().top_nodes(it.frag));
+                            // Left the window, not the list: its cells
+                            // wait for it.
+                            let content = ctx
+                                .em
+                                .borrow()
+                                .frag(it.frag)
+                                .and_then(|f| f.scope)
+                                .map(|s| s.id());
+                            if let Some(content) = content
+                                && let Ok((keep, ())) =
+                                    rt.with_owner(keep_root.id(), |rt| rt.scope(|_| ()))
+                            {
+                                if ctx.keep_cells(rt, content, keep.id()) > 0 {
+                                    kept.borrow_mut().insert(it.key.clone(), keep);
+                                } else {
+                                    keep.dispose(rt);
+                                }
+                            }
                         }
                         leave(rt, it);
                     },
                     |rt, at, k, v| {
                         let by_window = existed.is_none_or(|e| e.contains(&k));
+                        // Its kept cells are bound again as it mounts;
+                        // what is left of them goes.
+                        let held = kept.borrow_mut().remove(&k);
                         let it = arrive(rt, at, k, v);
+                        if let Some(s) = held {
+                            s.dispose(rt);
+                        }
                         if by_window {
                             marked
                                 .borrow_mut()

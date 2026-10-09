@@ -2263,6 +2263,84 @@ fn a_2000_row_list_mounts_only_its_window() {
     assert_eq!(labels(&shell).last().unwrap(), "r1999");
 }
 
+/// A row the window unmounts keeps its `state`s by key: scrolled away
+/// and back, an opened row is still open. A key the data drops loses
+/// them, so the same key coming back starts afresh.
+#[test]
+fn a_row_scrolled_out_and_back_keeps_its_state() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..200 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str(
+        "]\n\
+         component Item(r: Row) {\n\
+           state open = false\n\
+           row { text r.label\n text open ? \"open\" : \"shut\"\n box { on click { open = !open } } }\n\
+         }\n\
+         bar B { list { for r in rows { Item(r) } } }\n",
+    );
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    let opened = |shell: &Shell| -> Vec<String> {
+        shell
+            .scene
+            .children(list)
+            .iter()
+            .filter(|r| {
+                matches!(
+                    shell.scene.prop(shell.scene.children(**r)[1], Prop::Text),
+                    Some(PropValue::Text(t)) if t == "open"
+                )
+            })
+            .map(
+                |r| match shell.scene.prop(shell.scene.children(*r)[0], Prop::Text) {
+                    Some(PropValue::Text(t)) => t.clone(),
+                    v => panic!("{v:?}"),
+                },
+            )
+            .collect()
+    };
+    // Open row 3.
+    let row3 = shell.scene.children(list)[3];
+    let button = shell.scene.children(row3)[2];
+    assert!(shell.inst.event(button, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(opened(&shell), ["r3"]);
+    // Scrolled away: row 3 is unmounted.
+    shell.inst.set_list_window(list, 100, 20);
+    shell.flush();
+    assert!(opened(&shell).is_empty());
+    assert!(shell.scene.find_text("r3").is_none());
+    // And back: open still.
+    shell.inst.set_list_window(list, 0, 20);
+    shell.flush();
+    assert_eq!(opened(&shell), ["r3"]);
+
+    // Away again, and the data drops row 3 then brings it back: shut.
+    shell.inst.set_list_window(list, 100, 20);
+    shell.flush();
+    let row = shell.inst.vm().types().find_record("Row").expect("Row");
+    let rows = |skip: Option<i64>| {
+        Value::list(
+            (0..200)
+                .filter(|i| Some(*i) != skip)
+                .map(|i| Value::record(row, vec![Value::int(i), Value::text(format!("r{i}"))]))
+                .collect(),
+        )
+    };
+    shell.inst.set_value("t", "rows", rows(Some(3))).unwrap();
+    shell.flush();
+    shell.inst.set_value("t", "rows", rows(None)).unwrap();
+    shell.flush();
+    shell.inst.set_list_window(list, 0, 20);
+    shell.flush();
+    assert!(shell.scene.find_text("r3").is_some());
+    assert!(opened(&shell).is_empty());
+}
+
 /// A `list` holding more than its `for` (a header row) is not windowed:
 /// every row mounts, as in any container.
 #[test]
