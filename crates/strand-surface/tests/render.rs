@@ -648,7 +648,10 @@ fn a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes() {
 
         let before = mgr.state().host().drawn.len();
         let mut d = SceneDiff::default();
-        d.push(SceneOp::Remove { id: toast });
+        d.push(SceneOp::Remove {
+            id: toast,
+            window: false,
+        });
         d.set(TOASTS, Prop::Open, PropValue::Bool(false));
         apply(&mut mgr, d);
         assert_eq!(

@@ -88,6 +88,7 @@ fn templated(value: PropValue, slots: Slots) -> PropValue {
         PropValue::Token(TokenExpr::Template {
             value: Box::new(value),
             colors: slots,
+            numbers: Vec::new(),
         })
     } else {
         value
@@ -417,7 +418,7 @@ mod tests {
             Value::token(TokenExpr::path("border")),
         ]));
         let pv = prop_value_for(&t, Prop::Border, &ty, &v);
-        let PropValue::Token(TokenExpr::Template { value, colors }) = &pv else {
+        let PropValue::Token(TokenExpr::Template { value, colors, .. }) = &pv else {
             panic!("{pv:?}")
         };
         assert!(matches!(

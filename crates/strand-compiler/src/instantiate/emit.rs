@@ -254,6 +254,7 @@ impl Emitter {
             kind,
             parent,
             index: at as u32,
+            window: false,
         });
         id
     }
@@ -355,7 +356,10 @@ impl Emitter {
     pub fn park(&mut self, frag: FragId) -> Option<Scope> {
         let scene_parent = self.scene_parent(frag);
         for n in self.top_nodes(frag) {
-            self.ops.push(SceneOp::Remove { id: n });
+            self.ops.push(SceneOp::Remove {
+                id: n,
+                window: false,
+            });
             if let Some(o) = self.order.get_mut(&scene_parent) {
                 o.retain(|&x| x != n);
             }
@@ -407,6 +411,7 @@ impl Emitter {
             kind,
             parent,
             index: index as u32,
+            window: false,
         });
         let mut props: Vec<(Prop, PropValue)> = self
             .sent
@@ -448,7 +453,10 @@ impl Emitter {
             // A parked fragment is off the scene already.
             let on_scene = !self.parked.remove(&root);
             for n in self.top_nodes(root).into_iter().filter(|_| on_scene) {
-                self.ops.push(SceneOp::Remove { id: n });
+                self.ops.push(SceneOp::Remove {
+                    id: n,
+                    window: false,
+                });
                 if let Some(o) = self.order.get_mut(&scene_parent) {
                     o.retain(|&x| x != n);
                 }
@@ -637,7 +645,7 @@ impl Emitter {
                 later.push(id);
                 continue;
             }
-            out.push(SceneOp::Remove { id });
+            out.push(SceneOp::Remove { id, window: false });
             r.removed += 1;
             if let Some(p) = parent_of.remove(&id)
                 && let Some(v) = sim.get_mut(&p)
@@ -695,6 +703,7 @@ impl Emitter {
                         kind,
                         parent,
                         index: i as u32,
+                        window: false,
                     });
                     r.created += 1;
                 }
@@ -705,7 +714,7 @@ impl Emitter {
             }
         }
         for id in later {
-            out.push(SceneOp::Remove { id });
+            out.push(SceneOp::Remove { id, window: false });
             r.removed += 1;
         }
         // Props: what changed on kept nodes, everything on new ones.
@@ -801,7 +810,10 @@ impl Emitter {
         let mut ops = Vec::new();
         for id in old.order.get(&None).into_iter().flatten() {
             if !old.external.contains_key(id) {
-                ops.push(SceneOp::Remove { id: *id });
+                ops.push(SceneOp::Remove {
+                    id: *id,
+                    window: false,
+                });
             }
         }
         for id in old.nodes.keys() {
@@ -831,6 +843,7 @@ impl Emitter {
             kind,
             parent,
             index: at as u32,
+            window: false,
         });
         id
     }
@@ -854,7 +867,7 @@ impl Emitter {
             self.sent.remove(&n);
             self.alloc.free(n);
         }
-        self.ops.push(SceneOp::Remove { id });
+        self.ops.push(SceneOp::Remove { id, window: false });
     }
 
     /// Set a prop now (initial values), skipping unchanged ones.

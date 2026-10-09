@@ -112,10 +112,79 @@ pub enum TokenExpr {
     /// [`TokenScope::resolve`] resolves in place.) The
     /// `n`-th entry of `colors` replaces the `n`-th colour of `value` in
     /// [`PropValue::colors_mut`] order; `None` keeps the literal colour.
+    /// (M4) Likewise the `n`-th entry of `numbers` replaces the `n`-th
+    /// number in [`PropValue::numbers_mut`] order, so `glow: 10 *
+    /// wave(2s), $accent.alpha(0.4)` and `conic(from: t * 40deg, …)`
+    /// travel as one value.
     Template {
         value: Box<PropValue>,
         colors: Vec<Option<TokenExpr>>,
+        numbers: Vec<Option<TokenExpr>>,
     },
+    /// (M4) `t`: seconds since the node appeared ([`TimeContext::t`]).
+    Time,
+    /// (M4) `wave(period, phase: 0)`: swings from 0 to 1 and back once
+    /// per `period`, `0.5 − 0.5·cos(2π(t / period + phase))`, so it reads
+    /// 0 at `t = 0`; `phase` is in periods (`phase: index * 0.1`).
+    Wave {
+        period: std::time::Duration,
+        phase: Box<TokenExpr>,
+    },
+    /// (M4) `noise(x)`: smooth 1-D gradient noise in `-1..=1`, 0 at every
+    /// whole `x`. A time signal only when `x` reads `t`.
+    Noise(Box<TokenExpr>),
+    /// (M4) A `letters` letter's `index` ([`TimeContext::index`]).
+    Index,
+    /// (M4) The number of letters in a `letters` block
+    /// ([`TimeContext::count`]).
+    Count,
+}
+
+/// (M4) What a node's time leaves read: [`TokenExpr::Time`],
+/// [`TokenExpr::Index`] and [`TokenExpr::Count`]. Render builds one per
+/// node per frame ([`TokenScope::with_time`]); without one, and under
+/// `reduced_motion`, every time leaf reads 0.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct TimeContext {
+    /// Seconds since the node appeared.
+    pub t: f32,
+    /// A `letters` letter's position, 0 elsewhere.
+    pub index: u32,
+    /// How many letters its `letters` block has, 0 elsewhere.
+    pub count: u32,
+}
+
+impl TimeContext {
+    /// `t` seconds into a node that is not a letter.
+    pub const fn at(t: f32) -> Self {
+        Self {
+            t,
+            index: 0,
+            count: 0,
+        }
+    }
+}
+
+/// 1-D gradient noise (Perlin): smooth, in `-1..=1`, 0 at whole `x`.
+pub fn noise(x: f32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let x0 = x.floor();
+    let f = x - x0;
+    // A gradient in -1..=1 per lattice point, from an integer hash.
+    let grad = |i: f32| {
+        let mut h = (i as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^= h >> 31;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 29;
+        (h >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+    };
+    let a = grad(x0) * f;
+    let b = grad(x0 + 1.0) * (f - 1.0);
+    let s = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    // Two gradients each at most 0.5 away meet at most 0.5: scale to 1.
+    ((a + (b - a) * s) * 2.0).clamp(-1.0, 1.0)
 }
 
 impl TokenExpr {
@@ -127,6 +196,50 @@ impl TokenExpr {
     /// A literal.
     pub fn value(v: PropValue) -> Self {
         TokenExpr::Value(Box::new(v))
+    }
+
+    /// (M4) True if the expression reads time: `t`, any `wave(…)`, or a
+    /// `noise(x)` whose `x` does. A prop holding one is frame-driven:
+    /// its node repaints each frame of its clock while visible, and only
+    /// it. `index` and `count` alone are fixed per letter.
+    pub fn reads_time(&self) -> bool {
+        match self {
+            TokenExpr::Time | TokenExpr::Wave { .. } => true,
+            TokenExpr::Noise(x) => x.reads_time(),
+            TokenExpr::Index | TokenExpr::Count | TokenExpr::Ref(_) | TokenExpr::Channel(_) => {
+                false
+            }
+            TokenExpr::Value(v) => v.reads_time(),
+            TokenExpr::Method { receiver, args, .. } => {
+                receiver.reads_time() || args.iter().any(TokenExpr::reads_time)
+            }
+            TokenExpr::OklchFrom {
+                base,
+                l,
+                c,
+                h,
+                alpha,
+            } => {
+                base.reads_time()
+                    || [l, c, h, alpha]
+                        .into_iter()
+                        .flatten()
+                        .any(|e| e.reads_time())
+            }
+            TokenExpr::Binary { lhs, rhs, .. } => lhs.reads_time() || rhs.reads_time(),
+            TokenExpr::Template {
+                value,
+                colors,
+                numbers,
+            } => {
+                value.reads_time()
+                    || colors
+                        .iter()
+                        .chain(numbers)
+                        .flatten()
+                        .any(TokenExpr::reads_time)
+            }
+        }
     }
 
     /// `self.method(args…)`.
@@ -369,6 +482,8 @@ pub fn guard_solves() -> u64 {
 #[derive(Copy, Clone, Debug)]
 pub struct TokenScope<'a> {
     levels: &'a [&'a TokenTable],
+    /// What time leaves read; `None` reads them all as 0.
+    time: Option<TimeContext>,
 }
 
 /// Most evaluation steps (references followed plus expression nodes
@@ -424,7 +539,20 @@ impl<'a> TokenScope<'a> {
     /// `levels[0]` is the global table, the last entry the nearest
     /// override.
     pub fn new(levels: &'a [&'a TokenTable]) -> Self {
-        Self { levels }
+        Self { levels, time: None }
+    }
+
+    /// (M4) The same scope reading `time` for its time leaves (a node's
+    /// clock and, in a `letters` block, the letter's index and count).
+    /// Render passes `None` under `reduced_motion`, which freezes every
+    /// time signal at 0.
+    pub fn with_time(self, time: Option<TimeContext>) -> Self {
+        Self { time, ..self }
+    }
+
+    /// (M4) What this scope's time leaves read.
+    pub fn time(&self) -> Option<TimeContext> {
+        self.time
     }
 
     /// Evaluates the token at `path` in this scope.
@@ -509,6 +637,15 @@ impl<'a> TokenScope<'a> {
                     })
                     .collect::<Option<_>>()?,
             ),
+            PropValue::Uniforms(entries) => PropValue::Uniforms(
+                entries
+                    .iter()
+                    .map(|(n, v)| {
+                        self.resolve_in(v, depth, budget)
+                            .map(|v| (n.clone(), v.into_owned()))
+                    })
+                    .collect::<Option<_>>()?,
+            ),
             v => v.clone(),
         }))
     }
@@ -532,7 +669,7 @@ impl<'a> TokenScope<'a> {
             let scope = if i == 0 {
                 *self
             } else {
-                TokenScope::new(&self.levels[..i])
+                TokenScope::new(&self.levels[..i]).with_time(self.time)
             };
             let v = if let Some(v) = table.tokens.get(path) {
                 scope.resolve_in(v, depth + 1, budget).map(Cow::into_owned)
@@ -678,14 +815,45 @@ impl<'a> TokenScope<'a> {
                 };
                 v.is_finite().then_some(PropValue::Number(v))
             }
-            TokenExpr::Template { value, colors } => {
+            TokenExpr::Template {
+                value,
+                colors,
+                numbers,
+            } => {
                 let mut v = (**value).clone();
                 for (slot, expr) in v.colors_mut().into_iter().zip(colors) {
                     if let Some(e) = expr {
                         *slot = col(e)?;
                     }
                 }
+                for (slot, expr) in v.numbers_mut().into_iter().zip(numbers) {
+                    if let Some(e) = expr {
+                        *slot = num(e)?;
+                    }
+                }
                 Some(v)
+            }
+            TokenExpr::Time => Some(PropValue::Number(self.time.map_or(0.0, |c| c.t))),
+            TokenExpr::Index => Some(PropValue::Number(self.time.map_or(0.0, |c| c.index as f32))),
+            TokenExpr::Count => Some(PropValue::Number(self.time.map_or(0.0, |c| c.count as f32))),
+            TokenExpr::Wave { period, phase } => {
+                let Some(ctx) = self.time else {
+                    return Some(PropValue::Number(0.0));
+                };
+                let phase = num(phase)?;
+                let period = period.as_secs_f32();
+                if period <= 0.0 {
+                    return None;
+                }
+                let turns = ctx.t / period + phase;
+                let v = 0.5 - 0.5 * (std::f32::consts::TAU * turns).cos();
+                v.is_finite().then_some(PropValue::Number(v))
+            }
+            TokenExpr::Noise(x) => {
+                if self.time.is_none() {
+                    return Some(PropValue::Number(0.0));
+                }
+                Some(PropValue::Number(noise(num(x)?)))
             }
         }
     }
@@ -723,7 +891,7 @@ fn gamut_map(c: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Border, Shadow};
+    use crate::protocol::{Border, GradientStop, Shadow};
 
     fn table() -> TokenTable {
         let mut t = TokenTable::default();
@@ -809,6 +977,7 @@ mod tests {
                 paint: Paint::Solid(Color::TRANSPARENT),
             })),
             colors: vec![Some(TokenExpr::path("fg.muted"))],
+            numbers: vec![],
         });
         let PropValue::Border(b) = t.resolve(&border).unwrap().into_owned() else {
             panic!()
@@ -827,11 +996,245 @@ mod tests {
                 2
             ])),
             colors: vec![None, Some(TokenExpr::path("fg"))],
+            numbers: vec![],
         });
         let PropValue::Shadow(s) = t.resolve(&shadows).unwrap().into_owned() else {
             panic!()
         };
         assert_eq!((s[0].color, s[1].color), (Color::TRANSPARENT, Color::WHITE));
+    }
+
+    fn wave(period_ms: u64, phase: TokenExpr) -> TokenExpr {
+        TokenExpr::Wave {
+            period: std::time::Duration::from_millis(period_ms),
+            phase: Box::new(phase),
+        }
+    }
+
+    fn n(v: f32) -> TokenExpr {
+        TokenExpr::value(PropValue::Number(v))
+    }
+
+    fn mul(a: TokenExpr, b: TokenExpr) -> TokenExpr {
+        TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(a),
+            rhs: Box::new(b),
+        }
+    }
+
+    fn number(scope: TokenScope<'_>, e: &TokenExpr) -> f32 {
+        match scope.eval(e) {
+            Some(PropValue::Number(v)) => v,
+            other => panic!("{e:?} gave {other:?}"),
+        }
+    }
+
+    #[test]
+    fn time_leaves_read_the_scope_time() {
+        let t = table();
+        let levels = [&t];
+        let still = TokenScope::new(&levels);
+        let at = |secs: f32| {
+            still.with_time(Some(TimeContext {
+                t: secs,
+                index: 3,
+                count: 8,
+            }))
+        };
+        assert_eq!(at(1.5).time().map(|c| c.t), Some(1.5));
+        assert_eq!(number(at(1.5), &TokenExpr::Time), 1.5);
+        assert_eq!(number(at(1.5), &TokenExpr::Index), 3.0);
+        assert_eq!(number(at(1.5), &TokenExpr::Count), 8.0);
+        // `rotate: t * 20deg`.
+        assert_eq!(number(at(2.0), &mul(TokenExpr::Time, n(20.0))), 40.0);
+
+        // wave(2s): 0 at the start, 1 half way, 0 again a period on.
+        let w = wave(2000, n(0.0));
+        assert!(number(at(0.0), &w).abs() < 1e-6);
+        assert!((number(at(1.0), &w) - 1.0).abs() < 1e-6);
+        assert!((number(at(0.5), &w) - 0.5).abs() < 1e-6);
+        assert!(number(at(2.0), &w).abs() < 1e-5);
+        // phase: index * 0.1 is in periods.
+        let phased = wave(1000, mul(TokenExpr::Index, n(0.1)));
+        let shifted = TokenScope::new(&levels).with_time(Some(TimeContext {
+            t: 0.2,
+            index: 3,
+            count: 8,
+        }));
+        let reference = TokenScope::new(&levels).with_time(Some(TimeContext::at(0.5)));
+        assert!((number(shifted, &phased) - number(reference, &wave(1000, n(0.0)))).abs() < 1e-5);
+        // A non-positive period does not resolve.
+        assert!(at(1.0).eval(&wave(0, n(0.0))).is_none());
+
+        // noise: 0 at whole x, smooth and bounded between.
+        assert_eq!(number(at(0.0), &TokenExpr::Noise(Box::new(n(4.0)))), 0.0);
+        let mut prev = noise(0.0);
+        for i in 1..=400 {
+            let v = noise(i as f32 * 0.01);
+            assert!((-1.0..=1.0).contains(&v));
+            assert!((v - prev).abs() < 0.05, "noise is smooth");
+            prev = v;
+        }
+        assert!((0..40).any(|i| noise(i as f32 * 0.25 + 0.1).abs() > 0.05));
+        assert_eq!(noise(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn without_a_time_context_every_time_leaf_reads_zero() {
+        let t = table();
+        let levels = [&t];
+        let scope = TokenScope::new(&levels);
+        assert_eq!(scope.time(), None);
+        for e in [
+            TokenExpr::Time,
+            TokenExpr::Index,
+            TokenExpr::Count,
+            wave(1600, n(0.25)),
+            TokenExpr::Noise(Box::new(mul(TokenExpr::Time, n(3.3)))),
+            TokenExpr::Noise(Box::new(n(0.5))),
+        ] {
+            assert_eq!(number(scope, &e), 0.0, "{e:?}");
+            // `reduced_motion`: render passes `None` explicitly.
+            assert_eq!(number(scope.with_time(None), &e), 0.0, "{e:?}");
+        }
+        assert_eq!(t.eval(&TokenExpr::Time), Some(PropValue::Number(0.0)));
+    }
+
+    #[test]
+    fn reads_time_marks_frame_driven_values() {
+        assert!(TokenExpr::Time.reads_time());
+        assert!(wave(1000, n(0.0)).reads_time());
+        assert!(TokenExpr::Noise(Box::new(TokenExpr::Time)).reads_time());
+        assert!(!TokenExpr::Noise(Box::new(n(1.0))).reads_time());
+        assert!(!TokenExpr::Index.reads_time());
+        assert!(!TokenExpr::Count.reads_time());
+        assert!(!TokenExpr::path("accent").reads_time());
+        assert!(mul(n(10.0), wave(2000, n(0.0))).reads_time());
+        let glow = PropValue::Token(TokenExpr::Template {
+            value: Box::new(PropValue::List(vec![
+                PropValue::Number(0.0),
+                PropValue::Color(Color::TRANSPARENT),
+            ])),
+            colors: vec![Some(TokenExpr::path("accent"))],
+            numbers: vec![Some(mul(n(10.0), wave(2000, n(0.0))))],
+        });
+        assert!(glow.reads_time());
+        assert!(PropValue::List(vec![PropValue::Number(1.0), glow.clone()]).reads_time());
+        assert!(
+            PropValue::Uniforms(vec![("u_t".into(), PropValue::Token(TokenExpr::Time))])
+                .reads_time()
+        );
+        assert!(!PropValue::Number(3.0).reads_time());
+        assert!(!PropValue::Token(TokenExpr::path("fg")).reads_time());
+    }
+
+    #[test]
+    fn templates_fill_numeric_slots_in_field_order() {
+        let mut t = table();
+        t.insert(
+            "accent",
+            PropValue::Color(Color::from_hex("#cba6f7").unwrap()),
+        );
+        let levels = [&t];
+        // glow: 10 * wave(2s), $accent.alpha(0.4)
+        let glow = PropValue::Token(TokenExpr::Template {
+            value: Box::new(PropValue::List(vec![
+                PropValue::Number(0.0),
+                PropValue::Color(Color::TRANSPARENT),
+            ])),
+            colors: vec![Some(
+                TokenExpr::path("accent").call(TokenMethod::Alpha, vec![n(0.4)]),
+            )],
+            numbers: vec![Some(mul(n(10.0), wave(2000, n(0.0))))],
+        });
+        let at_peak = TokenScope::new(&levels).with_time(Some(TimeContext::at(1.0)));
+        let PropValue::List(items) = at_peak.resolve(&glow).unwrap().into_owned() else {
+            panic!()
+        };
+        assert!((items[0].as_number().unwrap() - 10.0).abs() < 1e-4);
+        assert!(matches!(items[1], PropValue::Color(c) if (c.a - 0.4).abs() < 1e-6));
+        // Without time the radius reads 0 and the colour still resolves.
+        let PropValue::List(items) = t.resolve(&glow).unwrap().into_owned() else {
+            panic!()
+        };
+        assert_eq!(items[0], PropValue::Number(0.0));
+
+        // border: 1.5, conic(from: t * 40deg, $accent, $accent): `from`
+        // is slot 1 (the width is slot 0); `None` keeps the literal.
+        let stop = |offset| GradientStop {
+            offset,
+            color: Color::TRANSPARENT,
+        };
+        let border = PropValue::Token(TokenExpr::Template {
+            value: Box::new(PropValue::Border(Border {
+                width: 1.5,
+                paint: Paint::Conic {
+                    from: 0.0,
+                    stops: vec![stop(0.0), stop(1.0)],
+                },
+            })),
+            colors: vec![
+                Some(TokenExpr::path("accent")),
+                Some(TokenExpr::path("accent")),
+            ],
+            numbers: vec![None, Some(mul(TokenExpr::Time, n(40.0)))],
+        });
+        let later = TokenScope::new(&levels).with_time(Some(TimeContext::at(2.0)));
+        let PropValue::Border(b) = later.resolve(&border).unwrap().into_owned() else {
+            panic!()
+        };
+        assert_eq!(b.width, 1.5);
+        let Paint::Conic { from, stops } = b.paint else {
+            panic!()
+        };
+        assert_eq!(from, 80.0);
+        assert_eq!(stops[1].offset, 1.0);
+        // A slot whose expression fails fails the whole value.
+        let bad = PropValue::Token(TokenExpr::Template {
+            value: Box::new(PropValue::Number(1.0)),
+            colors: vec![],
+            numbers: vec![Some(TokenExpr::path("accent"))],
+        });
+        assert!(t.resolve(&bad).is_none());
+    }
+
+    #[test]
+    fn uniforms_resolve_each_entry() {
+        let t = table();
+        let levels = [&t];
+        let u = PropValue::Uniforms(vec![
+            ("u_speed".into(), PropValue::Number(0.4)),
+            ("u_tint".into(), PropValue::Token(TokenExpr::path("fg"))),
+            ("u_time".into(), PropValue::Token(TokenExpr::Time)),
+        ]);
+        assert!(u.has_tokens());
+        let scope = TokenScope::new(&levels).with_time(Some(TimeContext::at(3.0)));
+        assert_eq!(
+            scope.resolve(&u).unwrap().into_owned(),
+            PropValue::Uniforms(vec![
+                ("u_speed".into(), PropValue::Number(0.4)),
+                ("u_tint".into(), PropValue::Color(Color::WHITE)),
+                ("u_time".into(), PropValue::Number(3.0)),
+            ])
+        );
+        let broken = PropValue::Uniforms(vec![(
+            "u_x".into(),
+            PropValue::Token(TokenExpr::path("nope")),
+        )]);
+        assert!(t.resolve(&broken).is_none());
+    }
+
+    #[test]
+    fn overrides_keep_the_time_context() {
+        // An override's right-hand side is evaluated in its parent scope,
+        // which still reads the node's time.
+        let t = table();
+        let mut o = TokenTable::default();
+        o.insert_derived("spin", mul(TokenExpr::Time, n(20.0)));
+        let levels = [&t, &o];
+        let scope = TokenScope::new(&levels).with_time(Some(TimeContext::at(0.5)));
+        assert_eq!(scope.lookup("spin"), Some(PropValue::Number(10.0)));
     }
 
     #[test]

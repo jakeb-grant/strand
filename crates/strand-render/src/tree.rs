@@ -325,8 +325,9 @@ impl SceneTree {
                 kind,
                 parent,
                 index,
+                window: _,
             } => self.create(id, kind, parent, index),
-            SceneOp::Remove { id } => self.remove(id),
+            SceneOp::Remove { id, window: _ } => self.remove(id),
             SceneOp::Move { id, parent, index } => self.move_node(id, parent, index),
             SceneOp::SetProp {
                 id,
@@ -544,6 +545,27 @@ mod tests {
     }
 
     #[test]
+    fn window_rows_mount_and_unmount_like_any_node() {
+        // (M4) The flag only changes motion (S-lists); the tree takes it.
+        let mut t = base();
+        t.apply_op(SceneOp::Create {
+            id: id(5),
+            kind: NodeKind::Row,
+            parent: Some(id(0)),
+            index: 0,
+            window: true,
+        })
+        .unwrap();
+        assert!(t.contains_live(id(5)));
+        t.apply_op(SceneOp::Remove {
+            id: id(5),
+            window: true,
+        })
+        .unwrap();
+        assert!(!t.contains_live(id(5)));
+    }
+
+    #[test]
     fn create_move_remove() {
         let mut t = base();
         assert_eq!(t.get(id(0)).unwrap().children, vec![id(1), id(2)]);
@@ -558,11 +580,19 @@ mod tests {
         assert_eq!(t.get(id(0)).unwrap().children, vec![id(2), id(1)]);
         assert_eq!(t.get(id(2)).unwrap().epoch, 1);
         // Removing a subtree frees its descendants.
-        t.apply_op(SceneOp::Remove { id: id(1) }).unwrap();
+        t.apply_op(SceneOp::Remove {
+            id: id(1),
+            window: false,
+        })
+        .unwrap();
         assert!(!t.contains(id(3)));
         assert_eq!(t.len(), 2);
         assert_eq!(t.surface_nodes().collect::<Vec<_>>(), vec![id(0)]);
-        t.apply_op(SceneOp::Remove { id: id(0) }).unwrap();
+        t.apply_op(SceneOp::Remove {
+            id: id(0),
+            window: false,
+        })
+        .unwrap();
         assert_eq!((t.len(), t.surface_nodes().count()), (0, 0));
     }
 
@@ -602,6 +632,7 @@ mod tests {
                 kind: NodeKind::Box,
                 parent: Some(NodeId::new(0, 0)),
                 index: 0,
+                window: false,
             })
             .is_ok()
             {
@@ -641,7 +672,11 @@ mod tests {
     #[test]
     fn generations_guard_reused_slots() {
         let mut t = base();
-        t.apply_op(SceneOp::Remove { id: id(3) }).unwrap();
+        t.apply_op(SceneOp::Remove {
+            id: id(3),
+            window: false,
+        })
+        .unwrap();
         let mut d = SceneDiff::new();
         d.create(NodeId::new(3, 1), NodeKind::Box, Some(id(1)), 0);
         assert!(t.apply(d).is_empty());

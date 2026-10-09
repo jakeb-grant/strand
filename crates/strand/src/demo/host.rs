@@ -184,14 +184,18 @@ impl Forward {
     /// nearest handler) and two-way writes.
     pub(crate) fn input(&mut self, event: &InputEvent, scene: &mut dyn InputScene) {
         for intent in self.router.handle(event, scene) {
-            self.send(to_logic(intent));
+            if let Some(msg) = to_logic(intent) {
+                self.send(msg);
+            }
         }
     }
 }
 
-/// What routing asks of logic, as the logic thread's message.
-fn to_logic(intent: Intent) -> ToLogic {
-    match intent {
+/// What routing asks of logic, as the logic thread's message. `None`
+/// for an intent logic cannot take yet: a drop (M4), until S-lists adds
+/// `NodeEvent::Drop` on the logic side.
+fn to_logic(intent: Intent) -> Option<ToLogic> {
+    Some(match intent {
         Intent::Flag { node, flag, on } => ToLogic::Flag {
             node,
             flag: match flag {
@@ -220,10 +224,14 @@ fn to_logic(intent: Intent) -> ToLogic {
                     modifiers,
                 },
                 RouteEvent::Dismiss => NodeEvent::Dismiss,
+                RouteEvent::Drop { .. } => {
+                    log::debug!("a drop on {node:?} is not delivered yet (M4 drag and drop)");
+                    return None;
+                }
             },
         },
         Intent::Write { node, prop, value } => ToLogic::Write { node, prop, value },
-    }
+    })
 }
 
 /// A monitor's logical size: no content-sized surface on it is larger.
@@ -286,7 +294,9 @@ impl Host {
     pub(crate) fn settle_input(&mut self) {
         if let Some(f) = &mut self.logic {
             for intent in f.router.settle(&mut self.renderer) {
-                f.send(to_logic(intent));
+                if let Some(msg) = to_logic(intent) {
+                    f.send(msg);
+                }
             }
         }
     }
@@ -470,6 +480,29 @@ mod tests {
             logical_size: Some((1920, 1080)),
             position: None,
         }
+    }
+
+    #[test]
+    fn drops_are_not_forwarded_until_logic_takes_them() {
+        let node = strand_scene::NodeId::new(1, 0);
+        let drop = Intent::Event {
+            node,
+            event: RouteEvent::Drop {
+                payload: strand_scene::DropPayload::Node(node),
+                at: 0,
+            },
+        };
+        assert_eq!(to_logic(drop), None);
+        assert!(matches!(
+            to_logic(Intent::Event {
+                node,
+                event: RouteEvent::Click
+            }),
+            Some(ToLogic::Event {
+                event: NodeEvent::Click,
+                ..
+            })
+        ));
     }
 
     /// Read what the forwarder sent, through a calloop loop.

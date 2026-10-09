@@ -406,7 +406,10 @@ fn incomplete_text_retries_without_looping() {
     assert_eq!(r.next_key, keys, "no hot loop");
     // B goes: its page frees and A completes.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: b });
+    d.push(SceneOp::Remove {
+        id: b,
+        window: false,
+    });
     r.apply(d);
     assert!(!state(&r, a));
     assert_eq!(text_at(&r, a).layout.as_ref().unwrap().glyphs().count(), 4);

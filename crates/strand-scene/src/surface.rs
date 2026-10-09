@@ -6,9 +6,10 @@
 //! reconfigures or recreates layer surfaces from them. See
 //! `docs/architecture.md`, "Render loop".
 
+use crate::color::Color;
 use crate::geometry::LogicalRect;
 use crate::id::NodeId;
-use crate::protocol::{Insets, Length, NodeKind, Prop, PropValue, named_enum};
+use crate::protocol::{Insets, Length, NodeKind, Paint, Prop, PropValue, named_enum};
 
 named_enum! {
     /// A screen edge: `edge: top` on a bar, `attach: top` on a panel.
@@ -118,6 +119,41 @@ pub struct SurfaceSpec {
     /// A `popup` that is a tooltip (`tooltip: expr`): shown without a
     /// grab, takes no input.
     pub tooltip: bool,
+    /// (M4) `scrim: $shadow.alpha(0.3)`: a full-output single-pixel
+    /// surface in this colour under the surface while it is open (the
+    /// click-away catcher too, when it has one). Only a `popup` or a
+    /// `panel` has one (the compiler rejects it elsewhere).
+    pub scrim: Option<Color>,
+}
+
+/// (M4) Which optional protocols the compositor offered, reported once
+/// the surface manager has bound its globals
+/// (`SurfaceHost::compositor_caps`); the host hands render what it uses
+/// (`set_compositor_blur`, `set_compositor_poses`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CompositorCaps {
+    /// `wp_alpha_modifier_v1`: delegated opacity poses.
+    pub alpha_modifier: bool,
+    /// `wp_viewporter`: delegated scale poses, single-pixel surfaces.
+    pub viewporter: bool,
+    /// `wp_single_pixel_buffer_v1`: scrims and lock backgrounds without
+    /// shm.
+    pub single_pixel_buffer: bool,
+    /// `ext_background_effect_manager_v1`: the blur ladder's first rung.
+    pub background_effect: bool,
+    /// `ext_session_lock_manager_v1`: the lock screen.
+    pub session_lock: bool,
+    /// `wl_data_device_manager`: drag and drop with other programs.
+    pub data_device: bool,
+}
+
+impl CompositorCaps {
+    /// True when a root's opacity, scale and x/y poses can be delegated:
+    /// the alpha modifier and the viewporter are both there (x/y uses
+    /// layer-shell margins, which every compositor has).
+    pub fn delegates_poses(&self) -> bool {
+        self.alpha_modifier && self.viewporter
+    }
 }
 
 /// True if a [`Prop::TwoWay`] value names `prop`.
@@ -211,6 +247,13 @@ impl SurfaceSpec {
             parent: None,
             anchor_rect: None,
             tooltip: false,
+            scrim: match (kind, get(Prop::Scrim).as_ref().map(AsRef::as_ref)) {
+                (
+                    NodeKind::Popup | NodeKind::Panel,
+                    Some(PropValue::Color(c) | PropValue::Paint(Paint::Solid(c))),
+                ) => Some(*c),
+                _ => None,
+            },
         }
     }
 
@@ -360,6 +403,57 @@ mod tests {
         let mut c = a.clone();
         c.name = Some("Bottom".into());
         assert!(a.needs_recreate(&c));
+    }
+
+    #[test]
+    fn a_scrim_is_a_colour_on_popups_and_panels() {
+        let dim = Color::BLACK.with_alpha(0.3);
+        for kind in [NodeKind::Popup, NodeKind::Panel] {
+            assert_eq!(
+                spec(kind, &[(Prop::Scrim, PropValue::Color(dim))]).scrim,
+                Some(dim)
+            );
+            assert_eq!(
+                spec(kind, &[(Prop::Scrim, PropValue::Paint(Paint::Solid(dim)))]).scrim,
+                Some(dim)
+            );
+            assert_eq!(spec(kind, &[]).scrim, None);
+        }
+        // A gradient has no single-pixel form; other kinds take none.
+        let gradient = PropValue::Paint(Paint::Radial { stops: vec![] });
+        assert_eq!(
+            spec(NodeKind::Panel, &[(Prop::Scrim, gradient)]).scrim,
+            None
+        );
+        for kind in [NodeKind::Bar, NodeKind::Osd, NodeKind::Lock] {
+            assert_eq!(
+                spec(kind, &[(Prop::Scrim, PropValue::Color(dim))]).scrim,
+                None
+            );
+        }
+        // A scrim change reconfigures in place.
+        let a = spec(NodeKind::Panel, &[]);
+        let b = spec(NodeKind::Panel, &[(Prop::Scrim, PropValue::Color(dim))]);
+        assert!(!a.needs_recreate(&b));
+    }
+
+    #[test]
+    fn compositor_caps() {
+        let none = CompositorCaps::default();
+        assert!(!none.delegates_poses());
+        let poses = CompositorCaps {
+            alpha_modifier: true,
+            viewporter: true,
+            ..CompositorCaps::default()
+        };
+        assert!(poses.delegates_poses());
+        assert!(
+            !CompositorCaps {
+                alpha_modifier: true,
+                ..none
+            }
+            .delegates_poses()
+        );
     }
 
     #[test]

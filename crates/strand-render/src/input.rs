@@ -59,6 +59,13 @@ pub enum NodeEvent {
     },
     /// Escape, a click away or focus loss closed a popup (`on dismiss`).
     Dismiss,
+    /// (M4) Something was dropped on the node (`on drop(value, at)`):
+    /// `at` is the global row index it landed at. Produced once S-lists
+    /// builds drag and drop; until then the Router emits none.
+    Drop {
+        payload: strand_scene::DropPayload,
+        at: u32,
+    },
 }
 
 /// What input asks of logic.
@@ -570,6 +577,13 @@ impl Router {
                     self.key(surface, root, key, scene);
                 }
             }
+            // (M4) `wl_data_device` drags: S-lists routes them (targets
+            // by `Prop::Accepts`, `NodeEvent::Drop`). Until then they
+            // change nothing and emit no intent.
+            InputEvent::DragEnter { .. }
+            | InputEvent::DragMotion { .. }
+            | InputEvent::DragLeave { .. }
+            | InputEvent::DragDrop { .. } => {}
         }
     }
 

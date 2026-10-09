@@ -59,6 +59,7 @@ fn shadows(layers: &[(f32, f32, f32)]) -> TokenExpr {
             .iter()
             .map(|&(_, _, a)| Some(alpha("shadow", a)))
             .collect(),
+        numbers: Vec::new(),
     }
 }
 

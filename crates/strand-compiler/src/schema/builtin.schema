@@ -662,6 +662,28 @@ fn invert(amount: float) -> Filter
 /// A colour filter tinting toward a colour: `filter: tint($accent)`.
 fn tint(color: color) -> Filter
 
+// Bundled GPU effects (design.md). Each starts the GPU only while
+// visible; without one it falls back to a CPU version or draws the node
+// unfiltered. The stream that builds an effect edits only its own
+// declaration here (its knobs) and records them in decisions.md.
+
+/// Bloom: bright parts bleed light `radius` around them,
+/// `filter: bloom(12)`. Without a GPU it draws as a glow.
+fn bloom(radius: length) -> Filter
+/// A CRT look (scanlines and curvature): `filter: crt()`. Without a GPU
+/// the node draws unfiltered.
+fn crt() -> Filter
+/// Chromatic aberration, splitting colour channels `offset` apart:
+/// `filter: chromatic(2)`. Without a GPU the node draws unfiltered.
+fn chromatic(offset: length) -> Filter
+/// A raster wobble up to `amplitude`: `filter: wobble(4)`. Without a GPU
+/// the node draws unfiltered.
+fn wobble(amplitude: length) -> Filter
+/// Liquid glass over what is behind it (refraction, a fresnel rim and a
+/// pointer highlight): `backdrop: glass()`. Without a GPU it draws as a
+/// blur and a tint.
+fn glass() -> Filter
+
 /// A mask fading toward an edge: `mask: fade(bottom, 24)`.
 fn fade(edge: Edge, size: length) -> Mask
 /// A mask of a shape from the shape library: `mask: shape(cookie)`.
@@ -902,8 +924,10 @@ group surface: node {
   anchor: Anchor
   /// Grows out of an edge with concave fillets: `attach: top`.
   attach: Edge
-  /// Paint dimming what is behind it: `scrim: $shadow.alpha(0.3)`.
-  scrim: paint
+  /// A colour dimming what is behind it, on a `popup` or `panel`:
+  /// `scrim: $shadow.alpha(0.3)`. A single-pixel buffer, so it costs
+  /// nothing; a gradient has no single-pixel form.
+  scrim: color
   /// It was shown: `on show { query = "" }`.
   on show
   /// It was hidden.

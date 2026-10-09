@@ -55,8 +55,8 @@ use wayland_protocols::wp::viewporter::client::{
 use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_wm_base::XdgWmBase};
 
 use strand_scene::{
-    Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget, Painter, Rect,
-    Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
+    CompositorCaps, Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget,
+    Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
 use crate::clock::{FrameClock, Presentation, PresentationClock};
@@ -153,6 +153,36 @@ pub trait SurfaceHost: Painter {
     fn input(&mut self, event: &InputEvent) {
         let _ = event;
     }
+    /// (M4) The optional protocols the compositor offered, once the
+    /// manager has bound its globals; the host hands render what it uses
+    /// (`set_compositor_blur`, `set_compositor_poses`). The manager calls
+    /// it once S-surface binds the M4 globals.
+    fn compositor_caps(&mut self, caps: &CompositorCaps) {
+        let _ = caps;
+    }
+    /// (M4) The manager must destroy or recreate `surface` while the GPU
+    /// thread presents to it: the host sends `GpuRequest::Release` and,
+    /// on the reply, calls `State::take_back`, which destroys it then
+    /// (docs/architecture.md, "`strand-gpu`", "Surface hand-off").
+    fn gpu_release(&mut self, surface: SurfaceId) {
+        let _ = surface;
+    }
+    /// (M4) The session lock changed (`ext_session_lock_v1`).
+    fn lock_changed(&mut self, state: LockState) {
+        let _ = state;
+    }
+}
+
+/// (M4) The session lock as the compositor reports it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LockState {
+    /// `locked`: every output shows a lock surface.
+    Locked,
+    /// `finished`: the compositor refused or ended the lock. Without a
+    /// `locked` before it, the lock was never shown.
+    Finished,
+    /// The lock was released with an `UnlockToken`.
+    Unlocked,
 }
 
 /// Settings for [`SurfaceManager`].
@@ -1124,4 +1154,38 @@ impl<H: SurfaceHost + 'static> State<H> {
 
 fn clamp_i32(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+    use strand_scene::Damage;
+
+    /// A host that implements only the painter.
+    struct Bare;
+
+    impl Painter for Bare {
+        fn paint(&mut self, _: SurfaceId, _: &mut PaintTarget<'_>) -> Damage {
+            Damage::new()
+        }
+        fn wants_frame(&self, _: SurfaceId) -> bool {
+            false
+        }
+    }
+
+    impl SurfaceHost for Bare {}
+
+    #[test]
+    fn the_m4_hooks_default_to_nothing() {
+        let mut host = Bare;
+        host.compositor_caps(&CompositorCaps {
+            alpha_modifier: true,
+            ..CompositorCaps::default()
+        });
+        host.gpu_release(SurfaceId(1));
+        for state in [LockState::Locked, LockState::Finished, LockState::Unlocked] {
+            host.lock_changed(state);
+        }
+        assert_eq!(host.surface_pose(SurfaceId(1)), None);
+    }
 }

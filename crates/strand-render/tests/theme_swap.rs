@@ -81,6 +81,7 @@ fn scene(t: TokenTable) -> (SceneDiff, NodeId) {
                 paint: Paint::Solid(Color::TRANSPARENT),
             })),
             colors: vec![Some(TokenExpr::path("border"))],
+            numbers: vec![],
         }),
     ));
     b.node(NodeKind::Box, Some(root), card);

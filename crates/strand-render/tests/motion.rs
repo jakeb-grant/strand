@@ -413,7 +413,10 @@ fn enter_and_exit_poses_and_siblings_slide_to_fill_the_gap() {
     assert_eq!(st.red_top(10), Some(48));
     // Remove the middle (blue) one.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: ids[1] });
+    d.push(SceneOp::Remove {
+        id: ids[1],
+        window: false,
+    });
     st.apply(d);
     assert!(st.r.tree().is_ghost(ids[1]), "it plays its exit");
     // Logic reuses the slot at once with a new generation.
@@ -560,7 +563,10 @@ fn content_removed_as_its_surface_closes_stays_through_the_pose() {
     st.r.take_surface_changes();
     // Removed before the close in the same diff, as logic sends it.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: boxed });
+    d.push(SceneOp::Remove {
+        id: boxed,
+        window: false,
+    });
     d.set(root, Prop::Open, PropValue::Bool(false));
     st.apply(d);
     assert!(st.r.surface_spec(root).unwrap().open, "open while it plays");
@@ -591,7 +597,10 @@ fn content_removed_as_its_surface_closes_stays_through_the_pose() {
     st.apply(d);
     let end = st.settle(end + 1);
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: again });
+    d.push(SceneOp::Remove {
+        id: again,
+        window: false,
+    });
     d.set(root, Prop::Open, PropValue::Bool(false));
     st.apply(d);
     st.paint(frame(end + 1));
@@ -932,7 +941,10 @@ fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
     // Its fill starts inside its 1 px border.
     assert_eq!(st.red_top(ox + 50), Some(oy + 63));
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: toasts[0] });
+    d.push(SceneOp::Remove {
+        id: toasts[0],
+        window: false,
+    });
     st.apply(d);
     let mut tops = Vec::new();
     let mut k = 1;
@@ -1020,7 +1032,10 @@ fn if_branches_list_rows_and_pages_enter_and_exit() {
     }
     let mut d = SceneDiff::new();
     for id in &made {
-        d.push(SceneOp::Remove { id: *id });
+        d.push(SceneOp::Remove {
+            id: *id,
+            window: false,
+        });
     }
     st.apply(d);
     for id in &made {
@@ -1288,7 +1303,10 @@ fn a_content_sized_panel_shrinks_when_nothing_moves() {
     assert_eq!(h.height(), Some(90.0));
     // The last row goes: nothing glides.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: last });
+    d.push(SceneOp::Remove {
+        id: last,
+        window: false,
+    });
     h.apply(d);
     h.run();
     assert_eq!(h.height(), Some(40.0), "a plain removal shrinks");
@@ -1386,7 +1404,10 @@ fn exits_stay_bounded_without_frames() {
             .set(row, Prop::Height, num(4.0))
             .set(row, Prop::Exit, pose(vec![(Prop::Opacity, num(0.0))]));
         if let Some(p) = prev {
-            d.push(SceneOp::Remove { id: p });
+            d.push(SceneOp::Remove {
+                id: p,
+                window: false,
+            });
         }
         st.apply(d);
         prev = Some(row);
@@ -1618,7 +1639,10 @@ fn animated_frames_fit_the_refresh_budget() {
     let mut h = Host::new(b.diff, root);
     h.run();
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: toasts[0] });
+    d.push(SceneOp::Remove {
+        id: toasts[0],
+        window: false,
+    });
     h.apply(d);
     let times = timed(&mut h);
     check("toast exit", times);
@@ -1641,7 +1665,7 @@ fn a_node_created_over_a_ghost_id_is_live_and_at_rest() {
     });
     let (col, id) = (ids[0], ids[1]);
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id });
+    d.push(SceneOp::Remove { id, window: false });
     st.apply(d);
     st.paint(frame(1));
     assert!(st.r.tree().is_ghost(id));
@@ -1719,7 +1743,10 @@ fn a_lone_toast_enters_with_its_panel_and_leaves_before_it_closes() {
     assert!(seen.windows(2).all(|w| w[1] <= w[0]), "{edges:?}");
     // The last toast leaves as the panel closes.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: toast });
+    d.push(SceneOp::Remove {
+        id: toast,
+        window: false,
+    });
     d.set(root, Prop::Open, PropValue::Bool(false));
     h.apply(d);
     assert!(h.surface.is_some(), "stays while the toast leaves");
@@ -2075,7 +2102,10 @@ fn an_exit_seen_on_one_of_two_outputs_plays_there() {
     // Row 0, on both, changes colour as row 4 leaves: the short output
     // paints frames too, none of which draws row 4.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: rows[4] });
+    d.push(SceneOp::Remove {
+        id: rows[4],
+        window: false,
+    });
     d.set(rows[0], Prop::Bg, color("#80a0c0"));
     assert!(r.apply(d).is_empty());
     let mut reds = Vec::new();

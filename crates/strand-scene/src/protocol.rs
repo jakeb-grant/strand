@@ -1,10 +1,13 @@
 //! The scene protocol: one [`SceneDiff`] per logic tick, describing edits to
 //! the retained tree the render thread owns.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::canvas::DrawOp;
 use crate::color::Color;
 use crate::id::NodeId;
+use crate::shader::ShaderCode;
 use crate::tokens::{TokenExpr, TokenTable};
 
 macro_rules! named_enum {
@@ -97,6 +100,12 @@ named_enum! {
         Letters = "letters",
         /// Goo merge around siblings: `merge 10 { … }`.
         Merge = "merge",
+        /// (M4) An `svg "icon.svg" { #needle { rotate: … } }` selector
+        /// block: a child of the `svg` carrying the id it selects as
+        /// [`Prop::Name`] (`Text`, without the `#`) and ordinary props,
+        /// which render applies to that layer. Made by the compiler, never
+        /// written as an element, so it has no schema element.
+        SvgPart = "svg_part",
     }
 }
 
@@ -275,8 +284,25 @@ props! {
     Life = "life": Snap,
     Sprite = "sprite": Snap,
     Speed = "speed": Snap,
-    /// `canvas { draw: (c) => … }`.
+    /// `canvas { draw: (c) => … }`: what the VM recorded, as a
+    /// [`PropValue::DrawList`] (M4).
     Draw = "draw": Snap,
+    // M4, set by the compiler and never written in source.
+    /// A `shader` node's `u_*` props, as one [`PropValue::Uniforms`]
+    /// sorted by name. Each entry springs as a prop of its value's type
+    /// would.
+    Uniforms = "uniforms": Effects,
+    /// A `shader` node's checked WGSL, as [`PropValue::Shader`].
+    Shader = "shader": Snap,
+    /// The type names a node's `on drop` takes, as a `List` of `Keyword`s
+    /// (`Drop` for other programs' drops, `any` for everything).
+    Accepts = "accepts": Snap,
+    /// On a `list` whose direct child is a `for`: how many rows there
+    /// are in all (`Number`).
+    RowCount = "row_count": Snap,
+    /// On a `list` whose direct child is a `for`: the global index of the
+    /// first mounted row (`Number`).
+    RowFirst = "row_first": Snap,
     // Tokens.
     /// Token overrides for this node and its subtree, as a
     /// [`PropValue::Tokens`] table: `set { $surface: $surface.alpha(0.5) }`
@@ -519,6 +545,57 @@ pub enum PropValue {
     /// Another scene node, named by its `id:` (`nav: results` routes arrow
     /// keys from an `input` to that `list`).
     Node(crate::id::NodeId),
+    /// (M4) A `shader` node's `u_*` props (the value of
+    /// [`Prop::Uniforms`]): name as written (`u_speed`) and value, sorted
+    /// by name. Values may hold tokens and time leaves.
+    Uniforms(Vec<(String, PropValue)>),
+    /// (M4) What a `canvas`'s `draw: (c) => …` recorded (the value of
+    /// [`Prop::Draw`]).
+    DrawList(Arc<[DrawOp]>),
+    /// (M4) A `shader` node's checked WGSL (the value of
+    /// [`Prop::Shader`]).
+    Shader(Arc<ShaderCode>),
+    /// (M4) The compiled `keyframes` block `play` names (the value of
+    /// [`Prop::Play`]).
+    Keyframes(Arc<Keyframes>),
+}
+
+/// (M4) A compiled `keyframes` block, sent inline with `play` so render
+/// keeps no keyframe table: `keyframes shake { 0% { x: 0 } 50% { x: 6 }
+/// … }` + `play shake`. Keyframes are offsets composed with the node's
+/// springs; a new `seq` restarts them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Keyframes {
+    /// The block's name, for diagnostics and the inspector.
+    pub name: String,
+    /// Bumped by logic each time `play` should start again.
+    pub seq: u32,
+    /// Stops as fractions in `0..=1`, in order, each with the props it
+    /// sets.
+    pub stops: Vec<(f32, Vec<(Prop, PropValue)>)>,
+    pub duration: Duration,
+    pub delay: Duration,
+    /// How many times it plays; `None` repeats forever.
+    pub repeat: Option<u32>,
+    /// Every other repeat runs backwards.
+    pub alternate: bool,
+    pub easing: Easing,
+}
+
+impl Keyframes {
+    /// A block with no stops that plays once over `duration`, linearly.
+    pub fn new(name: impl Into<String>, seq: u32, duration: Duration) -> Self {
+        Self {
+            name: name.into(),
+            seq,
+            stops: Vec::new(),
+            duration,
+            delay: Duration::ZERO,
+            repeat: Some(1),
+            alternate: false,
+            easing: Easing::Linear,
+        }
+    }
 }
 
 impl PropValue {
@@ -530,6 +607,22 @@ impl PropValue {
                 items.iter().any(PropValue::has_tokens)
             }
             PropValue::Pose(props) => props.iter().any(|(_, v)| v.has_tokens()),
+            PropValue::Uniforms(entries) => entries.iter().any(|(_, v)| v.has_tokens()),
+            _ => false,
+        }
+    }
+
+    /// (M4) True if a time leaf (`t`, `wave(…)`, `noise(…)` of `t`) sits
+    /// anywhere inside the value: the node reading it is frame-driven
+    /// while visible. See [`TokenExpr::reads_time`].
+    pub fn reads_time(&self) -> bool {
+        match self {
+            PropValue::Token(e) => e.reads_time(),
+            PropValue::List(items) | PropValue::Call { args: items, .. } => {
+                items.iter().any(PropValue::reads_time)
+            }
+            PropValue::Pose(props) => props.iter().any(|(_, v)| v.reads_time()),
+            PropValue::Uniforms(entries) => entries.iter().any(|(_, v)| v.reads_time()),
             _ => false,
         }
     }
@@ -561,6 +654,68 @@ impl PropValue {
         let mut out = Vec::new();
         self.collect_colors(&mut out);
         out
+    }
+
+    /// (M4) Every number inside the value, depth first in field order:
+    /// what [`TokenExpr::Template`] fills its numeric slots in. A
+    /// `Number`, an `Angle`, a `Length` other than `Auto`, the fields of
+    /// `Insets` (top, right, bottom, left) and `Corners` (clockwise from
+    /// top-left), a `Border`'s width then its paint, a gradient's angle
+    /// (`Linear`) or start (`Conic`) then its stops' offsets, a shadow's
+    /// `x`, `y`, `blur` and `spread`; `List` and `Call` items in order.
+    /// `glow: 10 * wave(2s), $accent.alpha(0.4)` fills slot 0, the
+    /// radius; `conic(from: t * 40deg, …)` fills slot 0, `from`.
+    pub fn numbers_mut(&mut self) -> Vec<&mut f32> {
+        let mut out = Vec::new();
+        self.collect_numbers(&mut out);
+        out
+    }
+
+    fn collect_numbers<'a>(&'a mut self, out: &mut Vec<&'a mut f32>) {
+        fn paint<'a>(p: &'a mut Paint, out: &mut Vec<&'a mut f32>) {
+            let stops = match p {
+                Paint::Solid(_) => return,
+                Paint::Linear { angle, stops } => {
+                    out.push(angle);
+                    stops
+                }
+                Paint::Radial { stops } => stops,
+                Paint::Conic { from, stops } => {
+                    out.push(from);
+                    stops
+                }
+            };
+            out.extend(stops.iter_mut().map(|s| &mut s.offset));
+        }
+        match self {
+            PropValue::Number(n) | PropValue::Angle(n) => out.push(n),
+            PropValue::Length(Length::Px(n) | Length::Percent(n) | Length::Ch(n)) => out.push(n),
+            PropValue::Insets(i) => {
+                out.extend([&mut i.top, &mut i.right, &mut i.bottom, &mut i.left])
+            }
+            PropValue::Corners(c) => out.extend([
+                &mut c.top_left,
+                &mut c.top_right,
+                &mut c.bottom_right,
+                &mut c.bottom_left,
+            ]),
+            PropValue::Paint(p) => paint(p, out),
+            PropValue::Border(b) => {
+                out.push(&mut b.width);
+                paint(&mut b.paint, out);
+            }
+            PropValue::Shadow(list) => {
+                for s in list {
+                    out.extend([&mut s.x, &mut s.y, &mut s.blur, &mut s.spread]);
+                }
+            }
+            PropValue::List(items) | PropValue::Call { args: items, .. } => {
+                for v in items {
+                    v.collect_numbers(out);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn collect_colors<'a>(&'a mut self, out: &mut Vec<&'a mut Color>) {
@@ -699,13 +854,21 @@ pub enum SceneOp {
         kind: NodeKind,
         parent: Option<NodeId>,
         index: u32,
+        /// (M4) A row a virtualised `list`'s window mounts (see
+        /// [`Prop::RowFirst`]): render plays no `enter` or FLIP for it.
+        window: bool,
     },
     /// Removes a node and its subtree; render plays `exit` before unmounting.
     /// The id is dead as soon as the op applies: logic may reuse its slot
     /// with a new generation in the same diff. (From M2 an exiting subtree
     /// lives on as a render-side ghost outside the id-indexed slots, so
     /// slot reuse never waits for an exit animation.)
-    Remove { id: NodeId },
+    Remove {
+        id: NodeId,
+        /// (M4) A row a virtualised `list`'s window unmounts: render
+        /// plays no `exit` or FLIP for it.
+        window: bool,
+    },
     /// Re-parents or reorders a node. `index` is the position among the
     /// new parent's children *after* the node has been detached from its
     /// old place (so moving the first of three children to the end is
@@ -773,7 +936,14 @@ impl SceneDiff {
             kind,
             parent,
             index,
+            window: false,
         })
+    }
+
+    /// Convenience for [`SceneOp::Remove`] of a node that is not a list
+    /// window's row.
+    pub fn remove(&mut self, id: NodeId) -> &mut Self {
+        self.push(SceneOp::Remove { id, window: false })
     }
 
     /// Convenience for [`SceneOp::SetTokens`].
@@ -867,6 +1037,122 @@ mod tests {
         ]);
         let got: Vec<Color> = v.colors_mut().into_iter().map(|c| *c).collect();
         assert_eq!(got, [Color::BLACK, Color::WHITE, Color::TRANSPARENT]);
+    }
+
+    #[test]
+    fn numbers_are_visited_in_field_order() {
+        let mut v = PropValue::List(vec![
+            PropValue::Number(1.0),
+            PropValue::Length(Length::Auto),
+            PropValue::Border(Border {
+                width: 2.0,
+                paint: Paint::Conic {
+                    from: 3.0,
+                    stops: vec![GradientStop {
+                        offset: 4.0,
+                        color: Color::BLACK,
+                    }],
+                },
+            }),
+            PropValue::Shadow(vec![Shadow {
+                x: 5.0,
+                y: 6.0,
+                blur: 7.0,
+                spread: 8.0,
+                color: Color::BLACK,
+            }]),
+            PropValue::Insets(Insets {
+                top: 9.0,
+                right: 10.0,
+                bottom: 11.0,
+                left: 12.0,
+            }),
+            PropValue::Angle(13.0),
+            PropValue::Color(Color::WHITE),
+            PropValue::Call {
+                name: "bloom".into(),
+                args: vec![PropValue::Length(Length::Percent(14.0))],
+            },
+        ]);
+        let got: Vec<f32> = v.numbers_mut().into_iter().map(|n| *n).collect();
+        let want: Vec<f32> = (1..=14).map(|n| n as f32).collect();
+        assert_eq!(got, want);
+        for n in v.numbers_mut() {
+            *n = -*n;
+        }
+        assert_eq!(*v.numbers_mut()[13], -14.0);
+    }
+
+    #[test]
+    fn m4_values_and_ops() {
+        // Window rows mount and unmount with the flag; the builders send
+        // ordinary ops.
+        let id = NodeId::new(4, 0);
+        let mut d = SceneDiff::new();
+        d.create(id, NodeKind::Row, None, 0).remove(id);
+        assert_eq!(
+            d.ops,
+            [
+                SceneOp::Create {
+                    id,
+                    kind: NodeKind::Row,
+                    parent: None,
+                    index: 0,
+                    window: false
+                },
+                SceneOp::Remove { id, window: false }
+            ]
+        );
+        let row = SceneOp::Create {
+            id,
+            kind: NodeKind::Row,
+            parent: None,
+            index: 0,
+            window: true,
+        };
+        assert_ne!(d.ops[0], row);
+
+        // An SVG part is a node kind with no schema element, not a surface.
+        assert_eq!(NodeKind::from_name("svg_part"), Some(NodeKind::SvgPart));
+        assert!(!NodeKind::SvgPart.is_surface());
+
+        // Props the compiler sets.
+        for (p, name) in [
+            (Prop::Uniforms, "uniforms"),
+            (Prop::Shader, "shader"),
+            (Prop::Accepts, "accepts"),
+            (Prop::RowCount, "row_count"),
+            (Prop::RowFirst, "row_first"),
+        ] {
+            assert_eq!(p.name(), name);
+        }
+        assert_eq!(Prop::Uniforms.class(), PropClass::Effects);
+        assert_eq!(Prop::RowFirst.class(), PropClass::Snap);
+
+        // Keyframes travel inline and shared.
+        let mut k = Keyframes::new("shake", 2, Duration::from_millis(300));
+        assert_eq!(
+            (k.repeat, k.alternate, k.easing),
+            (Some(1), false, Easing::Linear)
+        );
+        k.stops = vec![
+            (0.0, vec![(Prop::X, PropValue::Number(0.0))]),
+            (0.5, vec![(Prop::X, PropValue::Number(6.0))]),
+            (1.0, vec![(Prop::X, PropValue::Number(0.0))]),
+        ];
+        let v = PropValue::Keyframes(Arc::new(k.clone()));
+        assert_eq!(v.clone(), v);
+        let mut later = k.clone();
+        later.seq = 3;
+        assert_ne!(v, PropValue::Keyframes(Arc::new(later)));
+        assert!(!v.has_tokens() && !v.reads_time());
+
+        // Uniforms carry their tokens.
+        let u = PropValue::Uniforms(vec![(
+            "u_tint".into(),
+            PropValue::Token(TokenExpr::path("accent")),
+        )]);
+        assert!(u.has_tokens());
     }
 
     #[test]

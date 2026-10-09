@@ -304,12 +304,18 @@ fn expr_refs(e: &TokenExpr, out: &mut Vec<String>) {
             expr_refs(lhs, out);
             expr_refs(rhs, out);
         }
-        TokenExpr::Template { value, colors } => {
+        TokenExpr::Template {
+            value,
+            colors,
+            numbers,
+        } => {
             value_refs(value, out);
-            for e in colors.iter().flatten() {
+            for e in colors.iter().chain(numbers).flatten() {
                 expr_refs(e, out);
             }
         }
+        TokenExpr::Wave { phase: x, .. } | TokenExpr::Noise(x) => expr_refs(x, out),
+        TokenExpr::Time | TokenExpr::Index | TokenExpr::Count => {}
     }
 }
 

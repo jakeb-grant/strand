@@ -158,7 +158,7 @@ impl Renderer {
             // root to look up after it.
             let (before, after, shapes) = match &op {
                 SceneOp::Create { id, .. } => (None, Some(*id), true),
-                SceneOp::Remove { id } => (self.tree.root_of(*id), None, true),
+                SceneOp::Remove { id, .. } => (self.tree.root_of(*id), None, true),
                 SceneOp::SetProp { id, prop, .. } => {
                     (self.tree.root_of(*id), None, affects_layout(*prop))
                 }
@@ -325,7 +325,16 @@ impl Renderer {
     pub(super) fn animate_op(&mut self, op: &SceneOp) -> bool {
         let reduced = self.anim.reduced();
         match op {
-            SceneOp::Create { id, parent, .. } => {
+            // (M4) S-lists makes a list window's rows (`window: true`)
+            // play no enter, exit or FLIP; until then they animate like
+            // any node.
+            SceneOp::Create {
+                id,
+                parent,
+                kind: _,
+                index: _,
+                window: _,
+            } => {
                 // Logic reused the id of a ghost: the tree unmounts the
                 // ghost, and its motions must not carry over.
                 if self.tree.is_ghost(*id) {
@@ -346,7 +355,7 @@ impl Renderer {
                 }
                 self.flip(*parent);
             }
-            SceneOp::Remove { id } => {
+            SceneOp::Remove { id, window: _ } => {
                 let Some(node) = self.tree.get(*id).filter(|_| self.tree.contains_live(*id)) else {
                     return false;
                 };

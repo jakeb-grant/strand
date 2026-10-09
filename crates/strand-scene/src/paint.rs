@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use crate::damage::Damage;
-use crate::geometry::{Rect, Scale, Size};
+use crate::geometry::{LogicalPoint, Rect, Scale, Size};
 use crate::id::SurfaceId;
 
 /// Bytes per ARGB8888 pixel.
@@ -120,6 +120,41 @@ pub struct BlurRegion {
     pub radius: f32,
 }
 
+/// (M4) The pose the compositor applies to a whole surface when render
+/// delegates its root's pose (design.md, "Compositor-animated poses"):
+/// opacity through `wp_alpha_modifier_v1`, scale through the
+/// viewporter's destination size, and the offset through layer-shell
+/// margins. Render paints the content at rest meanwhile.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SurfacePose {
+    /// `0..=1`, multiplied into the surface's alpha.
+    pub opacity: f32,
+    /// About the surface's anchored side; 1 is the laid-out size.
+    pub scale: f32,
+    /// Logical pixels added to the surface's placement.
+    pub offset: LogicalPoint,
+}
+
+impl SurfacePose {
+    /// The pose of a surface at rest.
+    pub const IDENTITY: SurfacePose = SurfacePose {
+        opacity: 1.0,
+        scale: 1.0,
+        offset: LogicalPoint::new(0.0, 0.0),
+    };
+
+    /// True when applying it changes nothing.
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+}
+
+impl Default for SurfacePose {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
 /// Implemented by the render thread, called by the surface manager.
 pub trait Painter {
     /// Paint everything that changed for `surface` and return the damage,
@@ -151,11 +186,45 @@ pub trait Painter {
         let _ = surface;
         Vec::new()
     }
+    /// (M4) The pose the compositor should apply to the whole surface
+    /// this frame, when render delegates its root's pose (after
+    /// `Renderer::set_compositor_poses(true)`); `None` means identity. A
+    /// frame whose pose changed while `paint` returned no damage is a
+    /// pose-only commit: no buffer is attached and `age` does not
+    /// advance.
+    fn surface_pose(&self, surface: SurfaceId) -> Option<SurfacePose> {
+        let _ = surface;
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Blank;
+
+    impl Painter for Blank {
+        fn paint(&mut self, _: SurfaceId, _: &mut PaintTarget<'_>) -> Damage {
+            Damage::new()
+        }
+        fn wants_frame(&self, _: SurfaceId) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_painter_delegates_no_pose_by_default() {
+        assert_eq!(Blank.surface_pose(SurfaceId(1)), None);
+        assert!(Blank.blur_region(SurfaceId(1)).is_empty());
+        assert_eq!(SurfacePose::default(), SurfacePose::IDENTITY);
+        assert!(SurfacePose::IDENTITY.is_identity());
+        let half = SurfacePose {
+            opacity: 0.5,
+            ..SurfacePose::IDENTITY
+        };
+        assert!(!half.is_identity());
+    }
 
     #[test]
     fn target_validation() {

@@ -7,7 +7,10 @@
 //! `strand-surface`. Keyboard events arrive on `keyboard: on_demand |
 //! exclusive` surfaces.
 
-use crate::{LogicalPoint, SurfaceId};
+use std::path::PathBuf;
+
+use crate::protocol::named_enum;
+use crate::{LogicalPoint, NodeId, SurfaceId};
 
 /// Linux evdev button codes (`linux/input-event-codes.h`) as `wl_pointer`
 /// reports them.
@@ -76,6 +79,33 @@ pub struct KeyInput {
     pub time: u32,
 }
 
+named_enum! {
+    /// (M4) What another program dropped: builtin.schema's `enum
+    /// DropKind`.
+    pub enum DropKind {
+        Files = "files",
+        App = "app",
+        Text = "text",
+    }
+}
+
+/// (M4) What a drop carries (design.md, "Drag and drop").
+#[derive(Clone, Debug, PartialEq)]
+pub enum DropPayload {
+    /// A `drag:` source in Strand: logic maps the node back to its
+    /// value.
+    Node(NodeId),
+    /// Another program's drop. Only the fields `kind` names are filled;
+    /// logic resolves `app_id` to an `App` through the `apps` service
+    /// (null when no installed app has it).
+    External {
+        kind: DropKind,
+        files: Vec<PathBuf>,
+        text: String,
+        app_id: Option<String>,
+    },
+}
+
 /// An input event on one of our surfaces.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEvent {
@@ -119,6 +149,26 @@ pub enum InputEvent {
     /// click-away catcher mapped under it (an open `keyboard: exclusive`
     /// surface whose `open` is two-way): it closes.
     ClickAway { surface: SurfaceId },
+    /// (M4) A drag entered `surface` through `wl_data_device` (another
+    /// program's, or one between Strand surfaces), offering `kinds`.
+    DragEnter {
+        surface: SurfaceId,
+        at: LogicalPoint,
+        kinds: Vec<DropKind>,
+    },
+    /// (M4) The drag moved over `surface`.
+    DragMotion {
+        surface: SurfaceId,
+        at: LogicalPoint,
+    },
+    /// (M4) The drag left `surface` without dropping.
+    DragLeave { surface: SurfaceId },
+    /// (M4) The drag dropped on `surface`.
+    DragDrop {
+        surface: SurfaceId,
+        at: LogicalPoint,
+        payload: DropPayload,
+    },
 }
 
 impl InputEvent {
@@ -133,7 +183,59 @@ impl InputEvent {
             | Self::KeyboardEnter { surface }
             | Self::KeyboardLeave { surface }
             | Self::Key { surface, .. }
-            | Self::ClickAway { surface } => *surface,
+            | Self::ClickAway { surface }
+            | Self::DragEnter { surface, .. }
+            | Self::DragMotion { surface, .. }
+            | Self::DragLeave { surface }
+            | Self::DragDrop { surface, .. } => *surface,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_kinds_round_trip() {
+        for k in DropKind::ALL {
+            assert_eq!(DropKind::from_name(k.name()), Some(*k));
+        }
+        assert_eq!(DropKind::from_name("uri"), None);
+    }
+
+    #[test]
+    fn drag_events_name_their_surface() {
+        let s = SurfaceId(7);
+        let at = LogicalPoint::new(3.0, 4.0);
+        let payload = DropPayload::External {
+            kind: DropKind::Files,
+            files: vec![PathBuf::from("/tmp/a.png")],
+            text: String::new(),
+            app_id: None,
+        };
+        for e in [
+            InputEvent::DragEnter {
+                surface: s,
+                at,
+                kinds: vec![DropKind::Files, DropKind::Text],
+            },
+            InputEvent::DragMotion { surface: s, at },
+            InputEvent::DragLeave { surface: s },
+            InputEvent::DragDrop {
+                surface: s,
+                at,
+                payload: payload.clone(),
+            },
+            InputEvent::DragDrop {
+                surface: s,
+                at,
+                payload: DropPayload::Node(NodeId::new(2, 1)),
+            },
+        ] {
+            assert_eq!(e.surface(), s);
+            assert_eq!(e.clone(), e);
+        }
+        assert_ne!(payload, DropPayload::Node(NodeId::new(2, 1)));
     }
 }

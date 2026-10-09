@@ -3,27 +3,42 @@
 //!
 //! See `docs/architecture.md`, "Contracts".
 
+pub mod backend;
+pub mod canvas;
 pub mod color;
 pub mod damage;
+pub mod effect;
 pub mod geometry;
 pub mod id;
 pub mod input;
 pub mod motion;
 pub mod paint;
 pub mod protocol;
+pub mod shader;
 pub mod surface;
 pub mod tokens;
 
+pub use backend::{AdapterInfo, Backend, BackendChange, GpuStatus};
+pub use canvas::DrawOp;
+
 pub use color::{Color, LinearRgb, MIN_CONTRAST, Oklab, Oklch, REACH_MAX, luminance_reachable};
 pub use damage::{Damage, MAX_RECTS};
+pub use effect::{BlendMode, Bundled, Effect, Mask, ShaderInput, ShaderPass, ShaderRef};
 pub use geometry::{LogicalPoint, LogicalRect, LogicalSize, Point, Rect, Scale, Size};
 pub use id::{NodeId, NodeIdAllocator, SurfaceId};
-pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent, KeyInput, Modifiers};
-pub use motion::{Curve, Motion, Spring};
-pub use paint::{BYTES_PER_PIXEL, BlurRegion, PaintTarget, Painter, TargetError};
-pub use protocol::{
-    Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,
-    PropValue, SceneDiff, SceneOp, Shadow, Transition,
+pub use input::{
+    AxisDelta, AxisSource, ButtonState, DropKind, DropPayload, InputEvent, KeyInput, Modifiers,
 };
-pub use surface::{Anchor, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec, is_two_way};
-pub use tokens::{BinOp, Channel, MAX_TOKEN_STEPS, TokenExpr, TokenMethod, TokenScope, TokenTable};
+pub use motion::{Curve, Motion, Spring};
+pub use paint::{BYTES_PER_PIXEL, BlurRegion, PaintTarget, Painter, SurfacePose, TargetError};
+pub use protocol::{
+    Border, Corners, Easing, Font, GradientStop, Insets, Keyframes, Length, NodeKind, Paint, Prop,
+    PropClass, PropValue, SceneDiff, SceneOp, Shadow, Transition,
+};
+pub use shader::{PRELUDE, ShaderCode, UniformSlot, UniformType};
+pub use surface::{
+    Anchor, CompositorCaps, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec, is_two_way,
+};
+pub use tokens::{
+    BinOp, Channel, MAX_TOKEN_STEPS, TimeContext, TokenExpr, TokenMethod, TokenScope, TokenTable,
+};

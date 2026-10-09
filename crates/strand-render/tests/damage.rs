@@ -268,7 +268,10 @@ fn structural_changes_damage_old_and_new_places() {
 
     // Removing damages the old place only.
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: c });
+    d.push(SceneOp::Remove {
+        id: c,
+        window: false,
+    });
     r.apply(d);
     let dmg = buf.paint(&mut r, BAR, 1);
     assert_eq!(dmg.rects(), &[Rect::new(15, 2, 10, 10)]);
@@ -1204,7 +1207,10 @@ fn nested_popup_paints_only_on_its_own_surface() {
     // Removing the bar takes the popup with it: its surface clears its
     // stale frame (until the surface manager destroys it on `Removed`).
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: bar });
+    d.push(SceneOp::Remove {
+        id: bar,
+        window: false,
+    });
     r.apply(d);
     assert!(
         r.wants_frame(popup_s),

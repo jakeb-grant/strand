@@ -26,8 +26,8 @@ pub mod shm;
 pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 pub use manager::{
-    Config, GRAB_WINDOW, RepaintHandle, Request, State, Stats, SurfaceError, SurfaceHost,
-    SurfaceInfo, SurfaceManager,
+    Config, GRAB_WINDOW, LockState, RepaintHandle, Request, State, Stats, SurfaceError,
+    SurfaceHost, SurfaceInfo, SurfaceManager,
 };
 pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
 pub use placement::{Anchors, LayerConfig, PlacementError, layer_config};

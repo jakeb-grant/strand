@@ -300,6 +300,7 @@ fn the_image_cache_holds_six_megabytes() {
     for i in 0..10u32 {
         d.push(SceneOp::Remove {
             id: NodeId::new(i + 1, 0),
+            window: false,
         });
     }
     r.apply(d);

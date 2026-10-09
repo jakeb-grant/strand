@@ -50,6 +50,7 @@ impl SceneMirror {
                 kind,
                 parent,
                 index,
+                ..
             } => {
                 if self.nodes.contains_key(id) {
                     return Err(format!("create of live node {id:?}"));
@@ -72,7 +73,7 @@ impl SceneMirror {
                     },
                 );
             }
-            SceneOp::Remove { id } => {
+            SceneOp::Remove { id, .. } => {
                 let parent = self
                     .nodes
                     .get(id)
@@ -329,6 +330,17 @@ pub fn show(v: &PropValue) -> String {
             args.iter().map(show).collect::<Vec<_>>().join(", ")
         ),
         PropValue::Node(id) => format!("node {}", id.index),
+        PropValue::Uniforms(entries) => format!(
+            "uniforms {{{}}}",
+            entries
+                .iter()
+                .map(|(n, v)| format!("{n}: {}", show(v)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+        PropValue::DrawList(ops) => format!("draw [{} ops]", ops.len()),
+        PropValue::Shader(code) => format!("shader {:?}", code.path),
+        PropValue::Keyframes(k) => format!("keyframes {} #{}", k.name, k.seq),
     }
 }
 
@@ -405,12 +417,39 @@ pub fn show_expr(e: &TokenExpr) -> String {
             };
             format!("({} {o} {})", show_expr(lhs), show_expr(rhs))
         }
-        TokenExpr::Template { value, colors } => {
+        TokenExpr::Template {
+            value,
+            colors,
+            numbers,
+        } => {
             let slots: Vec<String> = colors
                 .iter()
                 .map(|c| c.as_ref().map_or("_".into(), show_expr))
                 .collect();
-            format!("template({} <- {})", show(value), slots.join(", "))
+            if numbers.is_empty() {
+                return format!("template({} <- {})", show(value), slots.join(", "));
+            }
+            let nums: Vec<String> = numbers
+                .iter()
+                .map(|c| c.as_ref().map_or("_".into(), show_expr))
+                .collect();
+            format!(
+                "template({} <- {}; {})",
+                show(value),
+                slots.join(", "),
+                nums.join(", ")
+            )
         }
+        TokenExpr::Time => "t".into(),
+        TokenExpr::Wave { period, phase } => {
+            format!(
+                "wave({}ms, phase: {})",
+                period.as_millis(),
+                show_expr(phase)
+            )
+        }
+        TokenExpr::Noise(x) => format!("noise({})", show_expr(x)),
+        TokenExpr::Index => "index".into(),
+        TokenExpr::Count => "count".into(),
     }
 }

@@ -593,7 +593,7 @@ fn two_way_bindings_write_back() {
         u.diff
             .ops
             .iter()
-            .any(|op| matches!(op, SceneOp::Remove { id } if *id == slider)),
+            .any(|op| matches!(op, SceneOp::Remove { id, .. } if *id == slider)),
         "the slider leaves (render plays its exit)"
     );
 }

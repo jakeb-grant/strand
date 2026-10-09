@@ -4,8 +4,8 @@
 use strand_render::{Flag, HitOnly, InputScene, Intent, NodeEvent, Renderer, Router, TextBackend};
 use strand_scene::input::button;
 use strand_scene::{
-    AxisDelta, ButtonState, InputEvent, KeyInput, LogicalPoint, NodeId, PaintTarget, Painter, Prop,
-    PropValue, Scale, Size, SurfaceId,
+    AxisDelta, ButtonState, DropKind, DropPayload, InputEvent, KeyInput, LogicalPoint, NodeId,
+    PaintTarget, Painter, Prop, PropValue, Scale, Size, SurfaceId,
 };
 
 /// A router and what it asked of logic so far.
@@ -336,7 +336,10 @@ fn keys_go_to_the_focused_input_and_its_list() {
     // Rows refilled (the selected one gone): once the diff is applied
     // the first row is selected again, and Down moves on from it.
     let mut d = SceneDiff::new();
-    d.push(strand_scene::SceneOp::Remove { id: rows[2] });
+    d.push(strand_scene::SceneOp::Remove {
+        id: rows[2],
+        window: false,
+    });
     let fresh = id(7);
     d.create(fresh, NodeKind::Row, Some(list), 2)
         .set(fresh, Prop::Height, PropValue::Number(20.0));
@@ -364,7 +367,10 @@ fn keys_go_to_the_focused_input_and_its_list() {
     // row is selected again.
     let mut d = SceneDiff::new();
     let top = id(8);
-    d.push(strand_scene::SceneOp::Remove { id: late });
+    d.push(strand_scene::SceneOp::Remove {
+        id: late,
+        window: false,
+    });
     d.create(top, NodeKind::Row, Some(list), 0)
         .set(top, Prop::Height, PropValue::Number(20.0))
         .set(input, Prop::Text, PropValue::Text("fb".into()));
@@ -695,6 +701,40 @@ fn an_empty_axis_frame_is_no_scroll() {
     );
 }
 
+/// (M4) `wl_data_device` drags reach the Router, which emits nothing for
+/// them until S-lists builds drag and drop.
+#[test]
+fn drag_events_are_not_routed_yet() {
+    let mut f = R::default();
+    let s = SurfaceId(1);
+    let root = NodeId::new(1, 0);
+    f.attached(s, root);
+    let hit = |_: SurfaceId, _: LogicalPoint| vec![NodeId::new(1, 0)];
+    let at = LogicalPoint::new(4.0, 4.0);
+    for e in [
+        InputEvent::DragEnter {
+            surface: s,
+            at,
+            kinds: vec![DropKind::Text],
+        },
+        InputEvent::DragMotion { surface: s, at },
+        InputEvent::DragDrop {
+            surface: s,
+            at,
+            payload: DropPayload::External {
+                kind: DropKind::Text,
+                files: vec![],
+                text: "hi".into(),
+                app_id: None,
+            },
+        },
+        InputEvent::DragLeave { surface: s },
+    ] {
+        f.input(&e, &mut HitOnly(hit));
+    }
+    assert!(f.drain().is_empty());
+}
+
 /// A focused `input` that logic removes loses focus at once, although
 /// it still plays its exit pose (a ghost): keys no longer reach its id.
 #[test]
@@ -731,7 +771,10 @@ fn a_removed_input_playing_its_exit_loses_focus_at_once() {
     assert_eq!(f.router.focused(s), Some(input));
     f.drain();
     let mut d = SceneDiff::new();
-    d.push(SceneOp::Remove { id: input });
+    d.push(SceneOp::Remove {
+        id: input,
+        window: false,
+    });
     assert!(r.apply(d).is_empty());
     assert!(r.tree().is_ghost(input), "it plays its exit");
     let key = InputEvent::Key {

@@ -810,9 +810,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   aligned in its box at flatten time; only a box narrower than it asks
   for a layout of its (whole-pixel) width (decisions.md, wave3-pixels).
 
-- **M4 vocabulary** (planned; docs/m4-plan.md). S-runtime lands these
-  types in wave 0b, with stubs where behaviour is pending, so the streams
-  build against them; `tests/scene_catalogue.rs` stays green. `Prop`
+- **M4 vocabulary** (docs/m4-plan.md). S-runtime landed these types in
+  wave 0b, with stubs where behaviour is pending, so the streams build
+  against them; `strand-compiler/tests/scene_catalogue.rs` checks them
+  against builtin.schema (decisions.md, m4-scene). `Prop`
   stays a `Copy` enum (decisions.md, 2026-10-05 render). The GPU
   backend negotiation, the shader ABI and `Effect::Shader` are in
   "`strand-gpu`" (wave 0c).
@@ -822,13 +823,22 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     (builtin.schema's `wave(period, phase: 0)`), `Noise(Box<TokenExpr>)`
     (`noise(x)`), and `Index` and `Count` (a `letters` letter's `index`
     and the letters' `count`). Arithmetic on them is the existing
-    `Binary`. `Template` gains numeric slots filled like its colours (in
-    field order), so `glow: 10 * wave(2s), $accent.alpha(0.4)` and
-    `conic(from: t * 40deg, …)` travel as one value.
-    `TokenScope::resolve` takes a per-node time context (`t`, `index`,
-    `count`); without one, every time leaf reads 0, as it does under
-    `reduced_motion`. A prop holding a time leaf is frame-driven: its node
-    repaints each frame of its clock while visible, and only it.
+    `Binary`. `Template` gains `numbers: Vec<Option<TokenExpr>>`, slots
+    filled like its colours in `PropValue::numbers_mut` order (field
+    order: a gradient's angle or `from` before its stops' offsets, a
+    border's width before its paint), so `glow: 10 * wave(2s),
+    $accent.alpha(0.4)` and `conic(from: t * 40deg, …)` travel as one
+    value. A scope reads a per-node `TimeContext { t, index, count }`
+    through `TokenScope::with_time(Option<TimeContext>)` (`resolve`,
+    `eval` and `lookup` keep their signatures; an override's right-hand
+    side keeps the node's time); without one, every time leaf reads 0, as
+    it does under `reduced_motion`. `wave` is `0.5 − 0.5·cos(2π(t/period
+    + phase))` (0 to 1, 0 at `t = 0`, phase in periods) and `noise` 1-D
+    gradient noise in −1..1, 0 at whole `x`
+    (`strand_scene::tokens::noise`). A prop holding a time leaf is
+    frame-driven (`PropValue::reads_time`, `TokenExpr::reads_time`;
+    `noise(x)` only when `x` reads `t`): its node repaints each frame of
+    its clock while visible, and only it.
   - **Per-node clocks with frame caps.** A node that reads time or plays
     frames (an animated image at its own rate, `grain` at 12 fps,
     `shimmer` at 30, others at refresh) has a clock; a clock that is not
@@ -845,17 +855,23 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   - **Canvas.** `Prop::Draw` holds `PropValue::DrawList(Arc<[DrawOp]>)`,
     what the VM recorded running `draw: (c) => …` (re-run when what it
     read changes; `c.width`/`c.height` come from layout facts). `DrawOp`
-    is the renderer's own paint vocabulary (paths, rounded rects, fills
-    and strokes with `Paint`, transforms, clips, text by spec); its
-    variants are added with the canvas work.
+    is the renderer's own paint vocabulary in a canvas-2D-like state
+    model (`strand_scene::canvas`): 0b landed one variant per method of
+    builtin.schema's `Canvas` record (`Line`, `Rect`, `Circle`, `Fill`,
+    `Stroke`, `Text`; `DrawOp::METHODS`, checked by the catalogue test).
+    It is `#[non_exhaustive]`: transforms and clips are added with the
+    canvas work.
   - **Effect layers** (design.md, "Runtime changes these need", items 1–4).
     `strand_scene::effect::Effect` is a tagged group effect:
     `ColorMatrix([f32; 20])` (the `filter:` colour functions compose into
-    one), `Blur { radius }`, `Blend(BlendMode)` (`screen`, `add`,
-    `multiply`, `overlay`, `difference`), `Mask(Mask)` (`fade(edge, len)`,
-    `radial(…)`, `shape(name)`), `Opacity(f32)` and `Shader(ShaderPass)`
-    (a bundled GPU effect or a `.wgsl` file's pass; see "`strand-gpu`"). `Effect::reach() -> Insets` is how far it spreads
-    damage. Render's display list gains `Item::Layer { effects, bounds,
+    one, `effect::compose_matrices`), `Blur { radius }` (a standard
+    deviation, as CSS's `blur()`), `Blend(BlendMode)` (`screen`, `add`,
+    `multiply`, `overlay`, `difference`), `Mask(Mask)` (`Fade { edge, len
+    }`, `Radial { at: Anchor, size }`, `Shape(name)`), `Opacity(f32)` and
+    `Shader(ShaderPass)` (a bundled GPU effect or a `.wgsl` file's pass;
+    see "`strand-gpu`"). `Effect::reach() -> Insets` is how far it
+    spreads damage: three standard deviations for a blur, a bundled
+    pass's own, nothing for the rest. Render's display list gains `Item::Layer { effects, bounds,
     items }`, a group whose damage grows by its effects' reach, lowered by
     each backend its own way (vello_cpu `push_layer`; masks always on the
     CPU), and `Item::Raster { node, bounds }`, a CPU raster node
@@ -865,12 +881,14 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     change, in a second 4 MB budget freed when idle. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
-    block is a child node of kind `NodeKind::SvgPart` carrying the id it
+    block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the
+    one kind with no schema element) carrying the id it
     selects as `Prop::Name` (`Text`, without the `#`) and ordinary props,
     which render applies to that layer (decisions.md, 2026-10-05 render).
   - **Keyframes.** `Prop::Play` holds `PropValue::Keyframes(Arc<Keyframes>)`
-    in place of `[name, seq]`: `Keyframes { name, seq, stops: Vec<(f32,
-    Vec<(Prop, PropValue)>)>, duration, delay, repeat, alternate, easing }`,
+    in place of `[name, seq]`: `Keyframes { name, seq: u32, stops:
+    Vec<(f32, Vec<(Prop, PropValue)>)>, duration, delay, repeat:
+    Option<u32> (None forever), alternate, easing }`,
     the compiled `keyframes` block inline (stops as fractions, settings as
     `check::keyframe_settings` allows), so render keeps no keyframe table.
     Keyframes are offsets composed with the node's springs; a new `seq`
@@ -879,7 +897,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     logic sets `Prop::RowCount` (`Number`: all rows) and `Prop::RowFirst`
     (`Number`: the global index of the first mounted row). `SceneOp::Create`
     and `Remove` gain `window: bool`, true for a row the list window mounts
-    or unmounts: render plays no `enter`, `exit` or FLIP for it. Render
+    or unmounts: render plays no `enter`, `exit` or FLIP for it (until
+    S-lists does that, render mounts such rows like any other).
+    `SceneDiff::create` and `SceneDiff::remove` send `false`. Render
     lays rows out at their global indexes (unmounted rows keep their
     extent), scrolls by a paint offset with no relayout, and reports the
     rows it wants (view plus overscan) with `Renderer::take_list_windows()
@@ -899,7 +919,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `apps` service when it builds the `Drop` value (null when no
     installed app has that id).
     `strand_render::input::NodeEvent` gains `Drop { payload, at: u32 }`
-    (`at` a global row index) for `on drop(p, at)`.
+    (`at` a global row index) for `on drop(p, at)`. Until S-lists routes
+    drags, the Router emits nothing for `InputEvent::Drag*` and the demo
+    host does not forward a `Drop` to logic.
   - **Surface poses** (design.md, "Compositor-animated poses").
     `SurfacePose { opacity: f32, scale: f32, offset: LogicalPoint }`. When
     the compositor allows it (`Renderer::set_compositor_poses`) and a
@@ -913,14 +935,24 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     popup's x/y always repaints. Without the protocols, render repaints.
   - **Compositor capabilities.** `CompositorCaps { alpha_modifier,
     viewporter, single_pixel_buffer, background_effect, session_lock,
-    data_device }` (all `bool`), reported once the globals are bound
+    data_device }` (all `bool`; `delegates_poses()` needs the first
+    two), reported once the globals are bound
     (`SurfaceHost::compositor_caps`); the host hands render what it uses
     (`set_compositor_blur`, `set_compositor_poses`).
+  - **Backends** (`strand_scene::backend`): `Backend` (`Cpu`,
+    `GpuPresent`, `GpuReadback`), `BackendChange` (`Promote(surface)`,
+    `Demote(surface)`, `Drop`), `GpuStatus` (`Unused`, `Starting`,
+    `Up(AdapterInfo)`, `Unavailable { reason }`, `GpuStatus::NOT_BUILT`)
+    and `AdapterInfo { name, driver, software }` live here, so render,
+    logic and the binary name them in a CPU-only build; `strand-gpu`
+    reports its adapter as this `AdapterInfo`.
   - **Scrims and fillets.** `SurfaceSpec` gains `scrim: Option<Color>`
     (`scrim:` resolved through tokens; `popup` and `panel` only, checked by
     the compiler). A scrim is a single-pixel buffer (design.md), so 0b
     narrows builtin.schema's `scrim: paint` to `scrim: color` and a
-    gradient scrim is a type error. `attach: top` fillets are drawn outside the box beside
+    gradient scrim is a type error. `SurfaceSpec::resolve` reads a
+    `Color` (or a solid `Paint`) on a `popup` or `panel` and leaves it
+    `None` elsewhere. `attach: top` fillets are drawn outside the box beside
     the attached edge: render adds the fillet radius to `overhang` on the
     two sides along that edge, so the input region stays the box, and
     placement puts the box at gap 0 from the attached edge. Fillets take
@@ -2220,7 +2252,10 @@ and the connection):
   (innermost first, as any surface's are), and it is not shown again until
   its spec closes. `Painter::blur_region` is read for the blur ladder
   (M4); nothing is sent yet.
-- **M4 additions** (planned; docs/m4-plan.md).
+- **M4 additions** (docs/m4-plan.md). 0b landed the host hooks as no-op
+  defaults (`compositor_caps`, `gpu_release`, `lock_changed(LockState)`,
+  `LockState` beside `SurfaceHost`); the manager calls them as the
+  streams below build their parts.
   - GPU hand-off (`gpu_handoff.rs`, feature `gpu`): `State::raw_handles(
     surface) -> Option<RawHandles>`, `State::hand_off(surface)`,
     `State::take_back(surface)` and the hook
@@ -2443,7 +2478,15 @@ subtree's pixels: the F4 cached group) or `Backdrop` (`backdrop:
 glass()` gets what is under it in the surface). Render packs `uniforms`
 each frame from the springing `Prop::Uniforms` in the code's slot order.
 The reach of a bundled pass is its own (bloom's radius, chromatic's
-offset, wobble's amplitude); a file's pass draws inside its box.
+offset, wobble's amplitude: each effect's builder puts it in uniform
+slot 0, which `Bundled::reach` reads); a file's pass draws inside its
+box. As landed in 0b, `Bundled` has nine variants for the eight
+effects, CRT and chromatic aberration being two spellings (`bloom`,
+`glass`, `particles`, `tilt`, `wobble`, `crt`, `chromatic`, `aurora`,
+`backdrop_blur`), and `ShaderCode { path, wgsl, uniforms:
+Vec<UniformSlot { name, ty: UniformType, offset } > }` holds the file
+without the prelude (`ShaderCode::module()` prepends it; offsets are in
+`f32`s and follow WGSL's uniform layout, filled by the checker).
 
 The ABI (the prelude `strand_scene::shader::PRELUDE`, prepended by the
 checker and by the GPU thread alike): Strand supplies the vertex stage

@@ -452,7 +452,7 @@ fn a_surface_layer_change_recreates_only_it() {
     assert!(report.classes.contains(&EditClass::Surface), "{report:?}");
     assert!(
         ops.iter()
-            .any(|o| matches!(o, SceneOp::Remove { id } if *id == panel)),
+            .any(|o| matches!(o, SceneOp::Remove { id, .. } if *id == panel)),
         "{ops:#?}"
     );
     assert_eq!(shell.scene.of_kind(NodeKind::Bar), [bar]);
@@ -500,7 +500,7 @@ fn a_surface_namespace_or_kind_change_recreates_only_it_with_its_state() {
         assert!(report.reset.is_empty(), "{report:?}");
         assert!(
             ops.iter()
-                .any(|o| matches!(o, SceneOp::Remove { id } if *id == before)),
+                .any(|o| matches!(o, SceneOp::Remove { id, .. } if *id == before)),
             "{kind} {name} {layer}: {ops:#?}"
         );
         assert_ne!(surface(&shell), before, "recreated");
@@ -952,7 +952,7 @@ fn external_nodes_survive_reloads() {
     let (_, ops) = shell.reload(&[("bar.strand", &edited)]);
     assert!(
         ops.iter()
-            .all(|o| !matches!(o, SceneOp::Remove { id } if *id == panel))
+            .all(|o| !matches!(o, SceneOp::Remove { id, .. } if *id == panel))
     );
     assert_eq!(shell.scene.find_text("bar.strand:3: oops"), Some(text));
     let build = compile(Some(&shell.build), &[("bar.strand", CLOCK)]);

@@ -355,6 +355,7 @@ mod tests {
         let mut closed = SceneDiff::new();
         closed.push(SceneOp::Remove {
             id: NodeId::new(7, 0),
+            window: false,
         });
         assert!(structural(&closed));
     }
