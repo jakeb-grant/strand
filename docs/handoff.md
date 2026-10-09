@@ -112,7 +112,7 @@ and the full shell warns above 64 MB and fails above 70 MB
     on failure.
   - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
     (read before `max_delay`) and
-    `strand/src/run.rs::tests::a_save_fixed_at_once_never_opens_the_overlay`
+    `strand/src/run/tests.rs::a_save_fixed_at_once_never_opens_the_overlay`
     (the overlay flashed on the formatted save), once each in the `test`
     job of run 37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30
     and 0 of 15 failed in the container.

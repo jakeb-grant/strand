@@ -29,7 +29,7 @@ carries a change of the desktop's reduced-motion preference
 (`system.reduced_motion`) to render (sent even with no ops). No locks are shared across
 threads on a hot path.
 
-`strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
+`strand run [dir]` (`crates/strand/src/run/`) is this wiring: the main
 thread's surface host forwards the monitor hooks (`screens` as a list of
 plain `ScreenInfo`s, `monitor_forgotten` as `Forget(id)`), pointer input
 on the node under the pointer (`Renderer::hit`'s chain: `hover` along
@@ -107,7 +107,7 @@ a resume or a clock step wakes it at once). After a structural burst
 a reload, a surface, popup, toast or row appearing or going), the
 logic thread, which sent it, and `strand run`'s main thread, which
 applied it (a dispatch timeout), each force one allocator collect
-500 ms after their last wake (`run::Trimmer`, `run::structural`,
+500 ms after their last wake (`run::trim::Trimmer`, `run::trim::structural`,
 `mi_collect(true)`), so what the burst freed is returned to the system
 once the shell goes quiet; a tick or a poll only sets props and pays no
 trim wakeup, and each loop instead trims inline at the end of a wake it
@@ -133,7 +133,7 @@ runs it once it has been quiet for 500 ms (one wake, only ever after
 real work and at most once per 5 s, inside the burst's settling as the
 main thread's delayed trim; so an idle worker never wakes, and a skip
 past that wake waits for the next drain allowed). The main and logic
-threads' delayed trim (`run::Trimmer`, armed by a structural diff) is
+threads' delayed trim (`run::trim::Trimmer`, armed by a structural diff) is
 pushed back by each wake while armed, but no further than 5 s after it
 was armed, so a surface that never settles still trims. The memory budget also rests on the workspace's
 release profile: the root `Cargo.toml`'s `[profile.release.package]`
@@ -173,6 +173,18 @@ loop arms no wall-clock wake), which the M2 acceptance tests drive. With
 either, the IPC command `mock` (`{"v": 1, "cmd": "mock", "notify": {…}
 | "volume" | "muted" | "brightness"}`) reports a service change as the
 M3 services will; without `STRAND_MOCK` it is refused.
+
+Module map of `crates/strand/src/run/` (split by concern in M4 wave 0
+with no behaviour change; the `run::` items other crates' modules use
+are re-exported from `mod.rs`): `mod.rs` (the messages, `ScreenInfo`,
+`NodeEvent`, `ToLogic`, `set_screens`, `storage`, and the main thread:
+signals, cache changes, `run`), `logic.rs` (`Live`, `logic`, the logic
+thread's boot and step loop), `sleep.rs` (the logic thread's calloop
+sleep: `Inbox`, `Sleeper`), `shell.rs` (`Shell`: messages, commits and
+reloads, IPC requests, `strand watch` events), `lock.rs` (the deferred
+load committed after the unlock), `trim.rs` (`trim`, `Trimmer`,
+`structural`) and `tests.rs` (`run::tests`). M4 streams add `feeds.rs`,
+`lists.rs` and `gpu.rs` beside them, and S-lock grows `lock.rs`.
 
 **IPC** (`crates/strand/src/ipc.rs`): a Unix socket at `$STRAND_SOCKET`
 or `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock`, newline-delimited
