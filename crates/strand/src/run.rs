@@ -3024,7 +3024,7 @@ pub(crate) mod tests {
     /// buffer through the real watcher, compiler worker, logic thread
     /// and renderer (the compositor's present is not in it). Checked on
     /// an optimised build only, against the budget itself: CI runs
-    /// `cargo test --release -p strand --bin strand reload_latency`
+    /// `cargo test --profile timing -p strand --bin strand reload_latency`
     /// (an unoptimised repaint alone takes about half the token budget,
     /// so a debug run would measure the build, not the design).
     /// `STRAND_LATENCY_ROUNDS` sets the edits per kind (20).
