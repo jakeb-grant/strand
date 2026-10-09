@@ -1,7 +1,7 @@
 //! (M4) Per-node clocks with frame caps (design.md, "Runtime changes these
-//! need", item 4): a node that reads time or animates by nature has a
-//! clock, which runs at refresh or at its own capped rate (`shimmer` at
-//! 30 fps). Each surface keeps the clocks its last fresh frame drew;
+//! need", item 4): a node that reads time or draws a CPU raster source
+//! has a clock, which runs at refresh or at its own capped rate
+//! (`shimmer` at 30 fps). Each surface keeps the clocks its last fresh frame drew;
 //! they keep its frame loop running while they are drawn, and stop it
 //! when none is left.
 //!
@@ -41,17 +41,22 @@ pub enum Rate {
     Every(Duration),
 }
 
-/// The clock of `node`, if it has one. A built-in `effect` animates by
-/// nature (`shimmer` at 30 fps, the others at refresh) and a CPU raster
-/// node at its source's `raster` rate (the faster of the two if both);
-/// otherwise a node whose props read time (`timed`) runs at refresh. A
-/// node's clock is one clock: its time-bound props follow its cap.
+/// The clock of `node`, if it has one: a CPU raster node's at its
+/// source's `raster` rate, a node whose props read time (`timed`) at
+/// refresh, either capped by its kind (`effect shimmer` at 30 fps; the
+/// faster of the two for a raster node). A node's clock is one clock:
+/// its time-bound props follow its cap. A built-in `effect` with neither
+/// has no clock: until something draws it (S-effects attaches its
+/// source), it would only keep the frame loop running with nothing to
+/// show, and an idle shell does no work.
 pub(crate) fn rate(node: &Node, timed: bool, raster: Option<Rate>) -> Option<Rate> {
-    [kind_rate(node), raster]
-        .into_iter()
-        .flatten()
-        .reduce(Rate::faster)
-        .or(timed.then_some(Rate::Refresh))
+    let cap = kind_cap(node);
+    match (raster, cap) {
+        (Some(r), Some(c)) => Some(r.faster(c)),
+        (Some(r), None) => Some(r),
+        (None, _) if timed => Some(cap.unwrap_or(Rate::Refresh)),
+        (None, _) => None,
+    }
 }
 
 impl Rate {
@@ -64,17 +69,16 @@ impl Rate {
     }
 }
 
-/// The rate a node's kind animates at by nature.
-fn kind_rate(node: &Node) -> Option<Rate> {
+/// The frame cap a node's kind puts on its clock.
+fn kind_cap(node: &Node) -> Option<Rate> {
     if node.kind == NodeKind::Effect {
         let style = match node.get(Prop::Style) {
             Some(PropValue::Keyword(k) | PropValue::Text(k)) => k.as_str(),
             _ => "",
         };
-        return Some(match style {
-            "shimmer" => Rate::Every(SHIMMER),
-            _ => Rate::Refresh,
-        });
+        if style == "shimmer" {
+            return Some(Rate::Every(SHIMMER));
+        }
     }
     None
 }

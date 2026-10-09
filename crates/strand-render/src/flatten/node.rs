@@ -780,7 +780,8 @@ impl<'a> Flattener<'a> {
         }
         // Drawn: its clock runs, unless all it draws is outside the clip
         // and nothing that places it follows time (it stays out). A
-        // built-in `effect` draws in its box.
+        // built-in `effect` draws in its box (it has a clock only when it
+        // reads time or has a raster source: `clock::rate`).
         let moves = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotate, Prop::Shadow]
             .into_iter()
             .any(follows);

@@ -2105,6 +2105,39 @@ fn hidden_time_nodes_request_no_frames() {
     assert!(r.wants_frame(BAR), "moving in: its clock runs");
 }
 
+/// design.md: an idle shell does zero work. A built-in `effect` that
+/// reads no time and has no raster source draws nothing that changes
+/// (nothing draws the built-in effects yet: S-effects), so it has no
+/// clock: the surface asks for no frame and no wake.
+#[test]
+fn effect_nodes_without_time_or_a_source_stay_idle() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    for (i, style) in ["lightning", "sparks", "ripple", "aurora", "shimmer"]
+        .into_iter()
+        .enumerate()
+    {
+        b.node(
+            NodeKind::Effect,
+            Some(root),
+            vec![
+                (Prop::X, num(10.0 + 30.0 * i as f32)),
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(20.0)),
+                (Prop::Style, PropValue::Keyword(style.into())),
+            ],
+        );
+    }
+    let (mut r, mut buf) = clocked(b.diff);
+    let mut k = 1;
+    while r.wants_frame(BAR) {
+        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        k += 1;
+        assert!(k < 5, "the first frame settles: no clock runs");
+    }
+    assert_eq!(r.next_wake(), None, "no wake either");
+}
+
 /// `effect shimmer` (30 fps cap) turning with `t`, and a square turning
 /// at refresh, on a fake 60 Hz and 144 Hz output.
 fn shimmer_bar(capped: bool) -> (SceneDiff, NodeId) {
@@ -2247,6 +2280,8 @@ fn all_idle_clocks_stop_the_frame_loop() {
             (Prop::X, num(150.0)),
             (Prop::Y, num(10.0)),
             (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#f38ba8")),
+            (Prop::Rotate, spin(90.0)),
             (Prop::Style, PropValue::Keyword("shimmer".into())),
         ],
     );

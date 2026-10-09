@@ -177,7 +177,7 @@ pub struct Flattened {
     /// (the blur ladder's first rung, M4).
     pub blur: Vec<BlurRegion>,
     /// (M4) The clocks of drawn, visible nodes that read time (`t`,
-    /// `wave(…)`, `noise(t)`) or animate by nature (a built-in `effect`):
+    /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
 }
