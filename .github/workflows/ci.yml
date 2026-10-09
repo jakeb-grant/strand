@@ -256,6 +256,61 @@ jobs:
           path: target/matrix/
           if-no-files-found: ignore
 
+  # The lock screen's VM tier (design.md, "Testing": a real PAM stack in
+  # a QEMU VM "before touching the lock code, and before releases"):
+  # scripts/container/lockvm.sh, as on the laptop. GitHub's standard
+  # Linux runners expose /dev/kvm (hardware-accelerated Android
+  # virtualization, 2024-04-02) once a udev rule opens it; that sudo
+  # step runs on the runner only, never in the container scripts. A
+  # runner without /dev/kvm fails here instead of emulating. Runs
+  # nightly, on demand, on tags and on pushes and pull requests that
+  # touch the lock code or the harness.
+  lock-vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lock paths changed
+        id: paths
+        if: (github.event_name == 'push' && github.ref_type == 'branch') || github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            lock:
+              - 'crates/strand-auth/**'
+              - 'crates/strand-surface/src/session_lock.rs'
+              - 'crates/strand-surface/tests/session_lock.rs'
+              - 'crates/strand-render/src/lock_fallback.rs'
+              - 'crates/strand/src/run/lock.rs'
+              - 'crates/strand/tests/lock.rs'
+              - 'scripts/lockvm/**'
+              - 'scripts/container/*lockvm*'
+              - 'scripts/container/lockvm/**'
+      - name: Decide
+        id: run
+        run: |
+          case "${{ github.event_name }}:${{ github.ref_type }}:${{ steps.paths.outputs.lock }}" in
+            schedule:* | workflow_dispatch:* | push:tag:* | *:true) echo "go=true" >>"$GITHUB_OUTPUT" ;;
+            *) echo "go=false" >>"$GITHUB_OUTPUT"; echo "no lock paths changed: the lock VM tier is skipped" ;;
+          esac
+      - name: KVM for the runner's user
+        if: steps.run.outputs.go == 'true'
+        run: |
+          ls -l /dev/kvm || { echo "::error::this runner has no /dev/kvm"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm || { echo "::error::/dev/kvm is not read-writable"; exit 1; }
+      # The harness's smoke: boot, the test user, headless sway, pam_unix
+      # through /etc/pam.d/strand with the right and a wrong password.
+      - name: Lock VM smoke
+        if: steps.run.outputs.go == 'true'
+        run: scripts/container/lockvm.sh
+        env:
+          LOCKVM_TIMEOUT: "300"
+
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04

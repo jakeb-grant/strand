@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Inside lockvm.sh's container: boots the guest (Dockerfile.lockvm) with
+# the checkout shared at its own path and runs CMD in it as root (cwd:
+# the checkout). Exits with CMD's status; 125 when the guest stopped
+# without one (a crash or a timeout).
+#
+# Usage: lockvm-run-guest WORKDIR CMD [ARGS...]
+# Env:   LOCKVM_TCG=1 software emulation (no /dev/kvm); LOCKVM_TIMEOUT
+#        (s, default 600); LOCKVM_MEM (default 2G); LOCKVM_CPUS (4).
+set -uo pipefail
+work=$1
+shift
+ctl=$(mktemp -d /tmp/lockvm-ctl.XXXXXX)
+trap 'rm -rf "$ctl"' EXIT
+printf '%s\n' "$work" >"$ctl/workdir"
+{
+  echo 'set -uo pipefail'
+  echo 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8'
+  printf '%q ' "$@"
+  echo
+} >"$ctl/cmd"
+
+if [ "${LOCKVM_TCG:-}" = 1 ]; then
+  accel=(-accel tcg -cpu max)
+else
+  accel=(-accel kvm -cpu host)
+fi
+start=$SECONDS
+timeout --foreground "${LOCKVM_TIMEOUT:-600}" qemu-system-x86_64 "${accel[@]}" \
+  -m "${LOCKVM_MEM:-2G}" -smp "${LOCKVM_CPUS:-4}" \
+  -kernel /lockvm/vmlinuz \
+  -append "root=/dev/vda rw rootfstype=ext4 init=/sbin/lockvm-init console=ttyS0 quiet loglevel=3 panic=-1" \
+  -drive file=/lockvm/rootfs.img,if=virtio,format=raw,snapshot=on \
+  -virtfs local,path="$ctl",mount_tag=ctl,security_model=none \
+  -virtfs local,path="$work",mount_tag=work,security_model=none \
+  -nic none -nographic -no-reboot -serial stdio -monitor none
+qemu=$?
+echo "lockvm: guest stopped after $((SECONDS - start)) s (qemu exit $qemu)"
+if [ ! -s "$ctl/status" ]; then
+  [ "$qemu" = 124 ] && echo "lockvm: timed out after ${LOCKVM_TIMEOUT:-600} s"
+  echo "lockvm: the guest stopped without an exit status (crash or timeout)"
+  exit 125
+fi
+exit "$(cat "$ctl/status")"

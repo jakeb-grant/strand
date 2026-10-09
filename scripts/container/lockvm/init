@@ -1,0 +1,37 @@
+#!/bin/bash
+# PID 1 of the lock VM guest (Dockerfile.lockvm). Mounts the basics and
+# the two 9p shares QEMU offers (lockvm-run-guest): `ctl` at /lockvm
+# (the command to run and its exit status) and `work` at the checkout's
+# own path, runs /lockvm/cmd as root in the checkout, writes its exit
+# status to /lockvm/status and powers off. Never returns: PID 1 exiting
+# panics the kernel, which QEMU (-no-reboot, panic=-1) turns into an
+# exit without a status, reported as a crash.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o gid=5,mode=0620 devpts /dev/pts
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+mount -t tmpfs -o mode=0755 tmpfs /run
+mount -t tmpfs -o mode=1777 tmpfs /tmp
+hostname lockvm
+echo 1 >/proc/sys/kernel/sysrq
+
+off() { sync; echo o >/proc/sysrq-trigger; sleep 10; }
+
+for m in 9pnet_virtio 9p; do modprobe "$m" 2>/dev/null; done
+opts=trans=virtio,version=9p2000.L,msize=1048576,cache=none
+mkdir -p /lockvm
+mount -t 9p -o "$opts" ctl /lockvm || { echo "lockvm-init: no ctl share"; off; }
+work=$(cat /lockvm/workdir)
+mkdir -p "$work"
+mount -t 9p -o "$opts" work "$work" || { echo "lockvm-init: no work share"; off; }
+mkdir -p /run/user/1000 && chown 1000:1000 /run/user/1000 && chmod 0700 /run/user/1000
+echo "lockvm-init: up in $(cut -d' ' -f1 /proc/uptime) s; $(uname -r)"
+
+cd "$work" || off
+status=0
+setsid bash /lockvm/cmd </dev/null || status=$?
+echo "$status" >/lockvm/status
+off
