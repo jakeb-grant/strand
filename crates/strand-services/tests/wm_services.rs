@@ -356,3 +356,86 @@ fn the_compositor_stores_follow_hyprland() {
     s.shutdown();
     wm::configure(None);
 }
+
+/// The `windows` store with no IPC adapter (sway's turned off, as on
+/// labwc, wayfire or river): `windows.focused` and `win.focus()`/
+/// `win.close()` come from `zwlr_foreign_toplevel_management_v1` on the
+/// `strand-toplevel` thread.
+#[test]
+fn the_windows_store_follows_wlr_management_without_an_adapter() {
+    let _serial = serial();
+    let Some(sway) = Sway::start("the_windows_store_follows_wlr_management_without_an_adapter")
+    else {
+        return;
+    };
+    wm::configure(Some(WmConfig {
+        backend: None,
+        wayland: Some(WaylandTarget::Socket(sway.socket())),
+        desktop: Some("labwc".into()),
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    until(&rt, &s, "boot", || {
+        b.wm.cells().snapshot(&rt).is_ok_and(|w| w.name == "labwc")
+    });
+    let focused_app = || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.focused)
+            .map(|f| f.app_id)
+    };
+    let a = TestWindow::open(&sway.socket(), "strand-a", "alpha");
+    let _b = TestWindow::open(&sway.socket(), "strand-b", "beta");
+    until(&rt, &s, "b focused", || {
+        focused_app().as_deref() == Some("strand-b")
+            && b.windows
+                .cells()
+                .snapshot(&rt)
+                .is_ok_and(|w| w.all.len() == 2)
+    });
+    let item = |app: &str| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .unwrap()
+            .all
+            .into_iter()
+            .find(|w| w.app_id == app)
+            .unwrap()
+    };
+    b.windows
+        .act(
+            &rt,
+            WindowAction::Focus {
+                item: item("strand-a"),
+            },
+        )
+        .unwrap();
+    until(&rt, &s, "a focused", || {
+        focused_app().as_deref() == Some("strand-a")
+    });
+    b.windows
+        .act(
+            &rt,
+            WindowAction::Close {
+                item: item("strand-a"),
+            },
+        )
+        .unwrap();
+    until(&rt, &s, "a closed", || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .is_ok_and(|w| w.all.len() == 1 && w.all[0].app_id == "strand-b")
+    });
+    assert!(a.closed.load(Ordering::SeqCst));
+    s.shutdown();
+    wm::configure(None);
+}

@@ -1,6 +1,8 @@
 //! The protocol client against a fake compositor that implements
 //! `ext-foreign-toplevel-list-v1` and `ext-workspace-v1` (wayland-server),
-//! since the sway in CI (1.9) offers neither.
+//! since the sway in CI (1.9) offers neither, and optionally
+//! `zwlr_foreign_toplevel_management_v1` with a seat: the shape of labwc,
+//! a compositor with no IPC adapter.
 
 mod common;
 
@@ -25,8 +27,12 @@ use wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
     ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
+use wayland_protocols_wlr::foreign_toplevel::v1::server::{
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
+};
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
-use wayland_server::protocol::wl_output;
+use wayland_server::protocol::{wl_output, wl_seat};
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
     Resource,
@@ -35,6 +41,10 @@ use wayland_server::{
 #[derive(Debug)]
 enum Cmd {
     AddToplevel(&'static str, &'static str, &'static str),
+    /// A toplevel on output `n` (by the order of `outputs`).
+    AddToplevelOn(&'static str, &'static str, &'static str, usize),
+    /// Activates a toplevel (and deactivates the others), as a click would.
+    Activate(&'static str),
     SetTitle(&'static str, &'static str),
     CloseToplevel(&'static str),
     AddWorkspace(&'static str, bool),
@@ -52,7 +62,46 @@ struct Toplevel {
     ident: String,
     title: String,
     app_id: String,
+    /// The output it is on (by the order of `outputs`).
+    output: usize,
+    activated: bool,
+    minimized: bool,
     handles: Vec<ExtForeignToplevelHandleV1>,
+    wlr: Vec<ZwlrForeignToplevelHandleV1>,
+}
+
+impl Toplevel {
+    fn new(ident: &str, title: &str, app_id: &str, output: usize) -> Self {
+        Toplevel {
+            ident: ident.into(),
+            title: title.into(),
+            app_id: app_id.into(),
+            output,
+            activated: false,
+            minimized: false,
+            handles: Vec::new(),
+            wlr: Vec::new(),
+        }
+    }
+
+    /// Its wlr state array.
+    fn wlr_state(&self) -> Vec<u8> {
+        let mut values = Vec::new();
+        if self.activated {
+            values.push(u32::from(zwlr_foreign_toplevel_handle_v1::State::Activated));
+        }
+        if self.minimized {
+            values.push(u32::from(zwlr_foreign_toplevel_handle_v1::State::Minimized));
+        }
+        values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+    }
+
+    fn send_wlr_state(&self) {
+        for h in &self.wlr {
+            h.state(self.wlr_state());
+            h.done();
+        }
+    }
 }
 
 struct Ws {
@@ -66,6 +115,7 @@ struct Ws {
 #[derive(Default)]
 struct Server {
     lists: Vec<ExtForeignToplevelListV1>,
+    wlr_managers: Vec<ZwlrForeignToplevelManagerV1>,
     toplevels: Vec<Toplevel>,
     managers: Vec<ExtWorkspaceManagerV1>,
     /// Per manager, one group per output name.
@@ -76,9 +126,63 @@ struct Server {
     workspaces: Vec<Ws>,
     pending: Vec<String>,
     activated: Arc<Mutex<Vec<String>>>,
+    /// The wlr requests received: `activate <ident>`, `close <ident>`,
+    /// `minimize <ident>`.
+    wlr_requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl Server {
+    fn send_wlr_toplevel(
+        dh: &DisplayHandle,
+        manager: &ZwlrForeignToplevelManagerV1,
+        outputs: &[(usize, wl_output::WlOutput)],
+        t: &mut Toplevel,
+    ) -> Option<()> {
+        let client = manager.client()?;
+        let h = client
+            .create_resource::<ZwlrForeignToplevelHandleV1, String, Server>(
+                dh,
+                manager.version(),
+                t.ident.clone(),
+            )
+            .ok()?;
+        manager.toplevel(&h);
+        h.title(t.title.clone());
+        h.app_id(t.app_id.clone());
+        for (i, o) in outputs {
+            if *i == t.output && o.client().as_ref() == Some(&client) {
+                h.output_enter(o);
+            }
+        }
+        h.state(t.wlr_state());
+        h.done();
+        t.wlr.push(h);
+        Some(())
+    }
+
+    fn close(&mut self, ident: &str) {
+        if let Some(i) = self.toplevels.iter().position(|t| t.ident == ident) {
+            for h in &self.toplevels[i].handles {
+                h.closed();
+            }
+            for h in &self.toplevels[i].wlr {
+                h.closed();
+            }
+            self.toplevels.remove(i);
+        }
+    }
+
+    fn activate(&mut self, ident: &str) {
+        for t in &mut self.toplevels {
+            let on = t.ident == ident;
+            if t.activated != on || (on && t.minimized) {
+                t.activated = on;
+                t.minimized &= !on;
+                t.send_wlr_state();
+            }
+        }
+    }
+
     fn send_toplevel(
         dh: &DisplayHandle,
         list: &ExtForeignToplevelListV1,
@@ -143,17 +247,19 @@ impl Server {
     fn apply(&mut self, dh: &DisplayHandle, cmd: Cmd) {
         match cmd {
             Cmd::AddToplevel(ident, title, app) => {
-                let mut t = Toplevel {
-                    ident: ident.into(),
-                    title: title.into(),
-                    app_id: app.into(),
-                    handles: Vec::new(),
-                };
+                self.apply(dh, Cmd::AddToplevelOn(ident, title, app, 0));
+            }
+            Cmd::AddToplevelOn(ident, title, app, output) => {
+                let mut t = Toplevel::new(ident, title, app, output);
                 for l in &self.lists {
                     Self::send_toplevel(dh, l, &mut t);
                 }
+                for m in &self.wlr_managers {
+                    Self::send_wlr_toplevel(dh, m, &self.outputs, &mut t);
+                }
                 self.toplevels.push(t);
             }
+            Cmd::Activate(ident) => self.activate(ident),
             Cmd::SetTitle(ident, title) => {
                 if let Some(t) = self.toplevels.iter_mut().find(|t| t.ident == ident) {
                     t.title = title.into();
@@ -161,16 +267,13 @@ impl Server {
                         h.title(title.into());
                         h.done();
                     }
-                }
-            }
-            Cmd::CloseToplevel(ident) => {
-                if let Some(i) = self.toplevels.iter().position(|t| t.ident == ident) {
-                    for h in &self.toplevels[i].handles {
-                        h.closed();
+                    for h in &t.wlr {
+                        h.title(title.into());
+                        h.done();
                     }
-                    self.toplevels.remove(i);
                 }
             }
+            Cmd::CloseToplevel(ident) => self.close(ident),
             Cmd::AddWorkspace(name, active) => self.apply(dh, Cmd::AddWorkspaceOn(name, active, 0)),
             Cmd::AddWorkspaceOn(name, active, group) => {
                 let mut ws = Ws {
@@ -403,6 +506,14 @@ impl GlobalDispatch<wl_output::WlOutput, usize> for Server {
                 m.done();
             }
         }
+        for t in state.toplevels.iter().filter(|t| t.output == *index) {
+            for h in &t.wlr {
+                if h.client().as_ref() == Some(client) {
+                    h.output_enter(&o);
+                    h.done();
+                }
+            }
+        }
         state.outputs.push((*index, o));
     }
 }
@@ -420,6 +531,112 @@ impl Dispatch<wl_output::WlOutput, usize> for Server {
     }
 }
 
+impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for Server {
+    fn bind(
+        state: &mut Self,
+        dh: &DisplayHandle,
+        _: &Client,
+        resource: New<ZwlrForeignToplevelManagerV1>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        let manager = init.init(resource, ());
+        for t in &mut state.toplevels {
+            Self::send_wlr_toplevel(dh, &manager, &state.outputs, t);
+        }
+        state.wlr_managers.push(manager);
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        manager: &ZwlrForeignToplevelManagerV1,
+        request: zwlr_foreign_toplevel_manager_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        if let zwlr_foreign_toplevel_manager_v1::Request::Stop = request {
+            manager.finished();
+            state.wlr_managers.retain(|m| m != manager);
+        }
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelHandleV1, String> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        handle: &ZwlrForeignToplevelHandleV1,
+        request: zwlr_foreign_toplevel_handle_v1::Request,
+        ident: &String,
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        use zwlr_foreign_toplevel_handle_v1::Request;
+        let log = |what: &str| {
+            state
+                .wlr_requests
+                .lock()
+                .unwrap()
+                .push(format!("{what} {ident}"));
+        };
+        match request {
+            Request::Activate { .. } => {
+                log("activate");
+                state.activate(ident);
+            }
+            Request::Close => {
+                log("close");
+                state.close(ident);
+            }
+            Request::SetMinimized => {
+                log("minimize");
+                if let Some(t) = state.toplevels.iter_mut().find(|t| t.ident == *ident) {
+                    t.minimized = true;
+                    t.activated = false;
+                    t.send_wlr_state();
+                }
+            }
+            Request::Destroy => {
+                for t in &mut state.toplevels {
+                    t.wlr.retain(|h| h != handle);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl GlobalDispatch<wl_seat::WlSeat, ()> for Server {
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<wl_seat::WlSeat>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        let seat = init.init(resource, ());
+        seat.capabilities(wl_seat::Capability::Keyboard);
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for Server {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &wl_seat::WlSeat,
+        _: wl_seat::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+    }
+}
+
 /// The fake compositor on its own thread.
 struct Fake {
     _dir: tempfile::TempDir,
@@ -427,6 +644,7 @@ struct Fake {
     tx: mpsc::Sender<Cmd>,
     stop: Arc<AtomicBool>,
     activated: Arc<Mutex<Vec<String>>>,
+    wlr_requests: Arc<Mutex<Vec<String>>>,
     clients: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
@@ -438,6 +656,12 @@ impl Fake {
 
     /// A fake with one `wl_output` (and one workspace group) per name.
     fn start_with(with_workspaces: bool, outputs: &'static [&'static str]) -> Fake {
+        Self::start_opts(with_workspaces, false, outputs)
+    }
+
+    /// A fake that also offers `zwlr_foreign_toplevel_management_v1` (v3)
+    /// and a seat.
+    fn start_opts(with_workspaces: bool, wlr: bool, outputs: &'static [&'static str]) -> Fake {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("wayland-fake");
         let listener = ListeningSocket::bind_absolute(socket.clone()).unwrap();
@@ -446,6 +670,8 @@ impl Fake {
         let activated = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = stop.clone();
         let thread_activated = activated.clone();
+        let wlr_requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_wlr_requests = wlr_requests.clone();
         let clients = Arc::new(AtomicUsize::new(0));
         let thread_clients = clients.clone();
         let thread = std::thread::spawn(move || {
@@ -455,11 +681,16 @@ impl Fake {
             if with_workspaces {
                 dh.create_global::<Server, ExtWorkspaceManagerV1, ()>(1, ());
             }
+            if wlr {
+                dh.create_global::<Server, ZwlrForeignToplevelManagerV1, ()>(3, ());
+                dh.create_global::<Server, wl_seat::WlSeat, ()>(1, ());
+            }
             for i in 0..outputs.len() {
                 dh.create_global::<Server, wl_output::WlOutput, usize>(4, i);
             }
             let mut state = Server {
                 activated: thread_activated,
+                wlr_requests: thread_wlr_requests,
                 output_names: outputs.iter().map(|o| o.to_string()).collect(),
                 ..Default::default()
             };
@@ -494,6 +725,7 @@ impl Fake {
             tx,
             stop,
             activated,
+            wlr_requests,
             clients,
             thread: Some(thread),
         }
@@ -952,4 +1184,135 @@ async fn a_late_adapter_resets_the_lists() {
     });
     assert_eq!((ws_resets, win_resets), (2, 2), "{:#?}", c.log);
     service.abort();
+}
+
+/// labwc's shape: no IPC adapter; `ext-foreign-toplevel-list-v1`,
+/// `zwlr_foreign_toplevel_management_v1` and `ext-workspace-v1` on two
+/// outputs. Windows come from the wlr protocol (ids, focus, minimized),
+/// each joined to its list identifier; the activated window says which
+/// output has the keyboard, so the workspace shown there is focused; the
+/// window actions reach the compositor as wlr requests.
+#[tokio::test]
+async fn wlr_management_serves_focus_state_and_window_actions() {
+    let fake = Fake::start_opts(true, true, &["FAKE-1", "FAKE-2"]);
+    fake.cmd(Cmd::AddWorkspaceOn("1", true, 0));
+    fake.cmd(Cmd::AddWorkspaceOn("2", true, 1));
+    fake.cmd(Cmd::AddToplevelOn("tl-1", "~", "foot", 0));
+    fake.cmd(Cmd::AddToplevelOn("tl-2", "Firefox", "firefox", 1));
+    fake.cmd(Cmd::Activate("tl-1"));
+    std::thread::sleep(Duration::from_millis(50));
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        desktop: Some("labwc".into()),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| {
+        m.windows.len() == 2
+            && m.focused_screen.as_deref() == Some("FAKE-1")
+            && m.windows.iter().all(|(_, w)| w.toplevel.is_some())
+    })
+    .await;
+    let m = &c.mirror;
+    assert!(m.sources.toplevel_management && m.sources.toplevel_list);
+    assert_eq!(m.sources.ipc, None);
+    assert_eq!(m.name, "labwc");
+    let foot = m.window_by_app("foot").unwrap().clone();
+    let firefox = m.window_by_app("firefox").unwrap().clone();
+    assert!(foot.id.starts_with("wlr-"), "{foot:?}");
+    assert_eq!(foot.toplevel.as_deref(), Some("tl-1"));
+    assert_eq!(firefox.toplevel.as_deref(), Some("tl-2"));
+    assert_eq!(m.focused_window.as_ref().map(|w| &w.id), Some(&foot.id));
+    assert_eq!(
+        m.focused_workspace.as_ref().map(|w| w.name.as_str()),
+        Some("1"),
+        "the workspace shown on the keyboard's output"
+    );
+
+    // Focus moves from outside: the other output's workspace is focused.
+    fake.cmd(Cmd::Activate("tl-2"));
+    c.until("firefox focused", |m| {
+        m.focused_window
+            .as_ref()
+            .is_some_and(|w| w.id == firefox.id)
+            && m.focused_workspace.as_ref().is_some_and(|w| w.name == "2")
+    })
+    .await;
+    assert_eq!(c.mirror.focused_screen.as_deref(), Some("FAKE-2"));
+    assert!(!c.mirror.window_by_app("foot").unwrap().focused);
+
+    // `win.focus()`, `win.minimize()`, `win.close()`.
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(foot.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("foot activated", |m| {
+        m.focused_window.as_ref().is_some_and(|w| w.id == foot.id)
+    })
+    .await;
+    let (r, done) = WmRequest::new(WmAction::MinimizeWindow(foot.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("foot minimized", |m| {
+        m.window_by_app("foot")
+            .is_some_and(|w| w.minimized && !w.focused)
+    })
+    .await;
+    assert_eq!(c.mirror.focused_window, None);
+    let (r, done) = WmRequest::new(WmAction::CloseWindow(firefox.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("firefox closed", |m| m.window_by_app("firefox").is_none())
+        .await;
+    assert_eq!(
+        *fake.wlr_requests.lock().unwrap(),
+        ["activate tl-1", "minimize tl-1", "close tl-2"]
+    );
+
+    // A title change is one keyed update; an unknown window is refused.
+    fake.cmd(Cmd::SetTitle("tl-1", "vim"));
+    c.until("retitled", |m| {
+        m.window_by_app("foot")
+            .is_some_and(|w| w.title == "vim" && w.id == foot.id)
+    })
+    .await;
+    let (r, done) = WmRequest::new(WmAction::CloseWindow(firefox.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Err(WmError::UnknownWindow(firefox.id.clone())));
+
+    // Idle: nothing is sent.
+    assert_eq!(c.quiet_for(Duration::from_millis(300)).await, 0);
+    service.abort();
+}
+
+/// The protocol client reads the wlr state: activated, minimized, the
+/// outputs by name, and a closed toplevel leaves.
+#[tokio::test]
+async fn protocol_client_follows_wlr_toplevels() {
+    let fake = Fake::start_opts(false, true, &["FAKE-1"]);
+    fake.cmd(Cmd::AddToplevel("tl-1", "~", "foot"));
+    std::thread::sleep(Duration::from_millis(50));
+    let (tx, mut rx) = unbounded_channel();
+    let _client = ProtocolClient::spawn(WaylandTarget::Socket(fake.socket.clone()), tx).unwrap();
+    let s = next_matching(&mut rx, "first", |s| {
+        s.connected && s.managed.first().is_some_and(|m| m.screens == ["FAKE-1"])
+    })
+    .await;
+    assert!(s.toplevel_management && s.toplevel_list && !s.workspace_manager);
+    assert_eq!(s.managed.len(), 1);
+    assert_eq!(
+        (s.managed[0].app_id.as_str(), s.managed[0].title.as_str()),
+        ("foot", "~")
+    );
+    assert!(!s.managed[0].activated);
+    let key = s.managed[0].key;
+    fake.cmd(Cmd::Activate("tl-1"));
+    next_matching(&mut rx, "activated", |s| s.managed[0].activated).await;
+    fake.cmd(Cmd::AddToplevel("tl-2", "x", "xterm"));
+    let s = next_matching(&mut rx, "second", |s| s.managed.len() == 2).await;
+    assert_ne!(s.managed[1].key, key);
+    fake.cmd(Cmd::CloseToplevel("tl-1"));
+    let s = next_matching(&mut rx, "closed", |s| s.managed.len() == 1).await;
+    assert_eq!(s.managed[0].app_id, "xterm");
 }

@@ -2360,6 +2360,7 @@ dependencies = [
  "unicode-segmentation",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-wlr",
  "wayland-server",
  "zbus",
 ]
@@ -3083,6 +3084,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]

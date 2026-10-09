@@ -49,8 +49,10 @@ use tokio::sync::oneshot;
 pub use detect::{Backend, detect, detect_with};
 pub use hub::{MAX_QUEUED, WmHub, WmSubscription};
 pub use model::{CompositorKind, Mirror, Publisher, Sources, Window, WmChange, WmState, Workspace};
-use protocol::ProtocolSender;
-pub use protocol::{ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget};
+pub use protocol::{
+    ManagedToplevel, ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget,
+};
+use protocol::{ProtocolSender, WindowOp};
 pub use schema::{WINDOWS_SCHEMA, WM_SCHEMA, WORKSPACES_SCHEMA};
 pub use service::{
     WindowAction, WindowItem, Windows, WindowsCells, Wm, WmCells, WmEvent, WorkspaceAction,
@@ -216,11 +218,19 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// takes `title` and `app_id` from `ext-foreign-toplevel-list-v1` (every
 /// window keeps that identifier as [`Window::toplevel`]). Without
 /// an adapter the protocols are the whole state: workspaces not `hidden`,
-/// numbered by [`ProtoWorkspace::key`]; windows by identifier, with no
-/// workspace or focus. `ext-workspace-v1` says which workspace each output
-/// shows (`active`), not which output has the keyboard, so a workspace is
-/// `focused` only when it is the one active workspace; with several
-/// outputs none is (and no screen is focused).
+/// numbered by [`ProtoWorkspace::key`]. Windows come from
+/// `zwlr_foreign_toplevel_management_v1` when it is bound (ids
+/// `wlr-<key>`, [`ManagedToplevel::window_id`]; `focused` is `activated`,
+/// with `minimized` and `fullscreen`; the list identifier joined by
+/// `join_managed` as [`Window::toplevel`]), else from
+/// `ext-foreign-toplevel-list-v1` by identifier, with no state; never with
+/// a workspace. `ext-workspace-v1` says which workspace each output shows
+/// (`active`), not which output has the keyboard: the keyboard's screen is
+/// the one activated wlr window's, when it is on one output, and a
+/// workspace is `focused` when it is the one active workspace on that
+/// screen, or, with no such screen known, the one active workspace; with
+/// several outputs and no activated window none is (and no screen is
+/// focused).
 pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolState) -> WmState {
     let mut s = match ipc {
         Some(ipc) => {
@@ -268,10 +278,56 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
         }
         None => {
             let shown = || proto.workspaces.iter().filter(|p| !p.hidden);
-            let mut active = shown().filter(|p| p.active);
+            // The keyboard's screen: the activated wlr window's, when
+            // there is one window activated and it is on one output.
+            let keyboard_screen = if proto.toplevel_management {
+                let mut activated = proto.managed.iter().filter(|m| m.activated);
+                match (activated.next(), activated.next()) {
+                    (Some(m), None) if m.screens.len() == 1 => Some(m.screens[0].clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let mut active = shown().filter(|p| {
+                p.active
+                    && keyboard_screen
+                        .as_ref()
+                        .is_none_or(|s| p.screens.contains(s))
+            });
             let sole_active = match (active.next(), active.next()) {
                 (Some(p), None) => Some(p.key),
                 _ => None,
+            };
+            let windows = if proto.toplevel_management {
+                let joins = join_managed(&proto.managed, &proto.toplevels);
+                proto
+                    .managed
+                    .iter()
+                    .zip(joins)
+                    .map(|(m, toplevel)| Window {
+                        id: m.window_id(),
+                        title: m.title.clone(),
+                        app_id: m.app_id.clone(),
+                        focused: m.activated,
+                        minimized: m.minimized,
+                        fullscreen: m.fullscreen,
+                        toplevel,
+                        ..Default::default()
+                    })
+                    .collect()
+            } else {
+                proto
+                    .toplevels
+                    .iter()
+                    .map(|t| Window {
+                        id: t.identifier.clone(),
+                        title: t.title.clone(),
+                        app_id: t.app_id.clone(),
+                        toplevel: Some(t.identifier.clone()),
+                        ..Default::default()
+                    })
+                    .collect()
             };
             WmState {
                 name: String::new(),
@@ -286,18 +342,8 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
                         ..Default::default()
                     })
                     .collect(),
-                windows: proto
-                    .toplevels
-                    .iter()
-                    .map(|t| Window {
-                        id: t.identifier.clone(),
-                        title: t.title.clone(),
-                        app_id: t.app_id.clone(),
-                        toplevel: Some(t.identifier.clone()),
-                        ..Default::default()
-                    })
-                    .collect(),
-                focused_screen: None,
+                windows,
+                focused_screen: keyboard_screen,
             }
         }
     };
@@ -306,6 +352,33 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
     }
     s.derive();
     s
+}
+
+/// The `ext-foreign-toplevel-list-v1` identifier of each wlr toplevel, by
+/// position: the wlr protocol has no identifier, so a wlr toplevel takes
+/// the identifier of the list toplevel with the same app id and title when
+/// both protocols show as many toplevels with that app id and title (the
+/// n-th oldest of one side pairs with the n-th oldest of the other), and
+/// none otherwise (one side has not caught up, or the two disagree).
+fn join_managed(managed: &[ManagedToplevel], list: &[Toplevel]) -> Vec<Option<String>> {
+    managed
+        .iter()
+        .map(|m| {
+            let twins: Vec<&ManagedToplevel> = managed
+                .iter()
+                .filter(|o| o.app_id == m.app_id && o.title == m.title)
+                .collect();
+            let listed: Vec<&Toplevel> = list
+                .iter()
+                .filter(|t| t.app_id == m.app_id && t.title == m.title)
+                .collect();
+            if twins.len() != listed.len() {
+                return None;
+            }
+            let nth = twins.iter().position(|o| o.key == m.key)?;
+            listed.get(nth).map(|t| t.identifier.clone())
+        })
+        .collect()
 }
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -490,6 +563,7 @@ pub(crate) async fn drive<S>(
                 ipc: kind,
                 connected,
                 toplevel_list: proto.toplevel_list,
+                toplevel_management: proto.toplevel_management,
                 workspace_protocol: proto.workspace_manager,
             };
             changes.extend(publisher.sources(sources));
@@ -513,8 +587,9 @@ pub(crate) async fn drive<S>(
 }
 
 /// Sends an action where it can run: the adapter once its state is out
-/// (the ids shown are its own), else `ext-workspace-v1` for workspaces
-/// (the ids shown are the protocol's). While an adapter has not come up,
+/// (the ids shown are its own), else `ext-workspace-v1` for workspaces and
+/// `zwlr_foreign_toplevel_management_v1` for windows (the ids shown are
+/// the protocols'). While an adapter has not come up,
 /// what the protocol cannot do answers `NotConnected`.
 fn route(
     req: WmRequest,
@@ -542,7 +617,7 @@ fn route(
         }
         return;
     }
-    match req.action {
+    let (id, op) = match req.action {
         WmAction::FocusWorkspace(id) => {
             let Some(client) = protocol.filter(|_| proto.workspace_manager) else {
                 return fail(req.reply, unsupported("no workspace source"));
@@ -550,13 +625,27 @@ fn route(
             let Some(p) = proto.workspaces.iter().find(|p| p.key as i64 == id) else {
                 return fail(req.reply, WmError::UnknownWorkspace(id));
             };
-            client.send(protocol::ProtoCmd::Activate(p.key, req.reply));
+            return client.send(protocol::ProtoCmd::Activate(p.key, req.reply));
         }
-        _ => fail(
+        WmAction::FocusWindow(id) => (id, WindowOp::Activate),
+        WmAction::CloseWindow(id) => (id, WindowOp::Close),
+        WmAction::MinimizeWindow(id) => (id, WindowOp::Minimize),
+    };
+    // Window actions: `zwlr_foreign_toplevel_management_v1`, whose ids the
+    // windows shown carry whenever it is bound (`merge`).
+    let Some(client) = protocol.filter(|_| proto.toplevel_management) else {
+        return fail(
             req.reply,
-            unsupported("ext-foreign-toplevel-list-v1 has no window actions"),
-        ),
-    }
+            unsupported(
+                "no zwlr_foreign_toplevel_management_v1 \
+                 (ext-foreign-toplevel-list-v1 has no window actions)",
+            ),
+        );
+    };
+    let Some(m) = proto.managed.iter().find(|m| m.window_id() == id) else {
+        return fail(req.reply, WmError::UnknownWindow(id));
+    };
+    client.send(protocol::ProtoCmd::Window(m.key, op, req.reply));
 }
 
 #[cfg(test)]
@@ -593,6 +682,7 @@ mod tests {
                 },
                 proto_ws(3, "2", "DP-1", false),
             ],
+            ..Default::default()
         };
         let s = merge(None, &[], &proto);
         assert_eq!(s.workspaces.len(), 2, "hidden left out");
@@ -633,6 +723,177 @@ mod tests {
         assert_eq!(
             merge(None, &[], &hidden).focused_workspace().map(|w| w.id),
             Some(1)
+        );
+    }
+
+    fn managed(key: u64, app: &str, title: &str, screen: &str) -> ManagedToplevel {
+        ManagedToplevel {
+            key,
+            title: title.into(),
+            app_id: app.into(),
+            screens: vec![screen.into()],
+            ..Default::default()
+        }
+    }
+
+    fn list(ident: &str, app: &str, title: &str) -> Toplevel {
+        Toplevel {
+            identifier: ident.into(),
+            title: title.into(),
+            app_id: app.into(),
+        }
+    }
+
+    /// With no adapter, wlr-foreign-toplevel-management is the window
+    /// source when bound: its ids, focus and state; the list identifier
+    /// joined by app id and title; the keyboard's screen from the
+    /// activated window.
+    #[test]
+    fn wlr_management_serves_windows_focus_and_state() {
+        let mut a = managed(1, "foot", "~", "DP-1");
+        a.activated = true;
+        let mut b = managed(2, "firefox", "Strand", "HDMI-A-1");
+        b.minimized = true;
+        b.fullscreen = true;
+        let proto = ProtocolState {
+            connected: true,
+            toplevel_list: true,
+            toplevel_management: true,
+            workspace_manager: true,
+            toplevels: vec![
+                list("x-ff", "firefox", "Strand"),
+                list("x-foot", "foot", "~"),
+            ],
+            managed: vec![a, b],
+            workspaces: vec![
+                proto_ws(1, "1", "DP-1", true),
+                proto_ws(2, "2", "DP-1", false),
+                proto_ws(3, "3", "HDMI-A-1", true),
+            ],
+        };
+        let s = merge(None, &[], &proto);
+        let ids: Vec<&str> = s.windows.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["wlr-1", "wlr-2"]);
+        assert_eq!(s.focused_window().map(|w| w.id.as_str()), Some("wlr-1"));
+        assert_eq!(s.windows[0].toplevel.as_deref(), Some("x-foot"));
+        assert_eq!(s.windows[1].toplevel.as_deref(), Some("x-ff"));
+        assert!(s.windows[1].minimized && s.windows[1].fullscreen);
+        assert_eq!(
+            s.windows[0].workspace, None,
+            "the protocols place no window"
+        );
+        assert_eq!(s.windows[0].icon, "foot");
+        // Two outputs each show a workspace; the activated window says
+        // which has the keyboard.
+        assert_eq!(s.focused_screen.as_deref(), Some("DP-1"));
+        assert_eq!(s.focused_workspace().map(|w| w.id), Some(1));
+
+        // Focus moves to the window on HDMI-A-1.
+        let mut moved = proto.clone();
+        moved.managed[0].activated = false;
+        moved.managed[1].activated = true;
+        let s = merge(None, &[], &moved);
+        assert_eq!(s.focused_window().map(|w| w.id.as_str()), Some("wlr-2"));
+        assert_eq!(s.focused_screen.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(s.focused_workspace().map(|w| w.id), Some(3));
+
+        // No window activated: the protocols cannot tell which of two
+        // shown workspaces has the keyboard.
+        let mut none = proto.clone();
+        none.managed[0].activated = false;
+        let s = merge(None, &[], &none);
+        assert_eq!(s.focused_window(), None);
+        assert_eq!(s.focused_workspace(), None);
+        assert_eq!(s.focused_screen, None);
+
+        // An activated window on two outputs names no screen either.
+        let mut spanning = proto.clone();
+        spanning.managed[0].screens.push("HDMI-A-1".into());
+        let s = merge(None, &[], &spanning);
+        assert_eq!(s.focused_window().map(|w| w.id.as_str()), Some("wlr-1"));
+        assert_eq!(s.focused_screen, None);
+
+        // Without wlr management the list serves windows, read-only.
+        let read_only = ProtocolState {
+            toplevel_management: false,
+            managed: vec![],
+            ..proto
+        };
+        let s = merge(None, &[], &read_only);
+        assert_eq!(s.windows[0].id, "x-ff");
+        assert_eq!(s.focused_window(), None);
+    }
+
+    /// The join by app id and title pairs twins in order, and gives up
+    /// while the two protocols disagree on how many there are.
+    #[test]
+    fn wlr_toplevels_join_the_list_by_app_id_and_title_in_order() {
+        let m = [
+            managed(4, "foot", "~", "DP-1"),
+            managed(7, "foot", "~", "DP-1"),
+            managed(9, "foot", "vim", "DP-1"),
+        ];
+        let l = [
+            list("a", "foot", "~"),
+            list("b", "foot", "vim"),
+            list("c", "foot", "~"),
+        ];
+        assert_eq!(
+            join_managed(&m, &l),
+            [Some("a".into()), Some("c".into()), Some("b".into())]
+        );
+        // The list has not seen the second `~` yet: neither twin joins.
+        assert_eq!(join_managed(&m, &l[..2]), [None, None, Some("b".into())]);
+        assert_eq!(join_managed(&m, &[]), [None, None, None]);
+    }
+
+    /// Window actions with no adapter: wlr management takes them on its
+    /// ids; without it they are `Unsupported`; an unknown id is
+    /// `UnknownWindow`; with an adapter that has not come up they are
+    /// `NotConnected`.
+    #[tokio::test]
+    async fn window_actions_route_to_wlr_management() {
+        let (adapter_tx, _adapter_rx) = mpsc::unbounded_channel();
+        let proto = ProtocolState {
+            connected: true,
+            toplevel_management: true,
+            managed: vec![managed(3, "foot", "~", "DP-1")],
+            ..Default::default()
+        };
+        // A protocol thread that has already ended answers what reaches
+        // it `NotConnected`: that answer proves the request was routed
+        // there (not refused as `Unsupported` or `UnknownWindow`).
+        let dir = tempfile::tempdir().unwrap();
+        let (ptx, mut prx) = mpsc::unbounded_channel();
+        let client =
+            ProtocolClient::spawn(WaylandTarget::Socket(dir.path().join("gone")), ptx).unwrap();
+        let _ = prx.recv().await;
+        let sender = client.sender();
+        let ask = |action: WmAction, has_adapter: bool, proto: &ProtocolState| {
+            let (req, reply) = WmRequest::new(action);
+            route(req, has_adapter, None, proto, &adapter_tx, Some(&sender));
+            reply
+        };
+        assert_eq!(
+            ask(WmAction::CloseWindow("wlr-3".into()), false, &proto).await,
+            Err(WmError::NotConnected),
+            "routed to the protocol thread"
+        );
+        assert_eq!(
+            ask(WmAction::FocusWindow("wlr-4".into()), false, &proto).await,
+            Err(WmError::UnknownWindow("wlr-4".into()))
+        );
+        let read_only = ProtocolState {
+            toplevel_management: false,
+            ..proto.clone()
+        };
+        assert!(matches!(
+            ask(WmAction::MinimizeWindow("wlr-3".into()), false, &read_only).await,
+            Err(WmError::Unsupported(_))
+        ));
+        assert_eq!(
+            ask(WmAction::MinimizeWindow("wlr-3".into()), true, &read_only).await,
+            Err(WmError::NotConnected)
         );
     }
 
@@ -689,6 +950,7 @@ mod tests {
                 },
                 proto_ws(2, "1", "DP-2", true),
             ],
+            ..Default::default()
         };
         let s = merge(Some(&ipc), &[("7".into(), "x1".into())], &proto);
         assert_eq!(s.workspaces[0].id, 10, "IPC ids stand");

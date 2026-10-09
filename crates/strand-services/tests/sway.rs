@@ -374,3 +374,133 @@ async fn sway_titles_that_are_not_utf8_keep_the_connection() {
     );
     service.abort();
 }
+
+/// sway's IPC adapter turned off: the standard protocols alone, as on a
+/// compositor without an adapter (labwc, wayfire, river). sway offers
+/// `zwlr_foreign_toplevel_management_v1` (1.9 has no
+/// `ext-foreign-toplevel-list-v1` or `ext-workspace-v1`), so windows,
+/// `windows.focused`, the fullscreen state and the window actions come
+/// from it.
+#[tokio::test]
+async fn wlr_management_serves_sway_without_its_adapter() {
+    let Some(sway) = Sway::start("wlr_management_serves_sway_without_its_adapter") else {
+        return;
+    };
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: None,
+        wayland: Some(WaylandTarget::Socket(sway.socket())),
+        desktop: Some("sway".into()),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.toplevel_management).await;
+    assert_eq!(c.mirror.sources.ipc, None);
+    assert!(c.mirror.windows.is_empty() && c.mirror.focused_window.is_none());
+
+    // Two windows: the newer one takes the focus.
+    let a = TestWindow::open(&sway.socket(), "strand-a", "alpha");
+    c.until("a focused", |m| {
+        m.focused_window
+            .as_ref()
+            .is_some_and(|w| w.app_id == "strand-a")
+    })
+    .await;
+    let b = TestWindow::open(&sway.socket(), "strand-b", "beta");
+    c.until("b focused", |m| {
+        m.focused_window
+            .as_ref()
+            .is_some_and(|w| w.app_id == "strand-b")
+            && m.windows.len() == 2
+    })
+    .await;
+    let wa = c.mirror.window_by_app("strand-a").unwrap().clone();
+    let wb = c.mirror.window_by_app("strand-b").unwrap().clone();
+    assert!(
+        wa.id.starts_with("wlr-") && wb.id.starts_with("wlr-"),
+        "{wa:?}"
+    );
+    assert!(!wa.focused && wb.focused);
+    assert_eq!(wa.title, "alpha");
+    assert_eq!(wa.workspace, None, "the protocols place no window");
+    // The focused window's output is the keyboard's screen (its
+    // `output_enter` may come in a later `done`).
+    c.until("the keyboard's screen", |m| {
+        m.focused_screen.as_deref() == Some("HEADLESS-1")
+    })
+    .await;
+
+    // Focus changed from outside follows.
+    sway.msg(&["[app_id=strand-a]", "focus"]);
+    c.until("a focused again", |m| {
+        m.focused_window.as_ref().is_some_and(|w| w.id == wa.id)
+    })
+    .await;
+    assert!(!c.mirror.window_by_app("strand-b").unwrap().focused);
+
+    // A title change patches the window in place.
+    b.set_title("beta, retitled");
+    c.until("retitled", |m| {
+        m.window_by_app("strand-b")
+            .is_some_and(|w| w.title == "beta, retitled" && w.id == wb.id)
+    })
+    .await;
+
+    // `win.focus()`: `activate` on sway's seat.
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(wb.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("b activated", |m| {
+        m.focused_window.as_ref().is_some_and(|w| w.id == wb.id)
+    })
+    .await;
+    let tree = sway.msg(&["-t", "get_tree"]);
+    let focused_app = |v: &serde_json::Value| -> Option<String> {
+        fn find(n: &serde_json::Value) -> Option<String> {
+            if n["focused"] == true {
+                return n["app_id"].as_str().map(str::to_string);
+            }
+            n["nodes"].as_array()?.iter().find_map(find)
+        }
+        find(v)
+    };
+    let tree: serde_json::Value = serde_json::from_str(&tree).unwrap();
+    assert_eq!(focused_app(&tree).as_deref(), Some("strand-b"));
+
+    // The fullscreen state.
+    sway.msg(&["fullscreen", "enable"]);
+    c.until("fullscreen", |m| {
+        m.window_by_app("strand-b").is_some_and(|w| w.fullscreen)
+    })
+    .await;
+    sway.msg(&["fullscreen", "disable"]);
+    c.until("not fullscreen", |m| {
+        m.window_by_app("strand-b").is_some_and(|w| !w.fullscreen)
+    })
+    .await;
+
+    // `win.minimize()` is sent (sway has no minimize and ignores it).
+    let (r, done) = WmRequest::new(WmAction::MinimizeWindow(wb.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+
+    // `win.close()`: sway asks the client, which unmaps.
+    let (r, done) = WmRequest::new(WmAction::CloseWindow(wa.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("a closed", |m| m.window_by_app("strand-a").is_none())
+        .await;
+    assert!(a.closed.load(std::sync::atomic::Ordering::SeqCst));
+
+    // A window that is gone is unknown.
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(wa.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Err(wm::WmError::UnknownWindow(wa.id.clone())));
+
+    // Idle: nothing changes, nothing is sent.
+    assert_eq!(c.quiet_for(Duration::from_millis(500)).await, 0);
+    drop(a);
+    drop(b);
+    service.abort();
+}

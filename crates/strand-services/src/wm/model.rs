@@ -167,6 +167,10 @@ pub struct Sources {
     pub connected: bool,
     /// The compositor advertises `ext_foreign_toplevel_list_v1`.
     pub toplevel_list: bool,
+    /// The compositor advertises `zwlr_foreign_toplevel_manager_v1`: with
+    /// no adapter, windows, their focus and state and the window actions
+    /// come from it.
+    pub toplevel_management: bool,
     /// The compositor advertises `ext_workspace_manager_v1`.
     pub workspace_protocol: bool,
 }
