@@ -2565,14 +2565,27 @@ fn surfaces_meet_the_live_compositor() {
         );
         let lua = String::from_utf8(out.stdout).expect("UTF-8 rules");
         assert_eq!(lua.matches("hl.layer_rule(").count(), 2, "{lua}");
+        // The printed rules open with Lua `--` comments, which hyprctl
+        // would take for an unknown flag (it prints its usage and exits
+        // 0): only the code goes to `eval`.
+        let code: String = lua
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!code.trim_start().starts_with('-'), "{code}");
         let eval = Command::new("hyprctl")
             .arg("eval")
-            .arg(&lua)
+            .arg(&code)
             .output()
             .expect("hyprctl eval");
         let said = String::from_utf8_lossy(&eval.stdout).to_string();
         eprintln!("matrix: hyprctl eval of the rules: {said:?}");
         assert!(eval.status.success(), "hyprctl eval failed: {said}");
+        assert!(
+            !said.contains("usage: hyprctl"),
+            "hyprctl did not take the code as `eval`'s argument: {said}"
+        );
         assert!(
             !said.to_lowercase().contains("error"),
             "Hyprland rejected the rules: {said}\n{lua}"
