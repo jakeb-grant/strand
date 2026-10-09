@@ -16,7 +16,7 @@
 # The memory budgets, pixel tests and every other step stay strict.
 #
 # Env: CI_FROM=N starts at step N (the steps are numbered as printed).
-#      CI_JOB=NAME runs that job's steps only (the setup steps 1 and 2
+#      CI_JOB=NAME runs that job's steps only (the setup steps 1 to 3
 #      always run).
 #      STRAND_STRICT_TIMING=1 makes the timing steps fail as in CI.
 
@@ -118,6 +118,14 @@ step "Services tier tools" 1 bash -c '
   dbus-daemon --version | head -1 &&
   python3 -c "import dbusmock" && dpkg -s python3-dbusmock | grep "^Version" &&
   pipewire --version'
+# The GPU tier (M4): lavapipe is the image's only Vulkan driver
+# (VK_DRIVER_FILES, Dockerfile) and the GPU tests require it.
+export STRAND_REQUIRE_GPU=1
+step "GPU tier device (lavapipe)" 1 bash -c '
+  dpkg -s mesa-vulkan-drivers | grep "^Version"
+  out=$(vulkaninfo --summary 2>&1)
+  printf "%s\n" "$out" | sed -n "/^Devices/,\$p"
+  printf "%s\n" "$out" | grep -Eq "driverName += llvmpipe" || { echo "no lavapipe (llvmpipe) Vulkan device"; exit 1; }'
 step "Reference package versions" 1 bash -c '
   sway --version
   dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E "^(Package|Version)"

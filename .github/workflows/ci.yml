@@ -20,6 +20,16 @@ env:
   # The audio tier (a private PipeWire with null sinks and WirePlumber)
   # fails instead of skipping when pipewire or wireplumber is missing.
   STRAND_REQUIRE_PIPEWIRE: "1"
+  # The GPU tier (M4) runs on Mesa's lavapipe, software Vulkan, and fails
+  # instead of skipping when no Vulkan device starts (decisions.md
+  # m4-owner). Lavapipe is the only driver the loader is given
+  # (VK_ICD_FILENAMES is the deprecated spelling), with a fixed llvmpipe
+  # vector width so GPU pixels do not depend on the runner's CPU; as in
+  # scripts/container/Dockerfile.
+  STRAND_REQUIRE_GPU: "1"
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  LP_NATIVE_VECTOR_WIDTH: "256"
   # No debug info: a full debug test build of the workspace with it does
   # not fit the runner's disk (as in the dev container, CLAUDE.md).
   CARGO_PROFILE_DEV_DEBUG: "0"
@@ -195,7 +205,7 @@ jobs:
       - name: Build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.0
