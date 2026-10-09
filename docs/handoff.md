@@ -47,8 +47,9 @@ for the reasoning behind each item below.
 ## Owner decisions (answered 2026-10-08)
 
 All four are answered; each is recorded in `docs/decisions.md` under
-"laptop-decisions". One decision is open: how M4's GPU work is tested
-("Before starting M4").
+"laptop-decisions". The M4 decisions (GPU testing, the GPU backend in
+every build, the bundled effects' syntax, the PAM fallback, `/dev/kvm`)
+were answered on 2026-10-09 and are under "m4-owner".
 
 1. **Release build settings: signed off.** The 27
    `[profile.release.package]` `opt-level` overrides stay as they are.
@@ -196,14 +197,16 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
 
 - GPU promotion and the 8 bundled GPU effects need a GPU to test against.
   GitHub's runners have none. The proposal is a software Vulkan driver
-  (lavapipe) in the container image and CI, plus real-hardware checks
-  through `/dev/dri/renderD128` on the owner's laptop (the only node a
-  container may get, CLAUDE.md). **Still the owner's open decision.**
+  (lavapipe) in the container image and CI, plus advisory real-hardware
+  checks through `/dev/dri/renderD128` on the owner's laptop. Decided
+  2026-10-09 (decisions.md, m4-owner), as is the GPU backend being in
+  every build with the `.text` gate raised to the measured size.
 - The lock screen must be tested in a local QEMU VM with injected faults,
   never on a real session (design.md). The laptop can do it: `/dev/kvm`
   there is `crw-rw-rw-` (0666, checked 2026-10-09), so a container given
   `--device /dev/kvm` runs a KVM-accelerated VM as the owner's user with
-  no host config change. That needs QEMU in an image of the container
+  no host config change; the owner allowed `/dev/kvm` for that container
+  only (m4-owner). That needs QEMU in an image of the container
   suite; GitHub's runners would need their own KVM setup to run it in CI.
 - The rest of M4 (blur protocols, drag and drop, tray menus, page
   transitions, the effects catalogue, 2,000-row scrolling) can run

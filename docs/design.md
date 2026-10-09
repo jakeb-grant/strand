@@ -445,7 +445,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 - **Drag and drop.** `drag: pin` on the source; `on drop(p: Pin, at: int) { pins.move(p.app, at) }` on the target. Reordering springs by key. Files, apps and text from other programs arrive as typed `Drop` values.
 - **Pages.** `pages current: page { page wifi {…}; page bluetooth {…} }` gives directional transitions. Hidden pages unmount, so a Wi-Fi scan stops when you leave that page.
 - **Popups** are anchored xdg\_popups that nest, which is how tray menus work. `tooltip: expr` adds a tooltip.
-- **Lock screen** on `ext-session-lock`. Authentication runs in a small forked PAM helper. The lock is exempt from reload and fails closed: if anything faults, a built-in password field appears.
+- **Lock screen** on `ext-session-lock`. Authentication runs in a small forked PAM helper using the `strand` PAM service, or `login` with a one-time warning when `/etc/pam.d/strand` is missing. The lock is exempt from reload and fails closed: if anything faults, a built-in password field appears.
 
 ## Motion and visual effects
 
@@ -521,7 +521,7 @@ Tuning the compositor's blur (saturation, noise, vibrancy) belongs to the compos
 
 ### Bundled GPU effects
 
-These 8 start the GPU only while visible and release it 30 s after: bloom, liquid-glass refraction (dispersion, fresnel rim, pointer specular), particles above 1,000, true 3D perspective, raster wobble, CRT and chromatic aberration, aurora and noise fields, and large full-resolution backdrop blur. Your own `.wgsl` shaders use the same path.
+These 8 start the GPU only while visible and release it 30 s after: bloom, liquid-glass refraction (dispersion, fresnel rim, pointer specular), particles above 1,000, true 3D perspective, raster wobble, CRT and chromatic aberration, aurora and noise fields, and large full-resolution backdrop blur. Your own `.wgsl` shaders use the same path. The ones without a node or prop of their own are spelled `filter: bloom(r)`, `filter: crt()`, `filter: chromatic(px)`, `filter: wobble(amp)` and `backdrop: glass()`. Without a usable GPU each falls back to a CPU version (particles cap at 1,000, tilt stays 2D, bloom becomes glow, glass becomes blur and tint) or, for the shader-only ones, draws the node unfiltered.
 
 **Left out of v1:** video wallpapers (use mpvpaper or the compositor), Rive, wallpaper subject separation (depth masks) and mesh-warp minimise effects.
 
@@ -563,7 +563,7 @@ File saves and system changes enter at the top and become writes into the reacti
 
 - **Wayland:** [smithay-client-toolkit](https://github.com/Smithay/client-toolkit) 0.21 plus `wayland-protocols` 0.32 for fractional scale, viewporter, single-pixel buffers, alpha modifier and background effect.
 - **Text:** parley 0.11 shapes on a worker thread; swash rasterises into LRU glyph atlases, one per output scale. Mixed-DPI setups stay sharp, unlike pleamar's single max-scale atlas.
-- **Paint:** our own scene IR feeds two backends. [vello\_cpu](https://github.com/linebender/vello) into `wl_shm` is the default. vello\_gpu on wgpu 30 handles shaders and surfaces animating large areas for more than 500 ms; the device is dropped after 30 s idle. Backends switch only when springs settle.
+- **Paint:** our own scene IR feeds two backends. [vello\_cpu](https://github.com/linebender/vello) into `wl_shm` is the default. vello\_gpu on wgpu 30 handles shaders and surfaces animating large areas for more than 500 ms; the device is dropped after 30 s idle. Backends switch only when springs settle. The GPU backend is in every build; when no device starts (no Vulkan driver, a lost device), Strand stays on the CPU, bundled GPU effects use their CPU versions, and a `shader` node draws nothing while the inspector and `strand report` say why.
 - **Images** decode at drawn size into a 6 MB LRU. mimalloc as allocator. GPU crates stay cold unless used; LSP and tree-sitter live in a separate `strand-dev` binary.
 
 **Compositor-animated poses.** Surface-level fades and scales cost no repaint: opacity via `wp_alpha_modifier_v1`, scale via viewporter, small moves via layer-shell margins. Without those protocols, Strand repaints instead.
@@ -802,7 +802,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 
 **Deliberately not tested in-house**
 
-- Real 144 Hz pacing, GPU vendors (Intel, AMD, NVIDIA) and Hyprland or niri specifics. The GPU path is optional and behind a flag; compositor adapters are thin. These rely on `strand report` from opt-in users.
+- Real 144 Hz pacing, GPU vendors (Intel, AMD, NVIDIA) and Hyprland or niri specifics. The GPU path is built in and falls back to the CPU when no device starts; compositor adapters are thin. These rely on `strand report` from opt-in users.
 
 ## Roadmap
 
