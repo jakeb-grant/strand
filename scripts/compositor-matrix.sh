@@ -5,8 +5,8 @@
 # `windows` and `wm` stores, and design.md's bar in `strand run`,
 # compared with what the compositor's own CLI reports).
 #
-#   sway      headless (WLR_BACKENDS=headless, the pixman renderer), one
-#             1280x720 output.
+#   sway      headless (WLR_BACKENDS=headless, the pixman renderer),
+#             1280x720 outputs.
 #   niri      nested: its winit backend in a window of a headless sway
 #             (Mesa's software EGL on the parent's wl_shm), 1280x720.
 #   hyprland  on a virtual KMS device (vkms) through seatd: aquamarine
@@ -15,6 +15,14 @@
 #             (llvmpipe). $STRAND_DRM_CARD names the card
 #             (/dev/dri/cardN); seatd must be running (LIBSEAT_BACKEND
 #             and SEATD_SOCK are passed through).
+#
+#   Outputs: MATRIX_OUTPUTS (default 2) for sway (swaymsg create_output:
+#             HEADLESS-2, 1280x720 right of HEADLESS-1) and Hyprland
+#             (hyprctl output create headless STRAND-2, the same place).
+#             Nested niri has one output (its winit backend makes one
+#             window, and niri cannot add an output at run time), so it
+#             gets one. The test is told how many (STRAND_MATRIX_OUTPUTS)
+#             and checks every output when there are two.
 #
 # Usage: scripts/compositor-matrix.sh sway|niri|hyprland [TEST_BINARY]
 #   TEST_BINARY  the built compositor_matrix test (default: built here
@@ -30,8 +38,9 @@ KIND=${1:-}
 TEST=${2:-}
 case "$KIND" in
   sway|niri|hyprland) ;;
-  *) sed -n '2,24p' "$0"; exit 2 ;;
+  *) sed -n '2,32p' "$0"; exit 2 ;;
 esac
+OUTPUTS=${MATRIX_OUTPUTS:-2}
 OUT=${OUT:-$ROOT/target/matrix/$KIND}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -126,6 +135,11 @@ case "$KIND" in
     unset HYPRLAND_INSTANCE_SIGNATURE NIRI_SOCKET
     export XDG_CURRENT_DESKTOP=sway
     swaymsg -t get_version
+    if [ "$OUTPUTS" -ge 2 ]; then
+      swaymsg create_output
+      swaymsg output HEADLESS-2 resolution 1280x720 position 1280 0 scale 1
+      swaymsg focus output HEADLESS-1
+    fi
     ;;
 
   niri)
@@ -158,6 +172,8 @@ EOF
     unset SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE
     export XDG_CURRENT_DESKTOP=niri
     niri msg version
+    # One output: niri nested on winit makes one, and adds none at run time.
+    OUTPUTS=1
     ;;
 
   hyprland)
@@ -175,7 +191,7 @@ EOF
     if [ "$major" -gt 0 ] || [ "$minor" -ge 55 ]; then
       cfg=$RT/hyprland.lua
       cat >"$cfg" <<'EOF'
-hl.monitor({ output = "", mode = "1280x720@60", position = "0x0", scale = 1 })
+hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
 hl.config({
     animations = { enabled = false },
     misc = { disable_hyprland_logo = true, disable_splash_rendering = true, force_default_wallpaper = 0 },
@@ -186,7 +202,7 @@ EOF
     else
       cfg=$RT/hyprland.conf
       cat >"$cfg" <<'EOF'
-monitor = , 1280x720@60, 0x0, 1
+monitor = , 1280x720@60, auto, 1
 animations {
     enabled = false
 }
@@ -235,6 +251,23 @@ EOF
       reply=$(hyprctl dispatch workspace "name:$active" 2>&1 || true)
     fi
     echo "Hyprland's reply to a dispatch (${cfg##*.} config): '$reply'"
+    if [ "$OUTPUTS" -ge 2 ]; then
+      # A second, headless output, placed right of the first by the
+      # config's rule (position auto).
+      echo "hyprctl output create headless STRAND-2: $(hyprctl output create headless STRAND-2 2>&1)"
+      for _ in $(seq 100); do
+        [ "$(hyprctl -j monitors | grep -c '"description"')" -ge 2 ] && break
+        sleep 0.1
+      done
+      first_mon=$(hyprctl -j monitors | sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' | sed -n 1p)
+      if [ "${cfg##*.}" = lua ]; then
+        reply=$(hyprctl dispatch "hl.dsp.focus({ monitor = \"$first_mon\" })" 2>&1 || true)
+      else
+        reply=$(hyprctl dispatch focusmonitor "$first_mon" 2>&1 || true)
+      fi
+      echo "focus $first_mon: '$reply'"
+      hyprctl -j monitors | grep -E '^    "(name|x|y|width|height|focused)"'
+    fi
     ;;
 esac
 
@@ -243,7 +276,7 @@ sleep 1
 grim "$OUT/$KIND-desktop.png" || echo "grim failed on the bare $KIND desktop" >&2
 
 status=0
-STRAND_MATRIX=$KIND STRAND_SHOTS=$OUT "$TEST" --test-threads=1 --nocapture 2>&1 |
+STRAND_MATRIX=$KIND STRAND_MATRIX_OUTPUTS=$OUTPUTS STRAND_SHOTS=$OUT "$TEST" --test-threads=1 --nocapture 2>&1 |
   tee "$OUT/test.log" || status=${PIPESTATUS[0]}
 echo "compositor matrix on $KIND: exit $status (logs and shots in $OUT)"
 exit "$status"

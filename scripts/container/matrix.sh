@@ -12,6 +12,7 @@
 # Usage: scripts/container/matrix.sh [sway] [niri] [hyprland]
 #        (default: all three). Logs and shots: target/matrix/<compositor>.
 # Env:   MATRIX_REBUILD=1 rebuilds the Arch image (pulls archlinux:latest).
+#        MATRIX_OUTPUTS (default 2): outputs for sway and Hyprland (niri: 1).
 
 set -uo pipefail
 
@@ -44,7 +45,7 @@ run_arch() { # MATRIX DRM_CARD [docker args...]
   local matrix=$1 card=$2
   shift 2
   docker run --rm --init "$@" "${mounts[@]}" -w "$ROOT" \
-    -e MATRIX="$matrix" -e STRAND_DRM_CARD="$card" \
+    -e MATRIX="$matrix" -e STRAND_DRM_CARD="$card" -e MATRIX_OUTPUTS="${MATRIX_OUTPUTS:-2}" \
     "$ARCH_IMAGE" bash scripts/compositor-matrix-ci.sh "$TEST"
 }
 
@@ -69,7 +70,7 @@ for kind in "${KINDS[@]}"; do
         # Hyprland never became ready: the test did not run.
         echo "Hyprland did not start on the render node alone; its log:"
         tail -25 "$ROOT/target/matrix/hyprland/hyprland.log" 2>/dev/null || true
-        results+=("hyprland: SKIPPED (aquamarine needs a KMS card; vkms needs modprobe, and the host's card0 is never passed in; CI covers it)")
+        results+=("hyprland: SKIPPED (aquamarine needs a KMS card; vkms needs modprobe, and the host's card0 is never passed in; nested Hyprland 0.56.2 fails in sway and niri, decisions.md laptop-verify; CI covers it)")
       else
         results+=("hyprland: FAILED (render node only)")
         status=1
