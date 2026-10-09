@@ -12,6 +12,19 @@ use strand_services::wm::{
 };
 use tokio::sync::mpsc::unbounded_channel;
 
+/// Waits (5 s at most) until `flag`, a test window's own view of its
+/// state, is `on`.
+async fn client_sees(what: &str, flag: &std::sync::atomic::AtomicBool, on: bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while flag.load(std::sync::atomic::Ordering::SeqCst) != on {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: the client never saw {on}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn sway_version() -> (u32, u32) {
     let out = std::process::Command::new("sway")
         .arg("--version")
@@ -165,6 +178,36 @@ async fn sway_adapter_follows_a_real_sway() {
             .is_some_and(|w| !w.minimized && w.focused)
     })
     .await;
+
+    // `win.fullscreen()`: sway's `fullscreen toggle` on the container, on
+    // and off; sway's tree and the client agree. `win.maximize()`: sway
+    // has no maximize.
+    for on in [true, false] {
+        let (r, done) = WmRequest::new(WmAction::FullscreenWindow(w.id.clone()));
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+        c.until("win.fullscreen()", |m| {
+            m.window_by_app("strand-test")
+                .is_some_and(|w| w.fullscreen == on)
+        })
+        .await;
+        let tree: serde_json::Value = serde_json::from_str(&sway.msg(&["-t", "get_tree"])).unwrap();
+        fn mode(n: &serde_json::Value) -> Option<i64> {
+            if n["app_id"] == "strand-test" {
+                return n["fullscreen_mode"].as_i64();
+            }
+            ["nodes", "floating_nodes"]
+                .iter()
+                .filter_map(|k| n[*k].as_array())
+                .flatten()
+                .find_map(mode)
+        }
+        assert_eq!(mode(&tree), Some(i64::from(on)), "sway's fullscreen_mode");
+        client_sees("win.fullscreen()", &win.fullscreen, on).await;
+    }
+    let (r, done) = WmRequest::new(WmAction::MaximizeWindow(w.id.clone()));
+    req_tx.send(r).unwrap();
+    assert!(matches!(done.await, Err(wm::WmError::Unsupported(_))));
 
     // A second monitor brings its own workspace.
     sway.msg(&["create_output"]);
@@ -479,6 +522,25 @@ async fn wlr_management_serves_sway_without_its_adapter() {
         m.window_by_app("strand-b").is_some_and(|w| !w.fullscreen)
     })
     .await;
+
+    // `win.fullscreen()`: `set_fullscreen`, then `unset_fullscreen` (a
+    // toggle from the state sway sent); the client sees it too.
+    for on in [true, false] {
+        let (r, done) = WmRequest::new(WmAction::FullscreenWindow(wb.id.clone()));
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+        c.until("win.fullscreen()", |m| {
+            m.window_by_app("strand-b")
+                .is_some_and(|w| w.fullscreen == on)
+        })
+        .await;
+        client_sees("win.fullscreen()", &b.fullscreen, on).await;
+    }
+    // `win.maximize()` is sent (sway has no maximize and ignores it).
+    let (r, done) = WmRequest::new(WmAction::MaximizeWindow(wb.id.clone()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    assert!(!c.mirror.window_by_app("strand-b").unwrap().maximized);
 
     // `win.minimize()` is sent (sway has no minimize and ignores it).
     let (r, done) = WmRequest::new(WmAction::MinimizeWindow(wb.id.clone()));

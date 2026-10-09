@@ -326,6 +326,49 @@ mod tests {
         }
     }
 
+    /// `win.maximize()` and `win.fullscreen()` are actions next to the
+    /// `maximized` and `fullscreen` fields (the same name as a field and
+    /// an action): both check, against the served and the builtin schema,
+    /// and the shared hover doc names both.
+    #[test]
+    fn window_state_actions_check_next_to_their_fields() {
+        let src = "bar Top {\n  row {\n    for w in windows.all {\n      \
+            box { when w.maximized { opacity: 1 } on click { w.maximize() } }\n      \
+            box { when w.fullscreen { opacity: 1 } on click { w.fullscreen() } }\n      \
+            box { when w.minimized { opacity: 1 } on click { w.minimize() } }\n    }\n    \
+            box { on click { windows.focused?.fullscreen() } }\n  }\n}\n";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+            let doc = schema
+                .doc(&strand_compiler::schema::DocKey::Member(
+                    "Window".into(),
+                    "fullscreen".into(),
+                ))
+                .unwrap_or_default();
+            assert!(
+                doc.starts_with("It is fullscreen.") && doc.contains("`win.fullscreen()`"),
+                "{which}: {doc:?}"
+            );
+        }
+        // An action is not a value.
+        let bad = "bar Top {\n  row {\n    for w in windows.all {\n      \
+            box { when w.maximize { opacity: 1 } }\n    }\n  }\n}\n";
+        let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+        assert!(
+            strand_compiler::compile_with(&map, schema())
+                .diagnostics
+                .iter()
+                .any(|d| d.is_error()),
+            "`w.maximize` without a call"
+        );
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.

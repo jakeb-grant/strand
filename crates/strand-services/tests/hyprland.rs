@@ -128,12 +128,32 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     let (r, done) = WmRequest::new(WmAction::MinimizeWindow("0x55d0c0a1c3d0".into()));
     req_tx.send(r).unwrap();
     assert!(matches!(done.await, Err(WmError::Unsupported(_))));
+    // `win.maximize()`, `win.fullscreen()`: the classic `fullscreen`
+    // dispatcher acts on the focused window, so one batch focuses first;
+    // Hyprland answers each command (`ok`, "\n\n\n", `ok`).
+    for action in [
+        WmAction::MaximizeWindow("0x55d0c0a1c3d0".into()),
+        WmAction::FullscreenWindow("0x55d0c0a1c3d0".into()),
+    ] {
+        let (r, done) = WmRequest::new(action);
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+    }
+    let (r, done) = WmRequest::new(WmAction::FullscreenWindow("0xdead".into()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Err(WmError::UnknownWindow("0xdead".into())));
     let reqs = fake.requests();
     assert!(
         reqs.contains(&"dispatch workspace 3".to_string()),
         "{reqs:?}"
     );
     assert!(reqs.contains(&"dispatch closewindow address:0x55d0c0a1c3d0".to_string()));
+    for mode in [1, 0] {
+        let batch = format!(
+            "[[BATCH]]dispatch focuswindow address:0x55d0c0a1c3d0;dispatch fullscreen {mode}"
+        );
+        assert!(reqs.contains(&batch), "{reqs:?}");
+    }
 
     // A window closes.
     fake.set_scene("closed");
@@ -216,6 +236,14 @@ async fn a_lua_config_hyprland_gets_lua_dispatches() {
     let (r, done) = WmRequest::new(WmAction::CloseWindow("0x55d0c0a1c3d0".into()));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Ok(()));
+    for action in [
+        WmAction::MaximizeWindow("0x55d0c0a1c3d0".into()),
+        WmAction::FullscreenWindow("0x55d0c0a1c3d0".into()),
+    ] {
+        let (r, done) = WmRequest::new(action);
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+    }
     let dispatches: Vec<String> = fake
         .requests()
         .into_iter()
@@ -227,6 +255,44 @@ async fn a_lua_config_hyprland_gets_lua_dispatches() {
             "dispatch workspace 3",
             r#"dispatch hl.dsp.focus({ workspace = "3" })"#,
             r#"dispatch hl.dsp.window.close({ window = "address:0x55d0c0a1c3d0" })"#,
+            r#"dispatch hl.dsp.window.fullscreen({ mode = "maximized", window = "address:0x55d0c0a1c3d0" })"#,
+            r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0x55d0c0a1c3d0" })"#,
+        ]
+    );
+    service.abort();
+}
+
+/// The first action on a Lua-config Hyprland may be `win.maximize()`: its
+/// classic form is a batch, which Hyprland refuses command by command with
+/// the Lua parser's error; that too switches the adapter to Lua.
+#[tokio::test]
+async fn a_refused_batch_switches_to_lua_too() {
+    let fake = FakeHyprland::start();
+    fake.set_lua(true);
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        events: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    let (r, done) = WmRequest::new(WmAction::FullscreenWindow("0x55d0c0a1b2c0".into()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    let sent: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| !r.starts_with("j/"))
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            "[[BATCH]]dispatch focuswindow address:0x55d0c0a1b2c0;dispatch fullscreen 0",
+            r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0x55d0c0a1b2c0" })"#,
         ]
     );
     service.abort();

@@ -23,6 +23,8 @@ struct State {
     buffer: wl_buffer::WlBuffer,
     closed: Arc<AtomicBool>,
     activated: Arc<AtomicBool>,
+    maximized: Arc<AtomicBool>,
+    fullscreen: Arc<AtomicBool>,
 }
 
 /// A mapped toplevel; closes when dropped.
@@ -36,6 +38,10 @@ pub struct TestWindow {
     /// keyboard focus): the client's own view, independent of any
     /// compositor IPC or foreign-toplevel protocol.
     pub activated: Arc<AtomicBool>,
+    /// The last configure said it is maximized (the client's own view).
+    pub maximized: Arc<AtomicBool>,
+    /// The last configure said it is fullscreen (the client's own view).
+    pub fullscreen: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -63,11 +69,15 @@ impl TestWindow {
         let buffer = pool.create_buffer(0, SIZE, SIZE, SIZE * 4, wl_shm::Format::Argb8888, &qh, ());
         let closed = Arc::new(AtomicBool::new(false));
         let activated = Arc::new(AtomicBool::new(false));
+        let maximized = Arc::new(AtomicBool::new(false));
+        let fullscreen = Arc::new(AtomicBool::new(false));
         let mut state = State {
             surface,
             buffer,
             closed: closed.clone(),
             activated: activated.clone(),
+            maximized: maximized.clone(),
+            fullscreen: fullscreen.clone(),
         };
         queue.roundtrip(&mut state).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
@@ -102,6 +112,8 @@ impl TestWindow {
             stop,
             closed,
             activated,
+            maximized,
+            fullscreen,
             thread: Some(thread),
         }
     }
@@ -188,11 +200,20 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
                 state.surface.commit();
             }
             xdg_toplevel::Event::Configure { states, .. } => {
-                let activated = u32::from(xdg_toplevel::State::Activated);
-                let on = states
-                    .chunks_exact(4)
-                    .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == activated);
-                state.activated.store(on, Ordering::SeqCst);
+                let has = |s: xdg_toplevel::State| {
+                    states
+                        .chunks_exact(4)
+                        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == u32::from(s))
+                };
+                state
+                    .activated
+                    .store(has(xdg_toplevel::State::Activated), Ordering::SeqCst);
+                state
+                    .maximized
+                    .store(has(xdg_toplevel::State::Maximized), Ordering::SeqCst);
+                state
+                    .fullscreen
+                    .store(has(xdg_toplevel::State::Fullscreen), Ordering::SeqCst);
             }
             _ => {}
         }

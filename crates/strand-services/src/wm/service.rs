@@ -73,6 +73,7 @@ pub struct WindowItem {
     pub workspace: Option<i64>,
     pub focused: bool,
     pub minimized: bool,
+    pub maximized: bool,
     pub fullscreen: bool,
     pub urgent: bool,
 }
@@ -87,6 +88,7 @@ impl From<model::Window> for WindowItem {
             workspace: w.workspace,
             focused: w.focused,
             minimized: w.minimized,
+            maximized: w.maximized,
             fullscreen: w.fullscreen,
             urgent: w.urgent,
         }
@@ -155,6 +157,10 @@ pub enum WindowAction {
     Close { item: WindowItem },
     /// `win.minimize()`.
     Minimize { item: WindowItem },
+    /// `win.maximize()`: maximise, or restore when maximised.
+    Maximize { item: WindowItem },
+    /// `win.fullscreen()`: fullscreen, or restore when fullscreen.
+    Fullscreen { item: WindowItem },
 }
 
 /// `workspaces`' actions (on a `Workspace` item).
@@ -315,6 +321,8 @@ impl Windows {
                     WindowAction::Focus { item } => WmAction::FocusWindow(item.id),
                     WindowAction::Close { item } => WmAction::CloseWindow(item.id),
                     WindowAction::Minimize { item } => WmAction::MinimizeWindow(item.id),
+                    WindowAction::Maximize { item } => WmAction::MaximizeWindow(item.id),
+                    WindowAction::Fullscreen { item } => WmAction::FullscreenWindow(item.id),
                 })
             },
         )

@@ -1,7 +1,8 @@
 //! The standard protocols, compositor-agnostic: `ext-foreign-toplevel-list-v1`
 //! (windows: identifier, title, app id), `zwlr_foreign_toplevel_management_v1`
 //! (windows with their state: activated, minimized, maximized, fullscreen,
-//! outputs; activate, close, set_minimized) and `ext-workspace-v1`
+//! outputs; activate, close, set_minimized, set/unset_maximized,
+//! set/unset_fullscreen) and `ext-workspace-v1`
 //! (workspaces, their groups' outputs, active/urgent/hidden, activate).
 //! The wlr protocol is what serves `windows.focused` and the window
 //! actions on a compositor with no IPC adapter (labwc, wayfire, river; see
@@ -177,6 +178,11 @@ pub(crate) enum WindowOp {
     Close,
     /// `set_minimized`.
     Minimize,
+    /// `set_maximized`, or `unset_maximized` when it is maximized.
+    Maximize,
+    /// `set_fullscreen` (on the output the compositor picks), or
+    /// `unset_fullscreen` when it is fullscreen; version 2 and later.
+    Fullscreen,
 }
 
 type Reply = Option<tokio::sync::oneshot::Sender<Result<(), WmError>>>;
@@ -667,6 +673,23 @@ fn window_action(client: &Client, key: u64, op: WindowOp) -> Result<(), WmError>
         }
         WindowOp::Close => entry.handle.close(),
         WindowOp::Minimize => entry.handle.set_minimized(),
+        // A toggle from the state the compositor last sent (the one the
+        // services show), as `win.maximize()` and `win.fullscreen()` are.
+        WindowOp::Maximize => match entry.current.as_ref() {
+            Some(c) if c.maximized => entry.handle.unset_maximized(),
+            _ => entry.handle.set_maximized(),
+        },
+        WindowOp::Fullscreen => {
+            if entry.handle.version() < 2 {
+                return Err(WmError::Unsupported(
+                    "zwlr_foreign_toplevel_handle_v1 before version 2 has no fullscreen",
+                ));
+            }
+            match entry.current.as_ref() {
+                Some(c) if c.fullscreen => entry.handle.unset_fullscreen(),
+                _ => entry.handle.set_fullscreen(None),
+            }
+        }
     }
     Ok(())
 }

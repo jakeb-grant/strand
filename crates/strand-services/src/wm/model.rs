@@ -29,6 +29,10 @@ pub struct Window {
     /// It is minimised (sway: in the scratchpad; Hyprland: a taskbar asked
     /// for it).
     pub minimized: bool,
+    /// It is maximised (Hyprland's maximized fullscreen mode, niri's
+    /// maximize-to-edges, wlr's `maximized`; never on sway, which has no
+    /// maximize).
+    pub maximized: bool,
     /// It is fullscreen.
     pub fullscreen: bool,
     /// It asks for attention.

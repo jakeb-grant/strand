@@ -274,6 +274,9 @@ impl State {
                 focused_screen: self.focused_output.clone(),
             },
             toplevel_ids: Vec::new(),
+            // niri's `Window` says neither maximized nor fullscreen: they
+            // come from the wlr protocol (`wm::wlr_window_states`).
+            window_states: false,
         }
     }
 
@@ -300,6 +303,15 @@ impl State {
             }
             WmAction::MinimizeWindow(_) => {
                 return Err(WmError::Unsupported("niri has no minimise"));
+            }
+            // niri's own toggles, by window id. `MaximizeWindowToEdges` is
+            // the window's true maximize (the xdg `maximized` state);
+            // `MaximizeColumn` acts on the focused column, not a window.
+            WmAction::MaximizeWindow(id) => {
+                json!({"Action": {"MaximizeWindowToEdges": {"id": window(id)?}}})
+            }
+            WmAction::FullscreenWindow(id) => {
+                json!({"Action": {"FullscreenWindow": {"id": window(id)?}}})
             }
         })
     }
@@ -545,6 +557,30 @@ mod tests {
             s.action_for(&WmAction::FocusWindow("3".into())),
             Err(WmError::UnknownWindow("3".into()))
         );
+        // `win.maximize()` is the window's own maximize (to the edges),
+        // not `MaximizeColumn` (the focused column); both are niri's
+        // toggles, by window id.
+        s.windows.push(NWindow {
+            id: 3,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.action_for(&WmAction::MaximizeWindow("3".into()))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"MaximizeWindowToEdges":{"id":3}}}"#
+        );
+        assert_eq!(
+            s.action_for(&WmAction::FullscreenWindow("3".into()))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"FullscreenWindow":{"id":3}}}"#
+        );
+        assert_eq!(
+            s.action_for(&WmAction::FullscreenWindow("4".into())),
+            Err(WmError::UnknownWindow("4".into()))
+        );
+        assert!(!s.snapshot().window_states, "niri's IPC has neither state");
     }
 
     // ---- traffic captured from a real niri 26.04 -------------------------

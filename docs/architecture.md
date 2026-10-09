@@ -2349,8 +2349,13 @@ transparent huge pages for life.
   batch as one envelope of its patches (keyed diffs stay keyed diffs),
   is ready once its part of the state has arrived, emits
   `wm.config_reloaded` (the `wm` store only), and runs `ws.focus()`,
-  `win.focus()`, `win.close()` and `win.minimize()` as `WmAction`s
-  (a failure is logged; the change arrives in the stream).
+  `win.focus()`, `win.close()`, `win.minimize()`, `win.maximize()` and
+  `win.fullscreen()` as `WmAction`s (a failure is logged; the change
+  arrives in the stream). `maximize()` and `fullscreen()` toggle: per
+  adapter, Hyprland's `hl.dsp.window.fullscreen({ mode, window })` (a
+  `[[BATCH]]` of `focuswindow` and `fullscreen 1|0` in the classic
+  dialect), niri's `MaximizeWindowToEdges`/`FullscreenWindow` by id,
+  sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
   `wm::live_runs()` counts live `run`s (tests). `screens.focused` is the
@@ -2360,9 +2365,11 @@ transparent huge pages for life.
   are `strand_services_schema::{WINDOWS, WORKSPACES, WM}` (one service
   per text; `wm::{WINDOWS_SCHEMA, WORKSPACES_SCHEMA, WM_SCHEMA}`),
   replacing the provisional stubs and adding `Workspace.active`,
-  `Window.urgent` and `event config_reloaded(failed: bool?)`. `requests` takes
+  `Window.urgent`, `Window.maximized` and `event
+  config_reloaded(failed: bool?)`. `requests` takes
   `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
-  CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`
+  CloseWindow, MinimizeWindow, MaximizeWindow, FullscreenWindow},
+  reply: Option<oneshot> }`
   (`WmRequest::new(action) -> (WmRequest, WmReply)`;
   `WmSubscription::request(action) -> WmReply`), answered
   `Ok` or a `WmError` (`NotConnected`, `Unsupported`, `Unknown…`,
@@ -2381,11 +2388,14 @@ transparent huge pages for life.
   (`toplevels`, `managed: Vec<ManagedToplevel>` with each wlr toplevel's
   `key`, title, app id, `activated`/`minimized`/`maximized`/`fullscreen`
   and output names, `workspaces`, and which of the three globals are
-  bound); `wm::merge` joins the two (`docs/decisions.md`, wave4-wm and
-  laptop-toplevel). The source order is the adapter, then the wlr
+  bound); `wm::merge` joins the two (`docs/decisions.md`, wave4-wm,
+  laptop-toplevel and laptop-open). An adapter whose IPC reports no
+  window state (niri) takes `maximized` and `fullscreen` from the wlr
+  protocol, joined by app id (and title for twins). The source order is the adapter, then the wlr
   protocol (window ids `wlr-<key>`, `ManagedToplevel::window_id`; focus,
-  state and `win.focus()`/`close()`/`minimize()` as `activate`, `close`,
-  `set_minimized`), then `ext-foreign-toplevel-list-v1` read-only (window
+  state and `win.focus()`/`close()`/`minimize()`/`maximize()`/`fullscreen()`
+  as `activate`, `close`, `set_minimized`, `set_`/`unset_maximized` and
+  `set_`/`unset_fullscreen` by the state last sent), then `ext-foreign-toplevel-list-v1` read-only (window
   actions `Unsupported`). `Sources::toplevel_management` says whether the
   wlr protocol is bound. `wm::Mirror` applies the stream (tests).
 

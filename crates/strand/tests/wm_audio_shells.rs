@@ -546,3 +546,132 @@ fn a_reload_handler_alone_hears_the_compositor_reload() {
     sh.keep("reloaded-twice");
     assert_eq!(of(&sh.shot(), RED), 0);
 }
+
+/// `win.maximize()` and `win.fullscreen()` from a click, end to end on a
+/// headless sway (the sway adapter): one button per window, red for
+/// maximize, green for fullscreen. sway has no maximize, so the red click
+/// logs `Unsupported` and changes nothing; the green one fullscreens the
+/// window in sway's tree, which the window itself sees in its configure.
+#[test]
+fn window_buttons_maximize_and_fullscreen_on_sway() {
+    if !tools() {
+        return;
+    }
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("strand-wm-winstate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (sway, display, ipc) = sway(&dir);
+    let win = TestWindow::open(&dir.join(&display), "strand-winstate", "a window");
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("winstate.strand"),
+        "bar Top {\n  edge: top; height: 32\n  row {\n    \
+         for w in windows.all {\n      \
+         box { size: 24; bg: #ff0000; when w.maximized { bg: #000000 }\n        \
+         on click { w.maximize() } }\n      \
+         box { size: 24; bg: #00ff00; when w.fullscreen { bg: #000000 }\n        \
+         on click { w.fullscreen() } }\n    }\n  }\n}\n",
+    )
+    .unwrap();
+    let log = dir.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("SWAYSOCK", &ipc)
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut sh = Shell {
+        dir: dir.clone(),
+        display,
+        ipc,
+        log,
+        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+        n: std::cell::Cell::new(0),
+        strand: Some(strand),
+        _sway: sway,
+    };
+    // The middle of the button of colour `c` in the bar, once drawn.
+    let button = |img: &Img, c: [u8; 3]| -> Option<(u32, u32)> {
+        let near = |p: [u8; 3]| {
+            p.iter()
+                .zip(c)
+                .all(|(a, b)| (*a as i32 - b as i32).abs() < 24)
+        };
+        let hits: Vec<(usize, usize)> = (0..32)
+            .flat_map(|y| (0..400).map(move |x| (x, y)))
+            .filter(|&(x, y)| near(img.px(x, y)))
+            .collect();
+        if hits.len() < 300 {
+            return None;
+        }
+        let n = hits.len();
+        let (sx, sy) = hits.iter().fold((0, 0), |(a, b), (x, y)| (a + x, b + y));
+        Some(((sx / n) as u32, (sy / n) as u32))
+    };
+    const RED: [u8; 3] = [255, 0, 0];
+    const GREEN: [u8; 3] = [0, 255, 0];
+    sh.wait("both buttons", |s| {
+        let img = s.shot();
+        button(&img, RED).is_some() && button(&img, GREEN).is_some()
+    });
+    sh.keep("winstate-buttons");
+    let img = sh.shot();
+    let (max_at, full_at) = (button(&img, RED).unwrap(), button(&img, GREEN).unwrap());
+    let fullscreen_mode = |s: &Shell| -> Option<i64> {
+        let tree: serde_json::Value =
+            serde_json::from_str(&s.swaymsg(&["-t", "get_tree", "-r"])).unwrap();
+        fn find(n: &serde_json::Value) -> Option<i64> {
+            if n["app_id"] == "strand-winstate" {
+                return n["fullscreen_mode"].as_i64();
+            }
+            ["nodes", "floating_nodes"]
+                .iter()
+                .filter_map(|k| n[*k].as_array())
+                .flatten()
+                .find_map(find)
+        }
+        find(&tree)
+    };
+    assert_eq!(fullscreen_mode(&sh), Some(0));
+
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    // (A new virtual pointer's first buttons reach no surface: one on
+    // the window first, which only focuses it.)
+    pointer.click(640, 400, W as u32, H as u32);
+    std::thread::sleep(Duration::from_millis(200));
+    // `w.maximize()`: sway has no maximize.
+    pointer.click(max_at.0, max_at.1, W as u32, H as u32);
+    sh.wait("maximize refused", |s| {
+        s.log_text().contains("sway has no maximize")
+    });
+    assert_eq!(fullscreen_mode(&sh), Some(0));
+    assert!(!win.maximized.load(std::sync::atomic::Ordering::SeqCst));
+    // `w.fullscreen()`: sway fullscreens the window.
+    pointer.click(full_at.0, full_at.1, W as u32, H as u32);
+    pointer.motion(640, 400, W as u32, H as u32);
+    sh.wait("sway fullscreens the window", |s| {
+        fullscreen_mode(s) == Some(1)
+    });
+    sh.wait("the window sees it", |_| {
+        win.fullscreen.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    sh.keep("winstate-fullscreen");
+    drop(win);
+}
