@@ -176,6 +176,8 @@ pub(crate) struct Animator {
     pub pages: pages::PageSwaps,
     /// (M4) Shaped nodes' shapes and morphs (`crate::shapes`).
     shapes: crate::shapes::morph::Morphs,
+    /// (M4) Rolling texts' layouts and rolls (`crate::effects::roll`).
+    rolls: crate::effects::roll::Rolls,
 }
 
 impl Animator {
@@ -266,6 +268,38 @@ impl Animator {
         outline
     }
 
+    /// (M4) What a `roll: true` text `id`, laid out as `layout`, draws:
+    /// `None` for `layout` as it is, or the roll from its last text
+    /// (along `curve`): the old layout, the new one and the progress
+    /// (`crate::effects::roll`).
+    pub fn roll(
+        &mut self,
+        id: NodeId,
+        layout: &std::sync::Arc<strand_text::TextLayout>,
+        curve: Curve,
+    ) -> Option<(
+        std::sync::Arc<strand_text::TextLayout>,
+        std::sync::Arc<strand_text::TextLayout>,
+        f32,
+    )> {
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (roll, moving) = self.rolls.roll(id, layout, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        roll
+    }
+
+    /// (M4) `id` does not roll (any more).
+    pub fn forget_roll(&mut self, id: NodeId) {
+        self.rolls.forget(id);
+    }
+
     /// (M4) `id` draws no shape (any more).
     pub fn forget_shape(&mut self, id: NodeId) {
         self.shapes.forget(id);
@@ -354,6 +388,7 @@ impl Animator {
     pub fn forget(&mut self, id: NodeId) {
         self.times.forget(id);
         self.shapes.forget(id);
+        self.rolls.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -421,6 +456,7 @@ impl Animator {
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.times.retain(&mut keep);
         self.shapes.retain(&mut keep);
+        self.rolls.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -646,6 +682,7 @@ impl Animator {
             || self.enter.iter().any(under)
             || self.exits.keys().any(under)
             || self.shapes.pending(|id| under(&id))
+            || self.rolls.pending(|id| under(&id))
     }
 }
 

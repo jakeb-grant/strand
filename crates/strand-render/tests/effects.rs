@@ -1045,3 +1045,83 @@ fn text_stroke_fill_and_letters_draw() {
     let (_, buf) = words(Scale::new(240).unwrap(), 0);
     assert_matches_ref("effects_text_2x", &buf, 2);
 }
+
+/// A `roll: true` text reading `value` in a 120×40 bar at 1 s.
+fn rolling(value: &str, reduced: bool) -> (Renderer, Buffer, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 4.0, 100.0, 32.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Text, text(value)),
+        (Prop::Font, PropValue::Font(common::font(24.0))),
+        (Prop::Color, color("#cdd6f4")),
+        (Prop::Roll, PropValue::Bool(true)),
+    ]);
+    let id = b.node(NodeKind::Text, Some(root), p);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(120, 40, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf, id)
+}
+
+/// design.md "Motion and time": `text pct(level) { roll: true }` — a
+/// changed digit rolls (the old one up and out, the new one up and in)
+/// while the others stay; it settles to the new text, and
+/// `reduced_motion` shows it at once (ref `effects_roll.png` mid-roll).
+#[test]
+fn rolling_numbers_roll_only_the_changed_digit() {
+    use std::time::Duration;
+    let (mut r, mut buf, id) = rolling("41%", false);
+    let before = buf.pixels.clone();
+    let mut d = SceneDiff::new();
+    d.set(id, Prop::Text, text("42%"));
+    assert!(r.apply(d).is_empty());
+    let mut t = 1016;
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    t += 50;
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    assert_matches_ref("effects_roll", &buf, 2);
+    let (_, settled, _) = rolling("42%", false);
+    let column = |b: &Buffer, x0: u32, x1: u32| -> Vec<[u8; 4]> {
+        (x0..x1)
+            .flat_map(|x| (0..40).map(move |y| (x, y)))
+            .map(|(x, y)| b.px(x, y))
+            .collect()
+    };
+    // The `4` (the first ~15 px of the text) stays; the middle digit is
+    // neither the old nor the new one.
+    assert!(
+        column(&buf, 10, 24) == column(&settled, 10, 24),
+        "the 4 stays"
+    );
+    let mid = column(&buf, 26, 40);
+    assert!(mid != column(&settled, 26, 40) && mid != column_of(&before, 26, 40));
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        assert!(t < 4000, "settles");
+    }
+    assert!(buf.pixels == settled.pixels, "settles on 42%");
+
+    // Reduced motion: the new text at once.
+    let (mut r, mut buf, id) = rolling("41%", true);
+    let mut d = SceneDiff::new();
+    d.set(id, Prop::Text, text("42%"));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    assert!(buf.pixels == settled.pixels);
+}
+
+fn column_of(px: &[u8], x0: u32, x1: u32) -> Vec<[u8; 4]> {
+    (x0..x1)
+        .flat_map(|x| (0..40u32).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            let i = ((y * 120 + x) * 4) as usize;
+            [px[i], px[i + 1], px[i + 2], px[i + 3]]
+        })
+        .collect()
+}

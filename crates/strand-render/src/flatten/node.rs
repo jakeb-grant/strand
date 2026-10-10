@@ -768,6 +768,22 @@ impl<'a> Flattener<'a> {
                 self.out.items[i].bounds = bounds;
             }
             if !bounds.is_empty() {
+                // (M4) `roll: true`: changed letters roll
+                // (`crate::effects::roll`).
+                let roll = if letters.is_none()
+                    && matches!(get(Prop::Roll), Some(PropValue::Bool(true)))
+                {
+                    let transition = node
+                        .props
+                        .iter()
+                        .find(|e| e.prop == Prop::Roll)
+                        .map_or(strand_scene::Transition::Default, |e| e.transition.clone());
+                    let curve = strand_scene::Curve::of(&scope.transition(&transition, Prop::Y));
+                    self.anim.roll(node.id, &l, curve)
+                } else {
+                    self.anim.forget_roll(node.id);
+                    None
+                };
                 let lines: Vec<(Rect, Color)> = l
                     .runs
                     .iter()
@@ -782,6 +798,7 @@ impl<'a> Flattener<'a> {
                     && text_fill.is_none()
                     && text_stroke.is_none()
                     && letters.is_none()
+                    && roll.is_none()
                 {
                     let mut rest = sig.clone();
                     (x, y).hash(&mut rest);
@@ -814,7 +831,20 @@ impl<'a> Flattener<'a> {
                         area: kurbo_rect(bounds).union(frame),
                     })
                 });
+                if let Some((old, new, p)) = &roll {
+                    let clip = kurbo_rect(phys).to_path(TOLERANCE);
+                    self.push(Item::PushClip(clip), phys, &mut sig, &mut ink);
+                    let h = (new.size.h as f64 * s).max(1.0);
+                    let each =
+                        crate::effects::roll::items(old, new, *p, (x, y), h, color, &span_colors);
+                    for (item, b) in each {
+                        let b = b.intersect(phys).unwrap_or_default();
+                        self.push(item, b, &mut sig, &mut ink);
+                    }
+                    self.push(Item::PopClip, phys, &mut sig, &mut ink);
+                }
                 match letters {
+                    _ if roll.is_some() => {}
                     None => self.push(
                         Item::Glyphs {
                             x,

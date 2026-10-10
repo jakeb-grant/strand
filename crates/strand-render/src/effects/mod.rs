@@ -16,6 +16,7 @@ pub(crate) mod letters;
 pub(crate) mod light;
 pub(crate) mod particles;
 pub(crate) mod raster;
+pub(crate) mod roll;
 
 use std::sync::Arc;
 
