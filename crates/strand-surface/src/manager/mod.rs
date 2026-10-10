@@ -79,6 +79,8 @@ use strand_scene::{KeyInput, Modifiers};
 mod catcher;
 mod commit;
 mod effect;
+#[path = "../gpu_handoff.rs"]
+mod gpu_handoff;
 mod layer;
 mod outputs;
 mod popup;
@@ -86,6 +88,8 @@ mod protocols;
 mod scrim;
 mod seat;
 mod session_lock;
+#[cfg(feature = "gpu")]
+pub use gpu_handoff::RawHandles;
 
 use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
@@ -696,6 +700,8 @@ pub struct State<H: SurfaceHost + 'static> {
     deadline_timers: HashMap<SurfaceId, RegistrationToken>,
     /// (M4) The session lock (`session_lock.rs`).
     session_lock: session_lock::SessionLock,
+    /// (M4) Surfaces the GPU thread commits (`gpu_handoff.rs`).
+    gpu: gpu_handoff::HandOffs,
 }
 
 impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
@@ -889,6 +895,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             expiry_timer: None,
             deadline_timers: HashMap::new(),
             session_lock: session_lock::SessionLock::new(session_lock),
+            gpu: gpu_handoff::HandOffs::default(),
         };
         Ok(Self {
             event_loop,

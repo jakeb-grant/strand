@@ -34,6 +34,11 @@ impl<H: SurfaceHost + 'static> State<H> {
     // ---- painting ----------------------------------------------------------
 
     pub(super) fn draw(&mut self, id: SurfaceId) {
+        if self.gpu.has(id) {
+            // (M4) The GPU thread presents it (`gpu_handoff.rs`).
+            self.draw_handed_off(id);
+            return;
+        }
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -296,7 +301,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         // A lock surface takes no bare commit: its configure is acked
         // with its next buffer instead (`session_lock.rs`).
-        if matches!(s.role, Role::Lock(_)) {
+        if matches!(s.role, Role::Lock(_)) || self.gpu.has(id) {
             return;
         }
         if s.ack_pending {

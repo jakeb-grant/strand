@@ -317,6 +317,8 @@ pub struct TestHost {
     pub input: Vec<InputEvent>,
     pub configured: Vec<(SurfaceId, Size, Scale)>,
     pub detached: Vec<SurfaceId>,
+    /// (M4) What [`SurfaceHost::gpu_release`] was told.
+    pub gpu_released: Vec<SurfaceId>,
     pub monitors_added: Vec<(Monitor, bool)>,
     pub monitors_removed: Vec<Monitor>,
     pub monitors_changed: Vec<Monitor>,
@@ -522,6 +524,10 @@ impl SurfaceHost for TestHost {
 
     fn compositor_caps(&mut self, caps: &CompositorCaps) {
         self.caps.push(*caps);
+    }
+
+    fn gpu_release(&mut self, surface: SurfaceId) {
+        self.gpu_released.push(surface);
     }
 }
 

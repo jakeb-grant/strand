@@ -32,6 +32,8 @@ pub mod solid;
 
 pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};
+#[cfg(feature = "gpu")]
+pub use manager::RawHandles;
 pub use manager::{
     Config, GRAB_WINDOW, LOCK_FALLBACK_NODE, LockError, LockState, RepaintHandle, Request, State,
     Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager,

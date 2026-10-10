@@ -105,9 +105,11 @@ impl<H: SurfaceHost + 'static> State<H> {
                 *config = new.clone();
                 s.config = new.as_layer();
                 s.geometry_dirty = true;
-                popup.wl_surface().commit();
-                s.stats.bare_commits += 1;
-                self.stats.bare_commits += 1;
+                if !self.gpu.has(id) {
+                    popup.wl_surface().commit();
+                    s.stats.bare_commits += 1;
+                    self.stats.bare_commits += 1;
+                }
             } else {
                 self.destroy_surface(id);
             }

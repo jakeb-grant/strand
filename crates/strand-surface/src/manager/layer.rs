@@ -82,9 +82,12 @@ impl<H: SurfaceHost + 'static> State<H> {
                 layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
             }
             s.config = config;
-            layer.commit();
-            s.stats.bare_commits += 1;
-            self.stats.bare_commits += 1;
+            // (M4) A handed-off surface's next present applies it.
+            if !self.gpu.has(id) {
+                layer.commit();
+                s.stats.bare_commits += 1;
+                self.stats.bare_commits += 1;
+            }
             self.update_catcher(id);
         }
     }
@@ -269,8 +272,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         if let Some(b) = s.blur.take() {
             b.destroy();
         }
-        // Dropping the layer surface destroys it and its wl_surface.
-        drop(s);
+        // Dropping the layer surface destroys it and its wl_surface; (M4)
+        // a handed-off one is kept until the GPU thread let go of it.
+        match self.gpu.keep(s) {
+            Some(s) => drop(s),
+            None => self.host.gpu_release(id),
+        }
         self.clock.forget(id);
         self.host.surface_detached(id);
         // `grab_focus` may name it still: the sync moves it on and tells

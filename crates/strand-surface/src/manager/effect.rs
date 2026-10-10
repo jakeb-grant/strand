@@ -19,7 +19,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// sends it with a bare commit when it changed.
     pub(super) fn resend_blur(&mut self, id: SurfaceId) {
         let rects = match self.surfaces.get(&id) {
-            Some(s) if s.mapped() => region_rects(&self.host.blur_region(id), s.scale),
+            Some(s) if s.mapped() && !self.gpu.has(id) => {
+                region_rects(&self.host.blur_region(id), s.scale)
+            }
             _ => return,
         };
         if self.set_blur(id, rects)
