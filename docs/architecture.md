@@ -923,7 +923,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
      it for `Updated`, destroy it and `detach_surface` for `Removed`.
   1. Spawn the text worker with `TextWorker::spawn_with_waker(config,
      Some(waker))`, where the waker pings the main calloop loop, and
-     build `Renderer::new(TextBackend::Worker(worker))`. `Renderer::text()`
+     build `Renderer::try_new(TextBackend::Worker(worker))`, which
+     also starts the image worker and fails, as the text worker's spawn
+     does, when it cannot (`Renderer::new` decodes inline instead: tests
+     and offline tools). `Renderer::text()`
      returns the backend; `TextWorker::is_running()` is false once the
      worker thread has ended, which with the handle still held means it
      panicked (shaping panics are caught and the engine restarted).

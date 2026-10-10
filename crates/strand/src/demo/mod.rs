@@ -122,7 +122,7 @@ pub fn run(log: &LogConfig) -> Result<(), DemoError> {
     let worker =
         TextWorker::spawn_with_waker(FontConfig::default(), Some(Box::new(move || ping.ping())))
             .map_err(DemoError::Text)?;
-    let mut renderer = Renderer::new(TextBackend::Worker(worker));
+    let mut renderer = Renderer::try_new(TextBackend::Worker(worker)).map_err(DemoError::Io)?;
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
     let host = Host::new(renderer, log.damage).waking(wake);
     let mut mgr = SurfaceManager::connect(host, Config::default())?;

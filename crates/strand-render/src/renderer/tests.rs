@@ -494,3 +494,22 @@ fn a_stagger_past_the_viewport_leaves_nothing_busy() {
         assert!(t < 3000, "still busy at {t} ms");
     }
 }
+
+/// The shell's renderer refuses to start when its image worker cannot:
+/// decodes and file reads would otherwise run on the render thread with
+/// jank as the only sign.
+#[test]
+fn an_image_worker_that_cannot_start_is_an_error_not_inline_decoding() {
+    use crate::image::ImageBackend;
+    let text = TextBackend::Worker(strand_text::TextWorker::spawn(Default::default()).unwrap());
+    let (images, err) = image_backend(&text, |_| Err(std::io::Error::other("no threads")));
+    assert!(matches!(images, ImageBackend::Inline(_)));
+    assert_eq!(err.map(|e| e.to_string()).as_deref(), Some("no threads"));
+    let (images, err) = image_backend(&text, spawn_images);
+    assert!(matches!(images, ImageBackend::Worker(_)) && err.is_none());
+    assert!(Renderer::try_new(text).is_ok());
+    // An inline text backend decodes inline by design (offline renders).
+    let inline = TextBackend::Inline(Box::new(strand_text::TextEngine::new(Default::default())));
+    let (images, err) = image_backend(&inline, |_| Err(std::io::Error::other("unused")));
+    assert!(matches!(images, ImageBackend::Inline(_)) && err.is_none());
+}

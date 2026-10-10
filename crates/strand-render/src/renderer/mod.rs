@@ -330,25 +330,52 @@ pub struct Renderer {
     gpu: backend::GpuState,
 }
 
+/// Starts the image worker, waking the render loop through `waker`.
+fn spawn_images(waker: Option<strand_text::Waker>) -> std::io::Result<crate::image::ImageWorker> {
+    crate::image::ImageWorker::spawn(crate::image::IconTheme::system(), waker)
+}
+
+/// The image backend for `text`: with a text worker, images decode on a
+/// worker of their own (`spawn`) that wakes the render loop through the
+/// same waker; one that cannot start leaves them inline, with its error.
+fn image_backend(
+    text: &TextBackend,
+    spawn: impl FnOnce(Option<strand_text::Waker>) -> std::io::Result<crate::image::ImageWorker>,
+) -> (crate::image::ImageBackend, Option<std::io::Error>) {
+    let inline = || crate::image::ImageBackend::Inline(crate::image::IconTheme::system());
+    match text {
+        TextBackend::Worker(w) => match spawn(w.waker()) {
+            Ok(worker) => (crate::image::ImageBackend::Worker(worker), None),
+            Err(e) => (inline(), Some(e)),
+        },
+        TextBackend::Inline(_) => (inline(), None),
+    }
+}
+
 /// How long the pointer rests on a node before its `tooltip` shows.
 pub const TOOLTIP_DELAY: Duration = Duration::from_millis(600);
 
 impl Renderer {
+    /// A renderer for tests and offline tools: with a text worker, one
+    /// whose image worker could not start decodes inline on the render
+    /// thread. The shell uses [`Renderer::try_new`], which refuses
+    /// instead.
     pub fn new(text: TextBackend) -> Self {
-        // With a text worker, images decode on a worker of their own that
-        // wakes the render loop through the same waker.
-        let images = match &text {
-            TextBackend::Worker(w) => {
-                crate::image::ImageWorker::spawn(crate::image::IconTheme::system(), w.waker())
-                    .map(crate::image::ImageBackend::Worker)
-                    .unwrap_or_else(|_| {
-                        crate::image::ImageBackend::Inline(crate::image::IconTheme::system())
-                    })
-            }
-            TextBackend::Inline(_) => {
-                crate::image::ImageBackend::Inline(crate::image::IconTheme::system())
-            }
-        };
+        let (images, _) = image_backend(&text, spawn_images);
+        Self::with_images(text, images)
+    }
+
+    /// [`Renderer::new`] for the shell: with a text worker, an image
+    /// worker that cannot start is an error, as the text worker's is,
+    /// since file reads and decodes must stay off the render thread.
+    pub fn try_new(text: TextBackend) -> std::io::Result<Self> {
+        match image_backend(&text, spawn_images) {
+            (_, Some(e)) => Err(e),
+            (images, None) => Ok(Self::with_images(text, images)),
+        }
+    }
+
+    fn with_images(text: TextBackend, images: crate::image::ImageBackend) -> Self {
         let extras = Extras {
             images: crate::image::ImageStore::new(images),
             ..Extras::default()
