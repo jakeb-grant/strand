@@ -20,8 +20,10 @@ below.
   change docs, two tests' harnesses and the GPU thread's answer to a
   request that panics (decisions.md m4-integration-w3, closing). The
   fourth to ninth m4 audit rounds' fixes are on `laptop/m4-audit`
-  (decisions.md m4-audit); they change runtime code as well as docs
-  and tests (docs/m4-report.md's header lists what).
+  (decisions.md m4-audit): 67 confirmed findings, all fixed, one of
+  them partly left to the owner (item 7 below). They change runtime
+  code as well as docs and tests (docs/m4-report.md, "Audit", has each
+  round's count and fixes).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
   M5 0/9 (boxes and exit criteria, counted 2026-10-10). The open M1
   box is the tree-sitter grammar, which M5 owns.

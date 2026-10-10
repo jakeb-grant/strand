@@ -230,6 +230,37 @@ CI's `test` and `budgets` jobs failed at `ffa8438` (run 38054473409).
 The line is now at info (decisions.md m4-audit, round 3, "no session
 lock under `STRAND_MOCK`").
 
+## Audit
+
+Nine audit rounds read M4's tree after its waves merged; each confirmed
+finding was fixed with a test, or sent to the owner, and has a dated
+paragraph under decisions.md "## m4-audit".
+
+- Rounds 1 to 3 ran on `laptop/integration-m4-w3` and are on `main`
+  (merged at `3dc3f71`): the GPU's bounded caches and hung-submission
+  loss, `GPU_WAIT`, the GPU thread joined before the connection, the
+  per-pixel memory cap, `check::lock_no_auth`, the PAM service choice,
+  the fallback looking for a deleted helper at each check, no lock
+  under `STRAND_MOCK`, and the flakes and harness gaps they found.
+- Rounds 4 to 9 ran on `laptop/m4-audit`: 67 confirmed findings in
+  all, every one fixed, one of them partly left to the owner (Open,
+  the hung-device cap):
+
+| Round | Confirmed | What was fixed |
+| --- | --- | --- |
+| 4 | 15 | promotion on a spring's last frame; a failed or hung pass answered `Failed` alone, its demoted surface not hanging a second device; shader, SVG `<image href>` and Lottie reads bounded (Lottie cycles, nesting past 32 and frames past 100,000 instances refused); verdicts tagged with their lock session; the VM's absence checks; the theme-swap gate in the timing job |
+| 5 | 10 | image, SVG and Lottie reads through one capped read (procfs refused); the memory cap counting run-time-indexed arrays and matrices; a lock session begun when a lock is first asked for; a drag export held unread given up after 5 s; a shader file that lost the device never run again |
+| 6 | 8 | a verdict in the dispatch that asked for the lock; the spectrum test's diagnostics; the glyph-damage test off the wall clock; docs (threads table, Open, the GPU paragraph, the round costs) |
+| 7 | 11 | a lock's shader files in its reload hash; `transition:`'s values; the fallback field's empty Return; the auth helper's reaping; file results kept for a burst of sources; the IPC socket's bind; a frame whose callback or presentation never comes (1 s give-up); the watcher tests off the wall clock; docs (`.text` growth, the Shaders box) |
+| 8 | 10 | the lock's keyboard focus following its content to another output; pixmaps without `XDG_RUNTIME_DIR` in a private directory with `O_EXCL` files; the lock check's help skipping an empty password; the give-up and drag tests; the format-on-save overlay test; docs |
+| 9 | 13 | an `auth.submit` in a lock's popup (no way out, and `check::lock_popup`); a naga panic made a `check::shader` error; the helper's socket off stdin and stdout before PAM; start notices for a missing helper or a compositor without ext-session-lock (its refused lock reported `Finished`); offscreen cache entries pinning their pixmaps; the audio meter's lines at info; the 2,000-row proof checked against the first mount |
+
+Across rounds 4 to 9 the laptop's CPU-only `.text` went from
+15,634,439 B (at `e765276`) to 15,659,527 B, 69,113 B under the
+15 MiB gate, and the GPU build's from 19,006,471 to 19,043,079 B;
+handoff.md's State gives each round's figure. No budget, gate or
+target was raised.
+
 ## Decisions the owner made in M4
 
 All on 2026-10-09 (decisions.md m4-owner):
