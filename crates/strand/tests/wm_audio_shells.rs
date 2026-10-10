@@ -678,7 +678,7 @@ fn window_buttons_maximize_and_fullscreen_on_sway() {
 
 /// (M4) `spectrum audio.sink { … }` in `strand run` on the real audio
 /// service, end to end: at rest its bars are dots; a 1 kHz test tone
-/// played to the default sink lifts one bar (the FFT on the audio
+/// played to the default sink lifts its own bar, not the far ones (the FFT on the audio
 /// thread, the bands fed to render through `run/feeds.rs` only while the
 /// spectrum is visible), and when the tone stops the bars rest again.
 #[test]
@@ -738,23 +738,35 @@ fn a_test_tone_lifts_a_spectrum_bar() {
         strand: Some(strand),
         _sway: sway,
     };
-    // The tallest run of red pixels in any column of the bar.
-    let tallest = |img: &Img| {
-        (0..400)
-            .map(|x| {
-                (0..48)
-                    .filter(|&y| {
-                        let p = img.px(x, y);
-                        p[0] > 160 && p[1] < 90 && p[2] < 90
-                    })
-                    .count()
-            })
-            .max()
-            .unwrap_or(0)
+    // Each bar's height in red pixels, left to right: runs of columns
+    // with red in them (a bar at rest is a dot, so all 16 show).
+    let bars = |img: &Img| {
+        let mut out: Vec<usize> = Vec::new();
+        let mut run = false;
+        for x in 0..400.min(img.w) {
+            let n = (0..48)
+                .filter(|&y| {
+                    let p = img.px(x, y);
+                    p[0] > 160 && p[1] < 90 && p[2] < 90
+                })
+                .count();
+            match (n > 0, run) {
+                (true, false) => out.push(n),
+                (true, true) => {
+                    if let Some(h) = out.last_mut() {
+                        *h = (*h).max(n);
+                    }
+                }
+                _ => {}
+            }
+            run = n > 0;
+        }
+        out
     };
+    let tallest = |img: &Img| bars(img).into_iter().max().unwrap_or(0);
     sh.wait("the spectrum at rest: dots", |s| {
-        let t = tallest(&s.shot());
-        (1..=4).contains(&t)
+        let b = bars(&s.shot());
+        b.len() == 16 && b.iter().all(|h| (1..=4).contains(h))
     });
     sh.keep("spectrum-at-rest");
     // The default sink's name, from the `default` metadata.
@@ -769,7 +781,25 @@ fn a_test_tone_lifts_a_spectrum_bar() {
     let wav = dir.join("tone.wav");
     pipewire::sine_wav(&wav, 30.0, 1000.0, 0.5);
     let mut player = pw.play(&wav, &sink);
-    sh.wait("a bar lifted by the tone", |s| tallest(&s.shot()) > 20);
+    // 1 kHz falls in band 34 of 64, so in bar 8 of 16 (the bands are
+    // spaced evenly in pitch): that bar (or a neighbour, as the tone may
+    // spill over a band edge) lifts, and bars about two octaves and more
+    // away (bars 4 and under, up to 260 Hz; 12 and over, from 3.6 kHz)
+    // stay under half height.
+    let tone_bar = strand_services::audio::spectrum::band_of(1000.0) * 16
+        / strand_services::audio::spectrum::BANDS;
+    assert_eq!(tone_bar, 8);
+    sh.wait("the tone's bar lifted, the far bars low", |s| {
+        let b = bars(&s.shot());
+        if b.len() != 16 {
+            return false;
+        }
+        let peak = (0..16).max_by_key(|&i| b[i]).unwrap_or(0);
+        let far_low = (0..16)
+            .filter(|&i| i <= tone_bar - 4 || i >= tone_bar + 4)
+            .all(|i| b[i] < 20);
+        peak.abs_diff(tone_bar) <= 1 && b[peak] > 20 && far_low
+    });
     sh.keep("spectrum-tone");
     let _ = player.kill();
     let _ = player.wait();
