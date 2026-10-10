@@ -291,11 +291,12 @@ Waiting on the owner (decisions.md m4-gpu-effects, m4-audit):
   names no spelling for one, and inventing one would add syntax.
 - **A hung frame on a presented surface that is not a lock** is bounded
   only by the WSI's acquire timeout. A lock is not affected (GPU).
-- **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate** has little or
+- **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate** had little or
   no headroom on GitHub: 2.53–5.06 ms over fifteen timing jobs against
-  5 ms, one failure. The choices are to accept the occasional failure,
-  use a larger runner, or make the swap cheaper. The laptop measured
-  1.64 ms.
+  5 ms, one failure. Answered 2026-10-10 (decisions.md m4-owner-swap):
+  the owner kept the gate and chose a cheaper swap, which took the
+  laptop's figure from 1.61 to 1.36 ms (the render thread's apply;
+  logic's palette solve is unchanged and still timed).
 - **The shape list**: whether to trim the 13 shapes to design.md's five
   plus polygons (decisions.md m4-audit, "the shape list is a reading").
 - **xdg-activation** (the notification ActivationToken and the launch
