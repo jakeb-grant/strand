@@ -36,6 +36,8 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
 
 /// Two cycles' PSS may differ by this much (no growth).
 const PSS_SLACK_KB: u64 = 3 * 1024;
+/// The hardware leg: PSS after the drop over the pre-GPU baseline.
+const HARDWARE_SLACK_KB: u64 = 6 * 1024;
 /// The device outlives its last use this long (30 s outside tests).
 const IDLE_MS: u64 = 1500;
 const STEP: Duration = Duration::from_secs(30);
@@ -309,7 +311,9 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
     // Lavapipe and LLVM stay mapped after the drop (about 80 MiB), so
     // the baseline is reported, not asserted against (gpu.sh's hardware
     // leg compares it).
-    eprintln!("before the GPU: PSS {} kB", pss_kb(pid));
+    let baseline = pss_kb(pid);
+    let baseline_maps = pss_by_mapping(pid);
+    eprintln!("before the GPU: PSS {baseline} kB");
     let mut pss = Vec::new();
     let mut maps = Vec::new();
     let cycles: u32 = std::env::var("STRAND_GPU_IDLE_CYCLES")
@@ -373,4 +377,23 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
     );
     let text = log();
     assert!(text.contains("GPU: the thread ended"), "{text}");
+    // The hardware leg (`scripts/container/gpu.sh`), in release: a
+    // hardware driver unmaps its libraries with the device, so PSS goes
+    // back to within about 6 MiB of the baseline (the spike's ANV left
+    // 5.2-6.3 MiB): what stays is strand's own GPU code paged in. A debug
+    // binary's is several times larger (8.9 MiB of it on ANV), so a debug
+    // run only reports it.
+    eprintln!(
+        "after the drop: {first} kB, {} kB over the baseline:\n{}",
+        first.saturating_sub(baseline),
+        growth(&baseline_maps, &maps[0])
+    );
+    if std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1") && !cfg!(debug_assertions) {
+        assert!(
+            first <= baseline + HARDWARE_SLACK_KB,
+            "PSS {first} kB after the drop, more than {HARDWARE_SLACK_KB} kB over the \
+             {baseline} kB before the GPU:\n{}",
+            growth(&baseline_maps, &maps[0])
+        );
+    }
 }
