@@ -34,11 +34,15 @@ each item below.
     pre-GPU baseline after the drop; decisions.md m4-gpu-effects).
   - From the audit, for the owner (decisions.md m4-audit): a hung frame
     on a promoted (`GpuPresent`) surface is bounded only by the WSI's
-    acquire timeout, nothing keeps a lock's surfaces off the GPU, and a
-    GPU stall while locked is not a lock fault, so a lock with a
-    fullscreen clocked shader that hangs after its first frame could
-    freeze without the fallback. Readbacks now give up after 10 s and
-    lose the device.
+    acquire timeout. This does not reach the lock: a lock surface is
+    never lent or handed off to the GPU thread
+    (`strand-surface/tests/session_lock.rs::a_lock_surface_is_never_handed_to_the_gpu`,
+    lock VM), so a promoted lock is read back, each frame holds for the
+    GPU at most `GPU_WAIT` (8 ms) before the CPU draws it, and a
+    readback that never ends loses the device after `HUNG_AFTER` (10 s),
+    after which the CPU draws everything. A GPU stall can slow a lock's
+    shader, not freeze its password field. The earlier entry said
+    otherwise; it was wrong (decisions.md m4-audit, the correction).
   - Two functional tests still bound wall-clock time with wide margins
     (`strand-scene/src/tokens.rs::huge_fan_out_fails_fast`,
     `strand-dev/tests/lsp.rs`'s hung-bus case), left to their owners.
@@ -171,15 +175,21 @@ and the full shell warns above 64 MB and fails above 70 MB
   no maximize). Through the wlr fallback (adapter off) the reply is
   `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
 - Notifications: ActivationToken (spec 1.2) needs an xdg-activation token
-  from the clicked surface (M4), so the server reports spec 1.1;
-  `Notification.time` has no time of day yet.
-- Tray: Activate and ContextMenu get position (0, 0) until M4 popup
-  placement passes real coordinates.
+  from the clicked surface, so the server reports spec 1.1;
+  `Notification.time` has no time of day yet. M4 did not take up
+  xdg-activation (neither features.md's M4 boxes nor m4-plan.md list
+  it), nor the `XDG_ACTIVATION_TOKEN` for app launches (decisions.md
+  wave4-a3 said "left for M4"): both move to a later milestone, to
+  be scheduled by the owner (decisions.md m4-audit).
+- Tray: Activate and ContextMenu get the press's output-logical point
+  (`demo/host.rs::a_press_sets_the_tray_click_point`); (0, 0) only before
+  the first press and for actions no press caused (`dismiss`, `scroll`,
+  `drop`).
 - Media: remote (https) art is not fetched.
 - Network: `connect()` is awaited inline (bounded: 5 s per settings call,
   25 s for activation); enterprise (802.1X) and WEP networks are refused.
-- Audio: `StepVolume` has no caller on the language path; the future
-  `spectrum` element needs PCM samples as well as peaks. Without an
+- Audio: `StepVolume` has no caller on the language path. (`spectrum`
+  landed in M4 with an FFT on the audio thread.) Without an
   inotify instance the audio thread reconnects on its 10 s timer (no other
   unprivileged signal exists) and makes its socket watch again as soon as
   inotify gives one.
