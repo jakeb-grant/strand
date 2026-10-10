@@ -31,6 +31,9 @@ below.
   measures it over the target, 35,557 kB at `70af44f` and 35,617 kB at
   `e765276`, which warns; the ceiling is 38,912 kB);
   the full shell 42–50 MB against 64 MB.
+  After the fourth audit round (`laptop/m4-audit`, decisions.md
+  m4-audit round 4) the laptop measures 15,643,655 B CPU-only (about
+  85 KB left) and 19,016,775 B with the GPU backend.
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
