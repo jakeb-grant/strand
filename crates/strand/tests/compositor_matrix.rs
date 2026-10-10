@@ -1247,7 +1247,9 @@ fn window_state_actions_follow_the_compositor() {
 
 /// (M4) `thumbnail w`'s capture, live: a tap on a real window through
 /// `wm::capture` gets frames of it over the compositor's
-/// ext-image-copy-capture, scaled down to cover the size asked for.
+/// ext-image-copy-capture, scaled down to cover the size asked for, in
+/// the window's own colour (a capture of the wrong buffer, read before
+/// `ready`, or all zeros fails it).
 /// Skipped (with a message) on a
 /// compositor that offers no ext-image-copy-capture.
 #[test]
@@ -1280,7 +1282,9 @@ fn a_window_is_captured_for_its_thumbnail() {
         return;
     }
     const APP: &str = "strand-thumb";
-    let _win = TestWindow::open(&socket, APP, "thumbnail");
+    // An opaque colour no compositor background or border shares.
+    const RGBA: [u8; 4] = [0x2a, 0x9d, 0x5c, 0xff];
+    let _win = TestWindow::open_filled(&socket, APP, "thumbnail", RGBA);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1318,12 +1322,34 @@ fn a_window_is_captured_for_its_thumbnail() {
                 let _ = tx.send(f.clone());
             }
         });
+        // The frame at the frame's centre, as straight RGBA (frames are
+        // premultiplied BGRA; the window is opaque).
+        let centre = |f: &CaptureFrame| -> [u8; 4] {
+            let i = (((f.height / 2) * f.width + f.width / 2) * 4) as usize;
+            let p = &f.pixels[i..i + 4];
+            [p[2], p[1], p[0], p[3]]
+        };
+        let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+        // The first frame may come before the window's buffer is shown
+        // (a compositor may capture the toplevel before its first
+        // commit lands): the colour must arrive within the patience.
         let deadline = Instant::now() + PATIENCE;
+        let mut last = None;
         let frame = loop {
-            if let Ok(f) = frames.try_recv() {
-                break f;
+            while let Ok(f) = frames.try_recv() {
+                last = Some(f);
             }
-            assert!(Instant::now() < deadline, "no frame of {APP} from {kind}");
+            if let Some(f) = last
+                .as_ref()
+                .filter(|f| f.width > 0 && near(centre(f), RGBA))
+            {
+                break f.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no frame of {APP} in its colour from {kind}: last {:?}",
+                last.as_ref().map(|f| (f.width, f.height, centre(f)))
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         eprintln!(

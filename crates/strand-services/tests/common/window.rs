@@ -1,5 +1,6 @@
-//! A tiny Wayland client with one xdg toplevel (a 64×64 shm buffer), for
-//! putting real windows on a test compositor.
+//! A tiny Wayland client with one xdg toplevel (a 64×64 shm buffer,
+//! transparent or one solid colour), for putting real windows on a test
+//! compositor.
 
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
@@ -48,6 +49,12 @@ pub struct TestWindow {
 impl TestWindow {
     /// Connects to the display at `socket` and maps a toplevel.
     pub fn open(socket: &Path, app_id: &str, title: &str) -> TestWindow {
+        Self::open_filled(socket, app_id, title, [0; 4])
+    }
+
+    /// [`TestWindow::open`], its buffer filled with `rgba` (straight
+    /// RGBA; stored premultiplied as ARGB8888, BGRA in memory).
+    pub fn open_filled(socket: &Path, app_id: &str, title: &str, rgba: [u8; 4]) -> TestWindow {
         let conn = Connection::from_socket(UnixStream::connect(socket).unwrap()).unwrap();
         let (globals, mut queue) = registry_queue_init::<State>(&conn).unwrap();
         let qh = queue.handle();
@@ -65,6 +72,13 @@ impl TestWindow {
         let fd = rustix::fs::memfd_create("strand-test-window", rustix::fs::MemfdFlags::CLOEXEC)
             .unwrap();
         rustix::fs::ftruncate(&fd, len as u64).unwrap();
+        if rgba != [0; 4] {
+            let a = rgba[3] as u32;
+            let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            let px = [pm(rgba[2]), pm(rgba[1]), pm(rgba[0]), rgba[3]];
+            let fill = px.repeat(len / 4);
+            rustix::io::pwrite(&fd, &fill, 0).unwrap();
+        }
         let pool = shm.create_pool(fd.as_fd(), len as i32, &qh, ());
         let buffer = pool.create_buffer(0, SIZE, SIZE, SIZE * 4, wl_shm::Format::Argb8888, &qh, ());
         let closed = Arc::new(AtomicBool::new(false));
