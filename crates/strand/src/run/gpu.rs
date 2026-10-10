@@ -78,6 +78,9 @@ mod host {
     /// How often an ending GPU thread is checked for having ended.
     const JOIN_POLL: Duration = Duration::from_millis(50);
 
+    /// How often [`GpuHost::shutdown`] looks again.
+    const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
+
     /// A surface the GPU thread presents.
     #[derive(Debug)]
     struct Presented {
@@ -238,6 +241,31 @@ mod host {
                 for r in std::mem::take(&mut self.queued) {
                     self.send(r);
                 }
+            }
+        }
+
+        /// Ends every GPU thread, the running one and those still ending,
+        /// waiting at most `within`; true once all have ended. Called
+        /// before the surface manager drops: a presenting thread holds
+        /// the display and the `wl_surface`s it was lent
+        /// (`strand_gpu::RawHandles`), and drops its swapchains on them
+        /// as it ends, so none may outlive the connection.
+        pub(crate) fn shutdown(&mut self, within: Duration) -> bool {
+            self.queued.clear();
+            if let Some(g) = self.gpu.take() {
+                self.exiting.push((g, Vec::new()));
+            }
+            let until = std::time::Instant::now() + within;
+            loop {
+                self.exiting.retain_mut(|(g, _)| !g.try_join());
+                if self.exiting.is_empty() {
+                    return true;
+                }
+                let now = std::time::Instant::now();
+                if now >= until {
+                    return false;
+                }
+                std::thread::sleep(SHUTDOWN_POLL.min(until - now));
             }
         }
 
@@ -627,6 +655,20 @@ mod host {
                 },
             );
             assert_eq!(lent(&attached), [SurfaceId(1), SurfaceId(2)]);
+        }
+
+        /// The run's exit ends the GPU thread before the surface manager
+        /// (and so the display its swapchains were made on) drops.
+        #[test]
+        fn shutdown_joins_the_running_thread() {
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            host.send(GpuRequest::Release(SurfaceId(1)));
+            assert!(host.gpu.is_some(), "the request started a thread");
+            assert!(host.shutdown(Duration::from_secs(30)));
+            assert!(host.gpu.is_none() && host.exiting.is_empty());
+            // Nothing left: at once.
+            assert!(host.shutdown(Duration::ZERO));
         }
 
         /// One device per process: a thread is started only when no

@@ -89,6 +89,11 @@ pub use logic::{Live, Switched, logic};
 pub(crate) use trim::trim;
 use trim::{Trimmer, structural};
 
+/// (M4) How long the run's exit waits for the GPU thread to end before
+/// it leaves the Wayland connection open instead (`GpuHost::shutdown`).
+#[cfg(feature = "gpu")]
+const GPU_SHUTDOWN: Duration = Duration::from_secs(3);
+
 /// A monitor as the `screens` service shows it (plain data: it crosses
 /// threads).
 #[derive(Clone, Debug, PartialEq)]
@@ -588,6 +593,19 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         gpu.pump(mgr.state_mut());
         gpu_status.send(&mgr.state().host().renderer, &to_logic);
     };
+    // (M4) The GPU thread ends before `mgr` drops: a presented surface's
+    // swapchain was made on the manager's display and `wl_surface`, and
+    // the thread drops it as it ends. One that does not end in time (a
+    // hung driver) keeps the connection: the manager is leaked, not
+    // dropped under it, and the process exits soon after.
+    #[cfg(feature = "gpu")]
+    if !gpu.shutdown(GPU_SHUTDOWN) {
+        log::warn!(
+            "GPU: the thread did not end within {} s; the Wayland connection is left open",
+            GPU_SHUTDOWN.as_secs()
+        );
+        std::mem::forget(mgr);
+    }
     let _ = to_logic.send(ToLogic::Shutdown);
     let joined = logic.join();
     if compiler.join().is_err() {
