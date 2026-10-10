@@ -618,7 +618,7 @@ impl Guard {
         let screen = &host.lock;
         if let Some((_, node)) = screen.content {
             if node == LOCK_FALLBACK_NODE {
-                return Some("no lock is compiled".into());
+                return Some("the session was locked with no `lock` open".into());
             }
             let tree = host.renderer.tree();
             if tree.get(node).is_none() {

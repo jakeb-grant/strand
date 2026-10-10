@@ -8,7 +8,9 @@ service auth {
   busy: bool
   /// The last password was refused, or could not be checked.
   failed: bool
-  /// Checks `password`: `input { type: password; on activate {
-  /// auth.submit(secret) } }`. Ignored while one is being checked.
+  /// Checks `password`: `input { type: password; text: <-> secret;
+  /// focus: true; on key(k) { if k.name == "Return" {
+  /// auth.submit(secret); secret = "" } } }`. Ignored while one is
+  /// being checked.
   action submit(password: text)
 }

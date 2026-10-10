@@ -300,6 +300,8 @@ jobs:
               - 'crates/**/*lock_fallback*'
               - 'crates/strand/src/lock.rs'
               - 'crates/strand/src/run/lock.rs'
+              # The fallback's painting and keys in the binary's host.
+              - 'crates/strand/src/demo/host.rs'
               - 'crates/strand/tests/lock.rs'
               - 'crates/strand/src/services/auth*'
               - 'crates/strand-services/src/auth.rs'
@@ -327,7 +329,8 @@ jobs:
           ls -l /dev/kvm
           test -r /dev/kvm -a -w /dev/kvm || { echo "::error::/dev/kvm is not read-writable"; exit 1; }
       # S-lock's scenarios (scripts/lockvm/scenarios/all.sh): the session
-      # lock on headless sway and the shipping helper against real
+      # lock on headless sway, the strand binary's fault matrix (built
+      # with `--features faults`) and the shipping helper against real
       # pam_unix, built here (the guest is the runner's Ubuntu release).
       - uses: ./.github/actions/setup
         if: steps.run.outputs.go == 'true'
@@ -341,7 +344,7 @@ jobs:
         if: steps.run.outputs.go == 'true'
         run: scripts/container/lockvm.sh bash scripts/lockvm/scenarios/all.sh
         env:
-          LOCKVM_TIMEOUT: "300"
+          LOCKVM_TIMEOUT: "600"
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

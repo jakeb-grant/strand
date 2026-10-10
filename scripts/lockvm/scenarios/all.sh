@@ -7,7 +7,8 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 failed=()
-for s in session_lock pam; do
+# strand_lock before pam: pam.sh removes /etc/pam.d/strand.
+for s in session_lock strand_lock pam; do
   echo "=== scenario $s"
   if bash "$here/$s.sh"; then
     echo "=== $s PASSED"
