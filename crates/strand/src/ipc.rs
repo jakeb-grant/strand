@@ -187,6 +187,8 @@ struct Client {
 pub struct Server {
     listener: UnixListener,
     path: PathBuf,
+    /// The bound socket's `(dev, ino)`: only that file is removed on drop.
+    id: Option<(u64, u64)>,
     clients: HashMap<ClientId, Client>,
     next: ClientId,
 }
@@ -207,12 +209,24 @@ pub trait HasReady {
 
 impl Server {
     /// Bind `path` (a stale socket left by a crash is replaced; one a
-    /// live shell answers on is not) and register it on `handle`.
+    /// live shell answers on is not, nor anything that is not a socket:
+    /// a `STRAND_SOCKET` naming a regular file is refused, not deleted)
+    /// and register it on `handle`.
     pub fn bind<D: HasReady + 'static>(
         path: &Path,
         handle: &LoopHandle<'static, D>,
     ) -> io::Result<Server> {
-        if path.exists() {
+        use std::os::unix::fs::FileTypeExt;
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if !meta.file_type().is_socket() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "{} exists and is not a socket; not replacing it",
+                        path.display()
+                    ),
+                ));
+            }
             if UnixStream::connect(path).is_ok() {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
@@ -236,8 +250,10 @@ impl Server {
                 },
             )
             .map_err(|e| io::Error::other(e.error))?;
+        let id = socket_id(path);
         Ok(Server {
             listener,
+            id,
             path: path.to_path_buf(),
             clients: HashMap::new(),
             next: 1,
@@ -464,8 +480,21 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        // Only the socket this server bound: a file put in its place since
+        // is not ours to delete.
+        if self.id.is_some() && socket_id(&self.path) == self.id {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
+}
+
+/// The `(dev, ino)` of the socket at `path`, if a socket is there.
+fn socket_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    meta.file_type()
+        .is_socket()
+        .then(|| (meta.dev(), meta.ino()))
 }
 
 /// Connect to the running shell.
@@ -747,6 +776,51 @@ mod tests {
         assert_eq!(reader.join().unwrap(), 601);
         assert!(server.clients.values().all(|c| c.wtoken.is_none()));
         drop(server);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (m4-audit) A path that is not a socket (a mistyped
+    /// `STRAND_SOCKET` naming a config file) is refused and left as it
+    /// is; a stale socket is replaced; on drop only the bound socket is
+    /// removed, not a file put in its place.
+    #[test]
+    fn bind_replaces_only_a_stale_socket() {
+        use calloop::EventLoop;
+        let dir = std::env::temp_dir().join(format!("strand-ipc-bind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let el = EventLoop::<Data>::try_new().unwrap();
+        let handle = el.handle();
+
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, "keep me").unwrap();
+        let e = Server::bind(&notes, &handle).err().expect("refused");
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists, "{e}");
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep me");
+        let link = dir.join("link.sock");
+        std::os::unix::fs::symlink(&notes, &link).unwrap();
+        assert!(Server::bind(&link, &handle).is_err());
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep me");
+
+        // A stale socket (its listener gone) is replaced.
+        let path = dir.join("s.sock");
+        drop(UnixListener::bind(&path).unwrap());
+        let server = Server::bind(&path, &handle).expect("a stale socket is replaced");
+        assert!(UnixStream::connect(&path).is_ok());
+        // A live one is not.
+        assert_eq!(
+            Server::bind(&path, &handle).err().map(|e| e.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        // Replaced under it by a file: the drop leaves the file.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "not ours").unwrap();
+        drop(server);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not ours");
+        // Its own socket is removed on drop.
+        std::fs::remove_file(&path).unwrap();
+        drop(Server::bind(&path, &handle).unwrap());
+        assert!(std::fs::symlink_metadata(&path).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
