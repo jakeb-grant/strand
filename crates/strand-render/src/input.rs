@@ -1229,30 +1229,31 @@ impl Router {
                     // A drag ends: dropped on the node that takes it, or
                     // back to its box; a release that ends a drag clicks
                     // nothing.
-                    if let Some(d) = self.drag.take() {
-                        if d.active {
-                            let target = if d.handed {
-                                None
-                            } else {
-                                self.drop_target_at(
-                                    scene,
-                                    surface,
-                                    at,
-                                    Carried::Value(&d.kind, d.source),
-                                )
-                            };
-                            if let Some((node, index)) = target {
-                                self.event(
-                                    node,
-                                    NodeEvent::Drop {
-                                        payload: strand_scene::DropPayload::Node(d.source),
-                                        at: index,
-                                    },
-                                );
-                            }
-                            scene.lift(d.source, None);
-                            self.dragged = true;
+                    // (A drag not past its threshold is dropped here too.)
+                    if let Some(d) = self.drag.take()
+                        && d.active
+                    {
+                        let target = if d.handed {
+                            None
+                        } else {
+                            self.drop_target_at(
+                                scene,
+                                surface,
+                                at,
+                                Carried::Value(&d.kind, d.source),
+                            )
+                        };
+                        if let Some((node, index)) = target {
+                            self.event(
+                                node,
+                                NodeEvent::Drop {
+                                    payload: strand_scene::DropPayload::Node(d.source),
+                                    at: index,
+                                },
+                            );
                         }
+                        scene.lift(d.source, None);
+                        self.dragged = true;
                     }
                     if let Some(&slider) = self.dragging.get(&surface) {
                         self.drag_slider(scene, surface, slider, at, true);

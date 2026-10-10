@@ -1469,7 +1469,7 @@ impl Ctx {
             if let Node::Handler(h) = n
                 && let Some(name) = self.drop_accepts(h)
             {
-                let k = PropValue::Keyword(name.into());
+                let k = PropValue::Keyword(name);
                 if !accepts.contains(&k) {
                     accepts.push(k);
                 }
@@ -1839,7 +1839,7 @@ impl Ctx {
                     let name = drag_type(&ctx.vm.prog.types, &v);
                     ctx.drags.borrow_mut().insert(id, v);
                     return Ok(PropOut {
-                        value: PropValue::Keyword(name.into()),
+                        value: PropValue::Keyword(name),
                         source: i,
                     });
                 }
