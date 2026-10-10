@@ -40,6 +40,14 @@ impl Flattener<'_> {
         [(local.x - rect.x0) as f32, (local.y - rect.y0) as f32]
     }
 
+    /// True if the GPU may draw `node`'s pass in `slot`: a GPU may draw
+    /// (none failed under 30 s ago) and that pass did not fail (its node
+    /// then takes its CPU form: a still aurora, capped particles, no
+    /// wobble, until the pass's inputs change).
+    pub(super) fn gpu_draws(&self, node: NodeId, slot: Slot) -> bool {
+        self.extras.gpu_ok && !self.extras.shaders.failed(PassId::new(node, slot))
+    }
+
     /// True if `node`'s `tilt` is the GPU's 3-D pass: a GPU may draw
     /// (none failed under 30 s ago), has answered for it (a first tilt
     /// turns in 2-D while [`Self::warm_tilt`] gets the device up), and
@@ -47,9 +55,7 @@ impl Flattener<'_> {
     /// version, until the node goes).
     pub(super) fn tilts_in_3d(&self, node: NodeId) -> bool {
         let results = &self.extras.shaders;
-        self.extras.gpu_ok
-            && results.answered(node)
-            && !results.failed(PassId::new(node, Slot::Filter))
+        self.gpu_draws(node, Slot::Filter) && results.answered(node)
     }
 
     /// Asks for a one-pixel tilt pass for `node`, turning in 2-D: it

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use gpu_host::*;
-use strand_gpu::{GpuError, GpuErrorKind, GpuOptions, GpuReply, GpuRequest};
+use strand_gpu::{AdapterInfo, GpuError, GpuErrorKind, GpuOptions, GpuReply, GpuRequest, Readback};
 use strand_render::Renderer;
 use strand_scene::shader::{ShaderCode, UniformType};
 use strand_scene::*;
@@ -657,13 +657,42 @@ fn a_failed_bundled_pass_draws_its_cpu_version() {
         ),
     ];
     for (name, nodes, size) in cases {
-        let mut run = offline(nodes, size);
+        let mut run = offline(nodes.clone(), size);
+        // The same nodes where no GPU can draw.
+        let mut cpu = offline(nodes, size);
+        cpu.r.deliver_gpu(GpuReply::Unavailable(GpuError {
+            kind: GpuErrorKind::NoAdapter,
+            message: "no device".into(),
+        }));
         let passes = run.frame(1000);
         assert_eq!(passes.len(), 1, "{name}: asked for");
-        let cpu = run.buf.pixels.clone();
+        assert!(cpu.frame(1000).is_empty(), "{name}");
+        assert!(run.buf.pixels == cpu.buf.pixels, "{name}: the CPU's first");
         run.r.deliver_gpu(failed(passes[0].key));
-        assert!(run.frame(1000).is_empty(), "{name}: not asked again");
-        assert!(run.buf.pixels == cpu, "{name}: drawn as the CPU draws it");
+        run.r.take_effect_notices();
+        let says = cpu.r.take_effect_notices();
+        // Time goes on: a clocked pass (wobble, aurora, particles) is not
+        // asked again at each frame either, its node takes its CPU form
+        // (aurora still, without a clock; particles capped, with their
+        // notice), and the warning is not repeated.
+        for t in [1000, 1016, 1032, 1500, 2000] {
+            assert!(run.frame(t).is_empty(), "{name}: not asked again at {t}");
+            cpu.frame(t);
+            assert!(
+                run.buf.pixels == cpu.buf.pixels,
+                "{name}: drawn as the CPU draws it at {t}"
+            );
+            assert_eq!(
+                run.r.wants_frame(S),
+                cpu.r.wants_frame(S),
+                "{name}: its clock is the CPU version's at {t}"
+            );
+        }
+        assert_eq!(
+            run.r.take_effect_notices(),
+            says,
+            "{name}: the CPU's notices"
+        );
         assert_eq!(run.r.gpu_pass_bytes(), 0, "{name}");
     }
 }
@@ -708,6 +737,100 @@ fn a_tilt_whose_pass_fails_stays_2d() {
     assert!(
         run.buf.pixels == cpu.buf.pixels,
         "turned in 2-D as on the CPU"
+    );
+}
+
+/// Transparent pixels answering pass `p`.
+fn answer(p: &strand_gpu::PassFrame) -> GpuReply {
+    let (w, h) = (p.size.w, p.size.h);
+    GpuReply::PassPixels {
+        key: p.key,
+        frame: p.id,
+        pixels: Readback {
+            width: w,
+            height: h,
+            stride: w * 4,
+            bytes: vec![0; (w * h * 4) as usize],
+        },
+    }
+}
+
+/// A tilt hovered again after the device dropped on idle warms up in
+/// 2-D, as its first hover did, rather than drawing its card flat until
+/// a new device has answered (design.md: tilt's fallback is the 2-D
+/// tilt).
+#[test]
+fn a_tilt_after_the_device_dropped_warms_up_in_2d() {
+    let card = || {
+        let mut p = at_xy(90.0, 10.0, 60.0, 40.0);
+        p.extend([
+            (Prop::Bg, color("#89b4fa")),
+            (Prop::Tilt, PropValue::Angle(20.0)),
+        ]);
+        vec![(NodeKind::Box, p, vec![])]
+    };
+    let mut run = offline(card(), (240, 60));
+    let mut cpu = offline(card(), (240, 60));
+    cpu.r.deliver_gpu(GpuReply::Unavailable(GpuError {
+        kind: GpuErrorKind::NoAdapter,
+        message: "no device".into(),
+    }));
+    let on = Some(LogicalPoint { x: 150.0, y: 30.0 });
+    let mut t = 1000;
+    // Hovered: warmed up, then turned in 3-D with the device's pixels.
+    run.r.set_pointer(S, on);
+    let mut started = false;
+    let mut full = false;
+    while t == 1000 || run.r.wants_frame(S) {
+        for p in run.frame(t) {
+            if !started {
+                run.r.deliver_gpu(GpuReply::Ready(AdapterInfo::default()));
+                started = true;
+            }
+            full |= p.size != Size::new(1, 1);
+            run.r.deliver_gpu(answer(&p));
+        }
+        t += 16;
+        assert!(t < 5000, "settles");
+    }
+    assert!(full, "it turned in 3-D");
+    // The hover ends; the card comes to rest.
+    run.r.set_pointer(S, None);
+    let rest = t;
+    while t == rest || run.r.wants_frame(S) {
+        for p in run.frame(t) {
+            run.r.deliver_gpu(answer(&p));
+        }
+        t += 16;
+        assert!(t < 10000, "comes to rest");
+    }
+    // The device drops on idle.
+    run.r.set_gpu_idle(Duration::from_millis(50));
+    let wake = run.r.next_wake().expect("render wakes to drop the device");
+    std::thread::sleep(wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5));
+    run.r.update();
+    assert_eq!(run.r.take_backend_changes(), [BackendChange::Drop]);
+    assert_eq!(run.r.gpu_status(), GpuStatus::Unused);
+    // Hovered again while the device starts (no reply yet): it turns in
+    // 2-D, frame for frame as where no GPU can draw.
+    let again = t;
+    cpu.frame(again - 16);
+    run.r.set_pointer(S, on);
+    cpu.r.set_pointer(S, on);
+    let mut asked = Vec::new();
+    for i in 0..12 {
+        let at = again + i * 16;
+        asked.extend(run.frame(at));
+        cpu.frame(at);
+        assert!(
+            run.buf.pixels == cpu.buf.pixels,
+            "turned in 2-D while the device starts, at {at}"
+        );
+    }
+    assert!(
+        !asked.is_empty() && asked.iter().all(|p| p.size == Size::new(1, 1)),
+        "only the warm-up pass: {:?}",
+        asked.iter().map(|p| p.size).collect::<Vec<_>>()
     );
 }
 

@@ -101,8 +101,10 @@ impl<'a> Flattener<'a> {
             || (node.kind == NodeKind::Shader
                 && matches!(node.get(Prop::Shader),
                     Some(PropValue::Shader(c)) if crate::renderer::backend::reads_time(c)))
-            // (M4) A `filter: wobble(…)` the GPU draws moves with time.
-            || (self.extras.gpu_ok && crate::effects::gpu::moves(node));
+            // (M4) A `filter: wobble(…)` the GPU draws moves with time
+            // (not once its pass failed: the CPU draws it unfiltered).
+            || (self.gpu_draws(node.id, crate::renderer::backend::Slot::Filter)
+                && crate::effects::gpu::moves(node));
         // (M4) An animated image's frames run on a clock of their own.
         // (A source built from props follows a clock that time-bound
         // props run at refresh: `crate::effects::raster`.)
@@ -117,10 +119,13 @@ impl<'a> Flattener<'a> {
         let raster = own
             .or(frames.flatten())
             .or_else(|| crate::effects::raster::rate(node).filter(|_| !timed));
-        // (M4) The GPU's aurora is animated (its CPU fallback is still).
+        // (M4) The GPU's aurora is animated (its CPU fallback, also after
+        // its pass failed, is still).
         #[cfg(feature = "gpu")]
-        let raster = raster
-            .or_else(|| crate::effects::gpu::rate(node).filter(|_| self.extras.gpu_ok && !timed));
+        let raster = raster.or_else(|| {
+            crate::effects::gpu::rate(node)
+                .filter(|_| self.gpu_draws(node.id, crate::renderer::backend::Slot::Node) && !timed)
+        });
         let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
@@ -756,7 +761,7 @@ impl<'a> Flattener<'a> {
                     Some(drawn) => Some(drawn),
                     None => {
                         #[cfg(feature = "gpu")]
-                        let says = !self.extras.gpu_ok;
+                        let says = !self.gpu_draws(node.id, crate::renderer::backend::Slot::Node);
                         #[cfg(not(feature = "gpu"))]
                         let says = true;
                         if says {

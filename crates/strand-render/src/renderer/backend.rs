@@ -133,6 +133,11 @@ pub(crate) struct PassWant {
     /// What the pass's pixels depend on: code, uniforms, size, time,
     /// input.
     pub key: u64,
+    /// What a failure of it depends on: its key without the time, the
+    /// pointer and (for a bundled pass that moves) the uniforms that
+    /// carry them. A failed pass is asked again only when this changes,
+    /// so a clocked one is not asked at refresh rate.
+    pub base: u64,
     /// Where its pixels go on the surface (buffer pixels), and their size.
     pub at: (i32, i32),
     pub size: Size,
@@ -161,8 +166,11 @@ struct PassResult {
     got: (u64, Arc<Pixmap>),
     /// The surface whose frame asked for it.
     surface: SurfaceId,
-    /// The pass failed: no pixels, not asked again until its key changes.
+    /// The pass failed: no pixels, not asked again until its want's
+    /// `base` changes.
     failed: bool,
+    /// The `base` of the want it answers.
+    base: u64,
 }
 
 impl ShaderResults {
@@ -195,6 +203,18 @@ impl ShaderResults {
                 *k == w.key
                     || (u32::from(p.width()) == w.size.w && u32::from(p.height()) == w.size.h)
             })
+    }
+
+    /// The device went (dropped on idle, lost, unavailable): a tilt that
+    /// holds no 3-D pixels warms up in 2-D again (`Flattener::warm_tilt`)
+    /// rather than drawing flat until a new device answers. One that holds
+    /// them keeps drawing them.
+    fn device_gone(&mut self) {
+        let Self { map, answered } = self;
+        answered.retain(|n| {
+            map.get(&PassId::new(*n, Slot::Filter))
+                .is_some_and(|r| !r.failed)
+        });
     }
 
     /// Bytes of pixels held (tests).
@@ -249,6 +269,25 @@ fn want_key(
     k.finish()
 }
 
+/// A bundled want's `base`: its passes' code, its size, scale and input,
+/// and its uniforms if `uniforms` (a moving pass's carry its time, as
+/// particles' positions do).
+fn fail_key(passes: &[&ShaderPass], size: Size, scale: f32, input: u64, uniforms: bool) -> u64 {
+    if uniforms {
+        return want_key(passes, size, scale, 0.0, [-1.0, -1.0], input);
+    }
+    use std::hash::{Hash, Hasher};
+    let mut k = std::collections::hash_map::DefaultHasher::new();
+    for p in passes {
+        match &p.code {
+            ShaderRef::File(code) => code.hash(&mut k),
+            ShaderRef::Bundled(b) => b.hash(&mut k),
+        }
+    }
+    (size.w, size.h, scale.to_bits(), input).hash(&mut k);
+    k.finish()
+}
+
 /// The pass a `shader` node draws at `w × h` buffer pixels at `at`, its
 /// `u_*` values packed in its slots' order; `pointer` in buffer pixels
 /// relative to its box (-1, -1 outside).
@@ -285,6 +324,7 @@ pub(crate) fn pass_want(
     Some(PassWant {
         id: PassId::new(node, Slot::Node),
         key: want_key(&[&pass], size, scale, time, pointer, 0),
+        base: want_key(&[&pass], size, scale, 0.0, [-1.0, -1.0], 0),
         at,
         size,
         pass,
@@ -328,6 +368,7 @@ pub(crate) fn bundled_want(
     Some(PassWant {
         id,
         key: want_key(&all, size, scale, time, pointer, input_key),
+        base: fail_key(&all, size, scale, input_key, !timed),
         at: (region.x, region.y),
         size,
         pass,
@@ -455,6 +496,7 @@ impl Surf {
 struct Pending {
     frame: u64,
     key: u64,
+    base: u64,
     surface: SurfaceId,
 }
 
@@ -742,6 +784,7 @@ impl Renderer {
                         got: (p.key, Arc::new(pm)),
                         surface: p.surface,
                         failed: false,
+                        base: p.base,
                     };
                     self.extras.shaders.map.insert(id, r);
                     if id.slot == Slot::Filter {
@@ -769,6 +812,7 @@ impl Renderer {
                             got: (p.key, empty_pixmap()),
                             surface: p.surface,
                             failed: true,
+                            base: p.base,
                         };
                         self.extras.shaders.map.insert(id, r);
                         if let Some(s) = self.gpu.surfaces.get_mut(&p.surface) {
@@ -801,6 +845,7 @@ impl Renderer {
     /// After the device went: promoted surfaces back on the CPU, repainted
     /// in full.
     fn repaint_fallen(&mut self) {
+        self.extras.shaders.device_gone();
         for id in self.gpu.fall_back() {
             if let Some(st) = self.surfaces.get_mut(&id) {
                 st.valid = false;
@@ -880,6 +925,7 @@ impl Renderer {
             self.gpu.status = GpuStatus::Unused;
             self.gpu.changes.push(BackendChange::Drop);
             self.gpu.uploads.clear();
+            self.extras.shaders.device_gone();
             // The pass results stay: they are CPU pixmaps a still
             // `shader` node keeps drawing, and asked for again only when
             // its inputs change (a clocked one is asked for every frame
@@ -1016,8 +1062,12 @@ impl Renderer {
             if gpu_drawn && w.id.slot == Slot::Node {
                 continue;
             }
-            let have = self.extras.shaders.get(w.id).map(|(k, _)| *k);
-            if have == Some(w.key) || self.gpu.pending.contains_key(&w.id) {
+            let last = self.extras.shaders.map.get(&w.id);
+            let have = last.map(|r| r.got.0);
+            // A failure is not asked again while its `base` stays (a
+            // clocked pass's key changes every frame).
+            let stuck = last.is_some_and(|r| r.failed && r.base == w.base);
+            if have == Some(w.key) || stuck || self.gpu.pending.contains_key(&w.id) {
                 continue;
             }
             if !self.gpu.want(now) {
@@ -1052,6 +1102,7 @@ impl Renderer {
                 Pending {
                     frame,
                     key: w.key,
+                    base: w.base,
                     surface,
                 },
             );
