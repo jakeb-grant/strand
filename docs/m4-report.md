@@ -7,7 +7,8 @@ the pixman renderer, lavapipe from Mesa 25.2.8 as the only Vulkan
 driver), at `e765276` on `laptop/integration-m4-w3`: M4 waves 0–3
 merged, the m4 audit's three rounds of fixes, and the closing
 integrator's one code fix (Lock). The commits after `e765276` change
-only docs. Release figures use the workspace's release profile (fat
+only docs and one test's count of the logic thread's wakes (decisions.md
+m4-integration-w3, closing). Release figures use the workspace's release profile (fat
 LTO, one codegen unit, mimalloc, the 40 per-package `opt-level`s of
 `Cargo.toml`; thin LTO until m4-integration-w2, which switched because
 thin LTO broke the `.text` gates). The latency benches use the
