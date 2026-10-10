@@ -260,6 +260,12 @@ struct Svg {
     /// The file's text, read on the first draw of a source.
     text: Option<Result<Arc<str>, String>>,
     doc: Option<Doc>,
+    /// The part names wrapping last failed for (the text not XML, or
+    /// wrapped into a document usvg rejects): not tried again until the
+    /// source or the names change.
+    failed: Option<Vec<String>>,
+    /// Times the parts were wrapped and parsed (tests).
+    parses: u32,
     parts: Vec<Part>,
     fit: Fit,
     fill: Option<[u8; 4]>,
@@ -277,10 +283,13 @@ impl Svg {
             );
         }
         let names: Vec<String> = self.parts.iter().map(|p| p.name.clone()).collect();
-        let stale = self.doc.as_ref().is_none_or(|d| d.names != names);
+        let stale = self.doc.as_ref().is_none_or(|d| d.names != names)
+            && self.failed.as_ref() != Some(&names);
         if stale && let Some(Ok(text)) = &self.text {
             // Not XML: drawn as resvg draws it (nothing, when broken).
+            self.parses += 1;
             self.doc = Doc::new(text, &names);
+            self.failed = self.doc.is_none().then_some(names);
         }
     }
 }
@@ -386,6 +395,7 @@ impl RasterSource for SvgSource {
             s.source = source;
             s.text = None;
             s.doc = None;
+            s.failed = None;
         }
         s.fit = match (props.get)(Prop::Fit) {
             Some(PropValue::Keyword(k)) => Fit::from_name(k).unwrap_or_default(),
@@ -433,6 +443,32 @@ mod tests {
         let text = assemble(&pieces, |_, out| out.push('>'));
         assert!(text.contains(r#"<g id="__strand_part_1"><g id="a"><g id="__strand_part_0"><g id="b"/></g></g></g>"#), "{text}");
         assert!(wrap("not xml <", &names).is_none());
+    }
+
+    /// A document that cannot be wrapped (not XML, or an id usvg rejects
+    /// wrapped) is parsed once per source and part names, not on every
+    /// flatten.
+    #[test]
+    fn a_failed_wrap_is_remembered() {
+        let dir = std::env::temp_dir().join(format!("strand-svg-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken.svg");
+        std::fs::write(&path, "<svg not xml").unwrap();
+        let mut s = Svg {
+            source: path.to_string_lossy().into_owned(),
+            parts: vec![Part::of("needle", &[])],
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            s.prepare();
+        }
+        assert!(s.doc.is_none());
+        assert_eq!(s.parses, 1);
+        // Other names: tried again, once.
+        s.parts = vec![Part::of("face", &[])];
+        s.prepare();
+        s.prepare();
+        assert_eq!(s.parses, 2);
     }
 
     #[test]
