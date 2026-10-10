@@ -2,9 +2,9 @@
 
 Where the project stands, what the owner still has to decide, and what was
 deliberately left for later. Read this first when picking the repo up again,
-then `docs/m3-report.md` for M3's measured numbers, `docs/m4-plan.md` and
-`docs/features.md` for M4, and `docs/decisions.md` for the reasoning behind
-each item below.
+then `docs/m3-report.md` and `docs/m4-report.md` for the measured numbers,
+`docs/m4-plan.md` and `docs/features.md` for M4, and `docs/decisions.md`
+for the reasoning behind each item below.
 
 ## State
 
@@ -16,8 +16,10 @@ each item below.
   `laptop/integration-m4-w3` (CI run 38041985436 at 22b8688 passed all
   seven jobs, `lock-vm` included), with the m4 audit's fixes on top
   (decisions.md m4-audit; CI run 38048149054 at 70af44f passed all seven
-  jobs, the new lock tests in `lock-vm` included); it has not reached
-  `main` yet.
+  jobs, the new lock tests in `lock-vm` included), then the audit's
+  second round of fixes (decisions.md m4-audit, from "a lock with no
+  way out is a check error"; the lock VM passed at 6a27238); it has not
+  reached `main` yet.
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
   M5 0/9 (boxes and exit criteria, counted 2026-10-10; the earlier
   M0 21/21 counted differently). M4's exits: smooth 2,000-row scrolling,
@@ -46,8 +48,14 @@ each item below.
   - Two functional tests still bound wall-clock time with wide margins
     (`strand-scene/src/tokens.rs::huge_fan_out_fails_fast`,
     `strand-dev/tests/lsp.rs`'s hung-bus case), left to their owners.
-  - The closing steps: `docs/m4-report.md`, merging the integration
-    branch to `main`, and deleting the merged wave branches.
+  - PSS after the GPU has run on lavapipe stays about 90 MB up (the
+    debug `gpu_idle` run; the release budgets' full shell "launcher
+    closed" at 136–147 MB, laptop and CI), not gated: likely the
+    software driver's mappings, and worth checking whether a closing
+    launcher is promoted at all (docs/m4-report.md, Open).
+  - The closing steps: merging the integration branch to `main` and
+    deleting the merged wave branches. `docs/m4-report.md` is written
+    (2026-10-10, at `6a27238`).
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
