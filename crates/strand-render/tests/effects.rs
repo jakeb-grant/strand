@@ -1272,3 +1272,82 @@ fn reduced_motion_skips_keyframes_and_freezes_loops() {
     assert!(buf.pixels == rest.pixels);
     assert!(!r.wants_frame(S));
 }
+
+/// A row with `stagger: 100ms` on a 120 × 40 bar, painted at 1 s, then
+/// four 20 px boxes with `enter { opacity: 0 }` created in it at once and
+/// painted at 1.016 s.
+fn staggered(reduced: bool) -> (Renderer, Buffer) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 10.0, 100.0, 20.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Gap, num(6.0)),
+        (
+            Prop::Stagger,
+            PropValue::Duration(std::time::Duration::from_millis(100)),
+        ),
+    ]);
+    let row = b.node(NodeKind::Row, Some(root), p);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(120, 40, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    let mut d = SceneDiff::new();
+    for i in 0..4u32 {
+        let n = NodeId::new(100 + i, 0);
+        d.create(n, NodeKind::Box, Some(row), i)
+            .set(n, Prop::Size, num(20.0))
+            .set(n, Prop::Bg, color("#a6e3a1"))
+            .set(
+                n,
+                Prop::Enter,
+                PropValue::Pose(vec![(Prop::Opacity, num(0.0))]),
+            );
+    }
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, std::time::Duration::from_millis(1016));
+    (r, buf)
+}
+
+/// design.md "Motion and time": `stagger: 30ms` on a container delays
+/// each child's `enter` that much after the one before; `reduced_motion`
+/// shows them all at once (ref `effects_stagger.png` at 150 ms).
+#[test]
+fn stagger_delays_each_childs_enter() {
+    use std::time::Duration;
+    let (mut r, mut buf) = staggered(false);
+    let bg = buf.px(1, 1);
+    // Box i's centre: x = 10 + 26 i + 10.
+    let alpha = |b: &Buffer, i: u32| b.px(20 + 26 * i, 20);
+    assert_ne!(alpha(&buf, 0), bg, "the first starts at once");
+    assert_eq!(alpha(&buf, 1), bg, "the second waits");
+    let mut t = 1016;
+    while t < 1150 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t.min(1150)));
+    }
+    assert_matches_ref("effects_stagger", &buf, 2);
+    // The first further along than the second; the third (from 200 ms)
+    // and fourth unseen.
+    let g = |b: &Buffer, i: u32| alpha(b, i)[1];
+    assert!(
+        g(&buf, 0) > g(&buf, 1) && g(&buf, 1) > bg[1],
+        "{:?}",
+        (0..4).map(|i| g(&buf, i)).collect::<Vec<_>>()
+    );
+    assert_eq!((alpha(&buf, 2), alpha(&buf, 3)), (bg, bg));
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        assert!(t < 5000, "settles");
+    }
+    let shown = alpha(&buf, 0);
+    assert!((1..4).all(|i| alpha(&buf, i) == shown), "all shown");
+
+    let (r, buf) = staggered(true);
+    assert!((0..4).all(|i| alpha(&buf, i) == shown), "reduced: at once");
+    assert!(!r.wants_frame(S));
+}

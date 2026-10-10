@@ -119,6 +119,7 @@ impl<'a> Flattener<'a> {
         };
         // Springs: this frame's values of the props in flight.
         let inherited = inh.color.unwrap_or_else(|| default_color(&scope));
+        self.anim.stagger(self.tree, node, &scope);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
         self.anim

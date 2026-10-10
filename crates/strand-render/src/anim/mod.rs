@@ -34,6 +34,7 @@ mod motion;
 mod pages;
 mod pose;
 mod sizes;
+mod stagger;
 
 pub(crate) use motion::Extents;
 use motion::{PropMotion, decode, encode};
@@ -181,6 +182,8 @@ pub(crate) struct Animator {
     rolls: crate::effects::roll::Rolls,
     /// (M4) Nodes' `play`s ([`keyframes`]).
     plays: keyframes::Plays,
+    /// (M4) Children waiting for their turn to enter ([`stagger`]).
+    staggers: stagger::Staggers,
 }
 
 impl Animator {
@@ -296,6 +299,34 @@ impl Animator {
             self.active = true;
         }
         roll
+    }
+
+    /// (M4) If `node` is about to enter under a parent with `stagger:`,
+    /// numbers it and the siblings entering with it ([`stagger`]).
+    /// Called before [`Animator::paint`].
+    pub fn stagger(&mut self, tree: &SceneTree, node: &Node, scope: &TokenScope<'_>) {
+        if self.snapping() || !self.enter.contains(&node.id) || self.staggers.planned(node.id) {
+            return;
+        }
+        let Some(parent) = node.parent.and_then(|p| tree.get(p)) else {
+            return;
+        };
+        let step = match parent
+            .get(Prop::Stagger)
+            .and_then(|v| scope.resolve(v))
+            .as_deref()
+        {
+            Some(PropValue::Duration(d)) if !d.is_zero() => *d,
+            _ => return,
+        };
+        let enter = &self.enter;
+        let entering = parent
+            .children
+            .iter()
+            .copied()
+            .filter(|c| enter.contains(c));
+        let entering: Vec<NodeId> = entering.collect();
+        self.staggers.plan(entering.into_iter(), step, self.time);
     }
 
     /// (M4) Draws node `node`'s `play` (`Prop::Play` in `props`, which
@@ -433,6 +464,7 @@ impl Animator {
         self.shapes.forget(id);
         self.rolls.forget(id);
         self.plays.forget(id);
+        self.staggers.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -502,6 +534,7 @@ impl Animator {
         self.shapes.retain(&mut keep);
         self.rolls.retain(&mut keep);
         self.plays.retain(&mut keep);
+        self.staggers.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -572,7 +605,9 @@ impl Animator {
         let exiting = self.exits.get(&id).copied();
         // Drawn this frame: its motions (an enter pose that starts now
         // included) survive `finish_undrawn`.
-        if exiting.is_some() || self.nodes.contains_key(&id) || self.enter.contains(&id) {
+        let waiting = self.staggers.planned(id);
+        if exiting.is_some() || self.nodes.contains_key(&id) || self.enter.contains(&id) || waiting
+        {
             self.drawn.insert(id);
         }
         if self.snapping() {
@@ -583,13 +618,16 @@ impl Animator {
                     na.respring = false;
                 }
                 self.enter.remove(&id);
+                self.staggers.forget(id);
                 if let Some(k) = self.exits.remove(&id) {
                     self.finished.push((id, k));
                 }
             }
             return;
         }
-        let entering = self.enter.remove(&id);
+        // A staggered child stays entering (in `staggers`, not `enter`,
+        // which frames clear) until its turn.
+        let entering = self.enter.remove(&id) || waiting;
         if !entering && exiting.is_none() && !self.nodes.contains_key(&id) {
             return;
         }
@@ -604,6 +642,21 @@ impl Animator {
                 .collect()
         };
         let chosen = self.poses.get(&id);
+        // A staggered child waiting for its turn holds at its pose.
+        if entering && exiting.is_none() && self.staggers.held(id, self.time) {
+            for (p, v) in chosen
+                .or(node.get(Prop::Enter))
+                .map(resolve)
+                .unwrap_or_default()
+            {
+                match props.iter().position(|(q, _)| *q == p) {
+                    Some(i) => props[i].1 = Cow::Owned(v),
+                    None => props.push((p, Cow::Owned(v))),
+                }
+            }
+            self.active = true;
+            return;
+        }
         let enter_pose = entering
             .then(|| chosen.or(node.get(Prop::Enter)).map(resolve))
             .flatten()
@@ -729,6 +782,7 @@ impl Animator {
             || self.shapes.pending(|id| under(&id))
             || self.rolls.pending(|id| under(&id))
             || self.plays.busy(|id| under(&id))
+            || self.staggers.busy(|id| under(&id))
     }
 }
 
