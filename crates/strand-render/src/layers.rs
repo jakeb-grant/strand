@@ -13,19 +13,18 @@
 //!   through the group's transform). Effects that read neighbouring
 //!   pixels (`Blur`) or a whole group (`ColorMatrix`) are drawn by an
 //!   offscreen group ([`crate::offscreen`]), then drawn into each cell as
-//!   an image under the cell-local part. The CPU draws a `Shader` pass's
-//!   group unfiltered, and `Mask::Shape` is opaque until the shape
-//!   library lands (S-effects).
+//!   an image under the cell-local part. On the CPU a `bloom` pass is an
+//!   offscreen group too, drawn as a glow of its own pixels
+//!   ([`crate::effects::glow`]); the other shader passes' groups draw
+//!   unfiltered. `Mask::Shape` is opaque until the shape library lands.
 //!
-//! Effects are built from props by S-effects (`filter:`, `blend:`,
-//! `mask:`, …). Until then the renderer takes them per node from
-//! [`crate::Renderer::set_layer_effects`].
+//! The effects are built from each node's props (`filter:`, `blend:`,
+//! `mask:`) by [`crate::effects::group`].
 
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use strand_scene::{Anchor, BlendMode, Edge, Effect, Mask, NodeId};
+use strand_scene::{Anchor, BlendMode, Edge, Effect, Mask};
 use vello_cpu::RenderContext;
 use vello_cpu::kurbo::{self, Affine};
 use vello_cpu::peniko::{self, Compose, Mix};
@@ -50,12 +49,21 @@ impl Layer {
     pub fn cell_local(&self) -> bool {
         self.effects
             .iter()
-            .all(|e| !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_)))
+            .all(|e| !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_)) && !cpu_glow(e))
     }
 }
 
-/// Effects attached to nodes until S-effects builds them from props.
-pub type NodeEffects = HashMap<NodeId, Arc<[Effect]>>;
+/// True for a shader pass the CPU draws as a glow of the group's own
+/// pixels (`bloom`, design.md: "bloom becomes glow").
+pub fn cpu_glow(e: &Effect) -> bool {
+    matches!(
+        e,
+        Effect::Shader(strand_scene::ShaderPass {
+            code: strand_scene::ShaderRef::Bundled(strand_scene::Bundled::Bloom),
+            ..
+        })
+    )
+}
 
 /// How far `effects` spread a group's damage, in physical pixels on a
 /// surface at `scale`.

@@ -1,6 +1,8 @@
 //! (M4) Effect layers: group opacity, blend modes and masks drawn through
 //! vello_cpu layers, partial repaints under them equal to full ones, and
-//! damage grown by each effect's reach (`crate::layers`).
+//! damage grown by each effect's reach (`crate::layers`). The effects
+//! come from each node's props (`filter:`, `mask:`, `blend:`), built by
+//! render (`crate::effects`).
 
 mod common;
 
@@ -10,11 +12,53 @@ use strand_scene::*;
 
 const S: SurfaceId = SurfaceId(1);
 
+/// Props that give a node effects.
+type Fx = Vec<(Prop, PropValue)>;
+
+fn call(name: &str, args: Vec<PropValue>) -> PropValue {
+    PropValue::Call {
+        name: name.into(),
+        args,
+    }
+}
+
+/// `filter:` with these functions of one number each.
+fn filter(fns: &[(&str, f32)]) -> (Prop, PropValue) {
+    let calls: Vec<PropValue> = fns.iter().map(|(n, v)| call(n, vec![num(*v)])).collect();
+    let v = if calls.len() == 1 {
+        calls.into_iter().next().unwrap()
+    } else {
+        PropValue::List(calls)
+    };
+    (Prop::Filter, v)
+}
+
+/// `filter: blur(r)`.
+fn blur(r: f32) -> (Prop, PropValue) {
+    filter(&[("blur", r)])
+}
+
+/// `filter: grayscale(1)` (a Rec. 709 luma colour matrix).
+fn grayscale() -> (Prop, PropValue) {
+    filter(&[("grayscale", 1.0)])
+}
+
+/// Sets each node's effect props.
+fn with_fx(r: &mut Renderer, fx: &[(NodeId, Fx)]) {
+    let mut d = SceneDiff::new();
+    for (id, props) in fx {
+        for (p, v) in props {
+            d.set(*id, *p, v.clone());
+        }
+    }
+    assert!(r.apply(d).is_empty());
+}
+
 /// Four 40 px boxes in a 240×60 bar: two overlapping squares under one
 /// group opacity, a square multiplied onto a yellow box, a green box
 /// fading out toward its bottom and a mauve box revealed in a circle.
 /// Returns the scene, the effects per node and the faded box.
-fn scene(fade_bg: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+fn scene(fade_bg: &str) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let place = |x: f32, more: Vec<(Prop, PropValue)>| {
@@ -53,33 +97,26 @@ fn scene(fade_bg: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
         Some(root),
         place(190.0, vec![(Prop::Bg, color("#cba6f7"))]),
     );
+    let kw = |k: &str| PropValue::Keyword(k.into());
     let effects = vec![
-        (group, vec![Effect::Opacity(0.5)]),
-        (multiplied, vec![Effect::Blend(BlendMode::Multiply)]),
+        (group, vec![(Prop::Opacity, num(0.5))]),
+        (multiplied, vec![(Prop::Blend, kw("multiply"))]),
         (
             faded,
-            vec![Effect::Mask(strand_scene::Mask::Fade {
-                edge: Edge::Bottom,
-                len: 20.0,
-            })],
+            vec![(Prop::Mask, call("fade", vec![kw("bottom"), num(20.0)]))],
         ),
         (
             revealed,
-            vec![Effect::Mask(strand_scene::Mask::Radial {
-                at: Anchor::Center,
-                size: 16.0,
-            })],
+            vec![(Prop::Mask, call("radial", vec![kw("center"), num(16.0)]))],
         ),
     ];
     (b.diff, effects, faded)
 }
 
-fn drawn(diff: SceneDiff, effects: &[(NodeId, Vec<Effect>)], scale: Scale) -> (Renderer, Buffer) {
+fn drawn(diff: SceneDiff, effects: &[(NodeId, Fx)], scale: Scale) -> (Renderer, Buffer) {
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
-    for (id, e) in effects {
-        r.set_layer_effects(*id, e.clone());
-    }
+    with_fx(&mut r, effects);
     r.attach_surface(S, r.tree().roots()[0]);
     let (w, h) = (
         (240.0 * scale.as_f32()).round() as u32,
@@ -136,8 +173,8 @@ fn partial_repaints_under_layers_match_full() {
 fn damage_grows_by_each_effects_reach() {
     for (effects, grow) in [
         (vec![], 0),
-        (vec![Effect::Blur { radius: 2.0 }], 6),
-        (vec![Effect::Blur { radius: 2.0 }, Effect::Opacity(0.5)], 6),
+        (vec![blur(2.0)], 6),
+        (vec![blur(2.0), (Prop::Opacity, num(0.5))], 6),
     ] {
         let mut b = Builder::default();
         let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
@@ -188,21 +225,10 @@ fn damage_grows_by_each_effects_reach() {
 
 // ---- (M4) Offscreen groups and raster nodes ---------------------------
 
-/// `grayscale(1)` as a colour matrix (Rec. 709 luma).
-fn grayscale() -> Effect {
-    let (r, g, b) = (0.2126, 0.7152, 0.0722);
-    Effect::ColorMatrix([
-        r, g, b, 0.0, 0.0, //
-        r, g, b, 0.0, 0.0, //
-        r, g, b, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0,
-    ])
-}
-
 /// Three 60 px groups of two squares in a 240×80 bar: blurred (σ 3),
 /// grayscale, and blurred at half opacity. Returns the scene, the
 /// effects and the blurred group's first square (in `first`).
-fn filtered(first: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+fn filtered(first: &str) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let mut groups = Vec::new();
@@ -232,26 +258,17 @@ fn filtered(first: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
         groups.push(g);
     }
     let effects = vec![
-        (groups[0], vec![Effect::Blur { radius: 3.0 }]),
+        (groups[0], vec![blur(3.0)]),
         (groups[1], vec![grayscale()]),
-        (
-            groups[2],
-            vec![Effect::Blur { radius: 3.0 }, Effect::Opacity(0.5)],
-        ),
+        (groups[2], vec![blur(3.0), (Prop::Opacity, num(0.5))]),
     ];
     (b.diff, effects, first_sq.unwrap())
 }
 
-fn drawn_80(
-    diff: SceneDiff,
-    effects: &[(NodeId, Vec<Effect>)],
-    scale: Scale,
-) -> (Renderer, Buffer) {
+fn drawn_80(diff: SceneDiff, effects: &[(NodeId, Fx)], scale: Scale) -> (Renderer, Buffer) {
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
-    for (id, e) in effects {
-        r.set_layer_effects(*id, e.clone());
-    }
+    with_fx(&mut r, effects);
     r.attach_surface(S, r.tree().roots()[0]);
     let k = scale.as_f32();
     let mut buf = Buffer::new((240.0 * k).round() as u32, (80.0 * k).round() as u32, scale);
@@ -302,7 +319,7 @@ fn blur_and_color_matrix_draw_through_offscreen_groups() {
 /// blurred (σ 2, reach 6) group of one red square, and a square 45 px to
 /// its right (`right`'s colour). Returns the scene, the effects and that
 /// square.
-fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let outer = b.node(
@@ -345,8 +362,8 @@ fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
         ],
     );
     let effects = vec![
-        (outer, vec![Effect::Blur { radius: 4.0 }, grayscale()]),
-        (inner, vec![Effect::Blur { radius: 2.0 }]),
+        (outer, vec![filter(&[("blur", 4.0), ("grayscale", 1.0)])]),
+        (inner, vec![blur(2.0)]),
     ];
     (b.diff, effects, sq)
 }
@@ -435,9 +452,7 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     }
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    for (id, e) in &big {
-        r.set_layer_effects(*id, e.clone());
-    }
+    with_fx(&mut r, &big);
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(2280, 560, Scale::ONE);
     buf.paint(&mut r, S, 0);
@@ -569,7 +584,7 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
     );
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    r.set_layer_effects(group, vec![Effect::Blur { radius: 3.0 }]);
+    with_fx(&mut r, &[(group, vec![blur(3.0)])]);
     r.set_raster_source(
         raster,
         Some(std::sync::Arc::new(Steps(Duration::from_millis(100)))),

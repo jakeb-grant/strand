@@ -301,6 +301,12 @@ fn render_group(
         match e {
             Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
             Effect::ColorMatrix(m) => color_matrix(bytes, m),
+            // `bloom(r)` without a GPU: a glow of the group's own pixels,
+            // reaching its radius (3σ; the uniform is in buffer pixels).
+            Effect::Shader(pass) if crate::layers::cpu_glow(e) => {
+                let r = pass.uniforms.first().copied().unwrap_or(0.0);
+                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0, None);
+            }
             _ => {}
         }
     }

@@ -413,6 +413,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   (channel encoding, `PropMotion`), `pose.rs` (enter/exit poses),
   `sizes.rs` (size springs), `tests.rs`. Keyframes, morph, stagger and
   page slides get modules of their own here when they land.
+- `effects/` (S-effects): `mod.rs` (group effects from props),
+  `filter.rs` (colour matrices), `glow.rs` (CPU glows).
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).
@@ -933,9 +935,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     lowered by each backend its own way (vello_cpu: one cell's
     `push_layer` with the opacities multiplied, the last blend and a
     cell-sized mask of `fade`/`radial`; masks always on the CPU;
-    `strand-render`'s `layers.rs`). Until S-effects builds `Effect`s
-    from props, `Renderer::set_layer_effects(node, effects)` (hidden)
-    attaches them. The display list also gains `Item::Raster`, a CPU
+    `strand-render`'s `layers.rs`). Render builds a node's `Effect`s
+    from its resolved props each frame (`strand-render`'s `effects/`:
+    `filter:` colour functions composed into one matrix per run, `blur`,
+    the bundled filters as shader passes, then `mask:`, then `blend:`);
+    on the CPU a `bloom` pass is an offscreen group drawn as a glow of
+    its own pixels and the other shader passes draw unfiltered. The
+    display list also gains `Item::Raster`, a CPU
     raster node (particles, grain, graphs, spectrum, animated image
     frames) drawn into a cached pixmap at its clock's rate (its fields
     below). Cached offscreen groups (glows,

@@ -18,6 +18,7 @@
 mod anim;
 mod cache;
 mod clock;
+mod effects;
 mod fillet;
 mod flatten;
 pub mod image;

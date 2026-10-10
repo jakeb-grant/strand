@@ -289,9 +289,6 @@ pub struct Extras {
     pub widgets: crate::widgets::Widgets,
     /// Decoded `image` and `icon` pixels.
     pub images: crate::image::ImageStore,
-    /// (M4) Group effects per node ([`crate::layers`]), until S-effects
-    /// builds them from props.
-    pub effects: crate::layers::NodeEffects,
     /// (M4) CPU raster nodes' sources and pixmaps.
     pub rasters: crate::offscreen::RasterNodes,
 }

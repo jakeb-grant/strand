@@ -359,7 +359,7 @@ impl<'a> Flattener<'a> {
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
         // (M4) Group effects: a layer around the node and its subtree,
         // whose damage grows by their reach.
-        let effects = self.extras.effects.get(&node.id).cloned();
+        let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32());
         let own_reach = effects
             .as_deref()
             .map_or(0, |e| crate::layers::reach_px(e, self.scale.as_f32()));
