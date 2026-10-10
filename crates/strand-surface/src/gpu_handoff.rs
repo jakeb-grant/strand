@@ -137,3 +137,99 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.update_geometry(id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::time::Duration;
+
+    use strand_fake_wayland::{Fake, SurfaceGlobals};
+    use strand_scene::{Damage, NodeKind, PaintTarget, Prop, PropValue};
+    use wayland_client::Connection;
+
+    use super::*;
+
+    /// Paints each surface once, in full.
+    #[derive(Default)]
+    struct Once(HashSet<SurfaceId>);
+
+    impl Painter for Once {
+        fn paint(&mut self, id: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+            self.0.insert(id);
+            Damage::full(target.size)
+        }
+        fn wants_frame(&self, id: SurfaceId) -> bool {
+            !self.0.contains(&id)
+        }
+    }
+
+    impl SurfaceHost for Once {}
+
+    const PANEL: NodeId = NodeId::new(3, 0);
+
+    fn commits(fake: &Fake) -> usize {
+        fake.surfaces()
+            .iter()
+            .filter(|s| s.namespace.as_deref() == Some("strand-Menu"))
+            .map(|s| s.commits)
+            .sum()
+    }
+
+    /// A popup grab makes its layer surface `exclusive` (and the grab's
+    /// end gives the keyboard back) with a commit; on a handed-off
+    /// surface that is pending state for the GPU thread's next present,
+    /// never a commit of the main thread's.
+    #[test]
+    fn a_popup_grab_does_not_commit_a_handed_off_surface() {
+        let fake = Fake::compositor(SurfaceGlobals::default());
+        let conn = Connection::from_socket(fake.connect()).expect("a connection to the fake");
+        let mut mgr = SurfaceManager::with_connection(conn, Once::default(), Config::default())
+            .expect("surface manager starts");
+        let props: HashMap<Prop, PropValue> = [
+            (Prop::Name, PropValue::Text("Menu".into())),
+            (Prop::Anchor, PropValue::Keyword("top_left".into())),
+            (Prop::Width, PropValue::Number(200.0)),
+            (Prop::Height, PropValue::Number(100.0)),
+        ]
+        .into_iter()
+        .collect();
+        let spec = SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p));
+        mgr.state_mut()
+            .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+        let ok = mgr
+            .dispatch_until(Duration::from_secs(10), |_| {
+                fake.layer("strand-Menu")
+                    .first()
+                    .is_some_and(|s| s.buffer_commits > 0)
+            })
+            .expect("dispatch");
+        assert!(ok, "the panel never painted");
+        let id = mgr.state().surfaces_of(PANEL)[0];
+        // A CPU surface: the grab commits.
+        let before = commits(&fake);
+        mgr.state_mut().set_grab_keyboard(id, true);
+        mgr.state_mut().set_grab_keyboard(id, false);
+        // Called outside a dispatch here: sent now.
+        mgr.state().conn.flush().expect("flush");
+        // Nothing comes back to wake the loop: let the fake read them.
+        mgr.dispatch_until(Duration::from_millis(200), |_| false)
+            .expect("dispatch");
+        assert_eq!(
+            commits(&fake),
+            before + 2,
+            "the grab was not committed on a CPU surface"
+        );
+        // Handed off: nothing from the main thread.
+        assert!(mgr.state_mut().hand_off(id));
+        let before = commits(&fake);
+        mgr.state_mut().set_grab_keyboard(id, true);
+        mgr.state().conn.flush().expect("flush");
+        mgr.dispatch_until(Duration::from_millis(200), |_| false)
+            .expect("dispatch");
+        mgr.state_mut().set_grab_keyboard(id, false);
+        mgr.state().conn.flush().expect("flush");
+        mgr.dispatch_until(Duration::from_millis(200), |_| false)
+            .expect("dispatch");
+        assert_eq!(commits(&fake), before, "committed a handed-off surface");
+    }
+}
