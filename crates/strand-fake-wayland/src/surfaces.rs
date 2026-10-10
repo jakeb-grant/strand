@@ -1,7 +1,7 @@
 //! The surface side of the fake: `wl_compositor`, `wl_region`, `wl_shm`,
 //! `wl_subcompositor`, `zwlr_layer_shell_v1`, `wp_viewporter`, `wp_single_pixel_buffer_v1`,
 //! `wp_alpha_modifier_v1`, `ext_background_effect_v1` and, when asked
-//! for, `zxdg_output_manager_v1` (and, in
+//! for, `zxdg_output_manager_v1` and `wp_presentation` (and, in
 //! `xdg.rs`, `xdg_wm_base` for popups), enough for the surface manager
 //! (`strand-surface`) to map layer surfaces and popups, and recording
 //! what each surface committed so tests can check the protocol state the
@@ -18,6 +18,10 @@ use wayland_protocols::ext::background_effect::v1::server::{
 use wayland_protocols::wp::alpha_modifier::v1::server::{
     wp_alpha_modifier_surface_v1::{self, WpAlphaModifierSurfaceV1},
     wp_alpha_modifier_v1::{self, WpAlphaModifierV1},
+};
+use wayland_protocols::wp::presentation_time::server::{
+    wp_presentation::{self, WpPresentation},
+    wp_presentation_feedback::{self, WpPresentationFeedback},
 };
 use wayland_protocols::wp::single_pixel_buffer::v1::server::wp_single_pixel_buffer_manager_v1::{
     self, WpSinglePixelBufferManagerV1,
@@ -63,6 +67,12 @@ pub struct SurfaceGlobals {
     /// surfaces (`origin.rs`). Off by default: a fake without it keeps
     /// the outputs' logical size unknown, as the other tests expect.
     pub xdg_output: bool,
+    /// (m4-audit) `wp_presentation` (v1, `CLOCK_MONOTONIC`), each
+    /// commit's feedback `presented` at the commit. Off by default: with
+    /// it the manager asks for no frame callback while nothing animates
+    /// and waits on the feedback instead, which the other tests do not
+    /// expect.
+    pub presentation: bool,
 }
 
 impl Default for SurfaceGlobals {
@@ -75,6 +85,7 @@ impl Default for SurfaceGlobals {
             background_effect: Some(1),
             output_size: (1920, 1080),
             xdg_output: false,
+            presentation: false,
         }
     }
 }
@@ -192,6 +203,7 @@ struct Pending {
     blur: Option<Option<Region>>,
     alpha: Option<u32>,
     frames: Vec<wl_callback::WlCallback>,
+    feedbacks: Vec<WpPresentationFeedback>,
 }
 
 /// A layer surface's requested state.
@@ -233,12 +245,40 @@ pub(crate) struct Surfaces {
     effect_managers: Vec<ExtBackgroundEffectManagerV1>,
     /// The blur capability flags sent now.
     pub(crate) effect_caps: u32,
-    /// (m4-audit) Frame callbacks are dropped, never done: a compositor
-    /// that loses them (an output being re-enabled, an occluded surface).
-    pub(crate) hold_frames: bool,
+    /// (m4-audit) Frame callbacks are held, not done: a compositor that
+    /// loses them (an output being re-enabled, an occluded surface).
+    hold_frames: bool,
+    held_frames: Vec<wl_callback::WlCallback>,
+    /// (m4-audit) The same for presentation feedback.
+    hold_feedback: bool,
+    held_feedback: Vec<WpPresentationFeedback>,
 }
 
 impl Surfaces {
+    /// Holds frame callbacks from now on, or does the held ones (late)
+    /// and stops holding.
+    pub(crate) fn hold_frames(&mut self, on: bool) {
+        self.hold_frames = on;
+        if !on {
+            for cb in std::mem::take(&mut self.held_frames) {
+                if cb.is_alive() {
+                    cb.done(0);
+                }
+            }
+        }
+    }
+
+    /// Holds presentation feedback from now on, or presents the held
+    /// feedback (late) and stops holding.
+    pub(crate) fn hold_feedback(&mut self, on: bool) {
+        self.hold_feedback = on;
+        if !on {
+            for f in std::mem::take(&mut self.held_feedback) {
+                present(&f);
+            }
+        }
+    }
+
     fn record(&self, surface: &ObjectId, f: impl FnOnce(&mut SurfaceRecord)) {
         let Some(live) = self.live.get(surface) else {
             return;
@@ -351,9 +391,18 @@ impl Surfaces {
         }
         let index = live.index;
         let margin = live.layer.as_ref().map(|_| live.layer_request.margin);
-        if !self.hold_frames {
+        if self.hold_frames {
+            self.held_frames.extend(pending.frames);
+        } else {
             for cb in pending.frames {
                 cb.done(0);
+            }
+        }
+        if self.hold_feedback {
+            self.held_feedback.extend(pending.feedbacks);
+        } else {
+            for f in &pending.feedbacks {
+                present(f);
             }
         }
         if let Ok(mut r) = self.records.lock()
@@ -733,6 +782,73 @@ impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for Server {
     }
 }
 
+// ---- wp_presentation --------------------------------------------------------------
+
+/// Sends `presented` now, on `CLOCK_MONOTONIC` (60 Hz, sequence 0).
+fn present(f: &WpPresentationFeedback) {
+    if !f.is_alive() {
+        return;
+    }
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let secs = now.tv_sec as u64;
+    f.presented(
+        (secs >> 32) as u32,
+        secs as u32,
+        now.tv_nsec as u32,
+        16_666_666,
+        0,
+        0,
+        wp_presentation_feedback::Kind::empty(),
+    );
+}
+
+impl GlobalDispatch<WpPresentation, ()> for Server {
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<WpPresentation>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        let p = init.init(resource, ());
+        // CLOCK_MONOTONIC.
+        p.clock_id(1);
+    }
+}
+
+impl Dispatch<WpPresentation, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &WpPresentation,
+        request: wp_presentation::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let wp_presentation::Request::Feedback { surface, callback } = request {
+            let f = init.init(callback, ());
+            if let Some(l) = state.surf.live.get_mut(&surface.id()) {
+                l.pending.feedbacks.push(f);
+            }
+        }
+    }
+}
+
+impl Dispatch<WpPresentationFeedback, ()> for Server {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &WpPresentationFeedback,
+        _: wp_presentation_feedback::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+    }
+}
+
 // ---- wp_viewporter ------------------------------------------------------------------
 
 impl GlobalDispatch<WpViewporter, ()> for Server {
@@ -1038,6 +1154,9 @@ pub(crate) fn create_globals(dh: &DisplayHandle, g: &SurfaceGlobals) {
     }
     if g.xdg_output {
         dh.create_global::<Server, ZxdgOutputManagerV1, ()>(3, ());
+    }
+    if g.presentation {
+        dh.create_global::<Server, WpPresentation, ()>(1, ());
     }
 }
 

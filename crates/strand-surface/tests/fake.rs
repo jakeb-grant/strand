@@ -6,11 +6,11 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{TestHost, WAIT, layer_spec};
 use strand_fake_wayland::{Cmd, Fake, SurfaceGlobals};
-use strand_scene::{CompositorCaps, NodeId, NodeKind, SurfaceChange};
+use strand_scene::{CompositorCaps, NodeId, NodeKind, SurfaceChange, SurfaceId};
 use strand_surface::{Config, SurfaceManager};
 use wayland_client::Connection;
 
@@ -993,7 +993,9 @@ fn a_zone_that_drops_to_none_places_the_others_again() {
 /// it: GitHub run 38064533227's replugged bar, which logic updated and
 /// never painted again) does not stop the surface for good: new content
 /// waits while the frame may still come, and is painted once the wait
-/// has lasted `THROTTLE_GIVE_UP` (1 s), with the give-up counted.
+/// has lasted `THROTTLE_GIVE_UP` (1 s), with the give-up counted. When
+/// the callbacks come again (late), painting goes on as before, with no
+/// further give-up.
 #[test]
 fn a_lost_frame_callback_does_not_stop_the_surface() {
     let fake = Fake::compositor(SurfaceGlobals::default());
@@ -1011,11 +1013,9 @@ fn a_lost_frame_callback_does_not_stop_the_surface() {
         .unwrap();
     assert!(ok, "{:?}", mgr.state().surface(id));
     fake.cmd(Cmd::HoldFrames(true));
-    // Let the fake take the command before the next commit.
-    let _ = mgr
-        .dispatch_until(Duration::from_millis(200), |_| false)
-        .unwrap();
-    // This frame's callback is dropped by the fake.
+    // The fake takes the command before the next commit.
+    fake.sync();
+    // This frame's callback is held by the fake.
     repaint(&mut mgr);
     let stats = mgr.state().surface(id).unwrap().stats;
     assert_eq!(stats.throttle_given_up, 0, "{stats:?}");
@@ -1045,8 +1045,181 @@ fn a_lost_frame_callback_does_not_stop_the_surface() {
     assert!(ok, "never painted again: {after:?}");
     assert_eq!(after.throttle_given_up, 1, "{after:?}");
     assert_eq!(after.frames_done, stats.frames_done);
-    // Callbacks come again: painting goes on as before.
+    // Callbacks come again (the held ones late): painting goes on as
+    // before, each paint on its own callback, never another give-up.
     fake.cmd(Cmd::HoldFrames(false));
+    for _ in 0..3 {
+        repaint(&mut mgr);
+    }
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.frames_done == i.stats.frame_requests)
+        })
+        .unwrap();
+    let last = mgr.state().surface(id).unwrap().stats;
+    assert!(ok, "a callback never came: {last:?}");
+    assert!(last.frames_done >= after.frames_done + 3, "{last:?}");
+    assert!(last.commits >= after.commits + 3, "{last:?}");
+    assert_eq!(last.throttle_given_up, 1, "no further give-up: {last:?}");
+    assert!(!mgr.state().give_up_armed(id), "{last:?}");
+}
+
+/// A fake that offers `wp_presentation`: while nothing animates the
+/// manager asks for no frame callback and waits on presentation feedback
+/// (`in_flight`), the path a real compositor (sway) takes.
+fn presenting() -> Fake {
+    Fake::compositor(SurfaceGlobals {
+        presentation: true,
+        ..SurfaceGlobals::default()
+    })
+}
+
+/// Shows the panel on a presenting fake, paints it once more and waits
+/// until every commit's feedback came; the panel's surface.
+fn presented_panel(fake: &Fake, mgr: &mut SurfaceManager<TestHost>) -> SurfaceId {
+    show_panel(fake, mgr);
+    repaint(mgr);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.presented + i.stats.discarded == i.stats.commits)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surface(id));
+    id
+}
+
+/// New content for the panel while its frame is in flight: waits until
+/// its paint is refused (throttled) or made.
+fn new_content(mgr: &mut SurfaceManager<TestHost>, id: SurfaceId) {
+    let before = mgr.state().surface(id).unwrap().stats;
+    mgr.state_mut()
+        .host_mut()
+        .set_square(Some(strand_scene::LogicalRect::new(
+            200.0, 50.0, 20.0, 20.0,
+        )));
+    mgr.state_mut().poll();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| {
+                i.stats.throttled > before.throttled || i.stats.commits > before.commits
+            })
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surface(id));
+}
+
+/// (m4-audit) The give-up on the presentation path: a frame whose
+/// presentation feedback never comes (no frame callback was asked for,
+/// nothing animating) stops new content only for `THROTTLE_GIVE_UP`,
+/// counted once. The lost feedback arriving late, for a commit no longer
+/// in flight, changes nothing; later paints go on through feedback alone.
+#[test]
+fn a_lost_presentation_feedback_does_not_stop_the_surface() {
+    let fake = presenting();
+    let mut mgr = manager(&fake);
+    let id = presented_panel(&fake, &mut mgr);
+    let before = mgr.state().surface(id).unwrap().stats;
+    fake.cmd(Cmd::HoldFeedback(true));
+    fake.sync();
+    // This frame's feedback is held; no callback is asked for.
     repaint(&mut mgr);
+    let stats = mgr.state().surface(id).unwrap().stats;
+    assert_eq!(stats.frame_requests, before.frame_requests, "{stats:?}");
+    new_content(&mut mgr, id);
+    let held = mgr.state().surface(id).unwrap().stats;
+    assert_eq!(held.presented, stats.presented, "the feedback was held");
+    assert_eq!(
+        held.commits, stats.commits,
+        "held while in flight: {held:?}"
+    );
+    assert!(held.throttled > stats.throttled, "{held:?}");
+    assert!(
+        mgr.state().give_up_armed(id),
+        "a refused paint arms the give-up"
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.commits > stats.commits)
+        })
+        .unwrap();
+    let after = mgr.state().surface(id).unwrap().stats;
+    assert!(ok, "never painted again: {after:?}");
+    assert_eq!(after.throttle_given_up, 1, "{after:?}");
+    assert_eq!(after.presented, stats.presented);
+    assert_eq!(after.frame_requests, before.frame_requests);
+    // The held feedback comes late (the lost commit's, and the give-up
+    // paint's, which settles it); painting goes on with no give-up.
+    fake.cmd(Cmd::HoldFeedback(false));
+    for _ in 0..3 {
+        repaint(&mut mgr);
+    }
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.presented + i.stats.discarded == i.stats.commits)
+        })
+        .unwrap();
+    let last = mgr.state().surface(id).unwrap().stats;
+    assert!(ok, "feedback never came: {last:?}");
+    assert!(last.commits >= after.commits + 3, "{last:?}");
+    assert_eq!(last.throttle_given_up, 1, "no further give-up: {last:?}");
+    assert_eq!(last.frame_requests, before.frame_requests, "{last:?}");
+    assert!(!mgr.state().give_up_armed(id), "{last:?}");
+}
+
+/// (m4-audit) Feedback that comes late but within `THROTTLE_GIVE_UP`
+/// settles the frame: the content held meanwhile is painted then, and
+/// the give-up timer the refused paint armed is cancelled, so no give-up
+/// is counted and nothing is painted again at the 1 s mark.
+#[test]
+fn late_presentation_feedback_cancels_the_give_up() {
+    let fake = presenting();
+    let mut mgr = manager(&fake);
+    let id = presented_panel(&fake, &mut mgr);
+    fake.cmd(Cmd::HoldFeedback(true));
+    fake.sync();
     repaint(&mut mgr);
+    let painted = Instant::now();
+    let stats = mgr.state().surface(id).unwrap().stats;
+    new_content(&mut mgr, id);
+    let held = mgr.state().surface(id).unwrap().stats;
+    assert_eq!(
+        held.commits, stats.commits,
+        "held while in flight: {held:?}"
+    );
+    assert!(held.throttled > stats.throttled, "{held:?}");
+    assert!(
+        mgr.state().give_up_armed(id),
+        "a refused paint arms the give-up"
+    );
+    fake.cmd(Cmd::HoldFeedback(false));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.commits > stats.commits)
+        })
+        .unwrap();
+    let after = mgr.state().surface(id).unwrap().stats;
+    assert!(ok, "the held content was never painted: {after:?}");
+    assert!(after.presented > stats.presented, "{after:?}");
+    if after.throttle_given_up == 0 {
+        // The feedback settled the frame before the give-up: its timer is
+        // gone, not left to fire.
+        assert!(!mgr.state().give_up_armed(id), "{after:?}");
+        common::pump(&mut mgr, Duration::from_millis(1200));
+        let quiet = mgr.state().surface(id).unwrap().stats;
+        assert_eq!(quiet.throttle_given_up, 0, "{quiet:?}");
+        assert_eq!(quiet.commits, after.commits, "nothing painted at 1 s");
+    } else {
+        // A runner stalled past the give-up before the feedback was
+        // read: the give-up painted instead, which is the other test's.
+        eprintln!(
+            "the give-up came first ({:?} after the paint); the cancel was not checked",
+            painted.elapsed()
+        );
+    }
 }

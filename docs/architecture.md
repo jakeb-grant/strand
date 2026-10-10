@@ -417,8 +417,10 @@ strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
 
 strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
                      on wayland-server: toplevels, workspaces, toplevel
-                     capture, layer surfaces, xdg popups, a seat keyboard
-                     and the M4 surface globals; no Strand crate
+                     capture, layer surfaces, xdg popups, a seat keyboard,
+                     the M4 surface globals and optionally
+                     wp_presentation, with frame callbacks and feedback
+                     it can hold; no Strand crate
   ^-- dev-dependency of strand-services (the wm protocol client's and the
       thumbnail capture tests) and strand-surface (the manager's tests,
       tests/fake.rs)

@@ -1102,6 +1102,13 @@ impl<H: SurfaceHost + 'static> State<H> {
             .collect()
     }
 
+    /// (m4-audit) Whether a give-up timer is armed for `id`: a paint
+    /// was refused while its frame was in flight (tests).
+    #[doc(hidden)]
+    pub fn give_up_armed(&self, id: SurfaceId) -> bool {
+        self.give_up_timers.contains_key(&id)
+    }
+
     pub fn surface(&self, id: SurfaceId) -> Option<SurfaceInfo> {
         let mut info = self.surfaces.get(&id).map(Surface::info)?;
         let primary = self

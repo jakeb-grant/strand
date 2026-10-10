@@ -7,7 +7,8 @@
 //!   a compositor with no IPC adapter (`Fake::start*`).
 //! - `strand-surface`'s manager: `wl_compositor`, `wl_shm`, layer shell,
 //!   viewporter, single-pixel buffers, the alpha modifier,
-//!   `ext-background-effect-v1`, `xdg_wm_base` for popups and a seat's
+//!   `ext-background-effect-v1`, optionally `wp_presentation`,
+//!   `xdg_wm_base` for popups and a seat's
 //!   keyboard whose focus tests move ([`SurfaceGlobals`], through
 //!   [`Fake::builder`]), recording what every surface committed
 //!   ([`Fake::surfaces`]). Sway 1.9, the compositor CI tests on, lacks
@@ -99,9 +100,18 @@ pub enum Cmd {
     /// A key (evdev code; 1 is Escape, the keymap's one key) pressed
     /// (true) or released on every bound keyboard.
     Key(u32, bool),
-    /// (m4-audit) Frame callbacks committed from now on are dropped and
-    /// never done (true), or done at their commit again (false).
+    /// (m4-audit) Frame callbacks committed from now on are held, not
+    /// done (true): a compositor that lost them. False does the held ones
+    /// (late) and does each callback at its commit again.
     HoldFrames(bool),
+    /// (m4-audit) The same for `wp_presentation` feedback (with
+    /// [`SurfaceGlobals::presentation`]): held, not sent (true); false
+    /// sends the held ones `presented` (late) and presents each commit's
+    /// feedback at its commit again.
+    HoldFeedback(bool),
+    /// Answered once every command sent before it is applied
+    /// ([`Fake::sync`]).
+    Sync(mpsc::Sender<()>),
 }
 
 struct Toplevel {
@@ -406,7 +416,11 @@ impl Server {
                 }
             }
             Cmd::KeyboardLeave => self.keyboard_leave(),
-            Cmd::HoldFrames(on) => self.surf.hold_frames = on,
+            Cmd::HoldFrames(on) => self.surf.hold_frames(on),
+            Cmd::HoldFeedback(on) => self.surf.hold_feedback(on),
+            Cmd::Sync(done) => {
+                let _ = done.send(());
+            }
             Cmd::Key(key, pressed) => {
                 self.serial += 1;
                 let state = if pressed {
@@ -1109,6 +1123,14 @@ impl Fake {
     pub fn cmd(&self, c: Cmd) {
         // The fake's thread outlives every `Fake` handle.
         let _ = self.tx.send(c);
+    }
+
+    /// Returns once the fake has applied every command sent before (10 s
+    /// at most): what a client sends after it is handled after them.
+    pub fn sync(&self) {
+        let (tx, rx) = mpsc::channel();
+        self.cmd(Cmd::Sync(tx));
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
     }
 
     /// Every surface created so far, in creation order, as last committed.
