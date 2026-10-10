@@ -49,7 +49,10 @@ debug = 0
 debug = 0
 
 [profile.release]
-lto = "thin"
+# Fat LTO: with M4 wave 2 merged it keeps the binary's `.text` within
+# its gates (15 MiB CPU core, 18.5 MiB with the GPU backend), which thin
+# LTO did not (decisions.md, m4-integration-w2).
+lto = "fat"
 codegen-units = 1
 
 # Code that runs at event rates (D-Bus, sockets, PipeWire's thread,
@@ -144,6 +147,46 @@ opt-level = "s"
 # rasterises at 3): built for size under the 15 MiB `.text` gate
 # (decisions.md, m4-effects-media-w2).
 [profile.release.package.velato]
+opt-level = "z"
+
+# Image and SVG decoding (once per source and drawn size, on the decode
+# worker; an animated image decodes a frame at most at its own rate):
+# event-rate code, built for size under the `.text` gates
+# (decisions.md, m4-integration-w2).
+[profile.release.package.image-webp]
+opt-level = "z"
+
+[profile.release.package.jpeg-decoder]
+opt-level = "z"
+
+[profile.release.package.png]
+opt-level = "z"
+
+[profile.release.package.gif]
+opt-level = "z"
+
+[profile.release.package.fdeflate]
+opt-level = "z"
+
+[profile.release.package.miniz_oxide]
+opt-level = "z"
+
+[profile.release.package.weezl]
+opt-level = "z"
+
+[profile.release.package.imagesize]
+opt-level = "z"
+
+[profile.release.package.usvg]
+opt-level = "z"
+
+[profile.release.package.svgtypes]
+opt-level = "z"
+
+[profile.release.package.simplecss]
+opt-level = "z"
+
+[profile.release.package.data-url]
 opt-level = "z"
 
 # The timing gates' build (CI's `timing` job: theme_swap_bench and the
