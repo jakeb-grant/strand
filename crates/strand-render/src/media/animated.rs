@@ -38,6 +38,13 @@ const MIN_TICK_MS: u64 = 10;
 /// canvas at the source's size). The least recently used goes past this.
 const MAX_PLAYERS: usize = 16;
 
+/// Bytes all players may hold together ([`Player::bytes`]: their files,
+/// each counted once however many sizes play it, their canvases and
+/// their decoders' frames). Past it the least recently used players go,
+/// never the one being drawn: one animation larger than this still plays,
+/// alone (decisions.md, m4-effects-media-w2).
+pub const MAX_PLAYER_BYTES: usize = 16 << 20;
+
 /// An animated image's frames in time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timeline {
@@ -348,6 +355,13 @@ impl Player {
         (self.w, self.h)
     }
 
+    /// Bytes it holds besides its file: its canvas, the canvas a
+    /// `Restore` frame saved, and its decoder's frame (counted at the
+    /// canvas's size, the most a frame takes).
+    pub fn bytes(&self) -> usize {
+        self.canvas.capacity() + self.saved.capacity() + self.canvas.len()
+    }
+
     /// Starts the decoder again at the first frame, on a clear canvas.
     fn restart(&mut self) -> Result<(), ImageError> {
         let cur = Cursor::new(self.data.clone());
@@ -423,8 +437,10 @@ impl Player {
                 Dispose::Keep => {}
                 Dispose::Clear => clear_rect(&mut self.canvas, self.w, [x, y, w, h]),
                 Dispose::Restore => {
+                    // The saved canvas becomes the canvas; none is kept
+                    // until another frame needs restoring.
                     if self.saved.len() == self.canvas.len() {
-                        self.canvas.copy_from_slice(&self.saved);
+                        self.canvas = std::mem::take(&mut self.saved);
                     }
                 }
             }
@@ -616,18 +632,34 @@ impl Players {
         };
         self.tick += 1;
         if !self.players.contains_key(&k) {
-            let (data, format) = read()?;
+            // Another size of the same image shares its file.
+            let shared = self
+                .players
+                .iter()
+                .find(|(o, _)| o.source == k.source && o.icon == k.icon)
+                .map(|(_, p)| (p.data.clone(), p.format));
+            let (data, format) = match shared {
+                Some(s) => s,
+                None => read()?,
+            };
             let p = Player::new(data, format)?;
-            if self.players.len() >= MAX_PLAYERS
-                && let Some(old) = self
+            self.players.insert(k.clone(), p);
+            // Within the count and the bytes, the least recently used
+            // first; the new one stays.
+            while self.players.len() > 1
+                && (self.players.len() > MAX_PLAYERS || self.bytes() > MAX_PLAYER_BYTES)
+            {
+                let Some(old) = self
                     .players
                     .iter()
+                    .filter(|(o, _)| **o != k)
                     .min_by_key(|(_, p)| p.used)
-                    .map(|(k, _)| k.clone())
-            {
+                    .map(|(o, _)| o.clone())
+                else {
+                    break;
+                };
                 self.players.remove(&old);
             }
-            self.players.insert(k.clone(), p);
         }
         let p = self
             .players
@@ -640,6 +672,22 @@ impl Players {
     /// Drops the players of images `keep` rejects (by their frame-0 key).
     pub fn retain(&mut self, mut keep: impl FnMut(&ImageKey) -> bool) {
         self.players.retain(|k, _| keep(k));
+    }
+
+    /// Bytes the players hold: each file once, however many players
+    /// share it, and each player's [`Player::bytes`].
+    pub fn bytes(&self) -> usize {
+        let mut files: Vec<*const u8> = Vec::new();
+        let mut n = 0;
+        for p in self.players.values() {
+            let ptr = p.data.as_ptr();
+            if !files.contains(&ptr) {
+                files.push(ptr);
+                n += p.data.len();
+            }
+            n += p.bytes();
+        }
+        n
     }
 
     /// Players kept.
@@ -685,6 +733,21 @@ mod tests {
     }
 
     #[test]
+    fn the_next_change_is_the_next_frame_boundary() {
+        let t = Timeline::new(vec![70, 80, 90], None).unwrap();
+        assert_eq!(t.tick, Duration::from_millis(10));
+        let ms = Duration::from_millis;
+        assert_eq!(t.until_change(0.0), Some(ms(70)));
+        assert_eq!(t.until_change(0.07), Some(ms(80)));
+        assert_eq!(t.until_change(0.1), Some(ms(50)));
+        assert_eq!(t.until_change(0.23), Some(ms(10)), "the loop's end");
+        assert_eq!(t.until_change(0.24), Some(ms(70)), "looped");
+        let once = Timeline::new(vec![100, 100], Some(1)).unwrap();
+        assert_eq!(once.until_change(0.15), Some(ms(50)));
+        assert_eq!(once.until_change(0.2), None, "played out");
+    }
+
+    #[test]
     fn disposal_and_blending_compose_the_canvas() {
         let mut c = vec![0u8; 4 * 4 * 4];
         blit(
@@ -713,19 +776,71 @@ mod tests {
         clear_rect(&mut c, 4, [9, 9, 2, 2]);
     }
 
+    /// A two-frame GIF of `side × side`, both frames solid.
+    fn big_gif(side: u16) -> Bytes {
+        let palette = [255, 0, 0, 0, 0, 255];
+        let mut out = Vec::new();
+        {
+            let mut enc = gif::Encoder::new(&mut out, side, side, &palette).unwrap();
+            for i in 0..2u8 {
+                let px = vec![i; side as usize * side as usize];
+                let mut f = gif::Frame::from_palette_pixels(side, side, px, palette.to_vec(), None);
+                f.delay = 10;
+                enc.write_frame(&f).unwrap();
+            }
+        }
+        Arc::from(out)
+    }
+
+    fn key(source: &str, w: u32) -> ImageKey {
+        ImageKey {
+            source: source.into(),
+            icon: false,
+            w,
+            h: w,
+            fit: crate::image::Fit::Contain,
+            scale: 1,
+            frame: 0,
+        }
+    }
+
+    /// Players share a file across sizes, and stay within their bytes:
+    /// the least recently used go, never the one being drawn.
     #[test]
-    fn the_next_change_is_the_next_frame_boundary() {
-        let t = Timeline::new(vec![70, 80, 90], None).unwrap();
-        assert_eq!(t.tick, Duration::from_millis(10));
-        let ms = Duration::from_millis;
-        assert_eq!(t.until_change(0.0), Some(ms(70)));
-        assert_eq!(t.until_change(0.07), Some(ms(80)));
-        assert_eq!(t.until_change(0.1), Some(ms(50)));
-        assert_eq!(t.until_change(0.23), Some(ms(10)), "the loop's end");
-        assert_eq!(t.until_change(0.24), Some(ms(70)), "looped");
-        let once = Timeline::new(vec![100, 100], Some(1)).unwrap();
-        assert_eq!(once.until_change(0.15), Some(ms(50)));
-        assert_eq!(once.until_change(0.2), None, "played out");
+    fn players_share_files_and_stay_within_their_bytes() {
+        // 900 × 900: a 3.2 MB canvas, 6.5 MB with its decoder's frame;
+        // two fit the budget, three do not.
+        let file = big_gif(900);
+        let each = 900 * 900 * 4 * 2;
+        let mut players = Players::default();
+        let mut reads = 0;
+        for w in [48, 96] {
+            let p = players
+                .get(&key("/a.gif", w), || {
+                    reads += 1;
+                    Ok((file.clone(), Format::Gif))
+                })
+                .unwrap();
+            p.frame(1).unwrap();
+        }
+        assert_eq!(reads, 1, "the second size shares the file");
+        assert_eq!(players.len(), 2);
+        assert_eq!(players.bytes(), file.len() + 2 * each);
+        assert!(players.bytes() <= MAX_PLAYER_BYTES);
+        // A third: the least recently used goes.
+        players
+            .get(&key("/b.gif", 48), || Ok((big_gif(900), Format::Gif)))
+            .unwrap();
+        assert_eq!(players.len(), 2);
+        assert!(players.bytes() <= MAX_PLAYER_BYTES);
+        assert!(!players.players.contains_key(&key("/a.gif", 48)));
+        // One larger than the budget alone still plays, alone.
+        let huge = big_gif(2048);
+        let p = players
+            .get(&key("/huge.gif", 48), || Ok((huge.clone(), Format::Gif)))
+            .unwrap();
+        assert_eq!(p.frame(1).unwrap().len(), 2048 * 2048 * 4);
+        assert_eq!(players.len(), 1);
     }
 
     #[test]
