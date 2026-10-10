@@ -39,12 +39,11 @@ fn main() -> ExitCode {
     let mut output = File::from(output);
 
     let confdir = test_confdir();
+    // The `login` fallback is said in the hello only: the client turns
+    // it into the one warning per process (design.md, "one-time
+    // warning"). A line here would repeat on every helper start, since
+    // the helper's stderr is strand's.
     let service = choose_service(confdir.as_deref());
-    if service == Service::Login {
-        eprintln!(
-            "strand-auth: warning: no `strand` PAM service (/etc/pam.d/strand); using `login`"
-        );
-    }
     let user = current_user();
     if protocol::write_message(
         &mut output,

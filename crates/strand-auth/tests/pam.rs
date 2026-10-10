@@ -236,6 +236,37 @@ fn a_missing_strand_service_falls_back_to_login_with_one_warning() {
     assert!(!v.is_unlocked(), "{v:?}");
 }
 
+/// The helper itself says nothing on stderr (strand's) about the
+/// `login` fallback: it is started again on every lock and after every
+/// fault, and the warning is once per process, from its hello.
+#[test]
+fn the_helper_does_not_repeat_the_fallback_warning_on_stderr() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    service(dir.path(), "login", "pam_permit.so", "pam_permit.so");
+    let mut child = Command::new(HELPER)
+        .env("STRAND_AUTH_PAM_CONFDIR", dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Its hello (the fallback is in it), then the end of its input.
+    let mut hello = [0u8; 1];
+    child.stdout.take().unwrap().read_exact(&mut hello).unwrap();
+    drop(child.stdin.take());
+    child.wait().unwrap();
+    let mut err = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
+        .unwrap();
+    assert!(!err.contains("login"), "the helper warned itself: {err}");
+}
+
 #[test]
 fn a_helper_that_died_while_idle_is_started_again() {
     let dir = tempfile::tempdir().unwrap();
