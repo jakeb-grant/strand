@@ -2094,6 +2094,9 @@ struct BlueHost {
     caps: Vec<strand_scene::CompositorCaps>,
     blur: Vec<strand_scene::BlurRegion>,
     fills: std::collections::HashMap<strand_scene::SurfaceId, Fill>,
+    /// (M4) The compositor pose each surface reports
+    /// (`Painter::surface_pose`).
+    poses: std::collections::HashMap<strand_scene::SurfaceId, strand_scene::SurfacePose>,
 }
 
 /// How [`BlueHost`] paints a surface other than blue.
@@ -2108,6 +2111,8 @@ enum Fill {
     Stripes,
     /// White at 60 % (above Hyprland's `ignore_alpha 0.5`).
     Glass,
+    /// Opaque white.
+    White,
 }
 
 impl strand_scene::Painter for BlueHost {
@@ -2127,6 +2132,7 @@ impl strand_scene::Painter for BlueHost {
                     Some(Fill::Stripes) if (x / 3) % 2 == 0 => [0, 0, 0, 0xff],
                     Some(Fill::Stripes) => [0xff; 4],
                     Some(Fill::Glass) => [0x99; 4],
+                    Some(Fill::White) => [0xff; 4],
                 });
             }
         }
@@ -2139,6 +2145,10 @@ impl strand_scene::Painter for BlueHost {
 
     fn blur_region(&self, _: strand_scene::SurfaceId) -> Vec<strand_scene::BlurRegion> {
         self.blur.clone()
+    }
+
+    fn surface_pose(&self, id: strand_scene::SurfaceId) -> Option<strand_scene::SurfacePose> {
+        self.poses.get(&id).copied()
     }
 }
 
@@ -2540,10 +2550,113 @@ fn surfaces_meet_the_live_compositor() {
             );
         }
     }
-    for node in [TIP, SHADE, WALL] {
+    for node in [TIP, SHADE] {
         mgr.state_mut()
             .apply_surface_change(node, SurfaceChange::Removed);
     }
+    let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
+
+    // (M4) Compositor-animated poses: `panel Pose { anchor: bottom_left;
+    // 200 × 100 }`, opaque white, held at the pose render reports for
+    // half opacity and half size about its centre: the alpha modifier
+    // fades it over the wallpaper, and the viewport's destination with
+    // the margins puts the half-size box around the full box's centre
+    // (the compositor shrinks a layer surface towards its top-left
+    // corner; render's offset moves that corner).
+    if caps.alpha_modifier {
+        const POSE: NodeId = NodeId::new(14, 0);
+        let props: std::collections::HashMap<Prop, PropValue> = [
+            (Prop::Name, PropValue::Text("Pose".into())),
+            (Prop::Anchor, PropValue::Keyword("bottom_left".into())),
+            (Prop::Width, PropValue::Number(200.0)),
+            (Prop::Height, PropValue::Number(100.0)),
+        ]
+        .into_iter()
+        .collect();
+        mgr.state_mut().apply_surface_change(
+            POSE,
+            SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p))),
+        );
+        let id = mgr.state().surfaces_of(POSE)[0];
+        let scaled = caps.viewporter;
+        let pose = if scaled {
+            strand_scene::SurfacePose {
+                opacity: 0.5,
+                scale: 0.5,
+                offset: strand_scene::LogicalPoint::new(50.0, 25.0),
+            }
+        } else {
+            strand_scene::SurfacePose {
+                opacity: 0.5,
+                ..strand_scene::SurfacePose::IDENTITY
+            }
+        };
+        let host = mgr.state_mut().host_mut();
+        host.fills.insert(id, Fill::White);
+        host.poses.insert(id, pose);
+        let ok = mgr
+            .dispatch_until(PATIENCE, |s| {
+                s.surface(id)
+                    .is_some_and(|i| i.stats.commits > 0 && i.pose == pose)
+            })
+            .expect("dispatch");
+        assert!(ok, "{kind}: the posed panel: {:?}", mgr.state().surface(id));
+        let blue = [0x20, 0x60, 0xe0];
+        // White at half over the wallpaper's blue.
+        let half = [0x90, 0xb0, 0xf0];
+        let inside = [(100, oh - 50), (60, oh - 70), (140, oh - 30)];
+        let outside: &[(usize, usize)] = if scaled {
+            &[
+                (40, oh - 50),
+                (160, oh - 50),
+                (100, oh - 85),
+                (100, oh - 15),
+            ]
+        } else {
+            &[(210, oh - 50), (100, oh - 110)]
+        };
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+            let img = grab(output.as_deref(), dir.path()).expect("grim");
+            let ins: Vec<[u8; 3]> = inside.iter().map(|&(x, y)| img.px(x, y)).collect();
+            let outs: Vec<[u8; 3]> = outside.iter().map(|&(x, y)| img.px(x, y)).collect();
+            if ins.iter().all(|p| dist(*p, half) <= 12) && outs.iter().all(|p| dist(*p, blue) <= 9)
+            {
+                eprintln!(
+                    "matrix: {kind}: the alpha modifier fades the posed panel to {:?}{}",
+                    ins[0],
+                    if scaled {
+                        ", and the viewport and margins scale it about its centre"
+                    } else {
+                        " (no viewporter: no scale)"
+                    }
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                    let mut cmd = Command::new("grim");
+                    if let Some(o) = &output {
+                        cmd.args(["-o", o]);
+                    }
+                    let _ = cmd
+                        .arg(PathBuf::from(shots).join(format!("matrix-{kind}-pose-failed.png")))
+                        .status();
+                }
+                panic!(
+                    "{kind}: the posed panel: inside {inside:?} is {ins:?} (want {half:?}),                      outside {outside:?} is {outs:?} (want the wallpaper's {blue:?}); {:?}",
+                    mgr.state().surface(id)
+                );
+            }
+        }
+        mgr.state_mut()
+            .apply_surface_change(POSE, SurfaceChange::Removed);
+    } else {
+        eprintln!("matrix: {kind} has no alpha modifier: poses repaint");
+    }
+    mgr.state_mut()
+        .apply_surface_change(WALL, SurfaceChange::Removed);
     let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
 
     if kind == "hyprland" {

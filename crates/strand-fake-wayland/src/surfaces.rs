@@ -147,6 +147,14 @@ pub struct SurfaceRecord {
     pub blur_sets: Vec<Option<Region>>,
     /// The alpha multiplier as of the last commit.
     pub alpha: Option<u32>,
+    /// Each commit that carried a `set_multiplier`, with its value.
+    pub alpha_sets: Vec<u32>,
+    /// A layer surface's margins (top, right, bottom, left) as of the
+    /// last commit.
+    pub margin: Option<[i32; 4]>,
+    /// Each commit that changed the viewport's destination, with what
+    /// it set (`None`: unset).
+    pub viewport_sets: Vec<Option<(i32, i32)>>,
     /// Commits so far, with and without a buffer.
     pub commits: usize,
     /// Commits that attached a buffer.
@@ -296,6 +304,7 @@ impl Surfaces {
             configure = Some((cw, ch));
         }
         let index = live.index;
+        let margin = live.layer.as_ref().map(|_| live.layer_request.margin);
         for cb in pending.frames {
             cb.done(0);
         }
@@ -310,7 +319,13 @@ impl Surfaces {
                 }
             }
             if let Some(v) = pending.viewport {
+                if rec.viewport != v {
+                    rec.viewport_sets.push(v);
+                }
                 rec.viewport = v;
+            }
+            if margin.is_some() {
+                rec.margin = margin;
             }
             if let Some(i) = pending.input {
                 rec.input = i;
@@ -321,6 +336,7 @@ impl Surfaces {
             }
             if let Some(a) = pending.alpha {
                 rec.alpha = Some(a);
+                rec.alpha_sets.push(a);
             }
             if let Some(c) = configure {
                 rec.configured = Some(c);

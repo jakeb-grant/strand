@@ -189,6 +189,10 @@ impl Painter for Renderer {
             .unwrap_or_default()
     }
 
+    fn surface_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        self.delegated_pose(surface)
+    }
+
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
         self.surfaces
             .get(&surface)

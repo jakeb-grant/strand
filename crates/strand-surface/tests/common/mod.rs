@@ -331,6 +331,11 @@ pub struct TestHost {
     pub caps: Vec<CompositorCaps>,
     /// What [`Painter::blur_region`] answers for every surface.
     pub blur: Vec<BlurRegion>,
+    /// (M4) Poses to report, one per paint (taken by each paint while
+    /// any are left, wanting frames meanwhile); [`Painter::surface_pose`]
+    /// answers the last one taken.
+    pub poses: std::collections::VecDeque<strand_scene::SurfacePose>,
+    pub pose: Option<strand_scene::SurfacePose>,
 }
 
 impl TestHost {
@@ -374,6 +379,9 @@ pub fn checker_at(x: u32, y: u32) -> [u8; 3] {
 
 impl Painter for TestHost {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        if let Some(p) = self.poses.pop_front() {
+            self.pose = Some(p);
+        }
         if self.empty_first && self.empty_done.insert(surface) {
             return Damage::new();
         }
@@ -469,7 +477,13 @@ impl Painter for TestHost {
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
-        self.animate > 0 || self.painted_version.get(&surface) != Some(&self.version)
+        self.animate > 0
+            || !self.poses.is_empty()
+            || self.painted_version.get(&surface) != Some(&self.version)
+    }
+
+    fn surface_pose(&self, _: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        self.pose
     }
 
     fn opaque_region(&self, surface: SurfaceId) -> Damage {

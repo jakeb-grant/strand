@@ -26,6 +26,7 @@ mod layers;
 mod layout;
 mod markup;
 mod offscreen;
+mod pose;
 mod raster;
 mod renderer;
 mod time;

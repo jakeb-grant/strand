@@ -547,3 +547,149 @@ fn a_scrim_toggled_on_an_overlay_panel_moves_its_catcher() {
         "the panel was never made again"
     );
 }
+
+/// The pose `k` of `n` on its way from `from` to rest.
+fn pose_at(from: strand_scene::SurfacePose, k: u32, n: u32) -> strand_scene::SurfacePose {
+    let f = 1.0 - k as f32 / n as f32;
+    strand_scene::SurfacePose {
+        opacity: 1.0 + (from.opacity - 1.0) * f,
+        scale: 1.0 + (from.scale - 1.0) * f,
+        offset: strand_scene::LogicalPoint::new(from.offset.x * f, from.offset.y * f),
+    }
+}
+
+/// Compositor-animated poses (M4): a pose the painter reports goes to
+/// the compositor as surface state, the alpha multiplier, the viewport's
+/// destination and the layer surface's margins, frame by frame; frames
+/// that drew nothing commit it with no buffer; it ends at rest (full
+/// opacity, the logical size, the placed margins).
+#[test]
+fn poses_go_to_the_compositor_without_buffers() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let from = SurfacePose {
+        opacity: 0.0,
+        scale: 0.5,
+        offset: LogicalPoint::new(100.0, 20.0),
+    };
+    let n = 8;
+    mgr.state_mut().host_mut().poses = (0..=n).map(|k| pose_at(from, k, n)).collect();
+    show_panel(&fake, &mut mgr);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().poses.is_empty()
+                && fake
+                    .layer("strand-Dash")
+                    .first()
+                    .is_some_and(|r| r.alpha == Some(u32::MAX))
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the pose never settled: {:?}",
+        fake.layer("strand-Dash")
+    );
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let rec = fake.layer("strand-Dash")[0].clone();
+    // One buffer (the content at rest): every later pose was a bare
+    // commit.
+    assert_eq!(rec.buffer_commits, 1, "{rec:?}");
+    assert!(rec.commits > n as usize, "{rec:?}");
+    // The first frame went out with the start pose, opacity rising after.
+    assert_eq!(rec.alpha_sets.first(), Some(&0), "{rec:?}");
+    assert!(
+        rec.alpha_sets.windows(2).all(|w| w[1] > w[0]),
+        "{:?}",
+        rec.alpha_sets
+    );
+    assert_eq!(rec.alpha, Some(u32::MAX));
+    // Half size first; at rest the logical size on the fractional path,
+    // unset (the buffer scale sizes it) on the integer one.
+    assert_eq!(
+        rec.viewport_sets.first(),
+        Some(&Some((200, 150))),
+        "{rec:?}"
+    );
+    let fractional = mgr.state().surface(id).unwrap().fractional;
+    let rest = fractional.then_some((400, 300));
+    assert_eq!(rec.viewport, rest, "fractional: {fractional}");
+    // `top_right`: x moves by the right margin, y by the top one; back
+    // at the placed margins (0) at rest.
+    assert_eq!(rec.margin, Some([0, 0, 0, 0]), "{rec:?}");
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.pose, SurfacePose::IDENTITY);
+    assert_eq!(info.stats.poses, n as u64 + 1, "{:?}", info.stats);
+    assert_eq!(info.stats.commits, 1);
+}
+
+/// A pose's offset reaches the margins: mid-way through a slide the
+/// compositor has the right margin shrunk by the offset and the top one
+/// grown, and a spec change meanwhile (a new size) keeps them.
+#[test]
+fn a_pose_offset_moves_the_margins_and_survives_a_reconfigure() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let held = SurfacePose {
+        offset: LogicalPoint::new(30.0, 12.0),
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [held].into_iter().collect();
+    show_panel(&fake, &mut mgr);
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.layer("strand-Dash")
+                .first()
+                .is_some_and(|r| r.margin == Some([12, -30, 0, 0]))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", fake.layer("strand-Dash"));
+    let spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 300.0, 200.0);
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.layer("strand-Dash")
+                .first()
+                .is_some_and(|r| r.configured == Some((300, 200)))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", fake.layer("strand-Dash"));
+    common::pump(&mut mgr, Duration::from_millis(100));
+    assert_eq!(
+        fake.layer("strand-Dash")[0].margin,
+        Some([12, -30, 0, 0]),
+        "the reconfigure kept the pose's margins"
+    );
+}
+
+/// Without the alpha modifier no multiplier is ever set, though the
+/// rest of a pose still goes out (render delegates nothing there, as
+/// `CompositorCaps::delegates_poses` is false; this is the manager's
+/// side only).
+#[test]
+fn no_alpha_modifier_no_multiplier() {
+    use strand_scene::SurfacePose;
+    let fake = Fake::compositor(SurfaceGlobals {
+        alpha_modifier: false,
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    let half = SurfacePose {
+        opacity: 0.5,
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [half].into_iter().collect();
+    show_panel(&fake, &mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.alpha, None, "{rec:?}");
+    assert!(rec.alpha_sets.is_empty());
+}

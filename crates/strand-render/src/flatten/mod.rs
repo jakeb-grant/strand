@@ -182,6 +182,10 @@ pub struct Flattened {
     /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
+    /// (M4) The pose the compositor applies to the whole surface this
+    /// frame, taken out of the root's props ([`crate::pose`]); `None`
+    /// when nothing is delegated.
+    pub pose: Option<strand_scene::SurfacePose>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -284,6 +288,10 @@ pub struct Extras {
     /// The compositor blurs behind surfaces (`ext-background-effect-v1`,
     /// M4): `blur` needs no tint fallback.
     pub compositor_blur: bool,
+    /// (M4) The compositor applies surface poses (`wp_alpha_modifier_v1`
+    /// and the viewporter): a root's opacity, scale and offset go to
+    /// it where its placement allows ([`crate::pose`]).
+    pub compositor_poses: bool,
     /// Hover, press, focus, carets and slider drags from the input
     /// router.
     pub widgets: crate::widgets::Widgets,

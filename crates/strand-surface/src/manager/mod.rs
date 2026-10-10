@@ -82,6 +82,7 @@ mod effect;
 mod layer;
 mod outputs;
 mod popup;
+mod pose;
 mod protocols;
 mod scrim;
 mod seat;
@@ -332,6 +333,10 @@ pub struct Stats {
     /// `ext_background_effect_surface_v1.set_blur_region` requests (sent
     /// only when the region changes).
     pub blur_updates: u64,
+    /// (M4) Compositor poses set (`Painter::surface_pose` changed): each
+    /// rides that frame's commit, or a bare commit when nothing was
+    /// drawn.
+    pub poses: u64,
 }
 
 /// A snapshot of one surface.
@@ -380,6 +385,8 @@ pub struct SurfaceInfo {
     pub layer: Option<Layer>,
     /// The layer its click-away catcher or scrim is on.
     pub under_layer: Option<Layer>,
+    /// (M4) The compositor pose last set on it (identity at rest).
+    pub pose: strand_scene::SurfacePose,
     pub stats: Stats,
 }
 
@@ -440,6 +447,10 @@ struct Surface {
     /// (`None`: unknown, sent again with the next frame).
     blur: Option<ExtBackgroundEffectSurfaceV1>,
     blur_sent: Option<Vec<crate::blur::BlurRect>>,
+    /// (M4) The compositor pose set on it (`pose.rs`), and its
+    /// `wp_alpha_modifier_surface_v1`, made with the first opacity.
+    pose: strand_scene::SurfacePose,
+    alpha: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1>,
     last_damage: Vec<Rect>,
     click_through: bool,
     /// The input region last sent: `None` the whole surface, `Some(None)`
@@ -579,6 +590,7 @@ impl Surface {
             scrim: None,
             layer: matches!(self.role, Role::Layer(_)).then_some(self.config.layer),
             under_layer: None,
+            pose: self.pose,
             stats: self.stats,
         }
     }
@@ -622,8 +634,6 @@ pub struct State<H: SurfaceHost + 'static> {
     presentation: Option<WpPresentation>,
     /// (M4) Optional protocols: the alpha modifier (poses), single-pixel
     /// buffers (scrims) and the background effect (the blur ladder).
-    /// Bound for compositor-animated poses (M4 wave 2).
-    #[allow(dead_code)]
     alpha_modifier: Option<WpAlphaModifierV1>,
     single_pixel: Option<WpSinglePixelBufferManagerV1>,
     background_effect: Option<ExtBackgroundEffectManagerV1>,

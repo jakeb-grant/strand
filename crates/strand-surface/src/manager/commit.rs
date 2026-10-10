@@ -136,11 +136,17 @@ impl<H: SurfaceHost + 'static> State<H> {
         let blur = self
             .blurs()
             .then(|| crate::blur::region_rects(&self.host.blur_region(id), scale));
+        // A compositor pose (M4) rides this frame's commit, or a bare one
+        // when it drew nothing.
+        let posed = self.sync_pose(id);
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
         let wl = s.wl().clone();
         if damage.is_empty() {
+            if posed {
+                s.ack_pending = true;
+            }
             // Nothing drawn, nothing recorded: the buffer keeps its age.
             s.stats.empty_paints += 1;
             self.stats.empty_paints += 1;
@@ -188,13 +194,13 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         if s.geometry_dirty {
             s.geometry_dirty = false;
-            match &s.viewport {
-                Some(vp) if s.fractional.is_some() => {
-                    wl.set_buffer_scale(1);
-                    vp.set_destination(s.logical.0 as i32, s.logical.1 as i32);
-                }
-                _ => wl.set_buffer_scale(s.integer_scale.max(1)),
+            if s.is_fractional() {
+                wl.set_buffer_scale(1);
+            } else {
+                wl.set_buffer_scale(s.integer_scale.max(1));
             }
+            // The logical size, times a pose's scale (`pose.rs`).
+            s.send_destination();
             // A popup's window geometry is its box: the compositor
             // positions that, and its shadow reaches past it.
             if let Role::Popup { popup, config, .. } = &s.role {

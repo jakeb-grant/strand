@@ -198,6 +198,36 @@ fn size(v: f32) -> u32 {
     px(v).max(1) as u32
 }
 
+/// (M4) The margins that move a layer surface of `config` by `offset`
+/// logical pixels (a compositor-animated pose): a margin moves a surface
+/// only from the edge it is anchored to, so an axis anchored on one side
+/// takes the offset there (subtracted on a right or bottom anchor); an
+/// axis centred or stretched keeps its margins (render delegates no
+/// offset on one). Rounded to whole pixels, as margins are.
+pub fn posed_margin(config: &LayerConfig, offset: strand_scene::LogicalPoint) -> [i32; 4] {
+    let [mut t, mut r, mut b, mut l] = config.margin;
+    let a = config.anchors;
+    let px = |v: f32| -> i32 {
+        if v.is_finite() {
+            v.round().clamp(-1e6, 1e6) as i32
+        } else {
+            0
+        }
+    };
+    let (dx, dy) = (px(offset.x), px(offset.y));
+    match (a.left, a.right) {
+        (true, false) => l = l.saturating_add(dx),
+        (false, true) => r = r.saturating_sub(dx),
+        _ => {}
+    }
+    match (a.top, a.bottom) {
+        (true, false) => t = t.saturating_add(dy),
+        (false, true) => b = b.saturating_sub(dy),
+        _ => {}
+    }
+    [t, r, b, l]
+}
+
 /// The layer under `layer` (the background has none: itself).
 pub fn layer_below(layer: Layer) -> Layer {
     match layer {
@@ -503,6 +533,43 @@ mod tests {
 
     fn kw(k: &str) -> PropValue {
         PropValue::Keyword(k.into())
+    }
+
+    #[test]
+    fn poses_move_a_surface_from_its_anchored_edges() {
+        use strand_scene::LogicalPoint;
+        // panel { anchor: top_right; margin: 8 } and one centred.
+        let corner = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("top_right")),
+                (Prop::Width, PropValue::Number(100.0)),
+                (Prop::Height, PropValue::Number(50.0)),
+                (
+                    Prop::Margin,
+                    PropValue::Insets(Insets::from_values(&[8.0]).unwrap()),
+                ),
+            ],
+        );
+        let c = layer_config(&corner).unwrap();
+        assert_eq!(c.margin, [8, 8, 8, 8]);
+        // 40 px right and 10 down: the right margin shrinks, the top grows.
+        assert_eq!(
+            posed_margin(&c, LogicalPoint::new(40.4, 10.0)),
+            [18, -32, 8, 8]
+        );
+        assert_eq!(posed_margin(&c, LogicalPoint::new(0.0, 0.0)), c.margin);
+        let mut centred = corner.clone();
+        centred.anchor = Anchor::Center;
+        let c = layer_config(&centred).unwrap();
+        assert_eq!(posed_margin(&c, LogicalPoint::new(40.0, 10.0)), c.margin);
+        let mut bottom_left = corner;
+        bottom_left.anchor = Anchor::BottomLeft;
+        let c = layer_config(&bottom_left).unwrap();
+        assert_eq!(
+            posed_margin(&c, LogicalPoint::new(-5.0, 20.0)),
+            [8, 8, -12, 3]
+        );
     }
 
     #[test]

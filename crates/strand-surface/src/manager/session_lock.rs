@@ -642,6 +642,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             opaque: Vec::new(),
             blur: None,
             blur_sent: Some(Vec::new()),
+            pose: strand_scene::SurfacePose::IDENTITY,
+            alpha: None,
             last_damage: Vec::new(),
             click_through: false,
             input_region: None,

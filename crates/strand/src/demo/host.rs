@@ -459,6 +459,10 @@ impl Painter for Host {
     fn blur_region(&self, surface: SurfaceId) -> Vec<BlurRegion> {
         self.renderer.blur_region(surface)
     }
+
+    fn surface_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        self.renderer.surface_pose(surface)
+    }
 }
 
 impl SurfaceHost for Host {
@@ -584,6 +588,10 @@ impl SurfaceHost for Host {
         // The blur ladder's first rung: with `ext-background-effect-v1`
         // confirmed, `blur` draws no tint (the compositor blurs).
         self.renderer.set_compositor_blur(caps.background_effect);
+        // Compositor-animated poses (M4): surface roots' fades, scales
+        // and small moves go to the alpha modifier, the viewport and
+        // the margins where the compositor has the first two.
+        self.renderer.set_compositor_poses(caps.delegates_poses());
         self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).
@@ -646,6 +654,62 @@ mod tests {
                 .unwrap()
                 .contains("strand compositor-rules")
         );
+    }
+
+    /// Compositor-animated poses follow the capabilities: with the alpha
+    /// modifier and the viewporter a panel's entering fade is handed to
+    /// the surface manager as a pose (and not painted), without them it
+    /// is painted and no pose is reported.
+    #[test]
+    fn poses_are_delegated_only_with_the_protocols() {
+        use std::time::Duration;
+        let pose = |caps: CompositorCaps| {
+            let font = std::fs::read(strand_text::test_font_path()).unwrap();
+            let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+                std::sync::Arc::new(font),
+            ]));
+            let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+            let mut host = Host::new(renderer, false);
+            host.compositor_caps(&caps);
+            let panel = NodeId::new(0, 0);
+            let num = strand_scene::PropValue::Number;
+            let mut d = SceneDiff::new();
+            d.create(panel, strand_scene::NodeKind::Panel, None, 0)
+                .set(panel, Prop::Width, num(100.0))
+                .set(panel, Prop::Height, num(100.0))
+                .set(
+                    panel,
+                    Prop::Anchor,
+                    strand_scene::PropValue::Keyword("top_right".into()),
+                )
+                .set(
+                    panel,
+                    Prop::Enter,
+                    strand_scene::PropValue::Pose(vec![(Prop::Opacity, num(0.0))]),
+                );
+            assert!(host.renderer.apply(d).is_empty());
+            let s = SurfaceId(1);
+            host.surface_attached(s, panel, None);
+            host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+            let mut px = vec![0u8; 100 * 100 * 4];
+            let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+            let mut t = t.at(Duration::from_secs(1));
+            assert!(!host.paint(s, &mut t).is_empty());
+            host.surface_pose(s)
+        };
+        let delegating = CompositorCaps {
+            alpha_modifier: true,
+            viewporter: true,
+            ..CompositorCaps::default()
+        };
+        let p = pose(delegating).expect("a pose");
+        assert!(p.opacity < 0.5, "{p:?}");
+        assert_eq!(pose(CompositorCaps::default()), None);
+        let no_alpha = CompositorCaps {
+            viewporter: true,
+            ..CompositorCaps::default()
+        };
+        assert_eq!(pose(no_alpha), None);
     }
 
     #[test]

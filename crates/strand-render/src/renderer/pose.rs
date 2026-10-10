@@ -1,15 +1,45 @@
 //! Exit poses: ghosts of removed nodes and surfaces playing their
-//! closing pose, until they finish or stall.
+//! closing pose, until they finish or stall; and (M4) the surface poses
+//! the compositor applies ([`crate::pose`]).
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use strand_scene::NodeId;
+use strand_scene::{NodeId, SurfaceId};
 
 use super::Renderer;
 use crate::anim::{ExitKind, exit_pose, is_pose};
 
 impl Renderer {
+    /// (M4) The compositor applies surface poses (it offers
+    /// `wp_alpha_modifier_v1` and the viewporter,
+    /// `CompositorCaps::delegates_poses`): a surface root's opacity, scale
+    /// and offset are reported through [`Renderer::delegated_pose`]
+    /// (`Painter::surface_pose`) where its placement allows, and its
+    /// content paints at rest.
+    pub fn set_compositor_poses(&mut self, on: bool) {
+        if self.extras.compositor_poses != on {
+            self.extras.compositor_poses = on;
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
+    }
+
+    /// (M4) The pose the compositor should apply to `surface` with its
+    /// next commit: the one its last flattened frame took out of the
+    /// root ([`crate::pose::delegate`]); `None` when nothing is
+    /// delegated.
+    pub fn delegated_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        if !self.extras.compositor_poses {
+            return None;
+        }
+        self.surfaces
+            .get(&surface)
+            .and_then(|s| s.cache.as_ref())
+            .and_then(|f| f.pose)
+    }
+
     /// Ghosts under surface node `root` still play their exit.
     pub(super) fn ghosts_under(&self, root: NodeId) -> bool {
         self.anim
