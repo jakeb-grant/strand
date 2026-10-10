@@ -1028,6 +1028,88 @@ fn an_unread_drag_export_is_given_up() {
     assert!(got > 0 && got < text.len(), "{got} of {}", text.len());
 }
 
+/// (m4-audit) The other side of the time limit: a large export (1 MiB,
+/// many pipe buffers) to a program that does read it, but slowly (it
+/// leaves the full pipe for 3 s at a time, longer in all than
+/// `DRAG_WRITE_TIMEOUT`), is never cut off: each write that goes through
+/// starts the limit again. The pipe stays open (no hang-up) through every
+/// pause, and the program reads every byte and then the end of file.
+#[test]
+fn a_slowly_read_drag_export_is_written_whole() {
+    use rustix::event::{PollFd, PollFlags, poll};
+    const DRAG_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+    const PAUSE: Duration = Duration::from_secs(3);
+    let Some((_sway, mut mgr, bar, mut p, program)) =
+        desk("a_slowly_read_drag_export_is_written_whole")
+    else {
+        return;
+    };
+    const PIN: NodeId = NodeId::new(42, 7);
+    let text = "y".repeat(1 << 20);
+    mgr.state_mut().host_mut().export = Some(DropPayload::External {
+        kind: DropKind::Text,
+        files: vec![],
+        text: text.clone(),
+        app_id: None,
+    });
+    *program.want.lock().unwrap() = Some("text/plain;charset=utf-8".into());
+    program.hang.store(true, Ordering::SeqCst);
+    drag_out_of_bar(&mut mgr, &mut p, bar, PIN);
+    glide(&mut mgr, &mut p, (100, 60), (960, 950));
+    p.button(wl_pointer::ButtonState::Released);
+    wait(&mut mgr, "the other program asks for the export", |_| {
+        program.log(|l| l.unread.len() == 1)
+    });
+    let mut pipe = program.log(|l| l.unread[0].try_clone().unwrap());
+    rustix::io::ioctl_fionbio(&pipe, true).unwrap();
+    let mut got = 0usize;
+    let drain = |pipe: &mut std::io::PipeReader, got: &mut usize| -> bool {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match std::io::Read::read(pipe, &mut buf) {
+                Ok(0) => return true,
+                Ok(n) => {
+                    assert!(buf[..n].iter().all(|b| *b == b'y'));
+                    *got += n;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return false,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    };
+    // True if the writer has closed its end, without reading.
+    let hung_up = |pipe: &std::io::PipeReader| -> bool {
+        let mut fds = [PollFd::new(pipe, PollFlags::IN)];
+        poll(&mut fds, None).unwrap();
+        fds[0].revents().contains(PollFlags::HUP)
+    };
+    // Three pauses of 3 s, each with the pipe full and unread, a drain
+    // between: 9 s in all, past the limit from the first write.
+    let begun = Instant::now();
+    for round in 0..3 {
+        pump_mgr(&mut mgr, PAUSE);
+        assert!(
+            !hung_up(&pipe),
+            "given up in pause {round}, {:?} in, {got} read",
+            begun.elapsed()
+        );
+        assert!(
+            !drain(&mut pipe, &mut got),
+            "ended early: {got} of {}",
+            text.len()
+        );
+    }
+    assert!(begun.elapsed() > DRAG_WRITE_TIMEOUT);
+    assert!(got < text.len(), "{got}: the export outlasts the pauses");
+    // Read on at speed: the rest, then the end of file.
+    let deadline = Instant::now() + WAIT;
+    while !drain(&mut pipe, &mut got) {
+        assert!(Instant::now() < deadline, "the rest never came: {got}");
+        mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
+    }
+    assert_eq!(got, text.len());
+}
+
 /// (M4) A drag from another Strand process (another manager, on its own
 /// connection, offering its own private type and what its value gives
 /// other programs) is recognised and read like another program's: it
