@@ -2121,13 +2121,22 @@ fn pulse() -> PropValue {
 
 /// A renderer drawing `diff` on `BAR`, its first frame painted at `T0`.
 fn clocked(diff: SceneDiff) -> (Renderer, Buffer) {
+    let (r, buf, _) = clocked_since(diff);
+    (r, buf)
+}
+
+/// [`clocked`], and the wall-clock instant taken just before the paint at
+/// `T0` (the renderer reads its own `now` at the start of that paint):
+/// what maps the renderer's wakes back to presentation time.
+fn clocked_since(diff: SceneDiff) -> (Renderer, Buffer, std::time::Instant) {
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
     let root = r.tree().roots()[0];
     r.attach_surface(BAR, root);
     let mut buf = Buffer::new(200, 40, Scale::ONE);
+    let at = std::time::Instant::now();
     buf.paint_at(&mut r, BAR, 0, T0);
-    (r, buf)
+    (r, buf, at)
 }
 
 /// design.md: a hidden node's clock stops. Nodes reading time that
@@ -2310,11 +2319,25 @@ fn shimmer_bar(capped: bool) -> (SceneDiff, NodeId) {
 /// presentation times of every frame painted. Each must draw something:
 /// a frame the renderer asks for between a capped clock's ticks has
 /// empty damage, and fails here rather than going uncounted.
-fn host_loop(r: &mut Renderer, buf: &mut Buffer, hz: u32) -> Vec<std::time::Duration> {
+///
+/// A wake (wall clock) maps back to presentation time through the
+/// instant taken just before the last paint (`since` for the paint at
+/// `T0`): the renderer reads its `now` at the start of each paint, so the
+/// two differ by microseconds whatever the scheduling. (m4-audit: the
+/// first `at` was taken after the T0 paint had returned, so any delay
+/// there, a preemption on a loaded runner, made the first wake early by
+/// as much; at 144 Hz over 4.2 ms of it painted a refresh between ticks,
+/// and CI run 38057185680 failed with "painted nothing".)
+fn host_loop(
+    r: &mut Renderer,
+    buf: &mut Buffer,
+    hz: u32,
+    since: std::time::Instant,
+) -> Vec<std::time::Duration> {
     use std::time::{Duration, Instant};
     let end = T0 + Duration::from_millis(500);
     let mut drawn = Vec::new();
-    let (mut k, mut last, mut at) = (1, T0, Instant::now());
+    let (mut k, mut last, mut at) = (1, T0, since);
     while at_hz(hz, k) < end {
         if r.wants_frame(BAR) {
             last = at_hz(hz, k);
@@ -2348,8 +2371,8 @@ fn capped_clocks_paint_at_their_rate() {
     use std::time::Duration;
     for hz in [60, 144] {
         let (diff, _) = shimmer_bar(false);
-        let (mut r, mut buf) = clocked(diff);
-        let drawn = host_loop(&mut r, &mut buf, hz);
+        let (mut r, mut buf, since) = clocked_since(diff);
+        let drawn = host_loop(&mut r, &mut buf, hz, since);
         let frames = (hz / 2 - 1) as usize;
         assert_eq!(
             drawn.len(),
@@ -2358,8 +2381,10 @@ fn capped_clocks_paint_at_their_rate() {
         );
 
         let (diff, id) = shimmer_bar(true);
-        let (mut r, mut buf) = clocked(diff);
-        let drawn = host_loop(&mut r, &mut buf, hz);
+        let (mut r, mut buf, since) = clocked_since(diff);
+        // A delay after the T0 paint (a loaded runner) moves nothing.
+        std::thread::sleep(Duration::from_millis(6));
+        let drawn = host_loop(&mut r, &mut buf, hz, since);
         assert!(
             (14..=15).contains(&drawn.len()),
             "{hz} Hz: 30 fps for half a second, drew {}: {drawn:?}",
