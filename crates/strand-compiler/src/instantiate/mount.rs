@@ -1467,11 +1467,13 @@ impl Ctx {
         let mut accepts: Vec<PropValue> = Vec::new();
         for n in e.children.iter() {
             if let Node::Handler(h) = n
-                && let Some(name) = self.drop_accepts(h)
+                && let Some(want) = self.drop_accepts(h)
             {
-                let k = PropValue::Keyword(name);
-                if !accepts.contains(&k) {
-                    accepts.push(k);
+                for name in accept_keys(&self.vm.prog.types, &want) {
+                    let k = PropValue::Keyword(name);
+                    if !accepts.contains(&k) {
+                        accepts.push(k);
+                    }
                 }
             }
         }
@@ -3245,7 +3247,7 @@ impl Ctx {
                         && !ctx
                             .args
                             .first()
-                            .is_some_and(|v| drop_matches(want, &me.vm.prog.types, v))
+                            .is_some_and(|v| drop_matches(&me.vm.prog.types, want, v))
                     {
                         return Ok(());
                     }
@@ -3557,10 +3559,9 @@ impl Ctx {
 
 /// The values of one longest strictly increasing subsequence of `seq`.
 impl Ctx {
-    /// The type an `on drop` handler's value parameter takes, as render
-    /// matches it (`Prop::Accepts`): `any` when it says none. `None` for
-    /// any other handler.
-    fn drop_accepts(&self, h: &Handler) -> Option<String> {
+    /// The type an `on drop` handler's value parameter takes (`any` when
+    /// it says none; `T` for `T?`). `None` for any other handler.
+    fn drop_accepts(&self, h: &Handler) -> Option<Ty> {
         if !matches!(&h.event, Event::Element(n) if n == "drop") {
             return None;
         }
@@ -3568,7 +3569,7 @@ impl Ctx {
             .params
             .first()
             .map_or(Ty::Any, |l| self.vm.prog.local(*l).ty.clone());
-        Some(type_key(&self.vm.prog.types, ty.non_null()))
+        Some(ty.non_null().clone())
     }
 }
 
@@ -3619,9 +3620,58 @@ fn value_ty(v: &Value) -> Ty {
     }
 }
 
-/// True if an `on drop` taking `want` (a [`type_key`]) takes `v`.
-pub(crate) fn drop_matches(want: &str, types: &crate::ty::TypeTable, v: &Value) -> bool {
-    want == "any" || drag_type(types, v) == want
+/// True if an `on drop` taking `want` takes `v`: as a call would, so an
+/// `int` fits a `float` parameter and an empty list (whose items say no
+/// type) fits any list type.
+/// A value of no type drag and drop names fits only an untyped one.
+pub(crate) fn drop_matches(types: &crate::ty::TypeTable, want: &Ty, v: &Value) -> bool {
+    let t = value_ty(v);
+    if t.is_lenient() {
+        return want.is_lenient();
+    }
+    types.assignable(&t, want)
+}
+
+/// The dragged type names (`Prop::Drag`, from [`drag_type`]) an `on
+/// drop` taking `want` accepts (`Prop::Accepts`), so render matches by
+/// name what [`drop_matches`] takes: `want`'s own name, the scalar types
+/// that fit it (`int` for `float`), and for a list type the empty list
+/// (`[any]`) and lists of those scalars.
+fn accept_keys(types: &crate::ty::TypeTable, want: &Ty) -> Vec<String> {
+    use crate::ty::Prim::*;
+    const SCALARS: [crate::ty::Prim; 15] = [
+        Bool, Int, Float, Length, Percent, Angle, Duration, Color, Paint, Text, Path, Font, Shadow,
+        Insets, Corners,
+    ];
+    if want.is_lenient() {
+        return vec!["any".into()];
+    }
+    let mut keys = vec![type_key(types, want)];
+    let mut add = |t: Ty| {
+        let k = type_key(types, &t);
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    };
+    let fits = |p: crate::ty::Prim| -> Vec<crate::ty::Prim> {
+        SCALARS
+            .into_iter()
+            .filter(|c| *c != p && types.assignable(&Ty::Prim(*c), &Ty::Prim(p)))
+            .collect()
+    };
+    match want {
+        Ty::Prim(p) => fits(*p).into_iter().for_each(|c| add(Ty::Prim(c))),
+        Ty::List(item, _) => {
+            add(Ty::List(Box::new(Ty::Any), false));
+            if let Ty::Prim(p) = &**item {
+                fits(*p)
+                    .into_iter()
+                    .for_each(|c| add(Ty::List(Box::new(Ty::Prim(c)), false)));
+            }
+        }
+        _ => {}
+    }
+    keys
 }
 
 fn longest_increasing(seq: &[usize]) -> Vec<usize> {

@@ -4014,6 +4014,57 @@ fn letters_index_and_count_stay_time_leaves() {
 /// dropping pin `c` at 0 moves it first ("reordering springs by key":
 /// one keyed move), a `Drop` from another program runs the other
 /// handler. A source unmounted takes its value with it.
+/// (M4) An `on drop` takes what a call with that parameter would: an
+/// empty list (whose items say no type) fits a `[Pin]` parameter, and an
+/// `int` fits a `float` one. Render matches by name, so the target's
+/// `Prop::Accepts` names those too (`[any]`, `int`), and the delivery
+/// runs the handler the value fits and not the other.
+#[test]
+fn drops_take_what_a_call_would() {
+    let src = r#"type Pin { app: text; label: text }
+state none: [Pin] = []
+state count: int = 3
+state lists = 0
+state nums = 0.0
+bar B {
+  row {
+    on drop(ps: [Pin], at: int) { lists += 1 }
+    on drop(x: float, at: int) { nums += x }
+    box { drag: none }
+    box { drag: count }
+  }
+}
+"#;
+    let mut shell = boot(&[("dock.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let Some(PropValue::List(acc)) = shell.scene.prop(row, Prop::Accepts).cloned() else {
+        panic!("no accepts")
+    };
+    for k in ["[Pin]", "[any]", "float", "int"] {
+        assert!(acc.contains(&kw(k)), "{k} in {acc:?}");
+    }
+    assert!(!acc.contains(&kw("any")), "{acc:?}");
+    let boxes = shell.scene.children(row).to_vec();
+    assert_eq!(shell.scene.prop(boxes[0], Prop::Drag), Some(&kw("[any]")));
+    assert_eq!(shell.scene.prop(boxes[1], Prop::Drag), Some(&kw("int")));
+    let empty = shell.inst.drag_value(boxes[0]).unwrap();
+    assert!(shell.inst.event(row, "drop", vec![empty, Value::int(0)]));
+    shell.flush();
+    assert_eq!(shell.inst.value_of("dock", "lists").unwrap(), Value::int(1));
+    let three = shell.inst.drag_value(boxes[1]).unwrap();
+    assert!(shell.inst.event(row, "drop", vec![three, Value::int(0)]));
+    shell.flush();
+    assert_eq!(shell.inst.value_of("dock", "lists").unwrap(), Value::int(1));
+    let nums = shell.inst.value_of("dock", "nums").unwrap();
+    assert!(
+        matches!(&nums, Value::Num(n, _) if (*n - 3.0).abs() < 1e-9),
+        "{nums:?}"
+    );
+}
+
 #[test]
 fn drag_sources_and_drop_targets_deliver_typed_values() {
     let src = r#"type Pin { app: text; label: text }
