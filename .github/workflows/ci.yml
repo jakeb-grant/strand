@@ -300,9 +300,21 @@ jobs:
               - 'crates/**/*lock_fallback*'
               - 'crates/strand/src/lock.rs'
               - 'crates/strand/src/run/lock.rs'
+              # The main loop's lock gating (Guard::check, signals and
+              # logic ending held while locked), the heartbeat, lock
+              # faults and password redaction on the logic thread.
+              - 'crates/strand/src/run/mod.rs'
+              - 'crates/strand/src/run/shell.rs'
+              - 'crates/strand/src/run/logic.rs'
+              # The `faults` feature the VM build turns on.
+              - 'crates/strand/Cargo.toml'
               # The fallback's painting and keys in the binary's host.
               - 'crates/strand/src/demo/host.rs'
               - 'crates/strand/tests/lock.rs'
+              - 'crates/strand/tests/lock/**'
+              # Lock solids: single-pixel buffers and the shm fallback.
+              - 'crates/strand-surface/src/solid.rs'
+              - 'crates/strand-surface/src/manager/scrim.rs'
               - 'crates/strand/src/services/auth*'
               - 'crates/strand-services/src/auth.rs'
               - 'crates/strand-services/tests/auth.rs'
