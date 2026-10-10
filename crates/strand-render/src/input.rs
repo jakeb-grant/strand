@@ -60,8 +60,9 @@ pub enum NodeEvent {
     /// Escape, a click away or focus loss closed a popup (`on dismiss`).
     Dismiss,
     /// (M4) Something was dropped on the node (`on drop(value, at)`):
-    /// `at` is the global row index it landed at. Produced once S-lists
-    /// builds drag and drop; until then the Router emits none.
+    /// a `drag:` source (by node) or another program's files, app or
+    /// text; `at` is the global row index it landed at (see
+    /// [`Router::handle`]).
     Drop {
         payload: strand_scene::DropPayload,
         at: u32,
@@ -168,6 +169,19 @@ pub trait InputScene {
     fn set_drag(&mut self, slider: NodeId, value: Option<f32>) {
         let _ = (slider, value);
     }
+    /// (M4) Drag and drop: `node` (a `drag:` source) is drawn `offset`
+    /// away from its box, above its siblings, following the pointer; or,
+    /// `None`, it springs back to its box (or to the place a drop moved
+    /// it to). See [`Renderer::lift`].
+    fn lift(&mut self, node: NodeId, offset: Option<LogicalPoint>) {
+        let _ = (node, offset);
+    }
+    /// (M4) [`InputScene::hit`] past `skip` and its subtree (a dragged
+    /// source drawn under the pointer). By default `hit`.
+    fn hit_under(&self, surface: SurfaceId, at: LogicalPoint, skip: NodeId) -> Vec<NodeId> {
+        let _ = skip;
+        self.hit(surface, at)
+    }
 }
 
 impl InputScene for Renderer {
@@ -220,6 +234,12 @@ impl InputScene for Renderer {
     fn set_drag(&mut self, slider: NodeId, value: Option<f32>) {
         Renderer::set_drag(self, slider, value);
     }
+    fn lift(&mut self, node: NodeId, offset: Option<LogicalPoint>) {
+        Renderer::lift(self, node, offset);
+    }
+    fn hit_under(&self, surface: SurfaceId, at: LogicalPoint, skip: NodeId) -> Vec<NodeId> {
+        Renderer::hit_under(self, surface, at, skip)
+    }
 }
 
 /// A scene that only hit-tests, through a function (tests).
@@ -245,9 +265,13 @@ pub const EDIT_IN_FLIGHT: Duration = Duration::from_millis(500);
 /// only detents.
 pub const WHEEL_STEP: f64 = 15.0;
 
+/// (M4) How far (logical pixels) the pointer moves with the left button
+/// held on a `drag:` source before it is a drag rather than a press.
+pub const DRAG_THRESHOLD: f32 = 6.0;
+
 /// (M4) A drag in flight, as other streams read it ([`Router::drag`]):
-/// the drag ghost, `jelly` and list reordering. Drag and drop arrives in
-/// M4's wave 2; until then no drag is ever in flight.
+/// `jelly` and list reordering. A press on a `drag:` source is a drag
+/// once the pointer has moved [`DRAG_THRESHOLD`] from it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DragView {
     /// The `drag:` source node.
@@ -263,6 +287,47 @@ pub struct DragView {
     pub target: Option<NodeId>,
     /// Where in the target list it would land, as a global row index.
     pub index: Option<u32>,
+}
+
+/// (M4) A press on a `drag:` source, and the drag it becomes.
+#[derive(Clone, Debug)]
+struct Drag {
+    source: NodeId,
+    /// The dragged value's type (`Prop::Drag`): what targets accept.
+    kind: String,
+    /// The surface it was pressed on (it is drawn there) and where.
+    origin: SurfaceId,
+    start: LogicalPoint,
+    /// Where the pointer is now, on `surface`.
+    surface: SurfaceId,
+    pointer: LogicalPoint,
+    /// Logical pixels per second, and the last motion's time (ms).
+    velocity: LogicalPoint,
+    time: Option<u32>,
+    /// Past the threshold: a drag, not a press.
+    active: bool,
+    /// The compositor carries it (`wl_data_device`): the pointer left the
+    /// origin surface, and it moves by `Drag*` events now.
+    handed: bool,
+    /// Where it would land.
+    target: Option<(NodeId, u32)>,
+}
+
+/// (M4) Another program's drag over one of our surfaces.
+#[derive(Clone, Debug)]
+struct Offer {
+    surface: SurfaceId,
+    target: Option<(NodeId, u32)>,
+}
+
+/// (M4) What a drag carries, as targets accept it.
+#[derive(Clone, Copy, Debug)]
+enum Carried<'a> {
+    /// A `drag:` source's value of this type (`Prop::Drag`), and the
+    /// source itself (never its own target).
+    Value(&'a str, NodeId),
+    /// Another program's files, app or text (`on drop(d: Drop, …)`).
+    Outside,
 }
 
 /// A list's selection that is not on a mounted row: moved there by a key
@@ -332,6 +397,13 @@ pub struct Router {
     dragging: HashMap<SurfaceId, NodeId>,
     /// The `input` whose text a held left button selects, per surface.
     selecting: HashMap<SurfaceId, NodeId>,
+    /// (M4) A press on a `drag:` source, or the drag it became.
+    drag: Option<Drag>,
+    /// (M4) A drag just ended (dropped or cancelled): the left release
+    /// that ends it clicks nothing.
+    dragged: bool,
+    /// (M4) Another program's drag over one of our surfaces.
+    offer: Option<Offer>,
     /// Intents of the event being handled.
     out: Vec<Intent>,
 }
@@ -412,6 +484,12 @@ impl Router {
         self.middle_down.remove(&surface);
         self.focus.remove(&surface);
         self.pointer.remove(&surface);
+        if self.drag.as_ref().is_some_and(|d| d.origin == surface) {
+            self.drag = None;
+        }
+        if self.offer.as_ref().is_some_and(|o| o.surface == surface) {
+            self.offer = None;
+        }
     }
 
     /// (M4) The last pointer position on `surface`, while the pointer is
@@ -420,10 +498,35 @@ impl Router {
         self.pointer.get(&surface).copied()
     }
 
-    /// (M4) The drag in flight. Drag and drop is M4's wave 2: until it
-    /// lands this is always `None`.
+    /// (M4) The drag in flight: a press on a `drag:` source that moved
+    /// [`DRAG_THRESHOLD`], until it is dropped or cancelled.
     pub fn drag(&self) -> Option<DragView> {
-        None
+        let d = self.drag.as_ref().filter(|d| d.active)?;
+        Some(DragView {
+            source: d.source,
+            surface: d.surface,
+            pointer: d.pointer,
+            velocity: d.velocity,
+            target: d.target.map(|t| t.0),
+            index: d.target.map(|t| t.1),
+        })
+    }
+
+    /// (M4) The node a drop on `surface` would land on now (a drag of
+    /// ours or another program's), if any accepts it: the surface
+    /// manager accepts the compositor's offer only then.
+    pub fn drop_target(&self, surface: SurfaceId) -> Option<NodeId> {
+        if let Some(d) = self
+            .drag
+            .as_ref()
+            .filter(|d| d.active && d.surface == surface)
+        {
+            return d.target.map(|t| t.0);
+        }
+        self.offer
+            .as_ref()
+            .filter(|o| o.surface == surface)
+            .and_then(|o| o.target.map(|t| t.0))
     }
 
     /// The global index of `list`'s selected row, mounted or not (a
@@ -658,6 +761,11 @@ impl Router {
             InputEvent::PointerEnter { position, .. }
             | InputEvent::PointerMotion { position, .. } => {
                 self.pointer.insert(surface, *position);
+                if let InputEvent::PointerMotion { time, .. } = event
+                    && self.drag_motion(scene, surface, *position, Some(*time))
+                {
+                    return;
+                }
                 if self.pressed.contains_key(&surface) {
                     // A drag: the slider follows the pointer, a held
                     // button in an `input` extends the selection.
@@ -677,6 +785,19 @@ impl Router {
             }
             InputEvent::PointerLeave { .. } => {
                 self.pointer.remove(&surface);
+                // A drag leaving its surface with the button held is the
+                // compositor taking it over (`wl_data_device`): it goes on
+                // by `Drag*` events, the source back in its box meanwhile.
+                if let Some(d) = self.drag.as_mut().filter(|d| d.surface == surface) {
+                    if d.active {
+                        d.handed = true;
+                        d.target = None;
+                        let source = d.source;
+                        scene.lift(source, None);
+                    } else {
+                        self.drag = None;
+                    }
+                }
                 self.end_drags(scene, surface);
                 self.release(surface);
                 self.hover(surface, Vec::new());
@@ -802,17 +923,198 @@ impl Router {
             }
             InputEvent::Key { key, .. } => {
                 if key.state == ButtonState::Pressed {
+                    // Escape cancels a drag in flight (and does nothing
+                    // else: the surface stays open).
+                    if key.name == "Escape" && self.drag.as_ref().is_some_and(|d| d.active) {
+                        self.cancel_drag(scene);
+                        return;
+                    }
                     self.key(surface, root, key, scene);
                 }
             }
-            // (M4) `wl_data_device` drags: S-lists routes them (targets
-            // by `Prop::Accepts`, `NodeEvent::Drop`). Until then they
-            // change nothing and emit no intent.
-            InputEvent::DragEnter { .. }
-            | InputEvent::DragMotion { .. }
-            | InputEvent::DragLeave { .. }
-            | InputEvent::DragDrop { .. } => {}
+            // (M4) `wl_data_device`: another program's drag, or ours
+            // carried by the compositor across surfaces.
+            InputEvent::DragEnter { at, kinds, .. } => {
+                if self.drag.as_ref().is_some_and(|d| d.handed) && kinds.is_empty() {
+                    self.drag_motion(scene, surface, *at, None);
+                } else {
+                    let target = self.drop_target_at(scene, surface, *at, Carried::Outside);
+                    self.offer = Some(Offer { surface, target });
+                }
+            }
+            InputEvent::DragMotion { at, .. } => {
+                if self.drag.as_ref().is_some_and(|d| d.handed) {
+                    self.drag_motion(scene, surface, *at, None);
+                } else if self.offer.as_ref().is_some_and(|o| o.surface == surface) {
+                    let target = self.drop_target_at(scene, surface, *at, Carried::Outside);
+                    self.offer = Some(Offer { surface, target });
+                }
+            }
+            InputEvent::DragLeave { .. } => {
+                if let Some(d) = self
+                    .drag
+                    .as_mut()
+                    .filter(|d| d.handed && d.surface == surface)
+                {
+                    d.target = None;
+                    if d.origin == surface {
+                        let source = d.source;
+                        scene.lift(source, None);
+                    }
+                }
+                if self.offer.as_ref().is_some_and(|o| o.surface == surface) {
+                    self.offer = None;
+                }
+            }
+            InputEvent::DragDrop { at, payload, .. } => {
+                let carried = match payload {
+                    strand_scene::DropPayload::Node(n) => match self.drag.as_ref() {
+                        Some(d) if d.source == *n => Some((d.kind.clone(), *n)),
+                        // Ours, but routing lost it (its surface went):
+                        // the source's own type.
+                        _ => scene.tree().and_then(|t| match t.get(*n)?.get(Prop::Drag) {
+                            Some(PropValue::Keyword(k)) => Some((k.to_string(), *n)),
+                            _ => None,
+                        }),
+                    },
+                    strand_scene::DropPayload::External { .. } => None,
+                };
+                let target = match &carried {
+                    Some((kind, n)) => {
+                        self.drop_target_at(scene, surface, *at, Carried::Value(kind, *n))
+                    }
+                    None => self.drop_target_at(scene, surface, *at, Carried::Outside),
+                };
+                if let Some((node, at)) = target {
+                    self.event(
+                        node,
+                        NodeEvent::Drop {
+                            payload: payload.clone(),
+                            at,
+                        },
+                    );
+                }
+                self.offer = None;
+                if let Some(d) = self.drag.take() {
+                    self.dragged = d.active;
+                    scene.lift(d.source, None);
+                }
+            }
         }
+    }
+
+    /// (M4) The pointer at `at` on `surface` (`time`: a pointer motion's,
+    /// `None` for a `Drag*` event): a press on a `drag:` source becomes a
+    /// drag past [`DRAG_THRESHOLD`], and a drag moves its source and
+    /// finds where it would land. Returns true if a drag took the motion.
+    fn drag_motion(
+        &mut self,
+        scene: &mut dyn InputScene,
+        surface: SurfaceId,
+        at: LogicalPoint,
+        time: Option<u32>,
+    ) -> bool {
+        let Some(mut d) = self.drag.take() else {
+            return false;
+        };
+        if time.is_some() && d.handed {
+            // Pointer motion on a surface while the compositor carries
+            // the drag: not ours.
+            self.drag = Some(d);
+            return false;
+        }
+        if !d.active {
+            let (dx, dy) = (at.x - d.start.x, at.y - d.start.y);
+            if surface != d.origin || (dx * dx + dy * dy).sqrt() < DRAG_THRESHOLD {
+                self.drag = Some(d);
+                return false;
+            }
+            d.active = true;
+            // A drag, not a press: the press's slider drag or text
+            // selection ends here.
+            self.end_drags(scene, surface);
+        }
+        if let (Some(t), Some(t0)) = (time, d.time)
+            && t > t0
+        {
+            let dt = (t - t0) as f32 / 1000.0;
+            let v = LogicalPoint::new((at.x - d.pointer.x) / dt, (at.y - d.pointer.y) / dt);
+            // Smoothed over a few motions.
+            d.velocity = LogicalPoint::new(
+                d.velocity.x * 0.5 + v.x * 0.5,
+                d.velocity.y * 0.5 + v.y * 0.5,
+            );
+        }
+        d.time = time.or(d.time);
+        d.surface = surface;
+        d.pointer = at;
+        if surface == d.origin {
+            scene.lift(
+                d.source,
+                Some(LogicalPoint::new(at.x - d.start.x, at.y - d.start.y)),
+            );
+        }
+        d.target = self.drop_target_at(scene, surface, at, Carried::Value(&d.kind, d.source));
+        self.drag = Some(d);
+        true
+    }
+
+    /// (M4) Ends the drag in flight without a drop: its source springs
+    /// back to its box.
+    fn cancel_drag(&mut self, scene: &mut dyn InputScene) {
+        if let Some(d) = self.drag.take() {
+            self.dragged = d.active;
+            scene.lift(d.source, None);
+        }
+    }
+
+    /// (M4) The node a drop at `at` on `surface` lands on and its index:
+    /// the innermost node under the pointer whose `on drop` takes what is
+    /// carried (`Prop::Accepts`; never the dragged source or anything in
+    /// it), and where among its rows (or, for a node without rows, its
+    /// parent's) the pointer is.
+    fn drop_target_at(
+        &self,
+        scene: &dyn InputScene,
+        surface: SurfaceId,
+        at: LogicalPoint,
+        carried: Carried<'_>,
+    ) -> Option<(NodeId, u32)> {
+        let tree = scene.tree()?;
+        let inside = |n: NodeId, of: NodeId| {
+            let mut cur = Some(n);
+            while let Some(c) = cur {
+                if c == of {
+                    return true;
+                }
+                cur = tree.get(c).and_then(|x| x.parent);
+            }
+            false
+        };
+        let takes = |n: NodeId| {
+            let Some(PropValue::List(acc)) = tree.get(n).and_then(|x| x.get(Prop::Accepts)) else {
+                return false;
+            };
+            acc.iter().any(|a| match (a, carried) {
+                (PropValue::Keyword(k), _) if k.as_str() == "any" => true,
+                (PropValue::Keyword(k), Carried::Value(ty, _)) => k.as_str() == ty,
+                (PropValue::Keyword(k), Carried::Outside) => k.as_str() == "Drop",
+                _ => false,
+            })
+        };
+        let source = match carried {
+            Carried::Value(_, s) => Some(s),
+            Carried::Outside => None,
+        };
+        let hits = match source {
+            Some(s) => scene.hit_under(surface, at, s),
+            None => scene.hit(surface, at),
+        };
+        let target = hits
+            .into_iter()
+            .filter(|n| source.is_none_or(|s| !inside(*n, s)))
+            .find(|n| takes(*n))?;
+        Some((target, drop_index(tree, scene, surface, target, at, source)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -886,6 +1188,32 @@ impl Router {
                         self.dragging.insert(surface, slider);
                         self.drag_slider(scene, surface, slider, at, false);
                     }
+                    // A press on (or in) a `drag:` source may become a
+                    // drag (past the threshold); a slider it holds drags
+                    // the slider instead.
+                    self.dragged = false;
+                    self.drag = if self.dragging.contains_key(&surface) {
+                        None
+                    } else {
+                        scene.tree().and_then(|t| {
+                            under.iter().find_map(|n| match t.get(*n)?.get(Prop::Drag) {
+                                Some(PropValue::Keyword(k)) => Some(Drag {
+                                    source: *n,
+                                    kind: k.to_string(),
+                                    origin: surface,
+                                    start: at,
+                                    surface,
+                                    pointer: at,
+                                    velocity: LogicalPoint::new(0.0, 0.0),
+                                    time: None,
+                                    active: false,
+                                    handed: false,
+                                    target: None,
+                                }),
+                                _ => None,
+                            })
+                        })
+                    };
                     // A press in an `input` puts the caret there and starts
                     // selecting.
                     if let Some(&input) = under
@@ -898,6 +1226,34 @@ impl Router {
                     }
                 }
                 ButtonState::Released => {
+                    // A drag ends: dropped on the node that takes it, or
+                    // back to its box; a release that ends a drag clicks
+                    // nothing.
+                    if let Some(d) = self.drag.take() {
+                        if d.active {
+                            let target = if d.handed {
+                                None
+                            } else {
+                                self.drop_target_at(
+                                    scene,
+                                    surface,
+                                    at,
+                                    Carried::Value(&d.kind, d.source),
+                                )
+                            };
+                            if let Some((node, index)) = target {
+                                self.event(
+                                    node,
+                                    NodeEvent::Drop {
+                                        payload: strand_scene::DropPayload::Node(d.source),
+                                        at: index,
+                                    },
+                                );
+                            }
+                            scene.lift(d.source, None);
+                            self.dragged = true;
+                        }
+                    }
                     if let Some(&slider) = self.dragging.get(&surface) {
                         self.drag_slider(scene, surface, slider, at, true);
                     }
@@ -919,6 +1275,9 @@ impl Router {
         let Some(down) = down else {
             return;
         };
+        if b == button::LEFT && std::mem::take(&mut self.dragged) {
+            return;
+        }
         let Some(&node) = under.iter().find(|n| down.contains(n)) else {
             return;
         };
@@ -1424,6 +1783,84 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
     let mounted = first.saturating_add(rows.len() as u32);
     let count = index(Prop::RowCount).map_or(mounted, |c| c.max(mounted));
     WindowRows { first, count, rows }
+}
+
+/// (M4) Where a drop at `at` lands in `target`: the global index among
+/// its rows (its live children; a windowed list's `row_first` added) of
+/// the first row whose middle is past the pointer, counted without the
+/// dragged `source` (a row moved within its own list lands where it is
+/// let go, `pins.move(p.app, at)`). A target without rows is placed in its
+/// parent's rows: its own index, plus one past its middle. Rows run
+/// along x in a `row` (or when they are spread wider than tall), else y.
+fn drop_index(
+    tree: &SceneTree,
+    scene: &dyn InputScene,
+    surface: SurfaceId,
+    target: NodeId,
+    at: LogicalPoint,
+    source: Option<NodeId>,
+) -> u32 {
+    let rows_of = |n: NodeId| -> Vec<NodeId> {
+        tree.get(n).map_or_else(Vec::new, |x| {
+            x.children
+                .iter()
+                .copied()
+                .filter(|r| tree.contains_live(*r) && Some(*r) != source)
+                .collect()
+        })
+    };
+    let first = |n: NodeId| match tree.get(n).and_then(|x| x.get(Prop::RowFirst)) {
+        Some(PropValue::Number(f)) if f.is_finite() && *f >= 0.0 => *f as u32,
+        _ => 0,
+    };
+    let rects = |rows: &[NodeId]| -> Vec<LogicalRect> {
+        rows.iter()
+            .filter_map(|r| scene.node_rect(surface, *r))
+            .collect()
+    };
+    let along_x = |n: NodeId, rs: &[LogicalRect]| {
+        if tree.get(n).is_some_and(|x| x.kind == NodeKind::Row) {
+            return true;
+        }
+        match (rs.first(), rs.last()) {
+            (Some(a), Some(b)) if rs.len() > 1 => (b.x - a.x).abs() > (b.y - a.y).abs(),
+            _ => false,
+        }
+    };
+    let rows = rows_of(target);
+    let rs = rects(&rows);
+    if !rows.is_empty() && rs.len() == rows.len() {
+        let x = along_x(target, &rs);
+        let past = rs
+            .iter()
+            .take_while(|r| {
+                if x {
+                    at.x > r.x + r.w / 2.0
+                } else {
+                    at.y > r.y + r.h / 2.0
+                }
+            })
+            .count();
+        return first(target) + past as u32;
+    }
+    // A leaf target: its place among its parent's rows.
+    let Some(parent) = tree.get(target).and_then(|x| x.parent) else {
+        return 0;
+    };
+    let siblings = rows_of(parent);
+    let Some(i) = siblings.iter().position(|r| *r == target) else {
+        return first(parent);
+    };
+    let rs = rects(&siblings);
+    let x = along_x(parent, &rs);
+    let after = scene.node_rect(surface, target).is_some_and(|r| {
+        if x {
+            at.x > r.x + r.w / 2.0
+        } else {
+            at.y > r.y + r.h / 2.0
+        }
+    });
+    first(parent) + i as u32 + u32::from(after)
 }
 
 /// A closed `popup` with a two-way `open` that `node` holds: among its
