@@ -324,6 +324,15 @@ fn vulkan_mapped(pid: u32) -> bool {
 
 /// Waits until `pid` takes no context switch for a whole second (within
 /// [`STEP`]).
+/// Fails unless `p` is still running (a zombie is reaped and fails).
+fn alive(p: &mut Proc, what: &str, log: &dyn Fn() -> String) {
+    match p.0.try_wait() {
+        Ok(None) => {}
+        Ok(Some(status)) => panic!("{what}: strand exited ({status})\n{}", log()),
+        Err(e) => panic!("{what}: strand's status: {e}\n{}", log()),
+    }
+}
+
 fn quiet(pid: u32, what: &str, log: &dyn Fn() -> String) {
     let end = Instant::now() + STEP;
     loop {
@@ -466,7 +475,7 @@ fn gpu_is_released_when_idle() {
     let (_sway, display) = sway(&dir);
     let socket = dir.join("strand.sock");
     let log_path = dir.join("strand.log");
-    let strand = Proc(
+    let mut strand = Proc(
         Command::new(env!("CARGO_BIN_EXE_strand"))
             .arg("run")
             .arg(&config)
@@ -684,6 +693,16 @@ fn gpu_is_released_when_idle() {
         );
         let kb = pss_kb(pid);
         eprintln!("cycle {cycle}: PSS {kb} kB, threads {:?}", threads(pid));
+        // Every check since the demotion passes for a strand that died
+        // during it (no threads, no switches, two blank strips, PSS 0):
+        // it must still run and answer.
+        alive(&mut strand, &format!("cycle {cycle}"), &log);
+        assert!(
+            set(false),
+            "cycle {cycle}: strand stopped answering after the demotion\n{}",
+            log()
+        );
+        assert!(kb > 0, "cycle {cycle}: no PSS read for strand");
         pss.push(kb);
         maps.push(pss_by_mapping(pid));
     }
