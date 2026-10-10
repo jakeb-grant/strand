@@ -227,6 +227,12 @@ pub(crate) fn hash_behind(items: &[DisplayItem], end: usize, region: Rect, h: &m
     }
 }
 
+/// What the backdrop group at `i` over `region` reads: the items behind
+/// it within its blur's reach.
+pub(crate) fn read(items: &[DisplayItem], i: usize, pass: Pass, region: Rect) -> Vec<DisplayItem> {
+    behind(items, i, region.inflate(pass.reach()))
+}
+
 /// The cache key of the backdrop group at `i` over `region`.
 pub(crate) fn key(
     items: &[DisplayItem],
@@ -248,8 +254,7 @@ pub(crate) fn key(
         pass.tint.map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits)),
     )
         .hash(&mut h);
-    let read = region.inflate(pass.reach());
-    for d in behind(items, i, read) {
+    for d in read(items, i, pass, region) {
         crate::flatten::hash_item(&mut h, &d.item);
         if let Item::PushLayer(l) = &d.item
             && let Some(n) = groups.get(&layer_key(l))

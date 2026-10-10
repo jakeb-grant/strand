@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use strand_scene::{Damage, Effect, NodeId, Rect, Scale, TimeContext};
@@ -51,6 +51,11 @@ pub struct Drawn {
 #[derive(Debug)]
 struct Entry {
     drawn: Drawn,
+    /// The pixmaps its key names by address (an `image`'s, a GPU pass's,
+    /// a nested group's): a `Weak` keeps each address allocated while the
+    /// entry lives, so no new pixmap with other pixels can take it and
+    /// match a stale entry (decisions.md, m4-audit).
+    pins: Vec<Weak<Pixmap>>,
     bytes: usize,
     used: u64,
     frame: u64,
@@ -176,6 +181,8 @@ impl Offscreen {
                 let drawn = match self.get(key) {
                     Some(d) => d,
                     None => {
+                        let behind = crate::backdrop::read(items, i, pass, region);
+                        let pins = pins(&behind, &self.current);
                         let Some(drawn) = crate::backdrop::render(
                             items,
                             i,
@@ -190,7 +197,7 @@ impl Offscreen {
                             continue;
                         };
                         self.builds += 1;
-                        self.insert(key, drawn)
+                        self.insert(key, drawn, pins)
                     }
                 };
                 self.current.insert(layer_key(layer), drawn);
@@ -242,7 +249,8 @@ impl Offscreen {
                         continue;
                     };
                     self.builds += 1;
-                    self.insert(key, drawn)
+                    let pins = pins(inner, &self.current);
+                    self.insert(key, drawn, pins)
                 }
             };
             self.current.insert(layer_key(layer), drawn);
@@ -252,18 +260,25 @@ impl Offscreen {
     fn get(&mut self, key: u64) -> Option<Drawn> {
         self.tick += 1;
         let (tick, frame) = (self.tick, self.frame);
-        self.entries.get_mut(&key).map(|e| {
-            e.used = tick;
-            e.frame = frame;
-            e.at = Instant::now();
-            e.drawn.clone()
-        })
+        // A pinned address is never reused, so a key that matches names
+        // the same, live, pixmaps; one gone means the hash collided.
+        let e = self.entries.get_mut(&key)?;
+        if e.pins.iter().any(|p| p.strong_count() == 0) {
+            if let Some(e) = self.entries.remove(&key) {
+                self.bytes -= e.bytes;
+            }
+            return None;
+        }
+        e.used = tick;
+        e.frame = frame;
+        e.at = Instant::now();
+        Some(e.drawn.clone())
     }
 
     /// Keeps `drawn` within the budget (evicting the least recently used
     /// groups this frame does not use); a group over the budget is not
     /// kept.
-    fn insert(&mut self, key: u64, drawn: Drawn) -> Drawn {
+    fn insert(&mut self, key: u64, drawn: Drawn, pins: Vec<Weak<Pixmap>>) -> Drawn {
         let bytes = drawn.pixmap.width() as usize * drawn.pixmap.height() as usize * 4;
         if bytes > OFFSCREEN_BYTES {
             return drawn;
@@ -288,6 +303,7 @@ impl Offscreen {
             key,
             Entry {
                 drawn: drawn.clone(),
+                pins,
                 bytes,
                 used: self.tick,
                 frame: self.frame,
@@ -296,6 +312,27 @@ impl Offscreen {
         );
         drawn
     }
+}
+
+/// The pixmaps that `hash_item` (and a key's nested groups) name by
+/// address among `items`, to pin in the entry keyed by them.
+fn pins(items: &[DisplayItem], groups: &HashMap<usize, Drawn>) -> Vec<Weak<Pixmap>> {
+    let mut out = Vec::new();
+    for d in items {
+        match &d.item {
+            Item::Image { pixmap, .. } => out.push(Arc::downgrade(pixmap)),
+            Item::PushLayer(l) => {
+                if let Some(g) = &l.gpu {
+                    out.push(Arc::downgrade(&g.pixmap));
+                }
+                if let Some(n) = groups.get(&layer_key(l)) {
+                    out.push(Arc::downgrade(&n.pixmap));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Draws a group's items into a pixmap of `region` and applies its
@@ -715,6 +752,76 @@ impl RasterNodes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (m4-audit) A group's key names its images by address. A pixmap
+    /// freed after the group was cached must not hand its address to a
+    /// new pixmap with other pixels, which would hit the stale group
+    /// (the allocator gives a just-freed block of the same size back
+    /// first): the entry pins every address it names.
+    #[test]
+    fn a_freed_images_address_never_hits_a_stale_group() {
+        use strand_scene::Size;
+        let surface = Rect::new(0, 0, 16, 16);
+        let damage = Damage::full(Size::new(16, 16));
+        let scale = Scale::default();
+        let full = vello_cpu::kurbo::Rect::new(0.0, 0.0, 16.0, 16.0);
+        let layer = Arc::new(crate::layers::Layer {
+            effects: Arc::from([Effect::Blur { radius: 1.0 }]),
+            frame: full,
+            scale: 1.0,
+            xform: Affine::IDENTITY,
+            mosaic: None,
+            gpu: None,
+        });
+        let image = |px: [u8; 4]| {
+            let mut pm = Pixmap::new(16, 16);
+            for p in pm.data_as_u8_slice_mut().chunks_exact_mut(4) {
+                p.copy_from_slice(&px);
+            }
+            Arc::new(pm)
+        };
+        let items = |pm: &Arc<Pixmap>| {
+            let at = |item| DisplayItem {
+                item,
+                bounds: surface,
+            };
+            vec![
+                at(Item::PushLayer(layer.clone())),
+                at(Item::Image {
+                    pixmap: pm.clone(),
+                    rect: full,
+                    dest: full,
+                    tint: None,
+                }),
+                at(Item::PopLayer),
+            ]
+        };
+        let (atlas, cache) = (AtlasMirror::default(), PaintCache::default());
+        let mut off = Offscreen::default();
+        let centre = |off: &Offscreen| {
+            let d = &off.current()[&layer_key(&layer)];
+            let (w, h) = (d.pixmap.width() as usize, d.pixmap.height() as usize);
+            let o = ((h / 2) * w + w / 2) * 4;
+            d.pixmap.data_as_u8_slice()[o..o + 4].to_vec()
+        };
+        let red = image([255, 0, 0, 255]);
+        let addr = Arc::as_ptr(&red) as usize;
+        off.prepare(&items(&red), &damage, surface, &atlas, &cache, scale);
+        assert_eq!(off.builds(), 1);
+        assert!(centre(&off)[0] > 200, "{:?}", centre(&off));
+        drop(red);
+        let blue = image([0, 0, 255, 255]);
+        let others: Vec<_> = (0..64).map(|_| image([0, 0, 0, 0])).collect();
+        assert!(
+            std::iter::once(&blue)
+                .chain(&others)
+                .all(|p| Arc::as_ptr(p) as usize != addr),
+            "a cached group's image address was handed out again"
+        );
+        off.prepare(&items(&blue), &damage, surface, &atlas, &cache, scale);
+        assert_eq!(off.builds(), 2, "the stale group was hit");
+        assert!(centre(&off)[2] > 200, "{:?}", centre(&off));
+    }
 
     #[test]
     fn blur_spreads_and_keeps_coverage() {
