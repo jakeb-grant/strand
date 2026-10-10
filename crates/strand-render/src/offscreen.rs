@@ -181,6 +181,12 @@ impl Offscreen {
             )
                 .hash(&mut h);
             crate::layers::hash_effects(&mut h, &layer.effects);
+            (
+                layer.mosaic,
+                layer.frame.x0.to_bits(),
+                layer.frame.y0.to_bits(),
+            )
+                .hash(&mut h);
             for v in layer.xform.as_coeffs() {
                 v.to_bits().hash(&mut h);
             }
@@ -342,6 +348,15 @@ fn render_group(
     drop(ctx);
     let s = scale.as_f32();
     let bytes = pm.data_as_u8_slice_mut();
+    if let Some(cell) = layer.mosaic {
+        // The cells start at the box's corner on the surface.
+        let corner = layer.xform * layer.frame.origin();
+        let phase = (
+            (corner.x - region.x as f64).round() as i64,
+            (corner.y - region.y as f64).round() as i64,
+        );
+        mosaic(bytes, w as usize, h as usize, cell as usize, phase);
+    }
     for e in layer.effects.iter() {
         match e {
             Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
@@ -360,6 +375,45 @@ fn render_group(
         x: region.x,
         y: region.y,
     })
+}
+
+/// `pixelate`: every `cell × cell` square of premultiplied pixels (`w × h`,
+/// the grid starting at `phase`, which may lie outside) becomes the
+/// average of its pixels, as if drawn at one sample per cell and sampled
+/// back up by nearest neighbour.
+pub fn mosaic(px: &mut [u8], w: usize, h: usize, cell: usize, phase: (i64, i64)) {
+    if cell <= 1 || px.len() < w * h * 4 {
+        return;
+    }
+    let c = cell as i64;
+    // The first cell's start: the grid line at or before 0.
+    let start = |p: i64| -> i64 { -(-p).rem_euclid(c) };
+    let (sx, sy) = (start(phase.0), start(phase.1));
+    let mut y0 = sy;
+    while y0 < h as i64 {
+        let (ya, yb) = (y0.max(0) as usize, ((y0 + c) as usize).min(h));
+        let mut x0 = sx;
+        while x0 < w as i64 {
+            let (xa, xb) = (x0.max(0) as usize, ((x0 + c) as usize).min(w));
+            let mut sum = [0u32; 4];
+            for y in ya..yb {
+                for p in px[(y * w + xa) * 4..(y * w + xb) * 4].chunks_exact(4) {
+                    for k in 0..4 {
+                        sum[k] += p[k] as u32;
+                    }
+                }
+            }
+            let n = ((yb - ya) * (xb - xa)).max(1) as u32;
+            let avg = sum.map(|v| ((v + n / 2) / n) as u8);
+            for y in ya..yb {
+                for p in px[(y * w + xa) * 4..(y * w + xb) * 4].chunks_exact_mut(4) {
+                    p.copy_from_slice(&avg);
+                }
+            }
+            x0 += c;
+        }
+        y0 += c;
+    }
 }
 
 /// A Gaussian blur of standard deviation `sigma` pixels over premultiplied
@@ -727,5 +781,23 @@ mod tests {
         let mut px = vec![128, 0, 0, 128];
         color_matrix(&mut px, &m);
         assert_eq!(px, vec![128, 0, 128, 128], "red now equals blue");
+    }
+
+    /// Each cell becomes its pixels' average, the grid starting at the
+    /// phase (cut cells at the edges average what they hold).
+    #[test]
+    fn mosaic_averages_each_cell_from_its_phase() {
+        let (w, h) = (5, 2);
+        // A ramp: pixel x has value 10·x in every channel.
+        let mut px: Vec<u8> = (0..w * h).flat_map(|i| [(10 * (i % w)) as u8; 4]).collect();
+        mosaic(&mut px, w, h, 2, (1, 0));
+        let row: Vec<u8> = px[..w * 4].chunks(4).map(|p| p[0]).collect();
+        // Cells [0], [1, 2], [3, 4].
+        assert_eq!(row, vec![0, 15, 15, 35, 35]);
+        assert_eq!(px[..w * 4], px[w * 4..], "rows of one cell agree");
+        // A cell of 1 changes nothing.
+        let before = px.clone();
+        mosaic(&mut px, w, h, 1, (0, 0));
+        assert_eq!(px, before);
     }
 }

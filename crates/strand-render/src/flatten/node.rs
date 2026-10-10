@@ -480,6 +480,7 @@ impl<'a> Flattener<'a> {
                 frame,
                 scale: self.scale.as_f32(),
                 xform: self.xform,
+                mosaic: None,
             })))
         });
         // (M4) The transition mask over the node and its subtree.
@@ -573,6 +574,7 @@ impl<'a> Flattener<'a> {
                     frame,
                     scale: self.scale.as_f32(),
                     xform: self.xform,
+                    mosaic: None,
                 })),
                 phys,
                 &mut sig,

@@ -479,8 +479,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   (`parallax:` and the CPU's 2D `tilt:` following the pointer),
   `jelly.rs` (`jelly:` squash and stretch of a dragged node, from its
   drawn offset),
-  `transition.rs` (transition masks: clip paths, pixelate's blur),
-  `goo.rs` (`merge d`'s goo field, a CPU raster under the children).
+  `transition.rs` (transition masks: clip paths, pixelate's mosaic),
+  `goo.rs` (`merge d`'s goo field contoured by marching squares, a CPU
+  raster under the children).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and

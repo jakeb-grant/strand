@@ -150,6 +150,7 @@ pub(crate) fn reach_of(e: &Effect, scale: Scale) -> u32 {
         frame: Default::default(),
         scale: scale.as_f32(),
         xform: Affine::IDENTITY,
+        mosaic: None,
     };
     pass(&layer, scale).map_or(0, Pass::reach)
 }
@@ -389,6 +390,7 @@ mod tests {
             frame: Default::default(),
             scale: 2.0,
             xform: Affine::IDENTITY,
+            mosaic: None,
         };
         assert_eq!(
             pass(&layer(blur.clone()), s),

@@ -1795,6 +1795,78 @@ fn transition_masks_reveal_and_hide() {
     assert!(!r.wants_frame(S));
 }
 
+/// design.md "Motion and time": `transition: pixelate` draws the subtree
+/// at low resolution and samples it back up: partway, every pixel of a
+/// cell (square, aligned to the box's corner) is the cell's average, so
+/// 1 px stripes spread into blocks (ref `effects_pixelate.png`); the cells
+/// shrink to the plain drawing as it fades in.
+#[test]
+fn pixelate_draws_a_mosaic_that_refines() {
+    use std::time::Duration;
+    let build = |masks: bool| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(80, 64, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let mut d = SceneDiff::new();
+        let n = NodeId::new(200, 0);
+        d.create(n, NodeKind::Box, Some(root), 0);
+        for (p, v) in at_xy(10.0, 8.0, 48.0, 48.0) {
+            set_now(&mut d, n, p, v);
+        }
+        set_now(&mut d, n, Prop::Place, kw("absolute"));
+        set_now(&mut d, n, Prop::Bg, color("#89b4fa"));
+        if masks {
+            d.set(n, Prop::Transition, kw("pixelate"));
+        }
+        // 1 px stripes every 4 px.
+        for i in 0..12u32 {
+            let c = NodeId::new(300 + i, 0);
+            d.create(c, NodeKind::Box, Some(n), i);
+            for (p, v) in at_xy(1.0 + 4.0 * i as f32, 0.0, 1.0, 48.0) {
+                set_now(&mut d, c, p, v);
+            }
+            set_now(&mut d, c, Prop::Place, kw("absolute"));
+            set_now(&mut d, c, Prop::Bg, color("#f38ba8"));
+        }
+        // And a 13 px square (no cell size divides it) in the corner.
+        let sq = NodeId::new(400, 0);
+        d.create(sq, NodeKind::Box, Some(n), 12);
+        for (p, v) in at_xy(0.0, 0.0, 13.0, 13.0) {
+            set_now(&mut d, sq, p, v);
+        }
+        set_now(&mut d, sq, Prop::Place, kw("absolute"));
+        set_now(&mut d, sq, Prop::Bg, color("#a6e3a1"));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+        (r, buf)
+    };
+    let (mut r, mut buf) = build(true);
+    let (_, plain) = build(false);
+    let mut t = 1016;
+    while t < 1064 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert_matches_ref("effects_pixelate", &buf, 2);
+    // Every pixel is its cell's (cells of `c` from the box's corner).
+    let (x0, y0) = (10u32, 8u32);
+    let cells_of = |buf: &Buffer, c: u32| {
+        (y0..y0 + 48).all(|y| {
+            (x0..x0 + 48)
+                .all(|x| buf.px(x, y) == buf.px(x0 + (x - x0) / c * c, y0 + (y - y0) / c * c))
+        })
+    };
+    let c = (2..=12).rev().find(|&c| cells_of(&buf, c));
+    assert!(c.is_some_and(|c| c >= 3), "a mosaic: cells of {c:?} px");
+    assert!(!cells_of(&plain, 2));
+    settle(&mut r, &mut buf, t);
+    assert!(buf.pixels == plain.pixels, "refined to the plain drawing");
+}
+
 /// A `pages` swap under `transition: wipe(left)`: the new page is
 /// revealed from the left over the old (created after it) or, created
 /// before it, the old page is hidden by the rest of the wipe over the new

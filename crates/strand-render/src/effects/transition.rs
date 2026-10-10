@@ -23,12 +23,14 @@
 //!   corners at `p = 1`.
 //! - `dissolve`: the box's 4 px cells (logical) whose random rank is
 //!   below `p`.
-//! - `pixelate`: on the CPU, a blur that sharpens as the node fades in
-//!   (the mosaic is the GPU's): blur radius `(1 − p) · 12` px, opacity
-//!   `p`.
+//! - `pixelate`: the subtree drawn at low resolution and sampled back up,
+//!   a mosaic of square cells `(1 − p) · 12` px wide (logical, aligned to
+//!   the box's corner; each cell its pixels' average) that refines to the
+//!   plain drawing as the node fades in at opacity `p`.
 //!
 //! wipe, disc and dissolve are clip paths, so they cost a clip. pixelate
-//! is an offscreen group, so it costs a blur.
+//! is an offscreen group ([`crate::layers::Layer::mosaic`]), so it costs
+//! one pass over the group's pixels.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,8 +45,8 @@ const EPS: f32 = 0.002;
 /// `dissolve`'s cell, logical pixels.
 const CELL: f64 = 4.0;
 
-/// `pixelate`'s blur at the start, logical pixels.
-const PIXELATE_BLUR: f32 = 12.0;
+/// `pixelate`'s cell at the start, logical pixels.
+const PIXELATE_CELL: f32 = 12.0;
 
 /// A transition mask.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -105,9 +107,9 @@ pub(crate) struct Masked {
 pub(crate) enum Drawn {
     /// A clip path over the subtree.
     Clip(BezPath),
-    /// An offscreen group: a blur of this radius (logical) at this
-    /// opacity.
-    Blur { radius: f32, opacity: f32 },
+    /// An offscreen group: a mosaic of square cells this many physical
+    /// pixels wide (1: none) at this opacity.
+    Mosaic { cell: u16, opacity: f32 },
 }
 
 impl Masked {
@@ -118,8 +120,10 @@ impl Masked {
         // How much of the node shows: `p`, or the rest of it.
         let shown = if self.invert { 1.0 - p } else { p };
         match self.kind {
-            Kind::Pixelate => Drawn::Blur {
-                radius: (1.0 - shown as f32) * PIXELATE_BLUR,
+            Kind::Pixelate => Drawn::Mosaic {
+                cell: ((1.0 - shown) * PIXELATE_CELL as f64 * scale)
+                    .round()
+                    .clamp(1.0, 1024.0) as u16,
                 opacity: shown as f32,
             },
             Kind::Wipe(edge) => {
@@ -201,7 +205,7 @@ impl Masked {
 impl Masked {
     /// The items that open and close the mask's group over a box `frame`
     /// (physical pixels) on a surface at `scale`, under the transform
-    /// `xform`: a clip, or pixelate's offscreen blur.
+    /// `xform`: a clip, or pixelate's offscreen mosaic.
     pub(crate) fn group(
         &self,
         frame: kurbo::Rect,
@@ -211,16 +215,13 @@ impl Masked {
         use crate::flatten::Item;
         match self.drawn(frame, scale as f64) {
             Drawn::Clip(path) => (Item::PushClip(path), Item::PopClip),
-            Drawn::Blur { radius, opacity } => {
-                let mut effects = vec![strand_scene::Effect::Opacity(opacity)];
-                if radius > 0.0 {
-                    effects.push(strand_scene::Effect::Blur { radius });
-                }
+            Drawn::Mosaic { cell, opacity } => {
                 let layer = crate::layers::Layer {
-                    effects: effects.into(),
+                    effects: std::sync::Arc::from([strand_scene::Effect::Opacity(opacity)]),
                     frame,
                     scale,
                     xform,
+                    mosaic: (cell > 1).then_some(cell),
                 };
                 (Item::PushLayer(std::sync::Arc::new(layer)), Item::PopLayer)
             }
@@ -318,7 +319,7 @@ mod tests {
     fn area(d: Drawn) -> f64 {
         match d {
             Drawn::Clip(p) => p.area().abs(),
-            Drawn::Blur { .. } => f64::NAN,
+            Drawn::Mosaic { .. } => f64::NAN,
         }
     }
 

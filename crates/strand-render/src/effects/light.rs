@@ -149,6 +149,7 @@ pub(crate) fn under_content(
             frame,
             scale,
             xform,
+            mosaic: None,
         })),
         bounds,
     });
@@ -221,6 +222,7 @@ pub(crate) fn inner_shadows(list: &[Shadow], b: BoxLight) -> Vec<(Item, Rect)> {
                     frame: b.frame,
                     scale: s as f32,
                     xform: b.xform,
+                    mosaic: None,
                 })),
                 region,
             ));

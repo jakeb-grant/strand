@@ -101,6 +101,7 @@ pub(crate) fn hash_item(h: &mut impl Hasher, item: &Item) {
         Item::PushLayer(l) => {
             12u8.hash(h);
             crate::layers::hash_effects(h, &l.effects);
+            l.mosaic.hash(h);
             hash_rect(h, l.frame);
             hash_f32(h, l.scale);
             for v in l.xform.as_coeffs() {
