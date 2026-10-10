@@ -85,8 +85,20 @@ mod host {
         scale: Scale,
         /// A frame was sent and its `Presented` has not come.
         in_flight: bool,
+    }
+
+    /// A surface attached (asked or answered).
+    #[derive(Debug, Default)]
+    struct Attachment {
+        /// How it draws, once answered.
+        mode: Option<GpuMode>,
+        /// Its `Attach` carried the manager's handles
+        /// (`State::raw_handles`): the manager keeps its `wl_surface`
+        /// alive until `State::take_back`.
+        lent: bool,
         /// `Release` was sent: no frame goes after it (the thread would
-        /// answer it for a surface no longer attached).
+        /// answer it for a surface no longer attached), and an `Attached`
+        /// still to come hands nothing off.
         releasing: bool,
     }
 
@@ -94,14 +106,14 @@ mod host {
     pub(crate) struct GpuHost {
         gpu: Option<Gpu>,
         /// Dropped `Gpu`s whose threads are still dropping their device:
-        /// joined once they have ended, never waited for; the surfaces they
-        /// presented are taken back then (their swapchains are gone).
+        /// joined once they have ended, never waited for; the surfaces
+        /// whose handles they held are taken back then (their swapchains
+        /// are gone).
         exiting: Vec<(Gpu, Vec<SurfaceId>)>,
         opts: GpuOptions,
         /// Wakes the main loop after every reply.
         ping: calloop::ping::Ping,
-        /// Surfaces attached (asked or answered), with how they draw.
-        attached: BTreeMap<SurfaceId, Option<GpuMode>>,
+        attached: BTreeMap<SurfaceId, Attachment>,
         presented: BTreeMap<SurfaceId, Presented>,
     }
 
@@ -130,11 +142,29 @@ mod host {
             }
         }
 
-        fn gpu(&mut self) -> &Gpu {
+        /// Sends `r` to the running `Gpu`, or starts one.
+        fn send(&mut self, r: GpuRequest) {
             let ping = self.ping.clone();
             let opts = self.opts;
             self.gpu
                 .get_or_insert_with(|| Gpu::spawn(Box::new(move || ping.ping()), opts))
+                .send(r);
+        }
+
+        /// A thread runs.
+        fn running(&self) -> bool {
+            self.gpu.is_some()
+        }
+
+        /// Asks the thread to let go of `id` (once).
+        fn release(&mut self, id: SurfaceId) {
+            if let Some(a) = self.attached.get_mut(&id) {
+                if a.releasing {
+                    return;
+                }
+                a.releasing = true;
+            }
+            self.send(GpuRequest::Release(id));
         }
 
         /// Everything owed since the last dispatch: replies to render,
@@ -145,15 +175,8 @@ mod host {
             self.replies(state);
             for id in std::mem::take(&mut state.host_mut().gpu_released) {
                 let held = self.exiting.iter().map(|(_, held)| held.as_slice());
-                match release_route(id, self.gpu.is_some(), held) {
-                    Release::Send => {
-                        if let Some(g) = &self.gpu {
-                            g.send(GpuRequest::Release(id));
-                        }
-                        if let Some(p) = self.presented.get_mut(&id) {
-                            p.releasing = true;
-                        }
-                    }
+                match release_route(id, self.running(), held) {
+                    Release::Send => self.release(id),
                     // Taken back (and so destroyed) once that thread has
                     // ended: its swapchain goes first.
                     Release::Defer => {}
@@ -163,12 +186,8 @@ mod host {
             for change in state.host_mut().renderer.take_backend_changes() {
                 self.change(state, change);
             }
-            let requests = state.host_mut().renderer.take_gpu_requests();
-            if !requests.is_empty() {
-                let gpu = self.gpu();
-                for r in requests {
-                    gpu.send(r);
-                }
+            for r in state.host_mut().renderer.take_gpu_requests() {
+                self.send(r);
             }
             self.present(state);
             let mut back = Vec::new();
@@ -203,14 +222,36 @@ mod host {
                     GpuReply::Attached { surface, mode } => {
                         let id = *surface;
                         let presenting = *mode == GpuMode::Present;
-                        if !self.attached.contains_key(&id) || (presenting && !state.hand_off(id)) {
-                            // Released or gone meanwhile.
-                            if let Some(g) = &self.gpu {
-                                g.send(GpuRequest::Release(id));
+                        match on_attached(self.attached.get(&id), presenting) {
+                            OnAttached::Release => {
+                                // Not asked for by this host: let go of it.
+                                if let Some(g) = &self.gpu {
+                                    g.send(GpuRequest::Release(id));
+                                }
+                                continue;
                             }
-                            continue;
+                            // Its `Released` follows and takes it back.
+                            OnAttached::Wait => continue,
+                            OnAttached::Unlend => {
+                                // Read back: the thread made no swapchain,
+                                // so the manager need not keep the surface
+                                // for it (one destroyed meanwhile goes).
+                                state.take_back(id);
+                            }
+                            OnAttached::HandOff => {
+                                if !state.hand_off(id) {
+                                    // Destroyed meanwhile (kept for the
+                                    // swapchain: `Released` destroys it).
+                                    self.release(id);
+                                    continue;
+                                }
+                            }
+                            OnAttached::Keep => {}
                         }
-                        self.attached.insert(id, Some(*mode));
+                        if let Some(a) = self.attached.get_mut(&id) {
+                            a.mode = Some(*mode);
+                            a.lent &= presenting;
+                        }
                         log::info!("GPU: surface {} attached ({mode:?})", id.0);
                         if presenting {
                             let (size, scale) = geometry(state, id);
@@ -220,7 +261,6 @@ mod host {
                                     size,
                                     scale,
                                     in_flight: false,
-                                    releasing: false,
                                 },
                             );
                         }
@@ -245,9 +285,10 @@ mod host {
                     }
                     GpuReply::Exited => {
                         // Every swapchain went with the thread: the
-                        // manager commits its surfaces again.
-                        self.attached.clear();
-                        for (id, _) in std::mem::take(&mut self.presented) {
+                        // manager commits its surfaces again and no
+                        // longer keeps the lent ones for it.
+                        self.presented.clear();
+                        for id in lent(&std::mem::take(&mut self.attached)) {
                             state.take_back(id);
                         }
                         if let Some(g) = self.gpu.take() {
@@ -278,8 +319,14 @@ mod host {
                                 window: h.window,
                             });
                     let (size, scale) = geometry(state, id);
-                    self.attached.insert(id, None);
-                    self.gpu().send(GpuRequest::Attach {
+                    self.attached.insert(
+                        id,
+                        Attachment {
+                            lent: handles.is_some(),
+                            ..Attachment::default()
+                        },
+                    );
+                    self.send(GpuRequest::Attach {
                         surface: id,
                         handles,
                         size,
@@ -288,25 +335,20 @@ mod host {
                     });
                 }
                 BackendChange::Demote(id) => {
-                    if self.attached.contains_key(&id)
-                        && let Some(g) = &self.gpu
-                    {
+                    if self.attached.contains_key(&id) && self.running() {
                         // Its swapchain goes first; `Released` takes the
                         // surface back.
-                        g.send(GpuRequest::Release(id));
-                        if let Some(p) = self.presented.get_mut(&id) {
-                            p.releasing = true;
-                        }
+                        self.release(id);
                     }
                 }
                 BackendChange::Drop => {
                     // Render has forgotten the device. Its replies are no
-                    // longer read: a surface still handed off (its
-                    // `Released` not in yet) is taken back once the
-                    // thread has ended, its swapchain dropped first.
-                    let held: Vec<SurfaceId> =
-                        std::mem::take(&mut self.presented).into_keys().collect();
-                    self.attached.clear();
+                    // longer read: a surface whose handles the thread has
+                    // (handed off, or its `Attach` not answered yet) is
+                    // taken back once the thread has ended, any swapchain
+                    // on it dropped first.
+                    self.presented.clear();
+                    let held = lent(&std::mem::take(&mut self.attached));
                     if let Some(g) = self.gpu.take() {
                         g.send(GpuRequest::Shutdown);
                         self.exiting.push((g, held));
@@ -327,6 +369,7 @@ mod host {
             };
             let now = monotonic();
             for (id, p) in &mut self.presented {
+                let releasing = self.attached.get(id).is_none_or(|a| a.releasing);
                 let (size, scale) = geometry(state, *id);
                 if (size, scale) != (p.size, p.scale) {
                     p.size = size;
@@ -337,7 +380,7 @@ mod host {
                         scale,
                     });
                 }
-                if p.in_flight || p.releasing {
+                if p.in_flight || releasing {
                     continue;
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
@@ -347,6 +390,42 @@ mod host {
                 }
             }
         }
+    }
+
+    /// What an `Attached` reply does.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum OnAttached {
+        /// Not attached by this host: released at once.
+        Release,
+        /// `Release` was sent after its `Attach`: nothing until `Released`.
+        Wait,
+        /// Read back although its handles were lent: given back to the
+        /// manager.
+        Unlend,
+        /// Presented: handed off.
+        HandOff,
+        /// Read back, nothing lent.
+        Keep,
+    }
+
+    fn on_attached(a: Option<&Attachment>, presenting: bool) -> OnAttached {
+        match a {
+            None => OnAttached::Release,
+            Some(a) if a.releasing => OnAttached::Wait,
+            Some(_) if presenting => OnAttached::HandOff,
+            Some(a) if a.lent => OnAttached::Unlend,
+            Some(_) => OnAttached::Keep,
+        }
+    }
+
+    /// The surfaces whose handles a thread was given: the manager keeps
+    /// them until that thread has let go of them.
+    fn lent(attached: &BTreeMap<SurfaceId, Attachment>) -> Vec<SurfaceId> {
+        attached
+            .iter()
+            .filter(|(_, a)| a.lent)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// What to do with a surface the manager must destroy while handed
@@ -414,6 +493,56 @@ mod host {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// A surface lent to the thread (its handles in `Attach`) stays
+        /// the manager's to keep alive until the thread lets go of it: a
+        /// readback answer gives it back, a release sent before the answer
+        /// waits for `Released`, and a dropped thread holds every lent
+        /// surface, presented or not answered yet.
+        #[test]
+        fn a_lent_surface_is_kept_until_the_thread_lets_go() {
+            let lent_to = |releasing| Attachment {
+                mode: None,
+                lent: true,
+                releasing,
+            };
+            assert_eq!(on_attached(None, true), OnAttached::Release);
+            assert_eq!(on_attached(Some(&lent_to(true)), true), OnAttached::Wait);
+            assert_eq!(on_attached(Some(&lent_to(true)), false), OnAttached::Wait);
+            assert_eq!(
+                on_attached(Some(&lent_to(false)), true),
+                OnAttached::HandOff
+            );
+            assert_eq!(
+                on_attached(Some(&lent_to(false)), false),
+                OnAttached::Unlend
+            );
+            assert_eq!(
+                on_attached(Some(&Attachment::default()), false),
+                OnAttached::Keep
+            );
+            let mut attached = BTreeMap::new();
+            // Asked, not answered: the thread may be building its
+            // swapchain.
+            attached.insert(SurfaceId(1), lent_to(false));
+            // Presented.
+            attached.insert(
+                SurfaceId(2),
+                Attachment {
+                    mode: Some(GpuMode::Present),
+                    ..lent_to(false)
+                },
+            );
+            // Read back without handles.
+            attached.insert(
+                SurfaceId(3),
+                Attachment {
+                    mode: Some(GpuMode::Readback),
+                    ..Attachment::default()
+                },
+            );
+            assert_eq!(lent(&attached), [SurfaceId(1), SurfaceId(2)]);
+        }
 
         #[test]
         fn a_release_waits_for_the_ending_thread_that_holds_the_surface() {

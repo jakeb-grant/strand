@@ -2,7 +2,8 @@
 //! "`strand-gpu`", "Surface hand-off"): while handed off the manager
 //! neither paints nor commits the surface, a configure is still
 //! reported, `take_back` paints a full frame, and a surface destroyed
-//! while handed off keeps its `wl_surface` until `take_back`. On headless sway, a handed-off
+//! while handed off, or after its handles were lent, keeps its
+//! `wl_surface` until `take_back`. On headless sway, a handed-off
 //! surface's new size reaches the compositor with the next present.
 
 #![cfg(feature = "gpu")]
@@ -124,6 +125,65 @@ fn a_surface_destroyed_while_handed_off_waits_for_take_back() {
     mgr.state_mut().take_back(id);
     let ok = mgr.dispatch_until(WAIT, |_| !alive(&fake)).unwrap();
     assert!(ok, "the wl_surface was not destroyed at take_back");
+}
+
+fn alive(fake: &Fake) -> bool {
+    fake.surfaces()
+        .iter()
+        .any(|s| s.namespace.as_deref() == Some("strand-Dash") && !s.destroyed)
+}
+
+/// Handles lent for an `Attach` keep the `wl_surface` alive before the
+/// hand-off too: the GPU thread may be building a swapchain on it when
+/// the surface is closed (its device takes 100 ms or more to start).
+/// Until `take_back` a destroy goes through `gpu_release`, and the late
+/// `Attached { Present }` hands nothing off. Meanwhile the manager still
+/// paints and commits it; once taken back (read back after all), a
+/// destroy is immediate again.
+#[test]
+fn a_surface_destroyed_after_its_handles_were_lent_waits_for_take_back() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(!mgr.state().is_handed_off(id));
+    // Lent, not handed off: the manager still commits it.
+    let before = commits(&fake);
+    change(&mut mgr, 40.0);
+    let ok = mgr
+        .dispatch_until(WAIT, |_| commits(&fake) > before)
+        .unwrap();
+    assert!(ok, "a lent surface is still the manager's to commit");
+
+    // Closed before `Attached` came back.
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Removed);
+    assert_eq!(mgr.state().host().gpu_released, [id]);
+    assert!(mgr.state().surfaces_of(PANEL).is_empty());
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    assert!(alive(&fake), "the wl_surface went while the GPU had it");
+    assert!(
+        !mgr.state_mut().hand_off(id),
+        "a destroyed surface was handed off"
+    );
+    mgr.state_mut().take_back(id);
+    let ok = mgr.dispatch_until(WAIT, |_| !alive(&fake)).unwrap();
+    assert!(ok, "the wl_surface was not destroyed at take_back");
+
+    // Lent and given back (attached for readback): destroyed at once.
+    let id = show_panel(&fake, &mut mgr);
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    mgr.state_mut().take_back(id);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Removed);
+    assert_eq!(
+        mgr.state().host().gpu_released.len(),
+        1,
+        "no second release"
+    );
+    let ok = mgr.dispatch_until(WAIT, |_| !alive(&fake)).unwrap();
+    assert!(ok, "a surface given back was kept");
 }
 
 /// A handed-off surface resized: the manager sets the new viewport

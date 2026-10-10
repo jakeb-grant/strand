@@ -2667,11 +2667,16 @@ would have been) and sends it. One frame is in flight per surface.
 
 **Surface hand-off** (`strand-surface/src/gpu_handoff.rs`). One
 `wl_surface` moves between shm and the WSI; it is never recreated.
-- `State::raw_handles(surface) -> Option<strand_surface::RawHandles>`
-  returns the connection's `wl_display` and the surface's `wl_surface`
-  as `raw-window-handle` handles (the binary moves them into
-  `strand_gpu::RawHandles`; none for a lock surface, which is never
-  handed off). It needs
+- `State::raw_handles(&mut self, surface) ->
+  Option<strand_surface::RawHandles>` returns the connection's
+  `wl_display` and the surface's `wl_surface` as `raw-window-handle`
+  handles (the binary moves them into `strand_gpu::RawHandles`; none
+  for a lock surface, which is never handed off). The handles are lent:
+  from then until `State::take_back` a destroy of the surface goes
+  through `gpu_release` as for a handed-off one, since the GPU thread
+  may be building a swapchain on it before its `Attached` reply comes
+  back (the device takes 100 ms or more to start); the manager still
+  paints and commits it until `hand_off`. It needs
   `wayland-backend`'s `client_system` feature, which strand-surface's
   `gpu` feature turns on (on by default). That feature switches the
   backend for every crate in the build to libwayland-client (57 kB of
@@ -2688,9 +2693,11 @@ would have been) and sends it. One frame is in flight per surface.
   interactivity) without committing; the next present applies it.
   Compositor poses are not delegated while presented: render paints the
   pose into the GPU frames, which are full frames anyway.
-- `State::take_back(surface)` after the GPU thread's `Released` reply:
-  the manager paints and commits a full shm frame (`age` 0) and resumes
-  frame callbacks and pose delegation. Between `Release` and the next
+- `State::take_back(surface)` after the GPU thread's `Released` reply
+  (also after an `Attached { Readback }` for lent handles, and when the
+  thread has ended): the manager paints and commits a full shm frame
+  (`age` 0) and resumes frame callbacks and pose delegation; a lent
+  surface is no longer lent. Between `Release` and the next
   shm commit nothing commits that surface.
 - When the manager has to destroy or recreate a handed-off surface
   (`Removed`, an unplugged output, a layer surface `closed`), it calls
@@ -2703,10 +2710,11 @@ would have been) and sends it. One frame is in flight per surface.
   every dispatch): `Attached { Present }` hands the surface off;
   `Presented` lets the next `paint_gpu` frame go (one in flight); a new
   buffer size or scale from the manager sends `Resize`; `Released`,
-  `Exited`, or the end of a thread dropped while a surface was still
-  handed off takes it back. Once a thread has ended the binary calls
-  libc's `malloc_trim(0)` and mimalloc's collect (the driver's freed
-  arena pages). `STRAND_GPU_IDLE_MS` shortens the 30 s idle for tests.
+  `Exited`, or the end of a thread dropped while it had a surface's
+  handles (handed off, or its `Attach` not answered yet) takes it back.
+  Once a thread has ended the binary calls libc's `malloc_trim(0)` and
+  mimalloc's collect (the driver's freed arena pages).
+  `STRAND_GPU_IDLE_MS` shortens the 30 s idle for tests.
 
 **Shaders and effects.** `strand_scene::effect::Effect::Shader(ShaderPass)`
 with `ShaderPass { code: ShaderRef, uniforms: Arc<[f32]>, input:
