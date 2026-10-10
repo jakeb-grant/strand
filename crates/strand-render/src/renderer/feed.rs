@@ -148,6 +148,13 @@ impl Renderer {
 }
 
 impl Renderer {
+    /// (M4) Whether a `spectrum` node rests (tests: a rested spectrum is
+    /// not fed stale bands). `false` for anything else.
+    #[doc(hidden)]
+    pub fn spectrum_at_rest(&self, node: NodeId) -> bool {
+        matches!(self.extras.media.sources.get(&node), Some(Source::Spectrum(s)) if s.at_rest())
+    }
+
     /// (M4) Columns a `graph` node has drawn so far (tests: a tick draws
     /// only its new columns).
     #[doc(hidden)]
