@@ -1227,6 +1227,48 @@ fn no_lock_compiled_shows_the_fallback() {
     vm.until("HEADLESS-1", "the marker removed", |_| !marker.exists());
 }
 
+/// A strand that starts with the marker and has its lock refused (another
+/// locker holds the session) removes the marker and runs on unlocked:
+/// later starts do not lock the session again.
+#[test]
+fn a_refused_restart_lock_removes_the_marker() {
+    let test = "refused_restart";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    let marker = vm.strand.marker(&vm.sway.display.clone());
+    vm.strand.signal(libc::SIGKILL);
+    vm.strand.wait_exit("killed");
+    // As a strand killed while locked leaves it.
+    std::fs::write(&marker, b"locked\n").unwrap();
+    let mut other = Other::lock(&vm.sway);
+    other.pump(Duration::from_millis(300));
+    vm.strand.run();
+    let deadline = Instant::now() + WAIT;
+    while marker.exists() {
+        other.pump(Duration::from_millis(50));
+        assert!(
+            Instant::now() < deadline,
+            "the marker stayed after a refused lock:\n{}",
+            vm.strand.log_text()
+        );
+    }
+    vm.log_has("locking again");
+    vm.log_has("the compositor refused the session lock");
+    assert!(vm.strand.running(), "strand runs on after a refusal");
+    other.unlock(&vm.sway.dir);
+    vm.until("HEADLESS-1", "the desktop back", Shot::desktop);
+    // Started again, it does not lock.
+    vm.strand.signal(libc::SIGTERM);
+    vm.strand.wait_exit("SIGTERM, unlocked");
+    vm.strand.run();
+    std::thread::sleep(Duration::from_millis(1000));
+    let shot = vm.sway.shot("HEADLESS-1");
+    assert!(shot.desktop(), "a later start locked: {}", shot.describe());
+    assert!(!marker.exists());
+}
+
 #[test]
 fn killed_while_locked_locks_again_on_restart() {
     restart_after("sigkill", libc::SIGKILL);

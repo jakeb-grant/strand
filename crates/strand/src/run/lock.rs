@@ -27,7 +27,8 @@
 //!   strand started while it is there locks at once with the fallback,
 //!   so a strand killed while locked (`kill -9`, an allocation failure)
 //!   and started again puts a password field back on the session the
-//!   compositor kept locked. Only an unlock removes it.
+//!   compositor kept locked. It goes once no lock is asked for or held
+//!   (an unlock, or a lock the compositor refused).
 //! - **Reloads**: a load deferred while the lock is shown is committed
 //!   after the unlock ([`Shell::unlocked`]).
 
@@ -675,23 +676,23 @@ impl Guard {
         None
     }
 
-    /// The marker follows the compositor: written once it says `locked`,
-    /// removed after an unlock.
+    /// The marker follows the compositor ([`marker_step`]).
     fn keep_marker(&mut self, state: &State<Host>) {
         let Some(m) = &self.marker else {
             return;
         };
-        if state.is_locked() && !self.marked {
-            if let Err(e) = std::fs::write(m, b"locked\n") {
-                log::warn!("lock: {}: {e}", m.display());
+        match marker_step(self.marked, state.is_locked(), state.lock_active()) {
+            Some(Marker::Write) => {
+                if let Err(e) = std::fs::write(m, b"locked\n") {
+                    log::warn!("lock: {}: {e}", m.display());
+                }
+                self.marked = true;
             }
-            self.marked = true;
-        } else if self.marked
-            && state.host().lock.last == Some(LockState::Unlocked)
-            && !state.lock_active()
-        {
-            let _ = std::fs::remove_file(m);
-            self.marked = false;
+            Some(Marker::Remove) => {
+                let _ = std::fs::remove_file(m);
+                self.marked = false;
+            }
+            None => {}
         }
     }
 
@@ -745,6 +746,29 @@ fn lock_color(tree: &strand_render::SceneTree, node: NodeId) -> Color {
             Paint::Linear { stops, .. } | Paint::Radial { stops } | Paint::Conic { stops, .. },
         )) => stops.first().map_or(Color::BLACK, |s| s.color),
         _ => Color::BLACK,
+    }
+}
+
+/// What the restart marker needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Write,
+    Remove,
+}
+
+/// The restart marker is written once the compositor says `locked`, and
+/// removed once no lock is asked for or held: after an unlock, and also
+/// after a lock the compositor refused (a restart's lock again, or the
+/// one asked for after `finished`), since a strand killed with no lock
+/// leaves nothing locked to come back to. A marker kept then would lock
+/// the session on every later start.
+fn marker_step(marked: bool, locked: bool, active: bool) -> Option<Marker> {
+    if locked && !marked {
+        Some(Marker::Write)
+    } else if marked && !active {
+        Some(Marker::Remove)
+    } else {
+        None
     }
 }
 
@@ -1058,6 +1082,23 @@ mod tests {
         assert_eq!(lock_color(&tree, ids[2]), blue, "a gradient's first stop");
         assert_eq!(lock_color(&tree, ids[3]), Color::BLACK, "no bg");
         assert_eq!(lock_color(&tree, NodeId::new(9, 0)), Color::BLACK);
+    }
+
+    /// The marker follows the lock: written once locked, kept while a
+    /// lock is asked for or held (a restart's lock not granted yet, the
+    /// lock asked for again after `finished`), removed once there is
+    /// none, whether the last one was unlocked or refused.
+    #[test]
+    fn the_restart_marker_goes_once_no_lock_is_asked_for_or_held() {
+        // (marked, locked, active)
+        assert_eq!(marker_step(false, true, true), Some(Marker::Write));
+        assert_eq!(marker_step(true, true, true), None);
+        assert_eq!(marker_step(false, false, true), None, "asked for");
+        // A restart's lock pending, or asked for again after `finished`.
+        assert_eq!(marker_step(true, false, true), None);
+        // Unlocked, or that lock refused: gone.
+        assert_eq!(marker_step(true, false, false), Some(Marker::Remove));
+        assert_eq!(marker_step(false, false, false), None);
     }
 
     #[test]
