@@ -367,7 +367,7 @@ fn a_resized_readback_surface_does_not_copy_old_size_pixels() {
 /// A scene with what lowering covers: solid and gradient fills, a
 /// border, a shadow, an opacity group, a masked layer (drawn on the CPU)
 /// and text.
-fn rich_scene() -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>) {
+fn rich_scene() -> SceneDiff {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     b.node(
@@ -414,7 +414,7 @@ fn rich_scene() -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>) {
             ),
         ],
     );
-    let group = b.node(
+    b.node(
         NodeKind::Box,
         Some(root),
         vec![
@@ -422,9 +422,10 @@ fn rich_scene() -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>) {
             (Prop::Y, num(10.0)),
             (Prop::Size, num(40.0)),
             (Prop::Bg, color("#a6e3a1")),
+            (Prop::Opacity, num(0.5)),
         ],
     );
-    let masked = b.node(
+    b.node(
         NodeKind::Box,
         Some(root),
         vec![
@@ -432,6 +433,13 @@ fn rich_scene() -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>) {
             (Prop::Y, num(10.0)),
             (Prop::Size, num(40.0)),
             (Prop::Bg, color("#cba6f7")),
+            (
+                Prop::Mask,
+                PropValue::Call {
+                    name: "radial".into(),
+                    args: vec![PropValue::Keyword("center".into()), num(16.0)],
+                },
+            ),
         ],
     );
     b.node(
@@ -445,25 +453,11 @@ fn rich_scene() -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>) {
             (Prop::Color, color("#cdd6f4")),
         ],
     );
-    let effects = vec![
-        (group, vec![Effect::Opacity(0.5)]),
-        (
-            masked,
-            vec![Effect::Mask(Mask::Radial {
-                at: Anchor::Center,
-                size: 16.0,
-            })],
-        ),
-    ];
-    (b.diff, effects)
+    b.diff
 }
 
 fn rich(r: &mut Renderer) {
-    let (diff, effects) = rich_scene();
-    assert!(r.apply(diff).is_empty());
-    for (id, e) in effects {
-        r.set_layer_effects(id, e);
-    }
+    assert!(r.apply(rich_scene()).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
 }
 
@@ -543,6 +537,101 @@ fn a_promoted_surface_is_drawn_by_the_gpu_like_the_cpu() {
     assert_eq!(buf.pixels, want.pixels, "the CPU's own frame");
 }
 
+/// (m4-integration-w2) S-effects' paints on a promoted surface: a
+/// shape-library mask and gradient-`fill:` text are drawn on the CPU and
+/// uploaded, so the GPU's frame matches the CPU's (neither is drawn
+/// unmasked or as plain glyphs).
+#[test]
+fn shape_masks_and_text_fills_are_drawn_by_the_gpu_like_the_cpu() {
+    let Some(opts) = device() else { return };
+    let scene = || {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::X, num(10.0)),
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(40.0)),
+                (Prop::Bg, color("#a6e3a1")),
+                (
+                    Prop::Mask,
+                    PropValue::Call {
+                        name: "shape".into(),
+                        args: vec![PropValue::Keyword("circle".into())],
+                    },
+                ),
+            ],
+        );
+        b.node(
+            NodeKind::Text,
+            Some(root),
+            vec![
+                (Prop::X, num(70.0)),
+                (Prop::Y, num(12.0)),
+                (Prop::Text, text("Strand")),
+                (Prop::Font, PropValue::Font(font(28.0))),
+                (
+                    Prop::Fill,
+                    PropValue::Paint(Paint::Linear {
+                        angle: 90.0,
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: hex("#f38ba8"),
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: hex("#89b4fa"),
+                            },
+                        ],
+                    }),
+                ),
+            ],
+        );
+        b.diff
+    };
+    let setup = |r: &mut Renderer| {
+        assert!(r.apply(scene()).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+    };
+    let mut cpu = renderer();
+    setup(&mut cpu);
+    let mut want = Buffer::new(240, 60, Scale::ONE);
+    want.paint(&mut cpu, S, 0);
+    cpu.update();
+    want.paint(&mut cpu, S, 0);
+    // The circle leaves its box's corner bare.
+    assert_eq!(want.px(11, 11), want.px(5, 5), "the mask cuts the corner");
+
+    let mut r = renderer();
+    setup(&mut r);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    r.update();
+    buf.paint(&mut r, S, 0);
+    let mut host = Host::new(opts);
+    r.promote_now(S);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Attached { .. }));
+    assert_eq!(r.backend(S), Backend::GpuReadback);
+    buf.pixels.fill(0);
+    buf.paint(&mut r, S, 0);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Pixels { .. }));
+    buf.pixels.fill(0);
+    let copied = r.gpu_frames_copied();
+    buf.paint(&mut r, S, 0);
+    assert_eq!(r.gpu_frames_copied(), copied + 1, "drawn by the GPU");
+    let (bad, worst) = compare(&buf, &want);
+    eprintln!("GPU vs CPU: {bad} pixels past {GPU_TOLERANCE}, worst {worst}");
+    assert!(
+        bad as f64 / (240.0 * 60.0) <= EDGE_SHARE,
+        "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
+    );
+}
+
 /// No device: a `shader` node keeps its box and draws nothing, the status
 /// says why, and the device is not asked for again within 30 s.
 #[test]
@@ -577,7 +666,14 @@ fn without_a_device_the_cpu_draws_and_the_shader_draws_nothing() {
     buf.paint(&mut r, S, 1);
     assert_eq!(buf.px(20, 20), buf.px(100, 20), "the node draws nothing");
     // A change that wants a pass again does not ask within 30 s.
-    r.set_layer_effects(r.tree().roots()[0], vec![Effect::Opacity(0.9)]);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: r.tree().roots()[0],
+        prop: Prop::Opacity,
+        value: num(0.9),
+        transition: Transition::Instant,
+    });
+    assert!(r.apply(d).is_empty());
     buf.paint(&mut r, S, 1);
     assert!(r.take_gpu_requests().is_empty());
 }

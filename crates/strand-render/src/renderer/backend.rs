@@ -1125,14 +1125,11 @@ impl Lowering<'_> {
                 Item::PopOpacity => self.ops.push(Op::PopLayer),
                 Item::PushLayer(l) => {
                     let end = crate::raster::skip_group(items, i - 1);
-                    let masked = l.effects.iter().any(|e| {
-                        matches!(
-                            e,
-                            strand_scene::Effect::Mask(
-                                strand_scene::Mask::Fade { .. } | strand_scene::Mask::Radial { .. }
-                            )
-                        )
-                    });
+                    // (Every mask, the shape library's outlines too.)
+                    let masked = l
+                        .effects
+                        .iter()
+                        .any(|e| matches!(e, strand_scene::Effect::Mask(_)));
                     if masked {
                         // Masks are always rasterised on the CPU: the
                         // whole group, as one upload.
@@ -1283,12 +1280,18 @@ impl Lowering<'_> {
                         smooth: cur != Affine::IDENTITY || resized,
                     });
                 }
+                // (M4) Text painted with a `fill:` paint is drawn on the
+                // CPU, like a masked group: its coverage times the paint.
+                Item::Glyphs { fill: Some(_), .. } => {
+                    self.island(&items[i - 1..i], d.bounds, cur);
+                }
                 Item::Glyphs {
                     x,
                     y,
                     layout,
                     color,
                     spans,
+                    fill: None,
                 } => {
                     let k = self.scale.as_f64() / layout.scale.as_f64();
                     let smooth = k != 1.0 || cur != Affine::IDENTITY;
