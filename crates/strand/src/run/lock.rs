@@ -764,6 +764,15 @@ impl LockScreen {
         self.pending = None;
     }
 
+    /// (m4-audit) A lock is first seen asked for: a new lock session. A
+    /// check begun before it (an `auth.submit` outside the `lock`, PAM
+    /// still answering when an idle lock starts) carries the old tag, so
+    /// its token cannot release a lock no password was typed into.
+    fn begin(&mut self) {
+        self.session
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// No lock any more: the fallback and its reasons go.
     fn reset(&mut self) {
         self.fallback = None;
@@ -943,7 +952,11 @@ impl Guard {
             }
             return;
         }
+        let began = self.since.is_none();
         let since = *self.since.get_or_insert(now);
+        if began {
+            state.host_mut().lock.begin();
+        }
         state.host_mut().lock.asked.get_or_insert(since);
         if signalled && !self.stopping {
             self.stopping = true;
@@ -1519,6 +1532,32 @@ mod tests {
         s.show("test again");
         assert!(s.checked(now, Verdict::Denied { message: None }).is_none());
         assert_eq!(field(&s), Some(FieldState::Failed));
+    }
+
+    /// (m4-audit) A check begun while no lock was active (an
+    /// `auth.submit` from a popup) answers after a lock began: its tag is
+    /// not the new lock's, so its token releases nothing.
+    /// [`Guard::check`] calls `begin` when it first sees the lock asked
+    /// for, before any of the lock's own input can reach it.
+    #[test]
+    fn a_verdict_from_before_a_lock_began_is_dropped() {
+        let mut s = LockScreen::default();
+        let unlocked = s.generation();
+        s.begin();
+        assert!(!s.current(unlocked, "test"), "a check from before the lock");
+        let locked = s.generation();
+        assert!(s.current(locked, "test"), "the lock's own check");
+        s.changed(LockState::Locked);
+        s.show("test");
+        assert!(
+            s.checked(unlocked, Verdict::Denied { message: None })
+                .is_none()
+        );
+        assert_ne!(
+            s.fallback.as_ref().map(|f| f.field.state()),
+            Some(FieldState::Failed),
+            "the stale refusal leaves the field alone"
+        );
     }
 
     /// The other outputs take the `lock`'s `bg`: a colour, a token, a
