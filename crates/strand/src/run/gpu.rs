@@ -141,10 +141,17 @@ mod host {
             // Replies first: they can attach, hand off and take back.
             self.replies(state);
             for id in std::mem::take(&mut state.host_mut().gpu_released) {
-                if let Some(g) = &self.gpu {
-                    g.send(GpuRequest::Release(id));
-                } else {
-                    state.take_back(id);
+                let held = self.exiting.iter().map(|(_, held)| held.as_slice());
+                match release_route(id, self.gpu.is_some(), held) {
+                    Release::Send => {
+                        if let Some(g) = &self.gpu {
+                            g.send(GpuRequest::Release(id));
+                        }
+                    }
+                    // Taken back (and so destroyed) once that thread has
+                    // ended: its swapchain goes first.
+                    Release::Defer => {}
+                    Release::TakeBack => state.take_back(id),
                 }
             }
             for change in state.host_mut().renderer.take_backend_changes() {
@@ -252,10 +259,17 @@ mod host {
                     if self.attached.contains_key(&id) {
                         return;
                     }
-                    let handles = state.raw_handles(id).map(|h| strand_gpu::RawHandles {
-                        display: h.display,
-                        window: h.window,
-                    });
+                    // A surface an ending thread may still present
+                    // gets no second swapchain: it is read back.
+                    let ending = self.exiting.iter().any(|(_, held)| held.contains(&id));
+                    let handles =
+                        state
+                            .raw_handles(id)
+                            .filter(|_| !ending)
+                            .map(|h| strand_gpu::RawHandles {
+                                display: h.display,
+                                window: h.window,
+                            });
                     let (size, scale) = geometry(state, id);
                     self.attached.insert(id, None);
                     self.gpu().send(GpuRequest::Attach {
@@ -325,6 +339,36 @@ mod host {
         }
     }
 
+    /// What to do with a surface the manager must destroy while handed
+    /// off (`SurfaceHost::gpu_release`).
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum Release {
+        /// Ask the running thread; its `Released` takes it back.
+        Send,
+        /// A dropped thread still ending may own its swapchain: it is
+        /// taken back when that thread has ended.
+        Defer,
+        /// No thread can hold it: take it back now.
+        TakeBack,
+    }
+
+    /// The route for `id`'s release: `running` if a `Gpu` runs, `held`
+    /// the surfaces each ending thread presented when it was dropped.
+    /// The swapchain always goes before its `wl_surface`.
+    fn release_route<'a>(
+        id: SurfaceId,
+        running: bool,
+        mut held: impl Iterator<Item = &'a [SurfaceId]>,
+    ) -> Release {
+        if held.any(|h| h.contains(&id)) {
+            Release::Defer
+        } else if running {
+            Release::Send
+        } else {
+            Release::TakeBack
+        }
+    }
+
     /// The GPU thread ended: what the driver freed goes back to the
     /// system. The Vulkan driver (and LLVM, under lavapipe) allocate with
     /// libc's malloc, whose per-thread arena keeps freed pages until
@@ -355,5 +399,28 @@ mod host {
             u64::try_from(t.tv_sec).unwrap_or(0),
             u32::try_from(t.tv_nsec).unwrap_or(0),
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_release_waits_for_the_ending_thread_that_holds_the_surface() {
+            let (a, b) = (SurfaceId(1), SurfaceId(2));
+            let ending = [vec![a]];
+            let held = || ending.iter().map(Vec::as_slice);
+            // Held by a dropped thread still ending: deferred, with or
+            // without a new thread running.
+            assert_eq!(release_route(a, false, held()), Release::Defer);
+            assert_eq!(release_route(a, true, held()), Release::Defer);
+            // Not held: the running thread answers, or nothing holds it.
+            assert_eq!(release_route(b, true, held()), Release::Send);
+            assert_eq!(release_route(b, false, held()), Release::TakeBack);
+            assert_eq!(
+                release_route(a, false, std::iter::empty()),
+                Release::TakeBack
+            );
+        }
     }
 }
