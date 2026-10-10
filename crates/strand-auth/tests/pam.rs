@@ -58,6 +58,26 @@ fn a_permit_stack_unlocks() {
     assert_eq!(c.spawns(), 1);
 }
 
+/// (m4-audit) The protocol socket is not on the helper's stdin and
+/// stdout while PAM runs: a module that prints to fd 1 and reads fd 0
+/// (`auth_stdio`) neither breaks the frame stream nor eats a password.
+#[test]
+fn a_module_on_stdin_and_stdout_does_not_touch_the_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    service(dir.path(), "strand", "pam_permit.so", "pam_permit.so");
+    let mut c = Client::new(HELPER.into(), no_hook)
+        .with_test_env(&[
+            ("STRAND_AUTH_PAM_CONFDIR", dir.path().to_str().unwrap()),
+            ("STRAND_FAULT", "auth_stdio"),
+        ])
+        .with_timeout(Duration::from_secs(20));
+    for pw in ["one", "two", "three"] {
+        let v = submit(&mut c, pw);
+        assert!(v.is_unlocked(), "{pw}: {v:?}");
+    }
+    assert_eq!(c.spawns(), 1);
+}
+
 #[test]
 fn a_deny_stack_does_not_unlock() {
     let dir = tempfile::tempdir().unwrap();

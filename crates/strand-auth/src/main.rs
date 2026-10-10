@@ -16,7 +16,7 @@ mod pam;
 
 use std::ffi::{CStr, CString};
 use std::fs::File;
-use std::os::fd::AsFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -31,10 +31,7 @@ const VENDOR_PAM_D: &str = "/usr/lib/pam.d";
 
 fn main() -> ExitCode {
     harden();
-    let (Ok(input), Ok(output)) = (
-        std::io::stdin().as_fd().try_clone_to_owned(),
-        std::io::stdout().as_fd().try_clone_to_owned(),
-    ) else {
+    let Some((input, output)) = take_socket() else {
         eprintln!("strand-auth: no socket on stdin and stdout");
         return ExitCode::from(2);
     };
@@ -107,6 +104,36 @@ fn harden() {
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
+}
+
+/// The protocol socket, moved off stdin and stdout (above fd 2,
+/// close-on-exec), with `/dev/null` put on fds 0 and 1: a PAM module, or
+/// a child it forks without changing its descriptors, that prints to
+/// stdout would otherwise write into the frame stream, and one that reads
+/// stdin would take the next password's bytes (decisions.md, m4-audit).
+/// Stderr stays strand's.
+fn take_socket() -> Option<(OwnedFd, OwnedFd)> {
+    let moved = |fd: i32| {
+        // SAFETY: F_DUPFD_CLOEXEC takes an int and returns a new
+        // descriptor this function then owns, or -1.
+        let new = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        // SAFETY: `new` is a fresh descriptor nothing else owns.
+        (new >= 0).then(|| unsafe { OwnedFd::from_raw_fd(new) })
+    };
+    let (input, output) = (moved(0)?, moved(1)?);
+    match File::options().read(true).write(true).open("/dev/null") {
+        Ok(null) => {
+            for fd in [0, 1] {
+                // SAFETY: dup2 onto the standard descriptors, which this
+                // process no longer reads or writes through.
+                unsafe { libc::dup2(null.as_raw_fd(), fd) };
+            }
+        }
+        // No /dev/null: the module output risk stays as it was rather
+        // than leave no way to unlock.
+        Err(e) => eprintln!("strand-auth: cannot open /dev/null for PAM modules: {e}"),
+    }
+    Some((input, output))
 }
 
 /// `strand` when libpam will read a `strand` service file, else `login`
@@ -191,10 +218,22 @@ fn fault(fault: &str) -> bool {
 
 /// (`faults`) The injection points before a check: the helper crashes
 /// (`auth_crash`), hangs (`auth_hang`) or answers garbage
-/// (`auth_garbage`).
+/// (`auth_garbage`), or a chatty PAM module writes to fd 1 and reads fd 0
+/// (`auth_stdio`), which must reach neither the client nor the protocol.
 #[cfg(feature = "faults")]
 fn fault_before_check(output: &mut File) {
     use std::io::Write;
+    if fault("auth_stdio") {
+        let chatter = b"STRAND_FAULT a module's chatter\n";
+        let mut byte = 0u8;
+        // SAFETY: plain writes and reads on fds 0 and 1 with valid
+        // buffers, as a module would make; a read on /dev/null returns 0.
+        unsafe {
+            libc::write(1, chatter.as_ptr().cast(), chatter.len());
+            libc::fcntl(0, libc::F_SETFL, libc::O_NONBLOCK);
+            libc::read(0, (&raw mut byte).cast(), 1);
+        }
+    }
     if fault("auth_crash") {
         eprintln!("strand-auth: STRAND_FAULT auth_crash");
         std::process::abort();
