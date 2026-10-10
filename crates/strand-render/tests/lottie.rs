@@ -143,9 +143,13 @@ fn speed_hidden_and_reduced_motion() {
     assert_eq!(r.next_wake(), None, "frozen under reduced motion");
 }
 
+/// A missing or broken file, or no source at all (a value logic has
+/// not set yet), draws nothing and keeps no clock running.
 #[test]
 fn a_broken_or_missing_file_draws_nothing_and_has_no_clock() {
     for (name, source) in [
+        ("empty", String::new()),
+        ("blank", "  ".to_string()),
         ("missing", "/nonexistent/slide.json".to_string()),
         (
             "broken",

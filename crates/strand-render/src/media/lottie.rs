@@ -156,7 +156,7 @@ impl RasterSource for LottieSource {
     }
 
     /// The file's frame rate once it is read (one refresh frame reads
-    /// it); none for a file that could not be.
+    /// it); none for a file that could not be, or no source at all.
     fn clock(&self) -> Option<Rate> {
         let s = self.inner.lock().ok()?;
         match &s.comp {
@@ -181,7 +181,11 @@ impl RasterSource for LottieSource {
             _ => String::new(),
         };
         if source != s.source || s.comp.is_none() {
-            s.comp = (!source.is_empty()).then(|| {
+            // No source (a value not set yet) is no animation: no clock,
+            // as for a file that could not be read.
+            s.comp = Some(if source.is_empty() {
+                Err("no source".to_string())
+            } else {
                 crate::image::read_local(&source, MAX_LOTTIE_BYTES)
                     .map_err(|e| e.to_string())
                     .and_then(|b| velato::Composition::from_slice(b).map_err(|e| e.to_string()))
