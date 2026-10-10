@@ -13,6 +13,7 @@
 //! stadium) or a smooth closed curve through its points.
 
 pub(crate) mod morph;
+pub(crate) mod stroke;
 
 use std::f64::consts::{PI, TAU};
 

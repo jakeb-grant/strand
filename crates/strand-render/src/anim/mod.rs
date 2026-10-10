@@ -41,7 +41,7 @@ pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
-pub(crate) const ANIMATED: [Prop; 12] = [
+pub(crate) const ANIMATED: [Prop; 16] = [
     Prop::X,
     Prop::Y,
     Prop::Opacity,
@@ -55,6 +55,12 @@ pub(crate) const ANIMATED: [Prop; 12] = [
     // Widgets: a meter's or slider's fill and its track's colour.
     Prop::Value,
     Prop::Track,
+    // (M4) Effects: a stroke (width and solid paint), its trim, a wave's
+    // amplitude (a wavy meter flattens when paused), a glow.
+    Prop::Stroke,
+    Prop::Trim,
+    Prop::Wave,
+    Prop::Glow,
 ];
 
 /// Props whose change springs the laid-out size.

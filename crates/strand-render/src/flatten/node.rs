@@ -146,6 +146,7 @@ impl<'a> Flattener<'a> {
                 node.kind,
                 NodeKind::Segmented
                     | NodeKind::Meter
+                    | NodeKind::Arc
                     | NodeKind::Slider
                     | NodeKind::Icon
                     | NodeKind::Image
@@ -613,6 +614,44 @@ impl<'a> Flattener<'a> {
                 &mut sig,
                 &mut ink,
             );
+        }
+        // (M4) `stroke:` with its styles (`crate::shapes::stroke`), along
+        // the outline inset by half its width, so it is drawn inside the
+        // box as a border is.
+        if has_area
+            && node.kind != NodeKind::Arc
+            && let Some(PropValue::Border(Border { width, paint })) = get(Prop::Stroke)
+            && let Some(width) = finite(*width)
+            && width > 0.0
+        {
+            let sw = (width as f64 * s).min(frame.width().min(frame.height()));
+            let half = sw / 2.0;
+            let mid = frame.inflate(-half, -half);
+            let mr = RoundedRectRadii::new(
+                (r.top_left - half).max(0.0),
+                (r.top_right - half).max(0.0),
+                (r.bottom_right - half).max(0.0),
+                (r.bottom_left - half).max(0.0),
+            );
+            let center = match &outline {
+                Some(o) => crate::shapes::path(o, mid),
+                None => shape_path(mid, mr, squircle),
+            };
+            let style =
+                crate::shapes::stroke::style_of(get, sw, s, crate::shapes::stroke::Cap::Butt);
+            if let Some(path) = crate::shapes::stroke::outline(&center, &style) {
+                let b = cover(path.bounding_box());
+                self.push(
+                    Item::Fill {
+                        shape: FillShape::Path(path),
+                        paint: paint.clone(),
+                        frame,
+                    },
+                    b,
+                    &mut sig,
+                    &mut ink,
+                );
+            }
         }
         // (M4) A rim light, over the border.
         if has_area {

@@ -516,3 +516,235 @@ fn grain_moves_at_12_fps_and_reduced_motion_freezes_it() {
     buf.paint_at(&mut r, S, 1, Duration::from_millis(1500));
     assert_eq!(pill(&buf), frozen, "static grain");
 }
+
+/// A dark bar `w × h` logical pixels holding `nodes` (each a kind and its
+/// props, placed absolutely by its own `x`/`y`), painted at `time` ms.
+fn scene(
+    nodes: Vec<(NodeKind, Fx)>,
+    (w, h): (f32, f32),
+    scale: Scale,
+    time: u64,
+) -> (Renderer, Buffer, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let ids = nodes
+        .into_iter()
+        .map(|(kind, mut p)| {
+            p.push((Prop::Place, kw("absolute")));
+            b.node(kind, Some(root), p)
+        })
+        .collect();
+    let mut r = renderer();
+    let mut tokens = TokenTable::default();
+    tokens.insert("accent", PropValue::Color(hex("#89b4fa")));
+    tokens.insert("fg", PropValue::Color(hex("#cdd6f4")));
+    b.diff.set_tokens(tokens, Transition::Instant);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new((w * k).round() as u32, (h * k).round() as u32, scale);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(time));
+    (r, buf, ids)
+}
+
+fn at_xy(x: f32, y: f32, w: f32, h: f32) -> Fx {
+    vec![
+        (Prop::X, num(x)),
+        (Prop::Y, num(y)),
+        (Prop::Width, num(w)),
+        (Prop::Height, num(h)),
+    ]
+}
+
+fn stroke(width: f32, c: &str) -> (Prop, PropValue) {
+    (
+        Prop::Stroke,
+        PropValue::Border(Border {
+            width,
+            paint: Paint::Solid(hex(c)),
+        }),
+    )
+}
+
+/// The stroke scene: a plain stroke, a trimmed round-capped ring, a
+/// dashed stroke and a wavy one on boxes; a 270° arc gauge and a full
+/// ring; a wavy and a flat meter.
+fn strokes(scale: Scale) -> (Renderer, Buffer, Vec<NodeId>) {
+    let with = |mut base: Fx, more: Vec<(Prop, PropValue)>| {
+        base.extend(more);
+        base
+    };
+    let n = |a: f32, b: f32| PropValue::List(vec![num(a), num(b)]);
+    let nodes = vec![
+        (
+            NodeKind::Box,
+            with(
+                at_xy(8.0, 8.0, 48.0, 48.0),
+                vec![stroke(3.0, "#f38ba8"), (Prop::Radius, num(12.0))],
+            ),
+        ),
+        (
+            NodeKind::Box,
+            with(
+                at_xy(64.0, 8.0, 48.0, 48.0),
+                vec![
+                    stroke(5.0, "#a6e3a1"),
+                    (Prop::Shape, kw("circle")),
+                    (Prop::Trim, n(0.0, 0.6)),
+                    (Prop::Cap, kw("round")),
+                ],
+            ),
+        ),
+        (
+            NodeKind::Box,
+            with(
+                at_xy(120.0, 8.0, 48.0, 48.0),
+                vec![
+                    stroke(2.0, "#f9e2af"),
+                    (Prop::Radius, num(6.0)),
+                    (Prop::Dash, n(6.0, 4.0)),
+                ],
+            ),
+        ),
+        (
+            NodeKind::Box,
+            with(
+                at_xy(176.0, 8.0, 48.0, 48.0),
+                vec![stroke(2.0, "#cba6f7"), (Prop::Wave, n(2.0, 12.0))],
+            ),
+        ),
+        (
+            NodeKind::Arc,
+            vec![
+                (Prop::X, num(232.0)),
+                (Prop::Y, num(8.0)),
+                (Prop::Size, num(48.0)),
+                (Prop::Value, num(0.6)),
+                (Prop::Sweep, PropValue::Angle(270.0)),
+                (Prop::Width, num(5.0)),
+            ],
+        ),
+        (
+            NodeKind::Arc,
+            vec![
+                (Prop::X, num(288.0)),
+                (Prop::Y, num(8.0)),
+                (Prop::Size, num(48.0)),
+                (Prop::Value, num(0.25)),
+                (Prop::Sweep, PropValue::Angle(360.0)),
+                (Prop::Color, color("#fab387")),
+            ],
+        ),
+        (
+            NodeKind::Meter,
+            with(
+                at_xy(16.0, 72.0, 150.0, 4.0),
+                vec![(Prop::Value, num(0.6)), (Prop::Wave, num(3.0))],
+            ),
+        ),
+        (
+            NodeKind::Meter,
+            with(
+                at_xy(184.0, 72.0, 150.0, 4.0),
+                vec![(Prop::Value, num(0.6))],
+            ),
+        ),
+    ];
+    scene(nodes, (344.0, 88.0), scale, 1000)
+}
+
+/// design.md "Shape and geometry": stroke styles (dash, trim, caps,
+/// wavy), arc and ring gauges, and the wavy media meter (refs
+/// `effects_strokes.png` at 1× and 2×).
+#[test]
+fn strokes_arcs_and_wavy_meters_draw() {
+    let (_, buf, _) = strokes(Scale::ONE);
+    assert_matches_ref("effects_strokes", &buf, 2);
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    let px = |x: u32, y: u32| buf.px(x, y);
+    // The plain stroke is inside its box; the middle is empty.
+    assert_ne!(px(9, 32), bg);
+    assert_eq!(px(32, 32), bg);
+    assert_eq!(px(7, 32), bg);
+    // The trimmed ring (centre 88, 32) runs clockwise from 12 o'clock to
+    // 0.6 of the way: the right side is drawn, the upper left is not.
+    assert_ne!(px(88 + 21, 32), bg, "3 o'clock");
+    assert_eq!(px(88 - 15, 32 - 15), bg, "10:30");
+    // The dashed stroke has gaps along its top edge.
+    let top: Vec<bool> = (128..160).map(|x| px(x, 9) != bg).collect();
+    assert!(top.iter().any(|d| *d) && top.iter().any(|d| !*d));
+    // The arc (centre 256, 32) has its gap at the bottom; its value
+    // starts bottom left and ends past the top.
+    assert_eq!(px(256, 32 + 20), bg, "the gap");
+    assert_ne!(px(256, 32 - 20), bg, "the top");
+    let [b, g, r, _] = px(256 - 20, 32);
+    assert!(b > r && b > g, "the value is the accent at 9 o'clock");
+    // The wavy meter's fill leaves its 4 px track; the flat one does not.
+    let wavy = (68..86)
+        .filter(|y| (16..106).any(|x| px(x, *y) != bg))
+        .count();
+    let flat = (68..86)
+        .filter(|y| (184..334).any(|x| px(x, *y) != bg))
+        .count();
+    assert!(wavy >= 9, "{wavy}");
+    assert_eq!(flat, 4);
+
+    let (_, buf, _) = strokes(Scale::new(240).unwrap());
+    assert_matches_ref("effects_strokes_2x", &buf, 2);
+}
+
+/// design.md: a wavy meter "flattens when paused": `wave: 3` → `0`
+/// springs, and `reduced_motion` snaps.
+#[test]
+fn a_wavy_meter_flattens_by_spring() {
+    use std::time::Duration;
+    let rows = |buf: &Buffer| {
+        (8..36)
+            .filter(|y| (16..166).any(|x| buf.px(x, *y) != [0x2e, 0x1e, 0x1e, 0xff]))
+            .count()
+    };
+    for reduced in [false, true] {
+        let (mut r, mut buf, ids) = scene(
+            vec![(
+                NodeKind::Meter,
+                vec![
+                    (Prop::X, num(16.0)),
+                    (Prop::Y, num(20.0)),
+                    (Prop::Width, num(150.0)),
+                    (Prop::Height, num(4.0)),
+                    (Prop::Value, num(0.8)),
+                    (Prop::Wave, num(3.0)),
+                ],
+            )],
+            (180.0, 44.0),
+            Scale::ONE,
+            1000,
+        );
+        let waving = rows(&buf);
+        assert!(waving >= 9, "{waving}");
+        r.set_reduced_motion(reduced);
+        let mut d = SceneDiff::new();
+        d.set(ids[0], Prop::Wave, num(0.0));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1040));
+        let mid = rows(&buf);
+        if reduced {
+            assert_eq!(mid, 4, "reduced motion: flat at once");
+            continue;
+        }
+        assert!(mid > 4, "not snapped: {mid}");
+        let mut seen = vec![mid];
+        let mut t = 1040;
+        while r.wants_frame(S) {
+            t += 16;
+            buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+            seen.push(rows(&buf));
+            assert!(t < 4000, "settles");
+        }
+        assert!(
+            seen.iter().any(|n| *n > 4 && *n < waving),
+            "flattens through lower waves: {seen:?}"
+        );
+        assert_eq!(rows(&buf), 4, "flat");
+    }
+}

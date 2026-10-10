@@ -419,7 +419,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   (raster sources built from props: `grain:`).
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
   paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
-  morphs, held by the `Animator`).
+  morphs, held by the `Animator`), `stroke.rs` (stroke styles: trim,
+  wave, dash, caps; arc centre lines).
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).

@@ -1,5 +1,6 @@
 //! What widgets draw over their background: buttons, sliders, inputs
-//! and their carets, segmented controls.
+//! and their carets, segmented controls, meters (wavy too) and `arc`
+//! gauges.
 
 use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
@@ -131,6 +132,39 @@ impl Flattener<'_> {
                     Some(PropValue::Color(c)) => *c,
                     _ => w.accent(),
                 };
+                // (M4) `wave: amplitude`: the fill is a round-capped wavy
+                // line along the middle, as thick as the meter (it
+                // flattens as `wave` springs to 0).
+                let amp = number(get(Prop::Wave)).unwrap_or(0.0);
+                if amp.is_finite() && amp != 0.0 {
+                    let h = f.height();
+                    let (x0, cy) = (f.x0 + h / 2.0, f.center().y);
+                    let x1 = x0 + (f.width() - h).max(0.0) * v;
+                    let mut line = BezPath::new();
+                    line.move_to((x0, cy));
+                    line.line_to((x1.max(x0 + 0.01), cy));
+                    let style = crate::shapes::stroke::Style {
+                        wave: Some((
+                            amp.clamp(-1000.0, 1000.0) as f64 * s,
+                            crate::widgets::METER_WAVELENGTH as f64 * s,
+                        )),
+                        ..crate::shapes::stroke::Style::plain(h, crate::shapes::stroke::Cap::Round)
+                    };
+                    if let Some(path) = crate::shapes::stroke::outline(&line, &style) {
+                        let b = path.bounding_box();
+                        self.push(
+                            Item::Fill {
+                                shape: FillShape::Path(path),
+                                paint: Paint::Solid(fill),
+                                frame: f,
+                            },
+                            cover(b),
+                            sig,
+                            ink,
+                        );
+                    }
+                    return;
+                }
                 let r = kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1);
                 let clip = self.marker(Item::PushClip(w.box_path.clone()));
                 self.out.items[clip].bounds = phys;
@@ -145,6 +179,53 @@ impl Flattener<'_> {
                     ink,
                 );
                 self.marker(Item::PopClip);
+            }
+            NodeKind::Arc => {
+                // (M4) A gauge: the track over the whole sweep, the value
+                // over its fraction, round-capped unless `cap:` says
+                // otherwise; `width` is the line's (design.md: `arc {
+                // value: cpu.usage; sweep: 270deg; width: 4 }`).
+                let v = number(get(Prop::Value)).unwrap_or(0.0) as f64;
+                let sweep = get(Prop::Sweep)
+                    .and_then(crate::effects::degrees)
+                    .unwrap_or(crate::widgets::ARC_SWEEP)
+                    .clamp(0.0, 360.0) as f64;
+                let width = get(Prop::Width)
+                    .and_then(crate::effects::number)
+                    .unwrap_or(crate::widgets::ARC_WIDTH)
+                    .clamp(0.0, 1000.0) as f64
+                    * s;
+                let Some((track, value)) = crate::widgets::arc_lines(f, v, sweep, width) else {
+                    return;
+                };
+                let style = crate::shapes::stroke::style_of(
+                    get,
+                    width,
+                    s,
+                    crate::shapes::stroke::Cap::Round,
+                );
+                let rest = paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(w.color.alpha(0.15)));
+                let fill = match w.node.get(Prop::Color).and(get(Prop::Color)) {
+                    Some(PropValue::Color(c)) => Paint::Solid(*c),
+                    _ => Paint::Solid(w.accent()),
+                };
+                for (line, paint) in [(Some(track), rest), (value, fill)] {
+                    let Some(path) = line.and_then(|l| crate::shapes::stroke::outline(&l, &style))
+                    else {
+                        continue;
+                    };
+                    let b = path.bounding_box();
+                    self.push(
+                        Item::Fill {
+                            shape: FillShape::Path(path),
+                            paint,
+                            frame: f,
+                        },
+                        cover(b),
+                        sig,
+                        ink,
+                    );
+                }
             }
             NodeKind::Slider => {
                 let v = widgets

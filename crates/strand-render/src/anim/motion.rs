@@ -97,11 +97,41 @@ pub(super) fn encode(p: Prop, v: Option<&PropValue>, inh: Color, b: Extents) -> 
         (Prop::Bg, None) => Enc::Four(color_channels(Color::TRANSPARENT)),
         (Prop::Color, None) => Enc::Four(color_channels(inh)),
         (Prop::Bg | Prop::Color, Some(v)) => Enc::Four(color_channels(solid(v)?)),
-        (Prop::Border, None) => {
+        // (M4) `trim: from, to`; `wave: amplitude[, wavelength]`; `glow:
+        // radius, colour` (a lone radius glows in the inherited colour).
+        (Prop::Trim, None) => Enc::Four([0.0, 1.0, 0.0, 0.0]),
+        (Prop::Trim, Some(PropValue::List(items))) => {
+            let a = number(items.first()?)?;
+            let b = number(items.get(1)?)?;
+            Enc::Four([a, b, 0.0, 0.0])
+        }
+        (Prop::Wave, None) => Enc::One([0.0]),
+        (Prop::Wave, Some(PropValue::List(items))) => {
+            let a = number(items.first()?)?;
+            let l = number(items.get(1)?)?;
+            Enc::Four([a, l, 0.0, 0.0])
+        }
+        (Prop::Wave, Some(v)) => Enc::One([number(v)?]),
+        (Prop::Glow, None) => {
             let c = color_channels(Color::TRANSPARENT);
             Enc::Five([0.0, c[0], c[1], c[2], c[3]])
         }
-        (Prop::Border, Some(PropValue::Border(Border { width, paint }))) => {
+        (Prop::Glow, Some(v)) => {
+            let (r, c) = match v {
+                PropValue::List(items) => (
+                    number(items.first()?)?,
+                    items.get(1).map_or(Some(inh), solid)?,
+                ),
+                v => (number(v)?, inh),
+            };
+            let c = color_channels(c);
+            Enc::Five([r, c[0], c[1], c[2], c[3]])
+        }
+        (Prop::Border | Prop::Stroke, None) => {
+            let c = color_channels(Color::TRANSPARENT);
+            Enc::Five([0.0, c[0], c[1], c[2], c[3]])
+        }
+        (Prop::Border | Prop::Stroke, Some(PropValue::Border(Border { width, paint }))) => {
             let c = color_channels(solid(&PropValue::Paint(paint.clone()))?);
             Enc::Five([width.is_finite().then_some(*width)?, c[0], c[1], c[2], c[3]])
         }
@@ -143,6 +173,13 @@ pub(super) fn decode(p: Prop, e: &Enc) -> PropValue {
     match (p, e) {
         (Prop::Rotate, Enc::One([v])) => PropValue::Angle(*v),
         (_, Enc::One([v])) => PropValue::Number(*v),
+        (Prop::Trim | Prop::Wave, Enc::Four(c)) => {
+            PropValue::List(vec![PropValue::Number(c[0]), PropValue::Number(c[1])])
+        }
+        (Prop::Glow, Enc::Five(b)) => PropValue::List(vec![
+            PropValue::Number(b[0].max(0.0)),
+            PropValue::Color(channels_color([b[1], b[2], b[3], b[4]])),
+        ]),
         (Prop::Radius, Enc::Four(c)) => PropValue::Corners(Corners {
             top_left: c[0].max(0.0),
             top_right: c[1].max(0.0),
