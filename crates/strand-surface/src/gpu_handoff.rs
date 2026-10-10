@@ -132,9 +132,17 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     /// In `draw` for a handed-off surface: no paint and no commit, but a
-    /// new size or scale is reported, so the host resizes the swapchain.
+    /// new size or scale is reported, so the host resizes the swapchain,
+    /// and set as pending state (buffer scale or viewport destination, a
+    /// popup's window geometry), so the next present commits it with the
+    /// new buffer.
     pub(super) fn draw_handed_off(&mut self, id: SurfaceId) {
-        self.update_geometry(id);
+        if !self.update_geometry(id) {
+            return;
+        }
+        if let Some(s) = self.surfaces.get_mut(&id) {
+            super::commit::send_geometry(s);
+        }
     }
 }
 

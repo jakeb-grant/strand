@@ -2681,9 +2681,11 @@ would have been) and sends it. One frame is in flight per surface.
   thread that commits that `wl_surface`. The manager stops attaching shm
   buffers, requesting frame callbacks and calling `paint` for it. It
   still handles configures (the ack is sent, `surface_configured` tells
-  the host, which sends `Resize`, and the next present commits the new
-  size) and sets pending state (input and opaque regions, margins from
-  placement) without committing; the next present applies it.
+  the host, which sends `Resize`, the buffer scale or viewport
+  destination and a popup's window geometry are set, and the next
+  present commits the new size) and sets pending state (input and
+  opaque regions, margins from placement, a popup grab's keyboard
+  interactivity) without committing; the next present applies it.
   Compositor poses are not delegated while presented: render paints the
   pose into the GPU frames, which are full frames anyway.
 - `State::take_back(surface)` after the GPU thread's `Released` reply:
