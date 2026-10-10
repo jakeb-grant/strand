@@ -1,6 +1,7 @@
 //! (M4) Media feeds (architecture.md, "M4 additions"): spectrum bands
-//! produced off the main thread reach their nodes through the binary
-//! ([`Renderer::feed`]), and render says which of those nodes are visible
+//! and window thumbnails' frames produced off the main thread reach their
+//! nodes through the binary ([`Renderer::feed`], [`Renderer::feed_frame`]),
+//! and render says which of those nodes are visible
 //! ([`Renderer::take_feed_demand`]) so producers run only for them. Media
 //! nodes get their raster sources when logic creates them.
 
@@ -22,6 +23,18 @@ pub enum FeedKind {
     /// A `spectrum`'s bands, of the audio device its source names (the
     /// device's id as text; `""` before logic set it).
     Spectrum { device: String },
+    /// A `thumbnail`'s frames: of the window its source names (the
+    /// window's id), at most `max` physical pixels (its drawn size,
+    /// rounded up to a multiple of [`THUMBNAIL_STEP`] so a box that
+    /// animates does not capture again every frame).
+    Thumbnail { window: String, max: (u32, u32) },
+}
+
+/// The step a thumbnail's capture size is rounded up to.
+pub const THUMBNAIL_STEP: u32 = 64;
+
+fn step_up(v: u32) -> u32 {
+    v.div_ceil(THUMBNAIL_STEP).max(1) * THUMBNAIL_STEP
 }
 
 impl Renderer {
@@ -48,6 +61,16 @@ impl Renderer {
             return;
         };
         s.feed(bands);
+        self.mark_node_dirty(node);
+    }
+
+    /// (M4) A new frame of `node`'s window (`None`: the window is gone):
+    /// it repaints. Ignored for a node that is gone or no thumbnail.
+    pub fn feed_frame(&mut self, node: NodeId, frame: Option<crate::ThumbnailFrame>) {
+        let Some(Source::Thumbnail(s)) = self.extras.media.sources.get(&node) else {
+            return;
+        };
+        s.feed(frame);
         self.mark_node_dirty(node);
     }
 
@@ -79,13 +102,17 @@ impl Renderer {
         }
         let mut now: Vec<FeedDemand> = Vec::new();
         for (id, src) in &self.extras.media.sources {
-            let visible = self
-                .surfaces
-                .values()
-                .any(|s| s.painted && s.records.get(id).is_some_and(|r| !r.bounds.is_empty()));
-            if !visible {
-                continue;
+            // The largest it is drawn, in physical pixels.
+            let mut drawn: Option<(u32, u32)> = None;
+            for s in self.surfaces.values().filter(|s| s.painted) {
+                if let Some(r) = s.records.get(id).filter(|r| !r.bounds.is_empty()) {
+                    let (w, h) = drawn.unwrap_or((0, 0));
+                    drawn = Some((w.max(r.bounds.w), h.max(r.bounds.h)));
+                }
             }
+            let Some((dw, dh)) = drawn else {
+                continue;
+            };
             let kind = match src {
                 Source::Spectrum(_) if reduced => continue,
                 Source::Spectrum(_) => {
@@ -95,6 +122,17 @@ impl Renderer {
                         _ => String::new(),
                     };
                     FeedKind::Spectrum { device }
+                }
+                Source::Thumbnail(_) => {
+                    match self.tree.get(*id).and_then(|n| n.get(Prop::Source)) {
+                        Some(PropValue::Text(t) | PropValue::Keyword(t)) if !t.is_empty() => {
+                            FeedKind::Thumbnail {
+                                window: t.clone(),
+                                max: (step_up(dw), step_up(dh)),
+                            }
+                        }
+                        _ => continue,
+                    }
                 }
                 Source::Graph(_) | Source::Svg(_) | Source::Lottie(_) => continue,
             };

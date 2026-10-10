@@ -30,7 +30,7 @@ mod text;
 mod tooltip;
 mod wake;
 
-pub use feed::{FeedDemand, FeedKind};
+pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use text::TextBackend;
 use text::{TextSlot, TextState};

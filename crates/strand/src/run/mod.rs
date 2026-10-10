@@ -427,8 +427,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let mut host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
         .waking(wake);
-    // (M4) Spectrum bands from the audio thread, for the visible spectra.
-    let (feeds_tx, feeds_rx) = calloop::channel::channel::<feeds::Bands>();
+    // (M4) Spectrum bands from the audio thread and window frames from
+    // the compositor thread, for the visible spectra and thumbnails.
+    let (feeds_tx, feeds_rx) = calloop::channel::channel::<feeds::Fed>();
     host.feeds = Some(feeds::Feeds::new(feeds_tx));
     let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
@@ -444,8 +445,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     handle
         .insert_source(feeds_rx, |event, _, state| {
-            if let Event::Msg(bands) = event {
-                feeds::fed(state, bands);
+            if let Event::Msg(fed) = event {
+                feeds::fed(state, fed);
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;

@@ -1,6 +1,7 @@
 //! (M4) Media and data nodes (design.md, "Generative, data-driven and
 //! media"): animated images (through the image store), and the CPU
-//! raster sources of `graph`, `spectrum`, `svg` and `lottie`, attached to their nodes when
+//! raster sources of `graph`, `spectrum`, `svg`, `lottie` and
+//! `thumbnail`, attached to their nodes when
 //! logic creates them ([`Media`]).
 
 pub mod animated;
@@ -8,6 +9,7 @@ pub mod graph;
 pub mod lottie;
 pub mod spectrum;
 pub mod svg;
+pub mod thumbnail;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +35,11 @@ pub(crate) fn created(diff: &SceneDiff) -> Vec<(NodeId, NodeKind)> {
 pub(crate) fn is_media(kind: NodeKind) -> bool {
     matches!(
         kind,
-        NodeKind::Graph | NodeKind::Spectrum | NodeKind::Svg | NodeKind::Lottie
+        NodeKind::Graph
+            | NodeKind::Spectrum
+            | NodeKind::Svg
+            | NodeKind::Lottie
+            | NodeKind::Thumbnail
     )
 }
 
@@ -44,6 +50,7 @@ pub(crate) enum Source {
     Spectrum(Arc<spectrum::SpectrumSource>),
     Svg(Arc<svg::SvgSource>),
     Lottie(Arc<lottie::LottieSource>),
+    Thumbnail(Arc<thumbnail::ThumbnailSource>),
 }
 
 impl Source {
@@ -53,6 +60,7 @@ impl Source {
             NodeKind::Spectrum => Source::Spectrum(Arc::default()),
             NodeKind::Svg => Source::Svg(Arc::default()),
             NodeKind::Lottie => Source::Lottie(Arc::default()),
+            NodeKind::Thumbnail => Source::Thumbnail(Arc::default()),
             _ => return None,
         })
     }
@@ -64,6 +72,7 @@ impl Source {
             Source::Spectrum(s) => s.clone(),
             Source::Svg(s) => s.clone(),
             Source::Lottie(s) => s.clone(),
+            Source::Thumbnail(s) => s.clone(),
         }
     }
 }

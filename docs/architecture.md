@@ -3486,9 +3486,14 @@ transparent huge pages for life.
     `CaptureFrame { width, height, pixels: Arc<[u8]> }` is premultiplied
     BGRA, scaled down (box filter) to cover `max` (0 for no limit). The
     callback runs on the protocol thread. Frames reach render through the
-    binary (`Renderer::feed_frame`), only while the thumbnail is visible
-    (`crates/strand-services/tests/capture.rs`, against
-    strand-fake-wayland's ext-image-copy-capture).
+    binary (`Renderer::feed_frame(node, Option<ThumbnailFrame>)`, the same
+    fields as `CaptureFrame`), only while the thumbnail is visible:
+    `take_feed_demand` lists it as `FeedKind::Thumbnail { window, max }`
+    (its source's window id, its drawn physical size rounded up to
+    `THUMBNAIL_STEP` = 64), and `run/feeds.rs` holds one `CaptureTap` per
+    such node (`crates/strand-services/tests/capture.rs`, against
+    strand-fake-wayland's ext-image-copy-capture;
+    `crates/strand-render/tests/thumbnail.rs`).
   - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the
     anchor's output-logical position for `x`/`y` instead of 0, 0. How it
     reaches the action (an optional argument, or filled in by the host
