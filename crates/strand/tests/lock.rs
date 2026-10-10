@@ -1005,6 +1005,49 @@ fn pam_helper_missing_shows_the_fallback() {
     auth_fault("auth_missing", "auth_missing");
 }
 
+/// The other outputs show the config's lock colour, the fallback's
+/// while it shows, and the config's again on the next lock of the same
+/// run (`auth_missing`: every submit through `auth` shows the fallback),
+/// following the lock's `when` (`auth.failed`).
+#[test]
+fn a_lock_after_the_fallback_has_the_configs_colour_again() {
+    let test = "colour_after_fallback";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "auth_missing");
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    // The second lock still says `auth.failed` (nothing succeeded
+    // through `auth`): its colour is the refused one, on both outputs.
+    for bg in [LOCK_BG, LOCK_REFUSED] {
+        if bg != LOCK_BG {
+            // A new lock session: closed, then opened again.
+            vm.strand.cli(&["set", "lock.locked", "false"]);
+        }
+        vm.lock();
+        vm.until_locked("HEADLESS-1", "the config's lock", true, |s| {
+            near(s.corner(), bg)
+        });
+        vm.until_locked(
+            &second,
+            "the lock's colour on the other output",
+            true,
+            |s| near(s.corner(), bg),
+        );
+        vm.lock_enter(PASSWORD);
+        vm.fallback();
+        vm.until_locked(
+            &second,
+            "the fallback's colour on the other output",
+            true,
+            |s| near(s.corner(), FALLBACK_BG),
+        );
+        vm.fallback_passwords();
+        vm.until(&second, "the desktop on the second output", Shot::desktop);
+    }
+}
+
 /// A runtime fault inside the lock (`10 / zero`) freezes its component.
 #[test]
 fn runtime_fault_in_the_lock_shows_the_fallback() {
@@ -1045,7 +1088,9 @@ fn sigterm_while_locked_waits_for_the_unlock() {
 
 /// SIGTERM while locked, logic ended, then the content's output
 /// unplugged: the content is made again on the other output and the
-/// fallback follows it there and takes the passwords. (Logic's unmount at its end sends render no diff, so the
+/// fallback follows it there and takes the passwords. Before the fault
+/// the other output shows the config's lock colour, after it the
+/// fallback's. (Logic's unmount at its end sends render no diff, so the
 /// lock's node stays in render's tree here; `lock_unmount` below plays
 /// the node gone.)
 #[test]
@@ -1059,8 +1104,20 @@ fn sigterm_then_the_contents_output_unplugged_keeps_the_fallback() {
     vm.until(&second, "the desktop on the second output", Shot::desktop);
     vm.lock();
     vm.content();
+    vm.until_locked(
+        &second,
+        "the lock's colour on the other output",
+        true,
+        |s| near(s.corner(), LOCK_BG),
+    );
     vm.strand.signal(libc::SIGTERM);
     vm.fallback();
+    vm.until_locked(
+        &second,
+        "the fallback's colour on the other output",
+        true,
+        |s| near(s.corner(), FALLBACK_BG),
+    );
     // Logic has unmounted the lock and ended.
     let deadline = Instant::now() + WAIT;
     while vm.strand.has_thread("strand-logic") {

@@ -39,7 +39,9 @@ use strand_auth::{AuthError, Client, Password, UnlockToken, Verdict};
 use strand_compiler::instantiate::SessionLock;
 use strand_render::TextBackend;
 use strand_render::lock_fallback::{Action, FieldState, LockFallback};
-use strand_scene::{Color, Damage, InputEvent, NodeKind, PaintTarget, SurfaceId};
+use strand_scene::{
+    Color, Damage, InputEvent, NodeKind, Paint, PaintTarget, Prop, PropValue, SurfaceId, TokenScope,
+};
 use strand_surface::{LOCK_FALLBACK_NODE, LockState, State};
 
 use super::shell::Shell;
@@ -588,6 +590,12 @@ impl Guard {
             state.poll();
             return;
         }
+        // The other outputs show the lock's colour (the fallback's own,
+        // set above, only while it shows).
+        let color = state.host().lock.content.map_or(Color::BLACK, |(_, node)| {
+            lock_color(state.host().renderer.tree(), node)
+        });
+        state.set_lock_color(color);
         // The heartbeat.
         match self.waiting {
             Some((seq, _)) if BEAT.load(Ordering::Acquire) >= seq => {
@@ -704,6 +712,29 @@ impl Guard {
         at.into_iter()
             .min()
             .map(|t| t.saturating_duration_since(now))
+    }
+}
+
+/// The colour of the lock's other outputs while the config's lock shows
+/// (architecture.md: "a single-pixel background in the lock's colour"):
+/// the `lock` node's `bg`, its tokens resolved; a gradient's first stop;
+/// black when it has none.
+fn lock_color(tree: &strand_render::SceneTree, node: NodeId) -> Color {
+    let Some(n) = tree.get(node) else {
+        return Color::BLACK;
+    };
+    let mut levels = vec![&tree.tokens];
+    if let Some(PropValue::Tokens(t)) = n.get(Prop::Tokens) {
+        levels.push(t);
+    }
+    let scope = TokenScope::new(&levels);
+    let bg = n.get(Prop::Bg).and_then(|v| scope.resolve(v));
+    match bg.as_deref() {
+        Some(PropValue::Color(c) | PropValue::Paint(Paint::Solid(c))) => *c,
+        Some(PropValue::Paint(
+            Paint::Linear { stops, .. } | Paint::Radial { stops } | Paint::Conic { stops, .. },
+        )) => stops.first().map_or(Color::BLACK, |s| s.color),
+        _ => Color::BLACK,
     }
 }
 
@@ -966,6 +997,53 @@ mod tests {
             Some(FieldState::Failed)
         );
         assert!(s.checked(Verdict::Failed(AuthError::Timeout)).is_none());
+    }
+
+    /// The other outputs take the `lock`'s `bg`: a colour, a token, a
+    /// gradient's first stop; black without one.
+    #[test]
+    fn the_lock_colour_is_the_lock_nodes_bg() {
+        use strand_scene::{GradientStop, SceneDiff, TokenExpr, TokenTable};
+        let blue = Color::new(0.125, 0.3125, 0.8125, 1.0);
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let mut tree = strand_render::SceneTree::new();
+        let ids: Vec<NodeId> = (1..=5).map(|i| NodeId::new(i, 0)).collect();
+        let mut d = SceneDiff::new();
+        for (i, id) in ids.iter().enumerate() {
+            d.create(*id, NodeKind::Lock, None, i as u32);
+        }
+        let mut tokens = TokenTable::default();
+        tokens.insert("lockbg", PropValue::Color(red));
+        d.set_tokens(tokens, strand_scene::Transition::Instant);
+        d.set(ids[0], Prop::Bg, PropValue::Color(blue))
+            .set(
+                ids[1],
+                Prop::Bg,
+                PropValue::Token(TokenExpr::path("lockbg")),
+            )
+            .set(
+                ids[2],
+                Prop::Bg,
+                PropValue::Paint(Paint::Linear {
+                    angle: 0.0,
+                    stops: vec![
+                        GradientStop {
+                            offset: 0.0,
+                            color: blue,
+                        },
+                        GradientStop {
+                            offset: 1.0,
+                            color: red,
+                        },
+                    ],
+                }),
+            );
+        assert!(tree.apply(d).is_empty());
+        assert_eq!(lock_color(&tree, ids[0]), blue);
+        assert_eq!(lock_color(&tree, ids[1]), red, "a token");
+        assert_eq!(lock_color(&tree, ids[2]), blue, "a gradient's first stop");
+        assert_eq!(lock_color(&tree, ids[3]), Color::BLACK, "no bg");
+        assert_eq!(lock_color(&tree, NodeId::new(9, 0)), Color::BLACK);
     }
 
     #[test]
