@@ -139,6 +139,8 @@ impl Shell {
                 self.host_notices.push(text);
             }
             ToLogic::Notice(_) => {}
+            ToLogic::LockState(state) => self.lock_state(state),
+            ToLogic::Beat(seq) => super::lock::beat(seq),
             ToLogic::Shutdown => {}
         }
     }
@@ -462,6 +464,7 @@ impl Shell {
     /// After a step: send the reload events it drew (and answer the
     /// clients waiting for a reload), report runtime faults.
     pub(super) fn after_step(&mut self, update: &strand_compiler::instantiate::Update) {
+        self.lock_faults(&update.errors);
         for e in &update.errors {
             log::error!("{e}");
             // A runtime fault freezes its component, outlined red.

@@ -31,6 +31,9 @@ pub struct Host {
     roots: HashMap<SurfaceId, NodeId>,
     /// The blur ladder's last rung: says once why `blur` draws its tint.
     blur_fallback: BlurFallback,
+    /// The session lock's content and its built-in fallback (`strand
+    /// run`'s `run/lock.rs`).
+    pub(crate) lock: crate::run::lock::LockScreen,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -302,6 +305,7 @@ impl Host {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
                 ..BlurFallback::default()
             },
+            lock: crate::run::lock::LockScreen::default(),
             #[cfg(test)]
             probe: None,
         }
@@ -403,7 +407,12 @@ impl Host {
 
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        // The lock's built-in fallback, when it shows (`run/lock.rs`).
+        if let Some(damage) = self.lock.paint(surface, target) {
+            return damage;
+        }
         let damage = self.renderer.paint(surface, target);
+        self.lock.painted(surface, &damage);
         self.note_blur_fallback(surface);
         self.forward_facts();
         // Virtualised lists scrolled past their mounted rows ask logic
@@ -449,14 +458,22 @@ impl Painter for Host {
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
-        self.renderer.wants_frame(surface)
+        self.lock
+            .wants_frame(surface)
+            .unwrap_or_else(|| self.renderer.wants_frame(surface))
     }
 
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
+        if self.lock.shown_on(surface) {
+            return Damage::new();
+        }
         self.renderer.opaque_region(surface)
     }
 
     fn blur_region(&self, surface: SurfaceId) -> Vec<BlurRegion> {
+        if self.lock.shown_on(surface) {
+            return Vec::new();
+        }
         self.renderer.blur_region(surface)
     }
 }
@@ -471,6 +488,8 @@ impl SurfaceHost for Host {
             );
         }
         self.renderer.attach_surface(surface, node);
+        let kind = self.renderer.tree().get(node).map(|n| n.kind);
+        self.lock.attached(surface, node, kind);
         self.roots.insert(surface, node);
         self.renderer
             .set_surface_bounds(surface, monitor.and_then(monitor_bounds));
@@ -492,6 +511,7 @@ impl SurfaceHost for Host {
             p.0.configured(surface);
         }
         self.renderer.configure_surface(surface, size, scale);
+        self.lock.configured(surface);
         if let Some(f) = &self.logic {
             let tree = self.renderer.tree();
             f.configured(surface, size, scale, |node| {
@@ -506,6 +526,7 @@ impl SurfaceHost for Host {
 
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
+        self.lock.detached(surface);
         self.renderer.detach_surface(surface);
         self.roots.remove(&surface);
         if let Some(f) = &mut self.logic {
@@ -546,6 +567,13 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
+        // The fallback lock takes its surface's input (`run/lock.rs`).
+        if self.lock.input(event) {
+            if let Some(p) = &self.wake {
+                p.ping();
+            }
+            return;
+        }
         // Surfaces already wanting a frame (animating) get it anyway.
         let idle: Vec<SurfaceId> = self.logic.as_ref().map_or_else(Vec::new, |f| {
             f.surfaces
@@ -578,6 +606,17 @@ impl SurfaceHost for Host {
             eprintln!("strand: dropped surface={}", surface.0);
         }
         self.renderer.invalidate(surface);
+    }
+
+    fn lock_changed(&mut self, state: strand_surface::LockState) {
+        log::info!("session lock: {state:?}");
+        self.lock.changed(state);
+        if let Some(f) = &self.logic {
+            f.send(ToLogic::LockState(crate::run::lock::session_lock(state)));
+        }
+        if let Some(p) = &self.wake {
+            p.ping();
+        }
     }
 
     fn compositor_caps(&mut self, caps: &CompositorCaps) {
