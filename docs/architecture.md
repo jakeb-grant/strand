@@ -246,10 +246,28 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   answer, with 3 s to answer. The faults also include a runtime fault
   inside the lock, the text worker stopping, `auth` failing to check,
   `finished` after `locked` and a lock with no `lock` open. A marker,
-  `$XDG_RUNTIME_DIR/strand-<display>.locked`, is kept while the
-  compositor says locked; a strand started while it exists locks at once
-  with the fallback. The `faults` feature (`STRAND_FAULT`) injects each
-  fault for `tests/lock.rs`, which runs only in the lock VM.
+  `$XDG_RUNTIME_DIR/strand-<display>.locked`, is written once the
+  compositor says locked and removed once no lock is asked for or held
+  (an unlock, or a lock the compositor refused); a strand started while
+  it exists locks at once with the fallback. While the config's lock
+  shows, the other outputs' solids take the `lock` node's `bg`; while
+  the fallback shows, its background. Logic redacts the current values
+  of `type: password` inputs from the runtime fault messages it logs and
+  streams to `strand watch` (`lock::Secrets`). The `faults` feature
+  (`STRAND_FAULT`) injects each fault for `tests/lock.rs`, which runs
+  only in the lock VM.
+  Residual risk: rendering runs on the main thread, and the main thread
+  is what outlives every other fault. If the process itself dies while
+  locked (a panic on the main thread, an allocation failure, which
+  aborts, or SIGKILL), the compositor keeps the session locked, as the
+  protocol requires, and shows its own abandoned-lock screen with no
+  password field. The marker brings the field back only when strand is
+  started again, and strand ships no supervisor: a session that uses
+  the lock must run strand under one that restarts it when it exits
+  abnormally (a systemd user unit with `Restart=on-failure`, or a
+  restart loop in the compositor's autostart). Without one, a main
+  thread fault while locked needs another way into the session (a VT,
+  ssh) to start strand again.
 - The PAM helper is a process, not a thread: the `strand-auth` binary,
   fork+exec'd over a socketpair by `strand_auth::Client`, one per lock
   session, respawned when it dies. The `Client`'s owner hands it
