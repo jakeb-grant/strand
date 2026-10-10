@@ -18,8 +18,11 @@
 //! What is behind is the earlier items over the node's box grown by the
 //! blur's reach. Groups still open at the node (its ancestors' clips,
 //! transforms and layers) are left open: their items draw as they are.
-//! A backdrop inside an offscreen ancestor shows nothing behind it (the
-//! ancestor is drawn before backdrops are).
+//! Inside an offscreen ancestor (a `filter: blur` or colour matrix around
+//! it) the backdrop is drawn first, from what is behind it on the
+//! surface, and the ancestor then draws it with the rest of its content
+//! and filters it with them ([`crate::offscreen::Offscreen::prepare`]
+//! orders groups by where they end).
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;

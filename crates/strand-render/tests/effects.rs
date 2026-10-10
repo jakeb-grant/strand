@@ -903,6 +903,56 @@ fn backdrop_blurs_what_is_behind() {
     assert_matches_ref("effects_backdrop_2x", &buf, 2);
 }
 
+/// A `backdrop:` inside an offscreen ancestor (a `filter: grayscale(1)`
+/// holder) shows what is behind it on the surface, blurred, and the
+/// ancestor filters it with the rest of its content: grey and mixed
+/// inside, the stripes untouched outside (ref `effects_backdrop_nested.png`).
+#[test]
+fn a_backdrop_inside_a_filtered_ancestor_shows_what_is_behind() {
+    let colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"];
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    for i in 0..12 {
+        let mut p = at_xy(i as f32 * 10.0, 0.0, 10.0, 64.0);
+        p.push((Prop::Bg, color(colors[i % 4])));
+        p.push((Prop::Place, kw("absolute")));
+        b.node(NodeKind::Box, Some(root), p);
+    }
+    let mut p = at_xy(12.0, 12.0, 64.0, 40.0);
+    p.push((Prop::Place, kw("absolute")));
+    p.push((Prop::Filter, call("grayscale", vec![num(1.0)])));
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    let mut p = at_xy(0.0, 0.0, 64.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Radius, num(12.0)),
+        (Prop::Backdrop, call("blur", vec![num(16.0)])),
+    ]);
+    b.node(NodeKind::Box, Some(holder), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(120, 64, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    assert_matches_ref("effects_backdrop_nested", &buf, 2);
+    // Grey, but for the little of the sharp stripes that shows where the
+    // blur reaches past the surface's edge (transparent there).
+    let chroma = |p: [u8; 4]| p[..3].iter().max().unwrap() - p[..3].iter().min().unwrap();
+    let grey = |p: [u8; 4]| chroma(p) <= 16;
+    let pure = [buf.px(45, 2), buf.px(35, 2), buf.px(55, 2)];
+    for x in [30, 45, 60] {
+        let p = buf.px(x, 32);
+        assert!(grey(p) && p[3] == 255, "({x}, 32) grey: {p:?}");
+        assert!(!pure.contains(&p));
+    }
+    // Neighbouring stripes blend: not one stripe's own grey.
+    assert_ne!(buf.px(31, 32), buf.px(39, 32));
+    assert!(
+        !grey(buf.px(45, 2)),
+        "outside, the stripes keep their colour"
+    );
+}
+
 /// The five built-in effects and a particle field, 72×48 each, on a
 /// 432×64 bar; the first frame at 1 s (their clocks' `t = 0`).
 fn generative(scale: Scale, reduced: bool) -> (Renderer, Buffer) {

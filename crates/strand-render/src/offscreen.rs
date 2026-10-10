@@ -149,27 +149,48 @@ impl Offscreen {
                 i += 1;
             }
         }
-        // Inner groups (later in the list) first; backdrops last, in
-        // order, as they show the groups behind them.
-        let backdrops: Vec<usize> = groups
+        // Each group after every group it shows: by where it ends, so
+        // the groups inside one come before it (it is drawn whole), and a
+        // backdrop (an empty group) comes after the groups closed before
+        // it, which it shows behind it, and before the groups still open
+        // around it, which then show its pixels.
+        let mut order: Vec<(usize, usize)> = groups
             .iter()
-            .copied()
-            .filter(|&i| {
-                matches!(&items[i].item, Item::PushLayer(l)
-                    if crate::backdrop::pass(l, scale).is_some())
-            })
+            .map(|&i| (crate::raster::skip_group(items, i), i))
             .collect();
-        for &i in groups.iter().rev() {
+        order.sort_unstable();
+        for (end, i) in order {
             let Item::PushLayer(layer) = &items[i].item else {
                 continue;
             };
-            if backdrops.contains(&i) {
-                continue;
-            }
             let Some(region) = items[i].bounds.intersect(surface).filter(|r| !r.is_empty()) else {
                 continue;
             };
-            let end = crate::raster::skip_group(items, i);
+            if let Some(pass) = crate::backdrop::pass(layer, scale) {
+                let key = crate::backdrop::key(items, i, pass, region, scale, &self.current);
+                let drawn = match self.get(key) {
+                    Some(d) => d,
+                    None => {
+                        let Some(drawn) = crate::backdrop::render(
+                            items,
+                            i,
+                            pass,
+                            region,
+                            surface,
+                            atlas,
+                            cache,
+                            scale,
+                            &self.current,
+                        ) else {
+                            continue;
+                        };
+                        self.builds += 1;
+                        self.insert(key, drawn)
+                    }
+                };
+                self.current.insert(layer_key(layer), drawn);
+                continue;
+            }
             let inner = &items[i + 1..end.saturating_sub(1).max(i + 1)];
             let mut h = DefaultHasher::new();
             (
@@ -206,39 +227,6 @@ impl Offscreen {
                     let Some(drawn) =
                         render_group(inner, layer, region, atlas, cache, scale, &self.current)
                     else {
-                        continue;
-                    };
-                    self.builds += 1;
-                    self.insert(key, drawn)
-                }
-            };
-            self.current.insert(layer_key(layer), drawn);
-        }
-        for i in backdrops {
-            let Item::PushLayer(layer) = &items[i].item else {
-                continue;
-            };
-            let (Some(pass), Some(region)) = (
-                crate::backdrop::pass(layer, scale),
-                items[i].bounds.intersect(surface).filter(|r| !r.is_empty()),
-            ) else {
-                continue;
-            };
-            let key = crate::backdrop::key(items, i, pass, region, scale, &self.current);
-            let drawn = match self.get(key) {
-                Some(d) => d,
-                None => {
-                    let Some(drawn) = crate::backdrop::render(
-                        items,
-                        i,
-                        pass,
-                        region,
-                        surface,
-                        atlas,
-                        cache,
-                        scale,
-                        &self.current,
-                    ) else {
                         continue;
                     };
                     self.builds += 1;
@@ -548,6 +536,24 @@ pub struct RasterProps<'a> {
     /// (M4) An `svg`'s `#id { … }` parts: each id and its props as
     /// resolved for this frame (empty for every other node).
     pub parts: &'a [(String, Vec<(strand_scene::Prop, strand_scene::PropValue)>)],
+    /// (M4) Where a source's file jobs run (the image store's worker, or
+    /// inline): `None` runs them inline.
+    pub files: Option<&'a crate::image::ImageStore>,
+}
+
+impl RasterProps<'_> {
+    /// Runs the file job `key` ([`crate::image::ImageStore::load_file`]):
+    /// its result, or `None` while it is on the worker.
+    pub(crate) fn load_file(
+        &self,
+        key: &str,
+        work: impl FnOnce() -> crate::image::Loaded + Send + 'static,
+    ) -> Option<crate::image::Loaded> {
+        match self.files {
+            Some(store) => store.load_file(key, work),
+            None => Some(work()),
+        }
+    }
 }
 
 impl std::fmt::Debug for RasterProps<'_> {

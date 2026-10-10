@@ -712,6 +712,42 @@ fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<(Raster, (f64, f6
     ))
 }
 
+/// (M4) Decodes a PNG or JPEG held in memory (a Lottie's image asset)
+/// at `want` pixels (its own size, within [`MAX_SIDE`], when `None`), as
+/// premultiplied RGBA in vello's own order (not swapped: drawn inside a
+/// raster node, as the node's own colours are).
+pub(crate) fn decode_rgba(data: &[u8], want: Option<(u32, u32)>) -> Result<Pixmap, ImageError> {
+    let ask = want.map_or((MAX_SIDE, MAX_SIDE), |(w, h)| {
+        (w.clamp(1, MAX_SIDE), h.clamp(1, MAX_SIDE))
+    });
+    let src = if data.starts_with(b"\x89PNG") {
+        decode_png(data, ask, Fit::Fill)?
+    } else if data.starts_with(&[0xff, 0xd8]) {
+        decode_jpeg(data, ask, Fit::Fill)?
+    } else {
+        return Err(ImageError::Decode("not a PNG or JPEG".into()));
+    };
+    let (w, h) = match want {
+        Some(_) => ask,
+        None => (src.w.clamp(1, MAX_SIDE), src.h.clamp(1, MAX_SIDE)),
+    };
+    let r = if (src.w, src.h) == (w, h) {
+        src
+    } else {
+        fit_raster(&src, w, h, Fit::Fill)
+    };
+    let mut pm = Pixmap::new(r.w as u16, r.h as u16);
+    for (d, s) in pm.data_mut().iter_mut().zip(r.rgba.chunks_exact(4)) {
+        *d = PremulRgba8 {
+            r: s[0],
+            g: s[1],
+            b: s[2],
+            a: s[3],
+        };
+    }
+    Ok(pm)
+}
+
 /// A vello pixmap of premultiplied RGBA, red and blue swapped.
 fn to_pixmap(r: &Raster) -> Pixmap {
     let mut pm = Pixmap::new(r.w as u16, r.h as u16);
@@ -748,13 +784,61 @@ pub fn set_idle_hook(hook: fn()) {
     let _ = IDLE_HOOK.set(hook);
 }
 
+/// (M4) What a media source's file job gives back: its parsed content
+/// (an `svg`'s text, a `lottie`'s model and decoded images), or why not.
+pub(crate) type Loaded = Result<Arc<dyn std::any::Any + Send + Sync>, String>;
+
+/// (M4) A media source's file job: read and parse on the worker.
+pub(crate) struct FileJob {
+    key: String,
+    work: Box<dyn FnOnce() -> Loaded + Send>,
+}
+
+/// One job for the worker.
+enum Job {
+    Image(ImageKey),
+    File(FileJob),
+}
+
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Job::Image(k) => f.debug_tuple("Image").field(k).finish(),
+            Job::File(j) => f.debug_tuple("File").field(&j.key).finish(),
+        }
+    }
+}
+
+/// (M4) File results kept for their sources to take.
+const MAX_FILES_DONE: usize = 64;
+
+/// (M4) File jobs in flight and done, by key.
+#[derive(Default)]
+struct FileLoads {
+    pending: HashSet<String>,
+    done: HashMap<String, Loaded>,
+    /// A job finished since the render loop last looked.
+    arrived: bool,
+}
+
+impl std::fmt::Debug for FileLoads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileLoads")
+            .field("pending", &self.pending)
+            .field("done", &self.done.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct ImageWorker {
-    requests: Option<Sender<ImageKey>>,
+    requests: Option<Sender<Job>>,
     /// `None`: dropped undecoded, no longer wanted.
     results: Receiver<(ImageKey, Option<Result<Decoded, ImageError>>)>,
     /// The keys some live frame draws (or will once decoded).
     wanted: Arc<Mutex<HashSet<ImageKey>>>,
+    /// (M4) Media sources' file jobs.
+    files: Arc<Mutex<FileLoads>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -762,10 +846,12 @@ impl ImageWorker {
     /// Starts the worker; `waker` runs after each result is sent (the
     /// render loop's ping).
     pub fn spawn(theme: IconTheme, waker: Option<Box<dyn Fn() + Send>>) -> std::io::Result<Self> {
-        let (req_tx, req_rx) = mpsc::channel::<ImageKey>();
+        let (req_tx, req_rx) = mpsc::channel::<Job>();
         let (out_tx, out_rx) = mpsc::channel();
         let wanted: Arc<Mutex<HashSet<ImageKey>>> = Arc::default();
         let still = wanted.clone();
+        let files: Arc<Mutex<FileLoads>> = Arc::default();
+        let loads = files.clone();
         let thread = std::thread::Builder::new()
             .name("strand-image".into())
             .spawn(move || {
@@ -784,8 +870,8 @@ impl ImageWorker {
                 };
                 let mut players = players_live();
                 loop {
-                    let key = match req_rx.try_recv() {
-                        Ok(key) => key,
+                    let job = match req_rx.try_recv() {
+                        Ok(job) => job,
                         Err(TryRecvError::Disconnected) => return,
                         Err(TryRecvError::Empty) => {
                             // Images no frame draws any more stop playing.
@@ -805,7 +891,7 @@ impl ImageWorker {
                                 Some(d) => req_rx.recv_timeout(d),
                             };
                             match next {
-                                Ok(key) => key,
+                                Ok(job) => job,
                                 // Quiet: the owed hook, then block.
                                 Err(RecvTimeoutError::Timeout) => {
                                     if let Some(hook) = IDLE_HOOK.get() {
@@ -815,6 +901,31 @@ impl ImageWorker {
                                 }
                                 Err(RecvTimeoutError::Disconnected) => return,
                             }
+                        }
+                    };
+                    let key = match job {
+                        Job::Image(key) => key,
+                        // (M4) A media source's file: read and parsed
+                        // here, the render loop woken to take it.
+                        Job::File(FileJob { key, work }) => {
+                            gate.worked();
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                                .unwrap_or_else(|_| Err("parser panicked".into()));
+                            if let Ok(mut f) = loads.lock() {
+                                // Results no source came back for (its
+                                // source changed while it was read) are
+                                // not kept for ever.
+                                if f.done.len() >= MAX_FILES_DONE {
+                                    f.done.clear();
+                                }
+                                f.pending.remove(&key);
+                                f.done.insert(key, r);
+                                f.arrived = true;
+                            }
+                            if let Some(w) = &waker {
+                                w();
+                            }
+                            continue;
                         }
                     };
                     // A request no frame wants any more (a size passed
@@ -849,6 +960,7 @@ impl ImageWorker {
             requests: Some(req_tx),
             results: out_rx,
             wanted,
+            files,
             thread: Some(thread),
         })
     }
@@ -1107,7 +1219,7 @@ impl ImageStore {
                     let sent = w
                         .requests
                         .as_ref()
-                        .is_some_and(|tx| tx.send(k.clone()).is_ok());
+                        .is_some_and(|tx| tx.send(Job::Image(k.clone())).is_ok());
                     if sent {
                         self.pending.insert(k.clone());
                     } else {
@@ -1117,6 +1229,53 @@ impl ImageStore {
             }
         }
         decoded
+    }
+
+    /// (M4) A media source's file job `key` (an `svg`'s or `lottie`'s
+    /// source): its result once done, taken (the source keeps it), or
+    /// `None` while the worker runs it. Inline, it runs at once; with a
+    /// worker it is sent once and the render loop is woken when it is
+    /// done ([`ImageStore::files_arrived`]).
+    pub(crate) fn load_file(
+        &self,
+        key: &str,
+        work: impl FnOnce() -> Loaded + Send + 'static,
+    ) -> Option<Loaded> {
+        let ImageBackend::Worker(w) = &self.backend else {
+            return Some(work());
+        };
+        let Ok(mut f) = w.files.lock() else {
+            return Some(Err("image worker poisoned".into()));
+        };
+        if let Some(r) = f.done.remove(key) {
+            return Some(r);
+        }
+        if f.pending.contains(key) {
+            return None;
+        }
+        let job = Job::File(FileJob {
+            key: key.to_string(),
+            work: Box::new(work),
+        });
+        match w.requests.as_ref().map(|tx| tx.send(job)) {
+            Some(Ok(())) => {
+                f.pending.insert(key.to_string());
+                None
+            }
+            _ => Some(Err("no image worker".into())),
+        }
+    }
+
+    /// (M4) True once if a file job finished since the last call.
+    pub(crate) fn files_arrived(&self) -> bool {
+        match &self.backend {
+            ImageBackend::Worker(w) => w
+                .files
+                .lock()
+                .map(|mut f| std::mem::take(&mut f.arrived))
+                .unwrap_or(false),
+            ImageBackend::Inline(_) => false,
+        }
     }
 
     /// Surface `surface` is gone: its frame no longer holds images.
@@ -1504,5 +1663,39 @@ mod tests {
         assert!(load(&k("", true), &theme).is_err());
         assert!(load(&k("../../etc/passwd", true), &theme).is_err());
         assert_eq!(percent_decode("/a%20b.png"), "/a b.png");
+    }
+
+    /// A media source's file job runs on the worker's thread, once while
+    /// in flight, and its result is taken once; inline it runs at once.
+    #[test]
+    fn file_jobs_run_on_the_worker_and_are_taken_once() {
+        let worker = ImageWorker::spawn(IconTheme::named("StrandTest"), None).unwrap();
+        let store = ImageStore::new(ImageBackend::Worker(worker));
+        let job = || -> Loaded {
+            let name = std::thread::current().name().map(str::to_string);
+            Ok(Arc::new(name))
+        };
+        assert!(store.load_file("a", job).is_none(), "sent");
+        assert!(
+            store.load_file("a", job).is_none(),
+            "in flight, not sent again"
+        );
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !store.files_arrived() {
+            assert!(Instant::now() < deadline, "the worker answers");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let got = store.load_file("a", job).unwrap().unwrap();
+        let name = got.downcast::<Option<String>>().unwrap();
+        assert_eq!(name.as_deref(), Some("strand-image"));
+        assert!(!store.files_arrived(), "said once");
+        // Taken: asked again, it is read again.
+        assert!(store.load_file("a", job).is_none());
+        let inline = ImageStore::new(ImageBackend::Inline(IconTheme::named("StrandTest")));
+        let got = inline.load_file("a", job).unwrap().unwrap();
+        assert_eq!(
+            got.downcast::<Option<String>>().unwrap().as_deref(),
+            std::thread::current().name()
+        );
     }
 }

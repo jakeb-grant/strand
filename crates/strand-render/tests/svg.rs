@@ -197,3 +197,56 @@ fn an_svg_fill_colours_the_drawing_and_a_missing_file_draws_nothing() {
     buf.paint_at(&mut r, S, 0, T0);
     assert_eq!(rgb(&buf, 28, 28), (0x1e, 0x1e, 0x2e));
 }
+
+/// With a text worker, the file is read on the image worker: the first
+/// frame shows only the bar, and the read's arrival repaints the gauge.
+#[test]
+fn the_file_is_read_on_the_image_worker() {
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let f = gauge_file("worker");
+    let data = std::fs::read(test_font_path()).unwrap();
+    let worker =
+        TextWorker::spawn_with_waker(FontConfig::isolated(vec![std::sync::Arc::new(data)]), None)
+            .unwrap();
+    let mut r = Renderer::new(strand_render::TextBackend::Worker(worker));
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Width, num(56.0)),
+            (Prop::Height, num(56.0)),
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Pad, num(8.0)),
+        ],
+    );
+    b.node(
+        NodeKind::Svg,
+        Some(root),
+        vec![
+            (Prop::Source, text(f.to_str().unwrap())),
+            (Prop::Size, num(40.0)),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(56, 56, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, T0);
+    assert_eq!(
+        rgb(&buf, 28, 16),
+        (0x1e, 0x1e, 0x2e),
+        "not read in the frame"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !r.wants_frame(S) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        r.update();
+    }
+    assert!(r.wants_frame(S), "its arrival repaints");
+    buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
+    assert!(
+        white(rgb(&buf, 28, 16)),
+        "the needle: {:?}",
+        rgb(&buf, 28, 16)
+    );
+}

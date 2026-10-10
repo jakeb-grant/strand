@@ -165,3 +165,136 @@ fn a_broken_or_missing_file_draws_nothing_and_has_no_clock() {
         assert_eq!((rr, g, b), (0x1e, 0x1e, 0x2e), "{name}");
     }
 }
+
+/// A `w × h` PNG of one opaque colour.
+fn png_of(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        let data: Vec<u8> = (0..w * h).flat_map(|_| rgb).collect();
+        wr.write_image_data(&data).unwrap();
+    }
+    out
+}
+
+fn base64(data: &[u8]) -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::new();
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                s.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
+}
+
+/// 100 × 100: two image layers, a 16 px asset authored at 20 × 20
+/// embedded as a `data:` URL at (10, 40), and a file beside the
+/// animation at (60, 40).
+fn with_images(dir_file: &str) -> String {
+    let red = base64(&png_of(16, 16, [255, 0, 0]));
+    let layer = |ind: u32, id: &str, x: u32| {
+        format!(
+            r#"{{"ty":2,"ind":{ind},"refId":"{id}","ip":0,"op":60,"st":0,
+              "ks":{{"o":{{"a":0,"k":100}},"r":{{"a":0,"k":0}},"p":{{"a":0,"k":[{x},40,0]}},
+                    "a":{{"a":0,"k":[0,0,0]}},"s":{{"a":0,"k":[100,100,100]}}}}}}"#
+        )
+    };
+    format!(
+        r#"{{"v":"5.7.0","fr":30,"ip":0,"op":60,"w":100,"h":100,
+          "assets":[{{"id":"red","w":20,"h":20,"u":"","p":"data:image/png;base64,{red}","e":1}},
+                    {{"id":"green","w":20,"h":20,"u":"","p":"{dir_file}","e":0}}],
+          "layers":[{},{}]}}"#,
+        layer(1, "red", 10),
+        layer(2, "green", 60)
+    )
+}
+
+/// design.md "Lottie via velato": image layers draw their assets, an
+/// embedded `data:` PNG (scaled to its authored size) and a PNG beside
+/// the file (ref `lottie_images.png`).
+#[test]
+fn image_layers_draw_embedded_and_neighbouring_assets() {
+    let f = file("images", "{}");
+    let dir = f.parent().unwrap();
+    std::fs::write(dir.join("green.png"), png_of(20, 20, [0, 255, 0])).unwrap();
+    std::fs::write(&f, with_images("green.png")).unwrap();
+    let (mut r, _l, mut buf) = scene(f.to_str().unwrap(), 1.0);
+    buf.paint_at(&mut r, S, 0, T0);
+    assert_matches_ref("lottie_images", &buf, TOLERANCE);
+    // The embedded red, over its authored 20 × 20.
+    assert!(
+        red(&buf, 12, 42) && red(&buf, 28, 58),
+        "{:?}",
+        buf.px(28, 58)
+    );
+    assert!(!red(&buf, 32, 50));
+    // The neighbouring green.
+    let [b, g, rr, _] = buf.px(70, 50);
+    assert!(g > 200 && rr < 60 && b < 60, "{:?}", buf.px(70, 50));
+    let [_, g, _, _] = buf.px(85, 50);
+    assert!(g < 100, "outside the asset");
+}
+
+/// With a text worker, the file is read and parsed on the image worker,
+/// not during the frame: the first frame draws nothing and keeps no
+/// clock, and the read's arrival wakes the loop and repaints with it.
+#[test]
+fn the_file_is_read_on_the_image_worker() {
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let f = file("worker", SLIDE);
+    let data = std::fs::read(test_font_path()).unwrap();
+    let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let w2 = woken.clone();
+    let worker = TextWorker::spawn_with_waker(
+        FontConfig::isolated(vec![std::sync::Arc::new(data)]),
+        Some(Box::new(move || {
+            w2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+    )
+    .unwrap();
+    let mut r = Renderer::new(strand_render::TextBackend::Worker(worker));
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#1e1e2e")),
+        ],
+    );
+    b.node(
+        NodeKind::Lottie,
+        Some(root),
+        vec![
+            (Prop::Source, text(f.to_str().unwrap())),
+            (Prop::Size, num(100.0)),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(100, 100, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, T0);
+    assert!(!red(&buf, 20, 50), "not read during the frame");
+    assert_eq!(r.next_wake(), None, "no clock while it is read");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !r.wants_frame(S) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        r.update();
+    }
+    assert!(r.wants_frame(S), "its arrival repaints");
+    assert!(woken.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
+    assert!(red(&buf, 20, 50), "drawn once read");
+}

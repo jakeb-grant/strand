@@ -723,6 +723,7 @@ impl<'a> Flattener<'a> {
                         get: &get,
                         color: text_color,
                         parts: &parts,
+                        files: Some(&self.extras.images),
                     },
                 )
             }

@@ -446,7 +446,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   sources for the nodes a diff creates, feeds and feed demand; built by
   m4-effects-media, with `media/` beside `renderer/`: `graph.rs`,
   `spectrum.rs`, `animated.rs`, `svg.rs`, `lottie.rs` (velato with
-  `default-features = false`, drawn through a vello_cpu `RenderSink`)). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
+  `default-features = false`, drawn through a vello_cpu `RenderSink`;
+  its image assets decoded with the file); the `svg` and `lottie` files
+  are read and parsed on the image decode worker as file jobs
+  (`ImageStore::load_file`, reached from `RasterProps::files`), whose
+  arrival marks every surface dirty). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
   frames, readback delivery) have no code yet: their streams create
   them, with `promote.rs` (the promotion state machine) and `canvas.rs`
   beside `renderer/`.
