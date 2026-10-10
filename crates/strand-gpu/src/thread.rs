@@ -371,9 +371,10 @@ impl State {
         (out, failed)
     }
 
-    /// Draws a frame; every frame is answered (`Presented`, `Pixels` or
-    /// `Failed`), since the host sends a surface's next frame only after
-    /// the answer to its last.
+    /// Draws a frame; every frame is answered exactly once (`Presented`,
+    /// `Pixels` or `Failed`), since the host sends a surface's next frame
+    /// only after the answer to its last. A frame whose inline pass fails
+    /// is answered `Failed` alone.
     fn frame(&mut self, dev: &Device, frame: Frame, reply: &Reply<'_>) {
         let surface = frame.surface;
         if let Err(error) = self.draw_frame(dev, frame, reply) {
@@ -418,11 +419,14 @@ impl State {
         let (passes, pass_error) =
             self.draw_passes(dev, &mut encoder, &frame.ops, &mut bindings, &mut keep);
         if let Some(e) = pass_error {
-            reply.send(GpuReply::Failed {
-                surface: Some(surface),
-                key: None,
-                error: e,
-            });
+            // The frame ends here with one answer, `Failed`: render takes
+            // it back to the CPU, which draws it. A frame both failed and
+            // presented would be demoted for good with its pixels on
+            // screen (m4-audit). The uploads and frees already recorded
+            // still run, so the image table stays true.
+            dev.queue.submit([encoder.finish()]);
+            drop(keep);
+            return Err(e);
         }
         self.scene.reset_and_resize(w as u16, h as u16);
         let missing = draw::build(&mut self.scene, &frame.ops, &self.images, &passes);

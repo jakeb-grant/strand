@@ -268,6 +268,60 @@ fn a_broken_shader_fails_its_pass_and_the_device_stays_up() {
     assert_eq!(pixel(&px, 0, 0), [255, 255, 255, 255]);
 }
 
+/// (m4-audit) A frame whose inline pass fails is answered once, with
+/// `Failed` for its surface, and not also `Pixels` (or `Presented`):
+/// render demotes a surface on that `Failed`, so a frame both failed and
+/// shown would be demoted for good with its pixels on screen. The next
+/// frame's answer is its own.
+#[test]
+fn a_frame_whose_inline_pass_fails_is_answered_once() {
+    let Some(mut h) = start() else { return };
+    let size = Size::new(8, 8);
+    attach(&mut h, size);
+    let broken = ShaderPass {
+        code: ShaderRef::File(code(
+            "@fragment fn main() -> @location(0) vec4<f32> { return nope; }",
+            vec![],
+        )),
+        uniforms: Arc::from([].as_slice()),
+        input: ShaderInput::None,
+    };
+    let white = AlphaColor::new([1.0, 1.0, 1.0, 1.0]);
+    let with = |id: u64, ops: Vec<Op>| Frame {
+        surface: S,
+        id,
+        size,
+        scale: Scale::ONE,
+        ops,
+        uploads: vec![],
+        retire: Vec::new(),
+        clear: white,
+    };
+    h.gpu.send(GpuRequest::Frame(with(
+        1,
+        vec![Op::Pass {
+            pass: broken,
+            bounds: Rect::new(0.0, 0.0, 4.0, 4.0),
+            globals: PassGlobals::default(),
+        }],
+    )));
+    match h.next() {
+        GpuReply::Failed {
+            surface,
+            key,
+            error,
+        } => {
+            assert_eq!((surface, key), (Some(S), None));
+            assert_eq!(error.kind, GpuErrorKind::Shader);
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    // The next reply answers frame 2, not frame 1 a second time.
+    let px = frame(&mut h, with(2, vec![]));
+    assert_eq!(pixel(&px, 0, 0), [255, 255, 255, 255]);
+    assert!(h.gpu.try_recv().is_none(), "no further reply");
+}
+
 #[test]
 fn a_software_adapter_counts_as_no_device_unless_accepted() {
     let (tx, pings) = mpsc::channel();
