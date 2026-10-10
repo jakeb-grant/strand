@@ -13,9 +13,9 @@ pub(crate) mod builtin;
 pub(crate) mod filter;
 pub(crate) mod glow;
 pub(crate) mod goo;
-pub(crate) mod jelly;
 #[cfg(feature = "gpu")]
 pub(crate) mod gpu;
+pub(crate) mod jelly;
 pub(crate) mod lean;
 pub(crate) mod letters;
 pub(crate) mod light;
