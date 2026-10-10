@@ -110,6 +110,7 @@ fn shell(lock_text: &str) -> String {
     format!(
         "export state locked = true\n\
          lock {{\n  open: <-> locked\n  state n = 0\n  on click {{ locked = false; n += 1 }}\n  \
+         on key(k) {{ auth.submit(k.name) }}\n  \
          text join(\"\", \"{lock_text} \", n)\n}}\n\
          bar Top {{\n  on click {{ locked = true }}\n  text \"bar\"\n}}\n"
     )
@@ -206,7 +207,7 @@ fn the_held_lock_survives_a_reload_of_the_rest() {
 /// and nothing fails.
 #[test]
 fn a_one_way_open_is_left_alone_by_the_unlock() {
-    let src = "export state locked = true\nlock {\n  open: locked\n  text \"locked\"\n}\n";
+    let src = "export state locked = true\nlock {\n  open: locked\n  on key(k) { auth.submit(k.name) }\n  text \"locked\"\n}\n";
     let mut s = boot(src);
     s.report(SessionLock::Locked);
     s.report(SessionLock::Unlocked);
@@ -222,7 +223,9 @@ fn a_one_way_open_is_left_alone_by_the_unlock() {
 #[test]
 fn a_lock_remounted_open_after_the_unlock_is_not_shown() {
     let src = |t: &str| {
-        format!("export state locked = true\nlock {{\n  open: locked\n  text \"{t}\"\n}}\n")
+        format!(
+            "export state locked = true\nlock {{\n  open: locked\n  on key(k) {{ auth.submit(k.name) }}\n  text \"{t}\"\n}}\n"
+        )
     };
     let mut s = boot(&src("locked"));
     s.report(SessionLock::Locked);

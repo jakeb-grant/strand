@@ -374,7 +374,7 @@ osd Level { width: 200; height: 40
   if true { Frosted }
 }
 component Frosted { box { blur: 8 } }
-lock Gate { box { blur: 4 } }
+lock Gate { on key(k) { auth.submit(k.name) }; box { blur: 4 } }
 "#;
 
     /// Every layer surface whose tree has `blur` gets a rule under its

@@ -635,7 +635,7 @@ fn a_parked_bar_keeps_its_state_through_a_reload() {
 /// While a lock is shown, an edit to it waits for the unlock.
 #[test]
 fn a_lock_edit_is_deferred_while_shown() {
-    let src = |s: &str| format!("lock L {{ text \"{s}\" }}\n");
+    let src = |s: &str| format!("lock L {{ on key(k) {{ auth.submit(k.name) }}; text \"{s}\" }}\n");
     let mut shell = boot(&[("t.strand", &src("a"))]);
     assert!(shell.inst.lock_shown());
     let build = compile(Some(&shell.build), &[("t.strand", &src("b"))]);
@@ -649,7 +649,7 @@ fn a_lock_edit_is_deferred_while_shown() {
 /// keeps its node and state, and the reload waits for the unlock.
 #[test]
 fn a_hard_reload_is_deferred_while_a_lock_is_shown() {
-    let src = "lock L {\n  state n = 0\n  on click { n += 1 }\n  text join(\"\", n)\n}\n";
+    let src = "lock L {\n  state n = 0\n  on click { n += 1 }\n  on key(k) { auth.submit(k.name) }\n  text join(\"\", n)\n}\n";
     let mut shell = boot(&[("t.strand", src)]);
     assert!(shell.inst.lock_shown());
     let lock = shell.scene.of_kind(NodeKind::Lock)[0];

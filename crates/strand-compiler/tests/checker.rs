@@ -1202,3 +1202,35 @@ fn a_text_holds_letters_and_nothing_else() {
         );
     }
 }
+
+/// `check::lock_no_auth`: a lock is accepted when `auth.submit` is
+/// reachable from it (a handler, a timer, a branch, a component it
+/// shows) and refused when the only call is outside it.
+#[test]
+fn a_lock_needs_a_reachable_auth_submit() {
+    let way_out = |src: &str| {
+        let (out, map) = compile_files(&[("shell.strand", src.to_string())]);
+        let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            !out.diagnostics.iter().any(|d| d.is_error()) || codes == ["check::lock_no_auth"],
+            "{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        !codes.contains(&"check::lock_no_auth")
+    };
+    let field = "input { type: password; text: <-> pw; on activate { auth.submit(pw) } }";
+    assert!(way_out(&format!("lock {{ state pw = \"\"\n  {field} }}\n")));
+    assert!(way_out(&format!(
+        "state typing = false\nlock {{ state pw = \"\"\n  if typing {{ {field} }} else {{ text \"locked\" }} }}\n"
+    )));
+    assert!(way_out(&format!(
+        "lock {{ Field }}\ncomponent Field {{ state pw = \"\"\n  {field} }}\n"
+    )));
+    assert!(way_out(
+        "lock { every 1s { auth.submit(\"\") }; text \"x\" }\n"
+    ));
+    assert!(!way_out("lock { text clock.format(\"%H:%M\") }\n"));
+    assert!(!way_out(
+        "lock { Face }\ncomponent Face { text \"x\" }\nbar Top { on key(k) { auth.submit(k.name) }; text \"b\" }\n"
+    ));
+}

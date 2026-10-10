@@ -7,4 +7,5 @@ lock {
   layer: top
   keyboard: on_demand
   text "locked"
+  on key(k) { auth.submit(k.name) }
 }

@@ -1348,7 +1348,7 @@ fn token_sets_extend_and_switch() {
 /// `play` from a handler, `exit` mirroring `enter`, and a `lock` surface.
 #[test]
 fn play_poses_and_lock() {
-    let src = "keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }\nbar B {\n  box { enter { opacity: 0 }; on click { play shake } }\n  box { enter { y: 4 }; exit { y: -4 } }\n}\nlock Lock { text \"locked\" }\n";
+    let src = "keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }\nbar B {\n  box { enter { opacity: 0 }; on click { play shake } }\n  box { enter { y: 4 }; exit { y: -4 } }\n}\nlock Lock { on key(k) { auth.submit(k.name) }; text \"locked\" }\n";
     let mut shell = boot(&[("t.strand", src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });

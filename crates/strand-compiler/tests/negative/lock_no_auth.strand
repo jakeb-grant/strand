@@ -1,0 +1,10 @@
+// expect: check::lock_no_auth
+// A lock nothing in which calls `auth.submit` has no way out: it draws,
+// never faults, and so never shows the built-in field.
+export state locked = false
+lock {
+  open: <-> locked
+  state secret = ""
+  text clock.format("%H:%M")
+  input { type: password; text: <-> secret; on activate { secret = "" } }
+}

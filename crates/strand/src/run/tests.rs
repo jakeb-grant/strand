@@ -595,7 +595,7 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     let dir = temp_dir("lock");
     let src = |lock: &str, bar: &str| {
         format!(
-            "export state locked = true\nlock L {{\n  open: <-> locked\n  on click {{ locked = false }}\n  text \"{lock}\"\n}}\nbar Top {{\n  on click {{ locked = true }}\n  text \"{bar}\"\n}}\n"
+            "export state locked = true\nlock L {{\n  open: <-> locked\n  on click {{ locked = false }}\n  on key(k) {{ auth.submit(k.name) }}\n  text \"{lock}\"\n}}\nbar Top {{\n  on click {{ locked = true }}\n  text \"{bar}\"\n}}\n"
         )
     };
     let file = dir.join("shell.strand");
@@ -827,7 +827,7 @@ fn an_unlock_replay_keeps_the_newer_errors() {
     let dir = temp_dir("lock-errors");
     let src = |lock: &str, bar: &str, el: &str| {
         format!(
-            "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  text \"{lock}\"\n}}\nbar Top {{\n  {el} \"{bar}\"\n}}\n"
+            "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  on key(k) {{ auth.submit(k.name) }}\n  text \"{lock}\"\n}}\nbar Top {{\n  {el} \"{bar}\"\n}}\n"
         )
     };
     let file = dir.join("shell.strand");
@@ -878,7 +878,7 @@ fn a_replayed_hard_reload_reports_the_newer_errors() {
     let dir = temp_dir("hard-replay");
     let src = |bar: &str, el: &str| {
         format!(
-            "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  text \"lock\"\n}}\nbar Top {{\n  {el} \"{bar}\"\n}}\n"
+            "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  on key(k) {{ auth.submit(k.name) }}\n  text \"lock\"\n}}\nbar Top {{\n  {el} \"{bar}\"\n}}\n"
         )
     };
     let file = dir.join("shell.strand");

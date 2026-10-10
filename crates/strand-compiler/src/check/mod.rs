@@ -585,6 +585,11 @@ impl<'a> Checker<'a> {
     fn finish(mut self) -> Checked {
         let files = std::mem::take(&mut self.out_files);
         self.diags.extend(lock::check(self.modules));
+        // A lock with no way out, judged only on a program that checked
+        // clean: a misspelt `auth.submit` already has its own error.
+        if !self.diags.iter().any(Diagnostic::is_error) {
+            self.diags.extend(lock::way_out(&files));
+        }
         // Stable order: by file, then position.
         self.diags.sort_by_key(|d| {
             (

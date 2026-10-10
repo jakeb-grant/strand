@@ -1,0 +1,16 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::lock_no_auth
+
+  × this `lock` has no way out: nothing in it calls `auth.submit`
+   ╭─[lock_no_auth.strand:5:1]
+ 4 │ export state locked = false
+ 5 │ lock {
+   · ──┬─
+   ·   ╰── only `auth.submit` can unlock the session
+ 6 │   open: <-> locked
+   ╰────
+  help: add a password field: `input { type: password; text: <-> secret; on activate
+        { auth.submit(secret); secret = "" } }`
