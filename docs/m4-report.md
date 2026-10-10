@@ -92,12 +92,17 @@ and their tests" and cited on features.md's exit line.
 | full shell, launcher closed, toasts up (gated since the audit's third round) | the same | **36,493 kB** (4), **40,985 kB** (161) | 39,610 kB (15), 41,919 kB (172) |
 | frame time, launcher enter and toast exit | every frame within 16.7 ms, median within 8.3 ms (`crates/strand-render/tests/motion.rs::animated_frames_fit_the_refresh_budget`, timing job) | launcher median 2.28 ms, worst 6.35 ms; toast median 0.03 ms, worst 0.76 ms | launcher median 1.85 ms, worst 2.28 ms; toast median 0.06 ms, worst 0.98 ms |
 
-Across the audit `.text` grew 13,504 B in the default build and 8,704 B
-in the CPU-only build (CI at `70af44f`, 18,990,978 and 15,623,746 B,
-against CI at `e765276`; the laptop's builds come out about 2 kB
-larger than CI's). The CPU-only margin is about 94 KB, down from the 216 KB the
-wave-3 brief quoted: most of that went to the wave-3 merges before the
-audit. No budget, gate or target was raised.
+Across the audit `.text` grew 9,728 B in the default build and shrank
+640 B in the CPU-only build (CI at the pre-audit tree `22b8688`, run
+38041985436: 18,994,754 and 15,633,090 B, against CI at `e765276`:
+19,004,482 and 15,632,450 B). Measured from `70af44f`, partway through
+the audit (18,990,978 and 15,623,746 B, run 38048149054), rounds 2 and
+3 alone grew it 13,504 and 8,704 B; round 1 had shrunk it 3,776 and
+9,344 B. The laptop's builds come out about 2 kB larger than CI's.
+The CPU-only margin is about 94 KB, down from the 216 KB the wave-3
+brief quoted: CI's CPU-only margin was already 95,550 B at `22b8688`,
+so the drop went to the wave-3 merges before the audit. No budget,
+gate or target was raised.
 
 The bar sits at its target on the laptop (34.1–34.5 MB across the
 integration's runs) and just over it on GitHub's runners: 35,557 kB at

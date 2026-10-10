@@ -2730,8 +2730,8 @@ enum Shape {
 
 /// What a shader uniform (`u_speed: 0.4`, `u_tint: $accent`, `u_dir: 1,
 /// 0`) may hold: the values WGSL uniforms take (scalars, lengths, angles,
-/// durations, colours, and comma vectors of them). Checking each against
-/// the `.wgsl` file's declarations needs naga's reflection (M4).
+/// durations, colours, and comma vectors of them). `check/shaders.rs`
+/// then checks each against the uniform naga reflects from the `.wgsl` file.
 fn uniform_ty() -> Ty {
     let scalars = vec![
         Ty::FLOAT,
