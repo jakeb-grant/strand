@@ -547,9 +547,10 @@ impl Vm {
 
     /// A handler body as a coroutine for `rt.spawn*`: it runs until it
     /// returns, suspending at each `await`. Dropping it cancels it. While
-    /// a handler of an input event ([`INPUT_EVENTS`]) runs (up to its
-    /// first `await`, and each stretch after one), [`in_input_handler`]
-    /// is true on this thread.
+    /// a handler of an input event ([`INPUT_EVENTS`]) runs up to its
+    /// first `await`, [`in_input_handler`] is true on this thread; the
+    /// stretches after an `await` resume outside the input (the press is
+    /// long gone, so its point must not be read).
     pub fn handler(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -560,7 +561,7 @@ impl Vm {
     ) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
         let vm = self.clone();
         let weak = rt.downgrade();
-        let input = ctx
+        let mut input = ctx
             .as_ref()
             .is_some_and(|c| INPUT_EVENTS.contains(&c.event.as_str()));
         async move {
@@ -570,7 +571,8 @@ impl Vm {
                     let Some(rt) = weak.upgrade() else {
                         return Ok(());
                     };
-                    let _input = input.then(InputHandler::enter);
+                    // Only the first stretch is the input's.
+                    let _input = std::mem::take(&mut input).then(InputHandler::enter);
                     m.run(&vm, &rt)?
                 };
                 match step {

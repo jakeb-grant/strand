@@ -1470,7 +1470,7 @@ fn actions_know_whether_input_called_them() {
     let src = "export state n = 0\n\
                bar B {\n  \
                  on change n { notifications.clear() }\n  \
-                 box { width: 10; height: 10; on click { notifications.clear(); n = n + 1 } }\n\
+                 box { width: 10; height: 10; on click { notifications.clear(); n = n + 1; await sleep(1s); notifications.clear() } }\n\
                }\n";
     let mut shell = boot(&[("b.strand", src)], |rt, host| {
         screens(rt, host, &["DP-1"])
@@ -1493,6 +1493,19 @@ fn actions_know_whether_input_called_them() {
             ("notifications.clear(0)".to_string(), false)
         ],
         "the click's own call, then `on change n`'s"
+    );
+    // After its `await` the click handler runs outside the input.
+    shell.at(2.0);
+    let calls: Vec<(String, bool)> = shell
+        .host
+        .take_actions()
+        .iter()
+        .map(|a| (a.to_string(), a.input))
+        .collect();
+    assert_eq!(
+        calls,
+        [("notifications.clear(0)".to_string(), false)],
+        "the call after the await"
     );
     assert!(!strand_compiler::vm::in_input_handler());
 }
