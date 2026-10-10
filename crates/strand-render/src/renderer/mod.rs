@@ -521,7 +521,10 @@ impl Renderer {
     /// the surface manager's placement (`SurfaceHost::surface_placed`):
     /// a shared-element morph into a node on it can start from a box last
     /// drawn on another surface of the same output. A surface given no
-    /// output name (a popup) takes its parent surface's.
+    /// output name (a popup) takes its parent surface's, looked up again
+    /// whenever any surface is placed, moves or goes: a popup placed
+    /// before its parent gets an output once the parent is placed, and
+    /// follows it to another monitor.
     pub fn set_surface_origin(
         &mut self,
         surface: SurfaceId,
@@ -530,25 +533,42 @@ impl Renderer {
         let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
             return;
         };
-        let Some((output, at)) = origin else {
-            self.extras.origins.remove(&root);
-            return;
-        };
-        let output = output.or_else(|| {
-            let parent = self.tree.get(root)?.parent?;
-            let up = self.tree.root_of(parent)?;
-            Some(self.extras.origins.get(&up)?.output.clone())
-        });
-        match output {
-            Some(output) => {
-                self.extras
-                    .origins
-                    .insert(root, crate::flatten::SurfaceOrigin { output, at });
+        match origin {
+            Some(o) => {
+                self.extras.placed.insert(root, o);
             }
             None => {
-                self.extras.origins.remove(&root);
+                self.extras.placed.remove(&root);
             }
         }
+        self.resolve_origins();
+    }
+
+    /// Rebuilds `extras.origins` from what the host placed, each surface
+    /// with no output of its own taking the nearest placed ancestor
+    /// surface's (a popup of a popup walks up to the layer surface).
+    pub(crate) fn resolve_origins(&mut self) {
+        let tree = &self.tree;
+        let placed = &self.extras.placed;
+        let output_of = |root: NodeId| -> Option<String> {
+            let mut at = root;
+            // A surface tree is shallow; the bound only guards a cycle.
+            for _ in 0..16 {
+                if let Some(o) = placed.get(&at).and_then(|(o, _)| o.clone()) {
+                    return Some(o);
+                }
+                let parent = tree.get(at)?.parent?;
+                at = tree.root_of(parent)?;
+            }
+            None
+        };
+        self.extras.origins = placed
+            .iter()
+            .filter_map(|(root, (_, at))| {
+                let output = output_of(*root)?;
+                Some((*root, crate::flatten::SurfaceOrigin { output, at: *at }))
+            })
+            .collect();
     }
 
     /// (M4) Where `surface` lies on its output, as last set.

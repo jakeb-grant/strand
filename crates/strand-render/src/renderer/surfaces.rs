@@ -161,7 +161,8 @@ impl Renderer {
         if let Some(root) = self.surfaces.remove(&surface).map(|s| s.root)
             && !self.surfaces.values().any(|s| s.root == root)
         {
-            self.extras.origins.remove(&root);
+            self.extras.placed.remove(&root);
+            self.resolve_origins();
         }
         self.forget_fade(surface);
         self.extras.images.forget(surface);

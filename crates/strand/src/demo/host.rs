@@ -519,12 +519,6 @@ impl Host {
 }
 
 impl Host {
-    /// The tray's click point `event` sets, if any: on a press on a
-    /// placed surface, [`click_point`] of the innermost node hit; on a
-    /// press on a surface not placed yet (a popup before its configure,
-    /// a monitor with no logical size) or a key press (an action the
-    /// keyboard triggers), (0, 0), the point when none is known, so an
-    /// action never sends an earlier press's point from another surface.
     /// (M4) Hands render where `surface` lies on its output, once it is
     /// placed (a popup, with no monitor of its own, takes its parent's).
     fn send_origin(&mut self, surface: SurfaceId) {
@@ -536,6 +530,12 @@ impl Host {
         }
     }
 
+    /// The tray's click point `event` sets, if any: on a press on a
+    /// placed surface, [`click_point`] of the innermost node hit; on a
+    /// press on a surface not placed yet (a popup before its configure,
+    /// a monitor with no logical size) or a key press (an action the
+    /// keyboard triggers), (0, 0), the point when none is known, so an
+    /// action never sends an earlier press's point from another surface.
     fn press_point(&self, event: &InputEvent) -> Option<(i32, i32)> {
         let (surface, position) = match event {
             InputEvent::PointerButton {
@@ -1305,7 +1305,8 @@ mod tests {
 
     /// (M4) The host hands render where each surface lies and on which
     /// output (shared-element morphs across surfaces): a layer surface
-    /// takes its monitor's identity, a popup with no monitor its parent's.
+    /// takes its monitor's identity, a popup with no monitor its parent's,
+    /// whichever is placed first, and follows the parent to another one.
     #[test]
     fn surfaces_are_placed_on_their_outputs_for_render() {
         let font = std::fs::read(strand_text::test_font_path()).unwrap();
@@ -1325,23 +1326,25 @@ mod tests {
         host.surface_attached(s, bar, Some(&dp1));
         host.surface_attached(p, popup, None);
         assert_eq!(host.renderer.surface_origin(s), None, "not placed yet");
-        host.surface_placed(s, (0, 0));
-        host.surface_placed(p, (40, 36));
         let origin = |host: &Host, id| {
             host.renderer
                 .surface_origin(id)
                 .map(|o| (o.output.clone(), o.at.x, o.at.y))
         };
+        // The popup placed before its parent: no output yet, then its
+        // parent's once the parent is placed.
+        host.surface_placed(p, (40, 36));
+        assert_eq!(origin(&host, p), None, "its parent is not placed");
+        host.surface_placed(s, (0, 0));
         let name = dp1.id.as_str().to_string();
         assert_eq!(origin(&host, s), Some((name.clone(), 0.0, 0.0)));
         assert_eq!(origin(&host, p), Some((name, 40.0, 36.0)));
-        // Moved to another monitor.
+        // The parent moved to another monitor: the popup follows it.
         let hdmi = monitor("B", "HDMI-A-1");
         host.surface_entered(s, &hdmi);
-        assert_eq!(
-            origin(&host, s),
-            Some((hdmi.id.as_str().to_string(), 0.0, 0.0))
-        );
+        let hdmi_name = hdmi.id.as_str().to_string();
+        assert_eq!(origin(&host, s), Some((hdmi_name.clone(), 0.0, 0.0)));
+        assert_eq!(origin(&host, p), Some((hdmi_name, 40.0, 36.0)));
         host.surface_detached(p);
         assert_eq!(host.renderer.surface_origin(p), None);
     }

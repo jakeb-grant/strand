@@ -470,7 +470,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   (`Renderer::set_surface_origin(surface, Option<(Option<String>,
   LogicalPoint)>)`, which the binary's host calls from
   `SurfaceHost::surface_placed` with the surface's monitor; a popup
-  takes its parent's output), on another surface of the same output),
+  takes its parent's output, looked up again whenever a surface is
+  placed, moves or goes), on another surface of the same output),
   `pages.rs` (page slides), `tests.rs`.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
   `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`

@@ -169,7 +169,8 @@ pub struct NodeRecord {
 pub struct RingCells {
     /// The hash of everything the node draws but its border.
     pub rest: u64,
-    /// The strips the ring lies in: top, bottom, left and right.
+    /// The strips the ring lies in: the top and bottom rows between the
+    /// corners, and the left and right columns holding them.
     pub cells: [Rect; 4],
 }
 
@@ -348,6 +349,9 @@ pub struct Extras {
     /// node (handed over by the host): shared-element morphs across
     /// surfaces start from boxes moved by it.
     pub origins: HashMap<NodeId, SurfaceOrigin>,
+    /// (M4) What the host placed, by the surface's root: its own output
+    /// (`None` for a popup) and position; `origins` is resolved from it.
+    pub placed: HashMap<NodeId, (Option<String>, strand_scene::LogicalPoint)>,
     /// (M4) The CPU fallbacks drawn in place of GPU effects, said once.
     pub fallbacks: crate::effects::raster::Fallbacks,
 
