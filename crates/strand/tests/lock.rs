@@ -639,6 +639,8 @@ struct Strand {
     /// `child` is a supervisor: [`Supervisor::documented`], the restart
     /// policy of the user unit architecture.md gives.
     supervised: bool,
+    /// The binary run: cargo's, or a copy ([`Vm::installed`]).
+    bin: PathBuf,
 }
 
 impl Strand {
@@ -682,6 +684,7 @@ impl Strand {
             log: sway.dir.join("strand.log"),
             starts: 0,
             supervised: false,
+            bin: PathBuf::from(env!("CARGO_BIN_EXE_strand")),
         }
     }
 
@@ -695,12 +698,9 @@ impl Strand {
             .unwrap();
         writeln!(log, "---- start {}", self.starts).unwrap();
         let mut cmd = if self.supervised {
-            Supervisor::documented().command(
-                std::ffi::OsStr::new(env!("CARGO_BIN_EXE_strand")),
-                &self.config,
-            )
+            Supervisor::documented().command(self.bin.as_os_str(), &self.config)
         } else {
-            let mut c = Command::new(env!("CARGO_BIN_EXE_strand"));
+            let mut c = Command::new(&self.bin);
             c.arg("run").arg(&self.config);
             c
         };
@@ -743,7 +743,7 @@ impl Strand {
     }
 
     fn try_cli(&self, args: &[&str]) -> bool {
-        Command::new(env!("CARGO_BIN_EXE_strand"))
+        Command::new(&self.bin)
             .args(args)
             .env_clear()
             .envs(self.env.iter().map(|(k, v)| (k, v)))
@@ -1022,6 +1022,33 @@ impl Vm {
         vm
     }
 
+    /// [`Vm::start`] (no faults) with strand and its helper copied into
+    /// sway's directory and run from there, so a test may delete the
+    /// helper: the build directory may belong to another user (CI's
+    /// runner), and is shared with the host.
+    fn installed(tag: &str) -> Vm {
+        let sway = Sway::start(tag);
+        let desktop = Desktop::start(&sway);
+        let keys = Keyboard::new(&sway);
+        let bin = sway.dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cargo = Path::new(env!("CARGO_BIN_EXE_strand"));
+        for name in ["strand", "strand-auth"] {
+            std::fs::copy(cargo.with_file_name(name), bin.join(name)).unwrap();
+        }
+        let mut strand = Strand::prepare(&sway, &sway.display.clone(), "", CONFIG);
+        strand.bin = bin.join("strand");
+        strand.run();
+        let vm = Vm {
+            sway,
+            _desktop: desktop,
+            keys,
+            strand,
+        };
+        vm.until("HEADLESS-1", "the desktop", Shot::desktop);
+        vm
+    }
+
     /// Strand on `display` of `sway`'s directory.
     fn on(sway: Sway, display: &str, faults: &str, source: &str) -> Vm {
         let desktop = Desktop::start(&sway);
@@ -1212,18 +1239,17 @@ impl Vm {
     }
 }
 
-/// The PAM helper beside the binary under test moved away for the
-/// guard's life (deleted, as far as anything looking for it can tell),
-/// and put back when the guard drops, a failed test included: it lives
-/// in the build directory the host shares.
+/// The PAM helper beside `strand` (a [`Vm::installed`] copy) moved away
+/// for the guard's life (deleted, as far as anything looking for it can
+/// tell), and put back when the guard drops.
 struct HelperAway {
     path: PathBuf,
     away: PathBuf,
 }
 
 impl HelperAway {
-    fn new() -> HelperAway {
-        let path = Path::new(env!("CARGO_BIN_EXE_strand")).with_file_name("strand-auth");
+    fn new(strand: &Path) -> HelperAway {
+        let path = strand.with_file_name("strand-auth");
         let away = path.with_file_name("strand-auth.away");
         std::fs::rename(&path, &away).unwrap();
         HelperAway { path, away }
@@ -1358,10 +1384,10 @@ fn pam_helper_deleted_and_killed_keeps_the_session_locked_until_it_is_back() {
     if !in_lock_vm(test) {
         return;
     }
-    let mut vm = Vm::start(test, "");
+    let mut vm = Vm::installed(test);
     vm.lock();
     vm.content();
-    let away = HelperAway::new();
+    let away = HelperAway::new(&vm.strand.bin);
     assert_eq!(vm.kill_helpers().len(), 1, "`auth`'s helper");
     vm.lock_enter(PASSWORD);
     vm.fallback();
