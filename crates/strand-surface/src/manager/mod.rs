@@ -78,6 +78,10 @@ use strand_scene::{KeyInput, Modifiers};
 
 mod catcher;
 mod commit;
+// (M4) Drag and drop is the lists stream's file, `src/dnd.rs`, but part
+// of the manager: it reaches `State` as the other parts here do.
+#[path = "../dnd.rs"]
+mod dnd;
 mod effect;
 mod layer;
 mod outputs;
@@ -182,6 +186,22 @@ pub trait SurfaceHost: Painter {
     /// (M4) The session lock changed (`ext_session_lock_v1`).
     fn lock_changed(&mut self, state: LockState) {
         let _ = state;
+    }
+    /// (M4) Whether a drop on `surface` now, at the drag's last position,
+    /// would land on something whose `on drop` takes it (the Router's
+    /// `drop_target`). The manager asks after every `Drag*` event it sent
+    /// and accepts the `wl_data_device` offer only while it holds.
+    fn drop_accepted(&self, surface: SurfaceId) -> bool {
+        let _ = surface;
+        false
+    }
+    /// (M4) The `drag:` node being dragged on `surface`, if a drag is in
+    /// flight there (the Router's `drag`): when the held pointer leaves
+    /// the surface, the manager hands that drag to the compositor
+    /// (`wl_data_device.start_drag`), so it can drop on another surface.
+    fn drag_source(&self, surface: SurfaceId) -> Option<NodeId> {
+        let _ = surface;
+        None
     }
 }
 
@@ -696,6 +716,8 @@ pub struct State<H: SurfaceHost + 'static> {
     deadline_timers: HashMap<SurfaceId, RegistrationToken>,
     /// (M4) The session lock (`session_lock.rs`).
     session_lock: session_lock::SessionLock,
+    /// (M4) Drag and drop over `wl_data_device` (`src/dnd.rs`).
+    dnd: dnd::Dnd,
 }
 
 impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
@@ -836,6 +858,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         // the replies to these binds (the background effect's
         // `capabilities` among them), before any surface is configured.
         handle.insert_idle(|state: &mut State<H>| state.report_caps());
+        let dnd = dnd::Dnd::bind(&globals, &qh);
         let state = State {
             host,
             conn,
@@ -889,6 +912,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             expiry_timer: None,
             deadline_timers: HashMap::new(),
             session_lock: session_lock::SessionLock::new(session_lock),
+            dnd,
         };
         Ok(Self {
             event_loop,

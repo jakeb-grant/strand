@@ -1019,9 +1019,17 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `apps` service when it builds the `Drop` value (null when no
     installed app has that id).
     `strand_render::input::NodeEvent` gains `Drop { payload, at: u32 }`
-    (`at` a global row index) for `on drop(p, at)`. Until S-lists routes
-    drags, the Router emits nothing for `InputEvent::Drag*` and the demo
-    host does not forward a `Drop` to logic.
+    (`at` a global row index) for `on drop(p, at)`. As built
+    (m4-lists wave 2): the Router turns a press on a `drag:` node into a
+    drag past `DRAG_THRESHOLD` (6 px), draws the source at the pointer
+    through `InputScene::lift(node, Option<LogicalPoint>)`
+    (`Renderer::lift`: a held paint offset, painted above its siblings;
+    `None` springs it back as a FLIP glide), finds the target with
+    `InputScene::hit_under(surface, at, skip)` (the hit past the dragged
+    source) and the node's `Accepts`, and emits `Drop` on release or on
+    `InputEvent::DragDrop`; Escape cancels. The binary forwards it as
+    `run::NodeEvent::Drop { payload, at }`, and `run/lists.rs` makes the
+    handler's arguments on the logic thread.
   - **Surface poses** (design.md, "Compositor-animated poses").
     `SurfacePose { opacity: f32, scale: f32, offset: LogicalPoint }`. When
     the compositor allows it (`Renderer::set_compositor_poses`) and a
@@ -1075,7 +1083,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     drag ghost, `jelly` and list reordering. `DragView { source: NodeId,
     surface: SurfaceId, pointer: LogicalPoint, velocity: LogicalPoint
     (px/s), target: Option<NodeId>, index: Option<u32> (a global row
-    index) }`. Always `None` until drag and drop lands (M4 wave 2).
+    index) }`. `None` but while a drag is past its threshold.
+  - `Router::drop_target(surface) -> Option<NodeId>`: the node a drop on
+    `surface` would land on now (our drag or another program's offer);
+    the surface manager accepts the compositor's offer only while it is
+    `Some` (`SurfaceHost::drop_accepted`).
   - Virtualised `nav`: `Router::selected_index(list) -> Option<u32>` is
     the selection's global index, mounted or not. Keys move it by index
     (Up, Down, Page_Up/Prior and Page_Down/Next by
@@ -2492,12 +2504,19 @@ and the connection):
     can take a lock it cannot release. A token given while the lock is
     pending is kept and spent when `locked` arrives (`destroy` would be
     a protocol error if `locked` is already on the wire).
-  - Drag and drop (`dnd.rs`): a `wl_data_device` per seat produces
-    `InputEvent::Drag*` (external files, apps and text as
-    `DropPayload::External`); `State::start_drag(surface, node)` starts
-    a drag between Strand surfaces with a Strand-private MIME type that
-    carries the node, delivered as `DropPayload::Node`. Drags out to
-    other programs are out of scope.
+  - Drag and drop (`src/dnd.rs`, included as `manager::dnd`): a
+    `wl_data_device` per seat produces `InputEvent::Drag*` (external
+    files, apps and text as `DropPayload::External`, read through calloop
+    without blocking, at most `MAX_DROP_BYTES`). Two `SurfaceHost` hooks
+    with defaults pull from the host: `drop_accepted(surface) -> bool`
+    (the offer is accepted, copy only, exactly while it holds) and
+    `drag_source(surface) -> Option<NodeId>`: when the held pointer
+    leaves the surface a drag is in flight on, the manager starts a
+    `wl_data_device` drag with the press serial and a MIME type private to
+    this process, which enters our surfaces with no kinds and drops as
+    `DropPayload::Node`; dropped elsewhere or cancelled, the origin gets a
+    left release far outside it. `State::carrying_drag()` says one is in
+    flight. Drags out to other programs carry no data.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
