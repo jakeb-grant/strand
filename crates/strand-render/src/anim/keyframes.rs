@@ -238,7 +238,9 @@ pub(super) fn apply(
             }
         }
     }
+    let glow_inh = super::motion::glow_color(props, inh);
     for prop in seen {
+        let inh = if prop == Prop::Glow { glow_inh } else { inh };
         let own_at = props.iter().position(|(q, _)| *q == prop);
         let own = own_at.map(|i| props[i].1.as_ref().clone());
         // The stops on either side of `p` that set it; the node's own

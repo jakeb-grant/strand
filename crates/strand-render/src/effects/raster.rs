@@ -93,7 +93,14 @@ pub(crate) fn built<'v>(
                 rate: get(Prop::Rate).and_then(number).unwrap_or(10.0),
                 life,
                 size,
-                glow: get(Prop::Glow).and_then(number).unwrap_or(0.0).max(0.0),
+                // `glow: r` or `glow: r, colour` (as it springs, a list).
+                glow: get(Prop::Glow)
+                    .and_then(|v| match v {
+                        PropValue::List(items) => items.first().and_then(number),
+                        v => number(v),
+                    })
+                    .unwrap_or(0.0)
+                    .max(0.0),
                 speed,
                 color,
             }));
@@ -219,6 +226,22 @@ mod tests {
         let b = Built::Grain(g);
         b.draw(&mut px, 64, 16, 1.0, b.time(TimeContext::at(t)));
         px
+    }
+
+    /// A particle field's sprite glow is its radius, whether `glow:` is a
+    /// lone radius or (springing, or with a colour) a list.
+    #[test]
+    fn particles_glow_by_radius_alone_or_in_a_list() {
+        for v in [
+            PropValue::Number(6.0),
+            PropValue::List(vec![PropValue::Number(6.0), PropValue::Color(Color::WHITE)]),
+        ] {
+            let get = |p: Prop| (p == Prop::Glow).then_some(&v);
+            match built(NodeKind::Particles, get, Color::WHITE) {
+                Some(Built::Particles(p)) => assert_eq!(p.glow, 6.0, "{v:?}"),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

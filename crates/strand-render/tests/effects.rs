@@ -458,6 +458,47 @@ fn light(scale: Scale, time: u64, reduced: bool) -> (Renderer, Buffer, Vec<NodeI
     (r, buf, ids)
 }
 
+/// `glow: r` alone glows in the node's own colour, at rest and while
+/// its radius springs (not in the colour it inherits).
+#[test]
+fn a_lone_radius_glow_springs_in_the_nodes_colour() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Bg, color("#000000")),
+            (Prop::Color, color("#0000ff")),
+        ],
+    );
+    let mut p = at_xy(30.0, 20.0, 40.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#000000")),
+        (Prop::Color, color("#ff0000")),
+        (Prop::Glow, num(8.0)),
+    ]);
+    let n = b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(100, 80, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    // (BGRA.)
+    let red = |px: [u8; 4]| px[2] > 40 && px[0] < px[2] / 4;
+    assert!(red(buf.px(28, 40)), "at rest: {:?}", buf.px(28, 40));
+    let mut d = SceneDiff::new();
+    d.set(n, Prop::Glow, num(20.0));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1050));
+    assert!(r.wants_frame(S), "springing");
+    assert!(red(buf.px(28, 40)), "mid-spring: {:?}", buf.px(28, 40));
+    settle(&mut r, &mut buf, 1050);
+    assert!(red(buf.px(24, 40)), "settled: {:?}", buf.px(24, 40));
+}
+
 /// design.md "Paint and light": `glow:` on a box (a shadow-like halo)
 /// and on text (its letters' own halo), `inner_shadow:` with `rim: top`,
 /// and `grain:` (refs `effects_light.png` at 1× and 2×).

@@ -62,6 +62,20 @@ pub(crate) struct Extents {
     pub parent: (f32, f32),
 }
 
+/// The colour a lone-radius `glow: r` glows in, as flatten draws it at
+/// rest: the node's own solid `color` in `props`, else `inh` (what it
+/// inherits).
+pub(super) fn glow_color(props: &[(Prop, std::borrow::Cow<'_, PropValue>)], inh: Color) -> Color {
+    match props
+        .iter()
+        .find(|(q, _)| *q == Prop::Color)
+        .map(|(_, v)| v.as_ref())
+    {
+        Some(PropValue::Color(c) | PropValue::Paint(Paint::Solid(c))) => *c,
+        _ => inh,
+    }
+}
+
 /// A prop value as channels (`None` value: the prop's default, `inh` for
 /// `color`), lengths resolved against `b`, so `radius: full` and
 /// percentage offsets spring in pixels. `None` when it cannot
@@ -98,7 +112,8 @@ pub(super) fn encode(p: Prop, v: Option<&PropValue>, inh: Color, b: Extents) -> 
         (Prop::Color, None) => Enc::Four(color_channels(inh)),
         (Prop::Bg | Prop::Color, Some(v)) => Enc::Four(color_channels(solid(v)?)),
         // (M4) `trim: from, to`; `wave: amplitude[, wavelength]`; `glow:
-        // radius, colour` (a lone radius glows in the inherited colour).
+        // radius, colour` (a lone radius glows in `inh`, which callers set
+        // to the node's colour, [`glow_color`]).
         (Prop::Trim, None) => Enc::Four([0.0, 1.0, 0.0, 0.0]),
         (Prop::Trim, Some(PropValue::List(items))) => {
             let a = number(items.first()?)?;

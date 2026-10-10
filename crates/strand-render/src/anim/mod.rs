@@ -38,7 +38,7 @@ mod sizes;
 mod stagger;
 
 pub(crate) use motion::Extents;
-use motion::{PropMotion, decode, encode};
+use motion::{PropMotion, decode, encode, glow_color};
 pub use pages::PageSwap;
 pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
@@ -960,7 +960,11 @@ impl Animator {
         let respring = std::mem::take(&mut na.respring);
         let mut moving = false;
         let mut exit_done = true;
+        // A lone-radius glow springs in the colour flatten draws it in at
+        // rest: the node's own (target) colour, else the inherited one.
+        let glow_inh = glow_color(props, inh);
         for p in ANIMATED {
+            let inh = if p == Prop::Glow { glow_inh } else { inh };
             let own = props.iter().position(|(q, _)| *q == p);
             let own_v = own.map(|i| props[i].1.as_ref().clone());
             let in_exit = exit_pose.iter().find(|(q, _)| *q == p).map(|(_, v)| v);

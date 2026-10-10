@@ -502,7 +502,10 @@ impl<'a> Flattener<'a> {
         }
         // (M4) `glow:`: a box glows as a shadow under it; text, icons and
         // images glow their own pixels (`crate::effects::light`).
-        let glow = crate::effects::light::Glow::of(get(Prop::Glow), color);
+        // A lone radius glows in the node's colour (its own, else the
+        // inherited one), on a box too, as its springs do.
+        let glow_color = own_color.unwrap_or_else(|| default_color(&scope));
+        let glow = crate::effects::light::Glow::of(get(Prop::Glow), glow_color);
         let glows_content = matches!(node.kind, NodeKind::Text | NodeKind::Icon | NodeKind::Image);
         // (`particles` glow their sprites: `crate::effects::particles`.)
         let glows_box = !glows_content && node.kind != NodeKind::Particles;
