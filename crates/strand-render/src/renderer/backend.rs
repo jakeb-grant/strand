@@ -169,7 +169,9 @@ pub(crate) fn pass_want(
 
 /// `entries` in `code`'s slot order, in buffer units (architecture.md,
 /// the ABI): lengths × `scale`, angles in radians, durations in
-/// seconds, colours premultiplied linear. A slot no entry sets is zero.
+/// seconds, colours premultiplied sRGB (the space Strand composites in,
+/// which is also how a pass's output is read). A slot no entry sets is
+/// zero.
 pub(crate) fn pack(code: &ShaderCode, entries: &[(String, PropValue)], scale: f32) -> Vec<f32> {
     let mut out = vec![0.0; code.uniform_floats() as usize];
     for slot in &code.uniforms {
@@ -199,9 +201,8 @@ fn value_floats(v: &PropValue, scale: f32, out: &mut Vec<f32>) {
         PropValue::Angle(deg) => out.push(deg.to_radians()),
         PropValue::Duration(d) => out.push(d.as_secs_f32()),
         PropValue::Color(c) => {
-            let l = c.clamped().to_linear();
-            let a = l.alpha as f32;
-            out.extend([l.r as f32 * a, l.g as f32 * a, l.b as f32 * a, a]);
+            let c = c.clamped();
+            out.extend([c.r * c.a, c.g * c.a, c.b * c.a, c.a]);
         }
         PropValue::List(items) => {
             for i in items {
@@ -1488,13 +1489,13 @@ mod tests {
             ("u_r".to_string(), PropValue::Length(Length::Px(6.0))),
             (
                 "u_tint".to_string(),
-                PropValue::Color(Color::new(1.0, 1.0, 1.0, 0.5)),
+                PropValue::Color(Color::new(0.5, 1.0, 0.0, 0.5)),
             ),
         ];
         let p = pack(&code(), &entries, 2.0);
         assert_eq!(p.len(), 8);
         assert_eq!(p[0], 12.0, "px × scale");
-        assert_eq!(&p[1..5], &[0.5, 0.5, 0.5, 0.5], "premultiplied linear");
+        assert_eq!(&p[1..5], &[0.25, 0.5, 0.0, 0.5], "premultiplied sRGB");
         assert_eq!(&p[5..7], &[1.0, 0.5]);
         assert_eq!(p[7], 0.0, "unset");
         let p = pack(

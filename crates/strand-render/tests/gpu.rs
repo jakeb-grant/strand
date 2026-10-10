@@ -838,3 +838,37 @@ fn an_unavailable_reason_is_warned_once() {
     ));
     assert_eq!(r.gpu_warnings(), 3, "again after the device was up");
 }
+
+/// A colour uniform reaches the shader in the space its output is read
+/// in: a pass that returns `u_tint` paints the same pixels as a box
+/// with that `bg`, mid-tones and translucency included.
+#[test]
+fn a_colour_uniform_paints_like_the_same_bg() {
+    let Some(opts) = device() else { return };
+    for tint in ["#7f3f1f", "#4080c080"] {
+        let mut r = renderer();
+        let (diff, node) = shader_scene(tint);
+        assert!(r.apply(diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(240, 60, Scale::ONE);
+        let mut host = Host::new(opts);
+        buf.paint(&mut r, S, 0);
+        host.send(&mut r);
+        host.until(&mut r, |m| matches!(m, GpuReply::PassPixels { .. }));
+        buf.paint(&mut r, S, 1);
+        let shaded = buf.px(20, 20);
+        // The same box painted with `bg` by the CPU.
+        let mut cpu = renderer();
+        let (mut diff, _) = shader_scene(tint);
+        diff.set(node, Prop::Bg, color(tint));
+        diff.set(node, Prop::Uniforms, PropValue::Uniforms(vec![]));
+        assert!(cpu.apply(diff).is_empty());
+        cpu.attach_surface(S, cpu.tree().roots()[0]);
+        let mut want = Buffer::new(240, 60, Scale::ONE);
+        want.paint(&mut cpu, S, 0);
+        let bg = want.px(20, 20);
+        assert_ne!(bg, want.px(100, 20), "{tint}: the box shows");
+        let close = shaded.iter().zip(bg).all(|(a, b)| a.abs_diff(b) <= 1);
+        assert!(close, "{tint}: the pass {shaded:?}, the bg {bg:?}");
+    }
+}

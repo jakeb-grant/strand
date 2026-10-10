@@ -2744,8 +2744,11 @@ when outside), `strand_input` (`texture_2d<f32>`, 1×1 transparent for
 uniforms, each its own `var<uniform>` of type `f32` or `vec2`–`vec4<f32>`
 at a binding the file picks (one value per binding, not a struct).
 Values arrive as `f32` in buffer units: lengths in px × scale,
-angles in radians, durations in seconds, colours premultiplied linear
-`vec4`.
+angles in radians, durations in seconds, colours premultiplied sRGB
+`vec4`: the space Strand composites in, which is also the space the
+fragment's output is read in, so a file that returns `u_tint` paints
+exactly the colour `bg: $accent` would (decisions.md, m4-gpu-w2
+review).
 
 On a surface that is not promoted (the usual case: a small aurora
 behind a bar's clock), a pass is drawn offscreen by the GPU at its
