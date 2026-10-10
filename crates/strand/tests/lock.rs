@@ -81,8 +81,9 @@ const FIRST_FRAME_MISSED: &str = "drew no first frame within";
 const WAIT: Duration = Duration::from_secs(30);
 
 /// The config: a lock opened by `lock.locked`, its password checked by
-/// `auth`, its colour showing typed text and a refusal, and a text that
-/// faults once `lock.zero` is 0.
+/// `auth` through auth.schema's documented idiom (`on activate`: Return
+/// in a plain `input`), its colour showing typed text and a refusal, and
+/// a text that faults once `lock.zero` is 0.
 const CONFIG: &str = r#"export state locked = false
 export state zero = 1
 lock Gate {
@@ -92,11 +93,20 @@ lock Gate {
   when auth.failed { bg: #a02040 }
   when secret != "" { bg: #20a050 }
   input { type: password; text: <-> secret; focus: true
-    on key(k) { if k.name == "Return" { auth.submit(secret); secret = "" } }
+    on activate { auth.submit(secret); secret = "" }
   }
   text pct(10 / zero)
 }
 "#;
+
+/// [`CONFIG`] submitting through `on key` instead, the form m4-lock-w2
+/// documented before Return activated a plain `input`; it keeps working.
+fn config_on_key() -> String {
+    CONFIG.replace(
+        r#"on activate { auth.submit(secret); secret = "" }"#,
+        r#"on key(k) { if k.name == "Return" { auth.submit(secret); secret = "" } }"#,
+    )
+}
 
 // ---- the VM guard -----------------------------------------------------------
 
@@ -1142,6 +1152,30 @@ fn a_healthy_lock_draws_its_first_frame_in_time() {
         );
     }
     eprintln!("lock first frames: {frames:?} ms");
+}
+
+/// The config's lock refuses a wrong password and unlocks with the
+/// right one, submitted by auth.schema's idiom (`on activate`) and by
+/// the older `on key` form: no fallback shows for either.
+#[test]
+fn the_configs_lock_unlocks_through_activate_and_through_key() {
+    let test = "lock_idioms";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let on_key = config_on_key();
+    assert!(on_key.contains("on key(k)") && !on_key.contains("on activate"));
+    for source in [CONFIG.to_string(), on_key] {
+        let mut vm = Vm::with(test, "", &source);
+        vm.lock();
+        vm.content();
+        vm.lock_passwords();
+        let log = vm.strand.log_text();
+        assert!(
+            !log.contains("lock: showing the built-in password field"),
+            "the config's lock unlocked without the fallback:\n{log}"
+        );
+    }
 }
 
 /// SIGTERM while locked: logic is told to stop, the fallback shows, and
