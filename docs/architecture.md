@@ -246,7 +246,16 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   through the binary (`Renderer::feed(node, bins)`,
   `Renderer::feed_frame(node, frame)`). Render tells the binary which of
   those nodes are visible (`Renderer::take_feed_demand()`), and producers
-  run only for them.
+  run only for them. Built for spectra (m4-effects-media): `feed(node,
+  bands)` takes `Levels::bins` (empty: rest);
+  `take_feed_demand() -> Option<Vec<FeedDemand>>` answers after a paint
+  when the set of fed nodes a painted surface drew with pixels changed
+  (`FeedDemand { node, kind: FeedKind::Spectrum { device } }`, the
+  device's id as logic sends it; none under `reduced_motion`). The host
+  asks after each paint and `run/feeds.rs` keeps one
+  `audio::tap_levels(LevelTarget::Device(id), …)` per visible spectrum,
+  its readings crossing to the main thread on a calloop channel; a node
+  that loses its tap is fed silence.
 
 ## Crate graph
 
@@ -398,8 +407,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   and the motions they start), `specs.rs` (surface specs, content
   sizing, size holds), `surfaces.rs` (attach, configure, detach, hit),
   `pose.rs` (exit poses and closing surfaces), `lists.rs` (scrolling),
-  `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`. The M4 plan's
-  `feed.rs` (effects) and `backend.rs` (lowering to `strand-gpu`'s
+  `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`, `feed.rs` (media
+  sources for the nodes a diff creates, feeds and feed demand; built by
+  m4-effects-media, with `media/` beside `renderer/`: `graph.rs`,
+  `spectrum.rs`, `animated.rs`). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
   frames, readback delivery) have no code yet: their streams create
   them, with `promote.rs` (the promotion state machine) and `canvas.rs`
   beside `renderer/`.

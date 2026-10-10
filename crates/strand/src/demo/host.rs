@@ -31,6 +31,9 @@ pub struct Host {
     roots: HashMap<SurfaceId, NodeId>,
     /// The blur ladder's last rung: says once why `blur` draws its tint.
     blur_fallback: BlurFallback,
+    /// (M4) `strand run`: the producers of the visible fed nodes (a
+    /// `spectrum`'s audio tap), changed after a paint changes them.
+    pub(crate) feeds: Option<crate::run::feeds::Feeds>,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -302,6 +305,7 @@ impl Host {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
                 ..BlurFallback::default()
             },
+            feeds: None,
             #[cfg(test)]
             probe: None,
         }
@@ -409,6 +413,14 @@ impl Painter for Host {
         // Virtualised lists scrolled past their mounted rows ask logic
         // for the rows they show.
         self.forward_list_windows();
+        // Fed nodes shown or hidden: their producers start or stop.
+        if let Some(feeds) = &mut self.feeds
+            && let Some(demand) = self.renderer.take_feed_demand()
+        {
+            for node in feeds.demand(demand) {
+                self.renderer.feed(node, &[]);
+            }
+        }
         self.wake_if_changed();
         #[cfg(test)]
         if let Some(p) = &self.probe {

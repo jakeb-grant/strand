@@ -675,3 +675,103 @@ fn window_buttons_maximize_and_fullscreen_on_sway() {
     sh.keep("winstate-fullscreen");
     drop(win);
 }
+
+/// (M4) `spectrum audio.sink { … }` in `strand run` on the real audio
+/// service, end to end: at rest its bars are dots; a 1 kHz test tone
+/// played to the default sink lifts one bar (the FFT on the audio
+/// thread, the bands fed to render through `run/feeds.rs` only while the
+/// spectrum is visible), and when the tone stops the bars rest again.
+#[test]
+fn a_test_tone_lifts_a_spectrum_bar() {
+    if !tools() {
+        return;
+    }
+    let Some(pw) = PipeWire::start("a_test_tone_lifts_a_spectrum_bar") else {
+        return;
+    };
+    pw.wait_for_defaults();
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("strand-spectrum-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (sway, display, ipc) = sway(&dir);
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("spectrum.strand"),
+        "bar Top {\n  edge: top; height: 48\n  row {\n    \
+         spectrum audio.sink { bars: 16; width: 320; height: 40; smooth: 0; color: #ff0000 }\n  \
+         }\n}\n",
+    )
+    .unwrap();
+    let log = dir.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("SWAYSOCK", &ipc)
+            .env("PIPEWIRE_RUNTIME_DIR", pw.dir.path())
+            .env_remove("PIPEWIRE_REMOTE")
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut sh = Shell {
+        dir: dir.clone(),
+        display,
+        ipc,
+        log,
+        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+        n: std::cell::Cell::new(0),
+        strand: Some(strand),
+        _sway: sway,
+    };
+    // The tallest run of red pixels in any column of the bar.
+    let tallest = |img: &Img| {
+        (0..400)
+            .map(|x| {
+                (0..48)
+                    .filter(|&y| {
+                        let p = img.px(x, y);
+                        p[0] > 160 && p[1] < 90 && p[2] < 90
+                    })
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    sh.wait("the spectrum at rest: dots", |s| {
+        let t = tallest(&s.shot());
+        (1..=4).contains(&t)
+    });
+    sh.keep("spectrum-at-rest");
+    // The default sink's name, from the `default` metadata.
+    let meta = pw.metadata();
+    let sink = meta
+        .split("default.audio.sink")
+        .nth(1)
+        .and_then(|r| r.split("\"name\":\"").nth(1))
+        .and_then(|r| r.split('"').next())
+        .expect("a default sink")
+        .to_string();
+    let wav = dir.join("tone.wav");
+    pipewire::sine_wav(&wav, 30.0, 1000.0, 0.5);
+    let mut player = pw.play(&wav, &sink);
+    sh.wait("a bar lifted by the tone", |s| tallest(&s.shot()) > 20);
+    sh.keep("spectrum-tone");
+    let _ = player.kill();
+    let _ = player.wait();
+    sh.wait("the bars at rest again", |s| tallest(&s.shot()) <= 4);
+}

@@ -73,6 +73,7 @@ use crate::overlay::{self, Click, Overlay};
 use crate::system;
 use strand_watch::{CacheKind, Role};
 
+pub(crate) mod feeds;
 mod lists;
 mod lock;
 mod logic;
@@ -423,9 +424,12 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         let _ = icons_tx.send(CacheKind::Icons);
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
-    let host = Host::new(renderer, log.damage)
+    let mut host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
         .waking(wake);
+    // (M4) Spectrum bands from the audio thread, for the visible spectra.
+    let (feeds_tx, feeds_rx) = calloop::channel::channel::<feeds::Bands>();
+    host.feeds = Some(feeds::Feeds::new(feeds_tx));
     let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
     handle
@@ -435,6 +439,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .insert_source(caches_rx, |event, _, state| {
             if let Event::Msg(kind) = event {
                 caches_changed(state, kind);
+            }
+        })
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(feeds_rx, |event, _, state| {
+            if let Event::Msg(bands) = event {
+                feeds::fed(state, bands);
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;

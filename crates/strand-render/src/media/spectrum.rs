@@ -9,8 +9,8 @@
 //! so it does no work while the audio is silent (the audio thread sends
 //! nothing then) or hidden (nothing is fed).
 //!
-//! The fed bands are resampled to `bars` (default 32): each bar the mean
-//! of the bands it covers. Each feed moves the bars `1 - smooth` of the
+//! The fed bands are resampled to `bars` (default 32): each bar the
+//! loudest of the bands it covers. Each feed moves the bars `1 - smooth` of the
 //! way to the new levels (`smooth` default 0.5); a feed with no bands
 //! (the sound stopped) drops them to rest at once. Styles: `bars`
 //! (pills up from the bottom, the default), `mirror` (pills about the
@@ -84,25 +84,22 @@ pub struct SpectrumSource {
     inner: Mutex<Spectrum>,
 }
 
-/// `bands` resampled to `n` bars: each bar the mean of the bands it
-/// covers (a band split between bars counts in each by its share).
+/// `bands` resampled to `n` bars: each bar the loudest band it covers
+/// (a tone lights its bar fully whatever the bar count, as each band is
+/// the loudest bin in it); with more bars than bands, each bar shows the
+/// band it falls in.
 pub fn resample(bands: &[f32], n: usize) -> Vec<f32> {
     if bands.is_empty() || n == 0 {
         return vec![0.0; n];
     }
-    let m = bands.len() as f32;
+    let m = bands.len();
     (0..n)
         .map(|i| {
-            let (a, b) = (i as f32 * m / n as f32, (i + 1) as f32 * m / n as f32);
-            let mut sum = 0.0;
-            let mut x = a;
-            while x < b - 1e-6 {
-                let next = (x.floor() + 1.0).min(b);
-                let k = (x.floor() as usize).min(bands.len() - 1);
-                sum += bands[k].clamp(0.0, 1.0) * (next - x);
-                x = next;
-            }
-            sum / (b - a)
+            let a = i * m / n;
+            let b = ((i + 1) * m).div_ceil(n).clamp(a + 1, m);
+            bands[a..b]
+                .iter()
+                .fold(0.0f32, |acc, v| acc.max(v.clamp(0.0, 1.0)))
         })
         .collect()
 }
@@ -261,12 +258,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bands_resample_to_bars_by_mean() {
+    fn bands_resample_to_bars_by_their_loudest() {
         let bands: Vec<f32> = (0..64).map(|i| i as f32 / 63.0).collect();
         let four = resample(&bands, 4);
         assert_eq!(four.len(), 4);
         assert!(four.windows(2).all(|w| w[0] < w[1]));
-        assert!((four[0] - (0..16).map(|i| i as f32 / 63.0).sum::<f32>() / 16.0).abs() < 1e-5);
+        assert_eq!(four[0], 15.0 / 63.0);
+        // A tone in one band lights its bar fully.
+        let mut tone = vec![0.0; 64];
+        tone[29] = 0.9;
+        let bars = resample(&tone, 16);
+        assert_eq!(bars[7], 0.9);
+        assert_eq!(bars.iter().filter(|v| **v > 0.0).count(), 1);
+        // Bars that do not divide the bands: every band is in some bar.
+        let mut lit = vec![0.0; 64];
+        lit[63] = 1.0;
+        assert_eq!(resample(&lit, 48)[47], 1.0);
         // More bars than bands: each band split evenly.
         let up = resample(&[0.0, 1.0], 4);
         assert_eq!(up, [0.0, 0.0, 1.0, 1.0]);
