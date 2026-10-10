@@ -105,6 +105,8 @@ pub enum Item {
         /// The colours of the layout's span slots ([`span_slots`]): a
         /// run whose colour is slot `i` paints in `spans[i]`.
         spans: Vec<Color>,
+        /// (M4) `fill:` on text: the glyphs painted with a paint instead.
+        fill: Option<Arc<GlyphFill>>,
     },
     /// A decoded `image` or `icon` filling `rect` (it was decoded at that
     /// size); a symbolic icon is a mask painted in `tint`. The pixmap
@@ -117,6 +119,16 @@ pub enum Item {
         dest: kurbo::Rect,
         tint: Option<Color>,
     },
+}
+
+/// (M4) `fill: linear(…)` on text (S-effects): the glyphs' coverage
+/// painted with `paint`, whose gradient spans `frame` (the text's box),
+/// over `area` (where the glyphs can be), physical pixels.
+#[derive(Clone, Debug)]
+pub struct GlyphFill {
+    pub paint: Paint,
+    pub frame: kurbo::Rect,
+    pub area: kurbo::Rect,
 }
 
 #[derive(Clone, Debug)]

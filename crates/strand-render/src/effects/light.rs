@@ -69,7 +69,7 @@ impl Glow {
     /// The effects of a content glow's group: every pixel in the colour
     /// (its coverage times the colour's alpha), blurred, its coverage
     /// doubled.
-    fn effects(self) -> Arc<[Effect]> {
+    pub(crate) fn effects(self) -> Arc<[Effect]> {
         let mut gain = strand_scene::effect::IDENTITY_MATRIX;
         gain[18] = 2.0;
         Arc::from([
@@ -82,15 +82,43 @@ impl Glow {
     }
 }
 
-/// Glows the items drawn since `start` (text, an icon, an image): a
-/// tinted, blurred copy of them in a group just before them. `frame`,
-/// `scale` and `xform` describe the node's box as [`Layer`] does; items'
-/// bounds are already in surface space. Returns the group's bounds, and
-/// the effects for the node's signature.
-pub(crate) fn glow_content(
+/// `text_stroke: width, paint`'s group effects: the letters' coverage
+/// grown by about `width` (blurred by 1.48 × width, then every pixel
+/// over a quarter covered made opaque: a Gaussian's quarter level lies
+/// 0.674 σ out) in the paint's colour (a gradient's first stop).
+pub(crate) fn text_stroke(v: Option<&PropValue>) -> Option<Arc<[Effect]>> {
+    let Some(PropValue::Border(strand_scene::Border { width, paint })) = v else {
+        return None;
+    };
+    let w = (*width).min(100.0);
+    if !(w.is_finite() && w > 0.0) {
+        return None;
+    }
+    let c = match paint {
+        Paint::Solid(c) => *c,
+        Paint::Linear { stops, .. } | Paint::Radial { stops } | Paint::Conic { stops, .. } => {
+            stops.first()?.color
+        }
+    };
+    let mut grow = strand_scene::effect::IDENTITY_MATRIX;
+    grow[18] = 8.0;
+    grow[19] = -1.0;
+    Some(Arc::from([
+        Effect::ColorMatrix(super::filter::solid(c)),
+        Effect::Blur { radius: w * 1.48 },
+        Effect::ColorMatrix(grow),
+    ]))
+}
+
+/// Draws a copy of the items drawn since `start` (text, an icon, an
+/// image) through `effects` in a group just before them (a glow, a text
+/// stroke). `frame`, `scale` and `xform` describe the node's box as
+/// [`Layer`] does; items' bounds are already in surface space. Returns
+/// the group's bounds, and the effects for the node's signature.
+pub(crate) fn under_content(
     items: &mut Vec<DisplayItem>,
     start: usize,
-    glow: Glow,
+    effects: Arc<[Effect]>,
     layer: (kurbo::Rect, f32, Affine),
     surface: Rect,
 ) -> Option<(Rect, Arc<[Effect]>)> {
@@ -112,7 +140,6 @@ pub(crate) fn glow_content(
         return None;
     }
     let (frame, scale, xform) = layer;
-    let effects = glow.effects();
     let reach = crate::layers::reach_px(&effects, scale);
     let bounds = content.inflate(reach).intersect(surface)?;
     let mut group = Vec::with_capacity(items.len() - start + 2);

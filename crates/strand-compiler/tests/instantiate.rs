@@ -3949,6 +3949,22 @@ fn time_values_convert_to_token_time_leaves() {
 /// `TokenExpr::Count`) render evaluates per letter, not values logic
 /// fixes for the whole node: arithmetic on them stays symbolic, and the
 /// same prop resolves differently for each letter.
+/// decisions.md m4-owner: `letters` animates the text of its enclosing
+/// `text` node, mounted as its child.
+#[test]
+fn letters_go_inside_the_text_they_animate() {
+    let src = "bar B {\n  text \"hello\" { letters { y: 2 * wave(1s, phase: index * 0.1) } }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let letters = shell.scene.of_kind(NodeKind::Letters);
+    assert_eq!(letters.len(), 1, "{}", shell.scene.render());
+    let parent = shell.scene.parent(letters[0]).unwrap();
+    assert_eq!(shell.scene.of_kind(NodeKind::Text), vec![parent]);
+}
+
 #[test]
 fn letters_index_and_count_stay_time_leaves() {
     use strand_scene::{TimeContext, TokenExpr, TokenScope, TokenTable};

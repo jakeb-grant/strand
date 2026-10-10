@@ -454,6 +454,7 @@ impl Flattener<'_> {
                     layout: l,
                     color: if chosen { on_accent } else { w.color },
                     spans: Vec::new(),
+                    fill: None,
                 },
                 bounds,
                 sig,

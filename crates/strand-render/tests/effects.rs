@@ -905,3 +905,143 @@ fn reduced_motion_freezes_effects_and_particles() {
     let (_, moving) = generative(Scale::ONE, false);
     assert!(moving.pixels == first);
 }
+
+fn mul(a: TokenExpr, b: TokenExpr) -> TokenExpr {
+    TokenExpr::Binary {
+        op: BinOp::Mul,
+        lhs: Box::new(a),
+        rhs: Box::new(b),
+    }
+}
+
+fn val(n: f32) -> TokenExpr {
+    TokenExpr::value(num(n))
+}
+
+/// The text scene on a 360×64 bar: an outlined, gradient-filled word,
+/// and a word whose `letters` wave (`y: 6 * wave(1s, phase: index *
+/// 0.15)`) and turn and fade by index; painted at 1 s, then at `t`.
+fn words(scale: Scale, t_ms: u64) -> (Renderer, Buffer) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let font = |size| (Prop::Font, PropValue::Font(common::font(size)));
+    let mut p = at_xy(12.0, 10.0, 160.0, 44.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Text, text("Strand")),
+        font(32.0),
+        (
+            Prop::Fill,
+            PropValue::Paint(Paint::Linear {
+                angle: 90.0,
+                stops: vec![
+                    GradientStop {
+                        color: hex("#f38ba8"),
+                        offset: 0.0,
+                    },
+                    GradientStop {
+                        color: hex("#89b4fa"),
+                        offset: 1.0,
+                    },
+                ],
+            }),
+        ),
+        (
+            Prop::TextStroke,
+            PropValue::Border(Border {
+                width: 1.5,
+                paint: Paint::Solid(hex("#f9e2af")),
+            }),
+        ),
+    ]);
+    b.node(NodeKind::Text, Some(root), p);
+    let mut p = at_xy(190.0, 12.0, 160.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Text, text("letters")),
+        font(26.0),
+        (Prop::Color, color("#a6e3a1")),
+    ]);
+    let word = b.node(NodeKind::Text, Some(root), p);
+    b.node(
+        NodeKind::Letters,
+        Some(word),
+        vec![
+            (
+                Prop::Y,
+                PropValue::Token(mul(
+                    val(6.0),
+                    TokenExpr::Wave {
+                        period: std::time::Duration::from_secs(1),
+                        phase: Box::new(mul(TokenExpr::Index, val(0.15))),
+                    },
+                )),
+            ),
+            (
+                Prop::Rotate,
+                PropValue::Token(mul(TokenExpr::Index, val(4.0))),
+            ),
+            (
+                Prop::Opacity,
+                PropValue::Token(TokenExpr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(val(1.0)),
+                    rhs: Box::new(mul(TokenExpr::Index, val(0.1))),
+                }),
+            ),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new((360.0 * k).round() as u32, (64.0 * k).round() as u32, scale);
+    let t0 = std::time::Duration::from_millis(1000);
+    buf.paint_at(&mut r, S, 0, t0);
+    if t_ms > 0 {
+        buf.paint_at(&mut r, S, 1, t0 + std::time::Duration::from_millis(t_ms));
+    }
+    (r, buf)
+}
+
+/// design.md "Paint and light": text effects — `text_stroke:` outlines
+/// the letters, `fill:` paints them with a gradient, and `letters`
+/// animates each letter of its text by `index` (refs `effects_text.png`
+/// at `t = 250 ms`, `effects_text_2x.png` at 0).
+#[test]
+fn text_stroke_fill_and_letters_draw() {
+    let (r, buf) = words(Scale::ONE, 250);
+    assert_matches_ref("effects_text", &buf, 2);
+    assert!(r.wants_frame(S), "the letters' wave runs a clock");
+    // The fill runs pink to blue across the word: the reddest glyph
+    // pixel on the left, the bluest on the right.
+    let glyph = |x0: u32, x1: u32| {
+        (x0..x1)
+            .flat_map(|x| (10..54).map(move |y| (x, y)))
+            .map(|(x, y)| buf.px(x, y))
+            .filter(|p| p[1] < 0xa0 && (p[2] > 0xc0 || p[0] > 0xc0))
+            .map(|p| p[2] as i32 - p[0] as i32)
+            .collect::<Vec<i32>>()
+    };
+    let left = glyph(12, 50);
+    let right = glyph(75, 110);
+    assert!(!left.is_empty() && !right.is_empty());
+    let avg = |v: &[i32]| v.iter().sum::<i32>() / v.len() as i32;
+    assert!(avg(&left) > avg(&right), "{} {}", avg(&left), avg(&right));
+    // The stroke: yellow (#f9e2af) pixels around the letters.
+    let yellow = (12..172)
+        .flat_map(|x| (8..56).map(move |y| (x, y)))
+        .filter(|&(x, y)| {
+            let p = buf.px(x, y);
+            p[2] > 0xd0 && p[1] > 0xb0 && p[0] < 0xc0
+        })
+        .count();
+    assert!(yellow > 50, "outline pixels: {yellow}");
+
+    // The letters: at t = 0 every wave reads its phase; later frames
+    // differ (they move), and a frozen clock holds t = 0.
+    let (_, still) = words(Scale::ONE, 0);
+    assert!(still.pixels != buf.pixels);
+    let (_, buf) = words(Scale::new(240).unwrap(), 0);
+    assert_matches_ref("effects_text_2x", &buf, 2);
+}

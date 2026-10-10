@@ -2726,7 +2726,9 @@ fn uniform_ty() -> Ty {
 fn rendered_child(n: &Node) -> Option<Span> {
     match n {
         Node::Element(e) => match &e.kind {
-            ElementKind::Builtin(k) if k == "popup" || k == "tooltip" => None,
+            // (M4) `letters` animates the text it is in (decisions.md,
+            // m4-owner): a leaf `text` holds it.
+            ElementKind::Builtin(k) if k == "popup" || k == "tooltip" || k == "letters" => None,
             _ => Some(e.span),
         },
         Node::If(i) => Some(i.span),

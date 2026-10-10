@@ -78,7 +78,11 @@ impl<'a> Flattener<'a> {
         // Time-bound props (M4) are evaluated at this node's own time.
         let global = &self.tree.tokens;
         let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
-        let timed = timed_scope || crate::time::reads_time(node, global);
+        // (M4) A `text`'s `letters` child is drawn by the text, at its time.
+        let letters = crate::effects::letters::child(self.tree, node);
+        let timed = timed_scope
+            || crate::time::reads_time(node, global)
+            || letters.is_some_and(|l| crate::time::reads_time(l, global));
         // Its clock: the rate its time props and its own animation run at.
         // (A source built from props follows a clock that time-bound
         // props run at refresh: `crate::effects::raster`.)
@@ -723,8 +727,20 @@ impl<'a> Flattener<'a> {
                 node, &get, frame, phys, &box_path, &r, text_color, &mut sig, &mut ink,
             );
         }
-        // Text.
+        // Text. (M4) `fill:` paints its glyphs, `text_stroke:` outlines
+        // them (an offscreen group under them), and a `letters` child
+        // draws each letter on its own (`crate::effects::letters`).
         let mut glyph_cells: Option<(DefaultHasher, Vec<(Rect, u64)>)> = None;
+        let text_fill = if is_text {
+            paint_of(get(Prop::Fill))
+        } else {
+            None
+        };
+        let text_stroke = if is_text {
+            crate::effects::light::text_stroke(get(Prop::TextStroke))
+        } else {
+            None
+        };
         if let Some((l, dx, dy)) = layout {
             // A layout from another scale is drawn resampled (see raster).
             let x = phys.x + (dx as f64 * s).round().clamp(-1e7, 1e7) as i32;
@@ -763,6 +779,9 @@ impl<'a> Flattener<'a> {
                     && caret.is_none()
                     && k == 1.0
                     && self.xform == kurbo::Affine::IDENTITY
+                    && text_fill.is_none()
+                    && text_stroke.is_none()
+                    && letters.is_none()
                 {
                     let mut rest = sig.clone();
                     (x, y).hash(&mut rest);
@@ -788,18 +807,44 @@ impl<'a> Flattener<'a> {
                         .collect();
                     glyph_cells = Some((rest, cells));
                 }
-                self.push(
-                    Item::Glyphs {
-                        x,
-                        y,
-                        layout: l,
-                        color,
-                        spans: span_colors,
-                    },
-                    bounds,
-                    &mut sig,
-                    &mut ink,
-                );
+                let fill = text_fill.clone().map(|paint| {
+                    Arc::new(super::GlyphFill {
+                        paint,
+                        frame,
+                        area: kurbo_rect(bounds).union(frame),
+                    })
+                });
+                match letters {
+                    None => self.push(
+                        Item::Glyphs {
+                            x,
+                            y,
+                            layout: l,
+                            color,
+                            spans: span_colors,
+                            fill,
+                        },
+                        bounds,
+                        &mut sig,
+                        &mut ink,
+                    ),
+                    Some(lt) => {
+                        let each = crate::effects::letters::items(
+                            lt,
+                            &scope,
+                            &l,
+                            (x, y),
+                            color,
+                            &span_colors,
+                            fill,
+                            s,
+                            self.xform,
+                        );
+                        for (item, b) in each {
+                            self.push(item, b, &mut sig, &mut ink);
+                        }
+                    }
+                }
                 for (u, c) in lines {
                     let r = kurbo::Rect::new(
                         x as f64 + u.left() as f64 * k,
@@ -823,12 +868,24 @@ impl<'a> Flattener<'a> {
                 self.marker(Item::PopClip);
             }
         }
-        if glows_content
-            && let Some(g) = glow
-            && let Some((bounds, effects)) = crate::effects::light::glow_content(
+        if let Some(effects) = text_stroke
+            && let Some((bounds, effects)) = crate::effects::light::under_content(
                 &mut self.out.items,
                 content_start,
-                g,
+                effects,
+                (frame, self.scale.as_f32(), self.xform),
+                self.surface,
+            )
+        {
+            crate::layers::hash_effects(&mut sig, &effects);
+            ink = ink.union(bounds);
+        }
+        if glows_content
+            && let Some(g) = glow
+            && let Some((bounds, effects)) = crate::effects::light::under_content(
+                &mut self.out.items,
+                content_start,
+                g.effects(),
                 (frame, self.scale.as_f32(), self.xform),
                 self.surface,
             )

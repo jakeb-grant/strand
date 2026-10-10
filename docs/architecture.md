@@ -418,7 +418,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
   (raster sources built from props: `grain:`, particles, the built-in
   effects), `builtin.rs` (lightning, sparks, shimmer, ripple, aurora's CPU
-  fallback; the canvas and sprites), `particles.rs` (CPU sprite blits).
+  fallback; the canvas and sprites), `particles.rs` (CPU sprite blits),
+  `letters.rs` (a text's `letters`, one letter at a time).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
