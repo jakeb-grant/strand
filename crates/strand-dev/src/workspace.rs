@@ -153,6 +153,16 @@ impl Analysis {
         compiled
             .diagnostics
             .extend(strand_compiler::check::paths::check(&compiled.program, dir));
+        // `shader "x.wgsl"` files, checked with naga (relative paths only
+        // in a config directory).
+        compiled.check_shaders(&|p: &str| match dir {
+            Some(d) => std::fs::read_to_string(strand_compiler::check::shaders::resolve(p, d))
+                .map_err(|e| e.to_string()),
+            None if std::path::Path::new(p).is_absolute() => {
+                std::fs::read_to_string(p).map_err(|e| e.to_string())
+            }
+            None => Err("a single file has no config directory to find it in".into()),
+        });
         Self {
             key,
             map,

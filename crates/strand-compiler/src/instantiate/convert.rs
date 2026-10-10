@@ -81,6 +81,21 @@ struct PaintSlots {
     numbers: Slots,
 }
 
+/// (M4) A paint as a canvas op records it: plain (`Ok`), or as the
+/// prop value render resolves in the node's token scope when it names
+/// tokens (`Err`, `c.fill($accent)`).
+pub(crate) fn canvas_paint(types: &TypeTable, v: &Value) -> Option<Result<Paint, PropValue>> {
+    match paint(v)? {
+        (p, slots)
+            if slots.colors.iter().all(Option::is_none)
+                && slots.numbers.iter().all(Option::is_none) =>
+        {
+            Some(Ok(p))
+        }
+        _ => Some(Err(prop_value(types, &Ty::PAINT, v))),
+    }
+}
+
 /// A paint (colour or gradient) with its slots.
 fn paint(v: &Value) -> Option<(Paint, PaintSlots)> {
     if let Some((c, slot)) = color_slot(v) {

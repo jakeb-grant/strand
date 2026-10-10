@@ -772,12 +772,65 @@ pub(crate) fn method(
             if def.name == "Date" {
                 return super::clock::date_method(vm.types(), recv, name, &args.into_vec());
             }
-            // Canvas drawing and other render-side methods do nothing on
-            // the logic thread.
+            if def.name == "Canvas" {
+                // (M4) Recorded while a `draw:` runs (`Vm::record_canvas`).
+                if let Some(op) = canvas_op(vm.types(), name, &args.into_vec()) {
+                    vm.canvas_op(op);
+                }
+                return Ok(Value::Unit);
+            }
+            // Other render-side methods do nothing on the logic thread.
             Ok(Value::Unit)
         }
         _ => Ok(Value::Null),
     }
+}
+
+/// (M4) The op a `Canvas` method call records (`None`: arguments that
+/// do not fit, which draw nothing).
+fn canvas_op(
+    types: &crate::ty::TypeTable,
+    name: &str,
+    a: &[Value],
+) -> Option<strand_scene::canvas::DrawOp> {
+    use strand_scene::canvas::DrawOp;
+    let n = |i: usize| a.get(i).and_then(Value::as_f64).map(|x| x as f32);
+    Some(match name {
+        "line" => DrawOp::Line {
+            x1: n(0)?,
+            y1: n(1)?,
+            x2: n(2)?,
+            y2: n(3)?,
+        },
+        "rect" => DrawOp::Rect {
+            x: n(0)?,
+            y: n(1)?,
+            w: n(2)?,
+            h: n(3)?,
+        },
+        "circle" => DrawOp::Circle {
+            x: n(0)?,
+            y: n(1)?,
+            r: n(2)?,
+        },
+        "fill" => match crate::instantiate::canvas_paint(types, a.first()?)? {
+            Ok(p) => DrawOp::Fill(p),
+            Err(themed) => DrawOp::FillThemed(themed),
+        },
+        "stroke" => {
+            let width = n(1).unwrap_or(1.0);
+            match crate::instantiate::canvas_paint(types, a.first()?)? {
+                Ok(paint) => DrawOp::Stroke { paint, width },
+                Err(paint) => DrawOp::StrokeThemed { paint, width },
+            }
+        }
+        "text" => DrawOp::Text {
+            text: a.first()?.as_text()?.to_string(),
+            x: n(1)?,
+            y: n(2)?,
+        },
+        _ => return None,
+    })
 }
 
 /// What `await` waits on for `source.name(args)` (`hits.take(2)`): the

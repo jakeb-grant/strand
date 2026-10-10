@@ -105,9 +105,11 @@ impl<H: SurfaceHost + 'static> State<H> {
                 *config = new.clone();
                 s.config = new.as_layer();
                 s.geometry_dirty = true;
-                popup.wl_surface().commit();
-                s.stats.bare_commits += 1;
-                self.stats.bare_commits += 1;
+                if !self.gpu.has(id) {
+                    popup.wl_surface().commit();
+                    s.stats.bare_commits += 1;
+                    self.stats.bare_commits += 1;
+                }
             } else {
                 self.destroy_surface(id);
             }
@@ -368,9 +370,13 @@ impl<H: SurfaceHost + 'static> State<H> {
             Keyboard::OnDemand => KeyboardInteractivity::OnDemand,
             Keyboard::Exclusive => KeyboardInteractivity::Exclusive,
         });
-        layer.commit();
-        s.stats.bare_commits += 1;
-        self.stats.bare_commits += 1;
+        // (M4) A handed-off surface's next present applies it: the GPU
+        // thread is its only committer.
+        if !self.gpu.has(id) {
+            layer.commit();
+            s.stats.bare_commits += 1;
+            self.stats.bare_commits += 1;
+        }
     }
 
     /// The topmost grabbing popup nested in layer surface `layer`.

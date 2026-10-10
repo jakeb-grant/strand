@@ -18,6 +18,8 @@ use crate::raster::{AtlasMirror, Raster};
 use crate::tree::SceneTree;
 
 mod apply;
+#[cfg(feature = "gpu")]
+pub(crate) mod backend;
 mod frame;
 mod layout_pass;
 mod lists;
@@ -29,6 +31,8 @@ mod text;
 mod tooltip;
 mod wake;
 
+#[cfg(feature = "gpu")]
+pub use backend::GPU_WAIT;
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use text::TextBackend;
 use text::{TextSlot, TextState};
@@ -317,6 +321,9 @@ pub struct Renderer {
     timer_due: Option<Instant>,
     /// (M4) Per-surface clocks: nodes reading time each surface drew.
     clocks: crate::clock::Clocks,
+    /// (M4) The GPU backend: promotion, the device, lowering, passes.
+    #[cfg(feature = "gpu")]
+    gpu: backend::GpuState,
 }
 
 /// How long the pointer rests on a node before its `tooltip` shows.
@@ -396,6 +403,8 @@ impl Renderer {
             timer_due: None,
             waker,
             clocks: crate::clock::Clocks::default(),
+            #[cfg(feature = "gpu")]
+            gpu: backend::GpuState::default(),
         }
     }
 
@@ -707,6 +716,27 @@ impl Renderer {
                 .surfaces
                 .values()
                 .any(|s| s.root == id && (s.animating || s.flip_all || !s.flip.is_empty()))
+    }
+
+    /// (M4) Why the GPU is not drawing: this build has no GPU backend.
+    #[cfg(not(feature = "gpu"))]
+    pub fn gpu_status(&self) -> strand_scene::GpuStatus {
+        strand_scene::GpuStatus::Unavailable {
+            reason: strand_scene::GpuStatus::NOT_BUILT.into(),
+        }
+    }
+
+    /// (M4) True while a surface shows a `shader` node (logic hears the
+    /// status only then).
+    #[cfg(not(feature = "gpu"))]
+    pub fn gpu_in_demand(&self) -> bool {
+        self.surfaces.values().any(|s| {
+            s.records.keys().any(|id| {
+                self.tree
+                    .get(*id)
+                    .is_some_and(|n| n.kind == NodeKind::Shader)
+            })
+        })
     }
 
     /// The retained tree, read-only (inspector, tests).

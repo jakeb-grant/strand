@@ -77,6 +77,8 @@ pub(super) struct Shell {
     pub(super) settings_reread: Vec<String>,
     /// The last layout fact batch taken in since the last diff went out.
     pub(super) layout_seen: Option<u64>,
+    /// (M4) The GPU status render last reported.
+    pub(super) gpu: strand_scene::GpuStatus,
 }
 
 impl Shell {
@@ -139,7 +141,31 @@ impl Shell {
                 self.host_notices.push(text);
             }
             ToLogic::Notice(_) => {}
+            ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::Shutdown => {}
+        }
+    }
+
+    /// (M4) The GPU status render reported: kept (for `strand report`),
+    /// and each reason the CPU fallback draws is logged and made a
+    /// `strand watch` notice once per run.
+    pub(super) fn gpu_status(&mut self, status: strand_scene::GpuStatus) {
+        let text = match &status {
+            strand_scene::GpuStatus::Unavailable { reason } => Some(format!(
+                "GPU unavailable: {reason}; shaders draw nothing (CPU fallback)"
+            )),
+            strand_scene::GpuStatus::Up(info) => {
+                log::info!("GPU: {} ({})", info.name, info.driver);
+                None
+            }
+            _ => None,
+        };
+        self.gpu = status;
+        if let Some(text) = text
+            && !self.host_notices.contains(&text)
+        {
+            log::warn!("{text}");
+            self.handle(ToLogic::Notice(text));
         }
     }
 

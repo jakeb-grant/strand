@@ -36,8 +36,8 @@ bar screens="Mock | DP-1 | Display" name="Everything"
       page name=wifi
         text text="Wi-Fi"
     box tooltip="A tooltip"
-    shader source="aurora.wgsl"
-    canvas
+    shader source="aurora.wgsl" uniforms=uniforms {u_speed: 0.4; u_tint: $accent}
+    canvas watch=size draw=draw [1 ops]
     box radius=[14, 14, 0, 0] corners=squircle
     popup attach=top
     box shape=cookie

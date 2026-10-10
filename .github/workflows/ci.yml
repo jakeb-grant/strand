@@ -27,6 +27,9 @@ env:
   # vector width so GPU pixels do not depend on the runner's CPU; as in
   # scripts/container/Dockerfile.
   STRAND_REQUIRE_GPU: "1"
+  # Lavapipe is a software adapter, which strand counts as no device
+  # unless this is set (docs/architecture.md, "`strand-gpu`").
+  STRAND_GPU_SOFTWARE: "1"
   VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
   VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
   LP_NATIVE_VECTOR_WIDTH: "256"
@@ -63,6 +66,10 @@ jobs:
       # sit behind default-on features; the build without them must stay
       # clean too.
       - run: cargo clippy -p strand-services --no-default-features --all-targets
+      # The CPU core without the GPU backend (no wgpu, vello_gpu, naga or
+      # libwayland-client; the 15 MiB `.text` gate's build).
+      - run: cargo clippy -p strand --no-default-features --all-targets
+      - run: cargo build -p strand --no-default-features
 
   # The debug test build: the workspace's tests, the 100 reloads and the
   # reload fuzzer's short run.
@@ -129,6 +136,9 @@ jobs:
       # (launcher open at 2x, two toasts, the OSD) printed against
       # design.md's 59-64 MB (64 MB target warns, 70 MB ceiling fails).
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
+      # The CPU core's .text keeps its 15 MiB gate behind the GPU
+      # backend's 18.5 MiB (docs/architecture.md, "`strand-gpu`").
+      - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
 
   # M2 exit: design.md's four example shells and theme.strand, byte for
   # byte, in `strand run` on headless sway with two outputs against the

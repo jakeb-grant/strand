@@ -86,6 +86,13 @@ impl Raster {
         &self.cache
     }
 
+    /// (M4) The paint cache and the offscreen groups, for lowering a frame
+    /// to the GPU.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn gpu_parts(&mut self) -> (&mut PaintCache, &mut crate::offscreen::Offscreen) {
+        (&mut self.cache, &mut self.offscreen)
+    }
+
     /// The offscreen group cache.
     pub fn offscreen(&self) -> &crate::offscreen::Offscreen {
         &self.offscreen

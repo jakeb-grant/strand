@@ -11,7 +11,7 @@
 # Env:   CARGO_BUILD_JOBS (default 6); every STRAND_* variable set on the
 #        host is passed in (STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE/GPU default
 #        to 1, as in CI; the GPU tier is lavapipe, the image's only
-#        Vulkan driver).
+#        Vulkan driver, accepted with STRAND_GPU_SOFTWARE=1).
 #
 # Builds land in <checkout>/target/container (apart from any native
 # target/); the cargo registry and git checkouts are the named volumes
@@ -54,6 +54,7 @@ envs=(
   -e STRAND_REQUIRE_DBUS=1
   -e STRAND_REQUIRE_PIPEWIRE=1
   -e STRAND_REQUIRE_GPU=1
+  -e STRAND_GPU_SOFTWARE=1
 )
 # The host's STRAND_* (overriding the defaults above).
 while IFS='=' read -r name _; do

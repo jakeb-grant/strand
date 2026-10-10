@@ -12,16 +12,21 @@ publish = false
 
 [workspace.dependencies]
 strand-auth = { path = "crates/strand-auth" }
-strand-compiler = { path = "crates/strand-compiler" }
+# `strand`'s feature `gpu` (on by default) turns on render's `gpu`,
+# surface's `gpu` and the compiler's `shaders`; members get none of them
+# from here, so `strand --no-default-features` links no wgpu, vello_gpu,
+# naga or libwayland-client (docs/architecture.md, "Crate graph").
+strand-compiler = { path = "crates/strand-compiler", default-features = false }
 strand-core = { path = "crates/strand-core" }
+strand-gpu = { path = "crates/strand-gpu" }
 strand-icons = { path = "crates/strand-icons" }
 strand-introspect = { path = "crates/strand-introspect" }
-strand-render = { path = "crates/strand-render" }
+strand-render = { path = "crates/strand-render", default-features = false }
 strand-scene = { path = "crates/strand-scene" }
 strand-services = { path = "crates/strand-services" }
 strand-services-macros = { path = "crates/strand-services-macros" }
 strand-services-schema = { path = "crates/strand-services-schema" }
-strand-surface = { path = "crates/strand-surface" }
+strand-surface = { path = "crates/strand-surface", default-features = false }
 strand-text = { path = "crates/strand-text" }
 strand-theme = { path = "crates/strand-theme" }
 strand-watch = { path = "crates/strand-watch" }

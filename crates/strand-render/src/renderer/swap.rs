@@ -1510,6 +1510,18 @@ impl Renderer {
         self.swap.blend += started.elapsed();
     }
 
+    /// (M4) `surface`'s crossfade snapshot at `size`, taken (the CPU
+    /// raster's bytes, rows `size.w * 4` apart): what a presented
+    /// surface's GPU frame blends under its new frame.
+    #[cfg(feature = "gpu")]
+    pub(super) fn fade_pixels(&self, surface: SurfaceId, size: Size) -> Option<&[u8]> {
+        self.swap
+            .fade
+            .get(&surface)
+            .filter(|s| s.size == size && s.old.is_none() && s.pixels.len() == s.bytes())
+            .map(|s| s.pixels.as_slice())
+    }
+
     /// Forgets a detached surface's crossfade.
     pub(super) fn forget_fade(&mut self, surface: SurfaceId) {
         self.swap.blended.remove(&surface);

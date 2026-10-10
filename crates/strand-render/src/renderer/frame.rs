@@ -46,10 +46,16 @@ impl Renderer {
             true => s.new_text_until,
         };
         let now = Instant::now();
+        // (M4) A pass or readback in flight.
+        #[cfg(feature = "gpu")]
+        let gpu = self.gpu_hold(surface);
+        #[cfg(not(feature = "gpu"))]
+        let gpu = None;
         [
             until,
             s.query_hold.map(|(_, t)| t),
             s.size_hold.map(|(_, t)| t),
+            gpu,
         ]
         .into_iter()
         .flatten()
@@ -269,6 +275,9 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        // (M4) Its `shader` nodes' passes (drawn with what they have).
+        #[cfg(feature = "gpu")]
+        self.gpu_passes(surface, &f.passes, false);
         if fresh {
             // Its clocks run while it draws them: not frozen (reduced
             // motion, a frame with no clock), and not after it detached.
@@ -288,6 +297,9 @@ impl Renderer {
         // Every painted frame, cached or not, is checked for a list
         // showing a gap or held at its mounted rows.
         self.check_list_gaps(surface);
+        // (M4) Clocked passes a GPU-drawn surface runs in every frame.
+        #[cfg(feature = "gpu")]
+        let clocked = self.gpu_clocked_damage(surface, &f.items, &f.passes);
         if fresh {
             // Exits under this surface it did not draw (a row scrolled
             // out of view) end: nobody sees them, unless another surface
@@ -338,6 +350,16 @@ impl Renderer {
         } else {
             frame = Damage::full(target.size);
         }
+        #[cfg(feature = "gpu")]
+        frame.union_clipped(&clocked, bounds);
+        // (M4) Promotion's input, and whether a GPU-drawn surface must
+        // send this frame.
+        #[cfg(feature = "gpu")]
+        let stats = (
+            frame.area(),
+            animating,
+            animating || !clocked.is_empty() || s.records != f.records,
+        );
         s.records = f.records.clone();
         s.hits = f.hits.clone();
 
@@ -357,6 +379,8 @@ impl Renderer {
             // the caller does not commit (see `Painter::paint`).
             s.cache = Some(f);
             self.last_damage.insert(surface, total);
+            #[cfg(feature = "gpu")]
+            self.gpu_frame_stats(surface, stats.0, stats.1);
             return total;
         }
 
@@ -372,9 +396,39 @@ impl Renderer {
         s.query_hold = None;
         s.query_held = false;
         let scale = s.scale;
-        self.raster
-            .paint(&f.items, &total, &self.atlas, scale, target);
-        if let super::swap::FadeFrame::Blend(w) = fade {
+        // (M4) A promoted surface: its pixels come from the GPU (or the
+        // CPU draws it in full until they do). A presented frame is
+        // lowered, crossfade included, so nothing is drawn into `target`.
+        #[cfg(feature = "gpu")]
+        let (total, drawn, lowered) = match self.backend(surface) {
+            strand_scene::Backend::GpuReadback => {
+                match self.gpu_readback_paint(surface, &f.items, &f.passes, stats.2, target) {
+                    Some(d) => (d, true, false),
+                    None => (Damage::full(target.size), false, false),
+                }
+            }
+            strand_scene::Backend::GpuPresent => {
+                let w = match fade {
+                    super::swap::FadeFrame::Blend(w) => Some(w),
+                    _ => None,
+                };
+                (
+                    self.gpu_present_paint(surface, &f.items, &f.passes, target.size, scale, w),
+                    true,
+                    true,
+                )
+            }
+            strand_scene::Backend::Cpu => (total, false, false),
+        };
+        #[cfg(not(feature = "gpu"))]
+        let (drawn, lowered) = (false, false);
+        if !drawn {
+            self.raster
+                .paint(&f.items, &total, &self.atlas, scale, target);
+        }
+        if let super::swap::FadeFrame::Blend(w) = fade
+            && !lowered
+        {
             self.blend_fade(surface, w, target);
         }
         // Nothing changed since flattening: the next paint can reuse it.
@@ -385,6 +439,8 @@ impl Renderer {
             s.painted_at = Some(Instant::now());
         }
         self.last_damage.insert(surface, total);
+        #[cfg(feature = "gpu")]
+        self.gpu_frame_stats(surface, stats.0, stats.1);
         total
     }
 

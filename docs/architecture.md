@@ -913,7 +913,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     builtin.schema's `Canvas` record (`Line`, `Rect`, `Circle`, `Fill`,
     `Stroke`, `Text`; `DrawOp::METHODS`, checked by the catalogue test).
     It is `#[non_exhaustive]`: transforms and clips are added with the
-    canvas work.
+    canvas work. M4 added `FillThemed(PropValue)` and `StrokeThemed {
+    paint, width }` for paints naming tokens (`c.fill($accent)`), which
+    render resolves in the node's token scope. The instance runs the
+    lambda in the prop's memo with a `Canvas` of the node's laid-out
+    size, the VM recording each `Canvas` method call; render turns the
+    list into clipped fills (`strand-render/src/canvas.rs`; `fill` with
+    no path fills the box; `text` is not drawn yet).
   - **Effect layers** (design.md, "Runtime changes these need", items 1–4).
     `strand_scene::effect::Effect` is a tagged group effect:
     `ColorMatrix([f32; 20])` (the `filter:` colour functions compose into
@@ -2517,8 +2523,9 @@ presentation global). New M4 concerns get files of their own beside them.
 
 ### `strand-gpu`
 
-(M4, planned; docs/m4-plan.md wave 0c, from the wave-0 spike: decisions.md,
-m4-gpu-spike.) The GPU backend is in every build and falls back to the
+(M4; docs/m4-plan.md wave 0c, from the wave-0 spike: decisions.md,
+m4-gpu-spike; the backend landed in m4-gpu-w2, the bundled effects are
+wave 3.) The GPU backend is in every build and falls back to the
 CPU (decisions.md, m4-owner). vello_cpu into `wl_shm` stays the default
 for every surface; the GPU draws a surface only while it animates a
 large area, and shaders. Nothing in this crate runs, and no Vulkan
@@ -2542,19 +2549,28 @@ Wayland crate. Its interface:
 - `GpuRequest`: `Attach { surface: SurfaceId, handles: Option<RawHandles>,
   size, scale, opaque: bool }` (no handles: readback only), `Resize {
   surface, size, scale }`, `Release(SurfaceId)`, `Frame(Frame)`,
-  `Shutdown`. `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
+  `Pass(PassFrame)` (a `shader` node's pass on a surface the GPU does
+  not draw: drawn offscreen at its size and read back), `Shutdown`.
+  `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
   `Attached { surface, mode: GpuMode }`, `Released(SurfaceId)`,
   `Presented { surface, at: Instant }`, `Pixels { surface, frame: u64,
-  pixels: Readback }`, `Lost(GpuError)`, `Exited`.
+  pixels: Readback }`, `PassPixels { key, frame, pixels }`, `Failed {
+  surface, key, error }` (a frame or pass that could not be drawn, such
+  as a shader that fails to compile on the device; the device stays
+  up), `Lost(GpuError)`, `Exited`.
 - `Frame { surface, id: u64, size, scale, ops: Vec<Op>, uploads:
-  Vec<Upload>, readback: Option<Rect> }` is what render lowers its
+  Vec<Upload>, retire: Vec<u64>, clear: AlphaColor<Srgb> }` (`clear`: the
+  background the frame is cleared to; no `readback` field, since an
+  attached surface's mode decides and a pass on a CPU surface is its
+  own `Pass` request: decisions.md, m4-gpu-w2) is what render lowers its
   display list into (`renderer/backend.rs`): fills and strokes of
   kurbo paths with peniko paints and transforms, images by texture id,
-  clips, blends and opacity as layers, and `Op::Pass(ShaderPass,
-  bounds)`. `Upload`s carry atlas pages and cached pixmaps (images,
-  gradients, shadows, masks: masks are always rasterised on the CPU)
-  keyed by id and generation; they live on the GPU until the device
-  drops. The GPU thread builds the vello_gpu scene from the ops, so
+  clips (`PushClipEvenOdd` for a shadow's ring), blends and opacity as
+  layers, and `Op::Pass(ShaderPass, bounds)`. `Upload`s carry atlas
+  pages and cached pixmaps (images, gradients, shadows, masks: masks are
+  always rasterised on the CPU) keyed by id; they live on the GPU until
+  a frame lists them in `retire` (render retires an upload whose pixmap
+  died or that no frame drew for 600 lowerings) or the device drops. The GPU thread builds the vello_gpu scene from the ops, so
   that work is off the main thread.
 - `Readback` is `Bgra8Unorm` premultiplied rows (the `wl_shm` ARGB8888
   byte order), padded to wgpu's 256-byte row alignment, with its stride.
@@ -2565,10 +2581,8 @@ requested without a surface, so readback works whatever the WSI can do.
 A software adapter (`DeviceType::Cpu`, lavapipe) counts as no device:
 it would draw on the CPU and keep about 80 MiB mapped after the drop.
 `STRAND_GPU_SOFTWARE=1` accepts it, and a user never needs it. The
-lavapipe tier is to set it beside `STRAND_REQUIRE_GPU=1`; that is
-pending: CI's env, `run.sh` and `ci.sh` set only `STRAND_REQUIRE_GPU`
-today, and the integrator adds `STRAND_GPU_SOFTWARE=1` with S-gpu's
-first test that needs it. The adapter is requested with
+lavapipe tier sets it beside `STRAND_REQUIRE_GPU=1` (CI's env, `run.sh`
+and `ci.sh`). The adapter is requested with
 `PowerPreference::HighPerformance`, so a hardware adapter wins when both
 exist. The thread waits on its
 channel and on presents, never on a timer: it does not decide when to
@@ -2577,12 +2591,21 @@ stop.
 **Promotion** (`strand-render/src/promote.rs`, a pure state machine per
 surface; `Renderer` drives it and reports changes with
 `Renderer::take_backend_changes() -> Vec<BackendChange>`, which the
-binary carries out):
+binary carries out, and queues what it wants of the GPU thread itself
+with `Renderer::take_gpu_requests() -> Vec<GpuRequest>` (passes and
+readback frames): the binary starts the `Gpu` when requests come and
+none runs, and hands every reply to `Renderer::deliver_gpu(GpuReply)`.
+The binary calls both after every dispatch of its loop; taking the
+changes also re-arms render's timer, since a reply or a detached surface
+can bring the device's drop forward; decisions.md m4-gpu-w2):
 
 - A surface is promoted only for heavy animation (design.md, Paint):
   after more than 500 ms in which every frame damaged at least 0.2 Mpx
   (render still diffs display lists on a promoted surface, so it knows
-  the damage a CPU frame would have had). A shader pass also needs the
+  the damage a CPU frame would have had). A paint that damages nothing
+  is not a frame (it commits nothing). The switch is made at the first
+  settled frame that is itself large; a promoted surface that paints
+  nothing for 500 ms goes back at a wake of its own. A shader pass also needs the
   device, without promoting its surface (below).
 - Backends switch only when springs settle: the switch waits for a
   frame with no spring in flight on that surface. Clocks (time signals,
@@ -2629,11 +2652,13 @@ or `GpuReadback`, and render switches at its next settled frame (for
 surface is settled, the CPU keeps drawing: promotion never stalls a
 frame.
 
-**Frames.** In readback mode, `Painter::paint` lowers the frame, sends
-it, and returns empty damage while it holds the frame for the pixels
-(`frame_deadline` reports the hold, as for text); the `Pixels` reply
-calls `Renderer::deliver_gpu`, the surface is polled, and the next
-`paint` copies them in. In present mode the surface manager does not
+**Frames.** In readback mode, `Painter::paint` copies in the pixels of
+the frame it sent last (full damage) and lowers and sends the current
+one when its records changed or it animates, so frames run one behind
+and the main thread never waits on the GPU; until the first pixels come
+the CPU draws the frame in full. The `Pixels` reply calls
+`Renderer::deliver_gpu`, which marks the surface for the next `paint`
+(decisions.md, m4-gpu-w2). In present mode the surface manager does not
 call `paint` for that surface: the GPU thread's `Presented` reply is its
 frame callback, the binary asks render for the next frame
 (`Renderer::paint_gpu(surface, at) -> Option<Frame>`, `at` the last
@@ -2642,8 +2667,16 @@ would have been) and sends it. One frame is in flight per surface.
 
 **Surface hand-off** (`strand-surface/src/gpu_handoff.rs`). One
 `wl_surface` moves between shm and the WSI; it is never recreated.
-- `State::raw_handles(surface)` returns the connection's `wl_display`
-  and the surface's `wl_surface` as `raw-window-handle` handles. It needs
+- `State::raw_handles(&mut self, surface) ->
+  Option<strand_surface::RawHandles>` returns the connection's
+  `wl_display` and the surface's `wl_surface` as `raw-window-handle`
+  handles (the binary moves them into `strand_gpu::RawHandles`; none
+  for a lock surface, which is never handed off). The handles are lent:
+  from then until `State::take_back` a destroy of the surface goes
+  through `gpu_release` as for a handed-off one, since the GPU thread
+  may be building a swapchain on it before its `Attached` reply comes
+  back (the device takes 100 ms or more to start); the manager still
+  paints and commits it until `hand_off`. It needs
   `wayland-backend`'s `client_system` feature, which strand-surface's
   `gpu` feature turns on (on by default). That feature switches the
   backend for every crate in the build to libwayland-client (57 kB of
@@ -2653,14 +2686,18 @@ would have been) and sends it. One frame is in flight per surface.
   thread that commits that `wl_surface`. The manager stops attaching shm
   buffers, requesting frame callbacks and calling `paint` for it. It
   still handles configures (the ack is sent, `surface_configured` tells
-  the host, which sends `Resize`, and the next present commits the new
-  size) and sets pending state (input and opaque regions, margins from
-  placement) without committing; the next present applies it.
+  the host, which sends `Resize`, the buffer scale or viewport
+  destination and a popup's window geometry are set, and the next
+  present commits the new size) and sets pending state (input and
+  opaque regions, margins from placement, a popup grab's keyboard
+  interactivity) without committing; the next present applies it.
   Compositor poses are not delegated while presented: render paints the
   pose into the GPU frames, which are full frames anyway.
-- `State::take_back(surface)` after the GPU thread's `Released` reply:
-  the manager paints and commits a full shm frame (`age` 0) and resumes
-  frame callbacks and pose delegation. Between `Release` and the next
+- `State::take_back(surface)` after the GPU thread's `Released` reply
+  (also after an `Attached { Readback }` for lent handles, and when the
+  thread has ended): the manager paints and commits a full shm frame
+  (`age` 0) and resumes frame callbacks and pose delegation; a lent
+  surface is no longer lent. Between `Release` and the next
   shm commit nothing commits that surface.
 - When the manager has to destroy or recreate a handed-off surface
   (`Removed`, an unplugged output, a layer surface `closed`), it calls
@@ -2669,6 +2706,17 @@ would have been) and sends it. One frame is in flight per surface.
   before its `wl_surface`.
 - In readback mode the surface is never handed off: the main thread
   commits, and poses are delegated as on any CPU surface.
+- The binary's side (`strand/src/run/gpu.rs`, `GpuHost::pump` after
+  every dispatch): `Attached { Present }` hands the surface off;
+  `Presented` lets the next `paint_gpu` frame go (one in flight); a new
+  buffer size or scale from the manager sends `Resize`; `Released`,
+  `Exited`, or the end of a thread dropped while it had a surface's
+  handles (handed off, or its `Attach` not answered yet) takes it back.
+  A `Gpu` is started only once every dropped thread has ended (one
+  device per process); requests meanwhile wait in the host. Once a
+  thread has ended the binary calls libc's `malloc_trim(0)` and
+  mimalloc's collect (the driver's freed arena pages).
+  `STRAND_GPU_IDLE_MS` shortens the 30 s idle for tests.
 
 **Shaders and effects.** `strand_scene::effect::Effect::Shader(ShaderPass)`
 with `ShaderPass { code: ShaderRef, uniforms: Arc<[f32]>, input:
@@ -2709,8 +2757,11 @@ when outside), `strand_input` (`texture_2d<f32>`, 1×1 transparent for
 uniforms, each its own `var<uniform>` of type `f32` or `vec2`–`vec4<f32>`
 at a binding the file picks (one value per binding, not a struct).
 Values arrive as `f32` in buffer units: lengths in px × scale,
-angles in radians, durations in seconds, colours premultiplied linear
-`vec4`.
+angles in radians, durations in seconds, colours premultiplied sRGB
+`vec4`: the space Strand composites in, which is also the space the
+fragment's output is read in, so a file that returns `u_tint` paints
+exactly the colour `bg: $accent` would (decisions.md, m4-gpu-w2
+review).
 
 On a surface that is not promoted (the usual case: a small aurora
 behind a bar's clock), a pass is drawn offscreen by the GPU at its
@@ -2740,16 +2791,26 @@ to say why.
   9.7%); `strand --no-default-features` at most 15 MiB (the spike's CPU
   build had 1.14 MiB to spare). The spike measured the GPU build's bar
   PSS at a mean of 33.7 MB, about 0.3 MB under the 34 MB target, all of
-  it cold-code mapping and relocations; S-gpu measures again when the
-  backend lands.
+  it cold-code mapping and relocations. With the backend landed
+  (m4-gpu-w2): `.text` 18,456,983 B (default) and 15,118,167 B
+  (`--no-default-features`, its own CI step), and the design bar's PSS
+  33,731–34,016 kB over three runs, under the 34 MiB (34,816 kB) target,
+  with no `libvulkan` mapped (asserted there). That is the spike's
+  prediction for the GPU build (mean 33.7 MB, about 1.3 MB over the CPU
+  build measured alternately with it), not a regression of the landed
+  backend: features.md's 31.2–32.3 MB are the CPU build's.
 - Cold (`strand/tests/gpu_cold.rs`, per feature set with `cargo
   metadata`): wgpu, vello_gpu and naga reach `strand` only through
   `strand-gpu`, and naga also through `strand-compiler`'s `shaders`;
   none of them in `--no-default-features`. `budgets.rs`: no `libvulkan`
   mapped before promotion.
-- Idle on lavapipe (`strand/tests/gpu_idle.rs`, enforced in CI): after
-  each promote, frames and drop the `strand-gpu` thread is gone and the
-  process takes no wakeups, and PSS after the second cycle is within 3
+- Idle on lavapipe (`strand/tests/gpu_idle.rs::gpu_is_released_when_idle`,
+  enforced in CI): a large animated shader panel is promoted and
+  presented (lavapipe must attach in `Present` mode), stays presented
+  while it animates, and its screenshot matches a small panel's
+  CPU-drawn strip whose still shader reads back; hidden, it is demoted
+  and taken back; after each cycle the `strand-gpu` thread is gone and
+  the process takes no wakeups, and PSS after the second cycle is within 3
   MiB of PSS after the first (no growth). PSS back to the pre-GPU
   baseline is not asserted there: lavapipe and LLVM stay mapped after
   the device drops (about 80 MiB the spike measured, the same every

@@ -73,6 +73,7 @@ use crate::overlay::{self, Click, Overlay};
 use crate::system;
 use strand_watch::{CacheKind, Role};
 
+mod gpu;
 mod lists;
 mod lock;
 mod logic;
@@ -226,6 +227,10 @@ pub enum ToLogic {
     /// A notice from the main thread for `strand watch` (the blur
     /// fallback's reason, decisions.md m4-surface-w1).
     Notice(String),
+    /// (M4) Why the GPU is or is not drawing, when it changes while a
+    /// frame shows a `shader` node (`Renderer::gpu_status`): logged once
+    /// per reason, a `strand watch` notice, kept for `strand report`.
+    GpuStatus(strand_scene::GpuStatus),
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,
@@ -405,6 +410,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
+    #[cfg(feature = "gpu")]
+    gpu::configure(&mut renderer);
     // Apps, icons and fonts are caches their directories' changes
     // invalidate (design.md, "Change sources"): the watcher (on the
     // compiler worker) reports them; the renderer's caches are dropped on
@@ -423,6 +430,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         let _ = icons_tx.send(CacheKind::Icons);
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
+    // (M4) The GPU thread's replies wake the loop; the loop pumps them
+    // after every dispatch (`run/gpu.rs`).
+    #[cfg(feature = "gpu")]
+    let (gpu_ping, gpu_ping_source) = calloop::ping::make_ping()?;
+    #[cfg(feature = "gpu")]
+    let mut gpu = gpu::GpuHost::new(gpu_ping);
+    let mut gpu_status = gpu::StatusForward::default();
     let host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
         .waking(wake);
@@ -430,6 +444,10 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let handle = mgr.loop_handle();
     handle
         .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    #[cfg(feature = "gpu")]
+    handle
+        .insert_source(gpu_ping_source, |_, _, _| {})
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     handle
         .insert_source(caches_rx, |event, _, state| {
@@ -490,7 +508,11 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         }
         trimmer.run(now);
         trimmer.settle(now, mgr.state().host().renderer.in_motion());
-        match mgr.dispatch(trimmer.wait(now)) {
+        let wait = trimmer.wait(now);
+        // (M4) A GPU thread that is ending is joined at a short poll.
+        #[cfg(feature = "gpu")]
+        let wait = [wait, gpu.wait()].into_iter().flatten().min();
+        match mgr.dispatch(wait) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {
                 log::info!("the compositor went away: {e}");
@@ -498,6 +520,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             }
             Err(e) => break End::Failed(e.into()),
         }
+        #[cfg(feature = "gpu")]
+        gpu.pump(mgr.state_mut());
+        gpu_status.send(&mgr.state().host().renderer, &to_logic);
     };
     let _ = to_logic.send(ToLogic::Shutdown);
     let joined = logic.join();

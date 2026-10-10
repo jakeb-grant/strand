@@ -122,11 +122,14 @@ pub fn logic(
     let mut stop = inbox.closed;
     // Notices for `strand watch` from before the shell is up: kept.
     let mut host_notices: Vec<String> = Vec::new();
+    // (M4) GPU statuses from before the shell is up: said once it is.
+    let mut early_gpu = Vec::new();
     for msg in inbox.msgs.drain(..) {
         match msg {
             ToLogic::Screens(list) => set_screens(&rt, &host, &list),
             ToLogic::Shutdown => stop = true,
             ToLogic::Notice(n) if !host_notices.contains(&n) => host_notices.push(n),
+            ToLogic::GpuStatus(s) => early_gpu.push(s),
             _ => {}
         }
     }
@@ -180,6 +183,7 @@ pub fn logic(
         host_notices,
         settings_reread: Vec::new(),
         layout_seen: None,
+        gpu: strand_scene::GpuStatus::default(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -197,6 +201,9 @@ pub fn logic(
     }
     if boot.from_cache {
         log::warn!("the config does not compile: running its last good version");
+    }
+    for s in early_gpu {
+        shell.gpu_status(s);
     }
     shell.watch_settings();
     let start = Instant::now();

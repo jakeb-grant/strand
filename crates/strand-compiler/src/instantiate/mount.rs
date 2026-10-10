@@ -49,6 +49,14 @@ enum SourceValue {
     Chunk(ChunkId, Ty),
     Pose(Vec<Prop>),
     Tokens(Vec<TokenDef>),
+    /// A `shader` node's `u_*` props, as one `Prop::Uniforms` (a `when`
+    /// block's on top of the base ones).
+    Uniforms(Vec<Prop>),
+    /// A `shader` node's checked file (`Prop::Shader`).
+    Shader(Arc<strand_scene::shader::ShaderCode>),
+    /// (M4) A `canvas`'s `draw:` lambda, run with a `Canvas` of the
+    /// node's laid-out size; its recorded ops are `Prop::Draw`.
+    Draw(ChunkId, crate::hir::NodeIdx),
 }
 
 /// Which branch of a [`Switch`] to show (`None`: none).
@@ -1697,6 +1705,9 @@ impl Ctx {
                 _ => {}
             }
         }
+        if matches!(e.kind, ElementKind::Builtin(NodeKind::Shader)) {
+            self.shader_sources(rt, e, env, &mut push);
+        }
         if !sets.is_empty() {
             push(
                 SceneProp::Tokens,
@@ -1707,6 +1718,18 @@ impl Ctx {
                 },
             );
         }
+        if matches!(e.kind, ElementKind::Builtin(NodeKind::Canvas)) {
+            for (p, sources) in out.iter_mut() {
+                if *p != SceneProp::Draw {
+                    continue;
+                }
+                for s in sources.iter_mut() {
+                    if let SourceValue::Chunk(c, _) = s.value {
+                        s.value = SourceValue::Draw(c, e.node);
+                    }
+                }
+            }
+        }
         // `exit` mirrors `enter` unless given (design.md, "Poses").
         let has_exit = out.iter().any(|(p, _)| *p == SceneProp::Exit);
         if !has_exit && let Some((_, enter)) = out.iter().find(|(p, _)| *p == SceneProp::Enter) {
@@ -1714,6 +1737,75 @@ impl Ctx {
             out.push((SceneProp::Exit, mirrored));
         }
         out
+    }
+
+    /// A `shader` node's `Prop::Shader` (its checked file, by the path it
+    /// names) and `Prop::Uniforms` (its `u_*` props: the base ones, and
+    /// each `when` block's over them, so a block that sets one uniform
+    /// keeps the others).
+    fn shader_sources(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        e: &Element,
+        env: &Rc<Env>,
+        push: &mut dyn FnMut(SceneProp, Source),
+    ) {
+        let uniform = |p: &&Prop| p.prop.is_none() && p.name.starts_with("u_");
+        let base: Vec<Prop> = e.props.iter().filter(uniform).cloned().collect();
+        let mut whens: Vec<(ChunkId, Vec<Prop>)> = Vec::new();
+        for c in e.children.iter() {
+            if let Node::When { cond, props } = c {
+                let own: Vec<&Prop> = props.iter().filter(uniform).collect();
+                if own.is_empty() {
+                    continue;
+                }
+                let mut merged: Vec<Prop> = base
+                    .iter()
+                    .filter(|b| !own.iter().any(|o| o.name == b.name))
+                    .cloned()
+                    .collect();
+                merged.extend(own.into_iter().cloned());
+                whens.push((*cond, merged));
+            }
+        }
+        if !base.is_empty() || !whens.is_empty() {
+            push(
+                SceneProp::Uniforms,
+                Source {
+                    cond: None,
+                    value: SourceValue::Uniforms(base),
+                    transition: Transition::Default,
+                },
+            );
+            for (cond, props) in whens {
+                push(
+                    SceneProp::Uniforms,
+                    Source {
+                        cond: Some(cond),
+                        value: SourceValue::Uniforms(props),
+                        transition: Transition::Default,
+                    },
+                );
+            }
+        }
+        // The path is a literal (the checker says so), so this reads
+        // nothing reactive.
+        let path = e
+            .arg
+            .as_ref()
+            .and_then(|a| rt.untrack(|rt| self.eval(rt, a.value, env)).ok());
+        if let Some(Value::Text(path)) = path
+            && let Some(code) = self.vm.prog.shaders.get(&*path)
+        {
+            push(
+                SceneProp::Shader,
+                Source {
+                    cond: None,
+                    value: SourceValue::Shader(code.clone()),
+                    transition: Transition::Default,
+                },
+            );
+        }
     }
 
     fn source_value(
@@ -1746,6 +1838,39 @@ impl Ctx {
                 }
                 PropValue::Tokens(Box::new(t))
             }
+            SourceValue::Draw(c, idx) => {
+                let f = self.eval(rt, *c, env)?;
+                let st = env.node_state(rt, *idx);
+                // Read like `self.width`: render reports the size.
+                self.vm.watch(&st, crate::vm::value::NodeState::WATCH_SIZE);
+                let (w, h) = (st.width.get(rt)?, st.height.get(rt)?);
+                let canvas = self
+                    .vm
+                    .types()
+                    .find_record("Canvas")
+                    .map_or(Value::Null, |r| Value::record(r, vec![w, h]));
+                let (out, ops) = self.vm.record_canvas(|| self.vm.call(rt, &f, vec![canvas]));
+                out?;
+                PropValue::DrawList(Arc::from(ops))
+            }
+            SourceValue::Uniforms(props) => {
+                let mut entries = Vec::with_capacity(props.len());
+                for p in props {
+                    let v = self.eval(rt, p.value, env)?;
+                    let v = match convert::prop_value(types, &p.ty, &v) {
+                        // A length reaches the GPU × the surface's scale
+                        // (the shader ABI): render must know it is one.
+                        PropValue::Number(n) if p.ty == Ty::LENGTH => {
+                            PropValue::Length(strand_scene::Length::Px(n))
+                        }
+                        v => v,
+                    };
+                    entries.push((p.name.clone(), v));
+                }
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                PropValue::Uniforms(entries)
+            }
+            SourceValue::Shader(code) => PropValue::Shader(code.clone()),
         })
     }
 
@@ -1825,6 +1950,9 @@ impl Ctx {
                 SourceValue::Chunk(c, _) => chunks.push(*c),
                 SourceValue::Pose(props) => chunks.extend(props.iter().map(|p| p.value)),
                 SourceValue::Tokens(defs) => chunks.extend(defs.iter().map(|d| d.value)),
+                SourceValue::Uniforms(props) => chunks.extend(props.iter().map(|p| p.value)),
+                SourceValue::Shader(_) => {}
+                SourceValue::Draw(c, _) => chunks.push(*c),
             }
         }
         self.declare_reads(rt, memo.id(), &chunks, env, &[]);

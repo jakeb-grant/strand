@@ -41,7 +41,8 @@ pub const PRELUDE_LINES: u32 = 13;
 
 /// The WGSL type of a `u_*` uniform, as reflected by the checker. Values
 /// arrive as `f32`s in buffer units: lengths in px × scale, angles in
-/// radians, durations in seconds, colours premultiplied linear `vec4`.
+/// radians, durations in seconds, colours premultiplied sRGB `vec4` (the
+/// space a pass's output is composited in).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum UniformType {
     F32,

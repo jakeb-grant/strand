@@ -11,7 +11,7 @@
 //! record offers today; transforms and clips are added with the canvas
 //! work, so other crates match with a wildcard arm.
 
-use crate::protocol::Paint;
+use crate::protocol::{Paint, PropValue};
 
 /// One recorded canvas call.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +30,12 @@ pub enum DrawOp {
     /// `c.text(t, x, y)`: text in the node's font and colour, its
     /// baseline's start at (`x`, `y`).
     Text { text: String, x: f32, y: f32 },
+    /// (M4) `c.fill(paint)` with a paint that names theme tokens
+    /// (`c.fill($accent)`): render resolves it in the node's token scope
+    /// when it draws, as it does a box's `bg`.
+    FillThemed(PropValue),
+    /// (M4) `c.stroke(paint, width)` with a themed paint.
+    StrokeThemed { paint: PropValue, width: f32 },
 }
 
 impl DrawOp {
@@ -45,15 +51,21 @@ impl DrawOp {
             DrawOp::Line { .. } => "line",
             DrawOp::Rect { .. } => "rect",
             DrawOp::Circle { .. } => "circle",
-            DrawOp::Fill(_) => "fill",
-            DrawOp::Stroke { .. } => "stroke",
+            DrawOp::Fill(_) | DrawOp::FillThemed(_) => "fill",
+            DrawOp::Stroke { .. } | DrawOp::StrokeThemed { .. } => "stroke",
             DrawOp::Text { .. } => "text",
         }
     }
 
     /// True for ops that paint (and end) the current path.
     pub fn paints(&self) -> bool {
-        matches!(self, DrawOp::Fill(_) | DrawOp::Stroke { .. })
+        matches!(
+            self,
+            DrawOp::Fill(_)
+                | DrawOp::Stroke { .. }
+                | DrawOp::FillThemed(_)
+                | DrawOp::StrokeThemed { .. }
+        )
     }
 }
 

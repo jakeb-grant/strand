@@ -34,6 +34,11 @@ impl<H: SurfaceHost + 'static> State<H> {
     // ---- painting ----------------------------------------------------------
 
     pub(super) fn draw(&mut self, id: SurfaceId) {
+        if self.gpu.has(id) {
+            // (M4) The GPU thread presents it (`gpu_handoff.rs`).
+            self.draw_handed_off(id);
+            return;
+        }
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -186,28 +191,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.host.frame_dropped(id);
             return;
         };
-        if s.geometry_dirty {
-            s.geometry_dirty = false;
-            match &s.viewport {
-                Some(vp) if s.fractional.is_some() => {
-                    wl.set_buffer_scale(1);
-                    vp.set_destination(s.logical.0 as i32, s.logical.1 as i32);
-                }
-                _ => wl.set_buffer_scale(s.integer_scale.max(1)),
-            }
-            // A popup's window geometry is its box: the compositor
-            // positions that, and its shadow reaches past it.
-            if let Role::Popup { popup, config, .. } = &s.role {
-                let [t, r, b, l] = config.overhang;
-                let (w, h) = s.logical;
-                popup.xdg_surface().set_window_geometry(
-                    l,
-                    t,
-                    (w as i32 - l - r).max(1),
-                    (h as i32 - t - b).max(1),
-                );
-            }
-        }
+        send_geometry(s);
         // A lock surface acks its configure only with the buffer at that
         // size (`session_lock.rs`).
         if let Role::Lock(l) = &mut s.role {
@@ -296,7 +280,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         // A lock surface takes no bare commit: its configure is acked
         // with its next buffer instead (`session_lock.rs`).
-        if matches!(s.role, Role::Lock(_)) {
+        if matches!(s.role, Role::Lock(_)) || self.gpu.has(id) {
             return;
         }
         if s.ack_pending {
@@ -521,5 +505,36 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
             }
             _ => {}
         }
+    }
+}
+
+/// A new size or scale (`geometry_dirty`) as pending state for the next
+/// commit: the buffer scale or the viewport's destination, and a popup's
+/// window geometry. (M4) A handed-off surface sets it too: the GPU
+/// thread's next present commits it (`gpu_handoff.rs`).
+pub(super) fn send_geometry(s: &mut Surface) {
+    if !s.geometry_dirty {
+        return;
+    }
+    s.geometry_dirty = false;
+    let wl = s.wl();
+    match &s.viewport {
+        Some(vp) if s.fractional.is_some() => {
+            wl.set_buffer_scale(1);
+            vp.set_destination(s.logical.0 as i32, s.logical.1 as i32);
+        }
+        _ => wl.set_buffer_scale(s.integer_scale.max(1)),
+    }
+    // A popup's window geometry is its box: the compositor positions
+    // that, and its shadow reaches past it.
+    if let Role::Popup { popup, config, .. } = &s.role {
+        let [t, r, b, l] = config.overhang;
+        let (w, h) = s.logical;
+        popup.xdg_surface().set_window_geometry(
+            l,
+            t,
+            (w as i32 - l - r).max(1),
+            (h as i32 - t - b).max(1),
+        );
     }
 }

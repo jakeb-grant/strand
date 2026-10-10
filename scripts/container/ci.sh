@@ -122,6 +122,9 @@ step "Services tier tools" 1 bash -c '
 # The GPU tier (M4): lavapipe is the image's only Vulkan driver
 # (VK_DRIVER_FILES, Dockerfile) and the GPU tests require it.
 export STRAND_REQUIRE_GPU=1
+# Lavapipe is a software adapter, which strand counts as no device
+# unless this is set (docs/architecture.md, "`strand-gpu`").
+export STRAND_GPU_SOFTWARE=1
 step "GPU tier device (lavapipe)" 1 bash -c '
   dpkg -s mesa-vulkan-drivers | grep "^Version"
   out=$(vulkaninfo --summary 2>&1)
@@ -142,6 +145,10 @@ step "cargo fmt --all --check" 60 cargo fmt --all --check
 step "cargo clippy --workspace --all-targets" 60 cargo clippy --workspace --all-targets
 step "cargo clippy -p strand-services --no-default-features --all-targets" 60 \
   cargo clippy -p strand-services --no-default-features --all-targets
+step "cargo clippy -p strand --no-default-features --all-targets" 60 \
+  cargo clippy -p strand --no-default-features --all-targets
+step "cargo build -p strand --no-default-features" 60 \
+  cargo build -p strand --no-default-features
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
@@ -160,6 +167,8 @@ step "cargo test --release -p strand --test services" 60 \
   cargo test --release -p strand --test services -- --test-threads=1
 step "cargo test --release -p strand --test budgets" 60 \
   cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
+step "cargo test --release -p strand --no-default-features --test budgets (.text gate)" 60 \
+  cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
 
 job=acceptance
 step "cargo test --release -p strand --test acceptance" 60 \

@@ -80,6 +80,12 @@ impl<'a> Flattener<'a> {
         let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
         let timed = timed_scope || crate::time::reads_time(node, global);
         // Its clock: the rate its time props and its own animation run at.
+        // (M4) A `shader` node whose code reads `strand.time` has a clock.
+        #[cfg(feature = "gpu")]
+        let timed = timed
+            || (node.kind == NodeKind::Shader
+                && matches!(node.get(Prop::Shader),
+                    Some(PropValue::Shader(c)) if crate::renderer::backend::reads_time(c)));
         let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
         let (time, next) = match rate {
             Some(rate) => {
@@ -518,6 +524,54 @@ impl<'a> Flattener<'a> {
                 &mut sig,
                 &mut ink,
             );
+        }
+        // (M4) A `shader` node: its pass's last pixels (a transparent
+        // pixel until it has some, and with no device), and the pass this
+        // frame wants.
+        #[cfg(feature = "gpu")]
+        if has_area
+            && node.kind == NodeKind::Shader
+            && let Some(PropValue::Shader(code)) = get(Prop::Shader)
+        {
+            let (w, h) = (frame.width().round() as u32, frame.height().round() as u32);
+            if let Some(want) = crate::renderer::backend::pass_want(
+                node.id,
+                code,
+                get(Prop::Uniforms),
+                w,
+                h,
+                self.scale.as_f32(),
+                time.map_or(0.0, |t| t.t),
+            ) {
+                let (key, pixmap) = match self.extras.shaders.get(node.id) {
+                    Some((k, p)) => (*k, p.clone()),
+                    None => (0, crate::renderer::backend::empty_pixmap()),
+                };
+                let (x, y) = (frame.x0.round(), frame.y0.round());
+                let rect = kurbo::Rect::new(x, y, x + w as f64, y + h as f64);
+                self.push(
+                    Item::Raster {
+                        node: node.id,
+                        key,
+                        pixmap,
+                        rect,
+                    },
+                    phys,
+                    &mut sig,
+                    &mut ink,
+                );
+                self.out.passes.push(want);
+            }
+        }
+        // (M4) A `canvas`: what its `draw:` recorded (`canvas.rs`).
+        if has_area
+            && node.kind == NodeKind::Canvas
+            && let Some(PropValue::DrawList(ops)) = get(Prop::Draw)
+        {
+            let themed = |v: &PropValue| scope.resolve(v).and_then(|v| paint_of(Some(&v)));
+            for (item, reach) in crate::canvas::items(ops, frame, s, &themed) {
+                self.push(item, cover(reach), &mut sig, &mut ink);
+            }
         }
         // Border, drawn inside the box.
         if has_area

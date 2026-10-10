@@ -7,8 +7,17 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["gpu"]
+# Raw Wayland handles for the GPU's WSI (`gpu_handoff.rs`): libwayland's
+# `client_system` backend for every crate in the build (57 kB of
+# `.text`), and raw-window-handle.
+gpu = ["dep:raw-window-handle", "dep:wayland-backend", "wayland-backend/client_system"]
+
 [dependencies]
 strand-scene.workspace = true
+raw-window-handle = { version = "0.6.2", optional = true }
+wayland-backend = { version = "0.3.17", optional = true }
 # The session lock's unlock gate: `State::unlock` takes an `UnlockToken`
 # (the lib only: libc and zeroize; the helper alone links libpam).
 strand-auth.workspace = true

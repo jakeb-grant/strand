@@ -1,0 +1,23 @@
+[package]
+name = "strand-gpu"
+description = "The GPU backend: one wgpu device on its own thread, vello_gpu frames, shader passes, readback and WSI presents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+strand-scene.workspace = true
+# Vulkan only, WGSL in; no default features (docs/architecture.md,
+# "`strand-gpu`"). The same naga as strand-compiler's `shaders` check.
+wgpu = { version = "30.0.1", default-features = false, features = ["vulkan", "wgsl", "std"] }
+# No `text`: glyphs arrive as atlas images.
+vello_gpu = { version = "0.3.0", default-features = false, features = ["wgpu", "std"] }
+vello_common = "0.3.0"
+raw-window-handle = "0.6.2"
+pollster = "0.4.0"
+log = "0.4"
+
+[lints]
+workspace = true

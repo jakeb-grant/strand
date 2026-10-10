@@ -182,6 +182,9 @@ pub struct Flattened {
     /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
+    /// (M4) The passes of drawn `shader` nodes.
+    #[cfg(feature = "gpu")]
+    pub(crate) passes: Vec<crate::renderer::backend::PassWant>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -294,6 +297,9 @@ pub struct Extras {
     pub effects: crate::layers::NodeEffects,
     /// (M4) CPU raster nodes' sources and pixmaps.
     pub rasters: crate::offscreen::RasterNodes,
+    /// (M4) `shader` nodes' last pass pixels.
+    #[cfg(feature = "gpu")]
+    pub shaders: crate::renderer::backend::ShaderResults,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.

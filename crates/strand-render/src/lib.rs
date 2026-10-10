@@ -17,6 +17,7 @@
 
 mod anim;
 mod cache;
+mod canvas;
 mod clock;
 mod fillet;
 mod flatten;
@@ -26,6 +27,8 @@ mod layers;
 mod layout;
 mod markup;
 mod offscreen;
+#[cfg(feature = "gpu")]
+pub mod promote;
 mod raster;
 mod renderer;
 mod time;
@@ -42,6 +45,8 @@ pub use layout::{
     MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
 };
 pub use offscreen::{OFFSCREEN_BYTES, RasterSource};
+#[cfg(feature = "gpu")]
+pub use renderer::GPU_WAIT;
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT, QUERY_WAIT,
     RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,
