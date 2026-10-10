@@ -374,6 +374,15 @@ mod tests {
                 (Bundled::Wobble, vec![6.0, 80.0, 2.0]),
             ]
         );
+        // Out-of-range knobs are clamped, bad ones dropped.
+        assert_eq!(
+            effects(&[(Prop::Filter, call("blur", vec![PropValue::Number(-4.0)]))]),
+            vec![]
+        );
+        assert_eq!(
+            effects(&[(Prop::Filter, call("grayscale", vec![]))]),
+            vec![]
+        );
     }
 
     /// The GPU's 3-D tilt goes last, in radians, pitch then yaw.
@@ -387,14 +396,5 @@ mod tests {
         assert_eq!(code, &ShaderRef::Bundled(Bundled::Tilt));
         assert!((uniforms[0] - 5f32.to_radians()).abs() < 1e-6);
         assert!((uniforms[1] - 10f32.to_radians()).abs() < 1e-6);
-        // Out-of-range knobs are clamped, bad ones dropped.
-        assert_eq!(
-            effects(&[(Prop::Filter, call("blur", vec![PropValue::Number(-4.0)]))]),
-            vec![]
-        );
-        assert_eq!(
-            effects(&[(Prop::Filter, call("grayscale", vec![]))]),
-            vec![]
-        );
     }
 }
