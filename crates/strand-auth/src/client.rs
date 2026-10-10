@@ -156,9 +156,29 @@ struct Helper {
 }
 
 impl Helper {
+    /// The helper if it still runs. One that exited was reaped by
+    /// `try_wait` (`waitpid`), so its pid, and its process group's once
+    /// that is empty, may already belong to another process: it is only
+    /// dropped, never signalled. An idle helper runs no PAM conversation,
+    /// so nothing it started is left to kill. One whose state cannot be
+    /// read is killed with its tree as usual.
+    fn running(mut self) -> Option<Helper> {
+        match self.child.try_wait() {
+            Ok(None) => Some(self),
+            Ok(Some(_)) => None,
+            Err(_) => {
+                self.kill();
+                None
+            }
+        }
+    }
+
     /// Kills the helper with everything it started (a hung PAM module's
     /// processes, which may have left its process group) and reaps it.
+    /// Only for a helper not yet reaped (see [`Helper::running`]).
     fn kill(mut self) {
+        #[cfg(test)]
+        tests::KILLS.with(|k| k.set(k.get() + 1));
         let pid = self.child.id() as libc::pid_t;
         // Stopped first, it forks nothing more while its tree is read.
         // SAFETY: kill(2) takes no pointers; `pid` is our child, not yet
@@ -336,17 +356,10 @@ impl Client {
 
     /// Starts the helper unless one is running.
     fn ensure_helper(&mut self) -> Result<(), AuthError> {
-        if let Some(h) = &mut self.helper {
-            match h.child.try_wait() {
-                Ok(None) => return Ok(()),
-                // It died while idle (killed, OOM): reap it and start
-                // another.
-                _ => {
-                    if let Some(h) = self.helper.take() {
-                        h.kill();
-                    }
-                }
-            }
+        // It may have died while idle (killed, OOM): then another starts.
+        self.helper = self.helper.take().and_then(Helper::running);
+        if self.helper.is_some() {
+            return Ok(());
         }
         let (ours, theirs) = UnixStream::pair().map_err(AuthError::Io)?;
         let theirs = OwnedFd::from(theirs);
@@ -551,4 +564,63 @@ fn read_message(sock: &UnixStream, deadline: Instant) -> Result<Message, AuthErr
         return Err(AuthError::Protocol(ProtocolError::Truncated));
     }
     protocol::decode(kind, payload).map_err(AuthError::Protocol)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use super::Helper;
+
+    thread_local! {
+        /// [`Helper::kill`] calls on this thread.
+        pub(super) static KILLS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    fn helper(script: &str) -> Helper {
+        let child = Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let (sock, _) = UnixStream::pair().unwrap();
+        Helper {
+            child,
+            sock,
+            service: None,
+        }
+    }
+
+    /// (m4-audit) A helper that exited while idle is reaped by the check
+    /// and then only dropped: no SIGSTOP, `/proc` walk or group SIGKILL
+    /// at a pid that may have been reused. A running one is kept.
+    #[test]
+    fn an_exited_helper_is_dropped_without_signals() {
+        let live = helper("sleep 30");
+        let pid = live.child.id();
+        let live = live.running().expect("still running");
+        assert_eq!(live.child.id(), pid);
+        live.kill();
+        assert_eq!(KILLS.with(Cell::get), 1);
+
+        let dead = helper("exit 3");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // Wait for the exit without reaping it (the check must reap).
+        let path = format!("/proc/{}/stat", dead.child.id());
+        while std::fs::read_to_string(&path).ok().and_then(|s| {
+            s.rsplit_once(')')
+                .map(|(_, r)| r.trim_start().starts_with('Z'))
+        }) != Some(true)
+        {
+            assert!(Instant::now() < deadline, "the helper never exited");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(dead.running().is_none());
+        assert_eq!(KILLS.with(Cell::get), 1, "no kill for a reaped helper");
+    }
 }
