@@ -45,8 +45,9 @@ pub struct Timeline {
     pub delays: Vec<u64>,
     /// One loop, milliseconds.
     pub total: u64,
-    /// The clock tick every frame change lands on (the delays' greatest
-    /// common divisor, at least 10 ms).
+    /// The step the node's time moves in (the delays' greatest common
+    /// divisor, at least 10 ms), so every frame change lands on one; the
+    /// clock wakes only at frame changes ([`Timeline::until_change`]).
     pub tick: Duration,
     /// How many times it plays; `None` forever.
     pub loops: Option<u32>,
@@ -87,6 +88,27 @@ impl Timeline {
             }
         }
         self.delays.len() as u32 - 1
+    }
+
+    /// How long after `t` the frame shown next changes (the next frame
+    /// boundary, the loop's end included); `None` once a finite loop
+    /// count has played out. The clock wakes for that boundary only, not
+    /// for every [`Timeline::tick`] between (decisions.md,
+    /// m4-effects-media-w2).
+    pub fn until_change(&self, t: f32) -> Option<Duration> {
+        if self.done(t) {
+            return None;
+        }
+        let total = self.total.max(1);
+        let into = (t.max(0.0) as f64 * 1000.0).round() as u64 % total;
+        let mut acc = 0;
+        for d in &self.delays {
+            acc += d;
+            if into < acc {
+                return Some(Duration::from_millis(acc - into));
+            }
+        }
+        Some(Duration::from_millis(total - into))
     }
 
     /// True once a finite loop count has played out at `t`: the last
@@ -689,6 +711,21 @@ mod tests {
         blit(&mut c, 4, 4, &[1; 16], [3, 3, 2, 2], false);
         assert_eq!(&c[(3 * 4 + 3) * 4..], &[1, 1, 1, 1]);
         clear_rect(&mut c, 4, [9, 9, 2, 2]);
+    }
+
+    #[test]
+    fn the_next_change_is_the_next_frame_boundary() {
+        let t = Timeline::new(vec![70, 80, 90], None).unwrap();
+        assert_eq!(t.tick, Duration::from_millis(10));
+        let ms = Duration::from_millis;
+        assert_eq!(t.until_change(0.0), Some(ms(70)));
+        assert_eq!(t.until_change(0.07), Some(ms(80)));
+        assert_eq!(t.until_change(0.1), Some(ms(50)));
+        assert_eq!(t.until_change(0.23), Some(ms(10)), "the loop's end");
+        assert_eq!(t.until_change(0.24), Some(ms(70)), "looped");
+        let once = Timeline::new(vec![100, 100], Some(1)).unwrap();
+        assert_eq!(once.until_change(0.15), Some(ms(50)));
+        assert_eq!(once.until_change(0.2), None, "played out");
     }
 
     #[test]

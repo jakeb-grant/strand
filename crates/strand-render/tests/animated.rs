@@ -313,6 +313,71 @@ fn only_frame_changes_repaint() {
     assert_eq!(damaged.len(), 6, "repainted at {damaged:?}");
 }
 
+/// A GIF of three solid frames with these delays (centiseconds),
+/// looping forever.
+fn write_gif_delays(path: &Path, delays: [u16; 3]) {
+    let palette: Vec<u8> = [RED, GREEN, BLUE]
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2]])
+        .collect();
+    let mut out = Vec::new();
+    {
+        let mut enc = gif::Encoder::new(&mut out, 16, 16, &palette).unwrap();
+        enc.set_repeat(gif::Repeat::Infinite).unwrap();
+        for (i, d) in delays.into_iter().enumerate() {
+            let mut f =
+                gif::Frame::from_palette_pixels(16, 16, vec![i as u8; 256], palette.clone(), None);
+            f.delay = d;
+            enc.write_frame(&f).unwrap();
+        }
+    }
+    std::fs::write(path, out).unwrap();
+}
+
+/// Delays of 70, 80 and 90 ms share only a 10 ms step, but the clock
+/// wakes the loop only at frame changes: over one second at 60 Hz, as
+/// the frame clock asks (a frame when the surface wants one or its wake
+/// has come), about one frame per frame change is drawn, not one per
+/// refresh, and each shows a new frame.
+#[test]
+fn the_clock_wakes_only_at_frame_changes() {
+    let gif = dir().join("uneven.gif");
+    write_gif_delays(&gif, [7, 8, 9]);
+    let (mut r, mut buf, _) = setup(&[&gif.to_string_lossy()]);
+    buf.paint_at(&mut r, S, 0, T0);
+    let mut last = T0;
+    let wake = |r: &Renderer, painted: Duration| {
+        r.next_wake().map(|w| {
+            let now = std::time::Instant::now();
+            painted + w.saturating_duration_since(now)
+        })
+    };
+    let mut due = wake(&r, T0);
+    let (mut painted, mut changed) = (0, 0);
+    for k in 1..=60u64 {
+        let at = T0 + Duration::from_nanos(1_000_000_000 * k / 60);
+        if !(r.wants_frame(S) || due.is_some_and(|d| at >= d)) {
+            continue;
+        }
+        painted += 1;
+        if !buf.paint_at(&mut r, S, 1, at).is_empty() {
+            changed += 1;
+        }
+        last = at;
+        due = wake(&r, at);
+    }
+    // Changes at 70, 150, 240, 310, 390, 480, 550, 630, 720, 790, 870
+    // and 960 ms.
+    assert!(
+        (11..=13).contains(&changed),
+        "{changed} frame changes drawn in 1 s"
+    );
+    assert!(
+        painted <= changed + 2,
+        "{painted} frames drawn for {changed} frame changes (last at {last:?})"
+    );
+}
+
 #[test]
 fn reduced_motion_shows_the_first_frame_and_stops_the_clock() {
     let f = files();

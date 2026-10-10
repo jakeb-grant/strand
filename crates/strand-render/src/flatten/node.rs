@@ -85,15 +85,23 @@ impl<'a> Flattener<'a> {
         // (M4) An animated image's frames run on a clock of their own.
         let anim = &mut *self.anim;
         let images = &self.extras.images;
-        let raster = self.extras.rasters.rate(node.id).or_else(|| {
+        let own = self.extras.rasters.rate(node.id);
+        let frames = own.is_none().then(|| {
             images.frame_rate(node, || {
                 anim.time_of(node.id, crate::clock::Rate::Refresh).0.t
             })
         });
+        let raster = own.or(frames.flatten());
         let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
-                let (cx, next) = self.anim.time_of(node.id, rate);
+                let (cx, mut next) = self.anim.time_of(node.id, rate);
+                // Its frames' clock wakes at frame changes only.
+                if let (Some(Some(crate::clock::Rate::Every(tick))), false, Some(n)) =
+                    (frames, timed, next)
+                {
+                    next = Some(images.frame_wake(node, cx.t, tick, n));
+                }
                 (Some(cx), next)
             }
             None => (None, None),

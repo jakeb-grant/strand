@@ -942,6 +942,31 @@ impl ImageStore {
         Some(crate::clock::Rate::Every(tl.tick))
     }
 
+    /// (M4) When an animated `image` node's clock next ticks: at its next
+    /// frame change, not at every [`Timeline::tick`] between. `t` is the
+    /// node's time and `next` the tick after it on its `tick` clock (what
+    /// [`crate::time::NodeTimes::context`] gave), so `next - tick` is the
+    /// instant of `t`. `next` unchanged for anything else.
+    pub(crate) fn frame_wake(
+        &self,
+        node: &crate::tree::Node,
+        t: f32,
+        tick: std::time::Duration,
+        next: std::time::Duration,
+    ) -> std::time::Duration {
+        let source = match node.get(strand_scene::Prop::Source) {
+            Some(strand_scene::PropValue::Text(s) | strand_scene::PropValue::Keyword(s)) => s,
+            _ => return next,
+        };
+        match self.timelines.get(source) {
+            Some(tl) if tl.tick == tick => match tl.until_change(t) {
+                Some(d) => next.saturating_sub(tick) + d.max(tick),
+                None => next,
+            },
+            _ => next,
+        }
+    }
+
     /// (M4) The timeline of `source`, if a decode showed it animated.
     pub fn timeline(&self, source: &str) -> Option<&Arc<Timeline>> {
         self.timelines.get(source)
