@@ -85,6 +85,10 @@ pub enum Cmd {
     /// A toplevel's capture sessions stop while it stays listed, as a
     /// compositor-side reset would.
     StopCapture(&'static str),
+    /// A toplevel's buffer is transformed (a `wl_output.transform`
+    /// value): its frames say so, and their upright image is its colour
+    /// on the left half and white on the right.
+    TransformToplevel(&'static str, u32),
     /// Gives keyboard focus to the layer surface with this namespace:
     /// `wl_keyboard.enter` on every bound keyboard, after a leave for the
     /// surface that had it.
@@ -387,6 +391,7 @@ impl Server {
             Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
             Cmd::ResizeToplevel(ident, w, h) => self.capture_resize(ident, w, h),
             Cmd::StopCapture(ident) => self.capture_closed(ident),
+            Cmd::TransformToplevel(ident, t) => self.capture_transform(ident, t),
             Cmd::KeyboardEnter(namespace) => {
                 if let Some(to) = self.surf.layer_surface(namespace) {
                     self.keyboard_leave();

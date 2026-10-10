@@ -1,8 +1,9 @@
-//! A tiny Wayland client with one xdg toplevel (a 64×64 shm buffer,
-//! transparent or one solid colour), for putting real windows on a test
-//! compositor.
+//! A tiny Wayland client with one xdg toplevel (an shm buffer,
+//! transparent or one solid colour, 64×64 until the compositor configures
+//! a size and then that size, as a real client fills its tile), for
+//! putting real windows on a test compositor.
 
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,9 +20,53 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 const SIZE: i32 = 64;
 
+/// A filled shm buffer and what keeps it.
+struct Buffer {
+    buffer: wl_buffer::WlBuffer,
+    _pool: wl_shm_pool::WlShmPool,
+    _fd: OwnedFd,
+    size: (i32, i32),
+}
+
+impl Buffer {
+    /// A `w × h` buffer of `rgba` (straight; stored premultiplied as
+    /// ARGB8888, BGRA in memory).
+    fn new(
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<State>,
+        (w, h): (i32, i32),
+        rgba: [u8; 4],
+    ) -> Buffer {
+        let len = (w * h * 4) as usize;
+        let fd = rustix::fs::memfd_create("strand-test-window", rustix::fs::MemfdFlags::CLOEXEC)
+            .unwrap();
+        rustix::fs::ftruncate(&fd, len as u64).unwrap();
+        if rgba != [0; 4] {
+            let a = rgba[3] as u32;
+            let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            let px = [pm(rgba[2]), pm(rgba[1]), pm(rgba[0]), rgba[3]];
+            let fill = px.repeat(len / 4);
+            rustix::io::pwrite(&fd, &fill, 0).unwrap();
+        }
+        let pool = shm.create_pool(fd.as_fd(), len as i32, qh, ());
+        let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, qh, ());
+        Buffer {
+            buffer,
+            _pool: pool,
+            _fd: fd,
+            size: (w, h),
+        }
+    }
+}
+
 struct State {
     surface: wl_surface::WlSurface,
-    buffer: wl_buffer::WlBuffer,
+    shm: wl_shm::WlShm,
+    rgba: [u8; 4],
+    buffer: Buffer,
+    /// The size the last toplevel configure asked for (0: the client's
+    /// choice).
+    configured: (i32, i32),
     closed: Arc<AtomicBool>,
     activated: Arc<AtomicBool>,
     maximized: Arc<AtomicBool>,
@@ -68,26 +113,17 @@ impl TestWindow {
         toplevel.set_title(title.into());
         surface.commit();
 
-        let len = (SIZE * SIZE * 4) as usize;
-        let fd = rustix::fs::memfd_create("strand-test-window", rustix::fs::MemfdFlags::CLOEXEC)
-            .unwrap();
-        rustix::fs::ftruncate(&fd, len as u64).unwrap();
-        if rgba != [0; 4] {
-            let a = rgba[3] as u32;
-            let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
-            let px = [pm(rgba[2]), pm(rgba[1]), pm(rgba[0]), rgba[3]];
-            let fill = px.repeat(len / 4);
-            rustix::io::pwrite(&fd, &fill, 0).unwrap();
-        }
-        let pool = shm.create_pool(fd.as_fd(), len as i32, &qh, ());
-        let buffer = pool.create_buffer(0, SIZE, SIZE, SIZE * 4, wl_shm::Format::Argb8888, &qh, ());
+        let buffer = Buffer::new(&shm, &qh, (SIZE, SIZE), rgba);
         let closed = Arc::new(AtomicBool::new(false));
         let activated = Arc::new(AtomicBool::new(false));
         let maximized = Arc::new(AtomicBool::new(false));
         let fullscreen = Arc::new(AtomicBool::new(false));
         let mut state = State {
             surface,
+            shm,
+            rgba,
             buffer,
+            configured: (0, 0),
             closed: closed.clone(),
             activated: activated.clone(),
             maximized: maximized.clone(),
@@ -97,7 +133,7 @@ impl TestWindow {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread = std::thread::spawn(move || {
-            let _keep = (fd, pool, xdg);
+            let _keep = xdg;
             while !thread_stop.load(Ordering::SeqCst) {
                 if queue.dispatch_pending(&mut state).is_err() || queue.flush().is_err() {
                     return;
@@ -184,13 +220,24 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
         event: xdg_surface::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg.ack_configure(serial);
             if !state.closed.load(Ordering::SeqCst) {
-                state.surface.attach(Some(&state.buffer), 0, 0);
-                state.surface.damage_buffer(0, 0, SIZE, SIZE);
+                // The configured size, each side the client's own (the
+                // last buffer's) where the compositor leaves it to us.
+                let (cw, ch) = state.configured;
+                let (bw, bh) = state.buffer.size;
+                let size = (
+                    if cw > 0 { cw.min(4096) } else { bw },
+                    if ch > 0 { ch.min(4096) } else { bh },
+                );
+                if size != state.buffer.size {
+                    state.buffer = Buffer::new(&state.shm, qh, size, state.rgba);
+                }
+                state.surface.attach(Some(&state.buffer.buffer), 0, 0);
+                state.surface.damage_buffer(0, 0, size.0, size.1);
                 state.surface.commit();
             }
         }
@@ -213,7 +260,12 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
                 state.surface.attach(None, 0, 0);
                 state.surface.commit();
             }
-            xdg_toplevel::Event::Configure { states, .. } => {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
+                state.configured = (width, height);
                 let has = |s: xdg_toplevel::State| {
                     states
                         .chunks_exact(4)
