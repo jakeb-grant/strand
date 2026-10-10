@@ -63,6 +63,10 @@ jobs:
       # sit behind default-on features; the build without them must stay
       # clean too.
       - run: cargo clippy -p strand-services --no-default-features --all-targets
+      # Targets behind a non-default feature (strand's `[[test]] lock`
+      # needs `faults`, and so does run/lock.rs's fault module) are out
+      # of the default build: lint them too (m4-plan, "Feature legs").
+      - run: cargo clippy --workspace --all-targets --all-features
 
   # The debug test build: the workspace's tests, the 100 reloads and the
   # reload fuzzer's short run.

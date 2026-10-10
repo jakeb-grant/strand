@@ -142,6 +142,8 @@ step "cargo fmt --all --check" 60 cargo fmt --all --check
 step "cargo clippy --workspace --all-targets" 60 cargo clippy --workspace --all-targets
 step "cargo clippy -p strand-services --no-default-features --all-targets" 60 \
   cargo clippy -p strand-services --no-default-features --all-targets
+step "cargo clippy --workspace --all-targets --all-features" 60 \
+  cargo clippy --workspace --all-targets --all-features
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
