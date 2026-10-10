@@ -447,6 +447,68 @@ impl Host {
 }
 
 impl Host {
+    /// What follows every painted frame, the CPU's or (M4) one the GPU
+    /// thread presents (`run/gpu.rs`): the lock's and the blur
+    /// fallback's bookkeeping, effect notices, layout facts and list
+    /// windows to logic, fed nodes' producers, and the `damage` log line.
+    pub(crate) fn painted(
+        &mut self,
+        surface: SurfaceId,
+        damage: &Damage,
+        size: Size,
+        scale: Scale,
+        age: u8,
+    ) {
+        self.lock.painted(surface, damage);
+        self.note_blur_fallback(surface);
+        // (M4) CPU fallbacks for GPU effects, once a run each.
+        for text in self.renderer.take_effect_notices() {
+            log::warn!("{text}");
+            if let Some(f) = &self.logic {
+                f.send(ToLogic::Notice(text));
+            }
+        }
+        self.forward_facts();
+        // Virtualised lists scrolled past their mounted rows ask logic
+        // for the rows they show.
+        self.forward_list_windows();
+        // Fed nodes shown or hidden: their producers start or stop.
+        if let Some(feeds) = &mut self.feeds {
+            crate::run::feeds::sync(&mut self.renderer, feeds);
+        }
+        self.wake_if_changed();
+        if !damage.is_empty() && self.log_damage {
+            let rects: Vec<String> = damage
+                .rects()
+                .iter()
+                .map(|r| format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y))
+                .collect();
+            // One line per painted frame, parsed by scripts/m0-exit.sh;
+            // strand-surface commits it unless `frame_dropped` follows.
+            // `gaps=`: frames so far that showed a list's unmounted rows
+            // (always 0; the M4 exit's per-frame check); `stalls=`:
+            // frames so far that held a list's view at its mounted rows
+            // while the scroll went on; `top=`: the first row (global
+            // index) a list showed in the last such frame.
+            let lists = self.renderer.list_frames();
+            eprintln!(
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={}",
+                surface.0,
+                size.w,
+                size.h,
+                scale.as_f64(),
+                age,
+                damage.area(),
+                rects.join(","),
+                lists.gaps,
+                lists.stalls,
+                lists.top_row,
+            );
+        }
+    }
+}
+
+impl Host {
     /// The tray's click point `event` sets, if any: on a press on a
     /// placed surface, [`click_point`] of the innermost node hit; on a
     /// press on a surface not placed yet (a popup before its configure,
@@ -489,58 +551,13 @@ impl Painter for Host {
             return damage;
         }
         let damage = self.renderer.paint(surface, target);
-        self.lock.painted(surface, &damage);
-        self.note_blur_fallback(surface);
-        // (M4) CPU fallbacks for GPU effects, once a run each.
-        for text in self.renderer.take_effect_notices() {
-            log::warn!("{text}");
-            if let Some(f) = &self.logic {
-                f.send(ToLogic::Notice(text));
-            }
-        }
-        self.forward_facts();
-        // Virtualised lists scrolled past their mounted rows ask logic
-        // for the rows they show.
-        self.forward_list_windows();
-        // Fed nodes shown or hidden: their producers start or stop.
-        if let Some(feeds) = &mut self.feeds {
-            crate::run::feeds::sync(&mut self.renderer, feeds);
-        }
-        self.wake_if_changed();
+        self.painted(surface, &damage, target.size, target.scale, target.age);
         #[cfg(test)]
         if let Some(p) = &self.probe {
             p.0.painted(surface, !damage.is_empty(), target.scale, &self.renderer);
             if !damage.is_empty() {
                 p.0.frame(surface, target);
             }
-        }
-        if !damage.is_empty() && self.log_damage {
-            let rects: Vec<String> = damage
-                .rects()
-                .iter()
-                .map(|r| format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y))
-                .collect();
-            // One line per painted frame, parsed by scripts/m0-exit.sh;
-            // strand-surface commits it unless `frame_dropped` follows.
-            // `gaps=`: frames so far that showed a list's unmounted rows
-            // (always 0; the M4 exit's per-frame check); `stalls=`:
-            // frames so far that held a list's view at its mounted rows
-            // while the scroll went on; `top=`: the first row (global
-            // index) a list showed in the last such frame.
-            let lists = self.renderer.list_frames();
-            eprintln!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={}",
-                surface.0,
-                target.size.w,
-                target.size.h,
-                target.scale.as_f64(),
-                target.age,
-                damage.area(),
-                rects.join(","),
-                lists.gaps,
-                lists.stalls,
-                lists.top_row,
-            );
         }
         damage
     }
@@ -1450,6 +1467,56 @@ mod tests {
             kinds: vec![DropKind::Text],
         });
         assert!(!host.drop_accepted(s));
+    }
+
+    /// (m4-integration-w2) A frame the GPU thread presents is followed
+    /// by what follows a CPU frame (`Host::painted`, called by
+    /// `run/gpu.rs`): a box whose size logic reads (`self.width`) grows
+    /// while presented, `paint_gpu` lays it out, and its size reaches
+    /// logic.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_presented_frame_hands_its_layout_facts_to_logic() {
+        use std::time::Duration;
+        use strand_scene::{Backend, NodeKind, PropValue};
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, mut el) = setup_channel();
+        let mut host = Host::new(renderer, false).forwarding(tx);
+        let (panel, child) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let mut d = SceneDiff::new();
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(200.0))
+            .set(panel, Prop::Height, PropValue::Number(100.0))
+            .create(child, NodeKind::Box, Some(panel), 0)
+            .set(child, Prop::Height, PropValue::Number(20.0))
+            .set(child, Prop::Watch, PropValue::Keyword("size".into()));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(200, 100), Scale::ONE);
+        let _ = drain(&mut el);
+        host.renderer.promote_now(s);
+        host.renderer.set_backend(s, Backend::GpuPresent);
+        // The box grows while the GPU presents the surface.
+        let mut d = SceneDiff::new();
+        d.set(child, Prop::Height, PropValue::Number(30.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let frame = host
+            .renderer
+            .paint_gpu(s, Duration::from_secs(1))
+            .expect("the switch repaints");
+        host.painted(s, &Damage::full(frame.size), frame.size, frame.scale, 0);
+        let sent = drain(&mut el);
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, ToLogic::Layout { sizes, .. }
+                if sizes.iter().any(|f| f.0 == child && f.2 == 30.0))),
+            "{sent:?}"
+        );
     }
 
     fn setup_channel() -> (

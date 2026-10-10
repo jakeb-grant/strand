@@ -70,7 +70,7 @@ mod host {
 
     use strand_gpu::{Gpu, GpuMode, GpuOptions, GpuReply, GpuRequest};
     use strand_render::Renderer;
-    use strand_scene::{BackendChange, Scale, Size, SurfaceId};
+    use strand_scene::{BackendChange, Damage, Scale, Size, SurfaceId};
     use strand_surface::State;
 
     use crate::demo::host::Host;
@@ -408,8 +408,15 @@ mod host {
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
                 if let Some(frame) = r.paint_gpu(*id, now) {
+                    let (size, scale) = (frame.size, frame.scale);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
+                    // What follows a CPU frame follows this one too:
+                    // layout facts and list windows to logic, fed nodes,
+                    // the damage log line (a presented frame is whole).
+                    state
+                        .host_mut()
+                        .painted(*id, &Damage::full(size), size, scale, 0);
                 }
             }
         }

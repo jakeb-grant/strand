@@ -1322,14 +1322,21 @@ fn a_window_is_captured_for_its_thumbnail() {
                 let _ = tx.send(f.clone());
             }
         });
-        // The frame at the frame's centre, as straight RGBA (frames are
-        // premultiplied BGRA; the window is opaque).
-        let centre = |f: &CaptureFrame| -> [u8; 4] {
-            let i = (((f.height / 2) * f.width + f.width / 2) * 4) as usize;
+        // A pixel as straight RGBA (frames are premultiplied BGRA; the
+        // window is opaque).
+        let at = |f: &CaptureFrame, x: u32, y: u32| -> [u8; 4] {
+            let i = ((y * f.width + x) * 4) as usize;
             let p = &f.pixels[i..i + 4];
             [p[2], p[1], p[0], p[3]]
         };
+        let centre = |f: &CaptureFrame| at(f, f.width / 2, f.height / 2);
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+        // The window's colour anywhere in the frame: sway and labwc capture
+        // the 64 x 64 buffer, Hyprland the tiled window's whole box, whose
+        // centre lies outside that buffer (transparent; its top-left
+        // corner is the buffer's).
+        let coloured =
+            |f: &CaptureFrame| (0..f.height).any(|y| (0..f.width).any(|x| near(at(f, x, y), RGBA)));
         // The first frame may come before the window's buffer is shown
         // (a compositor may capture the toplevel before its first
         // commit lands): the colour must arrive within the patience.
@@ -1339,15 +1346,12 @@ fn a_window_is_captured_for_its_thumbnail() {
             while let Ok(f) = frames.try_recv() {
                 last = Some(f);
             }
-            if let Some(f) = last
-                .as_ref()
-                .filter(|f| f.width > 0 && near(centre(f), RGBA))
-            {
+            if let Some(f) = last.as_ref().filter(|f| f.width > 0 && coloured(f)) {
                 break f.clone();
             }
             assert!(
                 Instant::now() < deadline,
-                "no frame of {APP} in its colour from {kind}: last {:?}",
+                "no frame of {APP} in its colour from {kind}: last (w, h, centre) {:?}",
                 last.as_ref().map(|f| (f.width, f.height, centre(f)))
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
