@@ -143,6 +143,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         if old.scale != 1.0 {
             self.sync_input_region(id);
         }
+        if old.offset != SurfacePose::IDENTITY.offset {
+            // Back where its configured margins put it (the tray's click
+            // point), as `sync_pose` places a moved surface.
+            self.place_layer(id);
+        }
     }
 }
 

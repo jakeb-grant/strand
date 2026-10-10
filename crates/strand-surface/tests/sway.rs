@@ -2538,4 +2538,11 @@ fn a_posed_panel_is_placed_where_its_margins_put_it() {
     // Scale 2: 960 × 540 logical, the panel keeps its size.
     sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
     placed(&mut mgr, (590, 12));
+    // The pose dropped (a GPU hand-off): back at its configured margins
+    // at once, and the host is told.
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    mgr.state_mut().clear_pose(id);
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.origin, Some((560, 0)));
+    assert_eq!(mgr.state().host().placed.last(), Some(&(id, (560, 0))));
 }
