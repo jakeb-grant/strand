@@ -25,7 +25,8 @@
 //! lock's node kept), or the lock unmounted and then the content's
 //! output unplugged; strand killed (SIGKILL) or aborted (SIGABRT, what
 //! an allocation failure does) while locked and
-//! started again; the compositor ends a lock it granted (`finished` after
+//! started again, by the test or by a supervisor (a restart loop like
+//! systemd's `Restart=on-failure`), twice in a row; the compositor ends a lock it granted (`finished` after
 //! `locked`, played by a Wayland proxy, tests/lock/proxy.rs: sway 1.9
 //! never sends it); the compositor refusing the lock (another locker
 //! holds it: not a fault, nothing shows, the run goes on); an output
@@ -610,6 +611,10 @@ struct Strand {
     config: PathBuf,
     log: PathBuf,
     starts: usize,
+    /// `child` is a supervisor: a restart loop running strand again
+    /// whenever it exits other than cleanly (what systemd's
+    /// `Restart=on-failure` does).
+    supervised: bool,
 }
 
 impl Strand {
@@ -617,6 +622,21 @@ impl Strand {
     /// `display` (sway's, or a proxy's in sway's directory), with
     /// `STRAND_FAULT=faults`.
     fn start(sway: &Sway, display: &str, faults: &str, source: &str) -> Strand {
+        let mut s = Strand::prepare(sway, display, faults, source);
+        s.run();
+        s
+    }
+
+    /// [`Strand::start`] under a supervisor.
+    fn supervised(sway: &Sway, source: &str) -> Strand {
+        let mut s = Strand::prepare(sway, &sway.display.clone(), "", source);
+        s.supervised = true;
+        s.run();
+        s
+    }
+
+    /// Its config and environment, not started.
+    fn prepare(sway: &Sway, display: &str, faults: &str, source: &str) -> Strand {
         let home = sway.dir.join("home");
         let config = home.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
@@ -631,15 +651,14 @@ impl Strand {
             ("STRAND_LOG".into(), "info".into()),
             ("STRAND_FAULT".into(), faults.into()),
         ];
-        let mut s = Strand {
+        Strand {
             child: None,
             env,
             config,
             log: sway.dir.join("strand.log"),
             starts: 0,
-        };
-        s.run();
-        s
+            supervised: false,
+        }
     }
 
     /// Starts the binary (again), its log appended.
@@ -651,9 +670,24 @@ impl Strand {
             .open(&self.log)
             .unwrap();
         writeln!(log, "---- start {}", self.starts).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_strand"))
-            .arg("run")
-            .arg(&self.config)
+        let mut cmd = if self.supervised {
+            // Runs strand again whenever it exits with a failure or a
+            // signal, as systemd's `Restart=on-failure` does.
+            let mut c = Command::new("sh");
+            c.arg("-c")
+                .arg(
+                    "while :; do \"$0\" run \"$1\"; s=$?; [ \"$s\" -eq 0 ] && exit 0; \
+                     echo \"---- supervisor: strand exited ($s), starting it again\"; done",
+                )
+                .arg(env!("CARGO_BIN_EXE_strand"))
+                .arg(&self.config);
+            c
+        } else {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_strand"));
+            c.arg("run").arg(&self.config);
+            c
+        };
+        let child = cmd
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("LANG", "C.UTF-8")
@@ -757,6 +791,17 @@ impl Strand {
             .unwrap_or(false)
     }
 
+    /// The running strand's pid: the child's, or under a supervisor its
+    /// child's (`None` between two runs).
+    fn pid(&self) -> Option<u32> {
+        let pid = self.child.as_ref()?.id();
+        if !self.supervised {
+            return Some(pid);
+        }
+        let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
+        children.split_whitespace().next()?.parse().ok()
+    }
+
     /// The restart marker (run/lock.rs).
     fn marker(&self, display: &str) -> PathBuf {
         let dir = self
@@ -771,9 +816,15 @@ impl Strand {
 
 impl Drop for Strand {
     fn drop(&mut self) {
+        // The supervisor first, so it starts nothing more; then its strand.
+        let supervised = if self.supervised { self.pid() } else { None };
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
             let _ = c.wait();
+        }
+        if let Some(pid) = supervised {
+            // SAFETY: kill(2) on the supervisor's child, ours to end.
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         }
     }
 }
@@ -799,6 +850,22 @@ impl Vm {
         let sway = Sway::start(tag);
         let display = sway.display.clone();
         Vm::on(sway, &display, faults, source)
+    }
+
+    /// [`Vm::start`] with strand under a supervisor.
+    fn supervised(tag: &str) -> Vm {
+        let sway = Sway::start(tag);
+        let desktop = Desktop::start(&sway);
+        let keys = Keyboard::new(&sway);
+        let strand = Strand::supervised(&sway, CONFIG);
+        let vm = Vm {
+            sway,
+            _desktop: desktop,
+            keys,
+            strand,
+        };
+        vm.until("HEADLESS-1", "the desktop", Shot::desktop);
+        vm
     }
 
     /// Strand on `display` of `sway`'s directory.
@@ -1381,6 +1448,65 @@ fn killed_while_locked_locks_again_on_restart() {
 #[test]
 fn aborted_while_locked_locks_again_on_restart() {
     restart_after("sigabrt", libc::SIGABRT);
+}
+
+/// (M4) The deployment architecture.md asks for: strand under a
+/// supervisor that starts it again when it exits abnormally (a restart
+/// loop standing in for systemd's `Restart=on-failure`). Killed while
+/// locked (SIGKILL), and killed again by an abort (SIGABRT) once back,
+/// the session never shows the desktop: every shot from each kill until
+/// the supervisor's new strand shows the built-in password field hides
+/// it, no test step starts strand, and only the right password unlocks.
+/// The supervisor and its strand run on after the unlock.
+#[test]
+fn a_supervised_strand_dying_while_locked_keeps_the_session_locked() {
+    let test = "supervised";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::supervised(test);
+    let display = vm.sway.display.clone();
+    let marker = vm.strand.marker(&display);
+    vm.lock();
+    vm.content();
+    vm.until("HEADLESS-1", "the restart marker written", |_| {
+        marker.exists()
+    });
+    for (round, sig) in [libc::SIGKILL, libc::SIGABRT].into_iter().enumerate() {
+        let pid = vm.strand.pid().expect("strand under its supervisor");
+        // SAFETY: kill(2) on the supervisor's child.
+        assert_eq!(unsafe { libc::kill(pid as i32, sig) }, 0, "kill {sig}");
+        // Locked while no strand runs, until the supervisor's next one.
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let shot = vm.sway.shot("HEADLESS-1");
+            assert!(
+                !shot.desktop(),
+                "round {round}: the desktop showed after signal {sig}: {}\n{}",
+                shot.describe(),
+                vm.strand.log_text()
+            );
+            if vm.strand.pid().is_some_and(|p| p != pid) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "round {round}: the supervisor never started strand again\n{}",
+                vm.strand.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        vm.fallback();
+        assert!(marker.exists(), "round {round}: still locked, still marked");
+    }
+    vm.log_has("---- supervisor: strand exited (137)");
+    vm.log_has("---- supervisor: strand exited (134)");
+    vm.log_has("locking again");
+    assert_eq!(vm.strand.starts, 1, "only the supervisor started strand");
+    vm.fallback_passwords();
+    vm.until("HEADLESS-1", "the marker removed", |_| !marker.exists());
+    assert!(vm.strand.running(), "the supervisor runs on");
+    assert!(vm.strand.pid().is_some(), "and so does its strand");
 }
 
 /// The compositor ends a lock it granted (the proxy's `finished` after

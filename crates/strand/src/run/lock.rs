@@ -160,9 +160,37 @@ pub(super) const REDACTED: &str = "<redacted>";
 /// that fails on a value read from the password's `state`
 /// (`clock.format(secret)`) would otherwise print the password. Each
 /// value is a [`Password`], zeroized when replaced or dropped.
+///
+/// (M4) A value replaced by one it is not the start of (submitted and
+/// emptied, edited, its input removed) is remembered, the newest
+/// [`REMEMBERED`] of them, so a state that copied it still has it
+/// redacted after the field emptied or the lock went away; and a message
+/// holding any [`FRAGMENT`]-byte run of a known value (ASCII case
+/// ignored) is redacted whole, so a slice, an upper-cased copy or an
+/// escaped quote never prints.
 #[derive(Default)]
 pub(super) struct Secrets {
     inputs: std::collections::HashMap<NodeId, Option<Password>>,
+    remembered: std::collections::VecDeque<Password>,
+}
+
+/// How many replaced password values [`Secrets`] keeps.
+const REMEMBERED: usize = 4;
+
+/// The shortest run of a password's bytes that redacts a message (a
+/// shorter password: the whole of it).
+const FRAGMENT: usize = 4;
+
+/// True when `text` holds a run of [`FRAGMENT`] bytes of `value` (all of
+/// it when shorter), ASCII case ignored.
+fn holds_fragment(text: &[u8], value: &[u8]) -> bool {
+    let k = value.len().min(FRAGMENT);
+    if k == 0 || text.len() < k {
+        return false;
+    }
+    value
+        .windows(k)
+        .any(|w| text.windows(k).any(|t| t.eq_ignore_ascii_case(w)))
 }
 
 impl Secrets {
@@ -184,7 +212,9 @@ impl Secrets {
                     }
                 }
                 SceneOp::Remove { id, .. } => {
-                    self.inputs.remove(id);
+                    if let Some(Some(old)) = self.inputs.remove(id) {
+                        self.remember(old);
+                    }
                 }
                 _ => {}
             }
@@ -204,9 +234,40 @@ impl Secrets {
         if prop != Prop::Text {
             return;
         }
-        if let (Some(slot), PropValue::Text(t)) = (self.inputs.get_mut(&node), value) {
-            *slot = (!t.is_empty()).then(|| Password::from(t.clone()));
+        let Some(PropValue::Text(t)) = Some(value) else {
+            return;
+        };
+        let Some(slot) = self.inputs.get_mut(&node) else {
+            return;
+        };
+        let new = (!t.is_empty()).then(|| Password::from(t.clone()));
+        let old = std::mem::replace(slot, new);
+        // Typed on (the old value starts the new one): nothing to keep.
+        if let Some(old) = old
+            && !t.as_bytes().starts_with(old.as_bytes())
+        {
+            self.remember(old);
         }
+    }
+
+    /// Keeps a replaced value: one inside a kept value is dropped, and
+    /// kept ones inside it go.
+    fn remember(&mut self, value: Password) {
+        let inside = |big: &[u8], small: &[u8]| big.windows(small.len()).any(|w| w == small);
+        if value.is_empty()
+            || self
+                .remembered
+                .iter()
+                .any(|r| inside(r.as_bytes(), value.as_bytes()))
+        {
+            return;
+        }
+        self.remembered
+            .retain(|r| !inside(value.as_bytes(), r.as_bytes()));
+        if self.remembered.len() == REMEMBERED {
+            self.remembered.pop_front();
+        }
+        self.remembered.push_back(value);
     }
 
     /// A runtime fault's message as it may be logged and streamed:
@@ -243,17 +304,22 @@ impl Secrets {
         std::borrow::Cow::Owned(self.redact(&e.to_string()).into_owned())
     }
 
-    /// `text` with every password input's current value replaced by
-    /// [`REDACTED`].
+    /// `text` with every known password value (the inputs' current ones
+    /// and the remembered) replaced by [`REDACTED`]; [`REDACTED`] whole
+    /// when a fragment of one is still in it.
     pub(super) fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        let known = || self.inputs.values().flatten().chain(&self.remembered);
         let mut out = std::borrow::Cow::Borrowed(text);
-        for p in self.inputs.values().flatten() {
+        for p in known() {
             if let Ok(v) = std::str::from_utf8(p.as_bytes())
                 && !v.is_empty()
                 && out.contains(v)
             {
                 out = std::borrow::Cow::Owned(out.replace(v, REDACTED));
             }
+        }
+        if known().any(|p| holds_fragment(out.as_bytes(), p.as_bytes())) {
+            return std::borrow::Cow::Borrowed(REDACTED);
         }
         out
     }
@@ -1334,14 +1400,15 @@ mod tests {
             secrets.redact("`hunter-two` is not a valid time pattern; visible"),
             "`<redacted>` is not a valid time pattern; visible"
         );
+        // Replaced by a value it does not start: the old one is kept.
         secrets.see_write(pw, Prop::Text, &PropValue::Text("s3cret".into()));
         assert_eq!(
             secrets.redact("a s3cret, hunter-two"),
-            "a <redacted>, hunter-two"
+            "a <redacted>, <redacted>"
         );
-        // Emptied (submitted): nothing to redact, nothing matches "".
+        // Emptied (submitted): still redacted, in a copy elsewhere.
         secrets.see_write(pw, Prop::Text, &PropValue::Text(String::new()));
-        assert_eq!(secrets.redact("s3cret"), "s3cret");
+        assert_eq!(secrets.redact("s3cret"), "<redacted>");
         secrets.see_write(pw, Prop::Text, &PropValue::Text("again".into()));
         let mut d = SceneDiff::new();
         d.push(SceneOp::Remove {
@@ -1349,8 +1416,9 @@ mod tests {
             window: false,
         });
         secrets.see_diff(&d);
-        assert_eq!(secrets.redact("again"), "again", "removed");
+        assert_eq!(secrets.redact("again"), "<redacted>", "removed, kept");
         assert!(matches!(secrets.redact("x"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(secrets.redact("visible"), "visible");
     }
 
     /// While a password input is mounted, an error that can carry values
@@ -1413,6 +1481,79 @@ mod tests {
         });
         secrets.see_diff(&d);
         assert_eq!(secrets.redact_error(&Error::failed("x")), "x");
+        // ... except a fragment of the password, its case changed.
+        assert_eq!(
+            secrets.redact_error(&Error::failed("`HUNT` is not a valid time pattern")),
+            "<redacted>"
+        );
+    }
+
+    /// (M4) A fault message holding a fragment of a password, any time
+    /// after it was typed, is never logged: four bytes of it in any case,
+    /// a short password whole; typing on does not fill the memory with
+    /// prefixes, and only the newest values are kept.
+    #[test]
+    fn a_password_fragment_is_never_logged() {
+        let pw = NodeId::new(1, 0);
+        let mut secrets = Secrets::default();
+        let mut d = SceneDiff::new();
+        d.create(pw, NodeKind::Input, None, 0).set(
+            pw,
+            Prop::InputType,
+            PropValue::Keyword("password".into()),
+        );
+        secrets.see_diff(&d);
+        for typed in ["c", "co", "cor", "corr", "correct-horse"] {
+            secrets.see_write(pw, Prop::Text, &PropValue::Text(typed.into()));
+        }
+        assert!(secrets.remembered.is_empty(), "typing on keeps nothing");
+        // Submitted: the field empties, the lock goes away.
+        secrets.see_write(pw, Prop::Text, &PropValue::Text(String::new()));
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: pw,
+            window: false,
+        });
+        secrets.see_diff(&d);
+        assert_eq!(secrets.remembered.len(), 1);
+        for leaked in [
+            "`HORSE` is not a valid time pattern",
+            "index 3 out of range for \"t-ho\"",
+            "no key `rect` in the map",
+            "correct-horse",
+        ] {
+            assert_eq!(secrets.redact(leaked), REDACTED, "{leaked}");
+        }
+        for fine in [
+            "`HH:mm` is not a valid time pattern",
+            "cor is fine",
+            "hosting",
+        ] {
+            assert_eq!(secrets.redact(fine), fine);
+        }
+        // A short password: whole, any case.
+        let mut d = SceneDiff::new();
+        d.create(pw, NodeKind::Input, None, 0)
+            .set(pw, Prop::InputType, PropValue::Keyword("password".into()))
+            .set(pw, Prop::Text, PropValue::Text("q1z".into()));
+        secrets.see_diff(&d);
+        secrets.see_write(pw, Prop::Text, &PropValue::Text(String::new()));
+        assert_eq!(secrets.redact("got Q1Z"), REDACTED);
+        assert_eq!(secrets.redact("q1"), "q1");
+        // A backspace keeps the longer value until a value holding it
+        // replaces it; only the newest four values are kept.
+        for v in [
+            "abcd", "abc", "", "w0rd-one", "", "w0rd-two", "", "w0rd-3", "", "w0rd-4", "",
+        ] {
+            secrets.see_write(pw, Prop::Text, &PropValue::Text(v.into()));
+        }
+        assert_eq!(secrets.remembered.len(), REMEMBERED);
+        assert_eq!(
+            secrets.redact("correct-horse"),
+            "correct-horse",
+            "forgotten"
+        );
+        assert_eq!(secrets.redact("W0RD-4"), REDACTED);
     }
 
     /// The host passes the compositor's reports to logic as the

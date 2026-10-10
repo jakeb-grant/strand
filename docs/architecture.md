@@ -255,7 +255,12 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   is mounted, logic replaces the error of every runtime fault that can
   carry values with `<redacted>` (keeping what failed and where) in the
   messages it logs and streams to `strand watch`; otherwise it replaces
-  the inputs' current values (`lock::Secrets`). The `faults` feature
+  the known values, and redacts a message whole when any 4-byte run of
+  one (ASCII case ignored; a shorter password whole) is still in it.
+  The known values are the inputs' current ones and the newest four
+  replaced by a value they do not start (submitted, edited, their input
+  removed), zeroized when dropped (`lock::Secrets`, M4
+  interaction-finish). The `faults` feature
   (`STRAND_FAULT`) injects each fault for `tests/lock.rs`, which runs
   only in the lock VM.
   Residual risk: rendering runs on the main thread, and the main thread
@@ -269,7 +274,31 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   abnormally (a systemd user unit with `Restart=on-failure`, or a
   restart loop in the compositor's autostart). Without one, a main
   thread fault while locked needs another way into the session (a VT,
-  ssh) to start strand again.
+  ssh) to start strand again. With one, the session stays locked
+  throughout and the field is back as soon as the new strand runs:
+  `tests/lock.rs::a_supervised_strand_dying_while_locked_keeps_the_session_locked`
+  (lock VM) kills a supervised strand twice while locked (SIGKILL, then
+  SIGABRT once it is back) and finds the desktop hidden in every shot
+  until the restarted strand's field shows, with no test step starting
+  strand. A user unit for it:
+
+  ```ini
+  [Unit]
+  Description=Strand shell
+  PartOf=graphical-session.target
+  After=graphical-session.target
+
+  [Service]
+  ExecStart=strand run
+  Restart=on-failure
+  RestartSec=0
+
+  [Install]
+  WantedBy=graphical-session.target
+  ```
+
+  (`RestartSec=0`: systemd's default 100 ms only delays the field; the
+  compositor keeps the session locked meanwhile.)
 - The PAM helper is a process, not a thread: the `strand-auth` binary,
   fork+exec'd over a socketpair by `strand_auth::Client`, one per lock
   session, respawned when it dies. The `Client`'s owner hands it
