@@ -24,6 +24,16 @@
 //! however large its assets say they are. An asset that cannot be read
 //! or decoded, or that no budget is left for, draws nothing. The rest of
 //! velato's support holds.
+//!
+//! velato draws a file's structure as it stands (m4-audit): a precomp
+//! that instances itself, or a matte that is its own, recursed until the
+//! stack overflowed (an abort no `catch_unwind` stops), precomps that
+//! fan out cost 2^N layers, and a repeater's copy count is unbounded
+//! (`1e18` cloned geometry until memory ran out). A file is refused at
+//! load unless its precomps and mattes form no cycle, nest at most
+//! [`MAX_NESTING`] deep, and one frame draws at most [`MAX_WORK`] layer
+//! and shape instances, each precomp instance and repeater copy counted
+//! at the most its keyframes (and their easing) can reach.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -54,6 +64,12 @@ pub const MAX_ASSET_SIDE: u32 = 1024;
 
 /// The most pixels a file's image assets hold together (4 MiB of RGBA).
 pub const MAX_ASSET_PIXELS: u64 = 1 << 20;
+
+/// The most layer and shape instances one frame of a file may draw.
+pub const MAX_WORK: u64 = 100_000;
+
+/// The deepest chain of precomp instances and mattes.
+pub const MAX_NESTING: usize = 32;
 
 /// The fastest a Lottie clock runs.
 const MAX_FPS: f64 = 120.0;
@@ -165,6 +181,7 @@ struct Asset {
 fn load(source: &str) -> Result<File, String> {
     let bytes = crate::image::read_local(source, MAX_LOTTIE_BYTES).map_err(|e| e.to_string())?;
     let comp = velato::Composition::from_slice(bytes).map_err(|e| e.to_string())?;
+    check_work(&comp)?;
     let dir = local_dir(source);
     let mut ids: Vec<&String> = comp.images.keys().collect();
     ids.sort();
@@ -191,6 +208,143 @@ fn load(source: &str) -> Result<File, String> {
         }
     }
     Ok(File { comp, images })
+}
+
+/// A layer: in the top-level list (`None`) or a precomp's, by index.
+type LayerAt<'a> = (Option<&'a str>, usize);
+
+/// Refuses a file velato could not draw within bounds (see the module
+/// docs): a cycle, nesting past [`MAX_NESTING`], or past [`MAX_WORK`].
+fn check_work(comp: &velato::Composition) -> Result<(), String> {
+    let mut walk = Walk {
+        comp,
+        done: HashMap::new(),
+        stack: Vec::new(),
+    };
+    let mut total = 0u64;
+    for i in 0..comp.layers.len() {
+        let c = walk.layer((None, i))?;
+        total = add(total, c)?;
+    }
+    Ok(())
+}
+
+struct Walk<'a> {
+    comp: &'a velato::Composition,
+    /// Each layer's cost, once known.
+    done: HashMap<LayerAt<'a>, u64>,
+    /// The layers being costed, outermost first.
+    stack: Vec<LayerAt<'a>>,
+}
+
+/// `a + b`, refused past [`MAX_WORK`].
+fn add(a: u64, b: u64) -> Result<u64, String> {
+    let sum = a.saturating_add(b);
+    if sum > MAX_WORK {
+        return Err(format!(
+            "a frame would draw over {MAX_WORK} layers and shapes"
+        ));
+    }
+    Ok(sum)
+}
+
+impl<'a> Walk<'a> {
+    /// What drawing layer `at` costs: itself, its matte and its content.
+    fn layer(&mut self, at: LayerAt<'a>) -> Result<u64, String> {
+        use velato::model::Content;
+        if let Some(c) = self.done.get(&at) {
+            return Ok(*c);
+        }
+        if self.stack.contains(&at) {
+            return Err("a precomp or matte contains itself".into());
+        }
+        if self.stack.len() >= MAX_NESTING {
+            return Err(format!("precomps or mattes nest deeper than {MAX_NESTING}"));
+        }
+        let comp = self.comp;
+        let set = match at.0 {
+            None => Some(&comp.layers),
+            Some(name) => comp.assets.get(name),
+        };
+        let Some(layer) = set.and_then(|s| s.get(at.1)) else {
+            return Ok(0);
+        };
+        self.stack.push(at);
+        let mut cost = 1;
+        if let Some((_, m)) = layer.mask_layer {
+            let c = self.layer((at.0, m))?;
+            cost = add(cost, c)?;
+        }
+        match &layer.content {
+            Content::Instance { name, .. } => {
+                if let Some((name, layers)) = comp.assets.get_key_value(name) {
+                    for i in 0..layers.len() {
+                        let c = self.layer((Some(name.as_str()), i))?;
+                        cost = add(cost, c)?;
+                    }
+                }
+            }
+            Content::Shape(shapes) => cost = add(cost, Self::shapes(shapes)?)?,
+            Content::Image { .. } | Content::None => {}
+        }
+        self.stack.pop();
+        self.done.insert(at, cost);
+        Ok(cost)
+    }
+
+    /// What a shape list costs: a repeater multiplies what comes before
+    /// it in its list by its copies (velato repeats those geometries).
+    fn shapes(shapes: &[velato::model::Shape]) -> Result<u64, String> {
+        use velato::model::Shape;
+        let mut cost = 0u64;
+        for shape in shapes {
+            cost = match shape {
+                Shape::Group(children, _) => add(cost, Self::shapes(children)?)?,
+                Shape::Repeater(r) => {
+                    let copies = match r {
+                        velato::model::Repeater::Fixed(f) => f.copies as u64,
+                        velato::model::Repeater::Animated(a) => {
+                            most(&a.copies).ok_or("a repeater's copies are not finite")?
+                        }
+                    };
+                    let n = cost.saturating_mul(copies.max(1));
+                    add(n, 0)?
+                }
+                Shape::Geometry(_) | Shape::Draw(_) | Shape::Trim(_) => add(cost, 1)?,
+            };
+        }
+        Ok(cost)
+    }
+}
+
+/// The largest whole count `v` reaches (velato rounds it), `None` when
+/// unbounded. An animated value between two keyframes stays within its
+/// easing curve's hull: `a + (b - a) · y` for `y` between 0, 1 and the
+/// handles' heights.
+fn most(v: &velato::model::Value<f64>) -> Option<u64> {
+    use velato::model::Value;
+    let count = |x: f64| x.is_finite().then(|| x.round().max(0.0) as u64);
+    match v {
+        Value::Fixed(x) => count(*x),
+        Value::Animated(a) => {
+            let mut top = 0u64;
+            for (i, &from) in a.values.iter().enumerate() {
+                let to = a.values.get(i + 1).copied().unwrap_or(from);
+                let mut lo = 0.0f64;
+                let mut hi = 1.0f64;
+                for t in [a.times.get(i), a.times.get(i + 1)].into_iter().flatten() {
+                    for h in [t.in_tangent, t.out_tangent].into_iter().flatten() {
+                        lo = lo.min(h.y);
+                        hi = hi.max(h.y);
+                    }
+                }
+                for y in [lo, hi] {
+                    top = top.max(count(from + (to - from) * y)?);
+                }
+            }
+            Some(top)
+        }
+    }
 }
 
 /// The directory of a local `source` (as `read_local` reads it).
@@ -442,6 +596,121 @@ mod tests {
         assert_eq!(frame_at(&comp, 0.25, -1.0), 22.0, "backwards");
         let empty = velato::Composition::default();
         assert_eq!(frame_at(&empty, 3.0, 1.0), 0.0);
+    }
+
+    const KS: &str = r#""ks":{"o":{"a":0,"k":100},"r":{"a":0,"k":0},"p":{"a":0,"k":[0,0,0]},"a":{"a":0,"k":[0,0,0]},"s":{"a":0,"k":[100,100,100]}}"#;
+
+    fn precomp(ind: u32, id: &str) -> String {
+        format!(
+            r#"{{"ty":0,"ind":{ind},"refId":"{id}","w":100,"h":100,"ip":0,"op":60,"st":0,{KS}}}"#
+        )
+    }
+
+    /// A shape layer: a square, then a repeater of `copies` (a JSON value).
+    fn repeated(ind: u32, copies: &str) -> String {
+        format!(
+            r#"{{"ty":4,"ind":{ind},"ip":0,"op":60,"st":0,{KS},"shapes":[
+              {{"ty":"rc","p":{{"a":0,"k":[0,0]}},"s":{{"a":0,"k":[2,2]}},"r":{{"a":0,"k":0}}}},
+              {{"ty":"fl","c":{{"a":0,"k":[1,0,0,1]}},"o":{{"a":0,"k":100}}}},
+              {{"ty":"rp","c":{copies},"o":{{"a":0,"k":0}},"tr":{{"p":{{"a":0,"k":[1,0]}},"a":{{"a":0,"k":[0,0]}},"s":{{"a":0,"k":[100,100]}},"r":{{"a":0,"k":0}},"so":{{"a":0,"k":100}},"eo":{{"a":0,"k":100}}}}}}]}}"#
+        )
+    }
+
+    /// Loads a file of `assets` (precomps) and `layers`.
+    fn load_of(tag: &str, assets: &[String], layers: &[String]) -> Result<File, String> {
+        let json = format!(
+            r#"{{"v":"5.7.0","fr":30,"ip":0,"op":60,"w":100,"h":100,"assets":[{}],"layers":[{}]}}"#,
+            assets.join(","),
+            layers.join(",")
+        );
+        let dir = std::env::temp_dir().join(format!("strand-lottie-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.json");
+        std::fs::write(&path, json).unwrap();
+        let out = load(path.to_str().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    fn asset(id: &str, layers: &[String]) -> String {
+        format!(r#"{{"id":"{id}","layers":[{}]}}"#, layers.join(","))
+    }
+
+    /// (m4-audit) velato draws a file's structure as it stands, so a
+    /// file it could not draw within bounds is refused at load: a precomp
+    /// instancing itself or a cycle of two (a stack overflow, which aborts
+    /// strand), a matte that is its own, precomps fanning out 2^20
+    /// layers, a chain nested past `MAX_NESTING`, and a repeater of 1e18
+    /// copies, fixed or reached through its easing. Files within bounds
+    /// load, a repeater's copies counted.
+    #[test]
+    fn files_velato_cannot_draw_within_bounds_are_refused() {
+        let refused = |tag: &str, assets: &[String], layers: &[String], why: &str| match load_of(
+            tag, assets, layers,
+        ) {
+            Err(e) => assert!(e.contains(why), "{tag}: {e}"),
+            Ok(_) => panic!("{tag}: loaded"),
+        };
+        refused(
+            "self",
+            &[asset("a", &[precomp(1, "a")])],
+            &[precomp(1, "a")],
+            "contains itself",
+        );
+        refused(
+            "cycle",
+            &[
+                asset("a", &[precomp(1, "b")]),
+                asset("b", &[precomp(1, "a")]),
+            ],
+            &[precomp(1, "a")],
+            "contains itself",
+        );
+        let own_matte =
+            format!(r#"{{"ty":4,"ind":1,"tt":1,"tp":1,"ip":0,"op":60,"st":0,{KS},"shapes":[]}}"#);
+        refused("matte", &[], &[own_matte], "contains itself");
+        // Each level instances the next twice: 2^20 leaves.
+        let fan: Vec<String> = (0..20)
+            .map(|i| {
+                asset(
+                    &format!("f{i}"),
+                    &[
+                        precomp(1, &format!("f{}", i + 1)),
+                        precomp(2, &format!("f{}", i + 1)),
+                    ],
+                )
+            })
+            .chain(std::iter::once(asset(
+                "f20",
+                &[repeated(1, r#"{"a":0,"k":1}"#)],
+            )))
+            .collect();
+        refused("fan", &fan, &[precomp(1, "f0")], "would draw over");
+        let chain: Vec<String> = (0..40)
+            .map(|i| asset(&format!("c{i}"), &[precomp(1, &format!("c{}", i + 1))]))
+            .collect();
+        refused("deep", &chain, &[precomp(1, "c0")], "nest deeper");
+        refused(
+            "copies",
+            &[],
+            &[repeated(1, r#"{"a":0,"k":1e18}"#)],
+            "would draw over",
+        );
+        // 2 → 3 copies, but an easing handle 1e17 high overshoots.
+        let eased = r#"{"a":1,"k":[{"t":0,"s":[2],"i":{"x":[0.5],"y":[1e17]},"o":{"x":[0.5],"y":[0]}},{"t":60,"s":[3]}]}"#;
+        refused("eased", &[], &[repeated(1, eased)], "would draw over");
+
+        // Within bounds: a shared precomp instanced from several places,
+        // 1,000 copies, and a precomp nested 8 deep.
+        let nested: Vec<String> = (0..8)
+            .map(|i| asset(&format!("n{i}"), &[precomp(1, &format!("n{}", i + 1))]))
+            .chain(std::iter::once(asset(
+                "n8",
+                &[repeated(1, r#"{"a":0,"k":1000}"#)],
+            )))
+            .collect();
+        let file = load_of("fine", &nested, &[precomp(1, "n0"), precomp(2, "n3")]).unwrap();
+        assert_eq!(file.comp.layers.len(), 2);
     }
 
     /// A file whose assets claim 4096 × 4096 each (from tiny PNGs) holds
