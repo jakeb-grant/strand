@@ -841,6 +841,19 @@ pub(super) struct Guard {
     marked: bool,
 }
 
+/// What `strand run` says at start when no `strand-auth` helper is
+/// installed (`cargo install --path crates/strand` alone): the session
+/// lock still takes when asked, since a lock that does not lock fails
+/// open, but no password can then end it, the fallback's included, so
+/// the user hears it before the first lock rather than at it
+/// (decisions.md, m4-audit). A mocked run never locks.
+pub(super) fn missing_helper(found: bool, mocked: bool) -> Option<&'static str> {
+    (!found && !mocked).then_some(
+        "lock: no `strand-auth` helper is installed: a `lock` would lock the session \
+         with no way to unlock it but a TTY: install it (`cargo install --locked --path crates/strand-auth`)",
+    )
+}
+
 /// `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.locked`.
 fn marker_path() -> Option<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)?;
@@ -1357,6 +1370,17 @@ mod tests {
     use super::*;
     use strand_scene::{ButtonState, KeyInput, Modifiers, Scale, Size};
     use strand_surface::SurfaceHost as _;
+
+    /// (m4-audit) Without a helper, `strand run` warns at start (a log
+    /// line and a `strand watch` notice) instead of at the first lock;
+    /// with one, or under the mock, it says nothing.
+    #[test]
+    fn a_missing_helper_is_said_at_start() {
+        let why = missing_helper(false, false).unwrap();
+        assert!(why.contains("strand-auth") && why.contains("TTY"), "{why}");
+        assert_eq!(missing_helper(true, false), None);
+        assert_eq!(missing_helper(false, true), None);
+    }
 
     fn key(name: &str, text: &str) -> InputEvent {
         InputEvent::Key {

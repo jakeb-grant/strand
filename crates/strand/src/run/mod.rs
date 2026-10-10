@@ -513,6 +513,10 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // (not under the mock, whose host has no `auth`).
     let mocked = crate::mock::requested().is_some();
     let mut guard = lock::Guard::wire(&handle, mgr.state_mut(), mocked)?;
+    if let Some(why) = lock::missing_helper(strand_auth::default_helper().is_some(), mocked) {
+        log::warn!("{why}");
+        let _ = to_logic.send(ToLogic::Notice(why.into()));
+    }
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);
     handle
