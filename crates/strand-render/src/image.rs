@@ -683,7 +683,7 @@ fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
 /// Renders an SVG into a `w × h` box by `fit`, with its own size.
 fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<(Raster, (f64, f64)), ImageError> {
     use resvg::{tiny_skia, usvg};
-    let tree = usvg::Tree::from_data(data, &usvg::Options::default())
+    let tree = usvg::Tree::from_data(data, &crate::media::svg::options())
         .map_err(|e| ImageError::Decode(e.to_string()))?;
     let size = tree.size();
     let (sw, sh) = (size.width() as f64, size.height() as f64);
@@ -1447,6 +1447,62 @@ mod tests {
             }
         }
         Raster { w, h, rgba }
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let n = c
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+            for i in 0..4 {
+                if i <= c.len() {
+                    out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// (m4-audit) An SVG's `<image href>` naming a file is not read:
+    /// usvg's default resolver read any path whole (`/dev/zero` until
+    /// strand was killed, a FIFO forever), past `read_local`'s limits.
+    /// A nested SVG file is not drawn, a FIFO is not opened (the test
+    /// would block), and a `data:` URL still is.
+    #[test]
+    fn an_svg_reads_no_file_its_images_name() {
+        let dir = std::env::temp_dir().join(format!("strand-svg-href-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let red = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>"#;
+        let inner = dir.join("inner.svg");
+        std::fs::write(&inner, red).unwrap();
+        let fifo = dir.join("pipe.svg");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        let outer = |href: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" href="{href}"/><rect width="1" height="1" fill="blue"/></svg>"#
+            )
+        };
+        let alpha = |svg: &str| {
+            let (r, _) = render_svg(svg.as_bytes(), 10, 10, Fit::Fill).unwrap();
+            r.rgba[(5 * 10 + 5) * 4 + 3]
+        };
+        assert_eq!(alpha(&outer(&inner.display().to_string())), 0, "a file");
+        if made {
+            assert_eq!(alpha(&outer(&fifo.display().to_string())), 0, "a FIFO");
+        }
+        assert_eq!(alpha(&outer("/dev/zero")), 0, "a device");
+        let data = format!("data:image/svg+xml;base64,{}", base64(red.as_bytes()));
+        assert_eq!(alpha(&outer(&data)), 255, "a data URL");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

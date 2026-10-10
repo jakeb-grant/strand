@@ -180,8 +180,20 @@ fn wrap(text: &str, names: &[String]) -> Option<Vec<Piece>> {
     Some(pieces)
 }
 
-fn options() -> usvg::Options<'static> {
-    usvg::Options::default()
+/// usvg's options for every SVG strand parses (this module's and
+/// `image.rs`'s): an `<image href>` naming a file is not read (m4-audit).
+/// usvg's default resolver reads any path it names whole, with no size
+/// limit and no regular-file check, before looking at it, so an SVG from
+/// an untrusted sender (a tray item's icon, a notification's) naming
+/// `/dev/zero` grew memory until strand was killed, and a FIFO blocked
+/// the image worker; `read_local`'s limits only covered the outer file.
+/// Raster images inside an SVG are not drawn anyway (resvg is built
+/// without `raster-images`), so only a nested SVG file is lost; a `data:`
+/// URL, bounded by the outer file's size, still resolves.
+pub(crate) fn options() -> usvg::Options<'static> {
+    let mut o = usvg::Options::default();
+    o.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    o
 }
 
 impl Doc {
