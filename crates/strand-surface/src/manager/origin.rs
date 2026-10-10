@@ -12,23 +12,31 @@
 //! client and are not taken out. It is placed at the margins its
 //! compositor pose's offset set (`placement::posed_margin`), again
 //! whenever that offset, its output's geometry or an exclusive zone on
-//! its output changes. A popup's comes from its configure, which gives
+//! its output changes (one that comes, goes, changes size or leaves with
+//! its surface: `Surface::zone_on` remembers where it was counted). A popup's comes from its configure, which gives
 //! its box relative to its parent's window geometry (a layer surface's
 //! is the surface; a popup's is its box).
 
 use super::*;
 
 impl<H: SurfaceHost + 'static> State<H> {
-    /// Places layer surface `id` on its monitor for its configured size;
-    /// a surface with an exclusive zone places the others on its output
-    /// again (their usable area changed with it).
+    /// Places layer surface `id` on its monitor for its configured size.
+    /// The other layer surfaces on the monitor its exclusive zone takes
+    /// from now, and on the one it took from when last placed, are placed
+    /// again: their usable area changed with it (a zone that grew, shrank
+    /// to none, or moved to another output with its surface).
     pub(super) fn place_layer(&mut self, id: SurfaceId) {
         self.place_layer_only(id);
-        let monitor = self.surfaces.get(&id).and_then(|s| match s.role {
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let now = match s.role {
             Role::Layer(_) if s.config.exclusive_zone > 0 => s.monitor.clone(),
             _ => None,
-        });
-        if let Some(m) = monitor {
+        };
+        let before = std::mem::replace(&mut s.zone_on, now.clone());
+        let before = before.filter(|b| now.as_ref() != Some(b));
+        for m in [now, before].into_iter().flatten() {
             for other in self.layers_on(&m) {
                 if other != id {
                     self.place_layer_only(other);

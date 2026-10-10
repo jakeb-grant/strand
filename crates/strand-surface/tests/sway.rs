@@ -2549,8 +2549,10 @@ fn a_posed_panel_is_placed_where_its_margins_put_it() {
 
 /// (M4) A layer surface is placed where sway arranges it, in the
 /// compositor's logical layout: a corner panel past our own bar's
-/// exclusive zone (not over it), again at the top once the bar goes, and
-/// a bar on a second output at that output's position in the layout.
+/// exclusive zone (not over it), at the top while the live bar's zone is
+/// none and below it once it is back, again at the top once the bar
+/// goes, and a bar on a second output at that output's position in the
+/// layout.
 #[test]
 fn layer_surfaces_are_placed_past_our_zones_in_layout_coordinates() {
     let Some((sway, mut mgr)) = start(
@@ -2651,6 +2653,18 @@ fn layer_surfaces_are_placed_past_our_zones_in_layout_coordinates() {
         origin_of(&mgr, BAR),
         mgr.state().monitors()
     );
+    // The live bar's zone drops to none (`height: 0`), and comes back:
+    // the panel, which gets no configure of its own, follows each time.
+    for (height, y) in [(0.0, 0), (36.0, 36)] {
+        mgr.state_mut().apply_surface_change(
+            BAR,
+            SurfaceChange::Updated {
+                spec: bar_spec("Top", height),
+                recreate: false,
+            },
+        );
+        wait_origin(&mut mgr, PANEL, vec![Some((1520, y))]);
+    }
     // The bar gone: the panel moves up to the top, as sway arranges it.
     mgr.state_mut()
         .apply_surface_change(BAR, SurfaceChange::Removed);

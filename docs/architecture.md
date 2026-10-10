@@ -2629,8 +2629,9 @@ and the connection):
     layer by layer from `overlay` down; other programs' zones are not
     known), a popup from its configure's position under its parent's
     window geometry. `SurfaceInfo::origin` reads it; adding, resizing or
-    destroying an exclusive layer surface places its output's others
-    again. The binary's host turns a press into the tray's click point
+    destroying an exclusive layer surface, or one whose zone drops to
+    none or that moves to another output, places the others on each
+    output it took from or takes from again (`Surface::zone_on`). The binary's host turns a press into the tray's click point
     with it (`strand_services::tray::set_click_point`: the pressed node's
     bottom-left corner in the layout). A tray action takes that point
     only when called by a handler of an input event

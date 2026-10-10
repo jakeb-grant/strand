@@ -510,6 +510,10 @@ struct Surface {
     alpha: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1>,
     /// (M4) Its buffer's top-left corner on its output (`origin.rs`).
     origin: Option<(i32, i32)>,
+    /// (M4) The monitor whose usable area its exclusive zone was last
+    /// taken from when it was placed (`origin.rs`): a zone that drops to
+    /// none, or a surface that moves, places the others there again.
+    zone_on: Option<MonitorId>,
     last_damage: Vec<Rect>,
     click_through: bool,
     /// The input region last sent: `None` the whole surface, `Some(None)`
