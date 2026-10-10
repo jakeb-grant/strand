@@ -273,14 +273,38 @@ pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
     } else {
         PathBuf::from(src)
     };
-    let meta = std::fs::metadata(&path).map_err(|_| ImageError::NotFound(src.into()))?;
-    if !meta.is_file() {
+    if !path.is_file() {
         return Err(ImageError::NotFound(src.into()));
+    }
+    read_capped(&path, max)
+}
+
+/// (m4-audit) A regular file's bytes, at most `max`: the length is checked
+/// on the open file and the read itself stops past `max`, so a procfs or
+/// sysfs file (a regular file whose size reads 0, `/proc/self/pagemap`
+/// hundreds of GiB long) or one growing after the stat is refused with
+/// [`ImageError::TooLarge`] instead of read to its end.
+fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>, ImageError> {
+    use std::io::Read as _;
+    let io = |e: std::io::Error| ImageError::Io(e.to_string());
+    // Refused before opening: a FIFO would block the open.
+    if !std::fs::metadata(path).map_err(io)?.is_file() {
+        return Err(ImageError::NotFound(path.display().to_string()));
+    }
+    let f = std::fs::File::open(path).map_err(io)?;
+    let meta = f.metadata().map_err(io)?;
+    if !meta.is_file() {
+        return Err(ImageError::NotFound(path.display().to_string()));
     }
     if meta.len() > max {
         return Err(ImageError::TooLarge);
     }
-    std::fs::read(&path).map_err(|e| ImageError::Io(e.to_string()))
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    f.take(max + 1).read_to_end(&mut bytes).map_err(io)?;
+    if bytes.len() as u64 > max {
+        return Err(ImageError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 /// The names an icon lookup tries ([`strand_icons::candidates`]: the
@@ -335,13 +359,7 @@ pub fn load_with(
             .file_stem()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.ends_with("-symbolic"));
-    let read = || -> Result<Vec<u8>, ImageError> {
-        let meta = std::fs::metadata(&path).map_err(|e| ImageError::Io(e.to_string()))?;
-        if meta.len() > MAX_FILE_BYTES {
-            return Err(ImageError::TooLarge);
-        }
-        std::fs::read(&path).map_err(|e| ImageError::Io(e.to_string()))
-    };
+    let read = || read_capped(&path, MAX_FILE_BYTES);
     // A file already playing is not read again.
     let mut data = None;
     let player = match players.get(key, || {
@@ -1502,6 +1520,49 @@ mod tests {
         assert_eq!(alpha(&outer("/dev/zero")), 0, "a device");
         let data = format!("data:image/svg+xml;base64,{}", base64(red.as_bytes()));
         assert_eq!(alpha(&outer(&data)), 255, "a data URL");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (m4-audit) An image, SVG or Lottie path (a notification's
+    /// `image-path` hint, an asset a Lottie names) to a procfs file is
+    /// refused, not read to its end: `/proc/self/pagemap` is a regular
+    /// file whose size reads 0 and whose content runs to hundreds of GiB.
+    /// A file at the limit is read; one past it, or growing past it after
+    /// the stat (a procfs file), is `TooLarge`.
+    #[test]
+    fn image_reads_stop_at_their_limit() {
+        let pagemap = Path::new("/proc/self/pagemap");
+        if pagemap.is_file() {
+            let r = read_local("/proc/self/pagemap", 1 << 20);
+            assert!(r.is_err(), "pagemap read {:?} bytes", r.map(|b| b.len()));
+            let key = ImageKey {
+                source: "/proc/self/pagemap".into(),
+                icon: false,
+                w: 16,
+                h: 16,
+                fit: Fit::Contain,
+                scale: 1,
+                frame: 0,
+            };
+            assert!(load(&key, &IconTheme::default()).is_err());
+        }
+        // A procfs file longer than the cap, though its size reads 0.
+        let maps = std::fs::read("/proc/self/maps").unwrap();
+        assert!(maps.len() > 16);
+        assert_eq!(
+            read_capped(Path::new("/proc/self/maps"), 16),
+            Err(ImageError::TooLarge)
+        );
+        let dir = std::env::temp_dir().join(format!("strand-img-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("f.bin");
+        std::fs::write(&f, [7u8; 16]).unwrap();
+        assert_eq!(read_capped(&f, 16).unwrap().len(), 16);
+        assert_eq!(
+            read_local(&f.display().to_string(), 15),
+            Err(ImageError::TooLarge)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
