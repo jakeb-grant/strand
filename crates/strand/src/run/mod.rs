@@ -509,8 +509,10 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
-    // `auth`'s unlocks reach the surface manager, which may then lock.
-    let mut guard = lock::Guard::wire(&handle, mgr.state_mut())?;
+    // `auth`'s unlocks reach the surface manager, which may then lock
+    // (not under the mock, whose host has no `auth`).
+    let mocked = crate::mock::requested().is_some();
+    let mut guard = lock::Guard::wire(&handle, mgr.state_mut(), mocked)?;
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);
     handle

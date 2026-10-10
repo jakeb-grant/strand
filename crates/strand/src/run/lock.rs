@@ -22,8 +22,9 @@
 //!   held. The fallback checks passwords with a `strand_auth::Client` of
 //!   its own on a thread of its own, and its token unlocks like `auth`'s.
 //!   Once shown it stays until the unlock.
-//! - **Restart**: while the compositor says the session is locked, a
-//!   marker (`$XDG_RUNTIME_DIR/strand-<display>.locked`) says so; a
+//! - **Restart**: while a lock is asked for or the compositor says the
+//!   session is locked, a marker
+//!   (`$XDG_RUNTIME_DIR/strand-<display>.locked`) says so; a
 //!   strand started while it is there locks at once with the fallback,
 //!   so a strand killed while locked (`kill -9`, an allocation failure)
 //!   and started again puts a password field back on the session the
@@ -777,9 +778,14 @@ impl Guard {
     /// `enable_session_lock` (never one without the other), then a lock
     /// with the fallback at once if a strand before this one was killed
     /// while the session was locked.
+    ///
+    /// Under `STRAND_MOCK` (`mocked`) the session lock stays off: the
+    /// mock host has no `auth` store, so `auth.submit` would never answer
+    /// and a lock it took could not be released or fall back (m4-audit).
     pub(super) fn wire(
         handle: &calloop::LoopHandle<'static, State<Host>>,
         state: &mut State<Host>,
+        mocked: bool,
     ) -> Result<Guard, DemoError> {
         let (tx, rx) = calloop::channel::channel::<LockMsg>();
         handle
@@ -821,17 +827,23 @@ impl Guard {
         };
         faults::auth_config(&mut config);
         strand_services::auth::configure(Some(config));
-        // Only now: a token reaches `unlock`.
-        state.enable_session_lock();
         let mut guard = Guard {
             since: None,
             seq: 0,
             waiting: None,
             next_beat: None,
             stopping: false,
-            marker: marker_path(),
+            marker: if mocked { None } else { marker_path() },
             marked: false,
         };
+        if mocked {
+            log::warn!(
+                "lock: STRAND_MOCK has no `auth` service, so this run never locks the session"
+            );
+            return Ok(guard);
+        }
+        // Only now: a token reaches `unlock`.
+        state.enable_session_lock();
         if let Some(m) = &guard.marker
             && m.exists()
         {
@@ -983,12 +995,13 @@ impl Guard {
         let Some(m) = &self.marker else {
             return;
         };
-        match marker_step(self.marked, state.is_locked(), state.lock_active()) {
+        match marker_step(self.marked, state.lock_active()) {
             Some(Marker::Write) => {
                 if let Err(e) = std::fs::write(m, b"locked\n") {
                     log::warn!("lock: {}: {e}", m.display());
                 }
                 self.marked = true;
+                faults::marked(state.is_locked());
             }
             Some(Marker::Remove) => {
                 let _ = std::fs::remove_file(m);
@@ -1058,14 +1071,18 @@ enum Marker {
     Remove,
 }
 
-/// The restart marker is written once the compositor says `locked`, and
-/// removed once no lock is asked for or held: after an unlock, and also
-/// after a lock the compositor refused (a restart's lock again, or the
-/// one asked for after `finished`), since a strand killed with no lock
-/// leaves nothing locked to come back to. A marker kept then would lock
-/// the session on every later start.
-fn marker_step(marked: bool, locked: bool, active: bool) -> Option<Marker> {
-    if locked && !marked {
+/// The restart marker is written as soon as a lock is asked for, before
+/// the compositor says `locked` (m4-audit): a compositor may lock the
+/// session at the request and keep it locked when the client dies, and
+/// a strand that dies before `locked` (on its first frame, say) must
+/// come back to that lock with a password field. It is removed once no
+/// lock is asked for or held: after an unlock, and also after a lock the
+/// compositor refused (a restart's lock again, or the one asked for after
+/// `finished`), since a strand killed with no lock leaves nothing locked
+/// to come back to. A marker kept then would lock the session on every
+/// later start.
+fn marker_step(marked: bool, active: bool) -> Option<Marker> {
+    if active && !marked {
         Some(Marker::Write)
     } else if marked && !active {
         Some(Marker::Remove)
@@ -1139,6 +1156,20 @@ pub(crate) mod faults {
     /// The lock's own frame never comes (`lock_no_frame`).
     pub(crate) fn no_first_frame() -> bool {
         on("lock_no_frame")
+    }
+
+    /// The restart marker was just written: `abort_before_locked` aborts
+    /// the process there if the compositor has not said `locked` yet (a
+    /// strand dying while its lock is pending, as on its first frame).
+    pub(crate) fn marked(locked: bool) {
+        if on("abort_before_locked") {
+            if locked {
+                log::warn!("STRAND_FAULT abort_before_locked missed: already locked");
+            } else {
+                log::warn!("STRAND_FAULT abort_before_locked: the lock is pending");
+                std::process::abort();
+            }
+        }
     }
 
     /// The lock leaves render's tree once it drew while locked
@@ -1228,6 +1259,8 @@ pub(crate) mod faults {
     pub(crate) fn no_first_frame() -> bool {
         false
     }
+    #[inline(always)]
+    pub(crate) fn marked(_: bool) {}
     #[inline(always)]
     pub(crate) fn unmount_lock(_: &mut super::State<super::Host>) {}
     #[inline(always)]
@@ -1442,21 +1475,20 @@ mod tests {
         assert_eq!(lock_color(&tree, NodeId::new(9, 0)), Color::BLACK);
     }
 
-    /// The marker follows the lock: written once locked, kept while a
-    /// lock is asked for or held (a restart's lock not granted yet, the
-    /// lock asked for again after `finished`), removed once there is
-    /// none, whether the last one was unlocked or refused.
+    /// The marker follows the lock: written once a lock is asked for
+    /// (before `locked`: a strand dying then comes back to the lock;
+    /// m4-audit), kept while a lock is asked for or held (a restart's
+    /// lock not granted yet, the lock asked for again after `finished`),
+    /// removed once there is none, whether the last one was unlocked or
+    /// refused.
     #[test]
     fn the_restart_marker_goes_once_no_lock_is_asked_for_or_held() {
-        // (marked, locked, active)
-        assert_eq!(marker_step(false, true, true), Some(Marker::Write));
-        assert_eq!(marker_step(true, true, true), None);
-        assert_eq!(marker_step(false, false, true), None, "asked for");
-        // A restart's lock pending, or asked for again after `finished`.
-        assert_eq!(marker_step(true, false, true), None);
+        // (marked, active)
+        assert_eq!(marker_step(false, true), Some(Marker::Write), "asked for");
+        assert_eq!(marker_step(true, true), None, "pending or locked");
         // Unlocked, or that lock refused: gone.
-        assert_eq!(marker_step(true, false, false), Some(Marker::Remove));
-        assert_eq!(marker_step(false, false, false), None);
+        assert_eq!(marker_step(true, false), Some(Marker::Remove));
+        assert_eq!(marker_step(false, false), None);
     }
 
     #[test]

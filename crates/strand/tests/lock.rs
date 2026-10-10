@@ -30,12 +30,12 @@
 //! started again, by the test or by a supervisor (a restart loop with
 //! the documented systemd unit's policy, read from architecture.md),
 //! twice in a row and then in a crash loop past systemd's default start
-//! limit; the compositor ends a lock it granted (`finished` after
+//! limit, or aborted with its lock still pending (before `locked`); the compositor ends a lock it granted (`finished` after
 //! `locked`, played by a Wayland proxy, tests/lock/proxy.rs: sway 1.9
 //! never sends it); the compositor refusing the lock (another locker
 //! holds it: not a fault, nothing shows, the run goes on); an output
 //! plugged in while locked; a config write of `false` while locked
-//! (only a password unlocks).
+//! (only a password unlocks). A run under `STRAND_MOCK` never locks.
 //!
 //! No assertion depends on how long anything took: each wait is for
 //! what grim shows, bounded only to fail instead of hanging.
@@ -1769,6 +1769,73 @@ fn killed_while_locked_locks_again_on_restart() {
 #[test]
 fn aborted_while_locked_locks_again_on_restart() {
     restart_after("sigabrt", libc::SIGABRT);
+}
+
+/// (m4-audit) strand dying after it asked for the lock but before the
+/// compositor said `locked` (`abort_before_locked`: an abort as the
+/// marker is written with the lock pending, as a crash on the lock's
+/// first frame would) leaves the marker, so strand started again locks
+/// at once with the fallback; a compositor that locked the session at
+/// the request is not left with an abandoned lock and no field.
+#[test]
+fn aborted_before_locked_locks_again_on_restart() {
+    let test = "abort_before_locked";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "abort_before_locked");
+    let marker = vm.strand.marker(&vm.sway.display.clone());
+    assert!(!marker.exists());
+    // The process may abort before the CLI hears back.
+    let _ = vm.strand.try_cli(&["set", "lock.locked", "true"]);
+    vm.strand.wait_exit("aborted with the lock pending");
+    vm.log_has("STRAND_FAULT abort_before_locked: the lock is pending");
+    assert!(marker.exists(), "no marker for a pending lock");
+    for (k, v) in vm.strand.env.iter_mut() {
+        if k == "STRAND_FAULT" {
+            *v = "".into();
+        }
+    }
+    vm.strand.run();
+    vm.fallback();
+    vm.log_has("locking again");
+    vm.fallback_passwords();
+    vm.until("HEADLESS-1", "the marker removed", |_| !marker.exists());
+}
+
+/// (m4-audit) Under `STRAND_MOCK` the mock host has no `auth` store, so
+/// a lock could never be unlocked or fall back: the run takes no session
+/// lock at all. The config's lock opened stays a state change; the
+/// desktop keeps showing and no marker is written.
+#[test]
+fn a_mocked_run_never_locks_the_session() {
+    let test = "mocked";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let sway = Sway::start(test);
+    let display = sway.display.clone();
+    let desktop = Desktop::start(&sway);
+    let keys = Keyboard::new(&sway);
+    let mut strand = Strand::prepare(&sway, &display, "", CONFIG);
+    strand.env.push(("STRAND_MOCK".into(), "desktop".into()));
+    strand.run();
+    let mut vm = Vm {
+        sway,
+        _desktop: desktop,
+        keys,
+        strand,
+    };
+    vm.until("HEADLESS-1", "the desktop", Shot::desktop);
+    vm.strand
+        .until_log("STRAND_MOCK has no `auth` service, so this run never locks the session");
+    let marker = vm.strand.marker(&display);
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    std::thread::sleep(Duration::from_millis(1000));
+    let shot = vm.sway.shot("HEADLESS-1");
+    assert!(shot.desktop(), "a mocked run locked: {}", shot.describe());
+    assert!(!marker.exists(), "a mocked run wrote the marker");
+    assert!(vm.strand.running(), "the mocked run goes on");
 }
 
 /// (M4) The supervisor stand-in behaves as systemd does: under a unit
