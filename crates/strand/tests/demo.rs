@@ -1596,17 +1596,25 @@ fn the_design_launcher_scrolls_2000_apps() {
     // the next ones in order, none missing, doubled or out of place, as
     // logic moves the window under them; and the first row shown
     // (render's `top=`) advances by five each time.
-    // Held still to the pixel: no frame painted between two shots 150 ms
-    // apart and the list's pixels alike (the structural `settled` cannot
-    // see a spring's last fraction of a pixel, which changes every
-    // glyph's antialiasing).
-    let still = || {
+    // Held still to the pixel: the last frame painted shows row `want`
+    // first (the scroll's frame, not one from before it) with no text
+    // layout or image decode left on a worker (`pending=0`: an arrival
+    // after the quiet window would change the pixels), no frame painted
+    // between two shots 150 ms apart, and the list's pixels alike (the
+    // structural `settled` cannot see a spring's last fraction of a
+    // pixel, which changes every glyph's antialiasing).
+    let still = |want: Option<u64>| {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut last: Option<(Shot, usize)> = None;
         loop {
-            let frames = damage_lines(&log).len();
+            let lines = damage_lines(&log);
+            let frames = lines.len();
+            let done = lines.last().is_some_and(|l| {
+                field(l, "pending") == 0 && want.is_none_or(|t| field(l, "top") == t)
+            });
             let s = Shot::take(&sway, "HEADLESS-1");
             if let Some((l, n)) = &last
+                && done
                 && *n == frames
                 && list
                     .clone()
@@ -1614,7 +1622,11 @@ fn the_design_launcher_scrolls_2000_apps() {
             {
                 return s;
             }
-            assert!(Instant::now() < deadline, "the list never held still");
+            assert!(
+                Instant::now() < deadline,
+                "the list never held still at row {want:?}: {:?}",
+                damage_lines(&log).last()
+            );
             last = Some((s, frames));
             std::thread::sleep(Duration::from_millis(150));
         }
@@ -1622,12 +1634,12 @@ fn the_design_launcher_scrolls_2000_apps() {
     let off = (x as u32, (top_px / 2) as u32);
     pointer.motion(off.0, off.1, w, h);
     drop(shot);
-    let mut prev = still();
+    let mut prev = still(None);
     let mut prev_top = field(damage_lines(&log).last().expect("frames"), "top");
     for burst in 0..16 {
         pointer.wheel(16, over.0, over.1, w, h);
         pointer.motion(off.0, off.1, w, h);
-        let now = still();
+        let now = still(Some(prev_top + 5));
         let (mut same, mut total) = (0usize, 0usize);
         for y in list.start..list.end - 240 {
             for xx in xs.clone() {
@@ -2049,7 +2061,7 @@ fn strand_run_keeps_a_replugged_monitors_bar() {
         .env("XDG_CACHE_HOME", sway.dir.join("cache"))
         .env("XDG_STATE_HOME", &state)
         .env("WAYLAND_DISPLAY", &sway.display)
-        .env("STRAND_LOG", "damage,info")
+        .env("STRAND_LOG", "damage,debug")
         .stdin(Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
@@ -2096,8 +2108,28 @@ fn strand_run_keeps_a_replugged_monitors_bar() {
     // Click HEADLESS-2's bar: the layout is 4480×1440, HEADLESS-2 starts
     // at x = 2560.
     let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
-    // The seat gains a pointer: give strand a moment to bind it.
-    std::thread::sleep(Duration::from_millis(300));
+    // The pointer over HEADLESS-2's bar until strand hears it enter
+    // `surface`: the seat gains a pointer strand binds late, and a bar's
+    // damage line is printed before its commit maps it, so a click sent
+    // at once can find no surface under it. Nudged a pixel each try so
+    // every motion is a new one.
+    let over = |pointer: &mut pointer::Pointer, strand: &mut Proc, surface: &str| {
+        let entered = format!("pointer entered surface {surface}");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut nudge = 0;
+        while !text().lines().any(|l| l.ends_with(&entered)) {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                text()
+            );
+            assert!(Instant::now() < deadline, "never {entered}: {}", text());
+            pointer.motion(2560 + 100 + nudge % 2, 10, 4480, 1440);
+            nudge += 1;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    over(&mut pointer, &mut strand, &first[0]);
     pointer.click(2560 + 100, 10, 4480, 1440);
     wait(&mut strand, "the click", &|l| {
         damage_after(l, 0, "buffer=1920x40 ")
@@ -2125,6 +2157,8 @@ fn strand_run_keeps_a_replugged_monitors_bar() {
     // Another click (n = 2, total = 2), then SIGTERM straight after it
     // is drawn: the run ends cleanly and `total` reached the disk.
     let mark = damage_count(&text());
+    let back = attached(&text())[1].clone();
+    over(&mut pointer, &mut strand, &back);
     pointer.click(2560 + 100, 10, 4480, 1440);
     wait(&mut strand, "the second click", &|l| {
         l.lines()

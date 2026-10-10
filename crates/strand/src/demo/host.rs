@@ -555,10 +555,12 @@ impl Host {
             // (always 0; the M4 exit's per-frame check); `stalls=`:
             // frames so far that held a list's view at its mounted rows
             // while the scroll went on; `top=`: the first row (global
-            // index) a list showed in the last such frame.
+            // index) a list showed in the last such frame; `pending=1`:
+            // text or images were still on their workers (the arrival
+            // paints another frame).
             let lists = self.renderer.list_frames();
             eprintln!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={}",
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={}",
                 surface.0,
                 size.w,
                 size.h,
@@ -569,6 +571,7 @@ impl Host {
                 lists.gaps,
                 lists.stalls,
                 lists.top_row,
+                u8::from(self.renderer.work_pending()),
             );
         }
     }
@@ -791,6 +794,10 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
+        // Tests wait on this line before clicking a surface just mapped.
+        if let InputEvent::PointerEnter { surface, .. } = event {
+            log::debug!("pointer entered surface {}", surface.0);
+        }
         // The fallback lock takes its surface's input (`run/lock.rs`).
         if self.lock.input(event) {
             if let Some(p) = &self.wake {

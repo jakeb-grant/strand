@@ -480,6 +480,13 @@ impl Renderer {
         }
     }
 
+    /// Text layouts or image decodes are on their workers: a frame
+    /// painted now is not the last one its content asks for (the
+    /// arrival repaints).
+    pub fn work_pending(&self) -> bool {
+        self.text_pending() || self.extras.images.pending() > 0
+    }
+
     /// Bytes of decoded images held (at most
     /// [`crate::image::IMAGE_CACHE_BYTES`] beyond what one frame draws).
     pub fn image_bytes(&self) -> usize {
