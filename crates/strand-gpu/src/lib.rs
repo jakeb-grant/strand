@@ -403,12 +403,36 @@ impl Gpu {
     /// [`GpuReply::Unavailable`]. `waker` is called after every reply.
     /// A thread that cannot be spawned answers `Unavailable` at once.
     pub fn spawn(waker: Box<dyn Fn() + Send>, opts: GpuOptions) -> Gpu {
+        Self::spawn_with(waker, opts, |b, f| b.spawn(f))
+    }
+
+    /// [`Gpu::spawn`] with the thread started by `start` (tests make it
+    /// fail). The waker waits in a slot the thread takes it from, so a
+    /// thread that never started leaves it here to wake the loop for
+    /// the `Unavailable` and `Exited` replies (m4-audit).
+    fn spawn_with(
+        waker: Box<dyn Fn() + Send>,
+        opts: GpuOptions,
+        start: impl FnOnce(
+            std::thread::Builder,
+            Box<dyn FnOnce() + Send>,
+        ) -> std::io::Result<JoinHandle<()>>,
+    ) -> Gpu {
         let (tx, req_rx) = mpsc::channel();
         let (reply_tx, rx) = mpsc::channel();
-        let thread = std::thread::Builder::new().name(THREAD_NAME.into()).spawn({
-            let reply_tx = reply_tx.clone();
-            move || thread::run(req_rx, reply_tx, waker, opts)
-        });
+        let slot = Arc::new(std::sync::Mutex::new(Some(waker)));
+        let thread = start(
+            std::thread::Builder::new().name(THREAD_NAME.into()),
+            Box::new({
+                let (reply_tx, slot) = (reply_tx.clone(), slot.clone());
+                move || {
+                    let waker = slot.lock().ok().and_then(|mut w| w.take());
+                    if let Some(waker) = waker {
+                        thread::run(req_rx, reply_tx, waker, opts);
+                    }
+                }
+            }),
+        );
         let thread = match thread {
             Ok(t) => Some(t),
             Err(e) => {
@@ -417,6 +441,9 @@ impl Gpu {
                     format!("cannot start the GPU thread: {e}"),
                 )));
                 let _ = reply_tx.send(GpuReply::Exited);
+                if let Some(waker) = slot.lock().ok().and_then(|mut w| w.take()) {
+                    waker();
+                }
                 None
             }
         };
@@ -479,6 +506,30 @@ impl Drop for Gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (m4-audit) A thread that cannot be spawned answers `Unavailable`
+    /// and `Exited` and wakes the loop to read them, as every reply does.
+    #[test]
+    fn a_thread_that_cannot_start_wakes_the_loop_for_its_replies() {
+        let (ping, pings) = mpsc::channel();
+        let mut gpu = Gpu::spawn_with(
+            Box::new(move || {
+                let _ = ping.send(());
+            }),
+            GpuOptions::default(),
+            |_, _| Err(std::io::Error::other("no threads left")),
+        );
+        assert_eq!(pings.try_recv(), Ok(()), "the loop is woken");
+        match gpu.try_recv() {
+            Some(GpuReply::Unavailable(e)) => {
+                assert_eq!(e.kind, GpuErrorKind::Device);
+                assert!(e.message.contains("no threads left"), "{e}");
+            }
+            other => panic!("not Unavailable: {other:?}"),
+        }
+        assert!(matches!(gpu.try_recv(), Some(GpuReply::Exited)));
+        assert!(gpu.try_recv().is_none());
+    }
 
     #[test]
     fn readback_rows_copy_clipped() {
