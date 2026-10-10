@@ -412,6 +412,13 @@ impl Renderer {
         (o.bytes(), o.builds(), o.len())
     }
 
+    /// (M4) Notices for CPU fallbacks drawn in place of GPU effects (a
+    /// still aurora, particles capped at 1,000), each once a run: the host
+    /// logs them and sends them to `strand watch`.
+    pub fn take_effect_notices(&mut self) -> Vec<String> {
+        self.extras.fallbacks.take()
+    }
+
     /// (M4) Pixmaps the raster nodes drew so far, and their bytes kept.
     pub fn raster_nodes(&self) -> (u64, usize) {
         (self.extras.rasters.builds(), self.extras.rasters.bytes())

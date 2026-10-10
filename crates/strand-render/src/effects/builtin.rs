@@ -320,24 +320,24 @@ fn ripple(c: &mut Canvas, color: Color, s: f32, t: f32) {
 }
 
 /// Aurora's CPU fallback: three curtains of light in the colour and its
-/// neighbours on the colour wheel, waving slowly across the box.
+/// neighbours on the colour wheel across the box. The flattener draws it
+/// still, at `t = 0` (`super::raster`); `t` moves the curtains for a
+/// caller that animates it.
 fn aurora(c: &mut Canvas, color: Color, t: f32) {
     let hues = [color, rotate_hue(color, 50.0), rotate_hue(color, -50.0)];
     let (w, h) = (c.w.max(1) as f32, c.h.max(1) as f32);
     for x in 0..c.w {
         let nx = x as f32 / w;
         // Each curtain's centre line and brightness at this column.
-        let curtains: Vec<(f32, f32)> = (0..3)
-            .map(|j| {
-                let j = j as f32;
-                let centre = 0.3
-                    + 0.2 * j
-                    + 0.12 * (TAU * (nx * (1.0 + 0.5 * j) + t * 0.05 * (j + 1.0))).sin()
-                    + 0.05 * (TAU * (nx * 3.1 - t * 0.08)).sin();
-                let light = 0.55 + 0.45 * (TAU * (nx * 2.0 + t * 0.1 * (j + 1.0)) + j).sin();
-                (centre, light)
-            })
-            .collect();
+        let curtains: [(f32, f32); 3] = std::array::from_fn(|j| {
+            let j = j as f32;
+            let centre = 0.3
+                + 0.2 * j
+                + 0.12 * (TAU * (nx * (1.0 + 0.5 * j) + t * 0.05 * (j + 1.0))).sin()
+                + 0.05 * (TAU * (nx * 3.1 - t * 0.08)).sin();
+            let light = 0.55 + 0.45 * (TAU * (nx * 2.0 + t * 0.1 * (j + 1.0)) + j).sin();
+            (centre, light)
+        });
         for y in 0..c.h {
             let ny = y as f32 / h;
             for (j, (centre, light)) in curtains.iter().enumerate() {

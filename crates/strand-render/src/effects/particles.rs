@@ -39,6 +39,12 @@ pub(crate) struct Particles {
 }
 
 impl Particles {
+    /// True if `rate · life` asks for more than [`MAX_ALIVE`] alive: the
+    /// CPU draws fewer, and says so ([`super::raster::Fallbacks`]).
+    pub(crate) fn capped(&self) -> bool {
+        self.rate.clamp(0.0, 10_000.0) * self.life.max(0.0) > MAX_ALIVE
+    }
+
     /// The rate actually drawn: at most [`MAX_ALIVE`] alive at once.
     pub(crate) fn rate(&self) -> f32 {
         let rate = self.rate.clamp(0.0, 10_000.0);

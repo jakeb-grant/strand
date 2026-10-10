@@ -651,15 +651,18 @@ impl<'a> Flattener<'a> {
             _ if !has_area => None,
             // (M4) A merge's goo is drawn after its children.
             None if node.kind == NodeKind::Merge => None,
-            Some(b) => self.extras.rasters.pixmap_from(
-                node.id,
-                b,
-                b.config(),
-                pw,
-                ph,
-                self.scale.as_f32(),
-                b.time(time_now),
-            ),
+            Some(b) => {
+                self.extras.fallbacks.note(b);
+                self.extras.rasters.pixmap_from(
+                    node.id,
+                    b,
+                    b.config(),
+                    pw,
+                    ph,
+                    self.scale.as_f32(),
+                    b.time(time_now),
+                )
+            }
             None => {
                 self.extras.rasters.unused(node.id);
                 self.extras

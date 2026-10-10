@@ -405,6 +405,13 @@ impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
         self.note_blur_fallback(surface);
+        // (M4) CPU fallbacks for GPU effects, once a run each.
+        for text in self.renderer.take_effect_notices() {
+            log::warn!("{text}");
+            if let Some(f) = &self.logic {
+                f.send(ToLogic::Notice(text));
+            }
+        }
         self.forward_facts();
         // Virtualised lists scrolled past their mounted rows ask logic
         // for the rows they show.
@@ -919,6 +926,68 @@ mod tests {
         let _ = pings();
         host.input(&wheel);
         assert_eq!(pings(), 1);
+    }
+
+    /// (M4) A still aurora and capped particles (CPU fallbacks for GPU
+    /// effects) are said once each, as a `strand watch` notice, the first
+    /// time a frame draws them.
+    #[test]
+    fn effect_fallbacks_are_said_once_as_notices() {
+        use std::time::Duration;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (f, mut el) = setup();
+        let mut host = Host::new(renderer, false);
+        host.logic = Some(f);
+        let (bar, aurora, field) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+        let num = strand_scene::PropValue::Number;
+        let mut d = SceneDiff::new();
+        d.create(bar, strand_scene::NodeKind::Bar, None, 0)
+            .create(aurora, strand_scene::NodeKind::Effect, Some(bar), 0)
+            .set(
+                aurora,
+                Prop::Style,
+                strand_scene::PropValue::Keyword("aurora".into()),
+            )
+            .set(aurora, Prop::Size, num(20.0))
+            .create(field, strand_scene::NodeKind::Particles, Some(bar), 1)
+            .set(field, Prop::Rate, num(5000.0))
+            .set(
+                field,
+                Prop::Life,
+                strand_scene::PropValue::Duration(Duration::from_secs(1)),
+            )
+            .set(field, Prop::Size, num(20.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, bar, None);
+        host.surface_configured(s, Size::new(100, 20), Scale::ONE);
+        let mut px = vec![0u8; 100 * 20 * 4];
+        let mut paint = |host: &mut Host, ms: u64| {
+            let t = PaintTarget::new(&mut px, Size::new(100, 20), 400, Scale::ONE, 0).unwrap();
+            let mut t = t.at(Duration::from_millis(ms));
+            host.paint(s, &mut t);
+        };
+        paint(&mut host, 1000);
+        let notices: Vec<String> = drain(&mut el)
+            .into_iter()
+            .filter_map(|m| match m {
+                ToLogic::Notice(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert!(notices[0].contains("aurora") && notices[1].contains("1,000"));
+        paint(&mut host, 1016);
+        assert!(
+            !drain(&mut el)
+                .iter()
+                .any(|m| matches!(m, ToLogic::Notice(_))),
+            "once"
+        );
     }
 
     /// A surface sized to its content resizes whenever its text changes

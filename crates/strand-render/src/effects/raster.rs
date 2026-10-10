@@ -41,6 +41,8 @@ pub(crate) fn rate(node: &Node) -> Option<Rate> {
             };
             match kind {
                 Some(Kind::Shimmer) => return Some(Rate::Every(crate::clock::SHIMMER)),
+                // Aurora's CPU fallback is one still frame: no clock.
+                Some(Kind::Aurora) => {}
                 Some(_) => return Some(Rate::Refresh),
                 None => {}
             }
@@ -130,15 +132,90 @@ impl Built {
 
     /// `time` as the source sees it: grain's tick (so a node whose props
     /// also read time, and so runs at refresh, keeps its 12 fps grain and
-    /// its pixmap between ticks).
+    /// its pixmap between ticks); aurora's `t = 0` (its CPU fallback is
+    /// still, so its pixmap is drawn once per size).
     pub(crate) fn time(&self, time: TimeContext) -> TimeContext {
         match self {
             Built::Grain(_) => TimeContext {
                 t: Grain::tick(time.t) as f32,
                 ..time
             },
+            Built::Effect(Builtin {
+                kind: Kind::Aurora, ..
+            }) => TimeContext { t: 0.0, ..time },
             Built::Effect(_) | Built::Particles(_) => time,
         }
+    }
+
+    /// What it draws in place of the GPU's version, if anything.
+    fn fallback(&self) -> Option<Fallback> {
+        match self {
+            Built::Effect(Builtin {
+                kind: Kind::Aurora, ..
+            }) => Some(Fallback::Aurora),
+            Built::Particles(p) if p.capped() => Some(Fallback::Particles),
+            _ => None,
+        }
+    }
+}
+
+/// An effect the CPU draws in place of the GPU's version (m4-plan: "Before
+/// the GPU path, particles cap at 1,000 and aurora is static, with a
+/// notice").
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Fallback {
+    Aurora,
+    Particles,
+}
+
+impl Fallback {
+    const ALL: [Fallback; 2] = [Fallback::Aurora, Fallback::Particles];
+
+    fn bit(self) -> u8 {
+        match self {
+            Fallback::Aurora => 1,
+            Fallback::Particles => 2,
+        }
+    }
+
+    fn notice(self) -> &'static str {
+        match self {
+            Fallback::Aurora => {
+                "effect aurora: drawn as a still CPU frame (its animated version needs the GPU)"
+            }
+            Fallback::Particles => {
+                "particles: at most 1,000 alive on the CPU (rate × life above that needs the GPU)"
+            }
+        }
+    }
+}
+
+/// (M4) The CPU fallbacks drawn so far, each said once a run: the
+/// flattener notes every source it draws, and the host takes the notices
+/// to log and send to `strand watch` (`Renderer::take_effect_notices`).
+#[derive(Debug, Default)]
+pub struct Fallbacks {
+    drawn: std::cell::Cell<u8>,
+    said: u8,
+}
+
+impl Fallbacks {
+    /// `built` is drawn this frame.
+    pub(crate) fn note(&self, built: &Built) {
+        if let Some(f) = built.fallback() {
+            self.drawn.set(self.drawn.get() | f.bit());
+        }
+    }
+
+    /// The notices of fallbacks drawn and not said yet.
+    pub(crate) fn take(&mut self) -> Vec<String> {
+        let new = self.drawn.get() & !self.said;
+        self.said |= new;
+        Fallback::ALL
+            .into_iter()
+            .filter(|f| new & f.bit() != 0)
+            .map(|f| f.notice().to_string())
+            .collect()
     }
 }
 

@@ -971,6 +971,55 @@ fn builtin_effects_and_particles_draw_at_fixed_times() {
     assert_matches_ref("effects_generative_2x", &buf, 2);
 }
 
+/// m4-plan: "Before the GPU path, particles cap at 1,000 and aurora is
+/// static, with a notice." Aurora alone runs no clock and draws the same
+/// still frame at any time; the renderer says once that aurora is still
+/// and, when `rate × life` passes 1,000, that particles are capped.
+#[test]
+fn aurora_is_still_and_cpu_fallbacks_are_noticed_once() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(0.0, 0.0, 72.0, 48.0);
+    p.extend([(Prop::Place, kw("absolute")), (Prop::Style, kw("aurora"))]);
+    b.node(NodeKind::Effect, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(72, 48, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    let first = buf.pixels.clone();
+    assert!(first.iter().any(|&p| p != first[0]), "the curtains drawn");
+    assert!(!r.wants_frame(S) && r.next_wake().is_none(), "no clock");
+    let notices = r.take_effect_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].contains("aurora"), "{notices:?}");
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(3000));
+    assert!(buf.pixels == first, "still");
+    assert!(r.take_effect_notices().is_empty(), "said once");
+
+    // Particles: capped above 1,000 alive, and said so; not below.
+    for (rate, said) in [(20.0, false), (2000.0, true)] {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![]);
+        let mut p = at_xy(0.0, 0.0, 72.0, 48.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Rate, num(rate)),
+            (Prop::Life, PropValue::Duration(Duration::from_secs(1))),
+        ]);
+        b.node(NodeKind::Particles, Some(root), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(72, 48, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let notices = r.take_effect_notices();
+        assert_eq!(!notices.is_empty(), said, "rate {rate}: {notices:?}");
+        assert!(notices.iter().all(|n| n.contains("1,000")));
+    }
+}
+
 /// design.md: "`reduced_motion` turns off loops, time signals and
 /// effects": every built-in effect and the particles hold their first
 /// frame, and no clock runs.
