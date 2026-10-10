@@ -32,8 +32,7 @@ compositor-animated poses, tray menus, and the lock screen on
 `ext-session-lock` with a forked PAM helper (`strand-auth`) that fails
 closed, tested in a local QEMU VM with injected faults. Its three exits
 are met; one box, the bundled noise field, waits on the owner, with
-the other owner items handoff.md lists. M4 is on the integration
-branch `laptop/integration-m4-w3` until the owner merges it.
+the other owner items handoff.md lists. M4 is merged to `main`.
 M3's exit gates are met (see
 [`docs/m3-report.md`](docs/m3-report.md)): every builtin service is
 real (`auth` since M4). The portal, cpu, memory, battery
@@ -189,9 +188,9 @@ one, write the `strand` file with `pam_unix` alone
 If strand dies while the session is locked, the compositor keeps it
 locked and a restarted strand shows the password field again, so run
 it under a supervisor that restarts it. docs/architecture.md
+("Threads", the lock's entry) has the systemd user unit. Its
 `ExecStart` is `%h/.cargo/bin/strand run`, for the install above;
 change it to where strand is if it is installed elsewhere. Its
-("Threads", the lock's entry) has the systemd user unit. Its
 `StartLimitIntervalSec=0` matters: systemd's default start limit
 would otherwise stop restarting a strand that keeps dying and leave
 the lock with no password field.

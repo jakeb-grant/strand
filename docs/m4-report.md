@@ -254,7 +254,8 @@ Left to their crates' owners:
   `strand` PAM file meanwhile.
 
 Closing steps: merging `laptop/integration-m4-w3` to `main` and deleting
-the merged wave branches.
+the merged wave branches. (Done: the owner merged it at `3dc3f71`, and
+the merged branches are deleted.)
 
 ## CI tiers
 

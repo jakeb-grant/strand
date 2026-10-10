@@ -13,13 +13,14 @@ below.
   bundled noise field). M4's three exits are ticked in features.md:
   smooth 2,000-row scrolling, GPU released when idle, and lock fails
   closed under faults (docs/m4-report.md, "Result").
-- `main` is at `f4899c0` (M4 waves 0–2). Wave 3 (effects-finish,
-  gpu-effects, interaction-finish), the m4 audit's three rounds of
-  fixes and the closing integrator's fix are on
-  `laptop/integration-m4-w3`, which has not reached `main` yet. Its
+- `main` holds all of M4: the owner merged `laptop/integration-m4-w3`
+  (M4 waves 0–3, the m4 audit's three rounds of fixes and the closing
+  integrator's fix) at `3dc3f71` and deleted the merged branches. Its
   measured head is `e765276` (docs/m4-report.md); the commits after it
   change docs, two tests' harnesses and the GPU thread's answer to a
-  request that panics (decisions.md m4-integration-w3, closing).
+  request that panics (decisions.md m4-integration-w3, closing). The
+  fourth m4 audit round's fixes are on `laptop/m4-audit` (decisions.md
+  m4-audit).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
   M5 0/9 (boxes and exit criteria, counted 2026-10-10). The open M1
   box is the tree-sitter grammar, which M5 owns.
@@ -37,10 +38,9 @@ below.
   on lavapipe (`run.sh`, CI) and advisorily on the laptop's GPU
   (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
   (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
-- Remote branches: `origin/main`, `origin/laptop/integration-m4-w3`, and
-  the wave-3 branches it merged (`laptop/m4-effects-finish`,
-  `laptop/m4-gpu-effects`, `laptop/m4-interaction-finish`), to be
-  deleted once the integration branch reaches `main`.
+- Remote branches: `origin/main` and `origin/laptop/m4-audit` (the
+  fourth audit round, until it is merged). The integration branch and
+  the wave-3 branches it merged are deleted.
 
 ## Open items for the owner
 
@@ -290,7 +290,9 @@ M4's, for the merge of `laptop/integration-m4-w3` (m4-plan.md's
   then GitHub CI green on that head. The closing integrator runs these
   after the last docs commit, so their results are in its hand-back,
   not here.
-- [ ] Merge `laptop/integration-m4-w3` to `main` (the owner's step), then
-  delete the merged wave branches and the integration branch.
+- [x] Merge `laptop/integration-m4-w3` to `main` (the owner's step), then
+  delete the merged wave branches and the integration branch: `main` is
+  at its head `3dc3f71`, and `origin` has only `main` (checked
+  2026-10-10 with `git ls-remote --heads origin`).
 - [ ] Delete worktree `target/` directories (each agent at its task's
   end; the cargo registry stays in its volumes).
