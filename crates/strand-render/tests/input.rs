@@ -1080,6 +1080,118 @@ fn other_programs_drops_reach_the_target_that_takes_drop() {
     assert!(g.drain().is_empty());
 }
 
+/// (M4) A dock: a 240×60 panel holding a `row` whose `on drop` takes
+/// `Pin`, of four 60 px `drag: Pin` items whose own `on drop` takes
+/// other programs' `Drop`s, each a `col` holding an icon (20 px) and a
+/// label (20 px). Painted once, so hits and boxes are known.
+fn dock_scene() -> (Renderer, NodeId, NodeId, Vec<NodeId>) {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, dock) = (id(0), id(1));
+    let items: Vec<NodeId> = (0..4).map(|i| id(10 + i)).collect();
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(240.0))
+        .set(panel, Prop::Height, PropValue::Number(60.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(dock, NodeKind::Row, Some(panel), 0)
+        .set(dock, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+    for (i, item) in items.iter().enumerate() {
+        d.create(*item, NodeKind::Col, Some(dock), i as u32)
+            .set(*item, Prop::Width, PropValue::Number(60.0))
+            .set(*item, Prop::Height, PropValue::Number(60.0))
+            .set(*item, Prop::Drag, kw("Pin"))
+            .set(*item, Prop::Accepts, PropValue::List(vec![kw("Drop")]));
+        for (j, h) in [20.0, 20.0].into_iter().enumerate() {
+            let c = id(100 + 2 * i as u32 + j as u32);
+            d.create(c, NodeKind::Box, Some(*item), j as u32)
+                .set(c, Prop::Width, PropValue::Number(40.0))
+                .set(c, Prop::Height, PropValue::Number(h));
+        }
+    }
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 240 * 60 * 4];
+    let t = PaintTarget::new(&mut px, Size::new(240, 60), 960, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    (r, panel, dock, items)
+}
+
+/// (M4) A per-item `on drop` on a dock item that holds an icon and a
+/// label is placed among the dock's items, not among its own content:
+/// files dropped on item 1 (x 60..120) past its middle land at 2, before
+/// it at 1, though the pointer is over its label (its own second child).
+/// The dock itself, whose children are `drag:` items, holds rows: item
+/// 0 dragged to x 200 lands before item 3 (index 2 without the source).
+#[test]
+fn a_per_item_drop_target_with_content_is_placed_among_its_siblings() {
+    let (mut r, panel, dock, items) = dock_scene();
+    let s = SurfaceId(1);
+    assert_eq!(
+        r.node_rect(s, items[1]).map(|b| (b.x, b.w)),
+        Some((60.0, 60.0))
+    );
+    let mut f = R::default();
+    f.attached(s, panel);
+    for (x, at) in [(100.0, 2), (70.0, 1)] {
+        let p = LogicalPoint::new(x, 30.0);
+        f.input(
+            &InputEvent::DragEnter {
+                surface: s,
+                at: p,
+                kinds: vec![DropKind::Files],
+            },
+            &mut r,
+        );
+        assert_eq!(f.router.drop_target(s), Some(items[1]));
+        let payload = DropPayload::External {
+            kind: DropKind::Files,
+            files: vec!["/tmp/a.png".into()],
+            text: String::new(),
+            app_id: None,
+        };
+        f.input(
+            &InputEvent::DragDrop {
+                surface: s,
+                at: p,
+                payload: payload.clone(),
+            },
+            &mut r,
+        );
+        assert_eq!(
+            events(f.drain()),
+            [(items[1], NodeEvent::Drop { payload, at })]
+        );
+    }
+    f.input(&motion(s, 30.0, 30.0, 0), &mut r);
+    f.input(&left(s, 30.0, 30.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 200.0, 30.0, 10), &mut r);
+    let d = f.router.drag().expect("a drag");
+    assert_eq!(
+        (d.source, d.target, d.index),
+        (items[0], Some(dock), Some(2))
+    );
+    f.input(&left(s, 200.0, 30.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            dock,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(items[0]),
+                at: 2
+            }
+        )]
+    );
+}
+
 /// (M4) A drag that leaves its surface with the button held is carried
 /// by the compositor (`wl_data_device`): the Router keeps it (its source
 /// back in its box meanwhile) and it continues as `Drag*` events with no

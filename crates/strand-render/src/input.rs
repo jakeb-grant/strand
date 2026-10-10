@@ -1792,9 +1792,11 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// dragged `source` (a row moved within its own list lands where it is
 /// let go, `pins.move(p.app, at)`). Rows mounted but not laid out (out
 /// of view) count by their place; past the last laid-out row lands after
-/// it, and a target none of whose rows is laid out lands at its end. A
-/// target without rows is placed in its
-/// parent's rows: its own index, plus one past its middle. Rows run
+/// it, and a target none of whose rows is laid out lands at its end.
+/// Only a `list`, or a target whose children are drag sources, holds
+/// rows; any other target (childless, or holding its own content such as
+/// a dock icon's image and label) is placed in its parent's rows: its
+/// own index, plus one past its middle. Rows run
 /// along x in a `row` (or when they are spread wider than tall), else y.
 fn drop_index(
     tree: &SceneTree,
@@ -1831,8 +1833,18 @@ fn drop_index(
             _ => false,
         }
     };
+    // A target holds rows when it is a `list` or its children are drag
+    // sources (a `for` of `drag:` items, the dragged one among them);
+    // otherwise its children are its own content (an icon and a label in
+    // a per-item `on drop`) and it is itself a row of its parent.
+    let holds_rows = tree.get(target).is_some_and(|x| {
+        x.kind == NodeKind::List
+            || x.children.iter().any(|c| {
+                tree.contains_live(*c) && tree.get(*c).is_some_and(|n| n.get(Prop::Drag).is_some())
+            })
+    });
     let rows = rows_of(target);
-    if !rows.is_empty() {
+    if holds_rows {
         // Only the rows in view (and a little overscan) are laid out; a
         // windowed list mounts more on either side. The laid-out ones
         // keep their places among all of them.
@@ -1858,7 +1870,7 @@ fn drop_index(
             );
         return first(target) + i as u32;
     }
-    // A leaf target: its place among its parent's rows.
+    // A target without rows: its place among its parent's rows.
     let Some(parent) = tree.get(target).and_then(|x| x.parent) else {
         return 0;
     };
