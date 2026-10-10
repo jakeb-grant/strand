@@ -416,7 +416,10 @@ fn solo(props: Fx, w: f32, h: f32, scale: Scale) -> Vec<u8> {
 /// `circle` and `pill` coincide in a square box (and only there: an
 /// ellipse is not a capsule). Outside the library, `rect` draws as a box
 /// with no `shape:` and `pill` as `radius: full`, but neither of those
-/// morphs (`only_named_shapes_morph`), so both stay.
+/// morphs (`only_named_shapes_morph`), so both stay. That keep rests on
+/// the renderer, not on the pixels: if a box with no `shape:` ever
+/// morphs from its own outline, `rect` and `pill` duplicate a plain box
+/// and `radius: full` exactly and the owner's rule removes them.
 #[test]
 fn no_shape_duplicates_another() {
     let boxes = [(56.0, 56.0), (96.0, 40.0), (40.0, 96.0), (31.0, 57.0)];
@@ -460,8 +463,13 @@ fn no_shape_duplicates_another() {
 
 /// Why `rect`, `circle` and `pill` stay beside the plain-box spellings
 /// they draw: a `shape:` change morphs by spring, but a box that gains
-/// `shape:` snaps, so only a named shape can start a morph at a plain
-/// rect, disc or capsule.
+/// `shape:` snaps (`Morphs::outline` has no entry for it), so only a
+/// named shape can start a morph at a plain rect, disc or capsule. The
+/// snap is what the shapes decision (docs/decisions.md, 2026-10-10
+/// m4-owner-shapes) keeps `rect` and `pill` for, not a fixed fact: if
+/// this test fails because a plain box now morphs, revisit that decision
+/// (both would then duplicate a plain box and `radius: full` exactly)
+/// rather than only updating the assertion.
 #[test]
 fn only_named_shapes_morph() {
     use std::time::Duration;
@@ -482,7 +490,13 @@ fn only_named_shapes_morph() {
         d.set(ids[0], Prop::Shape, kw("cookie"));
         assert!(r.apply(d).is_empty());
         buf.paint_at(&mut r, S, 1, ms(16));
-        assert!(!r.wants_frame(S), "a box gaining `shape:` snaps");
+        assert!(
+            !r.wants_frame(S),
+            "a box gaining `shape:` now morphs: the 2026-10-10 shapes decision \
+             (docs/decisions.md, m4-owner-shapes) keeps `rect` and `pill` only \
+             because this snapped; revisit it, since both now duplicate a plain \
+             box and `radius: full` exactly"
+        );
         assert!(buf.pixels == cookie.pixels, "snapped to the cookie");
     }
 }
