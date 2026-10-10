@@ -123,7 +123,9 @@ impl LockFallback {
         had
     }
 
-    /// A key on the lock surface. Return submits (unless a check runs),
+    /// A key on the lock surface. Return submits (unless a check runs or
+    /// nothing is typed: a Return to wake the screen is not a password
+    /// attempt, and PAM would count it against `pam_faillock`),
     /// BackSpace deletes a character, Escape and Ctrl+U clear, and a key
     /// that types text without Ctrl, Alt or Logo adds it. Typing after a
     /// refusal puts the field back to idle.
@@ -135,6 +137,9 @@ impl LockFallback {
         match key.name.as_str() {
             "Return" | "KP_Enter" => {
                 if self.state == FieldState::Checking {
+                    return Action::None;
+                }
+                if self.secret.is_empty() && !self.too_long {
                     return Action::None;
                 }
                 if self.too_long {
@@ -390,6 +395,29 @@ mod tests {
             FieldState::Idle,
             "typing again clears the refusal"
         );
+    }
+
+    /// (m4-audit) Return on an empty field checks nothing: no empty
+    /// password reaches PAM (where `pam_faillock` would count it), and the
+    /// field stays as it was.
+    #[test]
+    fn return_on_an_empty_field_submits_nothing() {
+        let mut f = LockFallback::new();
+        assert_eq!(f.key(&press("Return", "\r")), Action::None);
+        assert_eq!(f.key(&press("KP_Enter", "\r")), Action::None);
+        assert_eq!(f.state(), FieldState::Idle);
+        f.set_state(FieldState::Failed);
+        assert_eq!(f.key(&press("Return", "\r")), Action::None);
+        assert_eq!(f.state(), FieldState::Failed);
+        f.key(&press("x", "x"));
+        f.key(&press("BackSpace", ""));
+        assert_eq!(
+            f.key(&press("Return", "\r")),
+            Action::None,
+            "typed, then erased"
+        );
+        f.key(&press("x", "x"));
+        assert!(matches!(f.key(&press("Return", "\r")), Action::Submit(b) if b == b"x"));
     }
 
     #[test]
