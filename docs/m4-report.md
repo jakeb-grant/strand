@@ -9,12 +9,16 @@ merged, the m4 audit's three rounds of fixes, and the closing
 integrator's one code fix (Lock). The commits after `e765276` on
 `main` change docs, two tests' harnesses, and the GPU thread's answer
 to a frame or pass that panics (decisions.md m4-integration-w3,
-closing). The m4 audit's later rounds (4 to 6, on `laptop/m4-audit`
+closing). The m4 audit's later rounds (4 to 7, on `laptop/m4-audit`
 until merged; decisions.md m4-audit) also change runtime code: the
 GPU path (promotion, a hung or failed pass, a shader file that lost
 the device never run again), bounded reads of shader, image, SVG and
 Lottie files, the per-pixel memory cap, when a lock session begins,
-and drag exports nobody reads. The figures below are at `e765276` and
+and drag exports nobody reads; round 7 a lock's shader files in its
+reload hash, `transition:`'s values, the fallback field's empty
+Return, the auth helper's reaping, file results kept for a burst of
+sources, the IPC socket's bind, and a frame whose callback or
+presentation never comes. The figures below are at `e765276` and
 do not include them; each round's release `.text` cost is in
 decisions.md m4-audit and handoff.md. Release figures use the workspace's release profile (fat
 LTO, one codegen unit, mimalloc, the 40 per-package `opt-level`s of

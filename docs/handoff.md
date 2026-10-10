@@ -19,7 +19,7 @@ below.
   measured head is `e765276` (docs/m4-report.md); the commits after it
   change docs, two tests' harnesses and the GPU thread's answer to a
   request that panics (decisions.md m4-integration-w3, closing). The
-  fourth to sixth m4 audit rounds' fixes are on `laptop/m4-audit`
+  fourth to seventh m4 audit rounds' fixes are on `laptop/m4-audit`
   (decisions.md m4-audit); they change runtime code as well as docs
   and tests (docs/m4-report.md's header lists what).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
@@ -35,7 +35,9 @@ below.
   After the sixth audit round (`laptop/m4-audit`, decisions.md
   m4-audit round 6) the laptop measures 15,648,775 B CPU-only (about
   80 KB left) and 19,030,727 B with the GPU backend; the design bar
-  34,484 kB.
+  34,484 kB. After the seventh: 15,653,063 B CPU-only (about 75 KB
+  left) and 19,036,167 B with the GPU backend (the bar not measured
+  again; round 7 adds no code a mocked bar runs at rest).
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
@@ -44,7 +46,7 @@ below.
   (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
   (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
 - Remote branches: `origin/main` and `origin/laptop/m4-audit` (audit
-  rounds 4 to 6, until it is merged). The integration branch and
+  rounds 4 to 7, until it is merged). The integration branch and
   the wave-3 branches it merged are deleted.
 
 ## Open items for the owner
