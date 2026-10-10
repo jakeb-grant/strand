@@ -10,8 +10,11 @@
 //! starting a new path. `fill` with no path paints the whole box (the
 //! grammar's `c.fill($accent)` before drawing on it). A themed paint is
 //! resolved in the node's token scope, as a `bg` is. Everything is
-//! clipped to the box. Text ops are recorded but not drawn yet: shaping
-//! is per node (decisions.md, m4-gpu-w2).
+//! clipped to the box. `text(t, x, y)` draws `t` in the node's font and
+//! colour with its first baseline starting at (`x`, `y`): each text op is
+//! one of the node's texts (`TextSpec::part` 1 + its index among the
+//! node's text ops), shaped by the text worker like a `segmented`'s
+//! labels, and drawn once its layout is back ([`CanvasText`]).
 
 use strand_scene::canvas::DrawOp;
 use strand_scene::{Paint, PropValue};
@@ -31,16 +34,28 @@ fn sane(v: f32) -> Option<f64> {
     v.is_finite().then(|| v.clamp(-MAX, MAX))
 }
 
+/// Most text ops of one canvas drawn (a text's part is a `u8`, part 0
+/// being a node's own text).
+pub(crate) const MAX_TEXTS: usize = 254;
+
+/// How a canvas's texts are drawn: `text(i, t, x, y)` gives the item of
+/// its `i`-th text op (`t` with its baseline's start at physical (`x`,
+/// `y`)) and the rectangle it can touch, or `None` until it is shaped.
+pub(crate) type CanvasText<'a> =
+    dyn FnMut(usize, &str, f64, f64) -> Option<(Item, kurbo::Rect)> + 'a;
+
 /// The items drawing `ops` in `frame` (the box, physical pixels) at
 /// `scale`, each with the physical rectangle it can touch; inside a clip
 /// to the box when there is anything to draw.
-/// `themed` resolves a paint that names tokens.
+/// `themed` resolves a paint that names tokens, `text` draws a text op.
 pub(crate) fn items(
     ops: &[DrawOp],
     frame: kurbo::Rect,
     scale: f64,
     themed: &dyn Fn(&PropValue) -> Option<Paint>,
+    text: &mut CanvasText<'_>,
 ) -> Vec<(Item, kurbo::Rect)> {
+    let mut texts = 0;
     let to_phys = Affine::translate((frame.x0, frame.y0)) * Affine::scale(scale);
     let mut out = Vec::new();
     let mut path = BezPath::new();
@@ -112,8 +127,24 @@ pub(crate) fn items(
                 );
                 push_fill(&mut out, outline, &paint, frame);
             }
-            // Recorded; shaping a canvas's texts is pending.
-            DrawOp::Text { .. } => {}
+            DrawOp::Text { text: t, x, y } => {
+                let i = texts;
+                texts += 1;
+                if i >= MAX_TEXTS || t.is_empty() {
+                    continue;
+                }
+                let (Some(x), Some(y)) = (sane(*x), sane(*y)) else {
+                    continue;
+                };
+                let at = to_phys * kurbo::Point::new(x, y);
+                if let Some((item, reach)) = text(i, t, at.x, at.y)
+                    && let Some(reach) = Some(reach.intersect(frame))
+                    && reach.width() > 0.0
+                    && reach.height() > 0.0
+                {
+                    out.push((item, reach));
+                }
+            }
             _ => {}
         }
     }
@@ -170,7 +201,7 @@ mod tests {
                 width: 2.0,
             },
         ];
-        let items = items(&ops, frame, 2.0, &|_| None);
+        let items = items(&ops, frame, 2.0, &|_| None, &mut |_, _, _, _| None);
         assert_eq!(items.len(), 4, "{items:?}");
         assert!(matches!(items[0].0, Item::PushClip(_)));
         assert!(matches!(items[3].0, Item::PopClip));
@@ -217,7 +248,7 @@ mod tests {
         // (The first fill paints the box: no shape was valid, so it had
         // no path.)
         let ops = &ops[3..];
-        assert!(items(ops, frame, 1.0, &|_| None).is_empty());
+        assert!(items(ops, frame, 1.0, &|_| None, &mut |_, _, _, _| None).is_empty());
     }
 
     #[test]
@@ -227,13 +258,51 @@ mod tests {
         let ops = [DrawOp::FillThemed(accent.clone())];
         let red = Paint::Solid(Color::rgb(1.0, 0.0, 0.0));
         let resolve = |v: &PropValue| (*v == accent).then(|| red.clone());
-        let items = items(&ops, frame, 1.0, &resolve);
+        let items = items(&ops, frame, 1.0, &resolve, &mut |_, _, _, _| None);
         let (Item::Fill { paint, .. }, reach) = &items[1] else {
             panic!("{items:?}");
         };
         assert_eq!(*paint, red);
         assert_eq!(*reach, frame);
         // Unresolved: nothing drawn.
-        assert!(super::items(&ops, frame, 1.0, &|_| None).is_empty());
+        assert!(super::items(&ops, frame, 1.0, &|_| None, &mut |_, _, _, _| None).is_empty());
+    }
+
+    #[test]
+    fn texts_are_drawn_in_order_at_their_baseline_in_the_box() {
+        let frame = kurbo::Rect::new(100.0, 50.0, 300.0, 150.0);
+        let text = |t: &str, x, y| DrawOp::Text {
+            text: t.into(),
+            x,
+            y,
+        };
+        let ops = [
+            text("a", 10.0, 20.0),
+            DrawOp::Fill(Paint::Solid(Color::WHITE)),
+            text("", 0.0, 0.0),
+            text("b", f32::NAN, 0.0),
+            text("c", 1000.0, 20.0),
+            text("d", 4.0, 8.0),
+        ];
+        let mut asked = Vec::new();
+        let items = items(&ops, frame, 2.0, &|_| None, &mut |i, t, x, y| {
+            asked.push((i, t.to_string(), x, y));
+            let r = kurbo::Rect::new(x, y - 10.0, x + 10.0, y);
+            Some((Item::PopClip, r))
+        });
+        // Each op's index counts every text op; empty and nonsense ones
+        // ask for nothing.
+        assert_eq!(
+            asked,
+            vec![
+                (0, "a".into(), 120.0, 90.0),
+                (3, "c".into(), 2100.0, 90.0),
+                (4, "d".into(), 108.0, 66.0),
+            ]
+        );
+        // "a", the fill, "d" (outside the box, "c" draws nothing), clipped.
+        assert_eq!(items.len(), 5, "{items:?}");
+        assert!(matches!(items[2].0, Item::Fill { .. }));
+        assert_eq!(items[1].1, kurbo::Rect::new(120.0, 80.0, 130.0, 90.0));
     }
 }

@@ -18,7 +18,9 @@ use super::paint::{
     corners_of, cover, kurbo_rect, opaque_bands, opaque_paint, paint_of, radii, radii_zero,
     shape_path, tinted,
 };
-use super::text::{Shaped, TextSpec, natural_spec, pick, place_text, sane_font, slot_color};
+use super::text::{
+    Shaped, TextSpec, natural_spec, pick, pick_part, place_text, sane_font, slot_color,
+};
 use super::widget::{CaretAt, WidgetCtx, caret_x};
 use super::{
     DisplayItem, FillShape, Flattener, GlyphCells, HitBox, Inherited, Item, MAX_BLUR, NodeRecord,
@@ -238,6 +240,7 @@ impl<'a> Flattener<'a> {
             || matches!(
                 node.kind,
                 NodeKind::Segmented
+                    | NodeKind::Canvas
                     | NodeKind::Meter
                     | NodeKind::Arc
                     | NodeKind::Effect
@@ -868,8 +871,52 @@ impl<'a> Flattener<'a> {
             && let Some(PropValue::DrawList(ops)) = get(Prop::Draw)
         {
             let themed = |v: &PropValue| scope.resolve(v).and_then(|v| paint_of(Some(&v)));
-            for (item, reach) in crate::canvas::items(ops, frame, s, &themed) {
+            // Its texts: one request each (parts 1..), drawn once shaped.
+            let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
+            let scale = self.scale;
+            let mut specs = Vec::new();
+            let mut text = |i: usize, t: &str, x: f64, y: f64| {
+                let part = i as u8 + 1;
+                specs.push(TextSpec {
+                    text: t.to_string(),
+                    style: TextStyle {
+                        font: font.clone(),
+                        ..TextStyle::default()
+                    },
+                    max_width: None,
+                    scale,
+                    part,
+                });
+                let l = pick_part(shaped, part, scale, None).or_else(|| {
+                    shaped
+                        .iter()
+                        .find(|c| c.part == part)
+                        .map(|c| c.layout.clone())
+                })?;
+                let k = scale.as_f64() / l.scale.as_f64();
+                let (x, y) = (x.round() as i32, (y - l.baseline as f64 * s).round() as i32);
+                let ink = kurbo::Rect::new(
+                    x as f64 + l.ink.left() as f64 * k,
+                    y as f64 + l.ink.top() as f64 * k,
+                    x as f64 + l.ink.right() as f64 * k,
+                    y as f64 + l.ink.bottom() as f64 * k,
+                );
+                let item = Item::Glyphs {
+                    x,
+                    y,
+                    layout: l,
+                    color: text_color,
+                    spans: Vec::new(),
+                    fill: None,
+                };
+                Some((item, ink))
+            };
+            let items = crate::canvas::items(ops, frame, s, &themed, &mut text);
+            for (item, reach) in items {
                 self.push(item, cover(reach), &mut sig, &mut ink);
+            }
+            for spec in specs {
+                self.out.text.push((node.id, spec));
             }
         }
         // Border, drawn inside the box.
