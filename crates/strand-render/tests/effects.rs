@@ -1792,3 +1792,58 @@ fn goo_merges_near_children() {
     settle(&mut r, &mut buf, 1000);
     assert_ne!(buf.px(69, 30), bg, "bridged once near");
 }
+
+/// A solid `w × h` PNG of `rgba` in a temporary directory.
+fn solid_png(name: &str, rgba: [u8; 4]) -> String {
+    let dir = std::env::temp_dir().join(format!("strand-effects-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    let px: Vec<u8> = std::iter::repeat_n(rgba, 40 * 40).flatten().collect();
+    write_png(&path, 40, 40, &px);
+    path.to_string_lossy().into_owned()
+}
+
+/// design.md "Motion and time": transition masks on image swaps. An
+/// `image` with `transition: wipe(left)` whose source changes shows the
+/// new image coming in over the old from the left; with no `transition`
+/// it swaps at once (ref `effects_image_swap.png` partway).
+#[test]
+fn an_image_swap_wipes_the_new_image_in() {
+    use std::time::Duration;
+    let red = solid_png("red.png", [0xf3, 0x8b, 0xa8, 0xff]);
+    let blue = solid_png("blue.png", [0x89, 0xb4, 0xfa, 0xff]);
+    for masked in [true, false] {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = at_xy(10.0, 10.0, 40.0, 40.0);
+        p.extend([(Prop::Place, kw("absolute")), (Prop::Source, text(&red))]);
+        if masked {
+            p.push((Prop::Transition, call("wipe", vec![kw("left")])));
+        }
+        let img = b.node(NodeKind::Image, Some(root), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(60, 60, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let redpx = buf.px(30, 30);
+        let mut d = SceneDiff::new();
+        d.set(img, Prop::Source, text(&blue));
+        assert!(r.apply(d).is_empty());
+        let mut t = 1000;
+        while t < 1064 {
+            t += 16;
+            buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        }
+        let (left, right) = (buf.px(12, 30), buf.px(47, 30));
+        if masked {
+            assert_matches_ref("effects_image_swap", &buf, 2);
+            assert_ne!(left, redpx, "the new image at the left");
+            assert_eq!(right, redpx, "the old one at the right");
+            settle(&mut r, &mut buf, t);
+            assert_eq!(buf.px(47, 30), left, "all new");
+        } else {
+            assert!(left != redpx && left == right, "at once");
+        }
+    }
+}

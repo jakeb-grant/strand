@@ -435,26 +435,8 @@ impl<'a> Flattener<'a> {
             let mut h = DefaultHasher::new();
             format!("{m:?}").hash(&mut h);
             h.finish().hash(&mut sig);
-            match m.drawn(frame, s) {
-                crate::effects::transition::Drawn::Clip(path) => {
-                    (self.marker(Item::PushClip(path)), Item::PopClip)
-                }
-                crate::effects::transition::Drawn::Blur { radius, opacity } => {
-                    let mut effects = vec![strand_scene::Effect::Opacity(opacity)];
-                    if radius > 0.0 {
-                        effects.push(strand_scene::Effect::Blur { radius });
-                    }
-                    (
-                        self.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
-                            effects: effects.into(),
-                            frame,
-                            scale: self.scale.as_f32(),
-                            xform: self.xform,
-                        }))),
-                        Item::PopLayer,
-                    )
-                }
-            }
+            let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
+            (self.marker(push), pop)
         });
         let mask_hash = transition_mask.map(|m| format!("{m:?}"));
         // Widgets' default radius: `$radius.md` for buttons and segmented
@@ -794,7 +776,7 @@ impl<'a> Flattener<'a> {
         // An `icon` or `image`: decoded at the box's size.
         if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
             self.image(
-                node, &get, frame, phys, &box_path, &r, text_color, &mut sig, &mut ink,
+                node, &get, frame, phys, &box_path, &r, text_color, &scope, &mut sig, &mut ink,
             );
         }
         // Text. (M4) `fill:` paints its glyphs, `text_stroke:` outlines

@@ -191,6 +191,8 @@ pub(crate) struct Animator {
     reveals: crate::effects::transition::Reveals,
     /// (M4) Shared-element morphs ([`morph`]).
     shared: morph::SharedMorphs,
+    /// (M4) Image swaps under a transition mask.
+    image_swaps: crate::effects::transition::ImageSwaps,
 }
 
 impl Animator {
@@ -414,6 +416,53 @@ impl Animator {
         }
         self.reveals.hold(id, exiting && moving);
         Some(masked(p, false))
+    }
+
+    /// (M4) An `image` with `transition:` showing `source` (`ready`:
+    /// decoded): the source it swaps from and the mask the new one comes
+    /// in through, while it swaps (`crate::effects::transition`).
+    pub fn image_swap(
+        &mut self,
+        node: &Node,
+        source: &str,
+        ready: bool,
+        scope: &TokenScope<'_>,
+    ) -> Option<(String, crate::effects::transition::Masked)> {
+        use crate::effects::transition::{Kind, Masked};
+        let kind = node
+            .get(Prop::Transition)
+            .and_then(|v| scope.resolve(v))
+            .and_then(|v| Kind::of(&v));
+        let Some(kind) = kind else {
+            self.image_swaps.forget(node.id);
+            return None;
+        };
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Transition)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (swap, moving) = self.image_swaps.swap(node.id, source, ready, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        swap.map(|(old, p)| {
+            (
+                old,
+                Masked {
+                    kind,
+                    p,
+                    invert: false,
+                },
+            )
+        })
     }
 
     /// (M4) `node`'s shared-element morph ([`morph`]): laid out at `rect`
@@ -685,6 +734,7 @@ impl Animator {
         self.leans.forget(id);
         self.reveals.forget(id);
         self.shared.forget(id);
+        self.image_swaps.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -758,6 +808,7 @@ impl Animator {
         self.leans.retain(&mut keep);
         self.reveals.retain(&mut keep);
         self.shared.retain(&mut keep);
+        self.image_swaps.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -1012,6 +1063,7 @@ impl Animator {
             || self.staggers.busy(|id| under(&id))
             || self.reveals.busy(self.time, |id| under(&id))
             || self.shared.busy(|id| under(&id))
+            || self.image_swaps.busy(|id| under(&id))
     }
 }
 

@@ -198,6 +198,36 @@ impl Masked {
     }
 }
 
+impl Masked {
+    /// The items that open and close the mask's group over a box `frame`
+    /// (physical pixels) on a surface at `scale`, under the transform
+    /// `xform`: a clip, or pixelate's offscreen blur.
+    pub(crate) fn group(
+        &self,
+        frame: kurbo::Rect,
+        scale: f32,
+        xform: kurbo::Affine,
+    ) -> (crate::flatten::Item, crate::flatten::Item) {
+        use crate::flatten::Item;
+        match self.drawn(frame, scale as f64) {
+            Drawn::Clip(path) => (Item::PushClip(path), Item::PopClip),
+            Drawn::Blur { radius, opacity } => {
+                let mut effects = vec![strand_scene::Effect::Opacity(opacity)];
+                if radius > 0.0 {
+                    effects.push(strand_scene::Effect::Blur { radius });
+                }
+                let layer = crate::layers::Layer {
+                    effects: effects.into(),
+                    frame,
+                    scale,
+                    xform,
+                };
+                (Item::PushLayer(std::sync::Arc::new(layer)), Item::PopLayer)
+            }
+        }
+    }
+}
+
 /// Every mask in flight, and the ghosts they hold.
 #[derive(Debug, Default)]
 pub(crate) struct Reveals {
@@ -335,5 +365,98 @@ mod tests {
             Kind::of(&PropValue::Keyword("pixelate".into())),
             Some(Kind::Pixelate)
         );
+    }
+}
+
+/// One image node's swap: the source it shows and, while it swaps, the
+/// one it swaps from with the mask's progress (`None` until the new
+/// source is decoded).
+#[derive(Debug)]
+struct ImageSwap {
+    shown: String,
+    from: Option<(String, Option<Motion<1>>)>,
+}
+
+/// `image`s with `transition:` swapping sources (design.md: transition
+/// masks on "image swaps"): the new image comes in over the old through
+/// the mask, starting once it is decoded (the old one stays whole until
+/// then).
+#[derive(Debug, Default)]
+pub(crate) struct ImageSwaps {
+    nodes: HashMap<NodeId, ImageSwap>,
+}
+
+impl ImageSwaps {
+    /// Image `id` now showing `source` (`ready`: decoded) in `frame`:
+    /// the source it swaps from and the mask's progress, while it swaps;
+    /// also whether it still moves.
+    pub(crate) fn swap(
+        &mut self,
+        id: NodeId,
+        source: &str,
+        ready: bool,
+        curve: Curve,
+        frame: Frame,
+    ) -> (Option<(String, f32)>, bool) {
+        let Some(s) = self.nodes.get_mut(&id) else {
+            if frame.commit {
+                self.nodes.insert(
+                    id,
+                    ImageSwap {
+                        shown: source.to_string(),
+                        from: None,
+                    },
+                );
+            }
+            return (None, false);
+        };
+        if s.shown != source {
+            if !frame.commit {
+                return (Some((s.shown.clone(), 0.0)), true);
+            }
+            let old = std::mem::replace(&mut s.shown, source.to_string());
+            s.from = (!frame.snap).then_some((old, None));
+        }
+        let Some((old, motion)) = &mut s.from else {
+            return (None, false);
+        };
+        if frame.snap {
+            if frame.commit {
+                s.from = None;
+            }
+            return (None, false);
+        }
+        if motion.is_none() && ready {
+            let mut m = Motion::rest([0.0], EPS).sampled_at(frame.prev);
+            m.retarget([1.0], curve);
+            *motion = Some(m);
+        }
+        let p = match motion {
+            Some(m) if frame.commit => m.sample(frame.at)[0],
+            Some(m) => m.peek(frame.at)[0],
+            None => 0.0,
+        };
+        let settled = motion.as_ref().is_some_and(|m| m.is_settled(frame.at));
+        if settled {
+            if frame.commit {
+                s.from = None;
+            }
+            return (None, false);
+        }
+        (Some((old.clone(), p.clamp(0.0, 1.0))), true)
+    }
+
+    pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
+        self.nodes
+            .iter()
+            .any(|(id, s)| s.from.is_some() && under(*id))
+    }
+
+    pub(crate) fn forget(&mut self, id: NodeId) {
+        self.nodes.remove(&id);
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        self.nodes.retain(|id, _| keep(*id));
     }
 }
