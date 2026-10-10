@@ -13,7 +13,7 @@ use strand_gpu::{AlphaColor, Frame, GpuReply, GpuRequest};
 use strand_scene::{Scale, Size};
 
 #[test]
-fn the_device_is_created_on_first_visible_effect_and_dropped_after_idle() {
+fn the_thread_and_driver_start_at_spawn_and_end_at_shutdown() {
     // Nothing GPU runs before something asks for it.
     assert_eq!(gpu_threads(), 0);
     let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();

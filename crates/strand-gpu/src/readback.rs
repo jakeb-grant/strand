@@ -1,7 +1,16 @@
 //! Copying a texture into a mapped buffer: [`crate::Readback`].
 
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 use crate::device::Device;
 use crate::{GpuError, GpuErrorKind, Readback};
+
+/// How long a read waits for its submission before the GPU counts as
+/// hung. Far past any real frame or pass, even lavapipe's 4K aurora on
+/// a loaded machine: a false alarm costs a CPU fallback, an endless
+/// wait a thread that never answers again.
+pub(crate) const HUNG_AFTER: Duration = Duration::from_secs(10);
 
 /// Bytes per row of a `width`-pixel copy, padded to wgpu's alignment.
 pub(crate) fn padded_stride(width: u32) -> u32 {
@@ -68,9 +77,26 @@ impl ReadBuffer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        dev.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| GpuError::new(GpuErrorKind::Render, format!("readback: {e}")))?;
+        match dev.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(HUNG_AFTER),
+        }) {
+            Ok(_) => {}
+            Err(wgpu::PollError::Timeout) => {
+                dev.hung.store(true, Ordering::SeqCst);
+                dev.lost.store(true, Ordering::SeqCst);
+                return Err(GpuError::new(
+                    GpuErrorKind::Lost,
+                    format!("the GPU ran past {HUNG_AFTER:?} on one submission"),
+                ));
+            }
+            Err(e) => {
+                return Err(GpuError::new(
+                    GpuErrorKind::Render,
+                    format!("readback: {e}"),
+                ));
+            }
+        }
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {

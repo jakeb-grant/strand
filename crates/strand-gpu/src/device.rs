@@ -17,6 +17,12 @@ pub(crate) struct Device {
     /// Set by the device-lost callback (and by a panic caught on the
     /// thread).
     pub lost: Arc<AtomicBool>,
+    /// Set when a submission ran past [`crate::readback::HUNG_AFTER`]
+    /// (an endless loop in a validated shader: naga bounds neither, and
+    /// lavapipe has no driver reset). The device is lost with it, and
+    /// is never dropped: dropping waits for a queue that may never
+    /// drain.
+    pub hung: AtomicBool,
 }
 
 /// Whether wgpu's adapter is a software rasteriser.
@@ -89,6 +95,7 @@ impl Device {
             queue,
             info,
             lost,
+            hung: AtomicBool::new(false),
         })
     }
 

@@ -10,12 +10,12 @@
 //! instanced sprites. A pass may read an input texture (a filter's
 //! subtree, a backdrop): `strand_input`.
 
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use strand_scene::{Bundled, ShaderCode, ShaderRef};
 
 use crate::device::Device;
+use crate::lru::Lru;
 use crate::{GpuError, GpuErrorKind, PassGlobals, ShaderPass};
 
 /// The vertex stage Strand appends to every module: one triangle covering
@@ -39,6 +39,10 @@ pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 /// Bytes of `@group(0) @binding(0)`'s `Strand` (24, padded to 32).
 const GLOBALS_BYTES: u64 = 32;
 
+/// Compiled pipelines kept: far more than the shaders and bundled
+/// steps one screen shows, so a frame never recompiles one it drew.
+const PIPELINES: usize = 64;
+
 /// Bytes bound per `u_*` uniform (a `vec4<f32>` at most).
 const SLOT_BYTES: u64 = 16;
 
@@ -55,7 +59,10 @@ pub(crate) struct Passes {
     sampler: wgpu::Sampler,
     /// 1×1 transparent: `strand_input` of a pass with no input.
     empty: wgpu::TextureView,
-    pipelines: HashMap<u64, Result<Pipeline, GpuError>>,
+    /// By [`code_key`], bounded: a `.wgsl` file edited under hot reload
+    /// is a new key at every save, and a shown shader keeps the device
+    /// (and with it this cache) alive.
+    pipelines: Lru<u64, Result<Pipeline, GpuError>>,
     /// The instanced sprite pipeline of `particles`, once built.
     particles: Option<Result<Pipeline, GpuError>>,
 }
@@ -135,17 +142,17 @@ impl Passes {
             layout0,
             sampler,
             empty,
-            pipelines: HashMap::new(),
+            pipelines: Lru::new(PIPELINES),
             particles: None,
         }
     }
 
     fn pipeline(&mut self, dev: &Device, code: &ShaderCode) -> Result<&Pipeline, GpuError> {
         let key = code_key(code);
+        let layout0 = &self.layout0;
         let entry = self
             .pipelines
-            .entry(key)
-            .or_insert_with(|| compile(dev, &self.layout0, code));
+            .get_or_insert_with(key, || compile(dev, layout0, code));
         entry.as_ref().map_err(Clone::clone)
     }
 

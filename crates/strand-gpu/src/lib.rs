@@ -40,6 +40,7 @@ pub use vello_common::pixmap::Pixmap;
 mod bundled;
 mod device;
 mod draw;
+mod lru;
 mod pass;
 mod present;
 mod readback;

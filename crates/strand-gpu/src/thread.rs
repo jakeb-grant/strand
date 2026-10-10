@@ -12,6 +12,7 @@ use vello_common::TextureId;
 
 use crate::device::Device;
 use crate::draw::{self, DrawnPass, Held, Images};
+use crate::lru::Lru;
 use crate::pass::{self, Passes};
 use crate::present::{self, Blit, Presented};
 use crate::readback::ReadBuffer;
@@ -22,6 +23,9 @@ use crate::{
 
 /// The format frames are rendered in: straight colours, `wl_shm` bytes.
 const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
+/// Pass sizes whose readback buffers are kept.
+const PASS_READS: usize = 16;
 
 struct Reply<'a> {
     tx: &'a mpsc::Sender<GpuReply>,
@@ -88,12 +92,28 @@ pub(crate) fn run(
             dev.lost.store(true, Ordering::SeqCst);
         }
         if dev.is_lost() {
+            let why = if dev.hung.load(Ordering::SeqCst) {
+                "stopped answering"
+            } else {
+                "was lost"
+            };
             reply.send(GpuReply::Lost(GpuError::new(
                 GpuErrorKind::Lost,
-                format!("the GPU device was lost ({})", dev.info.name),
+                format!("the GPU device {why} ({})", dev.info.name),
             )));
             break;
         }
+    }
+    if dev.hung.load(Ordering::SeqCst) {
+        // A hung queue: dropping the swapchains, the renderer or the
+        // device would wait for it, so they are leaked (with the driver's
+        // spinning queue) and the thread ends now. The surfaces' owners
+        // may commit them again once they hear `Exited`: nothing here
+        // presents any more.
+        std::mem::forget(state);
+        std::mem::forget(dev);
+        reply.send(GpuReply::Exited);
+        return;
     }
     // Swapchains before their surfaces' owners hear anything, then the
     // renderer, the device and the instance.
@@ -127,7 +147,11 @@ struct State {
     passes: Passes,
     blit: Blit,
     targets: HashMap<SurfaceId, Target>,
-    pass_reads: HashMap<u64, ReadBuffer>,
+    /// Pass readback buffers by size: a pass's read finishes before the
+    /// next pass is drawn, so passes of one size share a buffer, and the
+    /// sizes kept are bounded (a remounted node is a new pass key, and a
+    /// shown shader keeps the device alive).
+    pass_reads: Lru<(u32, u32), ReadBuffer>,
 }
 
 impl State {
@@ -148,7 +172,7 @@ impl State {
             passes: Passes::new(dev),
             blit: Blit::default(),
             targets: HashMap::new(),
-            pass_reads: HashMap::new(),
+            pass_reads: Lru::new(PASS_READS),
         }
     }
 
@@ -545,11 +569,7 @@ impl State {
         }
         let read = self
             .pass_reads
-            .entry(p.key)
-            .or_insert_with(|| ReadBuffer::new(dev, w, h));
-        if !read.fits(w, h) {
-            *read = ReadBuffer::new(dev, w, h);
-        }
+            .get_or_insert_with((w, h), || ReadBuffer::new(dev, w, h));
         read.record(&mut encoder, &drawn.texture);
         dev.queue.submit([encoder.finish()]);
         drop(keep);
