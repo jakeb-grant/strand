@@ -2306,3 +2306,59 @@ fn scrims_dim_beneath_panels_and_popups() {
     assert_eq!(shot.rgb(1000, 41), BLUE, "nor is its shadow");
     assert_eq!(shot.rgb(130, 100), BLUE, "the popup is above its scrim");
 }
+
+/// (M4) A corner panel's place (what `surface_placed` says, the tray's
+/// click point) includes the offset its compositor pose moved its
+/// margins by (a root's static `x`/`y` is delegated for good), and
+/// follows its output's logical size.
+#[test]
+fn a_posed_panel_is_placed_where_its_margins_put_it() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let Some(sway) = Sway::start("a_posed_panel_is_placed_where_its_margins_put_it") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let held = SurfacePose {
+        offset: LogicalPoint::new(30.0, 12.0),
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [held].into_iter().collect();
+    let spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let placed = |mgr: &mut strand_surface::SurfaceManager<TestHost>, want: (i32, i32)| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces_of(PANEL)
+                    .first()
+                    .and_then(|id| s.surface(*id))
+                    .is_some_and(|i| i.origin == Some(want))
+            })
+            .unwrap();
+        assert!(ok, "placed at {want:?}: {:?}", mgr.state().host().placed);
+        let id = mgr.state().surfaces_of(PANEL)[0];
+        assert_eq!(
+            mgr.state()
+                .host()
+                .placed
+                .iter()
+                .rev()
+                .find(|(s, _)| *s == id)
+                .map(|(_, o)| *o),
+            Some(want),
+            "told to the host"
+        );
+    };
+    // Top right of 1920 × 1080: x 1520, moved 30 right (the right margin
+    // shrunk by 30) and 12 down.
+    placed(&mut mgr, (1550, 12));
+    // Scale 2: 960 × 540 logical, the panel keeps its size.
+    sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+    placed(&mut mgr, (590, 12));
+}

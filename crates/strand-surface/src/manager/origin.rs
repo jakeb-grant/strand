@@ -7,7 +7,10 @@
 //! derived as the compositor arranges one (`LayerConfig::position_in`)
 //! over the whole output: other surfaces' exclusive zones are not known
 //! here, so a panel anchored beside a bar is placed as if the bar were
-//! not there (off by the bar's zone on that axis). A popup's comes from
+//! not there (off by the bar's zone on that axis). It is placed at the
+//! margins its compositor pose's offset set (`placement::posed_margin`),
+//! again whenever that offset or its output's logical size changes. A
+//! popup's comes from
 //! its configure, which gives its box relative to its parent's window
 //! geometry (a layer surface's is the surface; a popup's is its box).
 
@@ -29,8 +32,26 @@ impl<H: SurfaceHost + 'static> State<H> {
             .and_then(|m| m.logical_size)
             .filter(|(w, h)| *w > 0 && *h > 0)
             .map(|(w, h)| (w as u32, h as u32));
-        let origin = area.map(|area| s.config.position_in(s.logical, area));
+        // At the margins a pose's offset moved it to (M4): a root's
+        // static `x`/`y` on a corner panel is delegated for good.
+        let mut config = s.config.clone();
+        config.margin = crate::placement::posed_margin(&s.config, s.pose.offset);
+        let origin = area.map(|area| config.position_in(s.logical, area));
         self.set_origin(id, origin);
+    }
+
+    /// Places again the layer surfaces on `monitor`, whose logical size
+    /// may have changed with no configure (a panel of a fixed size).
+    pub(super) fn place_layers_on(&mut self, monitor: &MonitorId) {
+        let ids: Vec<SurfaceId> = self
+            .surfaces
+            .values()
+            .filter(|s| s.monitor.as_ref() == Some(monitor))
+            .map(|s| s.id)
+            .collect();
+        for id in ids {
+            self.place_layer(id);
+        }
     }
 
     /// Places popup `id` from its configure's position `at`: its box's

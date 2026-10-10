@@ -59,14 +59,20 @@ impl<H: SurfaceHost + 'static> State<H> {
         if want.scale != old.scale {
             s.send_destination();
         }
-        if want.offset != old.offset
-            && let Role::Layer(layer) = &s.role
-        {
-            let [t, r, b, l] = crate::placement::posed_margin(&s.config, want.offset);
-            layer.set_margin(t, r, b, l);
-        }
+        let moved = want.offset != old.offset
+            && if let Role::Layer(layer) = &s.role {
+                let [t, r, b, l] = crate::placement::posed_margin(&s.config, want.offset);
+                layer.set_margin(t, r, b, l);
+                true
+            } else {
+                false
+            };
         s.stats.poses += 1;
         self.stats.poses += 1;
+        if moved {
+            // Where it lies now (the tray's click point).
+            self.place_layer(id);
+        }
         true
     }
 

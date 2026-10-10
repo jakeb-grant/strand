@@ -144,6 +144,7 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
             self.output_added(output);
         } else if let Some(monitor) = self.monitors.set_geometry(global, output_geometry(&info)) {
             self.host.monitor_changed(&monitor);
+            self.place_layers_on(&monitor.id);
         }
     }
 
