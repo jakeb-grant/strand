@@ -248,6 +248,9 @@ pub(crate) struct Ctx {
     pub list_windows: RefCell<HashMap<NodeId, Rc<mount::SetWindow>>>,
     /// (M4) The order of each `pages`' pages (directional transitions).
     pub pages: RefCell<mount::PagesOrder>,
+    /// (M4) Each mounted `drag:` source's current value, by node: what a
+    /// drop of that node delivers ([`Instance::drag_value`]).
+    pub drags: RefCell<HashMap<NodeId, Value>>,
 }
 
 impl VmHooks for Ctx {
@@ -540,6 +543,7 @@ impl Ctx {
             outlined: RefCell::default(),
             lock: RefCell::default(),
             list_windows: RefCell::default(),
+            drags: RefCell::default(),
             pages: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);

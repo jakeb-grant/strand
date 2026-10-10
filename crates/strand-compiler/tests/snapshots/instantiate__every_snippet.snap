@@ -31,7 +31,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     box width=24
     input nav=node 25
     list
-    box drag="Pin { app: firefox, label: Firefox }"
+    box drag=Pin
     pages current=wifi row_first=0
       page name=wifi
         text text="Wi-Fi"

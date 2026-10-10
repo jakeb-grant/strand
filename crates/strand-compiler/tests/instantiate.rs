@@ -4005,3 +4005,117 @@ fn letters_index_and_count_stay_time_leaves() {
     assert!((y(5) - 1.0).abs() < 1e-5, "{}", y(5));
     assert!((y(2) - y(0)).abs() > 0.5, "{} vs {}", y(2), y(0));
 }
+
+/// (M4) Drag and drop's logic side: a `drag:` source reaches render as
+/// its value's type name and an `on drop` target as the types its
+/// handlers take (`Prop::Accepts`: `Drop` for other programs' drops,
+/// `any` for an untyped parameter). A drop delivers the source's own
+/// value and the global index, and runs only the handlers of its type:
+/// dropping pin `c` at 0 moves it first ("reordering springs by key":
+/// one keyed move), a `Drop` from another program runs the other
+/// handler. A source unmounted takes its value with it.
+#[test]
+fn drag_sources_and_drop_targets_deliver_typed_values() {
+    let src = r#"type Pin { app: text; label: text }
+export state pins: [Pin] key app = [Pin(app: "a", label: "A"), Pin(app: "b", label: "B"), Pin(app: "c", label: "C")]
+state got = ""
+state seen = 0
+bar B {
+  row {
+    on drop(p: Pin, at: int) { pins.move(p.app, at) }
+    on drop(d: Drop, at: int) { got = d.text }
+    for p in pins { box { drag: p } }
+  }
+  col { on drop(v, at: int) { seen += at } }
+}
+"#;
+    let mut shell = boot(&[("dock.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let col = shell.scene.of_kind(NodeKind::Col)[0];
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    assert_eq!(
+        shell.scene.prop(row, Prop::Accepts),
+        Some(&PropValue::List(vec![kw("Pin"), kw("Drop")]))
+    );
+    assert_eq!(
+        shell.scene.prop(col, Prop::Accepts),
+        Some(&PropValue::List(vec![kw("any")]))
+    );
+    let boxes = shell.scene.children(row).to_vec();
+    assert_eq!(boxes.len(), 3);
+    for b in &boxes {
+        assert_eq!(shell.scene.prop(*b, Prop::Drag), Some(&kw("Pin")));
+        assert_eq!(shell.scene.prop(*b, Prop::Accepts), None);
+    }
+    let app = |shell: &Shell, n: NodeId| {
+        let v = shell.inst.drag_value(n).expect("a drag value");
+        let Value::Record(r) = v else {
+            panic!("not a Pin: {v:?}")
+        };
+        r.fields[0].clone()
+    };
+    assert_eq!(app(&shell, boxes[2]), Value::text("c"));
+    // Pin `c` dropped at 0: the Pin handler moves it, by key (the same
+    // node, moved), and the `Drop` handler does not run.
+    let c = shell.inst.drag_value(boxes[2]).unwrap();
+    assert!(shell.inst.event(row, "drop", vec![c, Value::int(0)]));
+    let u = shell.flush();
+    let order: Vec<Value> = shell
+        .scene
+        .children(row)
+        .iter()
+        .map(|n| app(&shell, *n))
+        .collect();
+    assert_eq!(order, ["c", "a", "b"].map(Value::text).to_vec());
+    assert_eq!(shell.scene.children(row)[0], boxes[2], "moved by key");
+    assert!(
+        !u.diff
+            .ops
+            .iter()
+            .any(|op| matches!(op, SceneOp::Create { .. } | SceneOp::Remove { .. })),
+        "a reorder only moves: {:?}",
+        u.diff.ops
+    );
+    assert_eq!(shell.inst.value_of("dock", "got").unwrap(), Value::text(""));
+    // Text from another program: the `Drop` handler, not the Pin one.
+    let drop = shell.host.record(
+        "Drop",
+        &[
+            ("kind", shell.host.variant("DropKind", "text")),
+            ("text", Value::text("hello")),
+        ],
+    );
+    assert!(
+        shell
+            .inst
+            .event(row, "drop", vec![drop.clone(), Value::int(1)])
+    );
+    shell.flush();
+    assert_eq!(
+        shell.inst.value_of("dock", "got").unwrap(),
+        Value::text("hello")
+    );
+    let order: Vec<Value> = shell
+        .scene
+        .children(row)
+        .iter()
+        .map(|n| app(&shell, *n))
+        .collect();
+    assert_eq!(order, ["c", "a", "b"].map(Value::text).to_vec());
+    // An untyped parameter takes anything.
+    assert!(shell.inst.event(col, "drop", vec![drop, Value::int(4)]));
+    shell.flush();
+    assert_eq!(shell.inst.value_of("dock", "seen").unwrap(), Value::int(4));
+    // The sources unmounted: no values left behind.
+    shell
+        .inst
+        .set("dock.pins", Value::list(Vec::new()))
+        .unwrap();
+    shell.flush();
+    assert!(shell.scene.children(row).is_empty());
+    for b in &boxes {
+        assert_eq!(shell.inst.drag_value(*b), None);
+    }
+}

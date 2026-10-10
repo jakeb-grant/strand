@@ -1461,6 +1461,28 @@ impl Ctx {
                 Transition::Instant,
             );
         }
+        // `on drop` targets: the type each handler's value parameter
+        // takes (`Drop` for other programs' drops, `any` for everything),
+        // which render matches against the dragged value's type.
+        let mut accepts: Vec<PropValue> = Vec::new();
+        for n in e.children.iter() {
+            if let Node::Handler(h) = n
+                && let Some(name) = self.drop_accepts(h)
+            {
+                let k = PropValue::Keyword(name.into());
+                if !accepts.contains(&k) {
+                    accepts.push(k);
+                }
+            }
+        }
+        if !accepts.is_empty() {
+            self.em.borrow_mut().set(
+                id,
+                SceneProp::Accepts,
+                PropValue::List(accepts),
+                Transition::Instant,
+            );
+        }
         let ec = ElemCtx { scene: id, state };
         if kind.is_surface() {
             self.mount_surface_body(rt, e, env, frag, ec, services.cloned());
@@ -1773,6 +1795,16 @@ impl Ctx {
         // A `lock`'s `open` is held true while the session is locked
         // (`lock.rs`).
         let lock_open = (kind == NodeKind::Lock && prop == SceneProp::Open).then(|| self.clone());
+        let drag = prop == SceneProp::Drag;
+        if drag {
+            // The source's value goes with its node.
+            let weak = Rc::downgrade(self);
+            rt.on_cleanup(move || {
+                if let Some(ctx) = weak.upgrade() {
+                    ctx.drags.borrow_mut().remove(&id);
+                }
+            });
+        }
         let pick = move |rt: &Runtime| -> Result<PropOut, strand_core::Error> {
             for (i, s) in srcs.iter().enumerate().rev() {
                 if let Some(c) = s.cond {
@@ -1799,10 +1831,25 @@ impl Ctx {
                         continue;
                     }
                 }
+                // A `drag:` source goes to render as its value's type
+                // name (what `on drop` targets accept); the value stays
+                // here for the drop to deliver.
+                if let (true, SourceValue::Chunk(c, _)) = (drag, &s.value) {
+                    let v = ctx.eval(rt, *c, &e)?;
+                    let name = drag_type(&ctx.vm.prog.types, &v);
+                    ctx.drags.borrow_mut().insert(id, v);
+                    return Ok(PropOut {
+                        value: PropValue::Keyword(name.into()),
+                        source: i,
+                    });
+                }
                 return Ok(PropOut {
                     value: ctx.source_value(rt, prop, &s.value, &e)?,
                     source: i,
                 });
+            }
+            if drag {
+                ctx.drags.borrow_mut().remove(&id);
             }
             Ok(PropOut {
                 value: PropValue::Unset,
@@ -3175,6 +3222,9 @@ impl Ctx {
     ) {
         let (vm, body, params) = (self.vm.clone(), h.body, h.params.clone());
         let file = self.vm.prog.chunk(body).file;
+        // An `on drop` runs only for a value of the type it takes (an
+        // element may have one per type).
+        let accepts = self.drop_accepts(h);
         match &h.event {
             Event::Element(name) => {
                 let Some(el) = el else { return };
@@ -3191,6 +3241,14 @@ impl Ctx {
                 );
                 let (e, me) = (env.clone(), self.clone());
                 let r = q.on(rt, move |rt, ctx| {
+                    if let Some(want) = &accepts
+                        && !ctx
+                            .args
+                            .first()
+                            .is_some_and(|v| drop_matches(want, &me.vm.prog.types, v))
+                    {
+                        return Ok(());
+                    }
                     let frame: Frame = params
                         .iter()
                         .copied()
@@ -3498,6 +3556,74 @@ impl Ctx {
 }
 
 /// The values of one longest strictly increasing subsequence of `seq`.
+impl Ctx {
+    /// The type an `on drop` handler's value parameter takes, as render
+    /// matches it (`Prop::Accepts`): `any` when it says none. `None` for
+    /// any other handler.
+    fn drop_accepts(&self, h: &Handler) -> Option<String> {
+        if !matches!(&h.event, Event::Element(n) if n == "drop") {
+            return None;
+        }
+        let ty = h
+            .params
+            .first()
+            .map_or(Ty::Any, |l| self.vm.prog.local(*l).ty.clone());
+        Some(type_key(&self.vm.prog.types, ty.non_null()))
+    }
+}
+
+impl super::Instance {
+    /// (M4) The current value of `drag:` source `node` (what dropping it
+    /// delivers to `on drop`), if it is mounted with one.
+    pub fn drag_value(&self, node: strand_scene::NodeId) -> Option<Value> {
+        self.ctx.drags.borrow().get(&node).cloned()
+    }
+}
+
+/// A type's name as drag and drop matches it: the checker's display
+/// name, with `path` read as `text` (a path converts to text both ways)
+/// and a schema type the config shadows named plainly.
+fn type_key(types: &crate::ty::TypeTable, ty: &Ty) -> String {
+    let name = types.show(ty).to_string();
+    let name = name.strip_prefix("builtin ").unwrap_or(&name);
+    match name {
+        "path" => "text".to_string(),
+        n => n.to_string(),
+    }
+}
+
+/// The type name a dragged value goes to render by (`Prop::Drag`), as
+/// [`type_key`] names an `on drop` parameter's type.
+pub(crate) fn drag_type(types: &crate::ty::TypeTable, v: &Value) -> String {
+    type_key(types, &value_ty(v))
+}
+
+/// The type of a value, as far as drag and drop tells types apart.
+fn value_ty(v: &Value) -> Ty {
+    use crate::vm::value::Num;
+    match v {
+        Value::Bool(_) => Ty::BOOL,
+        Value::Num(_, Num::Int) => Ty::INT,
+        Value::Num(_, Num::Px | Num::Ch) => Ty::LENGTH,
+        Value::Num(_, Num::Percent) => Ty::PERCENT,
+        Value::Num(_, Num::Deg) => Ty::ANGLE,
+        Value::Num(_, Num::Ms) => Ty::DURATION,
+        Value::Num(..) => Ty::FLOAT,
+        Value::Text(_) => Ty::TEXT,
+        Value::Color(_) => Ty::Prim(crate::ty::Prim::Color),
+        Value::Enum(e, _) => Ty::Enum(*e),
+        Value::Record(r) => Ty::Record(r.ty),
+        Value::List(items) => Ty::List(Box::new(items.first().map_or(Ty::Any, value_ty)), false),
+        Value::Null => Ty::Null,
+        _ => Ty::Any,
+    }
+}
+
+/// True if an `on drop` taking `want` (a [`type_key`]) takes `v`.
+pub(crate) fn drop_matches(want: &str, types: &crate::ty::TypeTable, v: &Value) -> bool {
+    want == "any" || drag_type(types, v) == want
+}
+
 fn longest_increasing(seq: &[usize]) -> Vec<usize> {
     // tails[l]: index into seq of the smallest tail of a run of length l+1.
     let mut tails: Vec<usize> = Vec::new();
