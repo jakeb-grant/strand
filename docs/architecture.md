@@ -462,7 +462,12 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   playback composed over the springs), `stagger.rs` (M4, S-effects:
   children entering one `stagger:` step apart), `morph.rs` (M4,
   S-effects: shared-element `morph:` from the box its name was last
-  drawn at, same surface only), `pages.rs` (page slides), `tests.rs`.
+  drawn at, on the same surface or, moved by the surfaces' origins
+  (`Renderer::set_surface_origin(surface, Option<(Option<String>,
+  LogicalPoint)>)`, which the binary's host calls from
+  `SurfaceHost::surface_placed` with the surface's monitor; a popup
+  takes its parent's output), on another surface of the same output),
+  `pages.rs` (page slides), `tests.rs`.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
   `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
   (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
@@ -472,6 +477,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `letters.rs` (a text's `letters`, one letter at a time), `roll.rs`
   (`roll: true` texts rolling their changed letters), `lean.rs`
   (`parallax:` and the CPU's 2D `tilt:` following the pointer),
+  `jelly.rs` (`jelly:` squash and stretch of a dragged node, from its
+  drawn offset),
   `transition.rs` (transition masks: clip paths, pixelate's blur),
   `goo.rs` (`merge d`'s goo field, a CPU raster under the children).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU

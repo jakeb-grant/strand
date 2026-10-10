@@ -517,6 +517,46 @@ impl Renderer {
         }
     }
 
+    /// (M4) Where `surface` lies on its output (`None`: not known), from
+    /// the surface manager's placement (`SurfaceHost::surface_placed`):
+    /// a shared-element morph into a node on it can start from a box last
+    /// drawn on another surface of the same output. A surface given no
+    /// output name (a popup) takes its parent surface's.
+    pub fn set_surface_origin(
+        &mut self,
+        surface: SurfaceId,
+        origin: Option<(Option<String>, strand_scene::LogicalPoint)>,
+    ) {
+        let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
+            return;
+        };
+        let Some((output, at)) = origin else {
+            self.extras.origins.remove(&root);
+            return;
+        };
+        let output = output.or_else(|| {
+            let parent = self.tree.get(root)?.parent?;
+            let up = self.tree.root_of(parent)?;
+            Some(self.extras.origins.get(&up)?.output.clone())
+        });
+        match output {
+            Some(output) => {
+                self.extras
+                    .origins
+                    .insert(root, crate::flatten::SurfaceOrigin { output, at });
+            }
+            None => {
+                self.extras.origins.remove(&root);
+            }
+        }
+    }
+
+    /// (M4) Where `surface` lies on its output, as last set.
+    pub fn surface_origin(&self, surface: SurfaceId) -> Option<&crate::flatten::SurfaceOrigin> {
+        let root = self.surfaces.get(&surface)?.root;
+        self.extras.origins.get(&root)
+    }
+
     /// Hover, press, focus, carets and slider drags as the input router
     /// last set them.
     pub fn widgets(&self) -> &crate::widgets::Widgets {

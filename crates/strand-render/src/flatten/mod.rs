@@ -330,11 +330,26 @@ pub struct Extras {
     /// root node, logical pixels (`Router::pointer`, handed over by the
     /// host): `parallax` and `tilt` follow it.
     pub pointers: HashMap<NodeId, strand_scene::LogicalPoint>,
+    /// (M4) Where each surface lies on its output, by the surface's root
+    /// node (handed over by the host): shared-element morphs across
+    /// surfaces start from boxes moved by it.
+    pub origins: HashMap<NodeId, SurfaceOrigin>,
     /// (M4) The CPU fallbacks drawn in place of GPU effects, said once.
     pub fallbacks: crate::effects::raster::Fallbacks,
 
     /// (M4) Media nodes' sources (graphs, spectra), by node.
     pub media: crate::media::Media,
+}
+
+/// (M4) Where a surface's buffer (its top-left corner) lies on an
+/// output: the output's name and the position, in the output's logical
+/// pixels (`SurfaceHost::surface_placed`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceOrigin {
+    /// The output it is on (any name that tells outputs apart).
+    pub output: String,
+    /// Its top-left corner on that output.
+    pub at: strand_scene::LogicalPoint,
 }
 
 impl Extras {

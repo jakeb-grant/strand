@@ -483,9 +483,10 @@ impl Animator {
     }
 
     /// (M4) `node`'s shared-element morph ([`morph`]): laid out at `rect`
-    /// (paint offsets included) on the surface of `root`, how far it is
-    /// drawn from there (`[dx, dy, sx, sy]`), if it morphs. A node that
-    /// starts a morph plays it in place of its enter pose. Called before
+    /// (paint offsets included) on the surface of `root` (`origins`:
+    /// where each surface lies on its output), how far it is drawn from there
+    /// (`[dx, dy, sx, sy]`), if it morphs. A node that starts a morph
+    /// plays it in place of its enter pose. Called before
     /// [`Animator::paint`].
     pub fn shared_morph(
         &mut self,
@@ -493,6 +494,7 @@ impl Animator {
         scope: &TokenScope<'_>,
         root: NodeId,
         rect: LogicalRect,
+        origins: &morph::Origins,
     ) -> Option<[f32; 4]> {
         let key = match node
             .get(Prop::Morph)
@@ -518,9 +520,9 @@ impl Animator {
             snap: self.snapping(),
         };
         let entering = self.enter.contains(&node.id);
-        let (v, moving, started) = self
-            .shared
-            .morph(node.id, &key, root, rect, entering, curve, frame);
+        let (v, moving, started) =
+            self.shared
+                .morph(node.id, &key, (root, origins), rect, entering, curve, frame);
         if started {
             // In place of its enter pose.
             self.enter.remove(&node.id);

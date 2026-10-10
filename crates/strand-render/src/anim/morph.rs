@@ -13,16 +13,24 @@
 //! plays that in place of its `enter` pose, and its subtree moves and
 //! scales with it. The node it came from leaves as it would anyway.
 //!
-//! Render knows nothing of where surfaces sit on the outputs, so a name
-//! last drawn on another surface gives no box to start from. The node
-//! plays its `enter` pose instead. `reduced_motion` and frames with no
-//! clock show it in place at once.
+//! A name last drawn on another surface starts the morph too when both
+//! surfaces lie on the same output and the host told render where
+//! (`Renderer::set_surface_origin`, from the surface manager's
+//! placement): the old box is moved by the difference between the two
+//! surfaces' origins, so the bar's pill grows into the media panel. With
+//! either origin unknown, or the surfaces on two outputs, there is no box
+//! to start from and the node plays its `enter` pose. `reduced_motion` and
+//! frames with no clock show it in place at once.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use strand_scene::{Curve, LogicalRect, Motion, NodeId};
 
+use crate::flatten::SurfaceOrigin;
+
+/// Where each surface lies on its output, by its root.
+pub(crate) type Origins = HashMap<NodeId, SurfaceOrigin>;
 use crate::shapes::morph::Frame;
 
 /// Settling tolerance (pixels and scale).
@@ -40,6 +48,26 @@ struct Seen {
     root: NodeId,
     rect: LogicalRect,
     at: Duration,
+}
+
+impl Seen {
+    /// Its box on the surface of `root`: as seen on its own surface, or
+    /// moved from another surface on the same output (`origins`: where
+    /// each surface lies, by root).
+    fn rect_on(&self, root: NodeId, origins: &Origins) -> Option<LogicalRect> {
+        if self.root == root {
+            return Some(self.rect);
+        }
+        let (from, to) = (origins.get(&self.root)?, origins.get(&root)?);
+        (from.output == to.output).then(|| {
+            LogicalRect::new(
+                self.rect.x + from.at.x - to.at.x,
+                self.rect.y + from.at.y - to.at.y,
+                self.rect.w,
+                self.rect.h,
+            )
+        })
+    }
 }
 
 /// Where each `morph` name was last drawn, and the morphs in flight.
@@ -61,7 +89,8 @@ pub(crate) struct SharedMorphs {
 
 impl SharedMorphs {
     /// Node `id` named `key`, laid out at `rect` on the surface of
-    /// `root`, in `frame`: how far it is drawn from its box (`[dx, dy,
+    /// `root` (`place`: the root, and where each surface lies on its
+    /// output, by root), in `frame`: how far it is drawn from its box (`[dx, dy,
     /// sx, sy]`, `None` at its box), whether it is still moving and
     /// whether its morph started now. `entering`: it is about to play its
     /// enter pose.
@@ -70,7 +99,7 @@ impl SharedMorphs {
         &mut self,
         id: NodeId,
         key: &str,
-        root: NodeId,
+        (root, origins): (NodeId, &Origins),
         rect: LogicalRect,
         entering: bool,
         curve: Curve,
@@ -87,22 +116,17 @@ impl SharedMorphs {
             && !frame.snap
             && let Some(seen) = self.seen.get(key)
             && seen.id != id
-            && seen.root == root
             && frame.at.saturating_sub(seen.at) <= STALE
+            && let Some(old) = seen.rect_on(root, origins)
             && rect.w > 0.0
             && rect.h > 0.0
-            && seen.rect.w > 0.0
-            && seen.rect.h > 0.0
+            && old.w > 0.0
+            && old.h > 0.0
         {
             let c = |r: &LogicalRect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
-            let ((ox, oy), (nx, ny)) = (c(&seen.rect), c(&rect));
+            let ((ox, oy), (nx, ny)) = (c(&old), c(&rect));
             let scale = |a: f32, b: f32| (a / b).clamp(1.0 / MAX_SCALE, MAX_SCALE);
-            let from = [
-                ox - nx,
-                oy - ny,
-                scale(seen.rect.w, rect.w),
-                scale(seen.rect.h, rect.h),
-            ];
+            let from = [ox - nx, oy - ny, scale(old.w, rect.w), scale(old.h, rect.h)];
             if from.iter().all(|v| v.is_finite()) && !frame.commit {
                 // A preview is drawn at the last frame's time, with its
                 // ancestors' offsets of then: starting here would carry
@@ -230,7 +254,7 @@ mod tests {
             m.morph(
                 NodeId::new(10 + i, 0),
                 &key,
-                root,
+                (root, &Origins::new()),
                 rect,
                 true,
                 Curve::Instant,
@@ -245,7 +269,15 @@ mod tests {
         let r = LogicalRect::new(10.0, 0.0, 10.0, 10.0);
         let key = "note-9999";
         let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
-        let (_, moving, started) = m.morph(NodeId::new(1, 1), key, root, r, true, curve, frame(ms));
+        let (_, moving, started) = m.morph(
+            NodeId::new(1, 1),
+            key,
+            (root, &Origins::new()),
+            r,
+            true,
+            curve,
+            frame(ms),
+        );
         assert!(started && moving);
         // Its surface gone: everything it remembered goes.
         m.retain(|id| id != root);

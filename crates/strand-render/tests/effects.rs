@@ -1912,8 +1912,8 @@ fn morph_box(d: &mut SceneDiff, id: NodeId, parent: NodeId, (x, y, w, h): (f32, 
 /// that enters with the name of one drawn on its surface starts from
 /// that box and springs to its own, moved and scaled, in place of its
 /// enter pose (ref `effects_morph_shared.png` on its way); another
-/// surface's box is unknown (render has no surface origins), so there
-/// it plays its enter pose; `reduced_motion` shows it in place.
+/// surface's box is unknown while the surfaces' origins are, so there it
+/// plays its enter pose; `reduced_motion` shows it in place.
 #[test]
 fn a_shared_morph_starts_from_the_named_box() {
     use std::time::Duration;
@@ -1969,6 +1969,61 @@ fn a_shared_morph_starts_from_the_named_box() {
     buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
     assert_eq!(buf.px(150, 30), orange);
     assert_eq!(buf.px(20, 30), bg);
+}
+
+/// design.md: "Shared-element morph across surfaces, so the bar's media
+/// pill becomes the media panel". With both surfaces placed on the same
+/// output (`Renderer::set_surface_origin`), a node entering on the panel
+/// starts over the bar's pill, moved by the difference of the origins
+/// (ref `effects_morph_across.png` on its way), and springs to its own
+/// box; on another output it plays its enter pose in place.
+#[test]
+fn a_shared_morph_crosses_surfaces_on_one_output() {
+    use std::time::Duration;
+    let at = |x: f32, y: f32| strand_scene::LogicalPoint::new(x, y);
+    for same in [true, false] {
+        let (mut r, buf, mut buf2, [_, _, panel]) = morphing(false);
+        let orange = buf.px(20, 30);
+        // The panel lies 30 px below the bar's top, on DP-1 or another.
+        r.set_surface_origin(S, Some((Some("DP-1".into()), at(0.0, 0.0))));
+        let other = if same { "DP-1" } else { "DP-2" };
+        r.set_surface_origin(S2, Some((Some(other.into()), at(0.0, 30.0))));
+        // The pill is drawn again (its box remembered with its place).
+        buf2.paint_at(&mut r, S2, 1, Duration::from_millis(1000));
+        let mut bar = Buffer::new(200, 60, Scale::ONE);
+        bar.paint_at(&mut r, S, 1, Duration::from_millis(1008));
+        let big = NodeId::new(401, 0);
+        let mut d = SceneDiff::new();
+        morph_box(&mut d, big, panel, (40.0, 20.0, 40.0, 30.0));
+        assert!(r.apply(d).is_empty());
+        buf2.paint_at(&mut r, S2, 1, Duration::from_millis(1016));
+        if same {
+            // The pill's box (10..30 × 20..40 on the bar) is 10..30 ×
+            // -10..10 on the panel: its lower half shows, in full colour.
+            assert_eq!(buf2.px(20, 5), orange, "starts at the pill");
+            assert_ne!(buf2.px(70, 40), orange, "not yet at its box");
+            let mut t = 1016;
+            while t < 1064 {
+                t += 16;
+                buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
+            }
+            assert_matches_ref("effects_morph_across", &buf2, 2);
+        } else {
+            let p = buf2.px(60, 35);
+            assert!(
+                p != orange && p != buf2.px(5, 5),
+                "another output: fading in in place: {p:?}"
+            );
+            assert_ne!(buf2.px(20, 5), orange);
+        }
+        let mut t = 1100;
+        while r.wants_frame(S2) {
+            t += 16;
+            buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
+            assert!(t < 5000, "settles");
+        }
+        assert_eq!(buf2.px(60, 35), orange, "at its own box");
+    }
 }
 
 /// A shared morph that a preview (the flatten at the last frame's time
