@@ -502,13 +502,56 @@ const GUARD_BGS: usize = 8;
 /// backgrounds there are.
 type GuardKey = ([u32; 4 * (GUARD_BGS + 1)], u8);
 
+/// The memo's hasher: its keys are colour bits, not input an attacker
+/// picks to collide, so a multiply-rotate over 8-byte words (FxHash's)
+/// does instead of SipHash, which costs more than a hit saves.
+#[derive(Default)]
+struct WordHasher(u64);
+
+impl std::hash::Hasher for WordHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut words = bytes.chunks_exact(8);
+        for w in &mut words {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(w);
+            self.add(u64::from_le_bytes(b));
+        }
+        let rest = words.remainder();
+        if !rest.is_empty() {
+            let mut b = [0u8; 8];
+            b[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(b) ^ ((rest.len() as u64) << 56));
+        }
+    }
+
+    fn write_u8(&mut self, v: u8) {
+        self.add(v as u64);
+    }
+
+    fn write_usize(&mut self, v: usize) {
+        self.add(v as u64);
+    }
+}
+
+impl WordHasher {
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+type GuardMemo = HashMap<GuardKey, Color, std::hash::BuildHasherDefault<WordHasher>>;
+
 thread_local! {
     /// Solved text colours by (text, backgrounds): a frame's text nodes
     /// share their scope's few pairs, so each pair is solved once per
     /// frame (once per palette while nothing springs), not once per
     /// lookup.
-    static GUARD: std::cell::RefCell<std::collections::HashMap<GuardKey, Color>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static GUARD: std::cell::RefCell<GuardMemo> =
+        std::cell::RefCell::new(GuardMemo::default());
     /// Solves done (memo misses), for cost tests.
     static GUARD_SOLVES: Cell<u64> = const { Cell::new(0) };
 }

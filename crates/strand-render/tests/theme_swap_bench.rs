@@ -38,6 +38,12 @@
 //! scopes the whole swap (logic's re-resolve on design.md's theme, the
 //! apply and every frame's work) to the 5 ms (decisions.md, wave3-theme
 //! fixer rounds 2 and 3).
+//!
+//! Every gated swap solves `material(seed:)` again: its palette memo is
+//! forgotten first, so the gates time a swap to a seed not shown before
+//! (a new wallpaper, a changed seed), not a palette kept from the swap
+//! before; the kept case is printed beside it (decisions.md,
+//! m4-owner-swap).
 
 mod common;
 
@@ -352,6 +358,9 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
             for _ in 0..samples(SWAPS) {
                 shell.look(from, false);
                 shell.settle();
+                // A seed not shown before: material(seed:) solves again
+                // (the gate's worst case, not a kept palette).
+                strand_theme::material::forget_kept_palettes();
                 let (logic, apply) = shell.look(to, true);
                 assert!(shell.r.swapping(), "{from} → {to}: nothing springs");
                 assert_eq!(shell.r.swap_crossfades(), 0, "{from} → {to} crossfaded");
@@ -670,27 +679,39 @@ fn spring_tables(stiffness: f32) -> (TokenTable, TokenTable) {
 /// the spring or the scopes; the work of each frame (the roots and the
 /// frame's token graph) is held to a twentieth of it per frame, and
 /// along the design's `spring(1600, 1)` with up to eight scopes the
-/// whole swap (logic's re-resolve, measured on design.md's theme as in
-/// the first bench, the apply and every frame's work) is held to the
+/// whole swap (logic's re-resolve solving the palette again, measured
+/// on design.md's theme as in the first bench, the apply and every frame's work) is held to the
 /// 5 ms; a slower spring costs the same per frame, over more frames
 /// (decisions.md).
 #[test]
 fn set_scopes_and_slow_springs_stay_within_the_budget() {
     let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
-    // Logic's re-resolve of a light↔dark swap on design.md's theme.
-    let logic = {
+    // Logic's re-resolve of a light↔dark swap on design.md's theme,
+    // with material(seed:) solving each palette again (a seed not shown
+    // before: the gated figure) and with the palette kept from the swap
+    // before (reported), so the solve's cost and the memo's saving are
+    // told apart (decisions.md, m4-owner-swap).
+    let (logic, kept) = {
         let (mut shell, dir, storage) = bench_shell("logic");
-        let mut logic = Vec::new();
-        for i in 0..samples(LOGIC_SWAPS) {
-            let (l, _) = shell.look(if i % 2 == 0 { "dark" } else { "light" }, true);
-            shell.settle();
-            if i > 0 {
-                logic.push(l);
+        let mut solved = Vec::new();
+        let mut kept = Vec::new();
+        for fresh in [true, false] {
+            for i in 0..samples(LOGIC_SWAPS) {
+                if fresh {
+                    strand_theme::material::forget_kept_palettes();
+                }
+                let (l, _) = shell.look(if i % 2 == 0 { "dark" } else { "light" }, true);
+                shell.settle();
+                // Kept: from the third swap on, both palettes are.
+                if i > 1 {
+                    if fresh { &mut solved } else { &mut kept }.push(l);
+                }
             }
         }
         finish(shell, dir, storage);
-        median(&logic)
+        (median(&solved), median(&kept))
     };
+    eprintln!("logic's re-resolve: {logic:?} solving the palette, {kept:?} with it kept");
     let per_frame = BUDGET / 20;
     let gate_frame = if cfg!(debug_assertions) {
         per_frame * 8

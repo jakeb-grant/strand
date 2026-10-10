@@ -291,6 +291,24 @@ impl<const N: usize> Segment<N> {
         (pos, vel)
     }
 
+    /// Position and velocity at `at`, or `None` once settled there (as
+    /// [`Segment::settled`]), the curve evaluated at most once.
+    fn moving(&self, at: Duration, eps: f32) -> Option<([f32; N], [f32; N])> {
+        let t = at.saturating_sub(self.start);
+        match self.curve {
+            Curve::Instant => None,
+            Curve::Timed { duration, .. } if t >= duration => None,
+            Curve::Spring(_) if t >= MAX_MOTION => None,
+            Curve::Timed { .. } => Some(self.at(at)),
+            Curve::Spring(_) => {
+                let (p, v) = self.at(at);
+                let rest = (0..N)
+                    .all(|i| (p[i] - self.target[i]).abs() <= eps && v[i].abs() <= eps * 10.0);
+                (!rest).then_some((p, v))
+            }
+        }
+    }
+
     /// At rest at its target by `at`, within `eps` of position (and
     /// `eps` × 10 per second of velocity).
     fn settled(&self, at: Duration, eps: f32) -> bool {
@@ -488,6 +506,27 @@ impl<const N: usize> Motion<N> {
         self.seg.at(at).1
     }
 
+    /// [`Motion::peek`], [`Motion::velocity`] and [`Motion::is_settled`]
+    /// at `at` in one go, the curve evaluated once (twice only for a
+    /// time before the segment starts): (position, velocity, settled).
+    pub fn probe(&self, at: Duration) -> ([f32; N], [f32; N], bool) {
+        let state = self.seg.moving(at, self.eps);
+        let vel = state.map_or([0.0; N], |(_, v)| v);
+        let settled = self.pending.is_none() && state.is_none();
+        let pos = if at >= self.seg.start {
+            let mut pos = state.map_or(self.seg.target, |(p, _)| p);
+            if let Some(p) = &self.pending {
+                for (x, s) in pos.iter_mut().zip(p.shift) {
+                    *x += s;
+                }
+            }
+            pos
+        } else {
+            self.peek(at)
+        };
+        (pos, vel, settled)
+    }
+
     /// At rest at its target, with nothing pending, at `at`.
     pub fn is_settled(&self, at: Duration) -> bool {
         self.pending.is_none() && self.seg.settled(at, self.eps)
@@ -525,6 +564,47 @@ pub fn channels_color(ch: [f32; 4]) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_probe_is_peek_velocity_and_settled_at_once() {
+        // Springs (bouncy and critical), a timed curve, a pending
+        // retarget with a shift, times before the segment starts and
+        // long after it settles: `probe` answers what the three calls do,
+        // bit for bit.
+        let curves = [
+            Curve::Spring(Spring::new(1600.0, 1.0).unwrap()),
+            Curve::Spring(Spring::new(380.0, 0.75).unwrap()),
+            Curve::Timed {
+                duration: ms(200),
+                easing: Easing::STANDARD,
+            },
+            Curve::Instant,
+        ];
+        for curve in curves {
+            let mut m = Motion::rest([0.0, 1.0, -2.0, 0.5], 0.0005).sampled_at(Some(ms(1000)));
+            m.retarget([1.0, -1.0, 2.0, 0.5], curve);
+            let mut shifted = m.clone();
+            shifted.shift([0.25, 0.0, 0.0, 0.0], curve);
+            let probes = |m: &Motion<4>| {
+                for t in (0..3000).step_by(7) {
+                    let at = ms(t);
+                    assert_eq!(
+                        m.probe(at),
+                        (m.peek(at), m.velocity(at), m.is_settled(at)),
+                        "{curve:?} at {t} ms"
+                    );
+                }
+            };
+            probes(&m);
+            probes(&shifted);
+            m.sample(ms(1010));
+            probes(&m);
+            m.retarget([0.0; 4], curve);
+            probes(&m);
+            m.sample(ms(1100));
+            probes(&m);
+        }
+    }
 
     fn ms(v: u64) -> Duration {
         Duration::from_millis(v)

@@ -659,8 +659,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   it as `v0·t·(1 − t/d)²`, which fades out by the end of the duration);
   `retarget_at` starts at a given time;
   `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
-  anything. Everything is a pure function of the timestamps sampled, so
-  frames are testable as images. `color_channels`/`channels_color` map a
+  anything, and `probe(at)` reads all three at once (the curve evaluated
+  once: the theme swap's contrast play-through). Everything is a pure
+  function of the timestamps sampled, so frames are testable as images. `color_channels`/`channels_color` map a
   colour to premultiplied OKLab plus alpha. `TokenScope::transition`
   falls back to `SPATIAL`/`EFFECTS`/`BOUNCY` when the table has no
   `$motion.*` token of that name.
@@ -1404,7 +1405,11 @@ table.
   opaque what it was given, derives the rest by one table, then
   guards).
 - `material::from_seed(Color, Options { variant, dark, contrast })`:
-  `material-colors` 0.5, spec 2021 pinned (`material::SPEC`).
+  `material-colors` 0.5, spec 2021 pinned (`material::SPEC`). Each
+  thread keeps its last eight palettes (keyed by 8-bit seed, variant,
+  mode and clamped contrast); `material::forget_kept_palettes()`
+  (hidden, for the timing benches) drops this thread's, so a gate
+  times the solve, not a kept palette.
 - `image::Quantiser`: `lookup(path) -> Lookup::{Ready(seed), Pending {
   last }, Failed { error, last }}` from a `stat` on the calling thread;
   a worker thread reads the file through one descriptor, BLAKE3-hashes

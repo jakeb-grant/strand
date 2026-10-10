@@ -74,10 +74,14 @@ list). The rest keep their numbers.
    (`strand-render/tests/gpu.rs::a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait`),
    and a readback that never ends loses the device after `HUNG_AFTER`
    (10 s).
-3. **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate** has little or
-   no headroom on GitHub: 2.53–5.06 ms over fifteen timing jobs against
-   5 ms, one failure (run 38050248241). Accept the occasional failure,
-   use a larger runner, or make the swap cheaper.
+3. **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate: answered.**
+   The owner chose (2026-10-10) to make the swap cheaper and keep the
+   5 ms gate (decisions.md m4-owner-swap). On the laptop the gated
+   whole swap went from 1.61 ms to 1.36 ms (-15%), all of it the
+   render thread's apply; the gate still times logic solving its
+   palette (about 0.26 ms, unchanged), not the memo's kept palette
+   (0.07 ms). Whether GitHub's 2.53–5.06 ms spread now clears 5 ms is
+   for the next timing jobs to show.
 4. **The shape list**: keep the 13 shapes (a reading of design.md,
    recorded with its reasons) or trim them to design.md's five plus
    polygons.
@@ -161,10 +165,14 @@ and the full shell warns above 64 MB and fails above 70 MB
   that is its own check of the compositor, not the adapter's.
 - `theme_swap_bench`'s tightest gated case, 8 scopes on
   `spring(1600, 1)` (whole swap), measured 4.46 ms on GitHub against
-  5 ms (about 11% headroom, no retry; decisions.md laptop-ci). Since
-  then fifteen timing jobs measured 2.53–5.06 ms, one over the gate
-  (run 38050248241; decisions.md m4-audit, round 3): a `timing` failure
-  there is most likely runner noise, and the gate is the owner's call. Consolidating test
+  5 ms (about 11% headroom, no retry; decisions.md laptop-ci), then
+  2.53–5.06 ms over fifteen timing jobs with one over the gate (run
+  38050248241; decisions.md m4-audit, round 3), all before
+  m4-owner-swap. The owner kept the gate and asked for a cheaper swap
+  (2026-10-10): m4-owner-swap cut the case from 1.61 to 1.36 ms on the
+  laptop (render's apply 0.78 to 0.55 ms; logic's solve about 0.26 ms
+  either way, still timed uncached), so GitHub should measure roughly
+  15% less; no timing job has run on it yet. Consolidating test
   binaries was measured (about 39 s of linking in all) and not done.
 - On the laptop the timing gates warn: `scripts/container/run.sh ci`
   prints WARN for `reload_latency` and `theme_swap_bench` gate misses
