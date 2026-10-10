@@ -145,6 +145,11 @@ pub struct CompositorCaps {
     pub session_lock: bool,
     /// `wl_data_device_manager`: drag and drop with other programs.
     pub data_device: bool,
+    /// (M4) Hyprland's own globals (`hyprland_*`) are in the registry.
+    /// Hyprland blurs layer surfaces by its layer rules (`strand
+    /// compositor-rules`), and draws a layer surface stretched to the box
+    /// it arranged whatever its viewport, so a root's scale is painted.
+    pub hyprland: bool,
 }
 
 impl CompositorCaps {

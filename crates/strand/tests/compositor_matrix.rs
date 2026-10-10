@@ -2376,6 +2376,8 @@ fn surfaces_meet_the_live_compositor() {
     let has = |i: &str| offered.iter().any(|o| o == i);
     eprintln!("matrix: {kind} reports {caps:?}");
     assert_eq!(caps.alpha_modifier, has("wp_alpha_modifier_v1"), "{kind}");
+    // (M4) Hyprland is known by its own globals, on Hyprland only.
+    assert_eq!(caps.hyprland, kind == "hyprland", "{kind}: {offered:?}");
     assert_eq!(caps.viewporter, has("wp_viewporter"), "{kind}");
     assert_eq!(
         caps.single_pixel_buffer,
@@ -2712,8 +2714,8 @@ fn surfaces_meet_the_live_compositor() {
             SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p))),
         );
         let id = mgr.state().surfaces_of(POSE)[0];
-        let scaled = caps.viewporter && kind != "hyprland";
-        let moved = kind == "hyprland";
+        let scaled = caps.viewporter && !caps.hyprland;
+        let moved = caps.hyprland;
         let pose = if moved {
             strand_scene::SurfacePose {
                 opacity: 0.5,
@@ -2965,5 +2967,122 @@ fn surfaces_meet_the_live_compositor() {
                 .apply_surface_change(node, SurfaceChange::Removed);
         }
         let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
+    }
+}
+
+/// (M4) A posed panel looks the same on every compositor, whichever path
+/// draws its pose: `panel Pose { anchor: bottom_left; 200 × 100; opacity:
+/// 0.5; scale: 0.5 }`, opaque white, run by `strand run`. Where the
+/// compositor has the alpha modifier and the viewporter the host hands
+/// both to it; on Hyprland (known by its `hyprland_*` globals) the scale
+/// is painted; on niri, which has no alpha modifier, both are painted
+/// (the repaint path). Each way the desktop under the half-size box about
+/// the panel's centre is blended halfway to white, and the rest of the
+/// panel's box shows the desktop unchanged.
+#[test]
+fn a_posed_panel_looks_the_same_on_every_compositor() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("a_posed_panel_looks_the_same_on_every_compositor");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let offered = registry(&socket);
+    let has = |i: &str| offered.iter().any(|o| o == i);
+    let path = if !has("wp_alpha_modifier_v1") || !has("wp_viewporter") {
+        "painted (no alpha modifier or viewporter)"
+    } else if offered.iter().any(|o| o.starts_with("hyprland_")) {
+        "opacity delegated, scale painted (Hyprland)"
+    } else {
+        "delegated to the compositor"
+    };
+    if kind == "niri" {
+        assert!(
+            !has("wp_alpha_modifier_v1"),
+            "niri offers the alpha modifier now: this test no longer proves the repaint path"
+        );
+    }
+    let live = live();
+    let output = live.as_ref().map(|l| l.output.clone());
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let desk = grab(output.as_deref(), dir.path()).expect("grim");
+    let oh = desk.h;
+    let inside = [(100, oh - 50), (60, oh - 70), (140, oh - 30)];
+    let outside = [
+        (40, oh - 50),
+        (160, oh - 50),
+        (100, oh - 85),
+        (100, oh - 15),
+    ];
+    let half = |p: [u8; 3]| p.map(|c| ((c as u16 + 255) / 2) as u8);
+    let want_in: Vec<[u8; 3]> = inside.iter().map(|&(x, y)| half(desk.px(x, y))).collect();
+    let want_out: Vec<[u8; 3]> = outside.iter().map(|&(x, y)| desk.px(x, y)).collect();
+
+    let home = dir.path().join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).expect("the config directory");
+    std::fs::write(
+        config.join("shell.strand"),
+        "panel Pose { anchor: bottom_left; width: 200; height: 100; open: true\n  \
+         opacity: 0.5; scale: 0.5; bg: #ffffff\n}\n",
+    )
+    .expect("the config");
+    let log = dir.path().join("strand.log");
+    let mut strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_CACHE_HOME", dir.path().join("cache"))
+            .env("XDG_STATE_HOME", dir.path().join("state"))
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("PIPEWIRE_RUNTIME_DIR", dir.path().join("no-pipewire"))
+            .env_remove("PIPEWIRE_REMOTE")
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).expect("the log"))
+            .spawn()
+            .expect("strand run"),
+    );
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        if let Ok(Some(status)) = strand.0.try_wait() {
+            panic!(
+                "strand exited ({status}): {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+        }
+        let img = grab(output.as_deref(), dir.path()).expect("grim");
+        let ins: Vec<[u8; 3]> = inside.iter().map(|&(x, y)| img.px(x, y)).collect();
+        let outs: Vec<[u8; 3]> = outside.iter().map(|&(x, y)| img.px(x, y)).collect();
+        let ok_in = ins.iter().zip(&want_in).all(|(a, b)| dist(*a, *b) <= 12);
+        let ok_out = outs.iter().zip(&want_out).all(|(a, b)| dist(*a, *b) <= 9);
+        if ok_in && ok_out {
+            eprintln!(
+                "matrix: {kind}: the posed panel blends {:?} to {:?}, its pose {path}",
+                desk.px(inside[0].0, inside[0].1),
+                ins[0]
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
+                let mut cmd = Command::new("grim");
+                if let Some(o) = &output {
+                    cmd.args(["-o", o]);
+                }
+                let _ = cmd
+                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-run-pose-failed.png")))
+                    .status();
+            }
+            panic!(
+                "{kind} ({path}): the posed panel: inside {inside:?} is {ins:?} (want \
+                 {want_in:?}), outside {outside:?} is {outs:?} (want {want_out:?})\n{}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }

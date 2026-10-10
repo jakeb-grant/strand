@@ -293,11 +293,9 @@ fn monitor_bounds(m: &Monitor) -> Option<strand_scene::LogicalSize> {
 /// compositor's, the same for every node with `blur`.
 #[derive(Debug, Default)]
 struct BlurFallback {
-    /// The compositor's capabilities (`None`: not reported yet).
+    /// The compositor's capabilities (`None`: not reported yet; on
+    /// Hyprland the reason names `strand compositor-rules`).
     caps: Option<CompositorCaps>,
-    /// Hyprland runs the session: the reason names `strand
-    /// compositor-rules`.
-    hyprland: bool,
     said: bool,
 }
 
@@ -308,9 +306,9 @@ impl BlurFallback {
     /// reported yet) costs a paint nothing.
     fn pending(&self) -> bool {
         !self.said
-            && self.caps.is_some_and(|c| {
-                strand_surface::caps::blur_fallback_reason(&c, self.hyprland).is_some()
-            })
+            && self
+                .caps
+                .is_some_and(|c| strand_surface::caps::blur_fallback_reason(&c).is_some())
     }
 
     /// The diagnostic for a frame of the surface `ns` that asks for blur:
@@ -321,7 +319,7 @@ impl BlurFallback {
         if self.said {
             return None;
         }
-        let reason = strand_surface::caps::blur_fallback_reason(&self.caps?, self.hyprland)?;
+        let reason = strand_surface::caps::blur_fallback_reason(&self.caps?)?;
         self.said = true;
         Some(format!("no blur behind {ns}: {reason}"))
     }
@@ -340,10 +338,7 @@ impl Host {
             roots: HashMap::new(),
             origins: HashMap::new(),
             idle: Vec::new(),
-            blur_fallback: BlurFallback {
-                hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
-                ..BlurFallback::default()
-            },
+            blur_fallback: BlurFallback::default(),
             gpu_released: Vec::new(),
             feeds: None,
             lock: crate::run::lock::LockScreen::default(),
@@ -776,9 +771,8 @@ impl SurfaceHost for Host {
         self.renderer.set_compositor_poses(caps.delegates_poses());
         // Hyprland draws a layer surface stretched to the box it
         // arranged, whatever its viewport: a root's scale is painted
-        // there (decisions.md, m4-surface-w2).
-        self.renderer
-            .set_compositor_pose_scale(!self.blur_fallback.hyprland);
+        // there (decisions.md, m4-surface-w2). Known by its globals.
+        self.renderer.set_compositor_pose_scale(!caps.hyprland);
         self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).
@@ -839,8 +833,10 @@ mod tests {
         assert!(!b.pending(), "said");
         assert_eq!(b.frame("strand-Dock"), None, "once");
         let mut b = BlurFallback {
-            hyprland: true,
-            caps: Some(CompositorCaps::default()),
+            caps: Some(CompositorCaps {
+                hyprland: true,
+                ..CompositorCaps::default()
+            }),
             ..BlurFallback::default()
         };
         assert!(
@@ -865,8 +861,7 @@ mod tests {
             ]));
             let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
             let mut host = Host::new(renderer, false);
-            host.blur_fallback.hyprland = hyprland;
-            host.compositor_caps(&caps);
+            host.compositor_caps(&CompositorCaps { hyprland, ..caps });
             let panel = NodeId::new(0, 0);
             let num = strand_scene::PropValue::Number;
             let mut d = SceneDiff::new();

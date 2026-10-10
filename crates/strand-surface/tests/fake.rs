@@ -72,6 +72,7 @@ fn capabilities_are_reported_once_the_globals_are_bound() {
         background_effect: true,
         session_lock: false,
         data_device: false,
+        hyprland: false,
     };
     assert_eq!(mgr.state().host().caps.last(), Some(&want));
     assert_eq!(mgr.state().compositor_caps(), want);

@@ -1138,10 +1138,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     popup's x/y always repaints. Without the protocols, render repaints.
   - **Compositor capabilities.** `CompositorCaps { alpha_modifier,
     viewporter, single_pixel_buffer, background_effect, session_lock,
-    data_device }` (all `bool`; `delegates_poses()` needs the first
-    two), reported once the globals are bound
+    data_device, hyprland }` (all `bool`; `delegates_poses()` needs the
+    first two; `hyprland` (M4 interaction-finish): a `hyprland_*` global
+    is in the registry), reported once the globals are bound
     (`SurfaceHost::compositor_caps`); the host hands render what it uses
-    (`set_compositor_blur`, `set_compositor_poses`).
+    (`set_compositor_blur`, `set_compositor_poses`,
+    `set_compositor_pose_scale(!hyprland)`; the blur fallback's reason
+    names `strand compositor-rules` when `hyprland`).
   - **Backends** (`strand_scene::backend`): `Backend` (`Cpu`,
     `GpuPresent`, `GpuReadback`), `BackendChange` (`Promote(surface)`,
     `Demote(surface)`, `Drop`), `GpuStatus` (`Unused`, `Starting`,
@@ -2514,8 +2517,9 @@ and the connection):
     "`strand-gpu`", "Surface hand-off".
   - Capabilities (`caps.rs`): the manager binds `wp_alpha_modifier_v1`,
     `wp_single_pixel_buffer_v1` and `ext_background_effect_manager_v1`
-    when offered, looks up `ext_session_lock_manager_v1` and
-    `wl_data_device_manager` in the registry, and calls the new hook
+    when offered, looks up `ext_session_lock_manager_v1`,
+    `wl_data_device_manager` and any `hyprland_*` global in the
+    registry, and calls the new hook
     `SurfaceHost::compositor_caps(&CompositorCaps)` at the end of its
     first wakeup (after the binds' replies, before any surface is
     configured), and again whenever they change (the background
