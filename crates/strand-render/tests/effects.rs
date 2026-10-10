@@ -821,3 +821,87 @@ fn backdrop_blurs_what_is_behind() {
     let (_, buf, _) = backdrop_scene(fx(), Scale::new(240).unwrap());
     assert_matches_ref("effects_backdrop_2x", &buf, 2);
 }
+
+/// The five built-in effects and a particle field, 72×48 each, on a
+/// 432×64 bar; the first frame at 1 s (their clocks' `t = 0`).
+fn generative(scale: Scale, reduced: bool) -> (Renderer, Buffer) {
+    let mut nodes: Vec<(NodeKind, Fx)> = ["lightning", "sparks", "shimmer", "ripple", "aurora"]
+        .iter()
+        .enumerate()
+        .map(|(i, style)| {
+            let mut p = at_xy(i as f32 * 72.0, 8.0, 72.0, 48.0);
+            p.push((Prop::Style, kw(style)));
+            (NodeKind::Effect, p)
+        })
+        .collect();
+    let mut p = at_xy(360.0, 8.0, 72.0, 48.0);
+    p.extend([
+        (Prop::Rate, num(20.0)),
+        (
+            Prop::Life,
+            PropValue::Duration(std::time::Duration::from_millis(1200)),
+        ),
+        (Prop::Sprite, call("dot", vec![num(3.0)])),
+        (Prop::Glow, num(6.0)),
+        (Prop::Color, color("#f5c2e7")),
+    ]);
+    nodes.push((NodeKind::Particles, p));
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    for (kind, mut p) in nodes {
+        p.push((Prop::Place, kw("absolute")));
+        b.node(kind, Some(root), p);
+    }
+    let mut tokens = TokenTable::default();
+    tokens.insert("accent", PropValue::Color(hex("#89b4fa")));
+    b.diff.set_tokens(tokens, Transition::Instant);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new((432.0 * k).round() as u32, (64.0 * k).round() as u32, scale);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf)
+}
+
+/// design.md "Generative, data-driven and media": the built-in effects
+/// (aurora as its CPU fallback) and particles as CPU sprite blits, drawn
+/// at fixed `t` (refs `effects_generative_0.png` at `t = 0`,
+/// `effects_generative_100ms.png` at 0.1 s and `effects_generative_2x.png`).
+#[test]
+fn builtin_effects_and_particles_draw_at_fixed_times() {
+    use std::time::Duration;
+    let (mut r, mut buf) = generative(Scale::ONE, false);
+    assert_matches_ref("effects_generative_0", &buf, 2);
+    assert!(r.wants_frame(S), "their clocks run");
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1100));
+    assert_matches_ref("effects_generative_100ms", &buf, 2);
+    // Each cell has ink.
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    for i in 0..6u32 {
+        let lit = (i * 72..i * 72 + 72)
+            .flat_map(|x| (8..56).map(move |y| (x, y)))
+            .filter(|&(x, y)| buf.px(x, y) != bg)
+            .count();
+        assert!(lit > 20, "cell {i}: {lit}");
+    }
+    let (_, buf) = generative(Scale::new(240).unwrap(), false);
+    assert_matches_ref("effects_generative_2x", &buf, 2);
+}
+
+/// design.md: "`reduced_motion` turns off loops, time signals and
+/// effects": every built-in effect and the particles hold their first
+/// frame, and no clock runs.
+#[test]
+fn reduced_motion_freezes_effects_and_particles() {
+    use std::time::Duration;
+    let (mut r, mut buf) = generative(Scale::ONE, true);
+    let first = buf.pixels.clone();
+    assert!(!r.wants_frame(S) && r.next_wake().is_none(), "no clock");
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1500));
+    assert!(buf.pixels == first, "still");
+    // The still frame is their t = 0 frame.
+    let (_, moving) = generative(Scale::ONE, false);
+    assert!(moving.pixels == first);
+}

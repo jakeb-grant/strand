@@ -1,6 +1,6 @@
 //! (M4) CPU raster sources built from props (design.md, "Runtime changes
-//! these need", item 3): `grain:` now, particles and the built-in effects
-//! as they land. Each frame the flattener builds a node's source from its
+//! these need", item 3): `grain:`, `particles` ([`super::particles`]) and
+//! the built-in `effect`s ([`super::builtin`]). Each frame the flattener builds a node's source from its
 //! resolved props ([`built`]) and draws it through
 //! [`crate::offscreen::RasterNodes::pixmap_from`], which keeps the last
 //! pixmap while the props, size, scale and tick are unchanged. Before the
@@ -15,10 +15,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-use strand_scene::{NodeKind, Prop, PropValue, TimeContext};
+use strand_scene::{Color, NodeKind, Prop, PropValue, TimeContext};
 use vello_cpu::color::PremulRgba8;
 
-use super::number;
+use super::builtin::{Builtin, Canvas, Kind};
+use super::particles::Particles;
+use super::{keyword, number};
 use crate::clock::Rate;
 use crate::offscreen::RasterSource;
 use crate::tree::Node;
@@ -30,6 +32,21 @@ pub(crate) const GRAIN: Duration = Duration::from_nanos(1_000_000_000 / 12);
 /// raw props (before they resolve): any `grain:` that is not a literal
 /// zero or less.
 pub(crate) fn rate(node: &Node) -> Option<Rate> {
+    match node.kind {
+        NodeKind::Particles => return Some(Rate::Refresh),
+        NodeKind::Effect => {
+            let kind = match node.get(Prop::Style) {
+                Some(PropValue::Keyword(k) | PropValue::Text(k)) => Kind::from_name(k),
+                _ => None,
+            };
+            match kind {
+                Some(Kind::Shimmer) => return Some(Rate::Every(crate::clock::SHIMMER)),
+                Some(_) => return Some(Rate::Refresh),
+                None => {}
+            }
+        }
+        _ => {}
+    }
     let grain = node.get(Prop::Grain).is_some_and(|v| match v {
         PropValue::Number(n) => *n > 0.0,
         _ => true,
@@ -41,14 +58,48 @@ pub(crate) fn rate(node: &Node) -> Option<Rate> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Built {
     Grain(Grain),
+    Effect(Builtin),
+    Particles(Particles),
 }
 
 /// The source the resolved props (`get`) of a node of `kind` build, if
-/// any.
+/// any; `color` is what it draws in (its own `color`, else `$accent`).
 pub(crate) fn built<'v>(
-    _kind: NodeKind,
+    kind: NodeKind,
     get: impl Fn(Prop) -> Option<&'v PropValue>,
+    color: Color,
 ) -> Option<Built> {
+    let speed = get(Prop::Speed).and_then(number).unwrap_or(1.0).max(0.0);
+    match kind {
+        NodeKind::Effect => {
+            let kind = get(Prop::Style)
+                .and_then(keyword)
+                .and_then(Kind::from_name)?;
+            return Some(Built::Effect(Builtin { kind, speed, color }));
+        }
+        NodeKind::Particles => {
+            let size = match get(Prop::Sprite) {
+                Some(PropValue::Call { name, args }) if name == "dot" => {
+                    args.first().and_then(number).unwrap_or(3.0)
+                }
+                _ => 3.0,
+            };
+            let life = match get(Prop::Life) {
+                Some(PropValue::Duration(d)) => d.as_secs_f32(),
+                Some(v) => number(v).unwrap_or(1.0),
+                None => 1.0,
+            };
+            return Some(Built::Particles(Particles {
+                rate: get(Prop::Rate).and_then(number).unwrap_or(10.0),
+                life,
+                size,
+                glow: get(Prop::Glow).and_then(number).unwrap_or(0.0).max(0.0),
+                speed,
+                color,
+            }));
+        }
+        _ => {}
+    }
     let amount = get(Prop::Grain).and_then(number)?.clamp(0.0, 1.0);
     (amount > 0.0).then_some(Built::Grain(Grain { amount }))
 }
@@ -59,6 +110,13 @@ impl Built {
         let mut h = DefaultHasher::new();
         match self {
             Built::Grain(g) => (0u8, g.amount.to_bits()).hash(&mut h),
+            Built::Effect(b) => (1u8, b.kind, b.speed.to_bits(), color_bits(b.color)).hash(&mut h),
+            Built::Particles(p) => (
+                2u8,
+                [p.rate, p.life, p.size, p.glow, p.speed].map(f32::to_bits),
+                color_bits(p.color),
+            )
+                .hash(&mut h),
         }
         h.finish()
     }
@@ -72,20 +130,32 @@ impl Built {
                 t: Grain::tick(time.t) as f32,
                 ..time
             },
+            Built::Effect(_) | Built::Particles(_) => time,
         }
     }
+}
+
+fn color_bits(c: Color) -> [u32; 4] {
+    [c.r, c.g, c.b, c.a].map(f32::to_bits)
 }
 
 impl RasterSource for Built {
     fn draw(&self, pixels: &mut [PremulRgba8], w: u32, h: u32, scale: f32, time: TimeContext) {
         match self {
             Built::Grain(g) => g.draw(pixels, w, h, scale, time),
+            Built::Effect(b) => b.draw(&mut Canvas { px: pixels, w, h }, scale, time.t),
+            Built::Particles(p) => p.draw(&mut Canvas { px: pixels, w, h }, scale, time.t),
         }
     }
 
     fn rate(&self) -> Rate {
         match self {
             Built::Grain(_) => Rate::Every(GRAIN),
+            Built::Effect(Builtin {
+                kind: Kind::Shimmer,
+                ..
+            }) => Rate::Every(crate::clock::SHIMMER),
+            Built::Effect(_) | Built::Particles(_) => Rate::Refresh,
         }
     }
 }
@@ -175,14 +245,18 @@ mod tests {
         let v = PropValue::Number(0.04);
         let get = |p: Prop| (p == Prop::Grain).then_some(&v);
         assert_eq!(
-            built(NodeKind::Box, get),
+            built(NodeKind::Box, get, Color::WHITE),
             Some(Built::Grain(Grain { amount: 0.04 }))
         );
         let zero = PropValue::Number(0.0);
         assert_eq!(
-            built(NodeKind::Box, |p| (p == Prop::Grain).then_some(&zero)),
+            built(
+                NodeKind::Box,
+                |p| (p == Prop::Grain).then_some(&zero),
+                Color::WHITE
+            ),
             None
         );
-        assert_eq!(built(NodeKind::Box, |_| None), None);
+        assert_eq!(built(NodeKind::Box, |_| None, Color::WHITE), None);
     }
 }

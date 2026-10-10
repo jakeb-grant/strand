@@ -147,6 +147,8 @@ impl<'a> Flattener<'a> {
                 NodeKind::Segmented
                     | NodeKind::Meter
                     | NodeKind::Arc
+                    | NodeKind::Effect
+                    | NodeKind::Particles
                     | NodeKind::Slider
                     | NodeKind::Icon
                     | NodeKind::Image
@@ -432,8 +434,10 @@ impl<'a> Flattener<'a> {
         // images glow their own pixels (`crate::effects::light`).
         let glow = crate::effects::light::Glow::of(get(Prop::Glow), color);
         let glows_content = matches!(node.kind, NodeKind::Text | NodeKind::Icon | NodeKind::Image);
+        // (`particles` glow their sprites: `crate::effects::particles`.)
+        let glows_box = !glows_content && node.kind != NodeKind::Particles;
         if has_area
-            && !glows_content
+            && glows_box
             && let Some(g) = glow
         {
             self.shadow(&g.shadow(), frame, &r, &box_path, &mut sig, &mut ink);
@@ -560,7 +564,14 @@ impl<'a> Flattener<'a> {
         // (M4) A CPU raster node's pixels at its clock's tick, over its
         // background: a source of its own, or one its props build
         // (`grain:`), clipped to its shape.
-        let built = crate::effects::raster::built(node.kind, get);
+        let source_color = match get(Prop::Color) {
+            Some(PropValue::Color(c)) => *c,
+            _ => match scope.lookup("accent") {
+                Some(PropValue::Color(c)) => c,
+                _ => text_color,
+            },
+        };
+        let built = crate::effects::raster::built(node.kind, get, source_color);
         let (pw, ph) = (frame.width().round() as u32, frame.height().round() as u32);
         let time_now = time.unwrap_or_default();
         let raster = match &built {
@@ -960,16 +971,13 @@ impl<'a> Flattener<'a> {
         }
         // Drawn: its clock runs, unless all it draws is outside the clip
         // and nothing that places it follows time (it stays out). A
-        // built-in `effect` draws in its box (it has a clock only when it
-        // reads time or has a raster source: `clock::rate`).
+        // built-in `effect` or `particles` draws its raster in its box
+        // (`crate::effects::raster`), so it counts as drawn only when that
+        // is inside the clip.
         let moves = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotate, Prop::Shadow]
             .into_iter()
             .any(follows);
-        let effect = node.kind == NodeKind::Effect
-            && map_rect(self.xform, phys)
-                .intersect(inh.clip)
-                .is_some_and(|r| !r.is_empty());
-        if !subtree.is_empty() || moves || effect {
+        if !subtree.is_empty() || moves {
             self.run_clock(node.id, clock);
         }
         if let Some(i) = opacity_group {

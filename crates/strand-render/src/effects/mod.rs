@@ -9,9 +9,11 @@
 //!   draw unfiltered (design.md, "Bundled GPU effects").
 //! - [`filter`]: the colour functions as colour matrices.
 
+pub(crate) mod builtin;
 pub(crate) mod filter;
 pub(crate) mod glow;
 pub(crate) mod light;
+pub(crate) mod particles;
 pub(crate) mod raster;
 
 use std::sync::Arc;

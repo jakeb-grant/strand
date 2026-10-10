@@ -2105,37 +2105,48 @@ fn hidden_time_nodes_request_no_frames() {
     assert!(r.wants_frame(BAR), "moving in: its clock runs");
 }
 
-/// design.md: an idle shell does zero work. A built-in `effect` that
-/// reads no time and has no raster source draws nothing that changes
-/// (nothing draws the built-in effects yet: S-effects), so it has no
-/// clock: the surface asks for no frame and no wake.
+/// design.md: an idle shell does zero work. A built-in `effect` draws
+/// its raster every frame, so its clock runs while it is drawn; one
+/// outside the bar's clip draws nothing, and its clock never starts (the
+/// surface asks for no frame and no wake).
 #[test]
-fn effect_nodes_without_time_or_a_source_stay_idle() {
-    let mut b = Builder::default();
-    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
-    for (i, style) in ["lightning", "sparks", "ripple", "aurora", "shimmer"]
-        .into_iter()
-        .enumerate()
-    {
-        b.node(
-            NodeKind::Effect,
-            Some(root),
+fn effect_nodes_run_their_clocks_only_while_drawn() {
+    for (x, drawn) in [(10.0, true), (1000.0, false)] {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Bar,
+            None,
             vec![
-                (Prop::X, num(10.0 + 30.0 * i as f32)),
-                (Prop::Y, num(10.0)),
-                (Prop::Size, num(20.0)),
-                (Prop::Style, PropValue::Keyword(style.into())),
+                (Prop::Bg, color("#1e1e2e")),
+                (Prop::Clip, PropValue::Bool(true)),
             ],
         );
+        for (i, style) in ["lightning", "sparks", "ripple", "aurora", "shimmer"]
+            .into_iter()
+            .enumerate()
+        {
+            b.node(
+                NodeKind::Effect,
+                Some(root),
+                vec![
+                    (Prop::X, num(x + 30.0 * i as f32)),
+                    (Prop::Y, num(10.0)),
+                    (Prop::Size, num(20.0)),
+                    (Prop::Style, PropValue::Keyword(style.into())),
+                ],
+            );
+        }
+        let (mut r, mut buf) = clocked(b.diff);
+        let mut k = 1;
+        while r.wants_frame(BAR) && k < 5 {
+            buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+            k += 1;
+        }
+        assert_eq!(r.wants_frame(BAR), drawn, "x = {x}");
+        if !drawn {
+            assert_eq!(r.next_wake(), None, "no wake either");
+        }
     }
-    let (mut r, mut buf) = clocked(b.diff);
-    let mut k = 1;
-    while r.wants_frame(BAR) {
-        buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
-        k += 1;
-        assert!(k < 5, "the first frame settles: no clock runs");
-    }
-    assert_eq!(r.next_wake(), None, "no wake either");
 }
 
 /// `effect shimmer` (30 fps cap) turning with `t`, and a square turning
@@ -2151,7 +2162,10 @@ fn shimmer_bar(capped: bool) -> (SceneDiff, NodeId) {
         (Prop::Rotate, spin(90.0)),
     ];
     if capped {
+        // (`speed: 0` holds the shimmer's band still: the pixels compared
+        // below are the square's turn.)
         props.push((Prop::Style, PropValue::Keyword("shimmer".into())));
+        props.push((Prop::Speed, num(0.0)));
     }
     let kind = if capped {
         NodeKind::Effect

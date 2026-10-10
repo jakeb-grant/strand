@@ -45,10 +45,9 @@ pub enum Rate {
 /// source's `raster` rate, a node whose props read time (`timed`) at
 /// refresh, either capped by its kind (`effect shimmer` at 30 fps; the
 /// faster of the two for a raster node). A node's clock is one clock:
-/// its time-bound props follow its cap. A built-in `effect` with neither
-/// has no clock: until something draws it (S-effects attaches its
-/// source), it would only keep the frame loop running with nothing to
-/// show, and an idle shell does no work.
+/// its time-bound props follow its cap. A built-in `effect`, `particles`
+/// and `grain:` get their raster rate from their props
+/// (`crate::effects::raster::rate`); a node with neither has no clock.
 pub(crate) fn rate(node: &Node, timed: bool, raster: Option<Rate>) -> Option<Rate> {
     let cap = kind_cap(node);
     match (raster, cap) {

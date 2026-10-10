@@ -416,7 +416,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
   `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
   (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
-  (raster sources built from props: `grain:`).
+  (raster sources built from props: `grain:`, particles, the built-in
+  effects), `builtin.rs` (lightning, sparks, shimmer, ripple, aurora's CPU
+  fallback; the canvas and sprites), `particles.rs` (CPU sprite blits).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
