@@ -1115,3 +1115,180 @@ fn a_presented_surface_paints_its_pose() {
     let pose = r.surface_pose(S).expect("delegated again on the CPU");
     assert!((pose.opacity - 0.5).abs() < 1e-3, "{pose:?}");
 }
+
+/// A device that answered `Ready` (no GPU thread runs here: replies are
+/// delivered by hand).
+fn up_without_a_device(r: &mut Renderer) {
+    r.deliver_gpu(GpuReply::Ready(AdapterInfo {
+        name: "test".into(),
+        driver: "none".into(),
+        software: true,
+    }));
+}
+
+/// Sleeps past `until`.
+fn sleep_past(until: Instant) {
+    std::thread::sleep(until.saturating_duration_since(Instant::now()) + Duration::from_millis(2));
+}
+
+/// (m4-audit) Why a GPU stall cannot freeze a lock (features.md, the
+/// lock exit): a lock surface is never handed to the GPU thread, so a
+/// promoted one is read back, and a readback frame the GPU never answers
+/// holds the surface at most [`strand_render::GPU_WAIT`]; the CPU then
+/// draws it, and while that frame stays unanswered no later frame waits
+/// at all. Needs no device: the GPU is "up" and never replies.
+#[test]
+fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#ff0000"))]);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    r.promote_now(S);
+    up_without_a_device(&mut r);
+    r.deliver_gpu(GpuReply::Attached {
+        surface: S,
+        mode: strand_gpu::GpuMode::Readback,
+    });
+    assert_eq!(r.backend(S), Backend::GpuReadback);
+    let _ = r.take_backend_changes();
+    // The first frame: no pixels yet, so the CPU draws it, and the GPU is
+    // sent the frame. It never answers.
+    buf.paint(&mut r, S, 0);
+    let sent = Instant::now();
+    assert!(
+        r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Frame(_))),
+        "the frame goes to the GPU"
+    );
+    assert_eq!(buf.px(100, 20), [0, 0, 255, 255], "red, drawn by the CPU");
+    // The scene changes: the next frame holds for the GPU's pixels, but
+    // never past GPU_WAIT from the request.
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Bg, color("#0000ff"));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    let until = r.frame_deadline(S).expect("held for the GPU's frame");
+    assert!(
+        until <= sent + strand_render::GPU_WAIT,
+        "held {:?} past the request, more than GPU_WAIT",
+        until.saturating_duration_since(sent)
+    );
+    assert!(!r.wants_frame(S), "held while the GPU may still answer");
+    sleep_past(until);
+    r.update();
+    assert_eq!(r.frame_deadline(S), None, "the hold ends at GPU_WAIT");
+    assert!(r.wants_frame(S), "the frame is wanted once the hold ends");
+    assert!(
+        !buf.paint(&mut r, S, 1).is_empty(),
+        "painted without the GPU"
+    );
+    assert_eq!(buf.px(100, 20), [255, 0, 0, 255], "blue, drawn by the CPU");
+    assert!(
+        r.take_gpu_requests().is_empty(),
+        "nothing more is queued behind the unanswered frame"
+    );
+    // While that frame stays unanswered, later frames do not wait at all.
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Bg, color("#00ff00"));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    assert_eq!(r.frame_deadline(S), None, "no second hold");
+    assert!(r.wants_frame(S));
+    buf.paint(&mut r, S, 1);
+    assert_eq!(buf.px(100, 20), [0, 255, 0, 255], "green, at once");
+    assert_eq!(r.backend(S), Backend::GpuReadback, "still promoted");
+}
+
+/// (m4-audit) The same bound for a `shader` node's pass on a CPU
+/// surface (a lock's shader is one): a pass the GPU never answers holds
+/// the frame at most [`strand_render::GPU_WAIT`], then the frame paints
+/// with the pass's last pixels, and the surface's later frames do not
+/// wait for it. Needs no device.
+#[test]
+fn a_pass_the_gpu_never_answers_holds_at_most_gpu_wait() {
+    let mut r = renderer();
+    let (diff, node) = shader_scene("#ff0000");
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    up_without_a_device(&mut r);
+    // The first pass answers: a 40×20 block of one colour.
+    let first = r
+        .take_gpu_requests()
+        .into_iter()
+        .find_map(|q| match q {
+            GpuRequest::Pass(p) => Some(p),
+            _ => None,
+        })
+        .expect("the node's pass is asked for");
+    r.deliver_gpu(GpuReply::PassPixels {
+        key: first.key,
+        frame: first.id,
+        pixels: strand_gpu::Readback {
+            width: 40,
+            height: 20,
+            stride: 160,
+            bytes: [0u8, 0, 255, 255].repeat(40 * 20),
+        },
+    });
+    buf.paint(&mut r, S, 1);
+    let shown = buf.px(20, 20);
+    assert_ne!(shown, buf.px(100, 20), "the pass's pixels are shown");
+    // A uniform change asks for a new pass, which never answers; the
+    // background changes in the same frame. (A uniform change alone
+    // changes nothing on screen until its pixels come, so it wants no
+    // frame of its own.)
+    let mut d = SceneDiff::new();
+    d.set(
+        node,
+        Prop::Uniforms,
+        PropValue::Uniforms(vec![("u_tint".into(), color("#0000ff"))]),
+    );
+    d.set(root, Prop::Bg, color("#45475a"));
+    assert!(r.apply(d).is_empty());
+    let old_bg = buf.px(100, 20);
+    r.update();
+    let sent = Instant::now();
+    assert!(
+        r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_))),
+        "a new pass is asked for"
+    );
+    let until = r.frame_deadline(S).expect("held for the pass");
+    assert!(
+        until <= sent + strand_render::GPU_WAIT,
+        "held {:?} past the request, more than GPU_WAIT",
+        until.saturating_duration_since(sent)
+    );
+    assert!(!r.wants_frame(S));
+    sleep_past(until);
+    r.update();
+    assert_eq!(r.frame_deadline(S), None, "the hold ends at GPU_WAIT");
+    assert!(r.wants_frame(S), "the frame is wanted once the hold ends");
+    assert!(
+        !buf.paint(&mut r, S, 1).is_empty(),
+        "painted without the pass"
+    );
+    assert_ne!(buf.px(100, 20), old_bg, "the new background is shown");
+    assert_eq!(buf.px(20, 20), shown, "the pass's last pixels stay");
+    // Something else on the surface changes: no hold while the pass is
+    // still unanswered.
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Bg, color("#313244"));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    assert_eq!(r.frame_deadline(S), None, "no second hold");
+    let before = buf.px(100, 20);
+    buf.paint(&mut r, S, 1);
+    assert_ne!(buf.px(100, 20), before, "the new background, at once");
+    assert!(
+        r.take_gpu_requests().is_empty(),
+        "the pass is not asked again"
+    );
+}
