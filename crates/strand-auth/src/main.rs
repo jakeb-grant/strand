@@ -20,9 +20,12 @@ use std::process::ExitCode;
 
 use strand_auth::protocol::{self, Code, Message, ProtocolError, Service};
 
-/// The service files the `strand` service may live in (the admin's, then
-/// the distribution's vendor directory, as Linux-PAM looks them up).
-const SERVICE_DIRS: [&str; 2] = ["/etc/pam.d", "/usr/lib/pam.d"];
+/// The admin's PAM service directory, which every Linux-PAM reads.
+const ETC_PAM_D: &str = "/etc/pam.d";
+/// The distribution's vendor directory, which Linux-PAM reads only when
+/// built with `--enable-vendordir` (openSUSE, not Debian, Fedora or
+/// Arch).
+const VENDOR_PAM_D: &str = "/usr/lib/pam.d";
 
 fn main() -> ExitCode {
     harden();
@@ -104,20 +107,42 @@ fn harden() {
     }
 }
 
-/// `strand`, or `login` when no `strand` service file exists in the PAM
-/// config directories (or in the test confdir).
+/// `strand` when libpam will read a `strand` service file, else `login`
+/// (or, with a test confdir, whether it holds a readable `strand`).
 fn choose_service(confdir: Option<&Path>) -> Service {
     let found = match confdir {
-        Some(dir) => dir.join("strand").exists(),
-        None => SERVICE_DIRS
-            .iter()
-            .any(|d| Path::new(d).join("strand").exists()),
+        Some(dir) => readable(&dir.join("strand")),
+        None => strand_service_read(Path::new(ETC_PAM_D), Path::new(VENDOR_PAM_D)),
     };
     if found {
         Service::Strand
     } else {
         Service::Login
     }
+}
+
+/// Whether libpam will read a `strand` service file: one in `etc` this
+/// process can read, or one in `vendor` when this libpam reads the vendor
+/// directory. A file libpam never opens (an unreadable one, or one in a
+/// vendor directory this libpam ignores) would send `pam_start` to the
+/// `other` service, usually `pam_deny`: every password refused as wrong,
+/// with no fallback and no warning (decisions.md, m4-audit). Whether the
+/// vendor directory is read cannot be asked of libpam; it is inferred
+/// from the system's own `login` service, which the fallback relies on:
+/// when it lives only in `vendor`, libpam must read `vendor`. Where
+/// `login` is in both or neither, `vendor` is not trusted and `login` is
+/// used, which works either way.
+fn strand_service_read(etc: &Path, vendor: &Path) -> bool {
+    readable(&etc.join("strand"))
+        || (readable(&vendor.join("strand"))
+            && !etc.join("login").exists()
+            && readable(&vendor.join("login")))
+}
+
+/// The file opens for reading (`exists()` is not enough: libpam opens
+/// it as this user).
+fn readable(path: &Path) -> bool {
+    File::open(path).is_ok_and(|f| f.metadata().is_ok_and(|m| m.is_file()))
 }
 
 /// The user this process runs as, from the passwd database.
@@ -187,3 +212,67 @@ fn fault_before_check(output: &mut File) {
 
 #[cfg(not(feature = "faults"))]
 fn fault_before_check(_: &mut File) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let (etc, vendor) = (root.path().join("etc"), root.path().join("vendor"));
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::create_dir_all(&vendor).unwrap();
+        (root, etc, vendor)
+    }
+
+    fn put(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), "auth required pam_unix.so\n").unwrap();
+    }
+
+    /// `/etc/pam.d/strand` is always read; one in the vendor directory
+    /// counts only where the system's `login` lives there alone, which
+    /// shows this libpam reads it. Otherwise `login`.
+    #[test]
+    fn a_vendor_service_counts_only_where_libpam_reads_the_vendor_dir() {
+        let (_root, etc, vendor) = dirs();
+        assert!(!strand_service_read(&etc, &vendor), "no file anywhere");
+        put(&vendor, "strand");
+        assert!(
+            !strand_service_read(&etc, &vendor),
+            "no sign the vendor dir is read"
+        );
+        put(&etc, "login");
+        put(&vendor, "login");
+        assert!(
+            !strand_service_read(&etc, &vendor),
+            "login in both: unknown"
+        );
+        std::fs::remove_file(etc.join("login")).unwrap();
+        assert!(
+            strand_service_read(&etc, &vendor),
+            "login only in the vendor dir"
+        );
+        put(&etc, "strand");
+        assert!(strand_service_read(&etc, &vendor));
+    }
+
+    /// A file that exists but cannot be opened is one libpam cannot read.
+    #[test]
+    fn an_unreadable_service_file_is_not_chosen() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_root, etc, vendor) = dirs();
+        put(&etc, "strand");
+        let file = etc.join("strand");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads anything: the case cannot be made there.
+        if File::open(&file).is_ok() {
+            return;
+        }
+        assert!(!strand_service_read(&etc, &vendor));
+        assert_eq!(choose_service(Some(&etc)), Service::Login);
+        // A directory named `strand` is no service file either.
+        let (_root2, etc2, vendor2) = dirs();
+        std::fs::create_dir(etc2.join("strand")).unwrap();
+        assert!(!strand_service_read(&etc2, &vendor2));
+    }
+}
