@@ -37,7 +37,8 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use strand_gpu::{
-    Brush, Frame, GpuMode, GpuReply, GpuRequest, Op, PassFrame, PassGlobals, Readback, Upload,
+    Brush, Frame, GpuErrorKind, GpuMode, GpuReply, GpuRequest, Op, PassFrame, PassGlobals,
+    Readback, Upload,
 };
 use strand_scene::shader::ShaderCode;
 use strand_scene::{
@@ -479,6 +480,11 @@ struct Surf {
     pixels: Option<Readback>,
     /// Until when its next frame holds (a pass or readback in flight).
     hold: Option<Instant>,
+    /// The `shader` nodes' passes its GPU frames draw inline (their id,
+    /// key and base), from its last frame's wants: recorded as failed
+    /// when a frame of it hangs or panics, so that the demoted surface
+    /// does not ask a new device for the same pass (m4-audit).
+    inline: Vec<(PassId, u64, u64)>,
 }
 
 impl Surf {
@@ -824,6 +830,25 @@ impl Renderer {
                 if let Some(surface) = surface
                     && let Some(s) = self.gpu.surfaces.get_mut(&surface)
                 {
+                    // A frame that hung or panicked (the device is lost
+                    // with it) took its inline passes along: one of them
+                    // may be the culprit, and the demoted surface would
+                    // ask a new device for it as a pass of its own, to
+                    // hang (and leak) that device too. Like a failed
+                    // pass, none is asked again while its base stays.
+                    if key.is_none() && error.kind == GpuErrorKind::Lost {
+                        for (id, key, base) in std::mem::take(&mut s.inline) {
+                            self.extras.shaders.map.insert(
+                                id,
+                                PassResult {
+                                    got: (key, empty_pixmap()),
+                                    surface,
+                                    failed: true,
+                                    base,
+                                },
+                            );
+                        }
+                    }
                     // A frame that cannot be drawn: back to the CPU.
                     s.inflight = None;
                     s.presenting = false;
@@ -1044,15 +1069,26 @@ impl Renderer {
             });
             results.answered.retain(|n| tree.get(*n).is_some());
         }
+        // A promoted surface's own passes run in its GPU frames; its
+        // layers' passes are read back like any surface's.
+        let gpu_drawn = self.backend(surface).is_gpu();
+        if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+            s.inline.clear();
+            if gpu_drawn {
+                s.inline.extend(
+                    wants
+                        .iter()
+                        .filter(|w| w.id.slot == Slot::Node)
+                        .map(|w| (w.id, w.key, w.base)),
+                );
+            }
+        }
         if wants.is_empty() {
             self.gpu.demand.remove(&surface);
             return;
         }
         self.gpu.demand.insert(surface);
         let now = Instant::now();
-        // A promoted surface's own passes run in its GPU frames; its
-        // layers' passes are read back like any surface's.
-        let gpu_drawn = self.backend(surface).is_gpu();
         if gpu_drawn {
             self.gpu.device.used(now);
         }

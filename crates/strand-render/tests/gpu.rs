@@ -1292,3 +1292,87 @@ fn a_pass_the_gpu_never_answers_holds_at_most_gpu_wait() {
         "the pass is not asked again"
     );
 }
+
+/// (m4-audit) A frame of a promoted surface that hangs (or panics) is
+/// answered `Failed` with no pass key, and the device goes with it. The
+/// `shader` node whose pass ran inline in that frame is recorded as
+/// failed too: demoted, the surface would otherwise ask the next device
+/// for the same pass as one of its own, 30 s later, and hang (and leak)
+/// that device as well. Not asked again while its base stays; asked
+/// once that changes. Needs no device: replies are delivered by hand,
+/// and the device is left up so that only the record stops the ask.
+#[test]
+fn a_hung_frame_records_its_inline_passes_as_failed() {
+    let mut r = renderer();
+    let (diff, node) = shader_scene("#ff0000");
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    r.promote_now(S);
+    up_without_a_device(&mut r);
+    r.deliver_gpu(GpuReply::Attached {
+        surface: S,
+        mode: strand_gpu::GpuMode::Readback,
+    });
+    let _ = r.take_backend_changes();
+    buf.paint(&mut r, S, 0);
+    let reqs = r.take_gpu_requests();
+    let frame = reqs
+        .iter()
+        .find_map(|q| match q {
+            GpuRequest::Frame(f) => Some(f),
+            _ => None,
+        })
+        .expect("the frame goes to the GPU");
+    assert!(
+        frame
+            .ops
+            .iter()
+            .any(|op| matches!(op, strand_gpu::Op::Pass { .. })),
+        "the shader runs inline in the GPU's frame"
+    );
+    assert!(
+        !reqs.iter().any(|q| matches!(q, GpuRequest::Pass(_))),
+        "and is not asked for on its own"
+    );
+    // The frame ran past HUNG_AFTER.
+    r.deliver_gpu(GpuReply::Failed {
+        surface: Some(S),
+        key: None,
+        error: strand_gpu::GpuError {
+            kind: GpuErrorKind::Lost,
+            message: "the GPU ran past 10s on one submission".into(),
+        },
+    });
+    assert!(
+        r.take_backend_changes()
+            .iter()
+            .any(|c| matches!(c, BackendChange::Demote(id) if *id == S)),
+        "demoted"
+    );
+    assert_eq!(r.backend(S), Backend::Cpu);
+    buf.paint(&mut r, S, 1);
+    assert!(
+        !r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_))),
+        "the pass that hung is not asked for again"
+    );
+    // Its base changes (a uniform): asked again.
+    let mut d = SceneDiff::new();
+    d.set(
+        node,
+        Prop::Uniforms,
+        PropValue::Uniforms(vec![("u_tint".into(), color("#0000ff"))]),
+    );
+    assert!(r.apply(d).is_empty());
+    r.update();
+    buf.paint(&mut r, S, 2);
+    assert!(
+        r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_))),
+        "a changed pass is asked for"
+    );
+}
