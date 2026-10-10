@@ -106,6 +106,14 @@ pub use session_lock::{LOCK_FALLBACK_NODE, LockError};
 /// callbacks come before the first buffer): about one 60 Hz frame.
 const UNMAPPED_RETRY: Duration = Duration::from_millis(16);
 
+/// (m4-audit) How long a surface waits for its last frame's callback or
+/// presentation before it paints anyway: a compositor can lose them (a
+/// bar's first frame on an output being re-enabled), and with nothing
+/// else to end the wait the surface would never paint again. Far longer
+/// than any refresh; a surface the compositor does not show (occluded,
+/// DPMS off) paints new content at most this often.
+const THROTTLE_GIVE_UP: Duration = Duration::from_secs(1);
+
 /// What the surface manager calls on the main thread: the [`Painter`]
 /// (render) plus surface lifecycle notifications, which the binary forwards
 /// to `Renderer::attach_surface`, `configure_surface` and `detach_surface`.
@@ -378,6 +386,9 @@ pub struct Stats {
     /// Dirty marks that waited because the surface's last frame was still
     /// in flight (refresh-rate throttling).
     pub throttled: u64,
+    /// (m4-audit) Paints made although the last frame's callback or
+    /// presentation never came ([`THROTTLE_GIVE_UP`]).
+    pub throttle_given_up: u64,
     /// Cursor images set on pointer enter (`wp_cursor_shape_v1` or the
     /// cursor theme).
     pub cursor_sets: u64,
@@ -493,6 +504,9 @@ struct Surface {
     /// The buffer commit whose presentation (or discard) we wait for
     /// before painting again: frames lock to the refresh rate.
     in_flight: Option<u64>,
+    /// (m4-audit) When the commit that set `callback_pending` or
+    /// `in_flight` was made ([`THROTTLE_GIVE_UP`]).
+    throttled_at: Option<Instant>,
     /// A configure was acked and no commit has followed yet.
     ack_pending: bool,
     /// A paint is owed: first configure, resize, rescale or a request.
@@ -779,6 +793,10 @@ pub struct State<H: SurfaceHost + 'static> {
     stats: Stats,
     expiry_timer: Option<RegistrationToken>,
     deadline_timers: HashMap<SurfaceId, RegistrationToken>,
+    /// (m4-audit) Surfaces whose frame callback or presentation is
+    /// awaited with new content waiting: marked again at
+    /// [`THROTTLE_GIVE_UP`] unless the frame settles first.
+    give_up_timers: HashMap<SurfaceId, RegistrationToken>,
     /// (M4) The session lock (`session_lock.rs`).
     session_lock: session_lock::SessionLock,
     /// (M4) Surfaces the GPU thread commits (`gpu_handoff.rs`).
@@ -980,6 +998,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             stats: Stats::default(),
             expiry_timer: None,
             deadline_timers: HashMap::new(),
+            give_up_timers: HashMap::new(),
             session_lock: session_lock::SessionLock::new(session_lock),
             gpu: gpu_handoff::HandOffs::default(),
             dnd,

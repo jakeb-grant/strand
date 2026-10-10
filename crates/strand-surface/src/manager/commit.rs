@@ -46,23 +46,40 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         }
         if s.throttled() {
-            if s.geometry_changed() {
+            let give_up = s.throttled_at.map(|t| t + THROTTLE_GIVE_UP);
+            let stuck = give_up.is_some_and(|t| Instant::now() >= t);
+            if s.geometry_changed() || stuck {
                 // A new size or scale supersedes the frame in flight: paint
                 // now, so a surface the compositor does not present (an
                 // occluded bar, an output in DPMS off) still applies its
                 // configure. The old frame's feedback comes back discarded
                 // and no longer matches `in_flight`; a late frame callback
-                // only marks the surface again.
+                // only marks the surface again. (m4-audit) So does a
+                // frame whose callback or presentation has not come in
+                // `THROTTLE_GIVE_UP`: it may never come.
+                if stuck && !s.geometry_changed() {
+                    log::debug!(
+                        "surface {}: no frame callback or presentation in {THROTTLE_GIVE_UP:?}; painting anyway",
+                        id.0
+                    );
+                    s.stats.throttle_given_up += 1;
+                    self.stats.throttle_given_up += 1;
+                }
                 s.in_flight = None;
                 s.callback_pending = false;
+                self.cancel_give_up(id);
             } else {
                 // The frame in flight's callback or presentation marks it
                 // again; whatever changed meanwhile is painted then, once.
                 // A same-size configure's ack is committed then too (a
                 // bare commit now would only discard the frame's
-                // presentation feedback).
+                // presentation feedback). (m4-audit) If neither comes,
+                // the surface is marked again at `THROTTLE_GIVE_UP`.
                 s.stats.throttled += 1;
                 self.stats.throttled += 1;
+                if let Some(at) = give_up {
+                    self.arm_give_up(id, at);
+                }
                 return;
             }
         }
@@ -188,6 +205,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             } else {
                 wl.frame(&self.qh, FrameCallbackData(wl.clone()));
                 s.callback_pending = true;
+                s.throttled_at = Some(Instant::now());
                 s.ack_pending = false;
                 wl.commit();
                 s.stats.frame_requests += 1;
@@ -245,6 +263,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         } else {
             s.in_flight = Some(s.commit_seq);
         }
+        s.throttled_at = Some(Instant::now());
         s.ack_pending = false;
         wl.commit();
         s.buffers.slots.commit(acquired.index);
@@ -364,6 +383,37 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
+    /// (m4-audit) Marks `id` again at `at` if its frame has not settled
+    /// by then ([`THROTTLE_GIVE_UP`]); one timer per surface, kept if
+    /// armed already.
+    pub(super) fn arm_give_up(&mut self, id: SurfaceId, at: Instant) {
+        if self.give_up_timers.contains_key(&id) {
+            return;
+        }
+        let token = self.handle.insert_source(
+            Timer::from_deadline(at),
+            move |_, _, state: &mut State<H>| {
+                state.give_up_timers.remove(&id);
+                state.mark(id);
+                TimeoutAction::Drop
+            },
+        );
+        match token {
+            Ok(t) => {
+                self.give_up_timers.insert(id, t);
+            }
+            Err(e) => log::warn!("cannot arm a frame's give-up timer: {}", e.error),
+        }
+    }
+
+    /// (m4-audit) The frame settled (or the surface went): no give-up
+    /// wake is owed.
+    pub(super) fn cancel_give_up(&mut self, id: SurfaceId) {
+        if let Some(t) = self.give_up_timers.remove(&id) {
+            self.handle.remove(t);
+        }
+    }
+
     /// Presentation feedback for commit `seq` of `surface` arrived (or was
     /// discarded): the frame is no longer in flight.
     pub(super) fn frame_settled(&mut self, tag: &FeedbackTag) -> bool {
@@ -375,6 +425,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         if s.in_flight == Some(tag.seq) {
             s.in_flight = None;
+            let settled = !s.throttled();
+            if settled {
+                self.cancel_give_up(tag.surface);
+            }
             self.mark(tag.surface);
         }
         true
@@ -423,6 +477,9 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.callback_pending = false;
             s.stats.frames_done += 1;
+            if !s.throttled() {
+                self.cancel_give_up(id);
+            }
         }
         self.mark(id);
     }

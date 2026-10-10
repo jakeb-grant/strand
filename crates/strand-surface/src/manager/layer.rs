@@ -234,6 +234,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             callback_pending: false,
             commit_seq: 0,
             in_flight: None,
+            throttled_at: None,
             ack_pending: false,
             repaint: true,
             opaque: Vec::new(),
@@ -292,6 +293,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.stop_repeat();
         }
         self.cancel_deadline(id);
+        self.cancel_give_up(id);
         s.buffers.destroy();
         if let Some(f) = s.fractional.take() {
             f.destroy();

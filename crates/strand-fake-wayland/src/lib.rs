@@ -99,6 +99,9 @@ pub enum Cmd {
     /// A key (evdev code; 1 is Escape, the keymap's one key) pressed
     /// (true) or released on every bound keyboard.
     Key(u32, bool),
+    /// (m4-audit) Frame callbacks committed from now on are dropped and
+    /// never done (true), or done at their commit again (false).
+    HoldFrames(bool),
 }
 
 struct Toplevel {
@@ -403,6 +406,7 @@ impl Server {
                 }
             }
             Cmd::KeyboardLeave => self.keyboard_leave(),
+            Cmd::HoldFrames(on) => self.surf.hold_frames = on,
             Cmd::Key(key, pressed) => {
                 self.serial += 1;
                 let state = if pressed {

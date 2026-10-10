@@ -99,6 +99,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// committer. False if there is no such surface.
     pub fn hand_off(&mut self, surface: SurfaceId) -> bool {
         self.cancel_deadline(surface);
+        self.cancel_give_up(surface);
         self.dirty.remove(&surface);
         let Some(s) = self
             .surfaces

@@ -321,6 +321,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             callback_pending: false,
             commit_seq: 0,
             in_flight: None,
+            throttled_at: None,
             ack_pending: false,
             repaint: true,
             opaque: Vec::new(),

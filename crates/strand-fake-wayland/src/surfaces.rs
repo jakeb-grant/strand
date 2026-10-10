@@ -233,6 +233,9 @@ pub(crate) struct Surfaces {
     effect_managers: Vec<ExtBackgroundEffectManagerV1>,
     /// The blur capability flags sent now.
     pub(crate) effect_caps: u32,
+    /// (m4-audit) Frame callbacks are dropped, never done: a compositor
+    /// that loses them (an output being re-enabled, an occluded surface).
+    pub(crate) hold_frames: bool,
 }
 
 impl Surfaces {
@@ -348,8 +351,10 @@ impl Surfaces {
         }
         let index = live.index;
         let margin = live.layer.as_ref().map(|_| live.layer_request.margin);
-        for cb in pending.frames {
-            cb.done(0);
+        if !self.hold_frames {
+            for cb in pending.frames {
+                cb.done(0);
+            }
         }
         if let Ok(mut r) = self.records.lock()
             && let Some(rec) = r.get_mut(index)

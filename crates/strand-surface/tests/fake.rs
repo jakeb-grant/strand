@@ -988,3 +988,65 @@ fn a_zone_that_drops_to_none_places_the_others_again() {
     }
     assert_eq!(configures(&mgr), before, "the panel got no configure");
 }
+
+/// (m4-audit) A frame whose callback never comes (a compositor that lost
+/// it: GitHub run 38064533227's replugged bar, which logic updated and
+/// never painted again) does not stop the surface for good: new content
+/// waits while the frame may still come, and is painted once the wait
+/// has lasted `THROTTLE_GIVE_UP` (1 s), with the give-up counted.
+#[test]
+fn a_lost_frame_callback_does_not_stop_the_surface() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    show_panel(&fake, &mut mgr);
+    repaint(&mut mgr);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    // Every callback asked for so far done, so the fake holds only the
+    // next frame's.
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.frames_done == i.stats.frame_requests)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surface(id));
+    fake.cmd(Cmd::HoldFrames(true));
+    // Let the fake take the command before the next commit.
+    let _ = mgr
+        .dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    // This frame's callback is dropped by the fake.
+    repaint(&mut mgr);
+    let stats = mgr.state().surface(id).unwrap().stats;
+    assert_eq!(stats.throttle_given_up, 0, "{stats:?}");
+    // New content while its callback is awaited: held, not painted.
+    mgr.state_mut()
+        .host_mut()
+        .set_square(Some(strand_scene::LogicalRect::new(
+            200.0, 50.0, 20.0, 20.0,
+        )));
+    mgr.state_mut().poll();
+    let _ = mgr
+        .dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    let held = mgr.state().surface(id).unwrap().stats;
+    assert_eq!(held.commits, stats.commits, "{held:?}");
+    assert_eq!(held.frames_done, stats.frames_done, "the callback was held");
+    assert!(held.throttled > stats.throttled, "{held:?}");
+    assert_eq!(held.throttle_given_up, 0);
+    // No callback ever comes; the surface paints anyway.
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.commits > stats.commits)
+        })
+        .unwrap();
+    let after = mgr.state().surface(id).unwrap().stats;
+    assert!(ok, "never painted again: {after:?}");
+    assert_eq!(after.throttle_given_up, 1, "{after:?}");
+    assert_eq!(after.frames_done, stats.frames_done);
+    // Callbacks come again: painting goes on as before.
+    fake.cmd(Cmd::HoldFrames(false));
+    repaint(&mut mgr);
+    repaint(&mut mgr);
+}
