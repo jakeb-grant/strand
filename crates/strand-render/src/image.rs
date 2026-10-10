@@ -713,13 +713,17 @@ fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<(Raster, (f64, f6
 }
 
 /// (M4) Decodes a PNG or JPEG held in memory (a Lottie's image asset)
-/// at `want` pixels (its own size, within [`MAX_SIDE`], when `None`), as
-/// premultiplied RGBA in vello's own order (not swapped: drawn inside a
-/// raster node, as the node's own colours are).
-pub(crate) fn decode_rgba(data: &[u8], want: Option<(u32, u32)>) -> Result<Pixmap, ImageError> {
-    let ask = want.map_or((MAX_SIDE, MAX_SIDE), |(w, h)| {
-        (w.clamp(1, MAX_SIDE), h.clamp(1, MAX_SIDE))
-    });
+/// at `want` pixels (its own size, within [`MAX_SIDE`], when `None`),
+/// shrunk, its aspect kept, to at most `max_pixels`, as premultiplied
+/// RGBA in vello's own order (not swapped: drawn inside a raster node, as
+/// the node's own colours are).
+pub(crate) fn decode_rgba(
+    data: &[u8],
+    want: Option<(u32, u32)>,
+    max_pixels: u64,
+) -> Result<Pixmap, ImageError> {
+    let want = want.map(|(w, h)| within(w.clamp(1, MAX_SIDE), h.clamp(1, MAX_SIDE), max_pixels));
+    let ask = want.unwrap_or((MAX_SIDE, MAX_SIDE));
     let src = if data.starts_with(b"\x89PNG") {
         decode_png(data, ask, Fit::Fill)?
     } else if data.starts_with(&[0xff, 0xd8]) {
@@ -728,9 +732,16 @@ pub(crate) fn decode_rgba(data: &[u8], want: Option<(u32, u32)>) -> Result<Pixma
         return Err(ImageError::Decode("not a PNG or JPEG".into()));
     };
     let (w, h) = match want {
-        Some(_) => ask,
-        None => (src.w.clamp(1, MAX_SIDE), src.h.clamp(1, MAX_SIDE)),
+        Some(wh) => wh,
+        None => within(
+            src.w.clamp(1, MAX_SIDE),
+            src.h.clamp(1, MAX_SIDE),
+            max_pixels,
+        ),
     };
+    if u64::from(w) * u64::from(h) > max_pixels {
+        return Err(ImageError::TooLarge);
+    }
     let r = if (src.w, src.h) == (w, h) {
         src
     } else {
@@ -746,6 +757,18 @@ pub(crate) fn decode_rgba(data: &[u8], want: Option<(u32, u32)>) -> Result<Pixma
         };
     }
     Ok(pm)
+}
+
+/// `w × h` shrunk, its aspect kept, to at most `max_pixels` (each side at
+/// least 1, so a very long, thin size can stay above it).
+fn within(w: u32, h: u32, max_pixels: u64) -> (u32, u32) {
+    let n = u64::from(w) * u64::from(h);
+    if n <= max_pixels {
+        return (w, h);
+    }
+    let k = (max_pixels as f64 / n as f64).sqrt();
+    let side = |v: u32| ((v as f64 * k).floor() as u32).max(1);
+    (side(w), side(h))
 }
 
 /// A vello pixmap of premultiplied RGBA, red and blue swapped.

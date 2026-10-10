@@ -246,6 +246,42 @@ fn image_layers_draw_embedded_and_neighbouring_assets() {
     assert!(g < 100, "outside the asset");
 }
 
+/// An asset authored at 4000 × 2000 (from a 4 × 2 PNG, left half red,
+/// right half green) is decoded within the asset budget but drawn over
+/// its whole authored box: a layer scaled to 1 % shows it at 40 × 20, red
+/// on the left and green on the right, and nothing past it.
+#[test]
+fn a_large_asset_is_decoded_small_and_drawn_over_its_box() {
+    let mut png_bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut png_bytes, 4, 2);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        let row = [255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 0];
+        wr.write_image_data(&[row, row].concat()).unwrap();
+    }
+    let json = format!(
+        r#"{{"v":"5.7.0","fr":30,"ip":0,"op":60,"w":100,"h":100,
+          "assets":[{{"id":"big","w":4000,"h":2000,"u":"","p":"data:image/png;base64,{}","e":1}}],
+          "layers":[{{"ty":2,"ind":1,"refId":"big","ip":0,"op":60,"st":0,
+              "ks":{{"o":{{"a":0,"k":100}},"r":{{"a":0,"k":0}},"p":{{"a":0,"k":[30,40,0]}},
+                    "a":{{"a":0,"k":[0,0,0]}},"s":{{"a":0,"k":[1,1,100]}}}}}}]}}"#,
+        base64(&png_bytes)
+    );
+    let f = file("big-asset", &json);
+    let (mut r, _l, mut buf) = scene(f.to_str().unwrap(), 1.0);
+    buf.paint_at(&mut r, S, 0, T0);
+    // The box is (30, 40)–(70, 60).
+    assert!(red(&buf, 34, 50), "{:?}", buf.px(34, 50));
+    let [b, g, rr, _] = buf.px(66, 50);
+    assert!(g > 200 && rr < 60 && b < 60, "{:?}", buf.px(66, 50));
+    for (x, y) in [(26, 50), (74, 50), (50, 36), (50, 64)] {
+        let [b, g, rr, _] = buf.px(x, y);
+        assert_eq!((rr, g, b), (0x1e, 0x1e, 0x2e), "({x}, {y}) is outside");
+    }
+}
+
 /// With a text worker, the file is read and parsed on the image worker,
 /// not during the frame: the first frame draws nothing and keeps no
 /// clock, and the read's arrival wakes the loop and repaints with it.

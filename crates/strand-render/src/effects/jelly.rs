@@ -16,9 +16,11 @@
 //! content stays sharp and it costs nothing to draw.
 //!
 //! The speed is the node's drawn offset (the lift's, then the glide back)
-//! between painted frames, smoothed: render needs no pointer velocity from
-//! the `Router`, and frames at fixed timestamps give the same jelly every
-//! run. A node not lifted and at rest keeps no state. `reduced_motion`
+//! between painted frames, smoothed over [`SMOOTHING`] by each frame's own
+//! interval (so a drag stretches alike at 60 Hz and 144 Hz): render needs
+//! no pointer velocity from the `Router`, and frames at fixed timestamps
+//! give the same jelly every run. A node not lifted and at rest keeps no
+//! state; a held node at rest keeps its state but wants no frames. `reduced_motion`
 //! and frames with no clock show it undeformed.
 
 use std::collections::HashMap;
@@ -41,6 +43,11 @@ pub(crate) const WOBBLE: (f32, f32) = (300.0, 0.35);
 const EPS: f32 = 0.002;
 const STILL: f32 = 5.0;
 
+/// The speed's smoothing time constant, seconds: each frame moves it
+/// `1 − e^(−dt/τ)` of the way to the frame's own speed (half the way at
+/// 60 Hz).
+pub(crate) const SMOOTHING: f32 = 0.024;
+
 #[derive(Debug)]
 struct State {
     /// The offset drawn in the last painted frame, and its time.
@@ -49,6 +56,9 @@ struct State {
     velocity: [f32; 2],
     /// The deformation: its amount at twice its axis's angle.
     motion: Motion<2>,
+    /// It moved or wobbled in its last sample (a held node at rest does
+    /// not keep its surface busy).
+    moving: bool,
 }
 
 /// Every jellied node's motion.
@@ -112,15 +122,17 @@ impl Jellies {
             last: None,
             velocity: [0.0; 2],
             motion: Motion::rest([0.0; 2], EPS).sampled_at(frame.prev),
+            moving: false,
         });
         if frame.commit {
             if let Some((o, t)) = s.last
                 && frame.at > t
             {
                 let dt = (frame.at - t).as_secs_f32();
+                let k = 1.0 - (-dt / SMOOTHING).exp();
                 for i in 0..2 {
                     let v = (offset[i] - o[i]) / dt;
-                    s.velocity[i] = s.velocity[i] * 0.5 + v * 0.5;
+                    s.velocity[i] += (v - s.velocity[i]) * k;
                 }
             }
             s.last = Some((offset, frame.at));
@@ -142,6 +154,9 @@ impl Jellies {
             s.motion.peek(frame.at)
         };
         let moving = !s.motion.is_settled(frame.at) || speed > STILL;
+        if frame.commit {
+            s.moving = moving;
+        }
         if frame.commit && !held && !moving {
             self.nodes.remove(&id);
             return (None, false);
@@ -157,9 +172,10 @@ impl Jellies {
         self.nodes.retain(|id, _| keep(*id));
     }
 
-    /// Anything `under` a surface wobbling.
+    /// Anything `under` a surface moving or wobbling (a held node at
+    /// rest is not: its next move marks the surface dirty itself).
     pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
-        self.nodes.keys().any(|id| under(*id))
+        self.nodes.iter().any(|(id, s)| s.moving && under(*id))
     }
 }
 
@@ -228,6 +244,7 @@ mod tests {
         let [a, _, _, d] = matrix([least, 0.0]).unwrap();
         assert!(a < 1.0 && d > 1.0);
         assert!(j.nodes.is_empty(), "no state at rest");
+        assert!(!j.busy(|_| true));
         // Without `jelly`, or snapping, nothing.
         assert_eq!(j.sample(id, 0.0, [0.0; 2], true, curve, frame(ms)).0, None);
         let snap = Frame {
@@ -235,5 +252,58 @@ mod tests {
             ..frame(ms)
         };
         assert_eq!(j.sample(id, 0.4, [0.0; 2], true, curve, snap).0, None);
+    }
+
+    /// The same drag (2,400 px/s) stretches alike at 60 Hz and 144 Hz:
+    /// the speed's smoothing follows each frame's interval, not a fixed
+    /// share per frame.
+    #[test]
+    fn the_stretch_does_not_depend_on_the_refresh_rate() {
+        let at_hz = |hz: u64| {
+            let id = NodeId::new(1, 0);
+            let mut j = Jellies::default();
+            let curve = wobble();
+            // From rest at 1 s, a twelfth of a second of drag: 5 frames
+            // at 60 Hz, 12 at 144 Hz.
+            for k in 0..=hz / 12 {
+                let us = 1_000_000 + k * 1_000_000 / hz;
+                let at = Duration::from_micros(us);
+                let f = Frame {
+                    at,
+                    commit: true,
+                    prev: Some(Duration::from_micros(us - 1_000_000 / hz)),
+                    snap: false,
+                };
+                let x = 2400.0 * (k as f32 / hz as f32);
+                j.sample(id, 0.4, [x, 0.0], true, curve, f);
+            }
+            j.nodes[&id].velocity[0]
+        };
+        let (slow, fast) = (at_hz(60), at_hz(144));
+        // Both 2,400 · (1 − e^(−83 ms / τ)) ≈ 2,325; a fixed half per
+        // frame gave 2,325 at 60 Hz and 2,399 at 144 Hz.
+        assert!((slow - 2325.0).abs() < 5.0, "{slow}");
+        assert!((slow - fast).abs() < 3.0, "{slow} vs {fast}");
+    }
+
+    /// A held node that stopped moving keeps its state (the drag goes
+    /// on) but no longer keeps its surface busy.
+    #[test]
+    fn a_held_node_at_rest_wants_no_frames() {
+        let id = NodeId::new(1, 0);
+        let mut j = Jellies::default();
+        let curve = wobble();
+        let mut ms = 1000;
+        for k in 1..=10 {
+            ms += 16;
+            j.sample(id, 0.4, [k as f32 * 30.0, 0.0], true, curve, frame(ms));
+        }
+        assert!(j.busy(|_| true), "moving");
+        for _ in 0..300 {
+            ms += 16;
+            j.sample(id, 0.4, [300.0, 0.0], true, curve, frame(ms));
+        }
+        assert!(j.nodes.contains_key(&id), "still held");
+        assert!(!j.busy(|_| true), "at rest");
     }
 }
