@@ -19,8 +19,9 @@ below.
   measured head is `e765276` (docs/m4-report.md); the commits after it
   change docs, two tests' harnesses and the GPU thread's answer to a
   request that panics (decisions.md m4-integration-w3, closing). The
-  fourth m4 audit round's fixes are on `laptop/m4-audit` (decisions.md
-  m4-audit).
+  fourth to sixth m4 audit rounds' fixes are on `laptop/m4-audit`
+  (decisions.md m4-audit); they change runtime code as well as docs
+  and tests (docs/m4-report.md's header lists what).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
   M5 0/9 (boxes and exit criteria, counted 2026-10-10). The open M1
   box is the tree-sitter grammar, which M5 owns.
@@ -31,9 +32,10 @@ below.
   measures it over the target, 35,557 kB at `70af44f` and 35,617 kB at
   `e765276`, which warns; the ceiling is 38,912 kB);
   the full shell 42–50 MB against 64 MB.
-  After the fourth audit round (`laptop/m4-audit`, decisions.md
-  m4-audit round 4) the laptop measures 15,643,655 B CPU-only (about
-  85 KB left) and 19,016,775 B with the GPU backend.
+  After the sixth audit round (`laptop/m4-audit`, decisions.md
+  m4-audit round 6) the laptop measures 15,648,775 B CPU-only (about
+  80 KB left) and 19,030,727 B with the GPU backend; the design bar
+  34,484 kB.
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
@@ -41,8 +43,8 @@ below.
   on lavapipe (`run.sh`, CI) and advisorily on the laptop's GPU
   (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
   (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
-- Remote branches: `origin/main` and `origin/laptop/m4-audit` (the
-  fourth audit round, until it is merged). The integration branch and
+- Remote branches: `origin/main` and `origin/laptop/m4-audit` (audit
+  rounds 4 to 6, until it is merged). The integration branch and
   the wave-3 branches it merged are deleted.
 
 ## Open items for the owner
