@@ -1,11 +1,21 @@
 //! "The GPU leaves nothing running" (M4, docs/architecture.md,
-//! "`strand-gpu`", "Budgets and tests"): `strand run` on headless sway
-//! with a large animated `shader` panel. Before anything needs the GPU no
-//! Vulkan library is mapped and no `strand-gpu` thread runs; each cycle
-//! (the panel opened, its surface promoted and drawn by the GPU, the
-//! panel closed, the device dropped once idle) ends with the thread gone
-//! and the process taking no wakeups, and the PSS after the second cycle
-//! is within 3 MiB of the PSS after the first.
+//! "`strand-gpu`", "Budgets and tests"; m4-plan's
+//! `gpu_is_released_when_idle`): `strand run` on headless sway. Panel
+//! `Glow` (640×420) shows, while `on`, a 640×320 animated `shader` above
+//! a strip (a translucent row with a gradient box, a still `shader` and
+//! text); panel `Ref` (320×100) shows the same strip. Before anything
+//! needs the GPU no Vulkan library is mapped and no `strand-gpu` thread
+//! runs. Each cycle: `on` is set; `Glow` is promoted and presented
+//! through the surface hand-off (lavapipe presents on CI's pixman sway;
+//! the hardware leg may read back there), while `Ref`, too small to
+//! promote, draws its still shader by reading the pass back; the
+//! screenshot shows the still shader's colour in both (premultiplied,
+//! red and blue in place), and `Glow`'s presented strip matches `Ref`'s
+//! CPU-drawn strip within the GPU tolerance. Then `on` is cleared, which
+//! hides the shaders with both panels left open: `Glow` is demoted (its
+//! swapchain released, the surface taken back) and the device drops
+//! once idle, the thread gone and the process taking no wakeups. PSS
+//! after the second cycle is within 3 MiB of the PSS after the first.
 //!
 //! Lavapipe tier: `STRAND_REQUIRE_GPU=1` (with `STRAND_GPU_SOFTWARE=1`,
 //! which accepts lavapipe) makes a device that does not come up a
@@ -20,8 +30,28 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const GLOW: &str = r#"export state on = false
-panel Glow { anchor: center; width: 640; height: 400; open: on
-  shader "aurora.wgsl" { width: 640; height: 400; u_speed: 1 }
+
+component Strip {
+  row { width: 320; height: 100; pad: 10; gap: 10; radius: 12; bg: $surface.alpha(0.8)
+    box { width: 80; height: 80; radius: 12; bg: linear(90deg, $accent, $error) }
+    box { width: 60; height: 60
+      if on { shader "still.wgsl" { width: 60; height: 60 } }
+    }
+    text "Strand" { color: $fg }
+  }
+}
+
+panel Glow { anchor: top_left; width: 640; height: 420; open: true
+  col {
+    box { width: 640; height: 320
+      if on { shader "aurora.wgsl" { width: 640; height: 320; u_speed: 1 } }
+    }
+    Strip
+  }
+}
+
+panel Ref { anchor: bottom_right; width: 320; height: 100; open: true
+  Strip
 }
 "#;
 
@@ -33,6 +63,43 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
     return vec4<f32>(t * 0.5, 0.2, 0.6 * (1.0 - t), 1.0);
 }
 ";
+
+/// Premultiplied orange at half alpha (see [`still_over`]): red and blue
+/// swapped, or straight alpha taken for premultiplied, would show
+/// otherwise.
+const STILL: &str = "\
+@fragment
+fn main(v: StrandVertex) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.5, 0.25, 0.0, 0.5);
+}
+";
+
+/// What [`STILL`] shows over `bg`: its premultiplied colour plus half
+/// of what is under it.
+fn still_over(bg: [u8; 3]) -> [u8; 3] {
+    let src = [127.5, 63.75, 0.0];
+    let mut out = [0u8; 3];
+    for i in 0..3 {
+        out[i] = (src[i] + bg[i] as f64 * 0.5).round().min(255.0) as u8;
+    }
+    out
+}
+
+/// The strip's top-left corner in `Glow` (below the 320 px shader box)
+/// and in `Ref` (the bottom-right 320×100 of the 1920×1080 output).
+const GLOW_STRIP: (usize, usize) = (0, 320);
+const REF_STRIP: (usize, usize) = (1600, 980);
+const STRIP: (usize, usize) = (320, 100);
+/// Inside the still shader's box, from the strip's corner (10 px pad,
+/// the 80 px gradient box, a 10 px gap: x 100..160; y within 10..80
+/// however the row aligns it).
+const STILL_AT: (usize, usize) = (130, 45);
+
+/// Per-channel difference allowed between the GPU's and the CPU's strip
+/// (render's `tests/gpu.rs`), and the share of pixels (edges) allowed
+/// past it.
+const GPU_TOLERANCE: u8 = 6;
+const EDGE_SHARE: f64 = 0.02;
 
 /// Two cycles' PSS may differ by this much (no growth).
 const PSS_SLACK_KB: u64 = 3 * 1024;
@@ -247,17 +314,116 @@ fn quiet(pid: u32, what: &str, log: &dyn Fn() -> String) {
     }
 }
 
+/// A screenshot of `HEADLESS-1` (RGB).
+struct Img {
+    w: usize,
+    h: usize,
+    rgb: Vec<u8>,
+}
+
+impl Img {
+    /// A binary PPM (`P6`, maxval 255), as `grim -t ppm` writes.
+    fn ppm(bytes: &[u8]) -> Option<Img> {
+        let mut fields = Vec::new();
+        let mut at = 0;
+        while fields.len() < 4 {
+            while bytes.get(at)?.is_ascii_whitespace() {
+                at += 1;
+            }
+            let start = at;
+            while !bytes.get(at)?.is_ascii_whitespace() {
+                at += 1;
+            }
+            fields.push(String::from_utf8_lossy(&bytes[start..at]).into_owned());
+        }
+        if fields[0] != "P6" {
+            return None;
+        }
+        let (w, h) = (fields[1].parse().ok()?, fields[2].parse().ok()?);
+        let rgb = bytes.get(at + 1..)?.to_vec();
+        (rgb.len() >= w * h * 3).then_some(Img { w, h, rgb })
+    }
+
+    fn px(&self, (x, y): (usize, usize)) -> [u8; 3] {
+        let i = (y * self.w + x) * 3;
+        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
+    }
+
+    /// The `size` region at `at`, row by row.
+    fn region(&self, at: (usize, usize), size: (usize, usize)) -> Vec<[u8; 3]> {
+        let mut out = Vec::with_capacity(size.0 * size.1);
+        for y in at.1..at.1 + size.1 {
+            for x in at.0..at.0 + size.0 {
+                out.push(self.px((x, y)));
+            }
+        }
+        out
+    }
+
+    fn save(&self, path: &Path) {
+        let mut out = format!("P6\n{} {}\n255\n", self.w, self.h).into_bytes();
+        out.extend_from_slice(&self.rgb);
+        let _ = std::fs::write(path, out);
+    }
+}
+
+fn shot(dir: &Path, display: &str) -> Option<Img> {
+    let path = dir.join("shot.ppm");
+    let ok = Command::new("grim")
+        .args(["-t", "ppm", "-o", "HEADLESS-1"])
+        .arg(&path)
+        .env("XDG_RUNTIME_DIR", dir)
+        .env("WAYLAND_DISPLAY", display)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        return None;
+    }
+    Img::ppm(&std::fs::read(&path).ok()?)
+}
+
+fn near(a: [u8; 3], b: [u8; 3], tol: u8) -> bool {
+    a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= tol)
+}
+
+/// Pixels of `a` and `b` past [`GPU_TOLERANCE`], and the worst channel
+/// difference.
+fn compare(a: &[[u8; 3]], b: &[[u8; 3]]) -> (usize, u8) {
+    let mut bad = 0;
+    let mut worst = 0;
+    for (p, q) in a.iter().zip(b) {
+        let d = p
+            .iter()
+            .zip(q)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0);
+        worst = worst.max(d);
+        if d > GPU_TOLERANCE {
+            bad += 1;
+        }
+    }
+    (bad, worst)
+}
+
 #[test]
-fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
-    if !have("sway") {
-        assert!(
-            std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
-            "sway is not installed but STRAND_REQUIRE_SWAY is set"
-        );
-        eprintln!("\n*** SKIPPED: sway is not installed ***\n");
-        return;
+fn gpu_is_released_when_idle() {
+    for tool in ["sway", "grim"] {
+        if !have(tool) {
+            assert!(
+                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
+            );
+            eprintln!("\n*** SKIPPED: {tool} is not installed ***\n");
+            return;
+        }
     }
     let required = std::env::var_os("STRAND_REQUIRE_GPU").is_some();
+    // The hardware leg (`gpu.sh`): ANV cannot present on a pixman sway,
+    // so the promoted panel may be read back there. Lavapipe presents.
+    let hardware = std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1");
     let target_tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let tmp = TmpDir(target_tmp.join(format!("strand-gpu-idle-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&tmp.0);
@@ -268,6 +434,7 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("glow.strand"), GLOW).unwrap();
     std::fs::write(config.join("aurora.wgsl"), AURORA).unwrap();
+    std::fs::write(config.join("still.wgsl"), STILL).unwrap();
     let (_sway, display) = sway(&dir);
     let socket = dir.join("strand.sock");
     let log_path = dir.join("strand.log");
@@ -307,6 +474,28 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
         !vulkan_mapped(pid),
         "a Vulkan library is mapped before anything needs the GPU"
     );
+    // Both strips are on screen (CPU-drawn, no shader yet).
+    let mut img = None;
+    until(
+        "both panels on screen",
+        STEP,
+        || {
+            img = shot(&dir, &display);
+            img.as_ref().is_some_and(|i| {
+                let bg = i.px((960, 540));
+                i.px((GLOW_STRIP.0 + 40, GLOW_STRIP.1 + 50)) != bg
+                    && i.px((REF_STRIP.0 + 40, REF_STRIP.1 + 50)) != bg
+            })
+        },
+        &log,
+    );
+    let bg = img.as_ref().map_or([0; 3], |i| i.px((960, 540)));
+    // The still shader is drawn over the strip's own background.
+    let under = img.as_ref().map_or([0; 3], |i| {
+        i.px((REF_STRIP.0 + STILL_AT.0, REF_STRIP.1 + STILL_AT.1))
+    });
+    let still = still_over(under);
+    eprintln!("the strip {under:?} under the still shader: it shows {still:?}");
 
     // Lavapipe and LLVM stay mapped after the drop (about 80 MiB), so
     // the baseline is reported, not asserted against (gpu.sh's hardware
@@ -321,14 +510,21 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
     for cycle in 1..=cycles {
-        let attached = log().matches("attached (").count();
+        let text = log();
+        let attached = text.matches("attached (").count();
+        let released = text.matches(" released").count();
         assert!(set(true), "strand set glow.on true");
-        // The panel animates 0.26 Mpx a frame: promoted after 500 ms.
+        // The panel animates 0.2 Mpx a frame: promoted after 500 ms.
         let end = Instant::now() + STEP;
-        loop {
+        let mode = loop {
             let text = log();
             if text.matches("attached (").count() > attached {
-                break;
+                let last = text.rsplit("attached (").next().unwrap_or("");
+                break if last.starts_with("Present") {
+                    "Present"
+                } else {
+                    "Readback"
+                };
             }
             if text.contains("GPU unavailable") {
                 assert!(!required, "STRAND_REQUIRE_GPU is set but:\n{text}");
@@ -340,14 +536,89 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
                 "cycle {cycle}: the panel was never promoted\n{text}"
             );
             std::thread::sleep(Duration::from_millis(20));
-        }
+        };
+        assert!(
+            mode == "Present" || hardware,
+            "cycle {cycle}: lavapipe presents on a pixman sway, but the panel was attached \
+             for {mode}\n{}",
+            log()
+        );
         assert!(
             gpu_thread(pid),
             "cycle {cycle}: promoted without a GPU thread"
         );
-        // GPU frames for a while.
-        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            log().matches("attached (").count(),
+            attached + 1,
+            "cycle {cycle}: only Glow is promoted ({mode}); Ref reads its pass back"
+        );
+        // Shown three times promotion's 500 ms idle window: a presented
+        // animation is not idle, so it stays on the GPU.
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(
+            log().matches(" released").count(),
+            released,
+            "cycle {cycle}: Glow went back to the CPU while its shader animated\n{}",
+            log()
+        );
+        // Then the screen: Glow's strip presented by the GPU, Ref's drawn
+        // by the CPU with its pass read back, both showing the still
+        // shader's colour.
+        let img: std::cell::RefCell<Option<Img>> = std::cell::RefCell::new(None);
+        let at = |c: (usize, usize)| (c.0 + STILL_AT.0, c.1 + STILL_AT.1);
+        let stills = || {
+            img.borrow()
+                .as_ref()
+                .map(|i: &Img| (i.px(at(GLOW_STRIP)), i.px(at(REF_STRIP))))
+        };
+        until(
+            &format!("cycle {cycle}: the still shader in both strips"),
+            STEP,
+            || {
+                *img.borrow_mut() = shot(&dir, &display);
+                stills().is_some_and(|(g, r)| near(g, still, 3) && near(r, still, 3))
+            },
+            &|| {
+                format!(
+                    "Glow's and Ref's still shader: {:?}, want {still:?}\n{}",
+                    stills(),
+                    log()
+                )
+            },
+        );
+        let img = img.into_inner().expect("a screenshot");
+        let glow = img.region(GLOW_STRIP, STRIP);
+        let reference = img.region(REF_STRIP, STRIP);
+        let (bad, worst) = compare(&glow, &reference);
+        let share = bad as f64 / (STRIP.0 * STRIP.1) as f64;
+        eprintln!(
+            "cycle {cycle}: Glow's strip ({mode}) against Ref's (CPU): {bad} pixels past \
+             {GPU_TOLERANCE}, worst {worst}"
+        );
+        if share > EDGE_SHARE {
+            img.save(&tmp.0.join("gpu_idle.actual.ppm"));
+        }
+        assert!(
+            share <= EDGE_SHARE,
+            "cycle {cycle}: Glow's strip ({mode}) differs from Ref's in {bad} pixels by more \
+             than {GPU_TOLERANCE} (worst {worst}); STRAND_KEEP_TMP keeps the screenshot"
+        );
+        assert_ne!(
+            img.px((320, 160)),
+            bg,
+            "cycle {cycle}: the animated shader is on screen"
+        );
+        // Hidden (both panels stay open): Glow goes back to the CPU, its
+        // swapchain released before the manager commits it again.
         assert!(set(false), "strand set glow.on false");
+        if mode == "Present" {
+            until(
+                &format!("cycle {cycle}: Glow demoted and taken back"),
+                STEP,
+                || log().matches(" released").count() > released,
+                &log,
+            );
+        }
         until(
             &format!("cycle {cycle}: the GPU thread to end"),
             STEP,
@@ -363,6 +634,17 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
             before,
             "cycle {cycle}: woke after the device dropped\n{}",
             log()
+        );
+        // The CPU draws both strips again, without the still shader.
+        let img = shot(&dir, &display).expect("a screenshot");
+        let (bad, worst) = compare(
+            &img.region(GLOW_STRIP, STRIP),
+            &img.region(REF_STRIP, STRIP),
+        );
+        assert_eq!(
+            (bad, worst),
+            (0, 0),
+            "cycle {cycle}: both strips drawn by the CPU again"
         );
         let kb = pss_kb(pid);
         eprintln!("cycle {cycle}: PSS {kb} kB, threads {:?}", threads(pid));
@@ -388,7 +670,7 @@ fn each_gpu_cycle_ends_with_the_thread_gone_and_no_growth() {
         first.saturating_sub(baseline),
         growth(&baseline_maps, &maps[0])
     );
-    if std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1") && !cfg!(debug_assertions) {
+    if hardware && !cfg!(debug_assertions) {
         assert!(
             first <= baseline + HARDWARE_SLACK_KB,
             "PSS {first} kB after the drop, more than {HARDWARE_SLACK_KB} kB over the \

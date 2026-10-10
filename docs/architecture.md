@@ -2788,9 +2788,13 @@ to say why.
   `strand-gpu`, and naga also through `strand-compiler`'s `shaders`;
   none of them in `--no-default-features`. `budgets.rs`: no `libvulkan`
   mapped before promotion.
-- Idle on lavapipe (`strand/tests/gpu_idle.rs`, enforced in CI): after
-  each promote, frames and drop the `strand-gpu` thread is gone and the
-  process takes no wakeups, and PSS after the second cycle is within 3
+- Idle on lavapipe (`strand/tests/gpu_idle.rs::gpu_is_released_when_idle`,
+  enforced in CI): a large animated shader panel is promoted and
+  presented (lavapipe must attach in `Present` mode), stays presented
+  while it animates, and its screenshot matches a small panel's
+  CPU-drawn strip whose still shader reads back; hidden, it is demoted
+  and taken back; after each cycle the `strand-gpu` thread is gone and
+  the process takes no wakeups, and PSS after the second cycle is within 3
   MiB of PSS after the first (no growth). PSS back to the pre-GPU
   baseline is not asserted there: lavapipe and LLVM stay mapped after
   the device drops (about 80 MiB the spike measured, the same every
