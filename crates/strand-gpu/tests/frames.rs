@@ -168,6 +168,8 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
             scale: 1.0,
             pointer: [-1.0, -1.0],
         },
+        then: Vec::new(),
+        input: None,
     }));
     let px = match h.next() {
         GpuReply::PassPixels { key, frame, pixels } => {
@@ -238,6 +240,8 @@ fn a_broken_shader_fails_its_pass_and_the_device_stays_up() {
         size: Size::new(4, 4),
         pass,
         globals: PassGlobals::default(),
+        then: Vec::new(),
+        input: None,
     }));
     match h.next() {
         GpuReply::Failed { key, error, .. } => {
@@ -460,6 +464,8 @@ fn frames_and_passes_that_cannot_be_drawn_are_answered() {
         size: Size::new(0, 0),
         pass,
         globals: PassGlobals::default(),
+        then: Vec::new(),
+        input: None,
     }));
     match h.next() {
         GpuReply::Failed { surface, key, .. } => {

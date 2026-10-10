@@ -509,8 +509,14 @@ impl Renderer {
             None => self.extras.pointers.remove(&root).is_some(),
         };
         let tree = &self.tree;
+        // (M4) A pass that reads the pointer (a shader's
+        // `strand.pointer`, glass's highlight) follows it too.
+        #[cfg(feature = "gpu")]
+        let reads = self.gpu.pointer_users.contains(&surface);
+        #[cfg(not(feature = "gpu"))]
+        let reads = false;
         if changed
-            && self.anim.leans(|id| tree.root_of(id) == Some(root))
+            && (reads || self.anim.leans(|id| tree.root_of(id) == Some(root)))
             && let Some(s) = self.surfaces.get_mut(&surface)
         {
             s.mark_dirty();

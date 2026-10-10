@@ -17,7 +17,9 @@
 //!   offscreen group too, drawn as a glow of its own pixels
 //!   ([`crate::effects::glow`]); the other shader passes' groups draw
 //!   unfiltered; a backdrop pass's group is what is drawn behind it,
-//!   blurred ([`crate::backdrop`]). `Mask::Shape` is the shape library's outline
+//!   blurred ([`crate::backdrop`]). With a GPU, a layer's bundled passes
+//!   run there and their pixels, read back, are its offscreen group
+//!   ([`Layer::gpu`]). `Mask::Shape` is the shape library's outline
 //!   ([`crate::shapes::Polygon`]) over the group's box.
 //!
 //! The effects are built from each node's props (`filter:`, `blend:`,
@@ -43,17 +45,22 @@ pub struct Layer {
     /// The transform in force at the group (its node's and its
     /// ancestors' `scale`/`rotate`): an offscreen group is drawn under it.
     pub xform: Affine,
+    /// (M4) Its bundled GPU passes' pixels, read back (the flattener
+    /// attaches them; `renderer::backend`): drawn as its offscreen group
+    /// in place of the CPU's version.
+    pub gpu: Option<crate::offscreen::Drawn>,
 }
 
 impl Layer {
     /// True if a cell can draw the layer with `push_layer` alone; else
     /// it is an offscreen group ([`crate::offscreen`]).
     pub fn cell_local(&self) -> bool {
-        self.effects.iter().all(|e| {
-            !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_))
-                && !cpu_glow(e)
-                && !crate::backdrop::is_backdrop(e)
-        })
+        self.gpu.is_none()
+            && self.effects.iter().all(|e| {
+                !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_))
+                    && !cpu_glow(e)
+                    && !crate::backdrop::is_backdrop(e)
+            })
     }
 }
 
@@ -239,6 +246,7 @@ mod tests {
             frame: kurbo::Rect::new(10.0, 10.0, 110.0, 50.0),
             scale: 2.0,
             xform: Affine::IDENTITY,
+            gpu: None,
         }
     }
 

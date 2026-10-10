@@ -221,6 +221,7 @@ impl Masked {
                     frame,
                     scale,
                     xform,
+                    gpu: None,
                 };
                 (Item::PushLayer(std::sync::Arc::new(layer)), Item::PopLayer)
             }

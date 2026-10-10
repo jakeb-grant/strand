@@ -106,6 +106,10 @@ pub(crate) fn hash_item(h: &mut impl Hasher, item: &Item) {
             for v in l.xform.as_coeffs() {
                 v.to_bits().hash(h);
             }
+            l.gpu
+                .as_ref()
+                .map(|g| (Arc::as_ptr(&g.pixmap) as usize, g.x, g.y))
+                .hash(h);
         }
         Item::Raster {
             node, key, rect, ..

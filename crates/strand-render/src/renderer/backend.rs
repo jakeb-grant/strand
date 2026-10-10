@@ -69,40 +69,104 @@ const RETIRE_AFTER: u64 = 600;
 const MAX_SIDE: u32 = 8192;
 
 // ---------------------------------------------------------------------------
-// Shader nodes
+// Passes
 
-/// A node as a pass's key, and back.
-fn node_key(n: NodeId) -> u64 {
-    (u64::from(n.index) << 32) | u64::from(n.generation)
+/// Which of a node's passes: its own (a `shader` node, a GPU aurora or
+/// particle field), its `filter:` layer's bundled passes, or its
+/// `backdrop:`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Slot {
+    Node = 0,
+    Filter = 1,
+    Backdrop = 2,
 }
 
-fn key_node(k: u64) -> NodeId {
-    NodeId::new((k >> 32) as u32, k as u32)
+/// A pass, by its node and slot.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PassId {
+    pub node: NodeId,
+    pub slot: Slot,
 }
 
-/// A `shader` node's pass as one frame wants it.
+impl PassId {
+    pub(crate) fn new(node: NodeId, slot: Slot) -> Self {
+        PassId { node, slot }
+    }
+
+    /// Its key on the wire: the node in the low 62 bits (indexes stay
+    /// far below 2^30), the slot in the top two.
+    fn wire(self) -> u64 {
+        let n = (u64::from(self.node.index & 0x3FFF_FFFF) << 32) | u64::from(self.node.generation);
+        n | ((self.slot as u64) << 62)
+    }
+
+    fn unwire(k: u64) -> Self {
+        let slot = match k >> 62 {
+            1 => Slot::Filter,
+            2 => Slot::Backdrop,
+            _ => Slot::Node,
+        };
+        PassId {
+            node: NodeId::new(((k >> 32) & 0x3FFF_FFFF) as u32, k as u32),
+            slot,
+        }
+    }
+}
+
+/// What a pass reads, by the display item that has it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PassInput {
+    /// Nothing.
+    None,
+    /// The group of the `PushLayer` at this index, CPU-filtered but not
+    /// by its bundled passes.
+    Group(usize),
+    /// What the display list draws before the `PushLayer` at this
+    /// index (a backdrop).
+    Behind(usize),
+}
+
+/// A pass as one frame wants it.
 #[derive(Clone, Debug)]
 pub(crate) struct PassWant {
-    pub node: NodeId,
-    /// What the pass's pixels depend on: code, uniforms, size, time.
+    pub id: PassId,
+    /// What the pass's pixels depend on: code, uniforms, size, time,
+    /// input.
     pub key: u64,
+    /// Where its pixels go on the surface (buffer pixels), and their size.
+    pub at: (i32, i32),
     pub size: Size,
     pub pass: ShaderPass,
+    /// Passes run after it, each on the one before's pixels.
+    pub then: Vec<ShaderPass>,
     pub globals: PassGlobals,
+    pub input: PassInput,
     /// It reads `strand.time`: its passes are pipelined, never held for.
     pub timed: bool,
+    /// It reads `strand.pointer`: a pointer motion repaints it.
+    pub pointer: bool,
 }
 
-/// The last pixels each `shader` node's pass gave, with the key of the
-/// want they answer.
+/// The last pixels each pass gave, with the key of the want they
+/// answer.
 #[derive(Debug, Default)]
 pub struct ShaderResults {
-    map: HashMap<NodeId, (u64, Arc<Pixmap>)>,
+    map: HashMap<PassId, (u64, Arc<Pixmap>)>,
 }
 
 impl ShaderResults {
-    pub(crate) fn get(&self, node: NodeId) -> Option<&(u64, Arc<Pixmap>)> {
-        self.map.get(&node)
+    pub(crate) fn get(&self, id: PassId) -> Option<&(u64, Arc<Pixmap>)> {
+        self.map.get(&id)
+    }
+
+    /// The pixels `w` can draw: its own, or (a frame behind) the last of
+    /// the same size, as a clocked pass's are while the next is drawn,
+    /// and a changed one's while it is redrawn. `None`: the CPU draws
+    /// its fallback (no pixels yet, a failed pass, a new size).
+    pub(crate) fn usable(&self, w: &PassWant) -> Option<&(u64, Arc<Pixmap>)> {
+        self.map.get(&w.id).filter(|(k, p)| {
+            *k == w.key || (u32::from(p.width()) == w.size.w && u32::from(p.height()) == w.size.h)
+        })
     }
 }
 
@@ -117,16 +181,51 @@ pub(crate) fn reads_time(code: &ShaderCode) -> bool {
     code.wgsl.contains("strand.time")
 }
 
-/// The pass a `shader` node draws at `w × h` buffer pixels, its `u_*`
-/// values packed in its slots' order.
+/// True if `code` reads the pointer.
+pub(crate) fn reads_pointer(code: &ShaderCode) -> bool {
+    code.wgsl.contains("strand.pointer")
+}
+
+/// A pass's key: what its pixels depend on.
+fn want_key(
+    passes: &[&ShaderPass],
+    size: Size,
+    scale: f32,
+    time: f32,
+    pointer: [f32; 2],
+    input: u64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut k = std::collections::hash_map::DefaultHasher::new();
+    for p in passes {
+        match &p.code {
+            ShaderRef::File(code) => code.hash(&mut k),
+            ShaderRef::Bundled(b) => b.hash(&mut k),
+        }
+        for v in p.uniforms.iter() {
+            v.to_bits().hash(&mut k);
+        }
+    }
+    (size.w, size.h, scale.to_bits(), time.to_bits()).hash(&mut k);
+    pointer.map(f32::to_bits).hash(&mut k);
+    input.hash(&mut k);
+    k.finish()
+}
+
+/// The pass a `shader` node draws at `w × h` buffer pixels at `at`, its
+/// `u_*` values packed in its slots' order; `pointer` in buffer pixels
+/// relative to its box (-1, -1 outside).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pass_want(
     node: NodeId,
     code: &Arc<ShaderCode>,
     uniforms: Option<&PropValue>,
+    at: (i32, i32),
     w: u32,
     h: u32,
     scale: f32,
     time: f32,
+    pointer: [f32; 2],
 ) -> Option<PassWant> {
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return None;
@@ -138,33 +237,102 @@ pub(crate) fn pass_want(
     let packed = pack(code, entries, scale);
     let timed = reads_time(code);
     let time = if timed && time.is_finite() { time } else { 0.0 };
-    let mut k = std::collections::hash_map::DefaultHasher::new();
-    {
-        use std::hash::{Hash, Hasher};
-        code.hash(&mut k);
-        for v in &packed {
-            v.to_bits().hash(&mut k);
-        }
-        (w, h, scale.to_bits(), time.to_bits()).hash(&mut k);
-        let _ = k.finish();
-    }
-    let key = std::hash::Hasher::finish(&k);
+    let reads = reads_pointer(code);
+    let pointer = if reads { pointer } else { [-1.0, -1.0] };
+    let pass = ShaderPass {
+        code: ShaderRef::File(code.clone()),
+        uniforms: packed.into(),
+        input: ShaderInput::None,
+    };
+    let size = Size::new(w, h);
     Some(PassWant {
-        node,
-        key,
-        size: Size::new(w, h),
-        pass: ShaderPass {
-            code: ShaderRef::File(code.clone()),
-            uniforms: packed.into(),
-            input: ShaderInput::None,
-        },
+        id: PassId::new(node, Slot::Node),
+        key: want_key(&[&pass], size, scale, time, pointer, 0),
+        at,
+        size,
+        pass,
+        then: Vec::new(),
         globals: PassGlobals {
             time,
             scale,
-            pointer: [-1.0, -1.0],
+            pointer,
         },
+        input: PassInput::None,
         timed,
+        pointer: reads,
     })
+}
+
+/// A bundled effect's pass want: `passes` (run in order) over `region`
+/// of the surface, reading `input` (whose content hashes to `input_key`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bundled_want(
+    id: PassId,
+    passes: Vec<ShaderPass>,
+    region: Rect,
+    input: PassInput,
+    input_key: u64,
+    scale: f32,
+    time: f32,
+    pointer: [f32; 2],
+) -> Option<PassWant> {
+    if region.w == 0 || region.h == 0 || region.w > MAX_SIDE || region.h > MAX_SIDE {
+        return None;
+    }
+    let mut passes = passes.into_iter();
+    let pass = passes.next()?;
+    let then: Vec<ShaderPass> = passes.collect();
+    let all: Vec<&ShaderPass> = std::iter::once(&pass).chain(then.iter()).collect();
+    let timed = all.iter().any(|p| bundled_timed(p));
+    let reads = all.iter().any(|p| bundled_pointer(p));
+    let time = if timed && time.is_finite() { time } else { 0.0 };
+    let pointer = if reads { pointer } else { [-1.0, -1.0] };
+    let size = Size::new(region.w, region.h);
+    Some(PassWant {
+        id,
+        key: want_key(&all, size, scale, time, pointer, input_key),
+        at: (region.x, region.y),
+        size,
+        pass,
+        then,
+        globals: PassGlobals {
+            time,
+            scale,
+            pointer,
+        },
+        input,
+        timed,
+        pointer: reads,
+    })
+}
+
+/// True for a bundled pass whose look moves with time.
+fn bundled_timed(p: &ShaderPass) -> bool {
+    use strand_scene::Bundled;
+    matches!(
+        p.code,
+        ShaderRef::Bundled(Bundled::Wobble | Bundled::Aurora | Bundled::Particles)
+    )
+}
+
+/// True for a bundled pass that follows the pointer (glass's highlight).
+fn bundled_pointer(p: &ShaderPass) -> bool {
+    matches!(p.code, ShaderRef::Bundled(strand_scene::Bundled::Glass))
+}
+
+/// True for a pass the GPU draws in place of a layer's CPU version:
+/// a bundled `filter:` pass (bloom, CRT, chromatic, wobble, 3D tilt).
+pub(crate) fn gpu_filter(e: &strand_scene::Effect) -> Option<&ShaderPass> {
+    match e {
+        strand_scene::Effect::Shader(
+            p @ ShaderPass {
+                code: ShaderRef::Bundled(_),
+                input: ShaderInput::Content,
+                ..
+            },
+        ) => Some(p),
+        _ => None,
+    }
 }
 
 /// `entries` in `code`'s slot order, in buffer units (architecture.md,
@@ -262,7 +430,7 @@ pub(super) struct GpuState {
     changes: Vec<BackendChange>,
     out: Vec<GpuRequest>,
     uploads: Uploads,
-    pending: HashMap<NodeId, Pending>,
+    pending: HashMap<PassId, Pending>,
     next_frame: u64,
     /// A `GpuPresent` frame `paint` lowered, for [`Renderer::paint_gpu`].
     present: Option<Frame>,
@@ -271,8 +439,10 @@ pub(super) struct GpuState {
     /// The pixels `paint_gpu`'s target points at: never written (a
     /// present frame is lowered, not rasterised), so never resident.
     scratch: Vec<u8>,
-    /// A `shader` node was drawn by the last frame of some surface.
+    /// A pass was wanted by the last frame of some surface.
     demand: HashSet<SurfaceId>,
+    /// Surfaces whose last frame had a pass that reads the pointer.
+    pub(super) pointer_users: HashSet<SurfaceId>,
     /// Presented surfaces crossfading: their snapshot as an upload,
     /// with the snapshot's address it was copied from.
     fades: HashMap<SurfaceId, (usize, Arc<Pixmap>)>,
@@ -508,17 +678,17 @@ impl Renderer {
             }
             GpuReply::PassPixels { key, frame, pixels } => {
                 self.gpu.device.used(now);
-                let node = key_node(key);
-                let Some(p) = self.gpu.pending.remove(&node).filter(|p| p.frame == frame) else {
+                let id = PassId::unwire(key);
+                let Some(p) = self.gpu.pending.remove(&id).filter(|p| p.frame == frame) else {
                     return;
                 };
                 if let Some(pm) = readback_pixmap(&pixels) {
-                    self.extras.shaders.map.insert(node, (p.key, Arc::new(pm)));
+                    self.extras.shaders.map.insert(id, (p.key, Arc::new(pm)));
                 }
                 if let Some(s) = self.gpu.surfaces.get_mut(&p.surface) {
                     s.hold = None;
                 }
-                self.mark_node_dirty(node);
+                self.mark_node_dirty(id.node);
             }
             GpuReply::Failed {
                 surface,
@@ -526,19 +696,16 @@ impl Renderer {
                 error,
             } => {
                 log::warn!("GPU: {error}");
-                if let Some(node) = key.map(key_node) {
+                if let Some(id) = key.map(PassId::unwire) {
                     // Not asked again until its inputs change: the result
                     // records the failed want with no pixels.
-                    if let Some(p) = self.gpu.pending.remove(&node) {
-                        self.extras
-                            .shaders
-                            .map
-                            .insert(node, (p.key, empty_pixmap()));
+                    if let Some(p) = self.gpu.pending.remove(&id) {
+                        self.extras.shaders.map.insert(id, (p.key, empty_pixmap()));
                         if let Some(s) = self.gpu.surfaces.get_mut(&p.surface) {
                             s.hold = None;
                         }
                     }
-                    self.mark_node_dirty(node);
+                    self.mark_node_dirty(id.node);
                 }
                 if let Some(surface) = surface
                     && let Some(s) = self.gpu.surfaces.get_mut(&surface)
@@ -627,6 +794,7 @@ impl Renderer {
         let live = &self.surfaces;
         self.gpu.surfaces.retain(|id, _| live.contains_key(id));
         self.gpu.demand.retain(|id| live.contains_key(id));
+        self.gpu.pointer_users.retain(|id| live.contains_key(id));
         self.gpu.fades.retain(|id, _| live.contains_key(id));
         // Passes of surfaces that went away: their pixels have nowhere
         // to go.
@@ -704,7 +872,11 @@ impl Renderer {
         if !self.backend(surface).is_gpu() || !passes.iter().any(|p| p.timed) {
             return out;
         }
-        let timed: HashSet<NodeId> = passes.iter().filter(|p| p.timed).map(|p| p.node).collect();
+        let timed: HashSet<NodeId> = passes
+            .iter()
+            .filter(|p| p.timed && p.id.slot == Slot::Node)
+            .map(|p| p.id.node)
+            .collect();
         for d in items {
             if let Item::Raster { node, .. } = &d.item
                 && timed.contains(node)
@@ -715,41 +887,73 @@ impl Renderer {
         out
     }
 
-    /// The passes a frame of `surface` wants: those whose pixels are not
-    /// its node's last are asked for (one in flight per node). `hold`: the
-    /// frame is not painted yet, so it may wait for them.
-    pub(super) fn gpu_passes(&mut self, surface: SurfaceId, wants: &[PassWant], hold: bool) {
+    /// The passes a frame of `surface` (its display list `items`) wants:
+    /// those whose pixels are not their last are asked for (one in
+    /// flight per pass), with their input drawn now. `hold`: the frame is
+    /// not painted yet, so it may wait for them.
+    pub(super) fn gpu_passes(
+        &mut self,
+        surface: SurfaceId,
+        items: &[DisplayItem],
+        wants: &[PassWant],
+        hold: bool,
+    ) {
+        if wants.iter().any(|w| w.pointer) {
+            self.gpu.pointer_users.insert(surface);
+        } else {
+            self.gpu.pointer_users.remove(&surface);
+        }
         if wants.is_empty() {
             self.gpu.demand.remove(&surface);
             return;
         }
         self.gpu.demand.insert(surface);
         let now = Instant::now();
-        // A promoted surface's passes run in its GPU frames.
-        if self.backend(surface).is_gpu() {
+        // A promoted surface's own passes run in its GPU frames; its
+        // layers' passes are read back like any surface's.
+        let gpu_drawn = self.backend(surface).is_gpu();
+        if gpu_drawn {
             self.gpu.device.used(now);
-            return;
         }
         let mut wait = false;
+        let mut prepared = false;
         for w in wants {
-            let have = self.extras.shaders.get(w.node).map(|(k, _)| *k);
-            if have == Some(w.key) || self.gpu.pending.contains_key(&w.node) {
+            if gpu_drawn && w.id.slot == Slot::Node {
+                continue;
+            }
+            let have = self.extras.shaders.get(w.id).map(|(k, _)| *k);
+            if have == Some(w.key) || self.gpu.pending.contains_key(&w.id) {
                 continue;
             }
             if !self.gpu.want(now) {
                 // No device (a failure under 30 s old): nothing to draw.
                 continue;
             }
+            let input = match w.input {
+                PassInput::None => None,
+                PassInput::Group(_) | PassInput::Behind(_) => {
+                    if !prepared {
+                        self.prepare_groups(surface, items);
+                        prepared = true;
+                    }
+                    match self.pass_input(surface, items, w) {
+                        Some(px) => Some(px),
+                        None => continue,
+                    }
+                }
+            };
             let frame = self.gpu.frame_id();
             self.gpu.out.push(GpuRequest::Pass(PassFrame {
-                key: node_key(w.node),
+                key: w.id.wire(),
                 id: frame,
                 size: w.size,
                 pass: w.pass.clone(),
+                then: w.then.clone(),
                 globals: w.globals,
+                input,
             }));
             self.gpu.pending.insert(
-                w.node,
+                w.id,
                 Pending {
                     frame,
                     key: w.key,
@@ -757,7 +961,7 @@ impl Renderer {
                 },
             );
             // Only an up device answers within the wait; a clocked pass
-            // is pipelined, and a node showing pixels keeps them meanwhile
+            // is pipelined, and a pass with pixels keeps them meanwhile
             // only if it is clocked.
             if self.gpu.device.is_up() && (have.is_none() || !w.timed) {
                 wait = true;
@@ -773,7 +977,77 @@ impl Renderer {
         self.extras
             .shaders
             .map
-            .retain(|id, _| pending.contains_key(id) || tree.get(*id).is_some());
+            .retain(|id, _| pending.contains_key(id) || tree.get(id.node).is_some());
+    }
+
+    /// Draws this frame's offscreen groups of `surface` (a pass's input
+    /// may hold or show them).
+    fn prepare_groups(&mut self, surface: SurfaceId, items: &[DisplayItem]) {
+        let Some((size, scale)) = self.surfaces.get(&surface).map(|s| (s.size, s.scale)) else {
+            return;
+        };
+        let (cache, offscreen) = self.raster.gpu_parts();
+        offscreen.prepare(
+            items,
+            &Damage::full(size),
+            Rect::from_size(size),
+            &self.atlas,
+            &*cache,
+            scale,
+        );
+    }
+
+    /// The pixels pass `w` reads: its layer's group, CPU-filtered but not
+    /// by its bundled passes, or what is drawn behind its backdrop.
+    fn pass_input(
+        &mut self,
+        surface: SurfaceId,
+        items: &[DisplayItem],
+        w: &PassWant,
+    ) -> Option<Arc<Pixmap>> {
+        let scale = self.surfaces.get(&surface)?.scale;
+        let region = Rect {
+            x: w.at.0,
+            y: w.at.1,
+            w: w.size.w,
+            h: w.size.h,
+        };
+        let (cache, offscreen) = self.raster.gpu_parts();
+        let groups = offscreen.current();
+        match w.input {
+            PassInput::None => None,
+            PassInput::Group(i) => {
+                let Item::PushLayer(layer) = &items.get(i)?.item else {
+                    return None;
+                };
+                let end = crate::raster::skip_group(items, i);
+                let inner = &items[i + 1..end.saturating_sub(1).max(i + 1)];
+                let d = crate::offscreen::render_group(
+                    inner,
+                    layer,
+                    region,
+                    &self.atlas,
+                    &*cache,
+                    scale,
+                    groups,
+                    false,
+                )?;
+                Some(d.pixmap)
+            }
+            PassInput::Behind(i) => {
+                let below = crate::backdrop::behind(items, i, region);
+                let pm = crate::offscreen::rasterise(
+                    &below,
+                    Affine::IDENTITY,
+                    region,
+                    &self.atlas,
+                    &*cache,
+                    scale,
+                    groups,
+                )?;
+                Some(Arc::new(pm))
+            }
+        }
     }
 
     /// Paints a frame of a `GpuReadback` surface: copies the last pixels
@@ -938,7 +1212,12 @@ impl Renderer {
             &*cache,
             scale,
         );
-        let passes: HashMap<NodeId, &PassWant> = passes.iter().map(|p| (p.node, p)).collect();
+        // The surface's own passes, run in the frame.
+        let passes: HashMap<NodeId, &PassWant> = passes
+            .iter()
+            .filter(|p| p.id.slot == Slot::Node)
+            .map(|p| (p.id.node, p))
+            .collect();
         let mut l = Lowering {
             atlas: &self.atlas,
             cache,
@@ -1581,28 +1860,34 @@ mod tests {
     }
 
     #[test]
-    fn node_keys_round_trip() {
-        let n = NodeId::new(7, 3);
-        assert_eq!(key_node(node_key(n)), n);
+    fn pass_ids_round_trip_on_the_wire() {
+        for slot in [Slot::Node, Slot::Filter, Slot::Backdrop] {
+            let id = PassId::new(NodeId::new(7, 3), slot);
+            assert_eq!(PassId::unwire(id.wire()), id);
+        }
+        let big = PassId::new(NodeId::new(1 << 29, u32::MAX), Slot::Backdrop);
+        assert_eq!(PassId::unwire(big.wire()), big);
     }
+
+    const P: [f32; 2] = [-1.0, -1.0];
 
     #[test]
     fn a_clocked_pass_changes_with_time_and_a_static_one_does_not() {
         let c = code();
-        let a = pass_want(NodeId::new(3, 0), &c, None, 10, 10, 1.0, 0.5).unwrap();
-        let b = pass_want(NodeId::new(3, 0), &c, None, 10, 10, 1.0, 0.6).unwrap();
+        let a = pass_want(NodeId::new(3, 0), &c, None, (0, 0), 10, 10, 1.0, 0.5, P).unwrap();
+        let b = pass_want(NodeId::new(3, 0), &c, None, (0, 0), 10, 10, 1.0, 0.6, P).unwrap();
         assert!(a.timed);
         assert_ne!(a.key, b.key);
         let still = Arc::new(ShaderCode {
             wgsl: "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }".into(),
             ..(*c).clone()
         });
-        let a = pass_want(NodeId::new(3, 0), &still, None, 10, 10, 1.0, 0.5).unwrap();
-        let b = pass_want(NodeId::new(3, 0), &still, None, 10, 10, 1.0, 0.6).unwrap();
+        let a = pass_want(NodeId::new(3, 0), &still, None, (0, 0), 10, 10, 1.0, 0.5, P).unwrap();
+        let b = pass_want(NodeId::new(3, 0), &still, None, (0, 0), 10, 10, 1.0, 0.6, P).unwrap();
         assert!(!a.timed);
         assert_eq!(a.key, b.key, "time is 0 for a pass that does not read it");
         assert_eq!(a.globals.time, 0.0);
-        assert!(pass_want(NodeId::new(3, 0), &still, None, 0, 10, 1.0, 0.0).is_none());
+        assert!(pass_want(NodeId::new(3, 0), &still, None, (0, 0), 0, 10, 1.0, 0.0, P).is_none());
     }
 
     #[test]

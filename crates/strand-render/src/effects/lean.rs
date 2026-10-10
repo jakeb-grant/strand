@@ -10,8 +10,11 @@
 //!   centre (all the way at its edges). A negative `d` moves it away.
 //! - `tilt: a` is the CPU's 2D tilt: the node turns in its plane by up to
 //!   `a` about its centre, towards the side of its own box the pointer is
-//!   on (all the way at or past its edge, nothing over its centre). The
-//!   3D tilt about its axes is the GPU's.
+//!   on (all the way at or past its edge, nothing over its centre). With
+//!   a GPU it turns in 3-D instead: up to `a` about its vertical axis as
+//!   the pointer goes across its box and about its horizontal axis as it
+//!   goes down, the side under the pointer pressed away (a bundled pass,
+//!   `Bundled::Tilt`).
 //!
 //! The offset and turn spring towards their targets along the prop's
 //! transition (`$motion.spatial` by default) and back to rest when the
@@ -58,16 +61,17 @@ impl Lean {
     }
 
     /// Where it leans with the pointer at `pointer` (`None`: off the
-    /// surface): `[dx, dy, turn]`, for a node laid out at `frame` on a
+    /// surface): `[dx, dy, across, down]` (the turns for the pointer
+    /// across and down its box), for a node laid out at `frame` on a
     /// surface `surface` (both logical pixels).
     pub(crate) fn target(
         &self,
         pointer: Option<LogicalPoint>,
         frame: LogicalRect,
         surface: LogicalRect,
-    ) -> [f32; 3] {
+    ) -> [f32; 4] {
         let Some(p) = pointer.filter(|p| p.x.is_finite() && p.y.is_finite()) else {
-            return [0.0; 3];
+            return [0.0; 4];
         };
         // -1 at one edge of `r`, 1 at the other.
         let along = |v: f32, start: f32, len: f32| {
@@ -80,14 +84,20 @@ impl Lean {
         let sx = along(p.x, surface.x, surface.w);
         let sy = along(p.y, surface.y, surface.h);
         let nx = along(p.x, frame.x, frame.w);
-        [self.parallax * sx, self.parallax * sy, self.tilt * nx]
+        let ny = along(p.y, frame.y, frame.h);
+        [
+            self.parallax * sx,
+            self.parallax * sy,
+            self.tilt * nx,
+            self.tilt * ny,
+        ]
     }
 }
 
 /// Every leaning node's spring, and the nodes that lean.
 #[derive(Debug, Default)]
 pub(crate) struct Leans {
-    nodes: HashMap<NodeId, Motion<3>>,
+    nodes: HashMap<NodeId, Motion<4>>,
     /// Nodes drawn with `parallax` or `tilt`: a pointer motion on their
     /// surface repaints it.
     users: HashSet<NodeId>,
@@ -99,21 +109,21 @@ impl Leans {
     pub(crate) fn sample(
         &mut self,
         id: NodeId,
-        target: [f32; 3],
+        target: [f32; 4],
         curve: Curve,
         frame: Frame,
-    ) -> ([f32; 3], bool) {
+    ) -> ([f32; 4], bool) {
         self.users.insert(id);
         if frame.snap {
             if frame.commit {
                 self.nodes.remove(&id);
             }
-            return ([0.0; 3], false);
+            return ([0.0; 4], false);
         }
         let m = self
             .nodes
             .entry(id)
-            .or_insert_with(|| Motion::rest([0.0; 3], EPS).sampled_at(frame.prev));
+            .or_insert_with(|| Motion::rest([0.0; 4], EPS).sampled_at(frame.prev));
         if m.target() != target {
             m.retarget(target, curve);
         }
@@ -123,7 +133,7 @@ impl Leans {
             m.peek(frame.at)
         };
         let moving = !m.is_settled(frame.at);
-        if !moving && frame.commit && target == [0.0; 3] {
+        if !moving && frame.commit && target == [0.0; 4] {
             self.nodes.remove(&id);
         }
         (v, moving)
@@ -158,11 +168,14 @@ mod tests {
         };
         let surface = LogicalRect::new(0.0, 0.0, 200.0, 100.0);
         let frame = LogicalRect::new(80.0, 30.0, 40.0, 40.0);
-        assert_eq!(lean.target(None, frame, surface), [0.0; 3]);
+        assert_eq!(lean.target(None, frame, surface), [0.0; 4]);
         let centre = LogicalPoint { x: 100.0, y: 50.0 };
-        assert_eq!(lean.target(Some(centre), frame, surface), [0.0; 3]);
+        assert_eq!(lean.target(Some(centre), frame, surface), [0.0; 4]);
         let corner = LogicalPoint { x: 200.0, y: 0.0 };
-        assert_eq!(lean.target(Some(corner), frame, surface), [6.0, -6.0, 8.0]);
+        assert_eq!(
+            lean.target(Some(corner), frame, surface),
+            [6.0, -6.0, 8.0, -8.0]
+        );
         let left = LogicalPoint { x: 90.0, y: 50.0 };
         let t = lean.target(Some(left), frame, surface);
         assert!((t[2] + 4.0).abs() < 1e-4, "{t:?}");

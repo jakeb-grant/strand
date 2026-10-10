@@ -358,7 +358,7 @@ fn aurora(c: &mut Canvas, color: Color, t: f32) {
 }
 
 /// `c` turned `deg` round the colour wheel (a luma-keeping rotation).
-fn rotate_hue(c: Color, deg: f32) -> Color {
+pub(crate) fn rotate_hue(c: Color, deg: f32) -> Color {
     let m = super::filter::hue(deg);
     let v = [c.r, c.g, c.b];
     let row =

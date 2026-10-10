@@ -19,6 +19,8 @@ use crate::anim::Animator;
 use crate::layout::Boxes;
 use crate::tree::{Node, SceneTree};
 
+#[cfg(feature = "gpu")]
+mod gpu;
 mod hash;
 mod image;
 mod node;
@@ -194,7 +196,7 @@ pub struct Flattened {
     /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
-    /// (M4) The passes of drawn `shader` nodes.
+    /// (M4) The passes of drawn `shader` nodes and bundled effects.
     #[cfg(feature = "gpu")]
     pub(crate) passes: Vec<crate::renderer::backend::PassWant>,
     /// (M4) The pose the compositor applies to the whole surface this
@@ -323,9 +325,14 @@ pub struct Extras {
     pub images: crate::image::ImageStore,
     /// (M4) CPU raster nodes' sources and pixmaps.
     pub rasters: crate::offscreen::RasterNodes,
-    /// (M4) `shader` nodes' last pass pixels.
+    /// (M4) Passes' last pixels (`shader` nodes, bundled effects).
     #[cfg(feature = "gpu")]
     pub shaders: crate::renderer::backend::ShaderResults,
+    /// (M4) Bundled effects take their GPU form (3-D tilt, an animated
+    /// aurora, particles past the CPU's cap): false while the device is
+    /// unavailable.
+    #[cfg(feature = "gpu")]
+    pub gpu_ok: bool,
     /// (M4) The pointer on each surface it is over, by the surface's
     /// root node, logical pixels (`Router::pointer`, handed over by the
     /// host): `parallax` and `tilt` follow it.

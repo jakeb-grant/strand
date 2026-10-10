@@ -13,6 +13,8 @@ pub(crate) mod builtin;
 pub(crate) mod filter;
 pub(crate) mod glow;
 pub(crate) mod goo;
+#[cfg(feature = "gpu")]
+pub(crate) mod gpu;
 pub(crate) mod lean;
 pub(crate) mod letters;
 pub(crate) mod light;
@@ -135,9 +137,17 @@ fn filter_effect(name: &str, args: &[PropValue], scale: f32) -> Option<Effect> {
         }
         "bloom" | "chromatic" | "wobble" | "crt" => {
             let bundled = Bundled::from_name(name)?;
+            // Uniforms in buffer units, the length first (its reach,
+            // `Bundled::reach`); decisions.md, m4-gpu-effects.
+            let length = radius(args).unwrap_or(0.0) * scale;
             let uniforms: Vec<f32> = match name {
                 "crt" => Vec::new(),
-                _ => vec![radius(args).unwrap_or(0.0) * scale],
+                "bloom" => {
+                    let strength = args.get(1).and_then(number).unwrap_or(1.0);
+                    vec![length, strength.clamp(0.0, 10.0)]
+                }
+                "wobble" => vec![length, WOBBLE_WAVE * scale, WOBBLE_PERIOD],
+                _ => vec![length],
             };
             return Some(Effect::Shader(ShaderPass {
                 code: ShaderRef::Bundled(bundled),
@@ -158,6 +168,35 @@ fn filter_effect(name: &str, args: &[PropValue], scale: f32) -> Option<Effect> {
         .iter()
         .all(|v| v.is_finite())
         .then_some(Effect::ColorMatrix(matrix))
+}
+
+/// `wobble()`'s wavelength, logical pixels, and period, seconds.
+const WOBBLE_WAVE: f32 = 40.0;
+const WOBBLE_PERIOD: f32 = 2.0;
+
+/// (M4) `effects` with the GPU's 3-D tilt last: `turn` is the lean's
+/// `[across, down]` in degrees (`crate::effects::lean`), the pass's
+/// uniforms its pitch and yaw in radians (`Bundled::Tilt`: the side the
+/// pointer is on pressed away).
+#[cfg(feature = "gpu")]
+pub(crate) fn with_tilt(effects: Option<Arc<[Effect]>>, turn: [f32; 2]) -> Arc<[Effect]> {
+    let mut out: Vec<Effect> = effects
+        .as_deref()
+        .map(<[Effect]>::to_vec)
+        .unwrap_or_default();
+    let [across, down] = turn.map(|d| {
+        if d.is_finite() {
+            d.clamp(-80.0, 80.0)
+        } else {
+            0.0
+        }
+    });
+    out.push(Effect::Shader(ShaderPass {
+        code: ShaderRef::Bundled(Bundled::Tilt),
+        uniforms: vec![-down.to_radians(), across.to_radians()].into(),
+        input: ShaderInput::Content,
+    }));
+    out.into()
 }
 
 /// `mask: fade(edge, len) | radial(at, size) | shape(name)`.
@@ -307,6 +346,11 @@ mod tests {
                 call("crt", vec![]),
                 call("chromatic", vec![PropValue::Number(2.0)]),
                 call("glass", vec![]),
+                call(
+                    "bloom",
+                    vec![PropValue::Number(4.0), PropValue::Number(1.5)],
+                ),
+                call("wobble", vec![PropValue::Number(3.0)]),
             ]),
         )]);
         let passes: Vec<(Bundled, Vec<f32>)> = got
@@ -323,11 +367,26 @@ mod tests {
         assert_eq!(
             passes,
             vec![
-                (Bundled::Bloom, vec![24.0]),
+                (Bundled::Bloom, vec![24.0, 1.0]),
                 (Bundled::Crt, vec![]),
                 (Bundled::Chromatic, vec![4.0]),
+                (Bundled::Bloom, vec![8.0, 1.5]),
+                (Bundled::Wobble, vec![6.0, 80.0, 2.0]),
             ]
         );
+    }
+
+    /// The GPU's 3-D tilt goes last, in radians, pitch then yaw.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_tilt_is_a_pass_in_radians() {
+        let tilted = with_tilt(None, [10.0, -5.0]);
+        let Effect::Shader(ShaderPass { code, uniforms, .. }) = &tilted[0] else {
+            panic!("{tilted:?}");
+        };
+        assert_eq!(code, &ShaderRef::Bundled(Bundled::Tilt));
+        assert!((uniforms[0] - 5f32.to_radians()).abs() < 1e-6);
+        assert!((uniforms[1] - 10f32.to_radians()).abs() < 1e-6);
         // Out-of-range knobs are clamped, bad ones dropped.
         assert_eq!(
             effects(&[(Prop::Filter, call("blur", vec![PropValue::Number(-4.0)]))]),

@@ -4271,3 +4271,46 @@ bar B {
         assert_eq!(shell.inst.drag_value(*b), None);
     }
 }
+
+/// (m4-gpu-effects) The bundled effects' knobs check and reach the scene
+/// as written: `bloom`'s optional `strength`, `glass`'s optional
+/// `refraction`, beside the one-knob forms.
+#[test]
+fn bundled_effect_knobs_reach_the_scene() {
+    let src = "bar B {\n  box { filter: bloom(12, 1.5), crt(), chromatic(2), wobble(4) }\n  box { filter: bloom(8) }\n  box { backdrop: glass(20) }\n  box { backdrop: glass() }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 4, "{}", shell.scene.render());
+    let prop = |i: usize, p: Prop| shell.scene.prop(boxes[i], p).cloned();
+    let call = |name: &str, args: Vec<PropValue>| PropValue::Call {
+        name: name.into(),
+        args,
+    };
+    let calls = |v: Option<PropValue>| -> Vec<(String, usize)> {
+        let list = match v {
+            Some(PropValue::List(items)) => items,
+            Some(v) => vec![v],
+            None => Vec::new(),
+        };
+        list.into_iter()
+            .filter_map(|c| match c {
+                PropValue::Call { name, args } => Some((name, args.len())),
+                _ => None,
+            })
+            .collect()
+    };
+    let first = calls(prop(0, Prop::Filter));
+    assert_eq!(first.len(), 4, "{first:?}");
+    assert_eq!(first[0], ("bloom".to_string(), 2));
+    assert_eq!(
+        prop(1, Prop::Filter).map(|v| calls(Some(v))[0].0.clone()),
+        Some("bloom".to_string())
+    );
+    let glass = prop(2, Prop::Backdrop);
+    assert_eq!(glass, Some(call("glass", vec![PropValue::Number(20.0)])));
+    assert_eq!(calls(prop(3, Prop::Backdrop))[0].0, "glass");
+}
