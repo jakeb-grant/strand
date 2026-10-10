@@ -524,33 +524,58 @@ impl Dispatch<wl_shm::WlShm, ()> for Server {
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        if let wl_shm::Request::CreatePool { id, .. } = request {
-            // The memory is never read: the fake records sizes only.
-            init.init(id, ());
+        if let wl_shm::Request::CreatePool { id, fd, .. } = request {
+            // Surfaces' memory is never read (the fake records sizes);
+            // capture frames write into theirs (`crate::capture`).
+            init.init(id, Arc::new(fd));
         }
     }
 }
 
-impl Dispatch<wl_shm_pool::WlShmPool, ()> for Server {
+impl Dispatch<wl_shm_pool::WlShmPool, Arc<std::os::fd::OwnedFd>> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         _: &wl_shm_pool::WlShmPool,
         request: wl_shm_pool::Request,
-        _: &(),
+        fd: &Arc<std::os::fd::OwnedFd>,
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
         if let wl_shm_pool::Request::CreateBuffer {
-            id, width, height, ..
+            id,
+            offset,
+            width,
+            height,
+            stride,
+            ..
         } = request
         {
-            init.init(id, BufferKind::Shm { width, height });
+            let b = init.init(id, BufferKind::Shm { width, height });
+            state.shm_buffers.insert(
+                b.id(),
+                crate::capture::ShmBuf {
+                    fd: fd.clone(),
+                    offset,
+                    stride,
+                    width,
+                    height,
+                },
+            );
         }
     }
 }
 
 impl Dispatch<wl_buffer::WlBuffer, BufferKind> for Server {
+    fn destroyed(
+        state: &mut Self,
+        _: wayland_server::backend::ClientId,
+        buffer: &wl_buffer::WlBuffer,
+        _: &BufferKind,
+    ) {
+        state.shm_buffers.remove(&buffer.id());
+    }
+
     fn request(
         _: &mut Self,
         _: &Client,

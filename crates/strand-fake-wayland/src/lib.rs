@@ -12,9 +12,15 @@
 //!   ([`Fake::surfaces`]). Sway 1.9, the compositor CI tests on, lacks
 //!   the alpha modifier and the background effect.
 //!
+//! - `strand-services`' thumbnails: the image capture source and copy
+//!   capture managers ([`FakeBuilder::capture`]; `capture.rs`).
+//!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
+mod capture;
 mod surfaces;
+
+pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
 
 pub use surfaces::{BufferKind, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
 
@@ -68,6 +74,12 @@ pub enum Cmd {
     /// Sends `ext_background_effect_manager_v1.capabilities` with these
     /// flags (1: blur) to every bound manager.
     SetEffectCapabilities(u32),
+    /// A toplevel draws in this RGBA colour: its capture sessions have a
+    /// new frame.
+    Paint(&'static str, [u8; 4]),
+    /// A toplevel's size changes: its capture sessions get new buffer
+    /// constraints.
+    ResizeToplevel(&'static str, u32, u32),
 }
 
 struct Toplevel {
@@ -155,6 +167,10 @@ struct Server {
     seat_globals: Vec<Option<GlobalId>>,
     /// The surface side ([`SurfaceGlobals`]).
     surf: surfaces::Surfaces,
+    /// Every client's shm buffer, by object (capture frames write them).
+    shm_buffers: std::collections::HashMap<wayland_server::backend::ObjectId, capture::ShmBuf>,
+    /// The capture side.
+    capture: capture::Capture,
 }
 
 impl Server {
@@ -195,6 +211,7 @@ impl Server {
                 h.closed();
             }
             self.toplevels.remove(i);
+            self.capture_closed(ident);
         }
     }
 
@@ -335,6 +352,8 @@ impl Server {
             }
             Cmd::Done => self.done(),
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
+            Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
+            Cmd::ResizeToplevel(ident, w, h) => self.capture_resize(ident, w, h),
             Cmd::RemoveSeat(n) => {
                 if let Some(id) = self.seat_globals.get_mut(n).and_then(Option::take) {
                     dh.remove_global::<Server>(id);
@@ -729,6 +748,9 @@ pub struct Fake {
     pub wlr_requests: Arc<Mutex<Vec<String>>>,
     clients: Arc<AtomicUsize>,
     surfaces: Arc<Mutex<Vec<SurfaceRecord>>>,
+    /// What the capture side did (`capture.rs`): `session <ident>`,
+    /// `frame <ident>`, `failed <ident>`, `stopped <ident>`, `end <ident>`.
+    pub captures: Arc<Mutex<Vec<String>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -749,6 +771,7 @@ pub struct FakeBuilder {
     outputs: &'static [&'static str],
     surfaces: Option<SurfaceGlobals>,
     toplevel_list: bool,
+    capture: bool,
 }
 
 impl FakeBuilder {
@@ -788,6 +811,12 @@ impl FakeBuilder {
         self
     }
 
+    /// The image capture source and copy capture managers (and `wl_shm`).
+    pub fn capture(mut self, on: bool) -> Self {
+        self.capture = on;
+        self
+    }
+
     pub fn start(self) -> Fake {
         Fake::start_built(self)
     }
@@ -804,6 +833,7 @@ impl Fake {
             outputs: &["FAKE-1"],
             surfaces: None,
             toplevel_list: true,
+            capture: false,
         }
     }
 
@@ -860,6 +890,8 @@ impl Fake {
         let thread_clients = clients.clone();
         let surfaces = Arc::new(Mutex::new(Vec::new()));
         let thread_surfaces = surfaces.clone();
+        let captures = Arc::new(Mutex::new(Vec::new()));
+        let thread_captures = captures.clone();
         let FakeBuilder {
             workspaces: with_workspaces,
             wlr,
@@ -867,6 +899,7 @@ impl Fake {
             outputs,
             surfaces: surface_globals,
             toplevel_list,
+            capture,
         } = b;
         let thread = std::thread::spawn(move || {
             let mut display = Display::<Server>::new().expect("a wayland-server display");
@@ -882,6 +915,9 @@ impl Fake {
             }
             if let Some(g) = &surface_globals {
                 surfaces::create_globals(&dh, g);
+            }
+            if capture {
+                capture::create_globals(&dh, surface_globals.is_none());
             }
             let seat_globals = (0..seats)
                 .map(|n| Some(dh.create_global::<Server, wl_seat::WlSeat, usize>(1, n)))
@@ -902,6 +938,7 @@ impl Fake {
                 .unwrap_or(0);
             state.surf.globals = surface_globals;
             state.surf.records = thread_surfaces;
+            state.capture.log = thread_captures;
             while !thread_stop.load(Ordering::SeqCst) {
                 while let Ok(cmd) = rx.try_recv() {
                     state.apply(&dh, cmd);
@@ -948,6 +985,7 @@ impl Fake {
             wlr_requests,
             clients,
             surfaces,
+            captures,
             thread: Some(thread),
         }
     }

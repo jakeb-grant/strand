@@ -3159,7 +3159,7 @@ transparent huge pages for life.
   fields plus `Workspace::active` and `Window::urgent`, and
   `Window::toplevel: Option<String>`, the window's
   `ext-foreign-toplevel-list-v1` identifier, which is not a schema field:
-  M4's thumbnails will capture by it through a new `ProtoCmd` on the
+  thumbnails capture by it through `ProtoCmd::Capture` on the
   `strand-toplevel` thread, the connection that owns the handle) in a `WmState`,
   and `wm::run(WmConfig { backend, wayland, events, desktop }, sink,
   requests) -> impl Future + Send`: the service on the shared runtime,
@@ -3470,11 +3470,25 @@ transparent huge pages for life.
     dB from −72 dBFS (0) to 0 dBFS (1); a quiet reading carries none, and
     a meter sends nothing on silence, so no FFT runs then
     (`crates/strand-services/tests/audio.rs::a_test_tone_lights_its_spectrum_band`).
-  - wm: `ProtoCmd::Capture` on the `strand-toplevel` thread captures a
-    window by its `Window::toplevel` identifier through
-    ext-image-copy-capture, for `thumbnail`; frames reach render through
-    the binary (`Renderer::feed_frame`), only while the thumbnail is
-    visible.
+  - wm: `ProtoCmd::Capture(Vec<capture::Want>)` on the `strand-toplevel`
+    thread captures windows by their `Window::toplevel` identifiers
+    through ext-image-copy-capture, for `thumbnail`. The entry point is
+    process-wide like the audio taps: `wm::capture::capture_window(window
+    id, max: (u32, u32), on_frame: FnMut(&CaptureFrame) + Send) ->
+    CaptureTap`, the session living while any tap of that window does
+    (dropping the tap ends it). The running `wm` service maps window ids
+    to identifiers and sends the wants whenever the taps or windows
+    change. One session per window, one frame in flight, frames only when
+    the compositor reports the window changed and at most
+    `capture::MAX_FPS` (15) a second, into a memfd `wl_shm` buffer
+    following the session's buffer constraints; a failed session retries
+    after a second, a stopped one (the window closed) ends. A
+    `CaptureFrame { width, height, pixels: Arc<[u8]> }` is premultiplied
+    BGRA, scaled down (box filter) to cover `max` (0 for no limit). The
+    callback runs on the protocol thread. Frames reach render through the
+    binary (`Renderer::feed_frame`), only while the thumbnail is visible
+    (`crates/strand-services/tests/capture.rs`, against
+    strand-fake-wayland's ext-image-copy-capture).
   - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the
     anchor's output-logical position for `x`/`y` instead of 0, 0. How it
     reaches the action (an optional argument, or filled in by the host

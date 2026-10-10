@@ -31,6 +31,7 @@
 //! nothing.
 
 mod backoff;
+pub mod capture;
 #[cfg(test)]
 mod captured;
 pub mod detect;
@@ -579,8 +580,18 @@ pub(crate) async fn drive<S>(
     let adapter = adapter(backend, atx, crx);
     let events = config.events;
     let desktop = config.desktop;
+    // (M4) Thumbnails' capture taps: re-read when they change.
+    let taps_changed = std::sync::Arc::new(tokio::sync::Notify::new());
+    let _taps_poke = {
+        let n = taps_changed.clone();
+        capture::on_taps_changed(move || n.notify_one())
+    };
 
     let coordinator = async move {
+        // The windows last merged (id, toplevel identifier) and the
+        // capture wants last sent to the protocol thread.
+        let mut windows: Vec<(String, Option<String>)> = Vec::new();
+        let mut sent_wants: Vec<capture::Want> = Vec::new();
         let mut publisher = Publisher::new();
         // Whose ids the last published state carried (the adapter's or
         // the protocols').
@@ -645,6 +656,7 @@ pub(crate) async fn drive<S>(
                         proto = p;
                         proto_ready = true;
                     }
+                    () = taps_changed.notified() => {}
                     req = requests.recv(), if requests_open => match req {
                         Some(req) => route(req, kind.is_some(), ipc.as_ref(), &proto, &ctx, protocol.as_ref()),
                         None => requests_open = false,
@@ -677,7 +689,19 @@ pub(crate) async fn drive<S>(
                     publisher.forget();
                 }
                 published_ipc_ids = Some(ipc_ids);
+                windows = state
+                    .windows
+                    .iter()
+                    .map(|w| (w.id.clone(), w.toplevel.clone()))
+                    .collect();
                 changes.extend(publisher.publish(state));
+            }
+            if let Some(p) = &protocol {
+                let w = capture::wants(windows.iter().map(|(i, t)| (i.as_str(), t.as_deref())));
+                if w != sent_wants {
+                    p.send(protocol::ProtoCmd::Capture(w.clone()));
+                    sent_wants = w;
+                }
             }
             let sources = Sources {
                 ipc: kind,
