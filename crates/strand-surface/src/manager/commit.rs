@@ -367,42 +367,43 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// it).
     pub(super) fn arm_deadline(&mut self, id: SurfaceId, at: Instant) {
         self.cancel_deadline(id);
-        let token = self.handle.insert_source(
-            Timer::from_deadline(at),
-            move |_, _, state: &mut State<H>| {
-                state.deadline_timers.remove(&id);
-                state.mark(id);
-                TimeoutAction::Drop
-            },
-        );
-        match token {
-            Ok(t) => {
-                self.deadline_timers.insert(id, t);
-            }
-            Err(e) => log::warn!("cannot arm a frame deadline: {}", e.error),
-        }
+        self.arm_timer(id, at, false);
     }
 
     /// (m4-audit) Marks `id` again at `at` if its frame has not settled
     /// by then ([`THROTTLE_GIVE_UP`]); one timer per surface, kept if
     /// armed already.
     pub(super) fn arm_give_up(&mut self, id: SurfaceId, at: Instant) {
-        if self.give_up_timers.contains_key(&id) {
-            return;
+        if !self.give_up_timers.contains_key(&id) {
+            self.arm_timer(id, at, true);
         }
+    }
+
+    /// A timer that marks `id` at `at`, kept in `give_up_timers` or
+    /// `deadline_timers` (one closure for both: one copy of calloop's
+    /// generic source code).
+    fn arm_timer(&mut self, id: SurfaceId, at: Instant, give_up: bool) {
         let token = self.handle.insert_source(
             Timer::from_deadline(at),
             move |_, _, state: &mut State<H>| {
-                state.give_up_timers.remove(&id);
+                state.timers(give_up).remove(&id);
                 state.mark(id);
                 TimeoutAction::Drop
             },
         );
         match token {
             Ok(t) => {
-                self.give_up_timers.insert(id, t);
+                self.timers(give_up).insert(id, t);
             }
-            Err(e) => log::warn!("cannot arm a frame's give-up timer: {}", e.error),
+            Err(e) => log::warn!("cannot arm a frame timer: {}", e.error),
+        }
+    }
+
+    fn timers(&mut self, give_up: bool) -> &mut HashMap<SurfaceId, RegistrationToken> {
+        if give_up {
+            &mut self.give_up_timers
+        } else {
+            &mut self.deadline_timers
         }
     }
 
