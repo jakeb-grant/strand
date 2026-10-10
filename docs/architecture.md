@@ -999,7 +999,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     spreads damage in logical pixels on a surface at `scale`: three
     standard deviations for a blur, a bundled pass's own (its uniforms
     are buffer values, so divided by `scale`), nothing for the rest. Render's display list gains a layer group,
-    `Item::PushLayer(Arc<layers::Layer { effects, frame, scale, xform }>)` …
+    `Item::PushLayer(Arc<layers::Layer { effects, frame, scale, xform,
+    gpu }>)` (`gpu: Option<offscreen::Drawn>`, m4-gpu-effects: its
+    bundled passes' pixels read back, drawn as its offscreen group in
+    place of the CPU's version) …
     `Item::PopLayer` (markers like its clip, opacity and transform
     groups, the push carrying the group's bounds; built: m4-runtime F3),
     whose bounds and whose nodes' damage grow by its effects' reach,
@@ -1011,7 +1014,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `filter:` colour functions composed into one matrix per run, `blur`,
     the bundled filters as shader passes, then `mask:`, then `blend:`);
     on the CPU a `bloom` pass is an offscreen group drawn as a glow of
-    its own pixels and the other shader passes draw unfiltered. The
+    its own pixels and the other shader passes draw unfiltered; with a
+    GPU the bundled passes run there (`Layer::gpu`), after the CPU's
+    blur and colour matrix whatever the written order. The
     display list also gains `Item::Raster`, a CPU
     raster node (particles, grain, graphs, spectrum, animated image
     frames) drawn into a cached pixmap at its clock's rate (its fields
@@ -2663,8 +2668,8 @@ presentation global). New M4 concerns get files of their own beside them.
 ### `strand-gpu`
 
 (M4; docs/m4-plan.md wave 0c, from the wave-0 spike: decisions.md,
-m4-gpu-spike; the backend landed in m4-gpu-w2, the bundled effects are
-wave 3.) The GPU backend is in every build and falls back to the
+m4-gpu-spike; the backend landed in m4-gpu-w2, the bundled effects in
+m4-gpu-effects.) The GPU backend is in every build and falls back to the
 CPU (decisions.md, m4-owner). vello_cpu into `wl_shm` stays the default
 for every surface; the GPU draws a surface only while it animates a
 large area, and shaders. Nothing in this crate runs, and no Vulkan
@@ -2689,7 +2694,14 @@ Wayland crate. Its interface:
   size, scale, opaque: bool }` (no handles: readback only), `Resize {
   surface, size, scale }`, `Release(SurfaceId)`, `Frame(Frame)`,
   `Pass(PassFrame)` (a `shader` node's pass on a surface the GPU does
-  not draw: drawn offscreen at its size and read back), `Shutdown`.
+  not draw, or a bundled effect's: drawn offscreen at its size and read
+  back), `Shutdown`. `PassFrame { key, id, size, pass: ShaderPass,
+  then: Vec<ShaderPass>, globals: PassGlobals, input: Option<Arc<Pixmap>>
+  }`: `input` is the pixels a `Content` or `Backdrop` pass reads (render
+  rasterises them on the CPU when it asks: a filter layer's group,
+  CPU-filtered, or what is drawn behind a backdrop), uploaded as
+  `strand_input`; each of `then` runs on the one before's output
+  (m4-gpu-effects).
   `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
   `Attached { surface, mode: GpuMode }`, `Released(SurfaceId)`,
   `Presented { surface, at: Instant }`, `Pixels { surface, frame: u64,
@@ -2855,13 +2867,18 @@ would have been) and sends it. One frame is in flight per surface.
   device per process); requests meanwhile wait in the host. Once a
   thread has ended the binary calls libc's `malloc_trim(0)` and
   mimalloc's collect (the driver's freed arena pages).
-  `STRAND_GPU_IDLE_MS` shortens the 30 s idle for tests.
+  `STRAND_GPU_IDLE_MS` shortens the 30 s idle for tests: `strand run`
+  reads it, nothing documents it to users, and no shell should set it
+  (decisions.md, m4-gpu-effects).
 
 **Shaders and effects.** `strand_scene::effect::Effect::Shader(ShaderPass)`
 with `ShaderPass { code: ShaderRef, uniforms: Arc<[f32]>, input:
 ShaderInput }`. `ShaderRef` is `Bundled(Bundled)` (design.md's eight
-bundled GPU effects; their WGSL lives in `strand-gpu`, and the stream
-that builds each one records its knobs) or `File(Arc<ShaderCode>)`. `ShaderInput` is `None` (a
+bundled GPU effects; their WGSL lives in `strand-gpu/src/bundled.rs`,
+each a `ShaderCode` with four `vec4` uniforms `u0`–`u3` run by the file
+pipeline, particles an instanced sprite pipeline of its own; the knobs
+and uniform layouts are in decisions.md, m4-gpu-effects) or
+`File(Arc<ShaderCode>)`. `ShaderInput` is `None` (a
 `shader` node draws in its box), `Content` (a `filter:` pass gets its
 subtree's pixels: the F4 cached group) or `Backdrop` (`backdrop:
 glass()` gets what is under it in the surface). Render packs `uniforms`
@@ -2907,14 +2924,22 @@ behind a bar's clock), a pass is drawn offscreen by the GPU at its
 bounds and read back into the CPU frame as a raster item; the surface
 does not switch. The frame holds for the result like a readback frame,
 up to `GPU_WAIT` (8 ms), and otherwise draws the previous result. On a
-promoted surface passes run in the GPU frame.
+promoted surface a node's own pass (a `shader` node, aurora, particles)
+runs in the GPU frame; a layer's bundled passes (`filter:`, glass, a
+large backdrop blur) are always `Pass` requests read back, whose pixels
+render attaches to the layer (`strand_render::layers::Layer::gpu`) as
+its offscreen group on either backend. Render asks for a bundled pass
+only while its node shows (inside its ancestors' clip and the
+surface), which is what starts the device and keeps it up.
 
 **CPU fallback** (no device yet, none at all, a lost device, or a build
 without `gpu`). Rendering stays on the CPU. Bundled effects use their
 CPU versions: bloom becomes glow, glass becomes blur and tint, particles
 cap at 1,000, tilt stays 2D, aurora is static, large backdrop blur is
 the quarter-scale CPU blur; CRT, chromatic aberration and wobble draw
-the node unfiltered. A `shader` node keeps its box and draws nothing.
+the node unfiltered. Aurora's and the particles' notices are said only
+when no GPU can draw them (`GpuStatus::Unavailable`, or no `gpu`
+feature); `tilt:` turns in 3-D only once the GPU has answered for it. A `shader` node keeps its box and draws nothing.
 The same applies while the device starts, so a first frame never
 waits for it. `Renderer::gpu_status() -> GpuStatus` (`Unused`,
 `Starting`, `Up(AdapterInfo)`, `Unavailable { reason }`, with
