@@ -424,8 +424,10 @@ fn gpu_is_released_when_idle() {
     // The hardware leg (`gpu.sh`): ANV cannot present on a pixman sway,
     // so the promoted panel may be read back there. Lavapipe presents.
     let hardware = std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1");
-    let target_tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let tmp = TmpDir(target_tmp.join(format!("strand-gpu-idle-{}", std::process::id())));
+    // Under the system's temp dir, not the target dir: sway's IPC socket
+    // path (`<run>/sway-ipc.<uid>.<pid>.sock`) must fit `sun_path`'s 108
+    // bytes, which a worktree's target dir can pass.
+    let tmp = TmpDir(std::env::temp_dir().join(format!("strand-gpu-idle-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&tmp.0);
     let dir = tmp.0.join("run");
     std::fs::create_dir_all(&dir).unwrap();
