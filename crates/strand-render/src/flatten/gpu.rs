@@ -41,20 +41,25 @@ impl Flattener<'_> {
     }
 
     /// True if `node`'s `tilt` is the GPU's 3-D pass: a GPU may draw
-    /// (none failed under 30 s ago) and has answered for it (a first
-    /// tilt turns in 2-D while [`Self::warm_tilt`] gets the device up).
+    /// (none failed under 30 s ago), has answered for it (a first tilt
+    /// turns in 2-D while [`Self::warm_tilt`] gets the device up), and
+    /// its last filter pass did not fail (then it turns in 2-D, the CPU
+    /// version, until the node goes).
     pub(super) fn tilts_in_3d(&self, node: NodeId) -> bool {
+        let results = &self.extras.shaders;
         self.extras.gpu_ok
-            && self
-                .extras
-                .shaders
-                .get(PassId::new(node, Slot::Filter))
-                .is_some()
+            && results.answered(node)
+            && !results.failed(PassId::new(node, Slot::Filter))
     }
 
     /// Asks for a one-pixel tilt pass for `node`, turning in 2-D: it
     /// starts the device, and once it is back the node turns in 3-D.
+    /// Not after its filter pass failed (it stays 2-D). The caller asks
+    /// only while the node shows.
     pub(super) fn warm_tilt(&mut self, node: NodeId) {
+        if self.extras.shaders.failed(PassId::new(node, Slot::Filter)) {
+            return;
+        }
         let pass = ShaderPass {
             code: ShaderRef::Bundled(Bundled::Tilt),
             uniforms: Arc::from([0.0, 0.0]),

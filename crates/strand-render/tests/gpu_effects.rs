@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use gpu_host::*;
-use strand_gpu::{GpuReply, GpuRequest};
+use strand_gpu::{GpuError, GpuErrorKind, GpuOptions, GpuReply, GpuRequest};
 use strand_render::Renderer;
 use strand_scene::shader::{ShaderCode, UniformType};
 use strand_scene::*;
@@ -29,6 +29,8 @@ const S: SurfaceId = SurfaceId(1);
 const REF_TOLERANCE: u8 = 2;
 
 type Fx = Vec<(Prop, PropValue)>;
+/// Nodes as `run` takes them: a kind, its props, its children's props.
+type Nodes = Vec<(NodeKind, Fx, Vec<Fx>)>;
 
 fn call(name: &str, args: Vec<PropValue>) -> PropValue {
     PropValue::Call {
@@ -60,10 +62,34 @@ struct Run {
     ids: Vec<NodeId>,
     /// Passes asked for whose pixels are not back yet.
     inflight: usize,
+    /// Requests go to the host's GPU (false: the test answers them).
+    live: bool,
 }
 
-fn run(nodes: Vec<(NodeKind, Fx, Vec<Fx>)>, (w, h): (u32, u32)) -> Option<Run> {
+fn run(nodes: Vec<(NodeKind, Fx, Vec<Fx>)>, size: (u32, u32)) -> Option<Run> {
     let opts = device()?;
+    Some(run_tree(opts, size, |b, root| add(b, root, nodes)))
+}
+
+/// `nodes` added under `parent`; their ids.
+fn add(b: &mut Builder, parent: NodeId, nodes: Vec<(NodeKind, Fx, Vec<Fx>)>) -> Vec<NodeId> {
+    let mut ids = Vec::new();
+    for (kind, props, children) in nodes {
+        let id = b.node(kind, Some(parent), props);
+        for c in children {
+            b.node(NodeKind::Box, Some(id), c);
+        }
+        ids.push(id);
+    }
+    ids
+}
+
+/// A run whose bar's subtree `build` adds (returning the ids to keep).
+fn run_tree(
+    opts: GpuOptions,
+    (w, h): (u32, u32),
+    build: impl FnOnce(&mut Builder, NodeId) -> Vec<NodeId>,
+) -> Run {
     let mut b = Builder::default();
     let root = b.node(
         NodeKind::Bar,
@@ -73,27 +99,32 @@ fn run(nodes: Vec<(NodeKind, Fx, Vec<Fx>)>, (w, h): (u32, u32)) -> Option<Run> {
             (Prop::Clip, PropValue::Bool(true)),
         ],
     );
-    let mut ids = Vec::new();
-    for (kind, props, children) in nodes {
-        let id = b.node(kind, Some(root), props);
-        for c in children {
-            b.node(NodeKind::Box, Some(id), c);
-        }
-        ids.push(id);
-    }
+    let ids = build(&mut b, root);
     let mut tokens = TokenTable::default();
     tokens.insert("accent", PropValue::Color(hex("#89b4fa")));
     b.diff.set_tokens(tokens, Transition::Instant);
     let mut r = renderer();
+    // These surfaces stay on the CPU (passes read back), however long
+    // their frames take on the wall clock.
+    r.set_promotion(false);
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
-    Some(Run {
+    Run {
         r,
         buf: Buffer::new(w, h, Scale::ONE),
         host: Host::new(opts),
         ids,
         inflight: 0,
-    })
+        live: true,
+    }
+}
+
+/// A run with no GPU behind it: its passes are asked for, and the test
+/// answers them.
+fn offline(nodes: Vec<(NodeKind, Fx, Vec<Fx>)>, size: (u32, u32)) -> Run {
+    let mut run = run_tree(GpuOptions::default(), size, |b, root| add(b, root, nodes));
+    run.live = false;
+    run
 }
 
 impl Run {
@@ -109,6 +140,9 @@ impl Run {
                 _ => None,
             })
             .collect();
+        if !self.live {
+            return passes;
+        }
         if !reqs.is_empty() {
             self.host.start();
         }
@@ -116,10 +150,8 @@ impl Run {
         for q in reqs {
             self.host.request(q);
         }
-        assert!(
-            self.r.take_backend_changes().is_empty(),
-            "nothing is promoted here"
-        );
+        let changes = self.r.take_backend_changes();
+        assert!(changes.is_empty(), "nothing is promoted here: {changes:?}");
         passes
     }
 
@@ -383,27 +415,74 @@ fn particles_above_a_thousand_are_drawn_by_the_gpu() {
     assert_matches_ref("gpu_particles", &run.buf, REF_TOLERANCE);
 }
 
-/// Each bundled effect starts the device only while it is visible: off
-/// the bar (clipped out) it asks for nothing; in view it asks; moved out
-/// again nothing wants the device, and it drops after the idle time (30
-/// s; 50 ms here).
+/// A file that draws a noise field moving with time (design.md's
+/// "aurora and noise fields": a noise field is a `.wgsl` shader on the
+/// same path; decisions.md, m4-gpu-effects).
+fn noise_code() -> Arc<ShaderCode> {
+    Arc::new(ShaderCode {
+        path: "noise.wgsl".into(),
+        wgsl: "@group(1) @binding(0) var<uniform> u_cell: f32;\n\
+               fn hash(p: vec2<f32>) -> f32 {\n\
+                   return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);\n\
+               }\n\
+               @fragment\n\
+               fn main(v: StrandVertex) -> @location(0) vec4<f32> {\n\
+                   let n = hash(floor(v.pos.xy / max(u_cell, 1.0) + vec2<f32>(strand.time, 0.0)));\n\
+                   return vec4<f32>(n, n, n, 1.0);\n\
+               }\n"
+        .into(),
+        uniforms: ShaderCode::packed(vec![("u_cell".into(), UniformType::F32, 0)]),
+    })
+}
+
+/// Each bundled effect, a large backdrop blur and the 3-D tilt among
+/// them, and a `.wgsl` noise field, starts the device only while it is
+/// visible, and render holds its pixels only then. Hidden, either off
+/// the bar or clipped out by an ancestor's `clip` while on the bar (the
+/// pointer over the bar, so a tilt leans), it asks for nothing; in view
+/// it asks, the device comes up and its pixels are held; hidden again
+/// nothing wants the device, its pixels are freed, and the device drops
+/// after the idle time (30 s; 50 ms here).
 #[test]
 fn bundled_effects_start_the_gpu_only_while_visible() {
+    let Some(opts) = device() else {
+        return;
+    };
     let f = |name: &str, args| vec![(Prop::Filter, call(name, args))];
-    let kinds: Vec<(&str, NodeKind, Fx)> = vec![
-        ("bloom", NodeKind::Box, f("bloom", vec![num(6.0)])),
-        ("crt", NodeKind::Box, f("crt", vec![])),
-        ("chromatic", NodeKind::Box, f("chromatic", vec![num(2.0)])),
-        ("wobble", NodeKind::Box, f("wobble", vec![num(3.0)])),
+    let small = (240, 60, 40.0, 40.0);
+    let kinds: Vec<(&str, NodeKind, Fx, Size4)> = vec![
+        ("bloom", NodeKind::Box, f("bloom", vec![num(6.0)]), small),
+        ("crt", NodeKind::Box, f("crt", vec![]), small),
+        (
+            "chromatic",
+            NodeKind::Box,
+            f("chromatic", vec![num(2.0)]),
+            small,
+        ),
+        ("wobble", NodeKind::Box, f("wobble", vec![num(3.0)]), small),
+        (
+            "tilt",
+            NodeKind::Box,
+            vec![(Prop::Tilt, PropValue::Angle(20.0))],
+            small,
+        ),
         (
             "glass",
             NodeKind::Box,
             vec![(Prop::Backdrop, call("glass", vec![]))],
+            small,
+        ),
+        (
+            "large blur",
+            NodeKind::Box,
+            vec![(Prop::Backdrop, call("blur", vec![num(8.0)]))],
+            (1300, 400, 560.0, 360.0),
         ),
         (
             "aurora",
             NodeKind::Effect,
             vec![(Prop::Style, kw("aurora"))],
+            small,
         ),
         (
             "particles",
@@ -412,40 +491,224 @@ fn bundled_effects_start_the_gpu_only_while_visible() {
                 (Prop::Rate, num(3000.0)),
                 (Prop::Life, PropValue::Duration(Duration::from_secs(1))),
             ],
+            small,
+        ),
+        (
+            "noise field",
+            NodeKind::Shader,
+            vec![
+                (Prop::Shader, PropValue::Shader(noise_code())),
+                (
+                    Prop::Uniforms,
+                    PropValue::Uniforms(vec![("u_cell".into(), num(4.0))]),
+                ),
+            ],
+            small,
         ),
     ];
-    for (name, kind, fx) in kinds {
-        let mut p = at_xy(1000.0, 10.0, 40.0, 40.0);
-        p.push((Prop::Bg, color("#f5e0dc")));
-        p.extend(fx);
-        let Some(mut run) = run(vec![(kind, p, vec![])], (240, 60)) else {
-            return;
-        };
-        run.r.set_gpu_idle(Duration::from_millis(50));
-        let node = run.ids[0];
-        assert!(run.frame(1000).is_empty(), "{name}: hidden, nothing asked");
-        assert!(!run.r.gpu_in_demand(), "{name}");
-        assert_eq!(run.r.gpu_status(), GpuStatus::Unused, "{name}");
-        assert!(run.r.apply(moved(node, 10.0)).is_empty());
-        run.settle(1100);
-        assert!(run.r.gpu_in_demand(), "{name}: visible, wanted");
-        assert!(matches!(run.r.gpu_status(), GpuStatus::Up(_)), "{name}");
-        assert!(run.r.apply(moved(node, 1000.0)).is_empty());
-        assert!(run.frame(1200).is_empty(), "{name}");
-        assert!(!run.r.gpu_in_demand(), "{name}: hidden again");
-        let wake = run.r.next_wake().expect("render wakes to drop the device");
-        std::thread::sleep(
-            wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
-        );
-        run.r.update();
-        assert_eq!(
-            run.r.take_backend_changes(),
-            [BackendChange::Drop],
-            "{name}: released after idle"
-        );
-        assert_eq!(run.r.gpu_status(), GpuStatus::Unused, "{name}");
-        drop(run.host.gpu.take());
+    for (name, kind, fx, (w, h, bw, bh)) in kinds {
+        for clipped in [false, true] {
+            let name = format!(
+                "{name} ({})",
+                if clipped { "clipped" } else { "off the bar" }
+            );
+            // Its parent: the bar's left half clipping, or all of it not.
+            let (pw, hidden) = if clipped {
+                (w as f32 / 2.0, w as f32 / 2.0 + 10.0)
+            } else {
+                (w as f32, w as f32 + 500.0)
+            };
+            let fx = fx.clone();
+            let mut run = run_tree(opts, (w, h), |b, root| {
+                let mut holder = at_xy(0.0, 0.0, pw, h as f32);
+                holder.push((Prop::Clip, PropValue::Bool(clipped)));
+                let holder = b.node(NodeKind::Box, Some(root), holder);
+                let mut p = at_xy(hidden, 10.0, bw, bh);
+                p.push((Prop::Bg, color("#f5e0dc")));
+                p.extend(fx);
+                add(b, holder, vec![(kind, p, vec![])])
+            });
+            run.r.set_pointer(S, Some(LogicalPoint { x: 5.0, y: 30.0 }));
+            let node = run.ids[0];
+            assert!(run.frame(1000).is_empty(), "{name}: hidden, nothing asked");
+            assert!(run.frame(1100).is_empty(), "{name}: hidden, nothing asked");
+            assert!(!run.r.gpu_in_demand(), "{name}");
+            assert_eq!(run.r.gpu_status(), GpuStatus::Unused, "{name}");
+            assert!(run.r.apply(moved(node, 10.0)).is_empty());
+            run.settle(1100);
+            assert!(run.r.gpu_in_demand(), "{name}: visible, wanted");
+            assert!(matches!(run.r.gpu_status(), GpuStatus::Up(_)), "{name}");
+            assert!(run.r.gpu_pass_bytes() > 0, "{name}: its pixels held");
+            assert!(run.r.apply(moved(node, hidden)).is_empty());
+            assert!(run.frame(1200).is_empty(), "{name}");
+            assert!(!run.r.gpu_in_demand(), "{name}: hidden again");
+            assert_eq!(run.r.gpu_pass_bytes(), 0, "{name}: its pixels freed");
+            // The idle window shortened only now: a frame of the steps
+            // above taking longer on the wall clock must not drop it.
+            run.r.set_gpu_idle(Duration::from_millis(50));
+            let wake = run.r.next_wake().expect("render wakes to drop the device");
+            std::thread::sleep(
+                wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+            );
+            run.r.update();
+            assert_eq!(
+                run.r.take_backend_changes(),
+                [BackendChange::Drop],
+                "{name}: released after idle"
+            );
+            assert_eq!(run.r.gpu_status(), GpuStatus::Unused, "{name}");
+            drop(run.host.gpu.take());
+        }
     }
+}
+
+/// A surface's width and height and a box's.
+type Size4 = (u32, u32, f32, f32);
+
+/// A pass failed on the device.
+fn failed(key: u64) -> GpuReply {
+    GpuReply::Failed {
+        surface: None,
+        key: Some(key),
+        error: GpuError {
+            kind: GpuErrorKind::Render,
+            message: "a test failure".into(),
+        },
+    }
+}
+
+/// A bundled pass that fails on a working device (over the device's
+/// texture size, a driver's compile error, a readback error) leaves its
+/// node to its CPU version, as design.md's fallbacks have it (bloom a
+/// glow, glass blur and tint, the others unfiltered, aurora still,
+/// particles capped), rather than to no pixels; and it is not asked
+/// again while its inputs stay.
+#[test]
+fn a_failed_bundled_pass_draws_its_cpu_version() {
+    let f = |name: &str, args| vec![(Prop::Filter, call(name, args))];
+    let over_stripes = |w: u32, h: f32, fx: Fx, bw: f32, bh: f32| {
+        let mut nodes = stripes(w, h);
+        let mut p = at_xy(20.0, 10.0, bw, bh);
+        p.extend(fx);
+        nodes.push((NodeKind::Box, p, vec![]));
+        nodes
+    };
+    let one = |kind, fx: Fx| {
+        let mut p = at_xy(10.0, 10.0, 200.0, 40.0);
+        p.extend(fx);
+        vec![(kind, p, vec![])]
+    };
+    let cases: Vec<(&str, Nodes, (u32, u32))> = vec![
+        (
+            "bloom",
+            vec![tile(10.0, f("bloom", vec![num(6.0)]))],
+            (240, 60),
+        ),
+        ("crt", vec![tile(10.0, f("crt", vec![]))], (240, 60)),
+        (
+            "chromatic",
+            vec![tile(10.0, f("chromatic", vec![num(3.0)]))],
+            (240, 60),
+        ),
+        (
+            "wobble",
+            vec![tile(10.0, f("wobble", vec![num(4.0)]))],
+            (240, 60),
+        ),
+        (
+            "glass",
+            over_stripes(
+                240,
+                60.0,
+                vec![(Prop::Backdrop, call("glass", vec![]))],
+                120.0,
+                40.0,
+            ),
+            (240, 60),
+        ),
+        (
+            "large blur",
+            over_stripes(
+                640,
+                400.0,
+                vec![(Prop::Backdrop, call("blur", vec![num(8.0)]))],
+                560.0,
+                360.0,
+            ),
+            (640, 400),
+        ),
+        (
+            "aurora",
+            one(NodeKind::Effect, vec![(Prop::Style, kw("aurora"))]),
+            (240, 60),
+        ),
+        (
+            "particles",
+            one(
+                NodeKind::Particles,
+                vec![
+                    (Prop::Rate, num(3000.0)),
+                    (Prop::Life, PropValue::Duration(Duration::from_secs(1))),
+                    (Prop::Sprite, call("dot", vec![num(2.0)])),
+                    (Prop::Color, color("#f5c2e7")),
+                ],
+            ),
+            (240, 60),
+        ),
+    ];
+    for (name, nodes, size) in cases {
+        let mut run = offline(nodes, size);
+        let passes = run.frame(1000);
+        assert_eq!(passes.len(), 1, "{name}: asked for");
+        let cpu = run.buf.pixels.clone();
+        run.r.deliver_gpu(failed(passes[0].key));
+        assert!(run.frame(1000).is_empty(), "{name}: not asked again");
+        assert!(run.buf.pixels == cpu, "{name}: drawn as the CPU draws it");
+        assert_eq!(run.r.gpu_pass_bytes(), 0, "{name}");
+    }
+}
+
+/// A tilt whose pass fails keeps turning in 2-D, as with no GPU, and
+/// asks for nothing more.
+#[test]
+fn a_tilt_whose_pass_fails_stays_2d() {
+    let card = || {
+        let mut p = at_xy(90.0, 10.0, 60.0, 40.0);
+        p.extend([
+            (Prop::Bg, color("#89b4fa")),
+            (Prop::Tilt, PropValue::Angle(20.0)),
+        ]);
+        vec![(NodeKind::Box, p, vec![])]
+    };
+    let mut run = offline(card(), (240, 60));
+    // The same card where no GPU can draw.
+    let mut cpu = offline(card(), (240, 60));
+    cpu.r.deliver_gpu(GpuReply::Unavailable(GpuError {
+        kind: GpuErrorKind::NoAdapter,
+        message: "no device".into(),
+    }));
+    let pointer = Some(LogicalPoint { x: 150.0, y: 30.0 });
+    run.r.set_pointer(S, pointer);
+    cpu.r.set_pointer(S, pointer);
+    let mut t = 1000;
+    let mut asked = 0;
+    while t == 1000 || run.r.wants_frame(S) || cpu.r.wants_frame(S) {
+        for p in run.frame(t) {
+            asked += 1;
+            assert_eq!(p.size, Size::new(1, 1), "the warm-up pass, once");
+            run.r.deliver_gpu(failed(p.key));
+        }
+        assert!(cpu.frame(t).is_empty());
+        t += 16;
+        assert!(t < 5000, "settles");
+    }
+    assert_eq!(asked, 1, "asked once");
+    assert!(run.frame(t).is_empty());
+    cpu.frame(t);
+    assert!(
+        run.buf.pixels == cpu.buf.pixels,
+        "turned in 2-D as on the CPU"
+    );
 }
 
 /// `node` moved to `x` at once.

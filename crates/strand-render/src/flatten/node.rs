@@ -475,11 +475,20 @@ impl<'a> Flattener<'a> {
         // (M4) Group effects: a layer around the node and its subtree,
         // whose damage grows by their reach.
         let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32());
+        // (M4) Some of it shows: a GPU pass is asked for only then (the
+        // device starts only while an effect is visible).
+        #[cfg(feature = "gpu")]
+        let shows = !phys.is_empty()
+            && map_rect(self.xform, phys)
+                .intersect(inh.clip)
+                .is_some_and(|r| !r.is_empty());
         #[cfg(feature = "gpu")]
         let effects = match tilt {
             Some(turn) if three_d => Some(crate::effects::with_tilt(effects, turn)),
             Some(_) => {
-                self.warm_tilt(node.id);
+                if shows {
+                    self.warm_tilt(node.id);
+                }
                 effects
             }
             None => effects,
@@ -549,13 +558,6 @@ impl<'a> Flattener<'a> {
             None => shape_path(frame, r, squircle),
         };
         let has_area = !phys.is_empty();
-        // (M4) Some of it shows: a GPU pass is asked for only then (the
-        // device starts only while an effect is visible).
-        #[cfg(feature = "gpu")]
-        let shows = has_area
-            && map_rect(self.xform, phys)
-                .intersect(inh.clip)
-                .is_some_and(|r| !r.is_empty());
 
         // Shadows, under the box.
         if has_area && let Some(PropValue::Shadow(list)) = get(Prop::Shadow) {

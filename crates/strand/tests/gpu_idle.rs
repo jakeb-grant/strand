@@ -3,7 +3,9 @@
 //! `gpu_is_released_when_idle`): `strand run` on headless sway. Panel
 //! `Glow` (640×420) shows, while `on`, a 640×320 animated `shader` above
 //! a strip (a translucent row with a gradient box, a still `shader` and
-//! text); panel `Ref` (320×100) shows the same strip. Before anything
+//! text), and over the animation a box with `filter: bloom(8)`, a
+//! bundled pass whose input is read back and whose pixels come back to
+//! render (m4-gpu-effects); panel `Ref` (320×100) shows the same strip. Before anything
 //! needs the GPU no Vulkan library is mapped and no `strand-gpu` thread
 //! runs. Each cycle: `on` is set; `Glow` is promoted and presented
 //! through the surface hand-off (lavapipe presents on CI's pixman sway;
@@ -44,7 +46,11 @@ component Strip {
 panel Glow { anchor: top_left; width: 640; height: 420; open: true
   col {
     box { width: 640; height: 320
-      if on { shader "aurora.wgsl" { width: 640; height: 320; u_speed: 1 } }
+      if on {
+        shader "aurora.wgsl" { width: 640; height: 320; u_speed: 1 }
+        box { place: absolute; x: 20; y: 20; width: 120; height: 60; radius: 12;
+          bg: $accent; filter: bloom(8) }
+      }
     }
     Strip
   }

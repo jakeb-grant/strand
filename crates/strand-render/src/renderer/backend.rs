@@ -151,12 +151,35 @@ pub(crate) struct PassWant {
 /// answer.
 #[derive(Debug, Default)]
 pub struct ShaderResults {
-    map: HashMap<PassId, (u64, Arc<Pixmap>)>,
+    map: HashMap<PassId, PassResult>,
+    /// Nodes a filter pass has answered for (a tilt then turns in 3-D).
+    answered: HashSet<NodeId>,
+}
+
+#[derive(Debug)]
+struct PassResult {
+    got: (u64, Arc<Pixmap>),
+    /// The surface whose frame asked for it.
+    surface: SurfaceId,
+    /// The pass failed: no pixels, not asked again until its key changes.
+    failed: bool,
 }
 
 impl ShaderResults {
+    /// The last answer for `id`: its want's key and its pixels (one
+    /// transparent pixel when it failed).
     pub(crate) fn get(&self, id: PassId) -> Option<&(u64, Arc<Pixmap>)> {
-        self.map.get(&id)
+        self.map.get(&id).map(|r| &r.got)
+    }
+
+    /// True if the last pass asked for `id` failed.
+    pub(crate) fn failed(&self, id: PassId) -> bool {
+        self.map.get(&id).is_some_and(|r| r.failed)
+    }
+
+    /// True if a filter pass of `node` has given pixels.
+    pub(crate) fn answered(&self, node: NodeId) -> bool {
+        self.answered.contains(&node)
     }
 
     /// The pixels `w` can draw: its own, or (a frame behind) the last of
@@ -164,9 +187,23 @@ impl ShaderResults {
     /// and a changed one's while it is redrawn. `None`: the CPU draws
     /// its fallback (no pixels yet, a failed pass, a new size).
     pub(crate) fn usable(&self, w: &PassWant) -> Option<&(u64, Arc<Pixmap>)> {
-        self.map.get(&w.id).filter(|(k, p)| {
-            *k == w.key || (u32::from(p.width()) == w.size.w && u32::from(p.height()) == w.size.h)
-        })
+        self.map
+            .get(&w.id)
+            .filter(|r| !r.failed)
+            .map(|r| &r.got)
+            .filter(|(k, p)| {
+                *k == w.key
+                    || (u32::from(p.width()) == w.size.w && u32::from(p.height()) == w.size.h)
+            })
+    }
+
+    /// Bytes of pixels held (tests).
+    fn bytes(&self) -> usize {
+        self.map
+            .values()
+            .filter(|r| !r.failed)
+            .map(|r| r.got.1.data_as_u8_slice().len())
+            .sum()
     }
 }
 
@@ -451,6 +488,9 @@ pub(super) struct GpuState {
     /// how many were (tests).
     warned: Option<String>,
     warnings: u64,
+    /// Promotion is off (tests whose frames' wall-clock pacing must not
+    /// matter).
+    no_promotion: bool,
 }
 
 impl GpuState {
@@ -534,6 +574,13 @@ impl Renderer {
         self.gpu.warnings
     }
 
+    /// (M4) Bytes of GPU pass pixels render holds (tests): only those
+    /// of passes some surface's last frame wanted.
+    #[doc(hidden)]
+    pub fn gpu_pass_bytes(&self) -> usize {
+        self.extras.shaders.bytes()
+    }
+
     /// (M4) Readback frames copied into `wl_shm` buffers so far (tests).
     #[doc(hidden)]
     pub fn gpu_frames_copied(&self) -> u64 {
@@ -554,6 +601,14 @@ impl Renderer {
                 .force_gpu();
             self.gpu.changes.push(BackendChange::Promote(surface));
         }
+    }
+
+    /// (M4) Turns promotion off or on (tests: a test of passes on CPU
+    /// surfaces whose frames' wall-clock spacing must not matter;
+    /// promotion's own timing is `promote.rs`'s).
+    #[doc(hidden)]
+    pub fn set_promotion(&mut self, on: bool) {
+        self.gpu.no_promotion = !on;
     }
 
     /// (M4) How long the device outlives its last use (30 s; tests
@@ -683,7 +738,15 @@ impl Renderer {
                     return;
                 };
                 if let Some(pm) = readback_pixmap(&pixels) {
-                    self.extras.shaders.map.insert(id, (p.key, Arc::new(pm)));
+                    let r = PassResult {
+                        got: (p.key, Arc::new(pm)),
+                        surface: p.surface,
+                        failed: false,
+                    };
+                    self.extras.shaders.map.insert(id, r);
+                    if id.slot == Slot::Filter {
+                        self.extras.shaders.answered.insert(id.node);
+                    }
                 }
                 if let Some(s) = self.gpu.surfaces.get_mut(&p.surface) {
                     s.hold = None;
@@ -698,9 +761,16 @@ impl Renderer {
                 log::warn!("GPU: {error}");
                 if let Some(id) = key.map(PassId::unwire) {
                     // Not asked again until its inputs change: the result
-                    // records the failed want with no pixels.
+                    // records the failed want with no pixels. A `shader`
+                    // node then draws nothing; a bundled pass's node, its
+                    // CPU version (`ShaderResults::usable`).
                     if let Some(p) = self.gpu.pending.remove(&id) {
-                        self.extras.shaders.map.insert(id, (p.key, empty_pixmap()));
+                        let r = PassResult {
+                            got: (p.key, empty_pixmap()),
+                            surface: p.surface,
+                            failed: true,
+                        };
+                        self.extras.shaders.map.insert(id, r);
                         if let Some(s) = self.gpu.surfaces.get_mut(&p.surface) {
                             s.hold = None;
                         }
@@ -801,6 +871,10 @@ impl Renderer {
         self.gpu
             .pending
             .retain(|_, p| live.contains_key(&p.surface));
+        self.extras
+            .shaders
+            .map
+            .retain(|_, r| live.contains_key(&r.surface));
         if !self.gpu.promoted() && self.gpu.pending.is_empty() && self.gpu.device.due(now) {
             self.gpu.device.dropped();
             self.gpu.status = GpuStatus::Unused;
@@ -841,6 +915,9 @@ impl Renderer {
     /// A frame of `surface` damaged `damage` pixels with `springs` in
     /// flight: promotion's input.
     pub(super) fn gpu_frame_stats(&mut self, surface: SurfaceId, damage: u64, springs: bool) {
+        if self.gpu.no_promotion {
+            return;
+        }
         let now = Instant::now();
         let s = self.gpu.surfaces.entry(surface).or_default();
         match s.promo.frame(now, damage, springs) {
@@ -902,6 +979,24 @@ impl Renderer {
             self.gpu.pointer_users.insert(surface);
         } else {
             self.gpu.pointer_users.remove(&surface);
+        }
+        // Pixels this surface's frame no longer wants go (an effect
+        // hidden, a tilt at rest, a node gone), with or without other
+        // wants; a failure stays while its node does, so that it is not
+        // asked again.
+        {
+            let wanted: HashSet<PassId> = wants.iter().map(|w| w.id).collect();
+            let pending = &self.gpu.pending;
+            let tree = &self.tree;
+            let results = &mut self.extras.shaders;
+            results.map.retain(|id, r| {
+                tree.get(id.node).is_some()
+                    && (r.surface != surface
+                        || r.failed
+                        || wanted.contains(id)
+                        || pending.contains_key(id))
+            });
+            results.answered.retain(|n| tree.get(*n).is_some());
         }
         if wants.is_empty() {
             self.gpu.demand.remove(&surface);
@@ -971,13 +1066,6 @@ impl Renderer {
             let s = self.gpu.surfaces.entry(surface).or_default();
             s.hold = Some(now + GPU_WAIT);
         }
-        // Results of nodes no longer drawn go.
-        let pending = &self.gpu.pending;
-        let tree = &self.tree;
-        self.extras
-            .shaders
-            .map
-            .retain(|id, _| pending.contains_key(id) || tree.get(id.node).is_some());
     }
 
     /// Draws this frame's offscreen groups of `surface` (a pass's input
