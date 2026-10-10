@@ -21,6 +21,7 @@
 
 mod chain;
 mod convert;
+pub(crate) use convert::canvas_paint;
 mod edges;
 mod emit;
 mod lock;

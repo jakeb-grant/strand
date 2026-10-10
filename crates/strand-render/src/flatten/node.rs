@@ -563,6 +563,16 @@ impl<'a> Flattener<'a> {
                 self.out.passes.push(want);
             }
         }
+        // (M4) A `canvas`: what its `draw:` recorded (`canvas.rs`).
+        if has_area
+            && node.kind == NodeKind::Canvas
+            && let Some(PropValue::DrawList(ops)) = get(Prop::Draw)
+        {
+            let themed = |v: &PropValue| scope.resolve(v).and_then(|v| paint_of(Some(&v)));
+            for (item, reach) in crate::canvas::items(ops, frame, s, &themed) {
+                self.push(item, cover(reach), &mut sig, &mut ink);
+            }
+        }
         // Border, drawn inside the box.
         if has_area
             && let Some(PropValue::Border(Border { width, paint })) = get(Prop::Border)

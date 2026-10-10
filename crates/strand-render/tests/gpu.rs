@@ -12,6 +12,7 @@
 
 #![cfg(feature = "gpu")]
 
+mod canvas_scene;
 mod common;
 
 use std::sync::Arc;
@@ -522,4 +523,51 @@ fn a_shader_pass_matches_its_reference() {
     // The pass is drawn at the node's buffer size (80×40 at 2×).
     assert_ne!(buf.px(22, 22), buf.px(200, 60));
     assert_matches_ref("gpu_shader", &buf, 2);
+}
+
+/// A promoted canvas: its draw list lowered to the GPU matches the CPU's
+/// raster within the GPU tolerance.
+#[test]
+fn a_canvas_is_drawn_by_the_gpu_like_the_cpu() {
+    let Some(opts) = device() else { return };
+    let paint = |r: &mut Renderer, buf: &mut Buffer| {
+        let (diff, _) = canvas_scene::canvas_scene(canvas_scene::chart());
+        assert!(r.apply(diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        buf.paint(r, S, 0);
+    };
+    let mut cpu = renderer();
+    let mut want = Buffer::new(160, 60, Scale::ONE);
+    paint(&mut cpu, &mut want);
+
+    let mut r = renderer();
+    let mut buf = Buffer::new(160, 60, Scale::ONE);
+    paint(&mut r, &mut buf);
+    let mut host = Host::new(opts);
+    r.promote_now(S);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Attached { .. }));
+    buf.pixels.fill(0);
+    buf.paint(&mut r, S, 0);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Pixels { .. }));
+    buf.pixels.fill(0);
+    let copied = r.gpu_frames_copied();
+    buf.paint(&mut r, S, 0);
+    assert_eq!(r.gpu_frames_copied(), copied + 1, "drawn by the GPU");
+    let (bad, worst) = compare(&buf, &want);
+    let share = bad as f64 / (160.0 * 60.0);
+    eprintln!("canvas GPU vs CPU: {bad} pixels past {GPU_TOLERANCE}, worst {worst}");
+    if share > EDGE_SHARE {
+        write_png(
+            &refs_dir().join("gpu_canvas.actual.png"),
+            160,
+            60,
+            &buf.to_rgba(),
+        );
+    }
+    assert!(
+        share <= EDGE_SHARE,
+        "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
+    );
 }

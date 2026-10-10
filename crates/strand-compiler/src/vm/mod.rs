@@ -376,6 +376,10 @@ pub struct Vm {
     /// Elements whose laid-out size a binding read since the last
     /// [`Vm::take_watched`]: the instance tells render to report them.
     watched: RefCell<Vec<Rc<NodeState>>>,
+    /// (M4) The ops a running `canvas { draw: }` lambda records
+    /// ([`Vm::record_canvas`]); `None` outside one, where canvas methods
+    /// do nothing.
+    canvas: RefCell<Option<Vec<strand_scene::canvas::DrawOp>>>,
 }
 
 /// Faults remembered between two [`Vm::clear_faults`] (a tick's worth).
@@ -409,6 +413,7 @@ impl Vm {
             theme: RefCell::new(None),
             faults: RefCell::default(),
             watched: RefCell::default(),
+            canvas: RefCell::default(),
         })
     }
 
@@ -437,6 +442,25 @@ impl Vm {
 
     /// Notes that a binding read `node`'s laid-out size (`bits`:
     /// [`NodeState::WATCH_SIZE`] or [`NodeState::WATCH_QUERY`]).
+    /// (M4) Runs `f` (a `canvas`'s `draw:` lambda) recording the canvas
+    /// methods it calls; returns its result and the ops.
+    pub(crate) fn record_canvas<T>(
+        &self,
+        f: impl FnOnce() -> T,
+    ) -> (T, Vec<strand_scene::canvas::DrawOp>) {
+        let saved = self.canvas.replace(Some(Vec::new()));
+        let out = f();
+        let ops = self.canvas.replace(saved).unwrap_or_default();
+        (out, ops)
+    }
+
+    /// (M4) A canvas method was called: recorded if a `draw:` runs.
+    pub(crate) fn canvas_op(&self, op: strand_scene::canvas::DrawOp) {
+        if let Some(ops) = self.canvas.borrow_mut().as_mut() {
+            ops.push(op);
+        }
+    }
+
     pub(crate) fn watch(&self, node: &Rc<NodeState>, bits: u8) {
         let had = node.watch.get();
         node.watch.set(had | bits);

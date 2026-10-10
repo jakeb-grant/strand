@@ -54,6 +54,9 @@ enum SourceValue {
     Uniforms(Vec<Prop>),
     /// A `shader` node's checked file (`Prop::Shader`).
     Shader(Arc<strand_scene::shader::ShaderCode>),
+    /// (M4) A `canvas`'s `draw:` lambda, run with a `Canvas` of the
+    /// node's laid-out size; its recorded ops are `Prop::Draw`.
+    Draw(ChunkId, crate::hir::NodeIdx),
 }
 
 /// Which branch of a [`Switch`] to show (`None`: none).
@@ -1715,6 +1718,18 @@ impl Ctx {
                 },
             );
         }
+        if matches!(e.kind, ElementKind::Builtin(NodeKind::Canvas)) {
+            for (p, sources) in out.iter_mut() {
+                if *p != SceneProp::Draw {
+                    continue;
+                }
+                for s in sources.iter_mut() {
+                    if let SourceValue::Chunk(c, _) = s.value {
+                        s.value = SourceValue::Draw(c, e.node);
+                    }
+                }
+            }
+        }
         // `exit` mirrors `enter` unless given (design.md, "Poses").
         let has_exit = out.iter().any(|(p, _)| *p == SceneProp::Exit);
         if !has_exit && let Some((_, enter)) = out.iter().find(|(p, _)| *p == SceneProp::Enter) {
@@ -1823,6 +1838,21 @@ impl Ctx {
                 }
                 PropValue::Tokens(Box::new(t))
             }
+            SourceValue::Draw(c, idx) => {
+                let f = self.eval(rt, *c, env)?;
+                let st = env.node_state(rt, *idx);
+                // Read like `self.width`: render reports the size.
+                self.vm.watch(&st, crate::vm::value::NodeState::WATCH_SIZE);
+                let (w, h) = (st.width.get(rt)?, st.height.get(rt)?);
+                let canvas = self
+                    .vm
+                    .types()
+                    .find_record("Canvas")
+                    .map_or(Value::Null, |r| Value::record(r, vec![w, h]));
+                let (out, ops) = self.vm.record_canvas(|| self.vm.call(rt, &f, vec![canvas]));
+                out?;
+                PropValue::DrawList(Arc::from(ops))
+            }
             SourceValue::Uniforms(props) => {
                 let mut entries = Vec::with_capacity(props.len());
                 for p in props {
@@ -1922,6 +1952,7 @@ impl Ctx {
                 SourceValue::Tokens(defs) => chunks.extend(defs.iter().map(|d| d.value)),
                 SourceValue::Uniforms(props) => chunks.extend(props.iter().map(|p| p.value)),
                 SourceValue::Shader(_) => {}
+                SourceValue::Draw(c, _) => chunks.push(*c),
             }
         }
         self.declare_reads(rt, memo.id(), &chunks, env, &[]);

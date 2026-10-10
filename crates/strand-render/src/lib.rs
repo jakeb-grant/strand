@@ -17,6 +17,7 @@
 
 mod anim;
 mod cache;
+mod canvas;
 mod clock;
 mod fillet;
 mod flatten;
