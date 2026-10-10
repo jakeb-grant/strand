@@ -216,6 +216,7 @@ fn lerp_enc(a: &Enc, b: &Enc, u: f32) -> Option<Enc> {
         (Enc::Shadows(a), Enc::Shadows(b)) if a.len() == b.len() => {
             Enc::Shadows(a.iter().zip(b).map(|(a, b)| mix(a, b, u)).collect())
         }
+        (Enc::Uniforms(a), Enc::Uniforms(b)) => Enc::Uniforms(a.mix(b, u)?),
         _ => return None,
     })
 }

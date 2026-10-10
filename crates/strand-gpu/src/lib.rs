@@ -37,6 +37,7 @@ pub use vello_common::kurbo;
 pub use vello_common::peniko;
 pub use vello_common::pixmap::Pixmap;
 
+mod bundled;
 mod device;
 mod draw;
 mod pass;
@@ -241,7 +242,15 @@ pub struct PassFrame {
     /// The pass's box in buffer pixels.
     pub size: Size,
     pub pass: ShaderPass,
+    /// Passes run after `pass`, each reading the one before's pixels
+    /// (a `filter:` list of several bundled passes).
+    pub then: Vec<ShaderPass>,
     pub globals: PassGlobals,
+    /// What the pass reads as `strand_input`, `size` pixels in the CPU
+    /// raster's byte order (`Bgra8Unorm`, premultiplied): a `filter:`
+    /// pass's subtree, a backdrop pass's backdrop; `None` for 1×1
+    /// transparent.
+    pub input: Option<Arc<Pixmap>>,
 }
 
 /// What `@group(0)`'s `strand` uniform holds for a pass.

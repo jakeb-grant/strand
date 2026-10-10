@@ -18,7 +18,9 @@ use super::paint::{
     corners_of, cover, kurbo_rect, opaque_bands, opaque_paint, paint_of, radii, radii_zero,
     shape_path, tinted,
 };
-use super::text::{Shaped, TextSpec, natural_spec, pick, place_text, sane_font, slot_color};
+use super::text::{
+    Shaped, TextSpec, natural_spec, pick, pick_part, place_text, sane_font, slot_color,
+};
 use super::widget::{CaretAt, WidgetCtx, caret_x};
 use super::{
     DisplayItem, FillShape, Flattener, GlyphCells, HitBox, Inherited, Item, MAX_BLUR, NodeRecord,
@@ -98,7 +100,11 @@ impl<'a> Flattener<'a> {
         let timed = timed
             || (node.kind == NodeKind::Shader
                 && matches!(node.get(Prop::Shader),
-                    Some(PropValue::Shader(c)) if crate::renderer::backend::reads_time(c)));
+                    Some(PropValue::Shader(c)) if crate::renderer::backend::reads_time(c)))
+            // (M4) A `filter: wobble(…)` the GPU draws moves with time
+            // (not once its pass failed: the CPU draws it unfiltered).
+            || (self.gpu_draws(node.id, crate::renderer::backend::Slot::Filter)
+                && crate::effects::gpu::moves(node));
         // (M4) An animated image's frames run on a clock of their own.
         // (A source built from props follows a clock that time-bound
         // props run at refresh: `crate::effects::raster`.)
@@ -113,6 +119,13 @@ impl<'a> Flattener<'a> {
         let raster = own
             .or(frames.flatten())
             .or_else(|| crate::effects::raster::rate(node).filter(|_| !timed));
+        // (M4) The GPU's aurora is animated (its CPU fallback, also after
+        // its pass failed, is still).
+        #[cfg(feature = "gpu")]
+        let raster = raster.or_else(|| {
+            crate::effects::gpu::rate(node)
+                .filter(|_| self.gpu_draws(node.id, crate::renderer::backend::Slot::Node) && !timed)
+        });
         let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
@@ -183,7 +196,14 @@ impl<'a> Flattener<'a> {
             play.as_ref()
                 .is_some_and(|(k, moving)| *moving && crate::anim::keyframes::sets(k, p))
         };
-        self.anim.lean(
+        // (M4) With a GPU, `tilt` turns the node in 3-D (a bundled pass
+        // over its subtree, below) rather than in its plane, once the
+        // GPU has answered for it (`Flattener::tilts_in_3d`).
+        #[cfg(feature = "gpu")]
+        let three_d = self.tilts_in_3d(node.id);
+        #[cfg(not(feature = "gpu"))]
+        let three_d = false;
+        let tilt = self.anim.lean(
             node,
             &mut props,
             &scope,
@@ -191,6 +211,7 @@ impl<'a> Flattener<'a> {
             self.pointer,
             laid,
             self.logical,
+            three_d,
         );
         // (M4) The root paints at rest what the compositor applies.
         if root && self.extras.delegates_pose(node.id) {
@@ -225,6 +246,7 @@ impl<'a> Flattener<'a> {
             || matches!(
                 node.kind,
                 NodeKind::Segmented
+                    | NodeKind::Canvas
                     | NodeKind::Meter
                     | NodeKind::Arc
                     | NodeKind::Effect
@@ -467,6 +489,26 @@ impl<'a> Flattener<'a> {
         // (M4) Group effects: a layer around the node and its subtree,
         // whose damage grows by their reach.
         let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32());
+        // (M4) Some of it shows: a GPU pass is asked for only then (the
+        // device starts only while an effect is visible).
+        #[cfg(feature = "gpu")]
+        let shows = !phys.is_empty()
+            && map_rect(self.xform, phys)
+                .intersect(inh.clip)
+                .is_some_and(|r| !r.is_empty());
+        #[cfg(feature = "gpu")]
+        let effects = match tilt {
+            Some(turn) if three_d => Some(crate::effects::with_tilt(effects, turn)),
+            Some(_) => {
+                if shows {
+                    self.warm_tilt(node.id);
+                }
+                effects
+            }
+            None => effects,
+        };
+        #[cfg(not(feature = "gpu"))]
+        let _ = tilt;
         let own_reach = effects
             .as_deref()
             .map_or(0, |e| crate::layers::reach_px(e, self.scale.as_f32()));
@@ -481,6 +523,7 @@ impl<'a> Flattener<'a> {
                 scale: self.scale.as_f32(),
                 xform: self.xform,
                 mosaic: None,
+                gpu: None,
             })))
         });
         // (M4) The transition mask over the node and its subtree.
@@ -567,6 +610,20 @@ impl<'a> Flattener<'a> {
             let end = self.out.items.len();
             crate::backdrop::hash_behind(&self.out.items, end, read, &mut sig);
             crate::layers::hash_effects(&mut sig, std::slice::from_ref(&e));
+            // (M4) Glass, and a large blur, drawn by the GPU at full
+            // resolution once it has (the layer is pushed after its clip).
+            #[cfg(feature = "gpu")]
+            let gpu = if !shows {
+                None
+            } else {
+                let boxed = map_rect(self.xform, phys)
+                    .intersect(self.surface)
+                    .unwrap_or_default();
+                let t = time.map_or(0.0, |t| t.t);
+                self.backdrop_pass(node.id, &e, boxed, read, end + 1, r.top_left, t)
+            };
+            #[cfg(not(feature = "gpu"))]
+            let gpu = None;
             self.push(Item::PushClip(box_path.clone()), phys, &mut sig, &mut ink);
             self.push(
                 Item::PushLayer(Arc::new(crate::layers::Layer {
@@ -575,6 +632,7 @@ impl<'a> Flattener<'a> {
                     scale: self.scale.as_f32(),
                     xform: self.xform,
                     mosaic: None,
+                    gpu,
                 })),
                 phys,
                 &mut sig,
@@ -700,16 +758,37 @@ impl<'a> Flattener<'a> {
             // (M4) A merge's goo is drawn after its children.
             None if node.kind == NodeKind::Merge => None,
             Some(b) => {
-                self.extras.fallbacks.note(b);
-                self.extras.rasters.pixmap_from(
-                    node.id,
-                    b,
-                    b.config(),
-                    pw,
-                    ph,
-                    self.scale.as_f32(),
-                    b.time(time_now),
-                )
+                // (M4) Aurora and particles past the CPU's cap: the GPU's
+                // pixels once it has drawn them.
+                #[cfg(feature = "gpu")]
+                let gpu = if shows {
+                    self.generator_pass(node.id, b, frame, time_now)
+                } else {
+                    None
+                };
+                #[cfg(not(feature = "gpu"))]
+                let gpu: Option<(u64, Arc<vello_cpu::Pixmap>)> = None;
+                match gpu {
+                    Some(drawn) => Some(drawn),
+                    None => {
+                        #[cfg(feature = "gpu")]
+                        let says = !self.gpu_draws(node.id, crate::renderer::backend::Slot::Node);
+                        #[cfg(not(feature = "gpu"))]
+                        let says = true;
+                        if says {
+                            self.extras.fallbacks.note(b);
+                        }
+                        self.extras.rasters.pixmap_from(
+                            node.id,
+                            b,
+                            b.config(),
+                            pw,
+                            ph,
+                            self.scale.as_f32(),
+                            b.time(time_now),
+                        )
+                    }
+                }
             }
             None => {
                 self.extras.rasters.unused(node.id);
@@ -764,25 +843,32 @@ impl<'a> Flattener<'a> {
         // pixel until it has some, and with no device), and the pass this
         // frame wants.
         #[cfg(feature = "gpu")]
-        if has_area
+        if shows
             && node.kind == NodeKind::Shader
             && let Some(PropValue::Shader(code)) = get(Prop::Shader)
         {
             let (w, h) = (frame.width().round() as u32, frame.height().round() as u32);
+            let (x, y) = (frame.x0.round(), frame.y0.round());
+            let pointer = self.pass_pointer(kurbo::Rect::new(x, y, x + w as f64, y + h as f64));
             if let Some(want) = crate::renderer::backend::pass_want(
                 node.id,
                 code,
                 get(Prop::Uniforms),
+                (x as i32, y as i32),
                 w,
                 h,
                 self.scale.as_f32(),
                 time.map_or(0.0, |t| t.t),
+                pointer,
             ) {
-                let (key, pixmap) = match self.extras.shaders.get(node.id) {
+                let id = crate::renderer::backend::PassId::new(
+                    node.id,
+                    crate::renderer::backend::Slot::Node,
+                );
+                let (key, pixmap) = match self.extras.shaders.get(id) {
                     Some((k, p)) => (*k, p.clone()),
                     None => (0, crate::renderer::backend::empty_pixmap()),
                 };
-                let (x, y) = (frame.x0.round(), frame.y0.round());
                 let rect = kurbo::Rect::new(x, y, x + w as f64, y + h as f64);
                 self.push(
                     Item::Raster {
@@ -804,8 +890,52 @@ impl<'a> Flattener<'a> {
             && let Some(PropValue::DrawList(ops)) = get(Prop::Draw)
         {
             let themed = |v: &PropValue| scope.resolve(v).and_then(|v| paint_of(Some(&v)));
-            for (item, reach) in crate::canvas::items(ops, frame, s, &themed) {
+            // Its texts: one request each (parts 1..), drawn once shaped.
+            let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
+            let scale = self.scale;
+            let mut specs = Vec::new();
+            let mut text = |i: usize, t: &str, x: f64, y: f64| {
+                let part = i as u8 + 1;
+                specs.push(TextSpec {
+                    text: t.to_string(),
+                    style: TextStyle {
+                        font: font.clone(),
+                        ..TextStyle::default()
+                    },
+                    max_width: None,
+                    scale,
+                    part,
+                });
+                let l = pick_part(shaped, part, scale, None).or_else(|| {
+                    shaped
+                        .iter()
+                        .find(|c| c.part == part)
+                        .map(|c| c.layout.clone())
+                })?;
+                let k = scale.as_f64() / l.scale.as_f64();
+                let (x, y) = (x.round() as i32, (y - l.baseline as f64 * s).round() as i32);
+                let ink = kurbo::Rect::new(
+                    x as f64 + l.ink.left() as f64 * k,
+                    y as f64 + l.ink.top() as f64 * k,
+                    x as f64 + l.ink.right() as f64 * k,
+                    y as f64 + l.ink.bottom() as f64 * k,
+                );
+                let item = Item::Glyphs {
+                    x,
+                    y,
+                    layout: l,
+                    color: text_color,
+                    spans: Vec::new(),
+                    fill: None,
+                };
+                Some((item, ink))
+            };
+            let items = crate::canvas::items(ops, frame, s, &themed, &mut text);
+            for (item, reach) in items {
                 self.push(item, cover(reach), &mut sig, &mut ink);
+            }
+            for spec in specs {
+                self.out.text.push((node.id, spec));
             }
         }
         // Border, drawn inside the box. Along the box (no `shape:`), it
@@ -1321,6 +1451,9 @@ impl<'a> Flattener<'a> {
         let subtree = bounds.union(children);
         if let Some(i) = layer_group {
             self.out.items[i].bounds = subtree;
+            // (M4) Its bundled passes, drawn by the GPU.
+            #[cfg(feature = "gpu")]
+            self.filter_pass(node.id, i, time.map_or(0.0, |t| t.t));
             self.marker(Item::PopLayer);
         }
         if let Some((i, pop)) = mask_group {

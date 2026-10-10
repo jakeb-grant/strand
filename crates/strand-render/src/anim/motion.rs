@@ -14,6 +14,114 @@ pub(super) enum Enc {
     Four([f32; 4]),
     Five([f32; 5]),
     Shadows(Vec<[f32; 8]>),
+    /// (M4) A `shader` node's `uniforms:`.
+    Uniforms(Uniforms),
+}
+
+/// (M4) A `shader` node's `uniforms:` as channels: each entry's numbers
+/// in order (a colour's four channels, a list's items), with the
+/// entries' names and kinds as its shape. Springing between two values
+/// of the same shape moves every channel; another shape snaps.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Uniforms {
+    shape: Vec<(String, Kind)>,
+    values: Vec<f32>,
+}
+
+/// What a uniform's channels decode to.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Kind {
+    Number,
+    Px,
+    Percent,
+    Angle,
+    Color,
+    List(Vec<Kind>),
+}
+
+/// `v`'s kind, its channels added to `out`; `None` for a value that
+/// cannot spring (a duration, a bool: it snaps).
+fn kind_of(v: &PropValue, out: &mut Vec<f32>) -> Option<Kind> {
+    let finite = |n: f32| n.is_finite().then_some(n);
+    Some(match v {
+        PropValue::Number(n) => {
+            out.push(finite(*n)?);
+            Kind::Number
+        }
+        PropValue::Length(Length::Px(n)) => {
+            out.push(finite(*n)?);
+            Kind::Px
+        }
+        PropValue::Length(Length::Percent(n)) => {
+            out.push(finite(*n)?);
+            Kind::Percent
+        }
+        PropValue::Angle(n) => {
+            out.push(finite(*n)?);
+            Kind::Angle
+        }
+        PropValue::Color(c) | PropValue::Paint(Paint::Solid(c)) => {
+            out.extend(color_channels(*c));
+            Kind::Color
+        }
+        PropValue::List(items) => Kind::List(
+            items
+                .iter()
+                .map(|i| kind_of(i, out))
+                .collect::<Option<_>>()?,
+        ),
+        _ => return None,
+    })
+}
+
+/// The value of kind `k` from the channels `it` gives next.
+fn of_kind(k: &Kind, it: &mut impl Iterator<Item = f32>) -> PropValue {
+    let mut next = || it.next().unwrap_or(0.0);
+    match k {
+        Kind::Number => PropValue::Number(next()),
+        Kind::Px => PropValue::Length(Length::Px(next())),
+        Kind::Percent => PropValue::Length(Length::Percent(next())),
+        Kind::Angle => PropValue::Angle(next()),
+        Kind::Color => {
+            let c = [next(), next(), next(), next()];
+            PropValue::Color(channels_color(c))
+        }
+        Kind::List(items) => PropValue::List(items.iter().map(|k| of_kind(k, it)).collect()),
+    }
+}
+
+impl Uniforms {
+    fn of(entries: &[(String, PropValue)]) -> Option<Uniforms> {
+        let mut values = Vec::new();
+        let shape = entries
+            .iter()
+            .map(|(n, v)| Some((n.clone(), kind_of(v, &mut values)?)))
+            .collect::<Option<_>>()?;
+        Some(Uniforms { shape, values })
+    }
+
+    /// `self` moved `u` of the way to `to`, if they are of one shape.
+    pub(super) fn mix(&self, to: &Uniforms, u: f32) -> Option<Uniforms> {
+        (self.shape == to.shape && self.values.len() == to.values.len()).then(|| Uniforms {
+            shape: self.shape.clone(),
+            values: self
+                .values
+                .iter()
+                .zip(&to.values)
+                .map(|(a, b)| a + (b - a) * u)
+                .collect(),
+        })
+    }
+
+    fn value(&self) -> PropValue {
+        let mut it = self.values.iter().copied();
+        PropValue::Uniforms(
+            self.shape
+                .iter()
+                .map(|(n, k)| (n.clone(), of_kind(k, &mut it)))
+                .collect(),
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +134,11 @@ pub(super) enum PropMotion {
     Shadows {
         m: Vec<Motion<8>>,
         len: usize,
+    },
+    /// One spring per channel, all of one shape.
+    Uniforms {
+        shape: Vec<(String, Kind)>,
+        m: Vec<Motion<1>>,
     },
 }
 
@@ -153,6 +266,9 @@ pub(super) fn encode(p: Prop, v: Option<&PropValue>, inh: Color, b: Extents) -> 
             let c = color_channels(solid(&PropValue::Paint(paint.clone()))?);
             Enc::Five([width.is_finite().then_some(*width)?, c[0], c[1], c[2], c[3]])
         }
+        (Prop::Uniforms, Some(PropValue::Uniforms(entries))) => {
+            Enc::Uniforms(Uniforms::of(entries)?)
+        }
         (Prop::Shadow, None) => Enc::Shadows(Vec::new()),
         (Prop::Shadow, Some(PropValue::Shadow(list))) => {
             Enc::Shadows(list.iter().map(shadow_channels).collect())
@@ -209,6 +325,7 @@ pub(super) fn decode(p: Prop, e: &Enc) -> PropValue {
             width: b[0].max(0.0),
             paint: Paint::Solid(channels_color([b[1], b[2], b[3], b[4]])),
         }),
+        (_, Enc::Uniforms(u)) => u.value(),
         (_, Enc::Shadows(list)) => PropValue::Shadow(
             list.iter()
                 .map(|s| Shadow {
@@ -242,6 +359,13 @@ impl PropMotion {
                     .collect(),
                 len: list.len(),
             },
+            Enc::Uniforms(u) => PropMotion::Uniforms {
+                shape: u.shape.clone(),
+                m: u.values
+                    .iter()
+                    .map(|v| Motion::rest([*v], k).sampled_at(last))
+                    .collect(),
+            },
         }
     }
 
@@ -253,6 +377,10 @@ impl PropMotion {
             PropMotion::Shadows { m, len } => {
                 Enc::Shadows(m.iter().take(*len).map(Motion::target).collect())
             }
+            PropMotion::Uniforms { shape, m } => Enc::Uniforms(Uniforms {
+                shape: shape.clone(),
+                values: m.iter().map(|m| m.target()[0]).collect(),
+            }),
         }
     }
 
@@ -279,6 +407,13 @@ impl PropMotion {
                 }
                 *len = list.len();
             }
+            (PropMotion::Uniforms { shape, m }, Enc::Uniforms(u))
+                if *shape == u.shape && m.len() == u.values.len() =>
+            {
+                for (m, v) in m.iter_mut().zip(&u.values) {
+                    m.retarget([*v], curve);
+                }
+            }
             _ => return false,
         }
         true
@@ -295,6 +430,10 @@ impl PropMotion {
             PropMotion::Shadows { m, .. } => {
                 Enc::Shadows(m.iter_mut().map(|m| one(m, at, commit)).collect())
             }
+            PropMotion::Uniforms { shape, m } => Enc::Uniforms(Uniforms {
+                shape: shape.clone(),
+                values: m.iter_mut().map(|m| one(m, at, commit)[0]).collect(),
+            }),
         }
     }
 
@@ -304,6 +443,7 @@ impl PropMotion {
             PropMotion::Four(m) => m.is_settled(at),
             PropMotion::Five(m) => m.is_settled(at),
             PropMotion::Shadows { m, .. } => m.iter().all(|m| m.is_settled(at)),
+            PropMotion::Uniforms { m, .. } => m.iter().all(|m| m.is_settled(at)),
         }
     }
 }

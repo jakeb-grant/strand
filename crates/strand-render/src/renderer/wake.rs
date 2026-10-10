@@ -174,7 +174,7 @@ impl Renderer {
             let f = self.flatten_surface(id);
             // (M4) Passes asked for now hold the frame (up to GPU_WAIT).
             #[cfg(feature = "gpu")]
-            self.gpu_passes(id, &f.passes, true);
+            self.gpu_passes(id, &f.items, &f.passes, true);
             let animating = self.anim.active() || self.swap_moving(id) || self.scrolling(id);
             // Text with a request in flight and no layout for this
             // surface's scale and width yet. A stand-in from another scale

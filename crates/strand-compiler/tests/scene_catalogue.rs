@@ -157,17 +157,19 @@ fn scene_enums_follow_the_schema() {
 }
 
 /// The bundled GPU effects without a node or prop of their own are
-/// functions of `filter:`/`backdrop:` (decisions.md, m4-owner).
+/// functions of `filter:`/`backdrop:` (decisions.md, m4-owner), with the
+/// knobs m4-gpu-effects gave them (`bloom`'s `strength` and `glass`'s
+/// `refraction` optional).
 #[test]
 fn bundled_effects_have_their_spelling() {
     let schema = Schema::builtin();
     let filter = Ty::opaque("Filter");
     for (name, arity) in [
-        ("bloom", 1),
+        ("bloom", 2),
         ("crt", 0),
         ("chromatic", 1),
         ("wobble", 1),
-        ("glass", 0),
+        ("glass", 1),
     ] {
         assert!(
             Bundled::from_name(name).is_some(),

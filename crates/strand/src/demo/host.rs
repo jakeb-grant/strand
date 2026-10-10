@@ -1351,7 +1351,8 @@ mod tests {
 
     /// (M4) A still aurora and capped particles (CPU fallbacks for GPU
     /// effects) are said once each, as a `strand watch` notice, the first
-    /// time a frame draws them.
+    /// time a frame draws them with no GPU to draw them (in a `gpu`
+    /// build, one whose device was refused).
     #[test]
     fn effect_fallbacks_are_said_once_as_notices() {
         use std::time::Duration;
@@ -1359,7 +1360,13 @@ mod tests {
         let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
             std::sync::Arc::new(font),
         ]));
-        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        #[allow(unused_mut)]
+        let mut renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        #[cfg(feature = "gpu")]
+        renderer.deliver_gpu(strand_gpu::GpuReply::Unavailable(strand_gpu::GpuError {
+            kind: strand_gpu::GpuErrorKind::NoAdapter,
+            message: "no adapter (test)".into(),
+        }));
         let (f, mut el) = setup();
         let mut host = Host::new(renderer, false);
         host.logic = Some(f);

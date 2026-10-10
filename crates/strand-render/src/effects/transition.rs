@@ -222,6 +222,7 @@ impl Masked {
                     scale,
                     xform,
                     mosaic: (cell > 1).then_some(cell),
+                    gpu: None,
                 };
                 (Item::PushLayer(std::sync::Arc::new(layer)), Item::PopLayer)
             }

@@ -10,7 +10,10 @@
 //! particle is one blit of a precomputed sprite (`dot(size)`: a disc of
 //! that diameter, with a glow of `glow` round it). At most 1,000 are
 //! alive at once on the CPU (the rate is capped so `rate · life` stays
-//! within it); the GPU version above that is wave 3's.
+//! within it). Above that, with a GPU, the field is a bundled pass
+//! (`Bundled::Particles`): the same particles at the same places (the CPU
+//! works them out, `Particles::gpu_uniforms`), each one instance of
+//! the same sprite, up to `GPU_MAX_ALIVE`.
 
 use std::f32::consts::TAU;
 
@@ -20,6 +23,11 @@ use super::builtin::{Canvas, Sprite, rand};
 
 /// Most particles alive at once on the CPU.
 pub(crate) const MAX_ALIVE: f32 = 1000.0;
+
+/// Most particles alive at once on the GPU (a pass's instance buffer:
+/// 600 KB at 12 bytes each).
+#[cfg(feature = "gpu")]
+pub(crate) const GPU_MAX_ALIVE: f32 = 50_000.0;
 
 /// Drift at `speed: 1`, logical pixels a second.
 const DRIFT: f32 = 20.0;
@@ -47,34 +55,39 @@ impl Particles {
 
     /// The rate actually drawn: at most [`MAX_ALIVE`] alive at once.
     pub(crate) fn rate(&self) -> f32 {
-        let rate = self.rate.clamp(0.0, 10_000.0);
-        let life = self.life.max(0.0);
-        if rate * life > MAX_ALIVE {
-            MAX_ALIVE / life
-        } else {
-            rate
-        }
+        self.rate_within(MAX_ALIVE)
     }
 
-    /// Draws the field at `t` seconds into `c`, `scale` device pixels a
-    /// logical one.
-    pub(crate) fn draw(&self, c: &mut Canvas, scale: f32, t: f32) {
-        let rate = self.rate();
+    /// The rate with at most `max` alive at once.
+    fn rate_within(&self, max: f32) -> f32 {
+        let rate = self.rate.clamp(0.0, 10_000.0);
+        let life = self.life.max(0.0);
+        if rate * life > max { max / life } else { rate }
+    }
+
+    /// The sprite, `s` device pixels a logical one.
+    fn sprite(&self, s: f32) -> Sprite {
+        Sprite::dot(
+            (self.size.clamp(0.5, 200.0) * s) / 2.0,
+            self.glow.clamp(0.0, 200.0) * s,
+        )
+    }
+
+    /// Calls `f(x, y, alpha)` for every particle alive at `t` in a `w ×
+    /// h` box, `s` device pixels a logical one, born at `rate`.
+    fn each(
+        &self,
+        (w, h): (f32, f32),
+        s: f32,
+        t: f32,
+        rate: f32,
+        mut f: impl FnMut(f32, f32, f32),
+    ) {
         let life = self.life;
         if !(rate > 0.0 && life > 0.0 && life.is_finite()) {
             return;
         }
         let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
-        let s = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
-        let sprite = Sprite::dot(
-            (self.size.clamp(0.5, 200.0) * s) / 2.0,
-            self.glow.clamp(0.0, 200.0) * s,
-        );
-        let (w, h) = (c.w as f32, c.h as f32);
         let v = DRIFT * self.speed.clamp(0.0, 100.0) * s;
         // Every particle born in (t - life, t].
         let last = (t * rate).floor() as i64;
@@ -88,9 +101,50 @@ impl Particles {
             let a = TAU * rand(i, 1, 0);
             let x = w * rand(i, 2, 0) + a.cos() * v * age * life;
             let y = h * rand(i, 3, 0) + a.sin() * v * age * life;
-            let alpha = (age * std::f32::consts::PI).sin();
-            c.stamp(&sprite, x, y, self.color, alpha);
+            f(x, y, (age * std::f32::consts::PI).sin());
         }
+    }
+
+    /// Draws the field at `t` seconds into `c`, `scale` device pixels a
+    /// logical one.
+    pub(crate) fn draw(&self, c: &mut Canvas, scale: f32, t: f32) {
+        let s = finite_scale(scale);
+        let sprite = self.sprite(s);
+        let color = self.color;
+        let size = (c.w as f32, c.h as f32);
+        self.each(size, s, t, self.rate(), |x, y, alpha| {
+            c.stamp(&sprite, x, y, color, alpha)
+        });
+    }
+
+    /// The GPU pass's uniforms for the field at `t` in a `w × h` box
+    /// (`Bundled::Particles`): the sprite's radius, glow and half size
+    /// (device pixels), the colour (straight), then each particle's
+    /// centre and alpha; up to `GPU_MAX_ALIVE` alive.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn gpu_uniforms(&self, w: u32, h: u32, scale: f32, t: f32) -> Vec<f32> {
+        let s = finite_scale(scale);
+        let sprite = self.sprite(s);
+        let radius = (self.size.clamp(0.5, 200.0) * s / 2.0).clamp(0.25, 256.0);
+        let glow = (self.glow.clamp(0.0, 200.0) * s).clamp(0.0, 256.0);
+        let c = self.color;
+        let mut out = vec![radius, glow, sprite.half as f32, 0.0, c.r, c.g, c.b, c.a];
+        let rate = self.rate_within(GPU_MAX_ALIVE);
+        let alive = (rate * self.life.clamp(0.0, 1e6)).ceil().min(GPU_MAX_ALIVE) as usize;
+        out.reserve(alive * 3 + 3);
+        self.each((w as f32, h as f32), s, t, rate, |x, y, alpha| {
+            out.extend([x, y, alpha])
+        });
+        out
+    }
+}
+
+/// `scale`, or 1 if it is not a positive number.
+fn finite_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     }
 }
 
@@ -154,6 +208,24 @@ mod tests {
             0.6,
         );
         assert_ne!(a, b);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_gpu_draws_every_particle_where_the_cpu_would() {
+        let p = field(5000.0, 2.0);
+        let u = p.gpu_uniforms(200, 100, 1.0, 3.0);
+        assert_eq!(&u[..3], &[1.5, 0.0, 3.0]);
+        let n = (u.len() - 8) / 3;
+        assert!((9_990..=10_000).contains(&n), "all of rate × life: {n}");
+        // The first of them is the CPU's first at the GPU's rate.
+        let mut first = None;
+        p.each((200.0, 100.0), 1.0, 3.0, 5000.0, |x, y, a| {
+            first.get_or_insert([x, y, a]);
+        });
+        assert_eq!(first, Some([u[8], u[9], u[10]]));
+        let capped = field(50_000.0, 2.0).gpu_uniforms(10, 10, 1.0, 3.0);
+        assert!((capped.len() - 8) / 3 <= GPU_MAX_ALIVE as usize);
     }
 
     #[test]

@@ -163,6 +163,11 @@ impl Offscreen {
             let Item::PushLayer(layer) = &items[i].item else {
                 continue;
             };
+            // (M4) Drawn by the GPU: its pixels as they came back.
+            if let Some(g) = &layer.gpu {
+                self.current.insert(layer_key(layer), g.clone());
+                continue;
+            }
             let Some(region) = items[i].bounds.intersect(surface).filter(|r| !r.is_empty()) else {
                 continue;
             };
@@ -224,9 +229,16 @@ impl Offscreen {
             let drawn = match self.get(key) {
                 Some(d) => d,
                 None => {
-                    let Some(drawn) =
-                        render_group(inner, layer, region, atlas, cache, scale, &self.current)
-                    else {
+                    let Some(drawn) = render_group(
+                        inner,
+                        layer,
+                        region,
+                        atlas,
+                        cache,
+                        scale,
+                        &self.current,
+                        true,
+                    ) else {
                         continue;
                     };
                     self.builds += 1;
@@ -287,9 +299,12 @@ impl Offscreen {
 }
 
 /// Draws a group's items into a pixmap of `region` and applies its
-/// spatial and colour effects. `None` if the region is too large for
-/// one context (the group then draws unfiltered).
-fn render_group(
+/// spatial and colour effects; `bundled`: its bundled passes' CPU
+/// versions too (false for a GPU pass's input, which the GPU filters).
+/// `None` if the region is too large for one context (the group then
+/// draws unfiltered).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_group(
     items: &[DisplayItem],
     layer: &crate::layers::Layer,
     region: Rect,
@@ -297,7 +312,53 @@ fn render_group(
     cache: &PaintCache,
     scale: Scale,
     groups: &HashMap<usize, Drawn>,
+    bundled: bool,
 ) -> Option<Drawn> {
+    let mut pm = rasterise(items, layer.xform, region, atlas, cache, scale, groups)?;
+    let (w, h) = (pm.width(), pm.height());
+    let s = scale.as_f32();
+    let bytes = pm.data_as_u8_slice_mut();
+    if let Some(cell) = layer.mosaic {
+        // The cells start at the box's corner on the surface.
+        let corner = layer.xform * layer.frame.origin();
+        let phase = (
+            (corner.x - region.x as f64).round() as i64,
+            (corner.y - region.y as f64).round() as i64,
+        );
+        mosaic(bytes, w as usize, h as usize, cell as usize, phase);
+    }
+    for e in layer.effects.iter() {
+        match e {
+            Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
+            Effect::ColorMatrix(m) => color_matrix(bytes, m),
+            // `bloom(r)` without a GPU: a glow of the group's own pixels,
+            // reaching its radius (3σ; the uniform is in buffer pixels).
+            Effect::Shader(pass) if bundled && crate::layers::cpu_glow(e) => {
+                let r = pass.uniforms.first().copied().unwrap_or(0.0);
+                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0, None);
+            }
+            _ => {}
+        }
+    }
+    Some(Drawn {
+        pixmap: Arc::new(pm),
+        x: region.x,
+        y: region.y,
+    })
+}
+
+/// Draws `items` under `xform` into a pixmap of `region` (surface
+/// pixels), unfiltered. `None` if the region is too large for one
+/// context.
+pub(crate) fn rasterise(
+    items: &[DisplayItem],
+    xform: Affine,
+    region: Rect,
+    atlas: &AtlasMirror,
+    cache: &PaintCache,
+    scale: Scale,
+    groups: &HashMap<usize, Drawn>,
+) -> Option<Pixmap> {
     let (w, h) = (u16::try_from(region.w).ok()?, u16::try_from(region.h).ok()?);
     let settings = RenderSettings {
         num_threads: 0,
@@ -305,17 +366,9 @@ fn render_group(
     };
     let mut ctx = RenderContext::new_with(w, h, settings);
     let base = Affine::translate((-(region.x as f64), -(region.y as f64)));
-    ctx.set_transform(base * layer.xform);
+    ctx.set_transform(base * xform);
     crate::raster::draw_group(
-        &mut ctx,
-        items,
-        region,
-        atlas,
-        cache,
-        scale,
-        base,
-        layer.xform,
-        groups,
+        &mut ctx, items, region, atlas, cache, scale, base, xform, groups,
     );
     ctx.flush();
     // Drawn straight into the pixmap that is kept, and filtered there:
@@ -334,35 +387,7 @@ fn render_group(
         },
     );
     drop(ctx);
-    let s = scale.as_f32();
-    let bytes = pm.data_as_u8_slice_mut();
-    if let Some(cell) = layer.mosaic {
-        // The cells start at the box's corner on the surface.
-        let corner = layer.xform * layer.frame.origin();
-        let phase = (
-            (corner.x - region.x as f64).round() as i64,
-            (corner.y - region.y as f64).round() as i64,
-        );
-        mosaic(bytes, w as usize, h as usize, cell as usize, phase);
-    }
-    for e in layer.effects.iter() {
-        match e {
-            Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
-            Effect::ColorMatrix(m) => color_matrix(bytes, m),
-            // `bloom(r)` without a GPU: a glow of the group's own pixels,
-            // reaching its radius (3σ; the uniform is in buffer pixels).
-            Effect::Shader(pass) if crate::layers::cpu_glow(e) => {
-                let r = pass.uniforms.first().copied().unwrap_or(0.0);
-                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0, None);
-            }
-            _ => {}
-        }
-    }
-    Some(Drawn {
-        pixmap: Arc::new(pm),
-        x: region.x,
-        y: region.y,
-    })
+    Some(pm)
 }
 
 /// `pixelate`: every `cell × cell` square of premultiplied pixels (`w × h`,

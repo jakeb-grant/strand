@@ -293,7 +293,7 @@ impl State {
             }
             match self
                 .passes
-                .draw(dev, encoder, pass, w as u32, h as u32, *globals)
+                .draw(dev, encoder, pass, w as u32, h as u32, *globals, None)
             {
                 Ok(Some(d)) => {
                     let id = TextureId(out.len() as u64 + 1);
@@ -491,14 +491,22 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("strand pass"),
             });
-        let drawn = match self
-            .passes
-            .draw(dev, &mut encoder, &p.pass, w, h, p.globals)
-        {
+        // Its input (a filter's subtree, a backdrop): the CPU raster's
+        // bytes are `Bgra8Unorm`'s, so they go up as they are.
+        let input = p.input.as_ref().and_then(|px| input_texture(dev, px));
+        let mut drawn = match self.passes.draw(
+            dev,
+            &mut encoder,
+            &p.pass,
+            w,
+            h,
+            p.globals,
+            input.as_ref().map(|(_, v)| v),
+        ) {
             Ok(Some(d)) => d,
             Ok(None) => {
-                // A zero or over-large size, or a bundled pass not built
-                // yet: answered, so render stops waiting for it.
+                // A zero or over-large size: answered, so render stops
+                // waiting for it.
                 reply.send(GpuReply::Failed {
                     surface: None,
                     key: Some(p.key),
@@ -515,6 +523,26 @@ impl State {
                 return;
             }
         };
+        // The passes after it, each on the one before's pixels (the
+        // textures live until the encoder is submitted).
+        let mut keep = Vec::new();
+        for next in &p.then {
+            match self
+                .passes
+                .draw(dev, &mut encoder, next, w, h, p.globals, Some(&drawn.view))
+            {
+                Ok(Some(d)) => keep.push(std::mem::replace(&mut drawn, d)),
+                Ok(None) => {}
+                Err(e) => {
+                    reply.send(GpuReply::Failed {
+                        surface: None,
+                        key: Some(p.key),
+                        error: e,
+                    });
+                    return;
+                }
+            }
+        }
         let read = self
             .pass_reads
             .entry(p.key)
@@ -524,6 +552,7 @@ impl State {
         }
         read.record(&mut encoder, &drawn.texture);
         dev.queue.submit([encoder.finish()]);
+        drop(keep);
         match read.read(dev) {
             Ok(pixels) => reply.send(GpuReply::PassPixels {
                 key: p.key,
@@ -537,6 +566,47 @@ impl State {
             }),
         }
     }
+}
+
+/// A pass's input pixels as a texture (none for an empty pixmap).
+fn input_texture(dev: &Device, px: &crate::Pixmap) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+    let (w, h) = (u32::from(px.width()), u32::from(px.height()));
+    let max = dev.device.limits().max_texture_dimension_2d;
+    if w == 0 || h == 0 || w > max || h > max {
+        return None;
+    }
+    let size = wgpu::Extent3d {
+        width: w,
+        height: h,
+        depth_or_array_layers: 1,
+    };
+    let texture = dev.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("strand pass input"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: pass::FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    dev.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        px.data_as_u8_slice(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w * 4),
+            rows_per_image: Some(h),
+        },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Some((texture, view))
 }
 
 fn render_error(message: impl Into<String>) -> GpuError {

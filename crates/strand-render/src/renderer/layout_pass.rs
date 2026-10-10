@@ -147,6 +147,15 @@ impl Renderer {
                 self.extras.gpu_presented.remove(&root);
             }
         }
+        // (M4) Whether bundled effects take their GPU form (3-D tilt, an
+        // animated aurora): not while the device is unavailable.
+        #[cfg(feature = "gpu")]
+        {
+            self.extras.gpu_ok = !matches!(
+                self.gpu_status(),
+                strand_scene::GpuStatus::Unavailable { .. }
+            );
+        }
         let Some(s) = self.surfaces.get(&id) else {
             return Flattened::default();
         };

@@ -3,14 +3,20 @@
 //! `gpu_is_released_when_idle`): `strand run` on headless sway. Panel
 //! `Glow` (640×420) shows, while `on`, a 640×320 animated `shader` above
 //! a strip (a translucent row with a gradient box, a still `shader` and
-//! text); panel `Ref` (320×100) shows the same strip. Before anything
+//! text), and over the animation a box with `filter: bloom(8)`, a
+//! bundled pass whose input is read back and whose pixels come back to
+//! render (m4-gpu-effects), beside a plain box of the same colour;
+//! panel `Ref` (320×100) shows the same strip. Before anything
 //! needs the GPU no Vulkan library is mapped and no `strand-gpu` thread
 //! runs. Each cycle: `on` is set; `Glow` is promoted and presented
 //! through the surface hand-off (lavapipe presents on CI's pixman sway;
 //! the hardware leg may read back there), while `Ref`, too small to
 //! promote, draws its still shader by reading the pass back; the
 //! screenshot shows the still shader's colour in both (premultiplied,
-//! red and blue in place), and `Glow`'s presented strip matches `Ref`'s
+//! red and blue in place), the bloomed box is brighter inside than the
+//! plain one (the GPU's bloom screens its glow over the box; the CPU's
+//! fallback glow is drawn under it, leaving it as plain), and `Glow`'s
+//! presented strip matches `Ref`'s
 //! CPU-drawn strip within the GPU tolerance. Then `on` is cleared, which
 //! hides the shaders with both panels left open: `Glow` is demoted (its
 //! swapchain released, the surface taken back) and the device drops
@@ -44,7 +50,13 @@ component Strip {
 panel Glow { anchor: top_left; width: 640; height: 420; open: true
   col {
     box { width: 640; height: 320
-      if on { shader "aurora.wgsl" { width: 640; height: 320; u_speed: 1 } }
+      if on {
+        shader "aurora.wgsl" { width: 640; height: 320; u_speed: 1 }
+        box { place: absolute; x: 20; y: 20; width: 120; height: 60; radius: 12;
+          bg: #f5c2e7; filter: bloom(8) }
+        box { place: absolute; x: 160; y: 20; width: 60; height: 60; radius: 12;
+          bg: #f5c2e7 }
+      }
     }
     Strip
   }
@@ -94,6 +106,20 @@ const STRIP: (usize, usize) = (320, 100);
 /// the 80 px gradient box, a 10 px gap: x 100..160; y within 10..80
 /// however the row aligns it).
 const STILL_AT: (usize, usize) = (130, 45);
+
+/// Inside the bloomed box and the plain box beside it, in `Glow`.
+const BLOOMED: (usize, usize) = (80, 50);
+const PLAIN: (usize, usize) = (190, 50);
+/// How much brighter (summed channels) the bloomed box's inside must be:
+/// the GPU's bloom screens #f5c2e7's glow over it (about +60); the
+/// CPU's glow leaves it as the plain box (+0).
+const BLOOM_GAIN: i32 = 24;
+
+/// The bloomed box's brightness over the plain box's (summed channels).
+fn bloom_gain(i: &Img) -> i32 {
+    let sum = |p: [u8; 3]| p.iter().map(|&c| i32::from(c)).sum::<i32>();
+    sum(i.px(BLOOMED)) - sum(i.px(PLAIN))
+}
 
 /// Per-channel difference allowed between the GPU's and the CPU's strip
 /// (render's `tests/gpu.rs`), and the share of pixels (edges) allowed
@@ -573,20 +599,28 @@ fn gpu_is_released_when_idle() {
                 .as_ref()
                 .map(|i: &Img| (i.px(at(GLOW_STRIP)), i.px(at(REF_STRIP))))
         };
+        let gain = || img.borrow().as_ref().map(bloom_gain);
         until(
-            &format!("cycle {cycle}: the still shader in both strips"),
+            &format!("cycle {cycle}: the still shader in both strips, the box bloomed"),
             STEP,
             || {
                 *img.borrow_mut() = shot(&dir, &display);
                 stills().is_some_and(|(g, r)| near(g, still, 3) && near(r, still, 3))
+                    && gain().is_some_and(|g| g >= BLOOM_GAIN)
             },
             &|| {
                 format!(
-                    "Glow's and Ref's still shader: {:?}, want {still:?}\n{}",
+                    "Glow's and Ref's still shader: {:?}, want {still:?}; the bloomed box \
+                     over the plain one: {:?}, want {BLOOM_GAIN} or more (the GPU's bloom)\n{}",
                     stills(),
+                    gain(),
                     log()
                 )
             },
+        );
+        eprintln!(
+            "cycle {cycle}: the bloomed box over the plain one: {:?}",
+            gain()
         );
         let img = img.into_inner().expect("a screenshot");
         let glow = img.region(GLOW_STRIP, STRIP);

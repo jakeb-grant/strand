@@ -43,6 +43,9 @@ use crate::layers::Layer;
 use crate::offscreen::{Drawn, layer_key};
 use crate::raster::AtlasMirror;
 
+/// `glass()`'s refraction at its rim when not given, logical pixels.
+pub(crate) const GLASS_REFRACTION: f32 = 12.0;
+
 /// `glass()`'s CPU fallback: a blur of this radius (logical pixels)…
 pub(crate) const GLASS_BLUR: f32 = 16.0;
 
@@ -67,7 +70,16 @@ pub(crate) fn effect(v: &PropValue, scale: f32) -> Option<Effect> {
             }
             (Bundled::BackdropBlur, vec![r * scale])
         }
-        "glass" => (Bundled::Glass, Vec::new()),
+        // `glass(refraction = 12)`: the GPU's knob (its CPU fallback is
+        // one blur and tint, `GLASS_BLUR`, `GLASS_TINT`).
+        "glass" => {
+            let refraction = args
+                .first()
+                .and_then(crate::effects::number)
+                .unwrap_or(GLASS_REFRACTION)
+                .clamp(0.0, 200.0);
+            (Bundled::Glass, vec![refraction * scale])
+        }
         _ => return None,
     };
     Some(Effect::Shader(ShaderPass {
@@ -154,6 +166,7 @@ pub(crate) fn reach_of(e: &Effect, scale: Scale) -> u32 {
         scale: scale.as_f32(),
         xform: Affine::IDENTITY,
         mosaic: None,
+        gpu: None,
     };
     pass(&layer, scale).map_or(0, Pass::reach)
 }
@@ -394,6 +407,7 @@ mod tests {
             scale: 2.0,
             xform: Affine::IDENTITY,
             mosaic: None,
+            gpu: None,
         };
         assert_eq!(
             pass(&layer(blur.clone()), s),
@@ -404,6 +418,14 @@ mod tests {
         );
         assert_eq!(reach_of(&blur, s), 96);
         let glass = effect(&call("glass", vec![]), 2.0).unwrap();
+        // The GPU's refraction knob, 12 when not given, in buffer pixels.
+        let refraction = |e: &Effect| match e {
+            Effect::Shader(p) => p.uniforms.to_vec(),
+            _ => Vec::new(),
+        };
+        assert_eq!(refraction(&glass), vec![24.0]);
+        let deep = effect(&call("glass", vec![PropValue::Number(20.0)]), 2.0).unwrap();
+        assert_eq!(refraction(&deep), vec![40.0]);
         let p = pass(&layer(glass), s).unwrap();
         assert_eq!(p.sigma, 32.0);
         assert!(p.tint.is_some());

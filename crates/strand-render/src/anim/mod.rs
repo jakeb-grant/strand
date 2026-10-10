@@ -44,7 +44,7 @@ pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
-pub(crate) const ANIMATED: [Prop; 17] = [
+pub(crate) const ANIMATED: [Prop; 18] = [
     Prop::X,
     Prop::Y,
     Prop::Opacity,
@@ -67,6 +67,9 @@ pub(crate) const ANIMATED: [Prop; 17] = [
     Prop::Wave,
     Prop::Glow,
     Prop::Fill,
+    // (M4) A `shader` node's uniforms, channel by channel (a change of
+    // names or kinds snaps; decisions.md m4-gpu-effects).
+    Prop::Uniforms,
 ];
 
 /// Props whose change springs the laid-out size.
@@ -80,7 +83,7 @@ fn eps(p: Prop) -> f32 {
         Prop::Opacity => 0.002,
         Prop::Scale => 0.0005,
         Prop::Rotate => 0.05,
-        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill => 0.002,
+        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill | Prop::Uniforms => 0.002,
         Prop::Value => 0.0005,
         _ => 0.05,
     }
@@ -537,7 +540,10 @@ impl Animator {
     /// (M4) Leans `node` with the pointer (`pointer`, `None` off its
     /// surface) by its `parallax` and `tilt` in `props`, laid out at
     /// `rect` on a surface `surface` (`crate::effects::lean`): adds the
-    /// springing offset and turn to its `x`, `y` and `rotate`.
+    /// springing offset to its `x` and `y`, and unless `three_d` (the
+    /// GPU's 3-D pass draws it) the turn to its `rotate` (the CPU's 2-D
+    /// tilt). Returns the turn while it is turned: degrees for the
+    /// pointer across and down its box.
     #[allow(clippy::too_many_arguments)]
     pub fn lean(
         &mut self,
@@ -548,11 +554,12 @@ impl Animator {
         pointer: Option<strand_scene::LogicalPoint>,
         rect: LogicalRect,
         surface: LogicalRect,
-    ) {
+        three_d: bool,
+    ) -> Option<[f32; 2]> {
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
         let Some(lean) = crate::effects::lean::Lean::of(get) else {
             self.leans.forget(node.id);
-            return;
+            return None;
         };
         let target = lean.target(pointer, rect, surface);
         let transition = node
@@ -577,7 +584,10 @@ impl Animator {
         };
         keyframes::offset(props, Prop::X, v[0], inh, boxes);
         keyframes::offset(props, Prop::Y, v[1], inh, boxes);
-        keyframes::offset(props, Prop::Rotate, v[2], inh, boxes);
+        if !three_d {
+            keyframes::offset(props, Prop::Rotate, v[2], inh, boxes);
+        }
+        (v[2] != 0.0 || v[3] != 0.0).then_some([v[2], v[3]])
     }
 
     /// (M4) True if a node `under` a surface leans with the pointer: a

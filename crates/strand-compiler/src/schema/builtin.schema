@@ -667,22 +667,27 @@ fn tint(color: color) -> Filter
 // unfiltered. The stream that builds an effect edits only its own
 // declaration here (its knobs) and records them in decisions.md.
 
-/// Bloom: bright parts bleed light `radius` around them,
-/// `filter: bloom(12)`. Without a GPU it draws as a glow.
-fn bloom(radius: length) -> Filter
-/// A CRT look (scanlines and curvature): `filter: crt()`. Without a GPU
+/// Bloom: bright parts bleed light `radius` around them, `strength`
+/// times as bright as they are (1: as bright), `filter: bloom(12)`,
+/// `filter: bloom(12, 1.5)`. Without a GPU it draws as a glow.
+fn bloom(radius: length, strength: float = 1) -> Filter
+/// A CRT look: a curved screen with rounded corners, scanlines, a fringe
+/// of colour and a darker rim, `filter: crt()`. No knobs. Without a GPU
 /// the node draws unfiltered.
 fn crt() -> Filter
-/// Chromatic aberration, splitting colour channels `offset` apart:
-/// `filter: chromatic(2)`. Without a GPU the node draws unfiltered.
+/// Chromatic aberration: red shifted `offset` right and blue `offset`
+/// left of green, `filter: chromatic(2)`. Without a GPU the node draws
+/// unfiltered.
 fn chromatic(offset: length) -> Filter
-/// A raster wobble up to `amplitude`: `filter: wobble(4)`. Without a GPU
-/// the node draws unfiltered.
+/// A raster wobble: rows swing up to `amplitude` sideways in a wave 40
+/// px long that travels down every 2 s, `filter: wobble(4)`. Without a
+/// GPU the node draws unfiltered.
 fn wobble(amplitude: length) -> Filter
-/// Liquid glass over what is behind it (refraction, a fresnel rim and a
-/// pointer highlight): `backdrop: glass()`. Without a GPU it draws as a
-/// blur and a tint.
-fn glass() -> Filter
+/// Liquid glass over what is behind it: lightly frosted, bent up to
+/// `refraction` at its rim (red and blue apart), a fresnel rim and a
+/// highlight under the pointer, `backdrop: glass()`,
+/// `backdrop: glass(20)`. Without a GPU it draws as a blur and a tint.
+fn glass(refraction: length = 12) -> Filter
 
 /// A mask fading toward an edge: `mask: fade(bottom, 24)`.
 fn fade(edge: Edge, size: length) -> Mask

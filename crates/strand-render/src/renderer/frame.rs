@@ -287,9 +287,9 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
-        // (M4) Its `shader` nodes' passes (drawn with what they have).
+        // (M4) Its passes (drawn with what they have).
         #[cfg(feature = "gpu")]
-        self.gpu_passes(surface, &f.passes, false);
+        self.gpu_passes(surface, &f.items, &f.passes, false);
         if fresh {
             // Its clocks run while it draws them: not frozen (reduced
             // motion, a frame with no clock), and not after it detached.
