@@ -632,13 +632,7 @@ impl Loader {
 }
 
 fn read(p: &Path) -> Result<Arc<str>, String> {
-    match std::fs::read(p) {
-        Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(s) => Ok(s.into()),
-            Err(_) => Err("not UTF-8".to_string()),
-        },
-        Err(e) => Err(e.to_string()),
-    }
+    crate::check::shaders::read_file(p).map(Arc::from)
 }
 
 /// The last good sources of one config, under `dir/<hash of the config

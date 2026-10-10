@@ -62,6 +62,40 @@ pub fn resolve(path: &str, config_dir: &Path) -> PathBuf {
     }
 }
 
+/// Shader files larger than this are refused: a fragment shader is a few
+/// kilobytes, and the cap keeps a path such as `/dev/zero` from
+/// exhausting memory.
+pub const MAX_SHADER_BYTES: u64 = 1024 * 1024;
+
+/// Reads a resolved shader file for [`check`]: a regular file (following
+/// symlinks) of at most [`MAX_SHADER_BYTES`], as UTF-8. A FIFO or device
+/// is refused before it is opened, so it cannot block the caller (the
+/// compiler worker, the LSP, `strand check`). The loader, the LSP and
+/// `strand check` all read through this (m4-audit).
+pub fn read_file(path: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".into());
+    }
+    if meta.len() > MAX_SHADER_BYTES {
+        return Err(format!(
+            "{} bytes is larger than {MAX_SHADER_BYTES}",
+            meta.len()
+        ));
+    }
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    // Bounded again: the file may grow between the stat and the read.
+    f.take(MAX_SHADER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_SHADER_BYTES {
+        return Err(format!("larger than {MAX_SHADER_BYTES} bytes"));
+    }
+    String::from_utf8(bytes).map_err(|_| "not UTF-8".to_string())
+}
+
 /// Does `program` have a `shader` node at all (so a caller can skip the
 /// reads)?
 pub fn any(program: &hir::Program) -> bool {

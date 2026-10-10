@@ -198,3 +198,52 @@ fn without_shaders_the_file_is_not_checked() {
     );
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// (m4-audit) A shader path is any string of the config, so the file
+/// must be a regular file of at most a megabyte: `/dev/zero` (which would
+/// read until memory ran out), a FIFO (which would block the compiler
+/// worker, ending hot reload) and an oversized file are refused with
+/// `check::shader_file`, without reading them. The FIFO has no writer:
+/// opening it would block this test for good.
+#[test]
+fn shader_files_refuse_fifos_devices_and_huge_files() {
+    use strand_compiler::check::shaders::{MAX_SHADER_BYTES, read_file};
+    let d = dir("kinds");
+    let fifo = d.join("pipe.wgsl");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .is_ok_and(|s| s.success());
+    let huge = d.join("huge.wgsl");
+    std::fs::write(&huge, vec![b' '; MAX_SHADER_BYTES as usize + 1]).unwrap();
+    let mut refused = vec!["/dev/zero".to_string(), huge.display().to_string()];
+    if made {
+        refused.push(fifo.display().to_string());
+    }
+    for path in &refused {
+        let r = read_file(Path::new(path));
+        assert!(r.is_err(), "{path}: {r:?}");
+        // Through the loader too: the module is held back, nothing read.
+        write(
+            &d,
+            "bar.strand",
+            &format!(
+                "bar Top {{ edge: top; height: 30\n  shader \"{path}\" {{ width: 100 }}\n}}\n"
+            ),
+        );
+        let mut l = Loader::new(&d, Schema::builtin().clone(), None);
+        let out = l.boot();
+        assert!(out.build.is_none(), "{path}");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|e| e.code == "check::shader_file"),
+            "{path}: {:?}",
+            out.diagnostics
+        );
+    }
+    // A regular file at the limit is read.
+    let ok = write(&d, "ok.wgsl", AURORA);
+    assert_eq!(read_file(&ok).as_deref(), Ok(AURORA));
+    let _ = std::fs::remove_dir_all(d);
+}
