@@ -1,6 +1,6 @@
 //! (M4) `spectrum audio.sink { bars: 48; smooth: 0.6; style: mirror }`
-//! (design.md: "Audio spectrum … FFT via realfft"; "stops when audio is
-//! silent").
+//! (design.md: "Audio spectrum … FFT on the audio thread"; "stops when
+//! audio is silent").
 //!
 //! The FFT runs on the audio thread (`strand_services::audio::spectrum`);
 //! its bands reach render through the binary ([`crate::Renderer::feed`])

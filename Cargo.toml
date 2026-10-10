@@ -135,6 +135,12 @@ opt-level = "s"
 [profile.release.package.libspa]
 opt-level = "s"
 
+# Lottie's scene building, once per animation frame (vello_cpu still
+# rasterises at 3): built for size under the 15 MiB `.text` gate
+# (decisions.md, m4-effects-media-w2).
+[profile.release.package.velato]
+opt-level = "z"
+
 # The timing gates' build (CI's `timing` job: theme_swap_bench and the
 # reload latency bench): the release profile, its per-package opt-levels
 # above and its single codegen unit included (a custom profile inherits

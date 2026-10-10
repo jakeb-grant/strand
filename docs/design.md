@@ -510,7 +510,7 @@ Tuning the compositor's blur (saturation, noise, vibrancy) belongs to the compos
 | Built-in effects | `effect lightning \| sparks \| shimmer \| ripple \| aurora { … }` with a few named knobs | Trivial–ok on CPU; aurora is GPU |
 | Particles | `particles { rate: 20; life: 1.2s; sprite: dot(3); glow: 6 }` | Under 1,000: CPU sprite blits; above: GPU |
 | Transition masks | `transition: wipe(left) \| disc \| dissolve \| pixelate` on `if`, `pages` and image swaps | Ok |
-| Audio spectrum | `spectrum audio.sink { bars: 48; smooth: 0.6; style: mirror }` (FFT via realfft) | Ok; stops when audio is silent |
+| Audio spectrum | `spectrum audio.sink { bars: 48; smooth: 0.6; style: mirror }` (FFT on the audio thread) | Ok; stops when audio is silent |
 | Graphs and sparklines with built-in history | `graph cpu.usage { history: 60s; fill: $accent.alpha(0.2) }` | Trivial; only the new column repaints |
 | Wavy media progress that flattens when paused | `meter media.position { wave: media.playing ? 3 : 0 }` | Trivial |
 | Animated GIF, APNG, WebP | `image "spin.gif"` | Frames streamed, not cached whole |

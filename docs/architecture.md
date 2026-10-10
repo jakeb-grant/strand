@@ -3460,7 +3460,8 @@ transparent huge pages for life.
     that could not be made is a warning diagnostic, as is the `login`
     fallback (once per process).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
-    (realfft) runs on the audio thread only while a reader is visible,
+    (`audio::spectrum::Fft`, an in-place radix-2 transform; realfft
+    until decisions.md m4-effects-media-w2) runs on the audio thread only while a reader is visible,
     and stops while the source is silent. Built (m4-effects-media):
     each meter's data thread keeps its last 4,096 samples mixed to mono
     in a ring of atomics (`audio::spectrum::Ring`); a reading with sound

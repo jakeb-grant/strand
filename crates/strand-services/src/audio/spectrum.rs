@@ -1,11 +1,13 @@
-//! (M4) The `spectrum` element's FFT (design.md: "FFT via realfft"; "stops
-//! when audio is silent"), on the audio thread.
+//! (M4) The `spectrum` element's FFT (design.md: "stops when audio is
+//! silent"), on the audio thread.
 //!
 //! A meter's data thread keeps the last [`RING`] samples of its stream,
 //! mixed to mono, in a [`Ring`] of atomics (no allocation, no lock on the
 //! realtime thread). When the loop sends a reading with sound it takes
-//! the last [`FFT_SIZE`] of them, applies a Hann window, runs a real FFT
-//! and folds the magnitudes into [`BANDS`] bands spaced evenly in pitch
+//! the last [`FFT_SIZE`] of them, applies a Hann window, runs an FFT
+//! ([`Fft`]: a plain radix-2 transform, in place of the realfft design.md
+//! named, whose planner cost about 300 KB of the release binary's code
+//! for one fixed size; decisions.md, m4-effects-media-w2) and folds the magnitudes into [`BANDS`] bands spaced evenly in pitch
 //! from [`LOW_HZ`] to [`HIGH_HZ`]: each band is the loudest bin in it (or
 //! the bin nearest its centre when it is narrower than a bin), in
 //! decibels mapped from [`FLOOR_DB`] (0) to 0 dBFS (1). So a full-scale
@@ -17,11 +19,7 @@
 //! then), and never on silence (a meter sends nothing while its device
 //! plays silence).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-
-use realfft::num_complex::Complex;
-use realfft::{RealFftPlanner, RealToComplex};
 
 /// Samples a meter keeps (a power of two).
 pub(crate) const RING: usize = 4096;
@@ -100,21 +98,85 @@ impl Ring {
     }
 }
 
+/// An in-place radix-2 FFT of one power-of-two size: its twiddles and
+/// bit-reversal order, computed once.
+pub(crate) struct Fft {
+    cos: Vec<f32>,
+    sin: Vec<f32>,
+    rev: Vec<u32>,
+}
+
+impl Fft {
+    /// An FFT of `n` points (a power of two, at least 2).
+    pub(crate) fn new(n: usize) -> Self {
+        let n = n.max(2).next_power_of_two();
+        let bits = n.trailing_zeros();
+        let (cos, sin) = (0..n / 2)
+            .map(|k| {
+                let a = std::f64::consts::TAU * k as f64 / n as f64;
+                (a.cos() as f32, a.sin() as f32)
+            })
+            .unzip();
+        let rev = (0..n as u32)
+            .map(|i| i.reverse_bits() >> (32 - bits))
+            .collect();
+        Fft { cos, sin, rev }
+    }
+
+    /// Points it transforms.
+    pub(crate) fn len(&self) -> usize {
+        self.rev.len()
+    }
+
+    /// The forward transform of `re + i·im` in place (`X_k = Σ x_j
+    /// e^(−2πijk/n)`). Slices of another length are left as they are.
+    pub(crate) fn forward(&self, re: &mut [f32], im: &mut [f32]) {
+        let n = self.len();
+        if re.len() != n || im.len() != n {
+            return;
+        }
+        for (i, &j) in self.rev.iter().enumerate() {
+            let j = j as usize;
+            if j > i {
+                re.swap(i, j);
+                im.swap(i, j);
+            }
+        }
+        let mut len = 2;
+        while len <= n {
+            let half = len / 2;
+            let step = n / len;
+            for start in (0..n).step_by(len) {
+                for k in 0..half {
+                    let (c, s) = (self.cos[k * step], self.sin[k * step]);
+                    let (a, b) = (start + k, start + k + half);
+                    // (re + i·im)(c − i·s)
+                    let tr = re[b] * c + im[b] * s;
+                    let ti = im[b] * c - re[b] * s;
+                    re[b] = re[a] - tr;
+                    im[b] = im[a] - ti;
+                    re[a] += tr;
+                    im[a] += ti;
+                }
+            }
+            len *= 2;
+        }
+    }
+}
+
 /// A meter's FFT: its plan, window and buffers, made on the first
 /// reading with sound and kept while the meter runs.
 pub(crate) struct Analyzer {
-    fft: Arc<dyn RealToComplex<f32>>,
+    fft: Fft,
     window: Vec<f32>,
     input: Vec<f32>,
-    output: Vec<Complex<f32>>,
-    scratch: Vec<Complex<f32>>,
+    imag: Vec<f32>,
     /// The window's sum: a sine of amplitude `a` peaks at `a · sum / 2`.
     gain: f32,
 }
 
 impl Analyzer {
     pub(crate) fn new() -> Self {
-        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
         let window: Vec<f32> = (0..FFT_SIZE)
             .map(|i| {
                 let x = i as f32 / FFT_SIZE as f32;
@@ -123,10 +185,9 @@ impl Analyzer {
             .collect();
         let gain = window.iter().sum();
         Analyzer {
-            input: fft.make_input_vec(),
-            output: fft.make_output_vec(),
-            scratch: fft.make_scratch_vec(),
-            fft,
+            fft: Fft::new(FFT_SIZE),
+            input: vec![0.0; FFT_SIZE],
+            imag: vec![0.0; FFT_SIZE],
             window,
             gain,
         }
@@ -153,17 +214,17 @@ impl Analyzer {
         for (s, w) in self.input.iter_mut().zip(&self.window) {
             *s *= w;
         }
-        if self
-            .fft
-            .process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch)
-            .is_err()
-        {
-            return vec![0.0; BANDS];
-        }
+        self.imag.fill(0.0);
+        self.fft.forward(&mut self.input, &mut self.imag);
         let rate = if rate == 0 { 48_000 } else { rate } as f32;
         let bin_hz = rate / FFT_SIZE as f32;
-        let last = self.output.len() - 1;
-        let amp = |k: usize| self.output[k.min(last)].norm() * 2.0 / self.gain;
+        // A real input's spectrum: bins 0 to n/2.
+        let last = FFT_SIZE / 2;
+        let (re, im) = (&self.input, &self.imag);
+        let amp = |k: usize| {
+            let k = k.min(last);
+            re[k].hypot(im[k]) * 2.0 / self.gain
+        };
         let ratio = HIGH_HZ / LOW_HZ;
         (0..BANDS)
             .map(|b| {
@@ -230,6 +291,37 @@ mod tests {
         }
         let silent = a.bands_of(&[0.0; FFT_SIZE], 48_000);
         assert!(silent.iter().all(|v| *v == 0.0));
+    }
+
+    /// The FFT matches a direct DFT.
+    #[test]
+    fn the_fft_is_the_dft() {
+        let n = 64;
+        let x: Vec<f32> = (0..n)
+            .map(|i| ((i * 7 % 13) as f32 - 6.0) / 6.0 + (i as f32 * 0.3).sin())
+            .collect();
+        let fft = Fft::new(n);
+        assert_eq!(fft.len(), n);
+        let (mut re, mut im) = (x.clone(), vec![0.0; n]);
+        fft.forward(&mut re, &mut im);
+        for k in 0..n {
+            let (mut dr, mut di) = (0.0f64, 0.0f64);
+            for (j, v) in x.iter().enumerate() {
+                let a = -std::f64::consts::TAU * (j * k) as f64 / n as f64;
+                dr += *v as f64 * a.cos();
+                di += *v as f64 * a.sin();
+            }
+            assert!(
+                (re[k] as f64 - dr).abs() < 1e-3 && (im[k] as f64 - di).abs() < 1e-3,
+                "bin {k}: ({}, {}) vs ({dr}, {di})",
+                re[k],
+                im[k]
+            );
+        }
+        // Another length is left alone.
+        let mut short = vec![1.0; 8];
+        fft.forward(&mut short.clone(), &mut short);
+        assert_eq!(short, [1.0; 8]);
     }
 
     #[test]

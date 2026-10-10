@@ -15,7 +15,7 @@ niri = []
 # The `audio` service (PipeWire). Building it needs libpipewire's headers
 # and libclang (bindgen), and the binary then links libpipewire-0.3; a
 # build without it answers `audio.*` at the schema's defaults.
-pipewire = ["dep:pipewire", "dep:realfft"]
+pipewire = ["dep:pipewire"]
 
 [dependencies]
 strand-core.workspace = true
@@ -80,9 +80,6 @@ wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 # since pipewire-rs is `!Send`. `v1_0_0`: the oldest PipeWire we build
 # against (Ubuntu 24.04's 1.0.5).
 pipewire = { version = "0.10.1", features = ["v1_0_0"], optional = true }
-# The `spectrum` element's FFT on the audio thread (design.md names
-# realfft).
-realfft = { version = "3.5.0", optional = true }
 
 [dev-dependencies]
 # The fake compositor tests/protocol.rs and the wm protocol client's unit
