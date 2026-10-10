@@ -236,3 +236,148 @@ fn masks_fade_and_reveal() {
     assert_ne!(at(&buf, 3, 68.0, 68.0), bg, "100% reaches the far corner");
     assert_matches_ref("effects_masks", &buf, 1);
 }
+
+// ---- Shapes ---------------------------------------------------------
+
+const SHAPES: [&str; 13] = [
+    "rect", "circle", "pill", "cookie", "clover", "burst", "flower", "gem", "sunny", "triangle",
+    "pentagon", "hexagon", "heart",
+];
+
+/// One 56 × 56 box per entry of `props` on a dark bar, 64 px apart (the
+/// pill's box is wider). Returns the renderer, buffer and boxes.
+fn boxes(props: Vec<Fx>, scale: Scale, time: u64) -> (Renderer, Buffer, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let n = props.len();
+    let ids = props
+        .into_iter()
+        .enumerate()
+        .map(|(i, more)| {
+            let mut p = vec![
+                (Prop::X, num(i as f32 * 64.0 + 4.0)),
+                (Prop::Y, num(4.0)),
+                (Prop::Width, num(56.0)),
+                (Prop::Height, num(56.0)),
+                (Prop::Place, kw("absolute")),
+                (Prop::Bg, color("#cba6f7")),
+            ];
+            p.extend(more);
+            b.node(NodeKind::Box, Some(root), p)
+        })
+        .collect();
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new(
+        (n as f32 * 64.0 * k).round() as u32,
+        (64.0 * k).round() as u32,
+        scale,
+    );
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(time));
+    (r, buf, ids)
+}
+
+/// design.md "Shape and geometry": every shape of the library, filled
+/// and with a border drawn inside its outline (refs `effects_shapes.png`
+/// at 1× and 1.5×).
+#[test]
+fn the_shape_library_draws_every_shape() {
+    let fx = || -> Vec<Fx> {
+        SHAPES
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut p = vec![(Prop::Shape, kw(s))];
+                if i % 2 == 1 {
+                    p.push((
+                        Prop::Border,
+                        PropValue::Border(Border {
+                            width: 3.0,
+                            paint: Paint::Solid(hex("#f5e0dc")),
+                        }),
+                    ));
+                }
+                p
+            })
+            .collect()
+    };
+    let (_, buf, _) = boxes(fx(), Scale::ONE, 1000);
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    let lilac = [0xf7, 0xa6, 0xcb, 0xff];
+    let tile = |i: u32, x: u32, y: u32| buf.px(i * 64 + 4 + x, 4 + y);
+    // A rect fills its corner, a circle does not; every shape fills its
+    // centre.
+    assert_eq!(tile(0, 1, 1), lilac);
+    assert_eq!(tile(1, 2, 2), bg);
+    for i in [0, 2, 3, 4, 5, 6, 8, 10, 12] {
+        assert_eq!(
+            tile(i, 28, 28),
+            lilac,
+            "{} at its centre",
+            SHAPES[i as usize]
+        );
+    }
+    // The heart's notch at the top middle is outside it.
+    assert_eq!(tile(12, 28, 3), bg, "the heart's notch");
+    assert_matches_ref("effects_shapes", &buf, 1);
+    let (_, buf, _) = boxes(fx(), Scale::new(180).unwrap(), 1000);
+    assert_matches_ref("effects_shapes_1_5x", &buf, 1);
+}
+
+/// design.md: "`shape: cookie` → `when loading { shape: burst }`; morphs
+/// by spring". Mid-morph frames lie between the two outlines (ref
+/// `effects_morph.png` at 80 ms), the morph settles on the new shape, and
+/// `reduced_motion` snaps.
+#[test]
+fn a_shape_change_morphs_by_spring() {
+    use std::time::Duration;
+    let (mut r, mut buf, ids) = boxes(vec![vec![(Prop::Shape, kw("cookie"))]], Scale::ONE, 1000);
+    let mut d = SceneDiff::new();
+    d.set(ids[0], Prop::Shape, kw("burst"));
+    assert!(r.apply(d).is_empty());
+    let ms = |m: u64| Duration::from_millis(1000 + m);
+    buf.paint_at(&mut r, S, 1, ms(16));
+    assert!(r.wants_frame(S), "the morph keeps frames coming");
+    buf.paint_at(&mut r, S, 1, ms(80));
+    assert_matches_ref("effects_morph", &buf, 1);
+    let (_, cookie, _) = boxes(vec![vec![(Prop::Shape, kw("cookie"))]], Scale::ONE, 1000);
+    let (_, burst, _) = boxes(vec![vec![(Prop::Shape, kw("burst"))]], Scale::ONE, 1000);
+    assert!(buf.pixels != cookie.pixels && buf.pixels != burst.pixels);
+    let mut t = 96;
+    while r.wants_frame(S) {
+        buf.paint_at(&mut r, S, 1, ms(t));
+        t += 16;
+        assert!(t < 3000, "settles");
+    }
+    assert!(buf.pixels == burst.pixels, "settled on the burst");
+    // Reduced motion: the next change snaps.
+    r.set_reduced_motion(true);
+    let mut d = SceneDiff::new();
+    d.set(ids[0], Prop::Shape, kw("cookie"));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, ms(t + 16));
+    assert!(buf.pixels == cookie.pixels, "snapped");
+    assert!(!r.wants_frame(S));
+}
+
+/// design.md: `mask: shape(cookie)` masks a subtree with a shape of the
+/// library (ref `effects_mask_shapes.png`).
+#[test]
+fn shape_masks_cut_a_subtree_to_its_outline() {
+    let (_, buf, _) = tiles(
+        ["cookie", "heart", "clover", "triangle"]
+            .into_iter()
+            .map(|s| vec![(Prop::Mask, call("shape", vec![kw(s)]))])
+            .collect(),
+        Scale::ONE,
+    );
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    // The squares' corners are cut away; the centre stays.
+    for i in 0..4 {
+        assert_eq!(at(&buf, i, 11.0, 11.0), bg, "tile {i}'s corner");
+        assert_ne!(at(&buf, i, 40.0, 45.0), bg, "tile {i}'s middle");
+    }
+    assert_matches_ref("effects_mask_shapes", &buf, 1);
+}

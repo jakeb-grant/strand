@@ -16,7 +16,8 @@
 //!   an image under the cell-local part. On the CPU a `bloom` pass is an
 //!   offscreen group too, drawn as a glow of its own pixels
 //!   ([`crate::effects::glow`]); the other shader passes' groups draw
-//!   unfiltered. `Mask::Shape` is opaque until the shape library lands.
+//!   unfiltered. `Mask::Shape` is the shape library's outline
+//!   ([`crate::shapes::Polygon`]) over the group's box.
 //!
 //! The effects are built from each node's props (`filter:`, `blend:`,
 //! `mask:`) by [`crate::effects::group`].
@@ -100,13 +101,10 @@ pub fn push(ctx: &mut RenderContext, layer: &Layer, cur: Affine) {
                 opacity = Some(opacity.unwrap_or(1.0) * o);
             }
             Effect::Blend(b) => blend = Some(blend_mode(*b)),
-            Effect::Mask(m @ (Mask::Fade { .. } | Mask::Radial { .. })) => masks.push(m),
-            // Drawn by an offscreen group, unfiltered on the CPU, or
-            // pending (see the module docs).
-            Effect::Mask(Mask::Shape(_))
-            | Effect::Blur { .. }
-            | Effect::ColorMatrix(_)
-            | Effect::Shader(_) => {}
+            Effect::Mask(m) => masks.push(m),
+            // Drawn by an offscreen group, or unfiltered on the CPU (see
+            // the module docs).
+            Effect::Blur { .. } | Effect::ColorMatrix(_) | Effect::Shader(_) => {}
         }
     }
     let mask = (!masks.is_empty()).then(|| cell_mask(ctx, layer, &masks, cur));
@@ -134,6 +132,15 @@ fn cell_mask(ctx: &RenderContext, layer: &Layer, masks: &[&Mask], cur: Affine) -
     } else {
         Affine::IDENTITY
     };
+    // A shape mask's outline as a polygon of the group's box, once per
+    // cell.
+    let shapes: Vec<Option<crate::shapes::Polygon>> = masks
+        .iter()
+        .map(|m| match m {
+            Mask::Shape(name) => Some(shape_polygon(name, layer)),
+            _ => None,
+        })
+        .collect();
     let mut data = Vec::with_capacity(w as usize * h as usize);
     for y in 0..h {
         for x in 0..w {
@@ -141,12 +148,23 @@ fn cell_mask(ctx: &RenderContext, layer: &Layer, masks: &[&Mask], cur: Affine) -
             let p = inv * kurbo::Point::new(x as f64 + 0.5, y as f64 + 0.5);
             let a = masks
                 .iter()
-                .map(|m| mask_alpha(m, layer, p))
+                .zip(&shapes)
+                .map(|(m, poly)| match poly {
+                    Some(poly) => poly.coverage(p),
+                    None => mask_alpha(m, layer, p),
+                })
                 .product::<f64>();
             data.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
     }
     vello_cpu::Mask::from_parts(data, w, h)
+}
+
+/// `mask: shape(name)`'s outline over the group's box (an unknown name
+/// masks to the box itself).
+fn shape_polygon(name: &str, layer: &Layer) -> crate::shapes::Polygon {
+    let shape = crate::shapes::Shape::from_name(name).unwrap_or(crate::shapes::Shape::Rect);
+    crate::shapes::Polygon::new(&crate::shapes::Outline::Shape(shape), layer.frame)
 }
 
 /// One mask's alpha at `p` (the group's space, physical pixels).
@@ -188,7 +206,7 @@ pub fn mask_alpha(m: &Mask, layer: &Layer, p: kurbo::Point) -> f64 {
             let d = ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt();
             (size - d + 0.5).clamp(0.0, 1.0)
         }
-        Mask::Shape(_) => 1.0,
+        Mask::Shape(name) => shape_polygon(name, layer).coverage(p),
     }
 }
 
@@ -239,7 +257,11 @@ mod tests {
         assert_eq!(at(&radial, 10.0, 10.0), 1.0);
         assert_eq!(at(&radial, 29.0, 10.0), 1.0);
         assert_eq!(at(&radial, 40.0, 10.0), 0.0);
-        assert_eq!(at(&Mask::Shape("cookie".into()), 0.0, 0.0), 1.0);
+        // A circle inscribed in the 100 × 40 box: its centre is in, its
+        // corner out.
+        let circle = Mask::Shape("circle".into());
+        assert_eq!(at(&circle, 60.0, 30.0), 1.0);
+        assert_eq!(at(&circle, 11.0, 11.0), 0.0);
     }
 
     #[test]

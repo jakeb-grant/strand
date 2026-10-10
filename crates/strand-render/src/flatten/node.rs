@@ -398,7 +398,20 @@ impl<'a> Flattener<'a> {
             s,
         );
         let squircle = matches!(get(Prop::Corners), Some(PropValue::Keyword(k)) if k == "squircle");
-        let box_path = shape_path(frame, r, squircle);
+        // (M4) `shape:` draws the box as a shape of the library, morphing
+        // by spring when it changes; hit testing and shadows round the
+        // box by the shape's corner (`crate::shapes`).
+        let outline = self.shape_outline(node, &get, &scope, frame);
+        let r = match &outline {
+            Some(o) => {
+                RoundedRectRadii::from_single_radius(o.corner(frame.width(), frame.height()))
+            }
+            None => r,
+        };
+        let box_path = match &outline {
+            Some(o) => crate::shapes::path(o, frame),
+            None => shape_path(frame, r, squircle),
+        };
         let has_area = !phys.is_empty();
 
         // Shadows, under the box.
@@ -535,7 +548,10 @@ impl<'a> Flattener<'a> {
                     (r.bottom_right - bw).max(0.0),
                     (r.bottom_left - bw).max(0.0),
                 );
-                path.extend(shape_path(inner, ir, squircle));
+                match &outline {
+                    Some(o) => path.extend(crate::shapes::path(o, inner)),
+                    None => path.extend(shape_path(inner, ir, squircle)),
+                }
             }
             self.push(
                 Item::Border {
@@ -824,6 +840,35 @@ impl<'a> Flattener<'a> {
             self.xform = saved;
         }
         subtree
+    }
+
+    /// (M4) The outline `node` draws its box as, when it has a `shape:`
+    /// (`crate::shapes`); a node without one forgets any it had.
+    fn shape_outline<'v>(
+        &mut self,
+        node: &Node,
+        get: &impl Fn(Prop) -> Option<&'v PropValue>,
+        scope: &TokenScope,
+        frame: kurbo::Rect,
+    ) -> Option<crate::shapes::Outline> {
+        let shape = match get(Prop::Shape) {
+            Some(PropValue::Keyword(k) | PropValue::Text(k)) => crate::shapes::Shape::from_name(k),
+            _ => None,
+        };
+        let Some(shape) = shape else {
+            self.anim.forget_shape(node.id);
+            return None;
+        };
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Shape)
+            .map_or(strand_scene::Transition::Default, |e| e.transition.clone());
+        let curve = strand_scene::Curve::of(&scope.transition(&transition, Prop::Shape));
+        Some(
+            self.anim
+                .shape_outline(node.id, shape, crate::shapes::aspect(frame), curve),
+        )
     }
 
     pub(super) fn shadow(

@@ -415,6 +415,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   page slides get modules of their own here when they land.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
   `filter.rs` (colour matrices), `glow.rs` (CPU glows).
+- `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
+  paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
+  morphs, held by the `Animator`).
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).

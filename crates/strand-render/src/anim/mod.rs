@@ -168,6 +168,8 @@ pub(crate) struct Animator {
     poses: HashMap<NodeId, PropValue>,
     /// `pages` swaps (directional page transitions).
     pub pages: pages::PageSwaps,
+    /// (M4) Shaped nodes' shapes and morphs (`crate::shapes`).
+    shapes: crate::shapes::morph::Morphs,
 }
 
 impl Animator {
@@ -233,6 +235,34 @@ impl Animator {
     /// clock).
     fn snapping(&self) -> bool {
         self.reduced || self.time.is_zero()
+    }
+
+    /// (M4) The outline `id` draws for `shape` in a box of `aspect`: the
+    /// shape, or while a change of it morphs (along `curve`), the points
+    /// between (`crate::shapes::morph`).
+    pub fn shape_outline(
+        &mut self,
+        id: NodeId,
+        shape: crate::shapes::Shape,
+        aspect: f64,
+        curve: Curve,
+    ) -> crate::shapes::Outline {
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (outline, moving) = self.shapes.outline(id, shape, aspect, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        outline
+    }
+
+    /// (M4) `id` draws no shape (any more).
+    pub fn forget_shape(&mut self, id: NodeId) {
+        self.shapes.forget(id);
     }
 
     /// Logic set `prop` of `id`, which had the value `old`.
@@ -317,6 +347,7 @@ impl Animator {
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
         self.times.forget(id);
+        self.shapes.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -383,6 +414,7 @@ impl Animator {
     /// Drops the state of nodes `keep` rejects (gone from the tree).
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.times.retain(&mut keep);
+        self.shapes.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -604,7 +636,10 @@ impl Animator {
     /// Anything under `root` moving or about to: frames are wanted.
     pub fn busy(&self, tree: &SceneTree, root: NodeId) -> bool {
         let under = |id: &NodeId| tree.root_of(*id) == Some(root);
-        self.nodes.keys().any(under) || self.enter.iter().any(under) || self.exits.keys().any(under)
+        self.nodes.keys().any(under)
+            || self.enter.iter().any(under)
+            || self.exits.keys().any(under)
+            || self.shapes.pending(|id| under(&id))
     }
 }
 

@@ -29,6 +29,7 @@ mod markup;
 mod offscreen;
 mod raster;
 mod renderer;
+mod shapes;
 mod time;
 mod tree;
 pub mod widgets;
