@@ -127,7 +127,12 @@ impl Renderer {
             .min();
         // A capped clock's next tick (M4), half a frame early.
         let clocks = self.clocks.next_wake();
-        [exits, tooltip, clocks].into_iter().flatten().min()
+        // (M4) An idle promoted surface's demotion, the device's drop.
+        #[cfg(feature = "gpu")]
+        let gpu = self.gpu_wake();
+        #[cfg(not(feature = "gpu"))]
+        let gpu = None;
+        [exits, tooltip, clocks, gpu].into_iter().flatten().min()
     }
 
     /// Collects finished text layouts and sends shaping requests for text
@@ -143,6 +148,8 @@ impl Renderer {
             self.timer_due = None;
         }
         self.raster.trim_idle(now);
+        #[cfg(feature = "gpu")]
+        self.gpu_tick(now);
         // A capped clock's tick has come: its surface wants a frame.
         self.clocks.woke(now);
         self.show_tooltip();
@@ -165,6 +172,9 @@ impl Renderer {
                 self.anim.begin(time, prev, false);
             }
             let f = self.flatten_surface(id);
+            // (M4) Passes asked for now hold the frame (up to GPU_WAIT).
+            #[cfg(feature = "gpu")]
+            self.gpu_passes(id, &f.passes, true);
             let animating = self.anim.active() || self.swap_moving(id) || self.scrolling(id);
             // Text with a request in flight and no layout for this
             // surface's scale and width yet. A stand-in from another scale

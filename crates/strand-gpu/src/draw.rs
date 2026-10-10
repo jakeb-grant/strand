@@ -70,6 +70,12 @@ pub(crate) fn build(
                 scene.push_clip_path(p);
                 stack.push(false);
             }
+            Op::PushClipEvenOdd(p) => {
+                scene.set_fill_rule(Fill::EvenOdd);
+                scene.push_clip_path(p);
+                scene.set_fill_rule(Fill::NonZero);
+                stack.push(false);
+            }
             Op::PopClip => {
                 if stack.last() == Some(&false) {
                     stack.pop();

@@ -35,6 +35,7 @@ fn the_device_is_created_on_first_visible_effect_and_dropped_after_idle() {
             scale: Scale::ONE,
             ops: vec![],
             uploads: vec![],
+            retire: Vec::new(),
             clear: AlphaColor::new([0.0, 0.0, 1.0, 1.0]),
         },
     );

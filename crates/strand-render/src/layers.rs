@@ -108,7 +108,7 @@ pub fn push(ctx: &mut RenderContext, layer: &Layer, cur: Affine) {
 /// `blend:` as vello's blend mode: a mix composited source-over, and
 /// `add` the Porter-Duff plus. Every mode is per channel, so the raster's
 /// swapped red and blue do not change it.
-fn blend_mode(b: BlendMode) -> peniko::BlendMode {
+pub(crate) fn blend_mode(b: BlendMode) -> peniko::BlendMode {
     match b {
         BlendMode::Screen => peniko::BlendMode::new(Mix::Screen, Compose::SrcOver),
         BlendMode::Add => peniko::BlendMode::new(Mix::Normal, Compose::Plus),

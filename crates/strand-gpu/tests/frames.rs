@@ -75,6 +75,7 @@ fn frames_fill_clip_layer_and_draw_uploads() {
                 generation: 1,
                 pixmap: Arc::new(pm),
             }],
+            retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
         },
     );
@@ -117,6 +118,7 @@ fn frames_fill_clip_layer_and_draw_uploads() {
             }],
             // Already uploaded: none sent again.
             uploads: vec![],
+            retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
         },
     );
@@ -211,6 +213,7 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
                 globals: PassGlobals::default(),
             }],
             uploads: vec![],
+            retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
         },
     );
@@ -254,6 +257,7 @@ fn a_broken_shader_fails_its_pass_and_the_device_stays_up() {
             scale: Scale::ONE,
             ops: vec![],
             uploads: vec![],
+            retire: Vec::new(),
             clear: AlphaColor::new([1.0, 1.0, 1.0, 1.0]),
         },
     );
@@ -283,4 +287,66 @@ fn a_software_adapter_counts_as_no_device_unless_accepted() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// An even-odd clip cuts a hole (a shadow's ring), and a retired upload
+/// is gone from the next frame (it draws nothing, as an unknown id).
+#[test]
+fn even_odd_clips_cut_holes_and_retired_uploads_go() {
+    let Some(mut h) = start() else { return };
+    let size = Size::new(32, 32);
+    attach(&mut h, size);
+    let blue = AlphaColor::new([0.0, 0.0, 1.0, 1.0]);
+    let mut ring = Rect::new(0.0, 0.0, 32.0, 32.0).to_path(0.1);
+    ring.extend(Rect::new(8.0, 8.0, 24.0, 24.0).to_path(0.1));
+    let mut white = Pixmap::new(2, 2);
+    for p in white.data_mut() {
+        *p = strand_gpu::peniko::color::PremulRgba8 {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+    }
+    let fill = Op::Fill {
+        path: Rect::new(0.0, 0.0, 32.0, 32.0).to_path(0.1),
+        brush: Brush::Solid(blue),
+        brush_transform: Affine::IDENTITY,
+        even_odd: false,
+    };
+    let image = Op::Image {
+        rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+        image: 5,
+        image_transform: Affine::IDENTITY,
+        tint: None,
+        smooth: false,
+    };
+    let f = |id, ops, uploads, retire| Frame {
+        surface: S,
+        id,
+        size,
+        scale: Scale::ONE,
+        ops,
+        uploads,
+        retire,
+        clear: AlphaColor::TRANSPARENT,
+    };
+    let px = frame(
+        &mut h,
+        f(
+            1,
+            vec![Op::PushClipEvenOdd(ring), fill, Op::PopClip, image.clone()],
+            vec![Upload {
+                id: 5,
+                generation: 0,
+                pixmap: Arc::new(white),
+            }],
+            vec![],
+        ),
+    );
+    assert_eq!(pixel(&px, 4, 16), [255, 0, 0, 255], "the ring is blue");
+    assert_eq!(pixel(&px, 16, 16), [0, 0, 0, 0], "the hole is not");
+    assert_eq!(pixel(&px, 1, 1), [255, 255, 255, 255], "the upload");
+    let px = frame(&mut h, f(2, vec![image], vec![], vec![5]));
+    assert_eq!(pixel(&px, 1, 1), [0, 0, 0, 0], "retired");
 }

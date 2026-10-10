@@ -314,6 +314,12 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("strand frame"),
             });
+        for id in &frame.retire {
+            if let Some(h) = self.images.remove(id) {
+                self.renderer
+                    .destroy_image(&mut self.resources, &mut encoder, h.id);
+            }
+        }
         self.upload(dev, &mut encoder, &frame.uploads);
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();

@@ -1827,7 +1827,15 @@ impl Ctx {
                 let mut entries = Vec::with_capacity(props.len());
                 for p in props {
                     let v = self.eval(rt, p.value, env)?;
-                    entries.push((p.name.clone(), convert::prop_value(types, &p.ty, &v)));
+                    let v = match convert::prop_value(types, &p.ty, &v) {
+                        // A length reaches the GPU × the surface's scale
+                        // (the shader ABI): render must know it is one.
+                        PropValue::Number(n) if p.ty == Ty::LENGTH => {
+                            PropValue::Length(strand_scene::Length::Px(n))
+                        }
+                        v => v,
+                    };
+                    entries.push((p.name.clone(), v));
                 }
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 PropValue::Uniforms(entries)

@@ -45,7 +45,7 @@ mod readback;
 mod thread;
 
 /// How the GPU is started.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct GpuOptions {
     /// Accept a software adapter (`DeviceType::Cpu`, lavapipe). Off for
     /// users: it would draw on the CPU and keep about 80 MiB mapped after
@@ -126,7 +126,7 @@ pub enum GpuMode {
 }
 
 /// What the GPU thread answers.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum GpuReply {
     /// The device is up.
     Ready(AdapterInfo),
@@ -221,6 +221,9 @@ pub struct Frame {
     /// Pixmaps the ops draw that the GPU does not have yet (or has at an
     /// older generation).
     pub uploads: Vec<Upload>,
+    /// Uploads render no longer draws: the GPU frees them before this
+    /// frame's uploads.
+    pub retire: Vec<u64>,
     /// Background the frame is cleared to (transparent for a
     /// translucent surface).
     pub clear: AlphaColor<Srgb>,
@@ -253,7 +256,8 @@ pub struct PassGlobals {
 
 /// A pixmap the GPU keeps (images, atlas pages, gradients, shadows,
 /// masks and CPU-drawn groups), keyed by `id`; a new `generation`
-/// replaces the old pixels. It lives on the GPU until the device drops.
+/// replaces the old pixels. It lives on the GPU until a frame retires it
+/// ([`Frame::retire`]) or the device drops.
 #[derive(Clone, Debug)]
 pub struct Upload {
     pub id: u64,
@@ -288,6 +292,9 @@ pub enum Op {
     /// in force when they are pushed).
     Transform(kurbo::Affine),
     PushClip(kurbo::BezPath),
+    /// A clip filled even-odd (a shadow's ring outside its box); popped
+    /// by [`Op::PopClip`].
+    PushClipEvenOdd(kurbo::BezPath),
     PopClip,
     PushLayer(Layer),
     PopLayer,
