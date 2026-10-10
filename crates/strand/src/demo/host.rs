@@ -31,6 +31,9 @@ pub struct Host {
     roots: HashMap<SurfaceId, NodeId>,
     /// The blur ladder's last rung: says once why `blur` draws its tint.
     blur_fallback: BlurFallback,
+    /// (M4) Handed-off surfaces the manager had to destroy: the GPU host
+    /// sends `Release` for each (`run/gpu.rs`).
+    pub gpu_released: Vec<SurfaceId>,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -302,6 +305,7 @@ impl Host {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
                 ..BlurFallback::default()
             },
+            gpu_released: Vec::new(),
             #[cfg(test)]
             probe: None,
         }
@@ -587,6 +591,13 @@ impl SurfaceHost for Host {
         self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).
+        if let Some(p) = &self.wake {
+            p.ping();
+        }
+    }
+
+    fn gpu_release(&mut self, surface: SurfaceId) {
+        self.gpu_released.push(surface);
         if let Some(p) = &self.wake {
             p.ping();
         }

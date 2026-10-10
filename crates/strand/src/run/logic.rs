@@ -180,6 +180,7 @@ pub fn logic(
         host_notices,
         settings_reread: Vec::new(),
         layout_seen: None,
+        gpu: strand_scene::GpuStatus::default(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good

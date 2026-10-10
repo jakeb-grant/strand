@@ -61,8 +61,14 @@ impl Promotion {
     }
 
     /// A frame at `now` that damaged `damage` pixels, with `springs`
-    /// in flight on the surface. Returns the switch to make now.
+    /// in flight on the surface. Returns the switch to make now. A paint
+    /// that damaged nothing is not a frame (nothing is committed): a
+    /// clocked shader whose pass result comes every other paint does not
+    /// break its run.
     pub fn frame(&mut self, now: Instant, damage: u64, springs: bool) -> Option<Switch> {
+        if damage == 0 {
+            return None;
+        }
         self.last = Some(now);
         let large = damage >= LARGE_DAMAGE;
         // The side of the line that argues for a switch.
@@ -291,6 +297,20 @@ mod tests {
             ),
             [Switch::ToGpu]
         );
+    }
+
+    #[test]
+    fn a_paint_with_no_damage_is_not_a_frame() {
+        let t0 = Instant::now();
+        let mut p = Promotion::default();
+        let mut t = t0;
+        let mut switched = None;
+        for i in 0..80 {
+            t += Duration::from_millis(8);
+            let damage = if i % 2 == 0 { LARGE_DAMAGE } else { 0 };
+            switched = switched.or(p.frame(t, damage, false));
+        }
+        assert_eq!(switched, Some(Switch::ToGpu));
     }
 
     #[test]

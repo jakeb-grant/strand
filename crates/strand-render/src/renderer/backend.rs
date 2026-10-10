@@ -313,7 +313,12 @@ impl Renderer {
 
     /// (M4) What the host must do about the GPU: attach a surface
     /// (`Promote`), release one (`Demote`), drop the `Gpu` (`Drop`).
+    ///
+    /// The host calls it after every dispatch, so it also re-arms the
+    /// renderer's timer: a reply or a surface detached since the last
+    /// paint can bring the device's drop forward.
     pub fn take_backend_changes(&mut self) -> Vec<BackendChange> {
+        self.arm_timer();
         std::mem::take(&mut self.gpu.changes)
     }
 
@@ -530,7 +535,20 @@ impl Renderer {
             .values()
             .filter_map(|s| s.promo.wake())
             .min();
-        let drop = if self.gpu.promoted() || !self.gpu.pending.is_empty() {
+        // A detached surface is forgotten at the next tick: it keeps
+        // nothing up.
+        let live = &self.surfaces;
+        let promoted = self
+            .gpu
+            .surfaces
+            .iter()
+            .any(|(id, s)| s.promo.on_gpu() && live.contains_key(id));
+        let pending = self
+            .gpu
+            .pending
+            .values()
+            .any(|p| live.contains_key(&p.surface));
+        let drop = if promoted || pending {
             None
         } else {
             self.gpu.device.drop_at()
@@ -554,6 +572,11 @@ impl Renderer {
         let live = &self.surfaces;
         self.gpu.surfaces.retain(|id, _| live.contains_key(id));
         self.gpu.demand.retain(|id| live.contains_key(id));
+        // Passes of surfaces that went away: their pixels have nowhere
+        // to go.
+        self.gpu
+            .pending
+            .retain(|_, p| live.contains_key(&p.surface));
         if !self.gpu.promoted() && self.gpu.pending.is_empty() && self.gpu.device.due(now) {
             self.gpu.device.dropped();
             self.gpu.status = GpuStatus::Unused;
