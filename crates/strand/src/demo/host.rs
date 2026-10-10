@@ -229,10 +229,7 @@ fn to_logic(intent: Intent) -> Option<ToLogic> {
                     modifiers,
                 },
                 RouteEvent::Dismiss => NodeEvent::Dismiss,
-                RouteEvent::Drop { .. } => {
-                    log::debug!("a drop on {node:?} is not delivered yet (M4 drag and drop)");
-                    return None;
-                }
+                RouteEvent::Drop { payload, at } => NodeEvent::Drop { payload, at },
             },
         },
         Intent::Write { node, prop, value } => ToLogic::Write { node, prop, value },
@@ -648,27 +645,26 @@ mod tests {
         );
     }
 
+    /// (M4) A drop the Router found a target for reaches logic as
+    /// `on drop`, payload and index unchanged.
     #[test]
-    fn drops_are_not_forwarded_until_logic_takes_them() {
+    fn drops_are_forwarded_to_logic() {
         let node = strand_scene::NodeId::new(1, 0);
+        let payload = strand_scene::DropPayload::Node(strand_scene::NodeId::new(2, 0));
         let drop = Intent::Event {
             node,
             event: RouteEvent::Drop {
-                payload: strand_scene::DropPayload::Node(node),
-                at: 0,
+                payload: payload.clone(),
+                at: 3,
             },
         };
-        assert_eq!(to_logic(drop), None);
-        assert!(matches!(
-            to_logic(Intent::Event {
-                node,
-                event: RouteEvent::Click
-            }),
+        assert_eq!(
+            to_logic(drop),
             Some(ToLogic::Event {
-                event: NodeEvent::Click,
-                ..
+                node,
+                event: NodeEvent::Drop { payload, at: 3 },
             })
-        ));
+        );
     }
 
     /// Read what the forwarder sent, through a calloop loop.

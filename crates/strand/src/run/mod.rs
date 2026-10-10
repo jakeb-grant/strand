@@ -128,6 +128,14 @@ pub enum NodeEvent {
     },
     /// Escape or a click away closed a popup (`on dismiss`).
     Dismiss,
+    /// (M4) Something dropped on the node at insertion index `at`
+    /// (`on drop(p, at)`): a `drag:` source's node, whose value the
+    /// instance holds, or another program's files, app or text. Its
+    /// arguments need the instance: `lists::drop_args`.
+    Drop {
+        payload: strand_scene::DropPayload,
+        at: u32,
+    },
 }
 
 impl NodeEvent {
@@ -141,6 +149,7 @@ impl NodeEvent {
             NodeEvent::Activate => "activate",
             NodeEvent::Key { .. } => "key",
             NodeEvent::Dismiss => "dismiss",
+            NodeEvent::Drop { .. } => "drop",
         }
     }
 
