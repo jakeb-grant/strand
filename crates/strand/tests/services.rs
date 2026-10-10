@@ -460,8 +460,21 @@ fn strand_run_reads_cpu_and_the_portal_through_the_real_services() {
     drop(busy);
 }
 
-/// Context switches per thread of `pid` named `name` (its `comm`).
+/// Context switches per thread of `pid` named `name` (its `comm`),
+/// voluntary and involuntary.
 fn switches_of(pid: u32, name: &str) -> u64 {
+    count_switches(pid, name, false)
+}
+
+/// Voluntary context switches per thread of `pid` named `name`: one per
+/// time the thread went to sleep, so one per wake. A thread preempted
+/// while it runs on a loaded machine adds involuntary switches, which
+/// are not wakes.
+fn wakes_of(pid: u32, name: &str) -> u64 {
+    count_switches(pid, name, true)
+}
+
+fn count_switches(pid: u32, name: &str, voluntary_only: bool) -> u64 {
     let mut total = 0;
     let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
         return 0;
@@ -474,7 +487,13 @@ fn switches_of(pid: u32, name: &str) -> u64 {
         let status = std::fs::read_to_string(task.path().join("status")).unwrap_or_default();
         total += status
             .lines()
-            .filter(|l| l.contains("ctxt_switches:"))
+            .filter(|l| {
+                if voluntary_only {
+                    l.starts_with("voluntary_ctxt_switches:")
+                } else {
+                    l.contains("ctxt_switches:")
+                }
+            })
             .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
             .sum::<u64>();
     }
@@ -564,10 +583,12 @@ fn the_real_services_sleep_when_nothing_changes() {
     setup.cli(&["set", "bar.open", "true"]);
     std::thread::sleep(Duration::from_millis(1500));
     let s0 = switches_of(pid, "strand-services");
-    let l0 = switches_of(pid, "strand-logic");
+    // Wakes, not all switches: under a loaded full test run the logic
+    // thread was preempted while it worked (9 switches in 5 s, 5 alone).
+    let l0 = wakes_of(pid, "strand-logic");
     std::thread::sleep(Duration::from_secs(5));
     let sampled = switches_of(pid, "strand-services") - s0;
-    let logic = switches_of(pid, "strand-logic") - l0;
+    let logic = wakes_of(pid, "strand-logic") - l0;
     eprintln!("cpu sampling 5 s: services {sampled} switches, logic {logic}");
     assert!(
         sampled >= 4,
