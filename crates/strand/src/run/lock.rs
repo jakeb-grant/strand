@@ -359,6 +359,28 @@ impl Secrets {
         std::borrow::Cow::Owned(self.redact(&e.to_string()).into_owned())
     }
 
+    /// Kept-over-a-new-default cells as they may be logged, streamed and
+    /// shown: a kept value is a state's, and a password input's state
+    /// holds the password (still, after an unlock, when the config does
+    /// not clear it), so each `shown` goes through [`Secrets::redact`].
+    pub(super) fn redact_kept(
+        &self,
+        kept: &[strand_compiler::reconcile::KeptCell],
+    ) -> Vec<strand_compiler::reconcile::KeptCell> {
+        kept.iter()
+            .map(|k| strand_compiler::reconcile::KeptCell {
+                path: k.path.clone(),
+                shown: self.redact(&k.shown).into_owned(),
+            })
+            .collect()
+    }
+
+    /// Notice lines (a kept cell's `KeptCell::notice` among them) through
+    /// [`Secrets::redact`].
+    pub(super) fn redact_lines(&self, lines: &[String]) -> Vec<String> {
+        lines.iter().map(|l| self.redact(l).into_owned()).collect()
+    }
+
     /// `text` with every known password value of at least [`FRAGMENT`]
     /// bytes (the inputs' current ones and the remembered) replaced by
     /// [`REDACTED`]; [`REDACTED`] whole when a fragment of one is still
@@ -1490,6 +1512,48 @@ mod tests {
         assert_eq!(secrets.redact("again"), "<redacted>", "removed, kept");
         assert!(matches!(secrets.redact("x"), std::borrow::Cow::Borrowed(_)));
         assert_eq!(secrets.redact("visible"), "visible");
+    }
+
+    /// A kept cell's value and its notice line never show a password: a
+    /// reload after the unlock that changes the default of a state still
+    /// holding the accepted password would print it in the `reload`
+    /// event, the `notices` event, the log and the overlay.
+    #[test]
+    fn a_kept_password_is_redacted_in_kept_cells_and_notices() {
+        use strand_compiler::reconcile::KeptCell;
+        let pw = NodeId::new(1, 0);
+        let mut secrets = Secrets::default();
+        let mut d = SceneDiff::new();
+        d.create(pw, NodeKind::Input, None, 0)
+            .set(pw, Prop::Text, PropValue::Text("hunter-two".into()))
+            .set(pw, Prop::InputType, PropValue::Keyword("password".into()));
+        secrets.see_diff(&d);
+        // Unlocked: the lock and its input unmount, the state keeps it.
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: pw,
+            window: false,
+        });
+        secrets.see_diff(&d);
+        let kept = [
+            KeptCell {
+                path: "lock.secret".into(),
+                shown: "\"hunter-two\"".into(),
+            },
+            KeptCell {
+                path: "bar.n".into(),
+                shown: "3".into(),
+            },
+        ];
+        let out = secrets.redact_kept(&kept);
+        assert_eq!(out[0].path, "lock.secret");
+        assert_eq!(out[0].shown, "\"<redacted>\"");
+        assert_eq!(out[1].shown, "3");
+        let notices = secrets.redact_lines(&[kept[0].notice(), kept[1].notice()]);
+        assert!(!notices[0].contains("hunter"), "{notices:?}");
+        assert_eq!(notices[1], kept[1].notice());
+        let json = super::super::shell::kept_json(&out).to_string();
+        assert!(!json.contains("hunter"), "{json}");
     }
 
     /// While a password input is mounted, an error that can carry values

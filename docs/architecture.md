@@ -1328,7 +1328,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     to `strand_render::lock_fallback`, which needs no text worker. An
     `input` with `type: password` is edited by the `Router` as any
     `input`; its value is redacted by the binary in `strand watch`, logs
-    and (M5) the inspector.
+    and (M5) the inspector: runtime faults, write errors, and the values
+    and notices of cells kept over a changed default (the overlay's rows
+    too).
 
 - Later (render):
   - `flatten_surface` rebuilds the map of every delivered layout and

@@ -359,6 +359,12 @@ impl Shell {
             }
             (None, false) => None,
         };
+        // Kept values and notices never show a password (`lock::Secrets`).
+        let report = report.map(|mut r| {
+            r.kept_over_default = self.secrets.redact_kept(&r.kept_over_default);
+            r.notices = self.secrets.redact_lines(&r.notices);
+            r
+        });
         let deferred = report
             .as_ref()
             .is_some_and(|r| r.classes == [EditClass::LockDeferred]);
@@ -655,23 +661,26 @@ impl Shell {
                 "notices": texts,
             }));
         }
-        for n in &update.notices {
+        // Kept values and notices never show a password (`lock::Secrets`).
+        let notices = self.secrets.redact_lines(&update.notices);
+        let kept = self.secrets.redact_kept(&update.kept);
+        for n in &notices {
             log::info!("{n}");
         }
-        if !update.notices.is_empty() || !update.kept.is_empty() {
+        if !notices.is_empty() || !kept.is_empty() {
             // Persisted cells kept over a changed default at boot (their
             // `[reset]` from the structured record), lowering's warnings.
-            let rows = overlay::kept_and_notices(&update.kept, &update.notices);
+            let rows = overlay::kept_and_notices(&kept, &notices);
             self.overlay.note(rows, Instant::now(), &self.inst);
             // `strand watch` hears them as they happen; with nobody
             // watching (at boot), the next reload event carries them.
             match &mut self.server {
                 Some(s) if s.watchers() > 0 => s.broadcast(&json!({
                     "event": "notices",
-                    "kept_over_default": kept_json(&update.kept),
-                    "notices": update.notices,
+                    "kept_over_default": kept_json(&kept),
+                    "notices": notices,
                 })),
-                _ => self.unheard.extend(update.kept.iter().cloned()),
+                _ => self.unheard.extend(kept),
             }
         }
         let now = Instant::now();
