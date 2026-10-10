@@ -750,7 +750,8 @@ impl Renderer {
     /// Paints a frame of a `GpuReadback` surface: copies the last pixels
     /// in (`Some`: full damage) and sends this frame when its scene
     /// changed (`changed`); `None` when the CPU must draw it (no pixels
-    /// yet, or a frame still in flight past [`GPU_WAIT`]).
+    /// yet, pixels of another size after a resize, or a frame still in
+    /// flight past [`GPU_WAIT`]).
     pub(super) fn gpu_readback_paint(
         &mut self,
         surface: SurfaceId,
@@ -760,7 +761,15 @@ impl Renderer {
         target: &mut PaintTarget<'_>,
     ) -> Option<Damage> {
         let now = Instant::now();
-        let ready = self.gpu.surfaces.get_mut(&surface)?.pixels.take();
+        // Frames run one behind: pixels drawn before a resize are not
+        // this frame's (copied in, they would fill only a corner).
+        let ready = self
+            .gpu
+            .surfaces
+            .get_mut(&surface)?
+            .pixels
+            .take()
+            .filter(|px| px.width == target.size.w && px.height == target.size.h);
         let inflight = self.gpu.surfaces.get(&surface)?.inflight;
         let fresh = ready.is_some() || inflight.is_none();
         if fresh && (changed || ready.is_none()) {

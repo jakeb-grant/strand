@@ -318,6 +318,52 @@ fn a_still_shader_keeps_its_pixels_when_the_device_drops() {
     assert_eq!(r.next_wake(), None, "nothing to wake for");
 }
 
+/// A readback surface resized: the pixels that come back first were
+/// drawn at the old size (frames run one behind), so that frame is the
+/// CPU's, at the new size, and the GPU's next one is copied in.
+#[test]
+fn a_resized_readback_surface_does_not_copy_old_size_pixels() {
+    let Some(opts) = device() else { return };
+    let mut cpu = renderer();
+    rich(&mut cpu);
+    let mut want = Buffer::new(200, 60, Scale::ONE);
+    want.paint(&mut cpu, S, 0);
+    cpu.update();
+    want.paint(&mut cpu, S, 0);
+
+    let mut r = renderer();
+    rich(&mut r);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    r.update();
+    buf.paint(&mut r, S, 0);
+    let mut host = Host::new(opts);
+    r.promote_now(S);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Attached { .. }));
+    assert_eq!(r.backend(S), Backend::GpuReadback);
+    buf.paint(&mut r, S, 0);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Pixels { .. }));
+    // The 240×60 pixels are in; the surface is now 200×60.
+    let copied = r.gpu_frames_copied();
+    let mut small = Buffer::new(200, 60, Scale::ONE);
+    small.paint(&mut r, S, 0);
+    assert_eq!(r.gpu_frames_copied(), copied, "old-size pixels copied in");
+    assert_eq!(small.pixels, want.pixels, "the CPU's frame at the new size");
+    // The frame sent at the new size comes back and is copied in.
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Pixels { .. }));
+    small.pixels.fill(0);
+    small.paint(&mut r, S, 0);
+    assert_eq!(r.gpu_frames_copied(), copied + 1, "drawn by the GPU");
+    let (bad, worst) = compare(&small, &want);
+    assert!(
+        bad as f64 / (200.0 * 60.0) <= EDGE_SHARE,
+        "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
+    );
+}
+
 /// A scene with what lowering covers: solid and gradient fills, a
 /// border, a shadow, an opacity group, a masked layer (drawn on the CPU)
 /// and text.
