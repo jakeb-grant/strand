@@ -30,7 +30,8 @@
 //!
 //! A frame's `transform` (sent before `ready`) says how the buffer's
 //! contents are transformed, as a `wl_surface` buffer transform does: the
-//! frame is turned upright by its inverse before it is scaled, so a
+//! frame is turned upright by its inverse (after it is scaled, in the
+//! buffer's orientation, straight from a mapping of the buffer), so a
 //! window drawn with a rotated or flipped buffer (or on a rotated output)
 //! shows as it looks on screen. Sessions are made without
 //! `paint_cursors`, so the protocol leaves the pointer out: a thumbnail
@@ -510,12 +511,6 @@ impl Client {
         let Some(shm) = &s.shm else {
             return;
         };
-        let stride = shm.width * 4;
-        let mut data = vec![0u8; (stride * shm.height) as usize];
-        if rustix::io::pread(shm.fd.as_fd(), &mut data[..], 0).is_err() {
-            return;
-        }
-        let (data, width, height) = upright(data, shm.width, shm.height, s.transform);
         let taps: Vec<&Want> = wants
             .iter()
             .filter(|w| w.identifier == s.identifier)
@@ -533,12 +528,69 @@ impl Client {
             max
         };
         let opaque = shm.format == wl_shm::Format::Xrgb8888;
-        let frame = downscale(&data, width, height, width * 4, opaque, max);
+        let Some(frame) = read_frame(shm, s.transform, opaque, max) else {
+            return;
+        };
         for w in taps {
             deliver(w.tap, Some(&frame));
         }
         self.captures.delivered += 1;
     }
+}
+
+/// The frame in `shm`, scaled to cover `max` and turned upright by `t`.
+/// Read straight from a shared mapping of the memfd (no full-size copy:
+/// a 4K window is 33 MB a frame, at up to [`MAX_FPS`]), scaled in the
+/// buffer's own orientation (to `max` turned the buffer's way), and
+/// only the small result turned upright.
+fn read_frame(
+    shm: &Shm,
+    t: wl_output::Transform,
+    opaque: bool,
+    max: (u32, u32),
+) -> Option<CaptureFrame> {
+    use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
+    let len = (shm.width as usize) * (shm.height as usize) * 4;
+    // SAFETY: a fresh read-only shared mapping of our own memfd, `len`
+    // bytes, which the memfd holds (`make_shm` sized it and sealed it
+    // against shrinking, so no holder of the fd can cut the mapping
+    // short and fault the read). The compositor writes the buffer only
+    // between `capture` and `ready`, and the next capture is asked for
+    // after this returns.
+    let ptr = unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            len,
+            ProtFlags::READ,
+            MapFlags::SHARED,
+            shm.fd.as_fd(),
+            0,
+        )
+    }
+    .ok()?;
+    // SAFETY: the mapping above, `len` readable bytes, alive until the
+    // `munmap` below, after the last use of `data`.
+    let data = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
+    let turned = turns(t);
+    let raw_max = if turned { (max.1, max.0) } else { max };
+    let small = downscale(data, shm.width, shm.height, shm.width * 4, opaque, raw_max);
+    // SAFETY: the mapping made above; `data` is not used again.
+    let _ = unsafe { munmap(ptr, len) };
+    if t == wl_output::Transform::Normal {
+        return Some(small);
+    }
+    let (pixels, width, height) = upright(small.pixels.to_vec(), small.width, small.height, t);
+    Some(CaptureFrame {
+        width,
+        height,
+        pixels: pixels.into(),
+    })
+}
+
+/// A transform that swaps width and height.
+fn turns(t: wl_output::Transform) -> bool {
+    use wl_output::Transform as T;
+    matches!(t, T::_90 | T::_270 | T::Flipped90 | T::Flipped270)
 }
 
 /// A `w × h` buffer of 4-byte pixels (rows tightly packed) whose
@@ -552,8 +604,7 @@ pub fn upright(src: Vec<u8>, w: u32, h: u32, t: wl_output::Transform) -> (Vec<u8
     if t == T::Normal || src.len() < (w as usize) * (h as usize) * 4 {
         return (src, w, h);
     }
-    let turned = matches!(t, T::_90 | T::_270 | T::Flipped90 | T::Flipped270);
-    let (uw, uh) = if turned { (h, w) } else { (w, h) };
+    let (uw, uh) = if turns(t) { (h, w) } else { (w, h) };
     let (mw, mh) = (uw as usize - 1, uh as usize - 1);
     let mut out = vec![0u8; src.len()];
     for y in 0..uh as usize {
@@ -590,6 +641,12 @@ fn make_shm(
         rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
     )?;
     rustix::fs::ftruncate(&fd, size)?;
+    // Never shorter than mapped: `read_frame` maps it, and a shrink by
+    // anyone holding the fd would fault the read.
+    rustix::fs::fcntl_add_seals(
+        &fd,
+        rustix::fs::SealFlags::SHRINK | rustix::fs::SealFlags::SEAL,
+    )?;
     let pool = shm.create_pool(fd.as_fd(), size as i32, qh, ());
     let buffer = pool.create_buffer(0, w as i32, h as i32, (w * 4) as i32, format, qh, ());
     Ok(Shm {
@@ -773,6 +830,39 @@ mod tests {
         let f = downscale(&src, 4, 2, 16, false, (0, 0));
         assert_eq!((f.width, f.height), (4, 2));
         assert_eq!(f.pixels[3], 7, "ARGB keeps its alpha");
+    }
+
+    /// Scaling in the buffer's orientation (to the cover box turned the
+    /// buffer's way) and then turning the small frame upright, as
+    /// `read_frame` does, gives what turning the whole buffer first
+    /// and then scaling gave, for every transform.
+    #[test]
+    fn scaling_before_turning_matches_turning_first() {
+        use wl_output::Transform as T;
+        // A 8 × 4 buffer of distinct pixels.
+        let (w, h) = (8u32, 4u32);
+        let src: Vec<u8> = (0..w * h)
+            .flat_map(|i| [(i * 7) as u8, (i * 3) as u8, (255 - i) as u8, 255])
+            .collect();
+        let max = (2, 4);
+        for t in [
+            T::Normal,
+            T::_90,
+            T::_180,
+            T::_270,
+            T::Flipped,
+            T::Flipped90,
+            T::Flipped180,
+            T::Flipped270,
+        ] {
+            let (up, uw, uh) = upright(src.clone(), w, h, t);
+            let first = downscale(&up, uw, uh, uw * 4, false, max);
+            let raw_max = if turns(t) { (max.1, max.0) } else { max };
+            let small = downscale(&src, w, h, w * 4, false, raw_max);
+            let (later, lw, lh) = upright(small.pixels.to_vec(), small.width, small.height, t);
+            assert_eq!((lw, lh), (first.width, first.height), "{t:?}");
+            assert_eq!(&later[..], &first.pixels[..], "{t:?}");
+        }
     }
 
     /// Each transform turns the buffer upright: a 3 × 2 upright image

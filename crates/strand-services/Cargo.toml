@@ -42,8 +42,9 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 futures-lite = { version = "2.6", default-features = false, features = ["std"] }
 # logind's `SetBrightness` for `brightness` writes (design.md's table).
 logind-zbus = { version = "5.3.2", default-features = false }
-# The backlight's sysfs files, watched (inotify); the Wayland client's poll.
-rustix = { version = "1.1.5", features = ["event", "fs"] }
+# The backlight's sysfs files, watched (inotify); the Wayland client's poll;
+# a thumbnail's shm buffer, mapped to read (`mm`).
+rustix = { version = "1.1.5", features = ["event", "fs", "mm"] }
 # A notification's arrival time as a `Date`, in the local zone.
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 # Pixmaps (tray icons, notification `image-data`) written as PNG files for
