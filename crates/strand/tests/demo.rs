@@ -188,9 +188,13 @@ fn seconds_into_minute() -> u64 {
         % 60
 }
 
+/// strand's complete damage lines so far. A line strand is still writing
+/// (no newline yet) is left for the next read: a read in the middle of
+/// one saw `strand: damage surface=1` and no fields after it.
 fn damage_lines(log: &Path) -> Vec<String> {
-    std::fs::read_to_string(log)
-        .unwrap_or_default()
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let complete = text.rfind('\n').map_or("", |end| &text[..end]);
+    complete
         .lines()
         .filter(|l| l.starts_with("strand: damage"))
         .map(String::from)

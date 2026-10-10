@@ -18,8 +18,8 @@ below.
   fixes and the closing integrator's fix are on
   `laptop/integration-m4-w3`, which has not reached `main` yet. Its
   measured head is `e765276` (docs/m4-report.md); the commits after it
-  change only docs and one test (decisions.md m4-integration-w3,
-  closing).
+  change only docs and two tests' harnesses (decisions.md
+  m4-integration-w3, closing).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
   M5 0/9 (boxes and exit criteria, counted 2026-10-10). The open M1
   box is the tree-sitter grammar, which M5 owns.
