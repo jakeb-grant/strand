@@ -534,11 +534,9 @@ fn assert_matches_ref(name: &str, size: Size, pixels: &[u8], tolerance: u8) {
         .flat_map(|p| {
             let a = p[3] as u32;
             let un = |c: u8| {
-                if a == 0 {
-                    0
-                } else {
-                    ((c as u32 * 255 + a / 2) / a).min(255) as u8
-                }
+                (c as u32 * 255 + a / 2)
+                    .checked_div(a)
+                    .map_or(0, |v| v.min(255) as u8)
             };
             [un(p[2]), un(p[1]), un(p[0]), p[3]]
         })
