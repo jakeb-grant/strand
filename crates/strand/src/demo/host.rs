@@ -647,6 +647,11 @@ impl SurfaceHost for Host {
         // and small moves go to the alpha modifier, the viewport and
         // the margins where the compositor has the first two.
         self.renderer.set_compositor_poses(caps.delegates_poses());
+        // Hyprland draws a layer surface stretched to the box it
+        // arranged, whatever its viewport: a root's scale is painted
+        // there (decisions.md, m4-surface-w2).
+        self.renderer
+            .set_compositor_pose_scale(!self.blur_fallback.hyprland);
         self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).
@@ -712,19 +717,21 @@ mod tests {
     }
 
     /// Compositor-animated poses follow the capabilities: with the alpha
-    /// modifier and the viewporter a panel's entering fade is handed to
-    /// the surface manager as a pose (and not painted), without them it
-    /// is painted and no pose is reported.
+    /// modifier and the viewporter a panel's entering fade and scale are
+    /// handed to the surface manager as a pose (and not painted), on
+    /// Hyprland the fade only, and without them it is painted and no pose
+    /// is reported.
     #[test]
     fn poses_are_delegated_only_with_the_protocols() {
         use std::time::Duration;
-        let pose = |caps: CompositorCaps| {
+        let pose = |caps: CompositorCaps, hyprland: bool| {
             let font = std::fs::read(strand_text::test_font_path()).unwrap();
             let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
                 std::sync::Arc::new(font),
             ]));
             let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
             let mut host = Host::new(renderer, false);
+            host.blur_fallback.hyprland = hyprland;
             host.compositor_caps(&caps);
             let panel = NodeId::new(0, 0);
             let num = strand_scene::PropValue::Number;
@@ -740,7 +747,10 @@ mod tests {
                 .set(
                     panel,
                     Prop::Enter,
-                    strand_scene::PropValue::Pose(vec![(Prop::Opacity, num(0.0))]),
+                    strand_scene::PropValue::Pose(vec![
+                        (Prop::Opacity, num(0.0)),
+                        (Prop::Scale, num(0.5)),
+                    ]),
                 );
             assert!(host.renderer.apply(d).is_empty());
             let s = SurfaceId(1);
@@ -757,14 +767,18 @@ mod tests {
             viewporter: true,
             ..CompositorCaps::default()
         };
-        let p = pose(delegating).expect("a pose");
-        assert!(p.opacity < 0.5, "{p:?}");
-        assert_eq!(pose(CompositorCaps::default()), None);
+        let p = pose(delegating, false).expect("a pose");
+        assert!(p.opacity < 0.5 && p.scale < 0.8, "{p:?}");
+        // Hyprland stretches a layer surface to its box: only the fade
+        // (and offsets) go to it, the scale is painted.
+        let p = pose(delegating, true).expect("a pose");
+        assert!(p.opacity < 0.5 && p.scale == 1.0, "{p:?}");
+        assert_eq!(pose(CompositorCaps::default(), false), None);
         let no_alpha = CompositorCaps {
             viewporter: true,
             ..CompositorCaps::default()
         };
-        assert_eq!(pose(no_alpha), None);
+        assert_eq!(pose(no_alpha, false), None);
     }
 
     /// (M4) A press sets the tray's click point: the bottom-left corner

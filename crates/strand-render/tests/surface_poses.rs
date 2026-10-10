@@ -295,3 +295,27 @@ fn turning_delegation_off_repaints() {
     assert_eq!(h.r.surface_pose(id), None);
     assert!(buf.px(40, 20)[3] < 255, "{:?}", buf.px(40, 20));
 }
+
+/// Where the compositor stretches a layer surface to its box whatever
+/// its viewport (Hyprland, `set_compositor_pose_scale(false)`), a corner
+/// panel's scale is painted (frames repaint) while its fade and slide
+/// are still the compositor's: the pose reports no scale, and the
+/// offset is the slide alone.
+#[test]
+fn without_compositor_scale_the_scale_repaints() {
+    let (diff, root) = panel("top_right", slide_in());
+    let mut h = Host::new(true, diff, root);
+    h.r.set_compositor_pose_scale(false);
+    h.open(true);
+    let seen = h.run();
+    assert!(seen.len() >= 5, "{seen:?}");
+    let first = seen[0].pose.unwrap();
+    assert!(first.opacity < 0.5, "{first:?}");
+    assert_eq!(first.scale, 1.0, "{first:?}");
+    assert!(
+        first.offset.x > 20.0 && first.offset.x <= 40.0,
+        "the slide alone: {first:?}"
+    );
+    assert!(seen.iter().take(4).all(|s| s.damage > 0), "{seen:?}");
+    assert_eq!(seen[0].centre[3], 255, "the fade is not painted");
+}

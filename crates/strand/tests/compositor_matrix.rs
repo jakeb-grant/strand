@@ -2562,7 +2562,10 @@ fn surfaces_meet_the_live_compositor() {
     // fades it over the wallpaper, and the viewport's destination with
     // the margins puts the half-size box around the full box's centre
     // (the compositor shrinks a layer surface towards its top-left
-    // corner; render's offset moves that corner).
+    // corner; render's offset moves that corner). Hyprland draws a layer
+    // surface stretched to its arranged box whatever its viewport, so the
+    // host delegates no scale there: it is held at half opacity, moved
+    // 50 px right and 25 px up by its margins alone.
     if caps.alpha_modifier {
         const POSE: NodeId = NodeId::new(14, 0);
         let props: std::collections::HashMap<Prop, PropValue> = [
@@ -2578,8 +2581,15 @@ fn surfaces_meet_the_live_compositor() {
             SurfaceChange::Created(SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p))),
         );
         let id = mgr.state().surfaces_of(POSE)[0];
-        let scaled = caps.viewporter;
-        let pose = if scaled {
+        let scaled = caps.viewporter && kind != "hyprland";
+        let moved = kind == "hyprland";
+        let pose = if moved {
+            strand_scene::SurfacePose {
+                opacity: 0.5,
+                scale: 1.0,
+                offset: strand_scene::LogicalPoint::new(50.0, -25.0),
+            }
+        } else if scaled {
             strand_scene::SurfacePose {
                 opacity: 0.5,
                 scale: 0.5,
@@ -2604,8 +2614,20 @@ fn surfaces_meet_the_live_compositor() {
         let blue = [0x20, 0x60, 0xe0];
         // White at half over the wallpaper's blue.
         let half = [0x90, 0xb0, 0xf0];
-        let inside = [(100, oh - 50), (60, oh - 70), (140, oh - 30)];
-        let outside: &[(usize, usize)] = if scaled {
+        let inside = if moved {
+            // The box at x 50..250, y oh - 125..oh - 25.
+            [(100, oh - 75), (240, oh - 115), (60, oh - 35)]
+        } else {
+            [(100, oh - 50), (60, oh - 70), (140, oh - 30)]
+        };
+        let outside: &[(usize, usize)] = if moved {
+            &[
+                (40, oh - 75),
+                (260, oh - 75),
+                (100, oh - 135),
+                (100, oh - 15),
+            ]
+        } else if scaled {
             &[
                 (40, oh - 50),
                 (160, oh - 50),
@@ -2626,7 +2648,9 @@ fn surfaces_meet_the_live_compositor() {
                 eprintln!(
                     "matrix: {kind}: the alpha modifier fades the posed panel to {:?}{}",
                     ins[0],
-                    if scaled {
+                    if moved {
+                        ", and the margins move it (its scale is painted: Hyprland stretches a layer surface to its box)"
+                    } else if scaled {
                         ", and the viewport and margins scale it about its centre"
                     } else {
                         " (no viewporter: no scale)"

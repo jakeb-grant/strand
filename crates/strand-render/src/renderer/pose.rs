@@ -26,6 +26,20 @@ impl Renderer {
         }
     }
 
+    /// (M4) Whether a delegated pose may scale (on by default): off for
+    /// a compositor that draws a layer surface stretched to the box it
+    /// arranged for its requested size whatever its viewport's
+    /// destination (Hyprland 0.56), where a root's scale is painted while
+    /// its fade and offset are still delegated.
+    pub fn set_compositor_pose_scale(&mut self, on: bool) {
+        if self.extras.compositor_pose_scale_off == on {
+            self.extras.compositor_pose_scale_off = !on;
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
+    }
+
     /// (M4) The pose the compositor should apply to `surface` with its
     /// next commit: the one its last flattened frame took out of the
     /// root ([`crate::pose::delegate`]); `None` when nothing is

@@ -292,6 +292,10 @@ pub struct Extras {
     /// and the viewporter): a root's opacity, scale and offset go to
     /// it where its placement allows ([`crate::pose`]).
     pub compositor_poses: bool,
+    /// (M4) The compositor draws a layer surface stretched to its
+    /// arranged box whatever its viewport (Hyprland): a root's scale is
+    /// painted, not delegated.
+    pub compositor_pose_scale_off: bool,
     /// Hover, press, focus, carets and slider drags from the input
     /// router.
     pub widgets: crate::widgets::Widgets,
