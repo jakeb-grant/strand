@@ -1363,9 +1363,12 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
 /// rows logic mounts at first: the list asks logic for the rows it shows
 /// (`ToLogic::ListWindow`) as it goes, frames keep coming, and no frame
 /// shows a gap where rows are not mounted (render's per-frame check,
-/// `gaps=` on every damage line). Settled, the list is full of rows; End
-/// then selects the last app, past the mounted rows, and it lands drawn
-/// selected at the bottom of the list.
+/// `gaps=` on every damage line). Settled, the list is full of rows. Then
+/// grim proves row continuity: sixteen settled wheel bursts of five rows,
+/// each screenshot of the list the one before moved up by exactly those
+/// 240 px, across logic's window moves. Ctrl+End then selects the last
+/// app, past the mounted rows, and it lands drawn selected at the bottom
+/// of the list.
 #[test]
 fn the_design_launcher_scrolls_2000_apps() {
     let Some(sway) = Sway::start_as("scroll2000") else {
@@ -1443,16 +1446,27 @@ fn the_design_launcher_scrolls_2000_apps() {
         }
         out
     };
-    // Settled with its icons: two shots alike, eight rows or more shown
-    // (420 px of 48 px rows).
+    // The box's width at its middle row: 600 once its `enter` pose (from
+    // `scale: 0.96`, which the compositor plays) is over.
+    let wide = |s: &Shot, (top, bottom, left): (usize, usize, usize)| {
+        (left..s.w)
+            .rev()
+            .find(|&xx| bright_in(s, xx, (top + bottom) / 2))
+            .map_or(0, |right| right + 1 - left)
+    };
+    // Settled with its icons: the box at its full 600 px (a pose played
+    // by the compositor paints no frame, and under load two shots can
+    // catch it at the same scale mid-way), two shots alike, eight rows or
+    // more shown (420 px of 48 px rows).
     let settled = || {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut last = None;
         loop {
             let s = Shot::take(&sway, "HEADLESS-1");
             let key = boxed(&s).map(|b| (b, bands(&s, b)));
-            if let Some((_, bs)) = &key
+            if let Some((b, bs)) = &key
                 && bs.len() >= 8
+                && wide(&s, *b) == 600
                 && key == last
             {
                 return s;
@@ -1485,6 +1499,11 @@ fn the_design_launcher_scrolls_2000_apps() {
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_top.png"));
     }
+    let start = Shot {
+        w: shot.w,
+        h: shot.h,
+        rgb: shot.rgb.clone(),
+    };
 
     // The wheel, over the list: 600 notches (9,000 px, about 190 rows)
     // in steps of 10, a frame or two apart.
@@ -1544,6 +1563,94 @@ fn the_design_launcher_scrolls_2000_apps() {
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_scrolled.png"));
     }
+
+    // Row continuity in grim's pixels. The list's own clip: the rows that
+    // changed between the top and the scrolled shot (two pixels in from
+    // the first and last, which may be blank in both), and the box's
+    // width less its corners.
+    let (top_px, _, left) = b;
+    let right = left + wide(&shot, b) - 1;
+    let xs = left + 24..right - 24;
+    let changed: Vec<usize> = (top_px..bottom)
+        .filter(|&y| xs.clone().any(|xx| start.px(xx, y) != shot.px(xx, y)))
+        .collect();
+    let list = changed[0] + 2..changed[changed.len() - 1] - 1;
+    assert!(
+        list.len() > 400,
+        "the list's clip {list:?} is not its 420 px"
+    );
+    // Wheel bursts of 16 notches (240 px, five 48 px rows), each settled
+    // with the pointer off the list (no row hovered, the cursor out of
+    // the list's pixels): every shot is the one before moved up by
+    // exactly 240 px, pixel for pixel where they overlap, so its rows are
+    // the next ones in order, none missing, doubled or out of place, as
+    // logic moves the window under them; and the first row shown
+    // (render's `top=`) advances by five each time.
+    // Held still to the pixel: no frame painted between two shots 150 ms
+    // apart and the list's pixels alike (the structural `settled` cannot
+    // see a spring's last fraction of a pixel, which changes every
+    // glyph's antialiasing).
+    let still = || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last: Option<(Shot, usize)> = None;
+        loop {
+            let frames = damage_lines(&log).len();
+            let s = Shot::take(&sway, "HEADLESS-1");
+            if let Some((l, n)) = &last
+                && *n == frames
+                && list
+                    .clone()
+                    .all(|y| xs.clone().all(|xx| l.px(xx, y) == s.px(xx, y)))
+            {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "the list never held still");
+            last = Some((s, frames));
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    };
+    let off = (x as u32, (top_px / 2) as u32);
+    pointer.motion(off.0, off.1, w, h);
+    drop(shot);
+    let mut prev = still();
+    let mut prev_top = field(damage_lines(&log).last().expect("frames"), "top");
+    for burst in 0..16 {
+        pointer.wheel(16, over.0, over.1, w, h);
+        pointer.motion(off.0, off.1, w, h);
+        let now = still();
+        let (mut same, mut total) = (0usize, 0usize);
+        for y in list.start..list.end - 240 {
+            for xx in xs.clone() {
+                total += 1;
+                let (a, c) = (now.px(xx, y), prev.px(xx, y + 240));
+                if a.iter().zip(c).all(|(p, q)| p.abs_diff(q) <= 24) {
+                    same += 1;
+                }
+            }
+        }
+        assert!(
+            same * 1000 >= total * 998,
+            "burst {burst}: the list did not move up by 240 px whole \
+             ({} of {total} pixels differ)",
+            total - same
+        );
+        // Not alike by accident: a row further on (288 px) is another row.
+        let other = (list.start..list.end - 288)
+            .flat_map(|y| xs.clone().map(move |xx| (xx, y)))
+            .filter(|&(xx, y)| now.px(xx, y) != prev.px(xx, y + 288))
+            .count();
+        assert!(other > 500, "burst {burst}: rows look alike ({other})");
+        let bs = bands(&now, b);
+        assert!(bs.len() >= 8, "burst {burst}: rows fill the list: {bs:?}");
+        let top_now = field(damage_lines(&log).last().expect("frames"), "top");
+        assert_eq!(top_now, prev_top + 5, "burst {burst}: the first row shown");
+        prev = now;
+        prev_top = top_now;
+    }
+    assert!(
+        damage_lines(&log).iter().all(|l| field(l, "gaps") == 0),
+        "a frame showed a gap"
+    );
 
     // Ctrl+End selects the last app (plain End moves the search's
     // caret): not mounted, it is scrolled to, mounted by logic and drawn
