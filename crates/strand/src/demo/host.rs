@@ -33,6 +33,9 @@ pub struct Host {
     /// (`SurfaceHost::surface_placed`): a press becomes the tray's click
     /// point with it.
     origins: HashMap<SurfaceId, (i32, i32)>,
+    /// The surfaces idle before an input event, kept between events so
+    /// pointer motion allocates nothing.
+    idle: Vec<SurfaceId>,
     /// The blur ladder's last rung: says once why `blur` draws its tint.
     blur_fallback: BlurFallback,
     /// Tests: told of every paint and monitor change (`bench.rs`,
@@ -321,6 +324,7 @@ impl Host {
             wake: None,
             roots: HashMap::new(),
             origins: HashMap::new(),
+            idle: Vec::new(),
             blur_fallback: BlurFallback {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
                 ..BlurFallback::default()
@@ -606,13 +610,16 @@ impl SurfaceHost for Host {
             strand_services::tray::set_click_point(x, y);
         }
         // Surfaces already wanting a frame (animating) get it anyway.
-        let idle: Vec<SurfaceId> = self.logic.as_ref().map_or_else(Vec::new, |f| {
-            f.surfaces
-                .keys()
-                .copied()
-                .filter(|s| !self.renderer.wants_frame(*s))
-                .collect()
-        });
+        let mut idle = std::mem::take(&mut self.idle);
+        idle.clear();
+        if let Some(f) = &self.logic {
+            idle.extend(
+                f.surfaces
+                    .keys()
+                    .copied()
+                    .filter(|s| !self.renderer.wants_frame(*s)),
+            );
+        }
         if let Some(f) = &mut self.logic {
             f.input(event, &mut self.renderer);
         }
@@ -623,6 +630,7 @@ impl SurfaceHost for Host {
         // diff to follow (a key scrolling a list to the row it selects)
         // still needs a frame: only then is the loop woken.
         let woke = idle.iter().any(|s| self.renderer.wants_frame(*s));
+        self.idle = idle;
         if woke && let Some(p) = &self.wake {
             p.ping();
         }
