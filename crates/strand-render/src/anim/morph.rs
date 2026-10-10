@@ -46,6 +46,12 @@ struct Seen {
 #[derive(Debug, Default)]
 pub(crate) struct SharedMorphs {
     seen: HashMap<String, Seen>,
+    /// The latest committed frame's time per surface root: a box older
+    /// than [`STALE`] by its own surface's clock can start no morph and
+    /// is dropped ([`SharedMorphs::prune`]).
+    latest: HashMap<NodeId, Duration>,
+    /// How many boxes were remembered after the last prune.
+    kept: usize,
     /// Per node: `[dx, dy, sx, sy]` springing to `[0, 0, 1, 1]`.
     flights: HashMap<NodeId, Motion<4>>,
 }
@@ -96,6 +102,8 @@ impl SharedMorphs {
             }
         }
         if frame.commit {
+            let latest = self.latest.entry(root).or_default();
+            *latest = (*latest).max(frame.at);
             self.seen.insert(
                 key.to_string(),
                 Seen {
@@ -105,6 +113,12 @@ impl SharedMorphs {
                     at: frame.at,
                 },
             );
+            // Computed names (`morph: "note-" + n.id`) come and go: drop
+            // the stale ones whenever the map has doubled since the last
+            // prune, so it stays bounded at little cost per frame.
+            if self.seen.len() > 2 * self.kept + 16 {
+                self.prune();
+            }
         }
         if frame.snap {
             if frame.commit {
@@ -143,5 +157,69 @@ impl SharedMorphs {
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.flights.retain(|id, _| keep(*id));
+        self.latest.retain(|root, _| keep(*root));
+        let latest = &self.latest;
+        self.seen.retain(|_, s| latest.contains_key(&s.root));
+        self.prune();
+    }
+
+    /// Drops the boxes no morph can start from: older than [`STALE`] by
+    /// their surface's latest frame.
+    fn prune(&mut self) {
+        let latest = &self.latest;
+        self.seen.retain(|_, s| {
+            latest
+                .get(&s.root)
+                .is_some_and(|t| t.saturating_sub(s.at) <= STALE)
+        });
+        self.kept = self.seen.len();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One computed `morph` name per notification, for a long session:
+    /// the remembered boxes stay bounded, and a box within [`STALE`]
+    /// still starts a morph.
+    #[test]
+    fn stale_names_are_dropped() {
+        let root = NodeId::new(1, 0);
+        let rect = LogicalRect::new(0.0, 0.0, 10.0, 10.0);
+        let mut m = SharedMorphs::default();
+        let frame = |ms: u64| Frame {
+            at: Duration::from_millis(ms),
+            commit: true,
+            prev: Some(Duration::from_millis(ms.saturating_sub(16))),
+            snap: false,
+        };
+        let mut most = 0;
+        for i in 0..10_000u32 {
+            let ms = 1000 + u64::from(i) * 100;
+            let key = format!("note-{i}");
+            m.morph(
+                NodeId::new(10 + i, 0),
+                &key,
+                root,
+                rect,
+                true,
+                Curve::Instant,
+                frame(ms),
+            );
+            most = most.max(m.seen.len());
+        }
+        // A box lives 1 s, one name each 100 ms: about ten fresh ones.
+        assert!(most < 64, "{most} boxes remembered");
+        // A fresh box still starts a morph (from 10 px to the left).
+        let ms = 1000 + 10_000 * 100;
+        let r = LogicalRect::new(10.0, 0.0, 10.0, 10.0);
+        let key = "note-9999";
+        let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
+        let (_, moving, started) = m.morph(NodeId::new(1, 1), key, root, r, true, curve, frame(ms));
+        assert!(started && moving);
+        // Its surface gone: everything it remembered goes.
+        m.retain(|id| id != root);
+        assert!(m.seen.is_empty() && m.latest.is_empty());
     }
 }
