@@ -44,7 +44,7 @@ pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
-pub(crate) const ANIMATED: [Prop; 17] = [
+pub(crate) const ANIMATED: [Prop; 18] = [
     Prop::X,
     Prop::Y,
     Prop::Opacity,
@@ -67,6 +67,9 @@ pub(crate) const ANIMATED: [Prop; 17] = [
     Prop::Wave,
     Prop::Glow,
     Prop::Fill,
+    // (M4) A `shader` node's uniforms, channel by channel (a change of
+    // names or kinds snaps; decisions.md m4-gpu-effects).
+    Prop::Uniforms,
 ];
 
 /// Props whose change springs the laid-out size.
@@ -80,7 +83,7 @@ fn eps(p: Prop) -> f32 {
         Prop::Opacity => 0.002,
         Prop::Scale => 0.0005,
         Prop::Rotate => 0.05,
-        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill => 0.002,
+        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill | Prop::Uniforms => 0.002,
         Prop::Value => 0.0005,
         _ => 0.05,
     }

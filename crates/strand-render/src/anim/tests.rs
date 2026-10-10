@@ -116,3 +116,52 @@ fn presets_expand() {
     );
     assert!(pose_props(&PropValue::Keyword("none".into()), None).is_empty());
 }
+
+/// (M4) A `shader` node's uniforms spring channel by channel between
+/// values of one shape, and snap when names or kinds change.
+#[test]
+fn shader_uniforms_spring_between_values_of_one_shape() {
+    use super::motion::PropMotion;
+    use std::time::Duration;
+    let b = Extents::default();
+    let u = |speed: f32, tint: Color, angle: PropValue| {
+        PropValue::Uniforms(vec![
+            ("u_speed".into(), PropValue::Number(speed)),
+            ("u_tint".into(), PropValue::Color(tint)),
+            ("u_turn".into(), angle),
+        ])
+    };
+    let from = u(0.0, Color::BLACK, PropValue::Angle(0.0));
+    let to = u(10.0, Color::WHITE, PropValue::Angle(90.0));
+    let ef = encode(Prop::Uniforms, Some(&from), Color::WHITE, b).unwrap();
+    let et = encode(Prop::Uniforms, Some(&to), Color::WHITE, b).unwrap();
+    assert_eq!(decode(Prop::Uniforms, &et), to, "round trip");
+    let t0 = Duration::from_millis(1000);
+    let mut m = PropMotion::rest(Prop::Uniforms, &ef, Some(t0));
+    assert!(m.retarget(&et, Curve::Spring(strand_scene::motion::SPATIAL), Some(t0)));
+    let mid = decode(
+        Prop::Uniforms,
+        &m.value(t0 + Duration::from_millis(60), true),
+    );
+    let PropValue::Uniforms(entries) = &mid else {
+        panic!("{mid:?}");
+    };
+    let PropValue::Number(speed) = entries[0].1 else {
+        panic!("{mid:?}");
+    };
+    assert!(speed > 0.0 && speed < 10.0, "between: {speed}");
+    let PropValue::Angle(turn) = entries[2].1 else {
+        panic!("{mid:?}");
+    };
+    assert!(turn > 0.0 && turn < 90.0, "between: {turn}");
+    assert!(m.settled(t0 + Duration::from_secs(5)));
+    // Another name, or a value that cannot spring: it snaps.
+    let renamed = PropValue::Uniforms(vec![("u_other".into(), PropValue::Number(1.0))]);
+    let er = encode(Prop::Uniforms, Some(&renamed), Color::WHITE, b).unwrap();
+    assert!(!m.retarget(&er, Curve::Spring(strand_scene::motion::SPATIAL), Some(t0)));
+    let timed = PropValue::Uniforms(vec![(
+        "u_d".into(),
+        PropValue::Duration(Duration::from_secs(1)),
+    )]);
+    assert_eq!(encode(Prop::Uniforms, Some(&timed), Color::WHITE, b), None);
+}

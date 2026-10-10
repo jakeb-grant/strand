@@ -498,3 +498,54 @@ fn a_shader_follows_the_pointer() {
     assert_eq!(run.rgb(50, 20), [255, 0, 0], "it followed");
     assert_ne!(run.rgb(20, 20), [255, 0, 0]);
 }
+
+/// A file that paints `u_tint`.
+fn tint_code() -> Arc<ShaderCode> {
+    Arc::new(ShaderCode {
+        path: "tint.wgsl".into(),
+        wgsl: "@group(1) @binding(0) var<uniform> u_tint: vec4<f32>;\n\
+               @fragment\n\
+               fn main(v: StrandVertex) -> @location(0) vec4<f32> {\n\
+                   return u_tint;\n\
+               }\n"
+        .into(),
+        uniforms: ShaderCode::packed(vec![("u_tint".into(), UniformType::Vec4, 0)]),
+    })
+}
+
+/// A shader's uniforms spring like any animated prop (design.md: "a
+/// `u_*` uniform animates like any prop"): a new tint is reached through
+/// frames whose passes draw the colours between, then the pass stops
+/// being asked for.
+#[test]
+fn shader_uniforms_spring() {
+    let tint = |c: &str| PropValue::Uniforms(vec![("u_tint".into(), color(c))]);
+    let mut p = at_xy(10.0, 10.0, 40.0, 20.0);
+    p.extend([
+        (Prop::Shader, PropValue::Shader(tint_code())),
+        (Prop::Uniforms, tint("#ff0000")),
+    ]);
+    let Some(mut run) = run(vec![(NodeKind::Shader, p, vec![])], (240, 60)) else {
+        return;
+    };
+    run.settle(1000);
+    assert_eq!(run.rgb(20, 20), [255, 0, 0]);
+    let mut d = SceneDiff::new();
+    d.set(run.ids[0], Prop::Uniforms, tint("#0000ff"));
+    assert!(run.r.apply(d).is_empty());
+    let mut t = 1000;
+    let mut between = 0;
+    run.r.update();
+    while t == 1000 || run.r.wants_frame(S) {
+        t += 16;
+        assert!(t < 5000, "settles");
+        run.settle(t);
+        let [r, _, b] = run.rgb(20, 20);
+        if r > 10 && b > 10 {
+            between += 1;
+        }
+    }
+    assert!(between >= 3, "frames between red and blue: {between}");
+    assert_eq!(run.rgb(20, 20), [0, 0, 255], "the new tint");
+    assert!(run.frame(t + 16).is_empty(), "settled: no more passes");
+}
