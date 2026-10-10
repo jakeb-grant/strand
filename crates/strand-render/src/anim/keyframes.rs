@@ -270,3 +270,29 @@ pub(super) fn apply(
         }
     }
 }
+
+/// Adds `delta` to `props`' `prop` (`x`, `y` or `rotate`; unset is 0),
+/// resolved as the springs resolve it.
+pub(super) fn offset(
+    props: &mut Vec<(Prop, std::borrow::Cow<'_, PropValue>)>,
+    prop: Prop,
+    delta: f32,
+    inh: Color,
+    b: Extents,
+) {
+    if delta == 0.0 || !delta.is_finite() {
+        return;
+    }
+    let at = props.iter().position(|(q, _)| *q == prop);
+    let own = at
+        .and_then(|i| match encode(prop, Some(props[i].1.as_ref()), inh, b) {
+            Some(Enc::One([n])) if n.is_finite() => Some(n),
+            _ => number(props[i].1.as_ref()),
+        })
+        .unwrap_or(0.0);
+    let value = std::borrow::Cow::Owned(decode(prop, &Enc::One([own + delta])));
+    match at {
+        Some(i) => props[i].1 = value,
+        None => props.push((prop, value)),
+    }
+}

@@ -422,7 +422,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   effects), `builtin.rs` (lightning, sparks, shimmer, ripple, aurora's CPU
   fallback; the canvas and sprites), `particles.rs` (CPU sprite blits),
   `letters.rs` (a text's `letters`, one letter at a time), `roll.rs`
-  (`roll: true` texts rolling their changed letters).
+  (`roll: true` texts rolling their changed letters), `lean.rs`
+  (`parallax:` and the CPU's 2D `tilt:` following the pointer).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
@@ -1093,7 +1094,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   defaults, so existing implementations keep compiling.
   - `Router::pointer(surface) -> Option<LogicalPoint>`: the last pointer
     position, read at flatten time by `parallax` and `tilt` (set by
-    enter, motion, buttons and axis frames; `None` after a leave).
+    enter, motion, buttons and axis frames; `None` after a leave). The
+    host hands it to render after each routed event with
+    `Renderer::set_pointer(surface, Option<LogicalPoint>)`
+    (m4-effects-paint-w2), which keeps it in `flatten::Extras::pointers`
+    by surface root and repaints the surface only if a node on it leans.
   - `Router::drag() -> Option<DragView>`: the drag in flight, read by the
     drag ghost, `jelly` and list reordering. `DragView { source: NodeId,
     surface: SurfaceId, pointer: LogicalPoint, velocity: LogicalPoint

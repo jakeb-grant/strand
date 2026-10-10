@@ -556,6 +556,9 @@ impl SurfaceHost for Host {
         });
         if let Some(f) = &mut self.logic {
             f.input(event, &mut self.renderer);
+            // (M4) `parallax` and `tilt` follow the router's pointer.
+            let s = event.surface();
+            self.renderer.set_pointer(s, f.router.pointer(s));
         }
         // A scroll lays out again: its sizes go with it.
         self.forward_facts();

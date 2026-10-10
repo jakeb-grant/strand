@@ -477,6 +477,26 @@ impl Renderer {
         }
     }
 
+    /// (M4) The pointer on `surface` (`Router::pointer`; `None` once it
+    /// left): `parallax` and `tilt` follow it, so a surface drawing them
+    /// repaints when it moves.
+    pub fn set_pointer(&mut self, surface: SurfaceId, at: Option<strand_scene::LogicalPoint>) {
+        let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
+            return;
+        };
+        let changed = match at {
+            Some(p) => self.extras.pointers.insert(root, p) != Some(p),
+            None => self.extras.pointers.remove(&root).is_some(),
+        };
+        let tree = &self.tree;
+        if changed
+            && self.anim.leans(|id| tree.root_of(id) == Some(root))
+            && let Some(s) = self.surfaces.get_mut(&surface)
+        {
+            s.mark_dirty();
+        }
+    }
+
     /// Hover, press, focus, carets and slider drags as the input router
     /// last set them.
     pub fn widgets(&self) -> &crate::widgets::Widgets {

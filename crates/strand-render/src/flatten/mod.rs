@@ -303,6 +303,10 @@ pub struct Extras {
     pub images: crate::image::ImageStore,
     /// (M4) CPU raster nodes' sources and pixmaps.
     pub rasters: crate::offscreen::RasterNodes,
+    /// (M4) The pointer on each surface it is over, by the surface's
+    /// root node, logical pixels (`Router::pointer`, handed over by the
+    /// host): `parallax` and `tilt` follow it.
+    pub pointers: HashMap<NodeId, strand_scene::LogicalPoint>,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -335,6 +339,8 @@ pub fn flatten(
         xform: kurbo::Affine::IDENTITY,
         out: &mut out,
         fillet: crate::fillet::find(tree, boxes, root),
+        pointer: extras.pointers.get(&root).copied(),
+        logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
     };
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
@@ -384,6 +390,9 @@ struct Flattener<'a> {
     out: &'a mut Flattened,
     /// The surface's `attach:` fillet (`crate::fillet`).
     fillet: Option<crate::fillet::Fillet>,
+    /// (M4) The pointer on the surface, and the surface's logical box.
+    pointer: Option<strand_scene::LogicalPoint>,
+    logical: LogicalRect,
 }
 
 /// The pixels `r` covers once drawn under `a`.

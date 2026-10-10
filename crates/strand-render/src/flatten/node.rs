@@ -124,6 +124,15 @@ impl<'a> Flattener<'a> {
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
         self.anim
             .keyframes(node, &mut props, inherited, Some(laid), parent);
+        self.anim.lean(
+            node,
+            &mut props,
+            &scope,
+            inherited,
+            self.pointer,
+            laid,
+            self.logical,
+        );
         let inert = inh.inert || self.tree.is_ghost(node.id);
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 

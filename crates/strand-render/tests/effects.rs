@@ -1351,3 +1351,86 @@ fn stagger_delays_each_childs_enter() {
     assert!((0..4).all(|i| alpha(&buf, i) == shown), "reduced: at once");
     assert!(!r.wants_frame(S));
 }
+
+/// A 30 px box with `parallax: 6px` and one with `tilt: 12deg` on a
+/// 160 × 60 bar, painted at 1 s (no `lean` props with `lean: false`).
+fn leaning(lean: bool, reduced: bool) -> (Renderer, Buffer) {
+    let mut p0 = at_xy(25.0, 15.0, 30.0, 30.0);
+    let mut p1 = at_xy(105.0, 15.0, 30.0, 30.0);
+    for p in [&mut p0, &mut p1] {
+        p.push((Prop::Bg, color("#89b4fa")));
+    }
+    if lean {
+        p0.push((Prop::Parallax, num(6.0)));
+        p1.push((Prop::Tilt, PropValue::Angle(12.0)));
+    }
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    for p in [p0, p1] {
+        let mut p = p;
+        p.push((Prop::Place, kw("absolute")));
+        b.node(NodeKind::Box, Some(root), p);
+    }
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(160, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf)
+}
+
+/// Paints frames 16 ms apart from `t` until nothing moves; the last time.
+fn settle(r: &mut Renderer, buf: &mut Buffer, mut t: u64) -> u64 {
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(r, S, 1, std::time::Duration::from_millis(t));
+        assert!(t < 10_000, "settles");
+    }
+    t
+}
+
+/// design.md "Motion and time": `parallax: 6px` moves a node towards the
+/// pointer (all the way with the pointer at the surface's corner) and
+/// `tilt: 12deg` turns it in its plane towards the side of its box the
+/// pointer is on (2D on the CPU); both spring back when the pointer
+/// leaves, a surface with neither ignores the pointer, and
+/// `reduced_motion` turns them off (ref `effects_lean.png`, settled with
+/// the pointer at the top right).
+#[test]
+fn parallax_and_tilt_follow_the_pointer() {
+    let (mut r, mut buf) = leaning(true, false);
+    let (_, rest) = leaning(false, false);
+    assert!(buf.pixels == rest.pixels, "no pointer: at rest");
+    assert!(!r.wants_frame(S));
+    r.set_pointer(S, Some(LogicalPoint { x: 160.0, y: 0.0 }));
+    assert!(r.wants_frame(S), "the pointer moved: a frame");
+    let t = settle(&mut r, &mut buf, 1000);
+    assert_matches_ref("effects_lean", &buf, 2);
+    let blue = rest.px(40, 30);
+    // Parallax: 6 px right and up, so its left column (x 25..31) shows
+    // the bar and x 56..61 the box; its top 6 rows moved up.
+    assert_eq!(buf.px(58, 30), blue);
+    assert_ne!(buf.px(27, 30), blue);
+    assert_eq!(buf.px(40, 10), blue);
+    // Tilt: turned, its corners off the axis-aligned square.
+    assert_ne!(buf.px(106, 16), rest.px(106, 16));
+    // The pointer leaves: back to rest.
+    r.set_pointer(S, None);
+    assert!(r.wants_frame(S));
+    settle(&mut r, &mut buf, t);
+    assert!(buf.pixels == rest.pixels, "back at rest");
+
+    // Nothing leans: the pointer asks for no frame.
+    let (mut r, _) = leaning(false, false);
+    r.set_pointer(S, Some(LogicalPoint { x: 160.0, y: 0.0 }));
+    assert!(!r.wants_frame(S));
+
+    // Reduced motion: off.
+    let (mut r, mut buf) = leaning(true, true);
+    let (_, rest) = leaning(false, true);
+    r.set_pointer(S, Some(LogicalPoint { x: 160.0, y: 0.0 }));
+    settle(&mut r, &mut buf, 1000);
+    buf.paint_at(&mut r, S, 1, std::time::Duration::from_millis(1100));
+    assert!(buf.pixels == rest.pixels);
+}

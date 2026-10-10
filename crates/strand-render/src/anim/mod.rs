@@ -184,6 +184,8 @@ pub(crate) struct Animator {
     plays: keyframes::Plays,
     /// (M4) Children waiting for their turn to enter ([`stagger`]).
     staggers: stagger::Staggers,
+    /// (M4) Pointer parallax and tilt (`crate::effects::lean`).
+    leans: crate::effects::lean::Leans,
 }
 
 impl Animator {
@@ -299,6 +301,58 @@ impl Animator {
             self.active = true;
         }
         roll
+    }
+
+    /// (M4) Leans `node` with the pointer (`pointer`, `None` off its
+    /// surface) by its `parallax` and `tilt` in `props`, laid out at
+    /// `rect` on a surface `surface` (`crate::effects::lean`): adds the
+    /// springing offset and turn to its `x`, `y` and `rotate`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn lean(
+        &mut self,
+        node: &Node,
+        props: &mut Vec<(Prop, Cow<'_, PropValue>)>,
+        scope: &TokenScope<'_>,
+        inh: Color,
+        pointer: Option<strand_scene::LogicalPoint>,
+        rect: LogicalRect,
+        surface: LogicalRect,
+    ) {
+        let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
+        let Some(lean) = crate::effects::lean::Lean::of(get) else {
+            self.leans.forget(node.id);
+            return;
+        };
+        let target = lean.target(pointer, rect, surface);
+        let transition = node
+            .props
+            .iter()
+            .find(|e| matches!(e.prop, Prop::Parallax | Prop::Tilt))
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = Curve::of(&scope.transition(&transition, Prop::Parallax));
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (v, moving) = self.leans.sample(node.id, target, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        let boxes = Extents {
+            own: (rect.w, rect.h),
+            parent: (surface.w, surface.h),
+        };
+        keyframes::offset(props, Prop::X, v[0], inh, boxes);
+        keyframes::offset(props, Prop::Y, v[1], inh, boxes);
+        keyframes::offset(props, Prop::Rotate, v[2], inh, boxes);
+    }
+
+    /// (M4) True if a node `under` a surface leans with the pointer: a
+    /// pointer motion there repaints it.
+    pub fn leans(&self, under: impl FnMut(NodeId) -> bool) -> bool {
+        self.leans.used(under)
     }
 
     /// (M4) If `node` is about to enter under a parent with `stagger:`,
@@ -465,6 +519,7 @@ impl Animator {
         self.rolls.forget(id);
         self.plays.forget(id);
         self.staggers.forget(id);
+        self.leans.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -535,6 +590,7 @@ impl Animator {
         self.rolls.retain(&mut keep);
         self.plays.retain(&mut keep);
         self.staggers.retain(&mut keep);
+        self.leans.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
