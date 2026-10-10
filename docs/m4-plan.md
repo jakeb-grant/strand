@@ -31,7 +31,11 @@ closed under faults.
   stream that builds an effect edits only that effect's declaration
   there (its knobs) and records them in decisions.md.
 - **A missing `/etc/pam.d/strand`** falls back to `login` with a one-time
-  warning; every later PAM error fails closed.
+  warning; every later PAM error fails closed. (As built the rule is
+  wider: an unreadable file, or one only in a `/usr/lib/pam.d` libpam
+  ignores, falls back too, and a vendor file counts where `login` is
+  only there; decisions.md m4-lock-w1 and m4-audit, architecture.md's
+  `strand-auth`.)
 - **`/dev/kvm`** is allowed for the lock VM container only
   (`scripts/container/lockvm.sh`). The owner updates CLAUDE.md's device
   rule; streams do not edit CLAUDE.md.

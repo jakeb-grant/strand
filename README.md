@@ -54,8 +54,10 @@ compositor with no IPC), takes 100 live reloads without a service
 reconnecting, and on
 two 2560×1440 monitors with the real services uses about 34 MB in
 today's default build, which links the GPU backend (33,731–34,016 kB
-when it landed, 34.1–34.5 MB in the M4 integration's budget runs;
-target 34,816 kB, ceiling 38 MiB; docs/architecture.md, "`strand-gpu`").
+when it landed, 34.1–34.5 MB in the M4 integration's laptop budget
+runs and 35,557 kB in CI's run at `70af44f`, over the target, which
+warned; target 34,816 kB, ceiling 38 MiB; docs/m4-report.md, "Budgets";
+docs/architecture.md, "`strand-gpu`").
 M3's CPU-only build used 31–32 MiB, and with the launcher, two toasts
 and the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
 measured then (design.md: 59–64; those figures are M3's, in
@@ -160,7 +162,8 @@ commands above, `target/release` in the build tree), then in
 A package installs it at one of those.
 
 The helper authenticates with the PAM service `strand`, read from
-`/etc/pam.d/strand`. Without that file it uses `login` and says so once
+`/etc/pam.d/strand`. Without that file, or when it cannot be read, it
+uses `login` and says so once
 (design.md, "Lock screen"). A minimal file includes the system's usual
 stack: on Debian and Ubuntu (the lock VM's file)
 
@@ -172,7 +175,12 @@ stack: on Debian and Ubuntu (the lock VM's file)
 and on Arch and Fedora `auth include system-auth` and
 `account include system-auth`. A file in `/usr/lib/pam.d` counts
 only where the system keeps its own `login` there (decisions.md,
-m4-audit).
+m4-audit). Keep the lock's stack to passwords: the lock shows PAM's
+messages only with the verdict and gives a check 30 s, so a fingerprint
+module ahead of `pam_unix` (`pam_fprintd`, whose default wait is 30 s)
+times out before the password is tried. If the system's stack includes
+one, write the `strand` file with `pam_unix` alone
+(`auth required pam_unix.so` and `account required pam_unix.so`).
 
 If strand dies while the session is locked, the compositor keeps it
 locked and a restarted strand shows the password field again, so run
@@ -183,10 +191,14 @@ would otherwise stop restarting a strand that keeps dying and leave
 the lock with no password field.
 
 Release builds use the workspace's `[profile.release]` in the root
-`Cargo.toml`: thin LTO, one codegen unit, and 27 per-package `opt-level`
-overrides that build the event-rate crates (D-Bus, sockets, parsing) for
-size and keep the per-frame paths at 3 (`docs/decisions.md`,
-wave4-exitMemory and laptop-decisions). The memory figures in the docs
+`Cargo.toml`: fat LTO, one codegen unit, and 40 per-package `opt-level`
+overrides that build the event-rate crates (D-Bus, sockets, parsing,
+image decoders) for size and keep the per-frame paths at 3
+(`docs/decisions.md`, wave4-exitMemory, laptop-decisions and
+m4-integration-w2, which moved to fat LTO because thin LTO no longer kept
+`.text` within its gates, and built the image and SVG decoders for
+size). Copy the
+tables from `Cargo.toml` itself, not from this paragraph. The memory figures in the docs
 (the bar's 34 MB target, the full shell's 64 MB) are measured with
 exactly these settings and hold for our builds only. Both commands above,
 and `cargo install --git` of this repository, read them. A build that

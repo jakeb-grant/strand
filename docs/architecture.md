@@ -15,7 +15,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
 | Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 | Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check blocks here in PAM, up to the client's timeout, and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
-| GPU (M4; started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait: every reply is a message and a ping |
+| GPU (M4; started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -253,8 +253,10 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   answer, with 3 s to answer. The faults also include a runtime fault
   inside the lock, the text worker stopping, `auth` failing to check,
   `finished` after `locked` and a lock with no `lock` open. A marker,
-  `$XDG_RUNTIME_DIR/strand-<display>.locked`, is written once the
-  compositor says locked and removed once no lock is asked for or held
+  `$XDG_RUNTIME_DIR/strand-<display>.locked`, is written once a lock is
+  asked for (before the compositor says locked, so a strand that dies in
+  between comes back to the lock; decisions.md m4-audit) and removed
+  once no lock is asked for or held
   (an unlock, or a lock the compositor refused); a strand started while
   it exists locks at once with the fallback. While the config's lock
   shows, the other outputs' solids take the `lock` node's `bg`; while
@@ -382,10 +384,12 @@ strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
       owners pass `child::restore_in_child` in as the spawn's `pre_exec`
 
 strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
-                     on wayland-server: toplevels, workspaces, layer
-                     surfaces and the M4 surface globals; no Strand crate
-  ^-- dev-dependency of strand-services (the wm protocol client's tests)
-      and strand-surface (the manager's tests, tests/fake.rs)
+                     on wayland-server: toplevels, workspaces, toplevel
+                     capture, layer surfaces, xdg popups, a seat keyboard
+                     and the M4 surface globals; no Strand crate
+  ^-- dev-dependency of strand-services (the wm protocol client's and the
+      thumbnail capture tests) and strand-surface (the manager's tests,
+      tests/fake.rs)
 ```
 
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
@@ -393,11 +397,17 @@ crate depends on it outside `[dev-dependencies]`, and it depends on no
 Strand crate, so it adds no runtime edge to the graph above. It serves
 the toplevel and workspace protocols strand-services' wm client speaks
 (`ext-foreign-toplevel-list-v1`, `ext-workspace-v1`, optionally
-`zwlr_foreign_toplevel_management_v1`), and `wl_compositor`, `wl_shm`,
-layer shell, the viewporter, single-pixel buffers, the alpha modifier
-and `ext-background-effect-v1` for strand-surface, recording what each
-surface committed for the tests to assert on (decisions.md,
-m4-surface-w1).
+`zwlr_foreign_toplevel_management_v1`) and, with `FakeBuilder::capture`,
+the toplevel capture strand-services' thumbnails use
+(`ext_foreign_toplevel_image_capture_source_manager_v1`,
+`ext_image_copy_capture_manager_v1`; `src/capture.rs`,
+`strand-services/tests/capture.rs`); and `wl_compositor`, `wl_shm`,
+layer shell, `xdg_wm_base` for popups (`src/xdg.rs`), a `wl_seat` with a
+keyboard whose focus the tests move, the viewporter, single-pixel
+buffers, the alpha modifier and `ext-background-effect-v1` for
+strand-surface, recording what each surface committed for the tests to
+assert on (decisions.md, m4-surface-w1; the crate's own doc comment,
+`src/lib.rs`, lists the globals).
 
 `strand-auth` (M4) is the lock's whole security boundary, small enough to
 review alone. Its lib depends on `libc` and `zeroize` and no Strand
@@ -411,8 +421,14 @@ a value only `Client` mints, from a success reply, which is `Send` and
 neither `Clone` nor constructible elsewhere. `strand-surface` releases
 a session lock only for an `UnlockToken`, so no other code path can
 unlock. The PAM service is `strand`, or `login` with a one-time warning
-when `/etc/pam.d/strand` is missing (decisions.md, m4-owner); every
-other PAM error fails closed. A `faults` cargo feature (off in default
+when libpam would not read a `strand` file (decisions.md, m4-owner; the
+rule as built, decisions.md m4-lock-w1 and m4-audit, "the `strand`
+service is chosen only when libpam will read its file"): `strand` when
+`/etc/pam.d/strand` opens for reading, or when `/usr/lib/pam.d/strand`
+does and `login` is only in `/usr/lib/pam.d` (libpam built with a
+vendor directory); otherwise `login`, so a missing, unreadable or
+ignored `strand` file all fall back (`strand-auth`'s `choose_service`).
+Every other PAM error fails closed. A `faults` cargo feature (off in default
 and release builds) adds `STRAND_FAULT` injection points here and in
 `strand`.
 As built (decisions.md, m4-lock-w1): `protocol` (frames of a `u32`
@@ -2836,8 +2852,18 @@ Wayland crate. Its interface:
   Option<GpuReply>` is drained when the waker's ping fires on the main
   loop. Dropping the `Gpu` (or `GpuRequest::Shutdown`) drops every
   surface, pipeline, texture, the device and the instance, and the thread
-  ends; the binary joins it after its `Exited` reply, never blocking on
-  a device drop.
+  ends; while the shell runs the binary joins it after its `Exited`
+  reply, never blocking on a device drop. At exit it is the one
+  exception (decisions.md m4-audit, "the run ends the GPU thread before
+  the surface manager drops"): `run` calls `GpuHost::shutdown(GPU_SHUTDOWN)`
+  before the `SurfaceManager` drops, which blocks the main thread up to
+  3 s joining every GPU thread, since a presenting thread holds the
+  display and the `wl_surface`s it was lent (`RawHandles`) and drops its
+  swapchains on them as it ends. A thread still running then (a hung
+  driver) keeps the connection: the manager is leaked
+  (`std::mem::forget`), not dropped under it, and the process exits.
+  This is how the `RawHandles` contract (no swapchain outlives its
+  `wl_surface` or display) holds at exit.
 - `GpuRequest`: `Attach { surface: SurfaceId, handles: Option<RawHandles>,
   size, scale, opaque: bool }` (no handles: readback only), `Resize {
   surface, size, scale }`, `Release(SurfaceId)`, `Frame(Frame)`,

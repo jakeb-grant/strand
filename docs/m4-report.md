@@ -6,8 +6,10 @@ threads, on battery or mains as it was) through the container suite
 1.97.0, headless sway 1.9 with the pixman renderer, lavapipe as the only
 Vulkan driver), at `6a27238` on `laptop/integration-m4-w3` (M4 waves
 0–3 merged, with the m4 audit's fixes; the commits after it change only
-docs). Release figures use the workspace's release profile (thin LTO,
-one codegen unit, the per-package `opt-level`s); the latency benches
+docs). Release figures use the workspace's release profile (fat LTO,
+one codegen unit, the per-package `opt-level`s; thin LTO until
+m4-integration-w2, which switched because thin LTO broke the `.text`
+gates); the latency benches
 use the `timing` profile. CI's figures are from run 38048149054 at
 `70af44f`, the integration branch before the audit's last fixes, read
 from its notices. Every number below comes from a test in the tree;
@@ -105,6 +107,11 @@ read its file; otherwise the helper falls back to `login`.
   drop is the figure design.md's budget is about. Neither test gates this
   number. Whether the launcher's exit is promoted at all is worth a
   look, because a closing panel should not need the GPU (handoff.md).
+  (After this report, m4-audit round 3: it was. Large frames seconds
+  apart, the launcher's opening and then its closing, counted as one
+  500 ms run; a pause past `RUN_GAP` now ends the run, the full-shell
+  budget gates the launcher-closed figure and asserts no GPU start.
+  The figures above are from before that fix.)
 - **Two wall-clock functional assertions** remain, with wide margins:
   `strand-scene/src/tokens.rs::huge_fan_out_fails_fast` and
   `strand-dev/tests/lsp.rs`'s hung-bus case. They are left to their

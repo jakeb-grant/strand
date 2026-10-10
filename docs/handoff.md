@@ -40,7 +40,8 @@ for the reasoning behind each item below.
     never lent or handed off to the GPU thread
     (`strand-surface/tests/session_lock.rs::a_lock_surface_is_never_handed_to_the_gpu`,
     lock VM), so a promoted lock is read back, each frame holds for the
-    GPU at most `GPU_WAIT` (8 ms) before the CPU draws it, and a
+    GPU at most `GPU_WAIT` (8 ms) before the CPU draws it
+    (`strand-render/tests/gpu.rs::a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait`), and a
     readback that never ends loses the device after `HUNG_AFTER` (10 s),
     after which the CPU draws everything. A GPU stall can slow a lock's
     shader, not freeze its password field. The earlier entry said
@@ -49,10 +50,18 @@ for the reasoning behind each item below.
     (`strand-scene/src/tokens.rs::huge_fan_out_fails_fast`,
     `strand-dev/tests/lsp.rs`'s hung-bus case), left to their owners.
   - PSS after the GPU has run on lavapipe stays about 90 MB up (the
-    debug `gpu_idle` run; the release budgets' full shell "launcher
-    closed" at 136–147 MB, laptop and CI), not gated: likely the
-    software driver's mappings, and worth checking whether a closing
-    launcher is promoted at all (docs/m4-report.md, Open).
+    debug `gpu_idle` run): the software driver's mappings (libLLVM
+    about 60 MB). The release full shell's "launcher closed" figure
+    (136–147 MB in docs/m4-report.md) was this: the closing launcher
+    was promoted, because large frames seconds apart counted as one
+    animation. Fixed in the audit's third round (`promote.rs`'s
+    `RUN_GAP`), and the full-shell budget now gates that figure and
+    asserts the design shells never start the GPU (decisions.md m4-audit,
+    "large frames seconds apart are not one animation").
+  - `theme_swap_bench`'s 8-scope `spring(1600, 1)` gate has little or no
+    headroom on GitHub: 2.53–5.06 ms over the last fifteen timing jobs
+    against 5 ms, one failure (decisions.md m4-audit, round 3, for the
+    owner: accept, a larger runner, or a cheaper swap).
   - The closing steps: merging the integration branch to `main` and
     deleting the merged wave branches. `docs/m4-report.md` is written
     (2026-10-10, at `6a27238`).
@@ -77,6 +86,10 @@ were answered on 2026-10-09 and are under "m4-owner".
 
 1. **Release build settings: signed off.** The 27
    `[profile.release.package]` `opt-level` overrides stay as they are.
+   (Since this sign-off the profile changed: m4-integration-w2 moved
+   `[profile.release]` to fat LTO, since thin LTO no longer kept `.text`
+   within its gates, and built the image and SVG decoders for size; the
+   profile now has 40 overrides. `Cargo.toml` is the reference; decisions.md m4-integration-w2.)
    Caveat: the memory figures hold for builds that read the workspace's
    release profile (`cargo build --release`, `cargo install --path` or
    `--git` of this repository). A registry package, a build as a
@@ -113,8 +126,10 @@ and the full shell warns above 64 MB and fails above 70 MB
   that is its own check of the compositor, not the adapter's.
 - `theme_swap_bench`'s tightest gated case, 8 scopes on
   `spring(1600, 1)` (whole swap), measured 4.46 ms on GitHub against
-  5 ms (about 11% headroom, no retry; decisions.md laptop-ci). If
-  `timing` fails there, look at that case first. Consolidating test
+  5 ms (about 11% headroom, no retry; decisions.md laptop-ci). Since
+  then fifteen timing jobs measured 2.53–5.06 ms, one over the gate
+  (run 38050248241; decisions.md m4-audit, round 3): a `timing` failure
+  there is most likely runner noise, and the gate is the owner's call. Consolidating test
   binaries was measured (about 39 s of linking in all) and not done.
 - On the laptop the timing gates warn: `scripts/container/run.sh ci`
   prints WARN for `reload_latency` and `theme_swap_bench` gate misses
@@ -194,6 +209,14 @@ and the full shell warns above 64 MB and fails above 70 MB
   the first press and for actions no press caused (`dismiss`, `scroll`,
   `drop`).
 - Media: remote (https) art is not fetched.
+- Lock: PAM's info and error texts reach the lock only with the verdict,
+  inside one 30 s client timeout. A stack with `pam_fprintd` before
+  `pam_unix` (30 s default wait) never shows "Place your finger" and
+  times out before the password is tried, then shows the fallback,
+  which meets the same wall. Streaming interim text needs a protocol
+  message and a lock prompt design.md does not have; moved past M4
+  (decisions.md m4-audit, round 3). README asks for a password-only
+  stack meanwhile.
 - Network: `connect()` is awaited inline (bounded: 5 s per settings call,
   25 s for activation); enterprise (802.1X) and WEP networks are refused.
 - Audio: `StepVolume` has no caller on the language path. (`spectrum`
