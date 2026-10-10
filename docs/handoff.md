@@ -173,11 +173,15 @@ and the full shell warns above 64 MB and fails above 70 MB
     window now starts after boot has settled; the woken thread is named
     on failure.
   - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
-    (read before `max_delay`) and
-    `strand/src/run/tests.rs::a_save_fixed_at_once_never_opens_the_overlay`
-    (the overlay flashed on the formatted save), once each in the `test`
-    job of run 37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30
-    and 0 of 15 failed in the container.
+    (read before `max_delay`), once in the `test` job of run
+    37874718084 (attempts 1 and 2; attempt 3 green). 0 of 30 failed in
+    the container.
+- Fixed in m4-audit round 8: `strand/src/run/tests.rs::a_save_fixed_at_once_never_opens_the_overlay`
+  (the overlay flashed on the formatted save) failed twice, in run
+  37874718084 and again in run 38072311030 (laptop/m4-audit at
+  `35cf98b`), so it was recurring, not once. Its no-overlay check rested
+  on the live pipeline beating the real 250 ms quiet period on a starved
+  runner; its logic thread now waits 2 s (decisions.md m4-audit round 8).
 - `crates/strand/tests/reloads.rs` still allows a bus connection that
   only introspects, though `strand-introspect` now keeps one connection
   per bus; tightening it is left to that file's owner (decisions.md

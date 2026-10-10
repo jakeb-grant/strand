@@ -540,6 +540,23 @@ fn spawn_live_with(
     std::thread::JoinHandle<Result<(), String>>,
     Mirror,
 ) {
+    spawn_live_quiet(dir, socket, buses, storage, None)
+}
+
+/// [`spawn_live_with`] whose logic thread's overlay waits `quiet`
+/// instead of `overlay::QUIET` (`None`: the real one).
+fn spawn_live_quiet(
+    dir: &Path,
+    socket: Option<PathBuf>,
+    buses: Option<strand_services::Buses>,
+    storage: Storage,
+    quiet: Option<Duration>,
+) -> (
+    Worker,
+    calloop::channel::Sender<ToLogic>,
+    std::thread::JoinHandle<Result<(), String>>,
+    Mirror,
+) {
     let (wtx, wrx) = calloop::channel::channel();
     let (compiler, boot) = Worker::spawn(dir, None, wtx).unwrap();
     compiler.register_own_writes(&storage);
@@ -555,7 +572,10 @@ fn spawn_live_with(
     to_logic
         .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
         .unwrap();
-    let t = std::thread::spawn(move || logic(boot, storage, from_main, tx, live));
+    let t = std::thread::spawn(move || {
+        crate::overlay::QUIET_ON_THIS_THREAD.with(|q| q.set(quiet));
+        logic(boot, storage, from_main, tx, live)
+    });
     (compiler, to_logic, t, Mirror::new(rx))
 }
 
@@ -925,12 +945,27 @@ fn a_replayed_hard_reload_reports_the_newer_errors() {
 /// design.md: "Format-on-save and delete-then-create saves never
 /// flash it": a broken text fixed within 100 ms (a formatter's second
 /// write) lands without the overlay ever opening.
+///
+/// (m4-audit) The fix must reach the logic thread within the quiet
+/// period, which on the real 250 ms rests on the wall clock: a starved
+/// runner flashed the overlay twice (GitHub runs 37874718084 and
+/// 38072311030). The logic thread here waits 2 s instead, so a flash
+/// needs a stall of seconds; that the period itself opens and closes on
+/// time is `overlay::tests::the_quiet_period_and_dismissal`'s, on given
+/// instants. The final 2.5 s settle still catches a broken save whose
+/// pending overlay the fix did not take away.
 #[test]
 fn a_save_fixed_at_once_never_opens_the_overlay() {
     let dir = temp_dir("format-on-save");
     let file = dir.join("bar.strand");
     std::fs::write(&file, "bar Top {\n  text \"a\"\n}\n").unwrap();
-    let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+    let (compiler, to_logic, t, mut m) = spawn_live_quiet(
+        &dir,
+        None,
+        None,
+        Storage::none(),
+        Some(Duration::from_secs(2)),
+    );
     m.until("the bar", |s| s.texts() == ["a"]);
     m.steady = true;
     for (i, gap) in [5u64, 40, 90].into_iter().enumerate() {
@@ -941,7 +976,7 @@ fn a_save_fixed_at_once_never_opens_the_overlay() {
         let want = format!("b{i}");
         m.until("the formatted save", |s| s.texts() == [want.as_str()]);
     }
-    m.settle("after the saves", Duration::from_millis(500));
+    m.settle("after the saves", Duration::from_millis(2500));
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     drop(compiler);

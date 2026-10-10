@@ -22,6 +22,25 @@ use strand_scene::{Color, Font, NodeId, NodeKind, Prop, PropValue};
 /// How long diagnostics must stand before the overlay opens.
 pub const QUIET: Duration = Duration::from_millis(250);
 
+#[cfg(test)]
+thread_local! {
+    /// (m4-audit, tests) A quiet period other than [`QUIET`] for the
+    /// overlays of this thread: a live-pipeline test whose functional
+    /// check must not rest on the wall clock sets a long one on its logic
+    /// thread (the period's own timing is tested on given instants).
+    pub static QUIET_ON_THIS_THREAD: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The quiet period: [`QUIET`] (a test's thread may set another).
+fn quiet() -> Duration {
+    #[cfg(test)]
+    if let Some(q) = QUIET_ON_THIS_THREAD.with(std::cell::Cell::get) {
+        return q;
+    }
+    QUIET
+}
+
 /// Rows shown at most (the rest are counted in the header) until the
 /// panel can scroll (M2 `scroll`; decisions.md, wave2-runtime).
 const MAX_ROWS: usize = 40;
@@ -452,7 +471,7 @@ impl Overlay {
         if self.shown.is_some() || self.dismissed {
             return None;
         }
-        self.since.map(|t| t + QUIET)
+        self.since.map(|t| t + quiet())
     }
 
     /// Open it if its diagnostics stood for the quiet period.
