@@ -659,8 +659,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   it as `v0·t·(1 − t/d)²`, which fades out by the end of the duration);
   `retarget_at` starts at a given time;
   `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
-  anything. Everything is a pure function of the timestamps sampled, so
-  frames are testable as images. `color_channels`/`channels_color` map a
+  anything, and `probe(at)` reads all three at once (the curve evaluated
+  once: the theme swap's contrast play-through). Everything is a pure
+  function of the timestamps sampled, so frames are testable as images. `color_channels`/`channels_color` map a
   colour to premultiplied OKLab plus alpha. `TokenScope::transition`
   falls back to `SPATIAL`/`EFFECTS`/`BOUNCY` when the table has no
   `$motion.*` token of that name.
