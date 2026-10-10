@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use strand_core::Runtime;
-use strand_services::auth::{self, AuthAction, AuthConfig, UnlockSink};
+use strand_services::auth::{self, AuthAction, AuthConfig, FailureSink, UnlockSink};
 use strand_services::{Buses, ServiceDiagnostic};
 use support::*;
 
@@ -52,6 +52,8 @@ struct Harness {
     services: strand_services::Services,
     builtin: strand_services::Builtin,
     unlocks: Arc<AtomicUsize>,
+    /// What the failure sink was told.
+    failures: Arc<Mutex<Vec<String>>>,
     diagnostics: Mutex<Vec<ServiceDiagnostic>>,
 }
 
@@ -63,10 +65,15 @@ impl Harness {
         let sink: UnlockSink = Arc::new(move |_token| {
             u.fetch_add(1, Ordering::SeqCst);
         });
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let f = failures.clone();
+        let failed: FailureSink = Arc::new(move |why| f.lock().unwrap().push(why.to_string()));
         auth::configure(Some(AuthConfig {
             helper: Some(helper),
             timeout: Duration::from_secs(5),
             sink: Some(sink),
+            failed: Some(failed),
+            client_hook: None,
         }));
         let rt = Runtime::new();
         let (services, builtin) = services(&rt, Buses::none());
@@ -78,6 +85,7 @@ impl Harness {
             services,
             builtin,
             unlocks,
+            failures,
             diagnostics: Mutex::new(Vec::new()),
         }
     }
@@ -145,6 +153,10 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
     h.until("refused", |h| !h.busy() && h.failed());
     assert_eq!(h.unlocks.load(Ordering::SeqCst), 0);
     assert!(h.warnings().is_empty(), "{:?}", h.warnings());
+    assert!(
+        h.failures.lock().unwrap().is_empty(),
+        "a refusal is not a failure to check"
+    );
     h.stop();
 
     // A success: the token goes to the sink; one check at a time.
@@ -171,6 +183,8 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
     h.submit("x");
     h.until("failed", |h| !h.busy() && h.failed());
     assert_eq!(h.unlocks.load(Ordering::SeqCst), 0);
+    // The binary hears it (and shows its built-in password field).
+    assert_eq!(h.failures.lock().unwrap().len(), 1);
     assert!(
         h.warnings()
             .iter()
@@ -186,6 +200,7 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
     h.until("failed", Harness::failed);
     assert_eq!(h.unlocks.load(Ordering::SeqCst), 0);
     assert!(!h.warnings().is_empty());
+    assert!(!h.failures.lock().unwrap().is_empty());
     h.stop();
 
     // The `login` fallback: a success, and the warning once.
