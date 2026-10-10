@@ -29,7 +29,7 @@ use strand_scene::{
 
 use crate::tree::{Node, SceneTree};
 
-mod keyframes;
+pub(crate) mod keyframes;
 mod morph;
 mod motion;
 mod pages;
@@ -211,6 +211,9 @@ impl Animator {
         self.commit = commit;
         self.active = false;
         self.drawn.clear();
+        if commit {
+            self.plays.begin(time);
+        }
     }
 
     /// Something drawn since [`Animator::begin`] is still moving.
@@ -598,7 +601,9 @@ impl Animator {
     /// (M4) Draws node `node`'s `play` (`Prop::Play` in `props`, which
     /// already hold this frame's springs) over `props`
     /// ([`keyframes`]). `inh`, `rect` and `parent` as for
-    /// [`Animator::paint`].
+    /// [`Animator::paint`]. Returns the block and whether it is still
+    /// playing; it wants frames only once the flattener finds the node
+    /// drawn ([`Animator::play_drawn`]).
     pub fn keyframes(
         &mut self,
         node: &Node,
@@ -606,14 +611,14 @@ impl Animator {
         inh: Color,
         rect: Option<LogicalRect>,
         parent: LogicalRect,
-    ) {
+    ) -> Option<(std::sync::Arc<strand_scene::Keyframes>, bool)> {
         let Some(PropValue::Keyframes(k)) = props
             .iter()
             .find(|(q, _)| *q == Prop::Play)
             .map(|(_, v)| v.as_ref())
         else {
             self.plays.forget(node.id);
-            return;
+            return None;
         };
         let k = k.clone();
         let frame = crate::shapes::morph::Frame {
@@ -623,15 +628,23 @@ impl Animator {
             snap: self.snapping(),
         };
         let (p, moving) = self.plays.progress(node.id, &k, frame);
-        if moving {
-            self.active = true;
-        }
         if let Some(p) = p {
             let boxes = Extents {
                 own: rect.map_or((0.0, 0.0), |r| (r.w, r.h)),
                 parent: (parent.w, parent.h),
             };
             keyframes::apply(&k, p, props, inh, boxes);
+        }
+        Some((k, moving))
+    }
+
+    /// (M4) Node `id`, whose `play` is still playing, is drawn (or hidden
+    /// only by something that follows time or the play itself): frames
+    /// are wanted, and its surface is busy until the play ends.
+    pub fn play_drawn(&mut self, id: NodeId) {
+        self.active = true;
+        if self.commit {
+            self.plays.drawn(id, self.time);
         }
     }
 

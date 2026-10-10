@@ -1273,6 +1273,106 @@ fn reduced_motion_skips_keyframes_and_freezes_loops() {
     assert!(!r.wants_frame(S));
 }
 
+/// A loop that pulses a box's background to pink and back each second.
+fn pulse_loop() -> (Prop, PropValue) {
+    keyframes(
+        "pulse",
+        1,
+        1000,
+        None,
+        vec![(0.5, vec![(Prop::Bg, color("#f38ba8"))])],
+    )
+}
+
+/// design.md: "the frame loop stops when every clock is idle". A looping
+/// `play` runs only while its node is drawn: under `opacity: 0` (its own
+/// or an ancestor's, set by logic) or outside its parent's clip it wants
+/// no frames and no wake, and once shown it plays again. A loop that
+/// fades its own opacity through 0 keeps playing (as a loop that moves a
+/// node outside its clip would: what places it follows time, the rule
+/// time signals keep).
+#[test]
+fn a_hidden_or_clipped_loop_wants_no_frames() {
+    use std::time::Duration;
+    // (hidden, own opacity, parent opacity, x inside a clipped parent)
+    let cases = [
+        ("drawn", true, 1.0, 1.0, 10.0),
+        ("opacity 0", false, 0.0, 1.0, 10.0),
+        ("hidden parent", false, 1.0, 0.0, 10.0),
+        ("outside the clip", false, 1.0, 1.0, 500.0),
+    ];
+    for (name, drawn, own, parent, x) in cases {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut gp = at_xy(0.0, 0.0, 200.0, 50.0);
+        gp.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Clip, PropValue::Bool(true)),
+            (Prop::Opacity, num(parent)),
+        ]);
+        let g = b.node(NodeKind::Box, Some(root), gp);
+        let mut p = at_xy(x, 10.0, 30.0, 30.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Bg, color("#cba6f7")),
+            (Prop::Opacity, num(own)),
+            pulse_loop(),
+        ]);
+        let n = b.node(NodeKind::Box, Some(g), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(200, 50, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+        assert_eq!(r.wants_frame(S), drawn, "{name}");
+        if drawn {
+            continue;
+        }
+        assert_eq!(r.next_wake(), None, "{name}: no wake either");
+        // Shown again: it plays (in phase with its start).
+        let mut d = SceneDiff::new();
+        set_now(&mut d, g, Prop::Opacity, num(1.0));
+        set_now(&mut d, n, Prop::Opacity, num(1.0));
+        set_now(&mut d, n, Prop::X, num(10.0));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1250));
+        assert!(r.wants_frame(S), "{name}: shown, it plays");
+        let before = columns(&buf, 0, 60);
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1500));
+        assert!(columns(&buf, 0, 60) != before, "{name}: and moves");
+    }
+
+    // A loop that blinks its own opacity through 0 keeps playing.
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 10.0, 30.0, 30.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#cba6f7")),
+        keyframes(
+            "blink",
+            1,
+            1000,
+            None,
+            vec![
+                (0.0, vec![(Prop::Opacity, num(0.0))]),
+                (1.0, vec![(Prop::Opacity, num(1.0))]),
+            ],
+        ),
+    ]);
+    b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(200, 50, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    assert!(r.wants_frame(S), "blinking at opacity 0: still playing");
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1500));
+    assert!(r.wants_frame(S));
+    assert_ne!(buf.px(25, 25), buf.px(100, 25), "half faded in");
+}
+
 /// A row with `stagger: 100ms` on a 120 × 40 bar, painted at 1 s, then
 /// four 20 px boxes with `enter { opacity: 0 }` created in it at once and
 /// painted at 1.016 s.

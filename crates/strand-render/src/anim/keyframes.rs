@@ -19,6 +19,12 @@
 //! `reduced_motion` (and frames with no clock): a block that plays a
 //! fixed number of times is not played, and a loop holds still at its
 //! start.
+//!
+//! A play runs only while drawn (design.md: "the frame loop stops when
+//! every clock is idle"): a node hidden by something that does not
+//! follow time (`opacity: 0` from logic, an ancestor hidden, outside its
+//! clip) wants no frames and keeps no surface busy, even when it loops;
+//! its play keeps its start, so it resumes in phase once shown.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -39,6 +45,8 @@ struct Play {
     /// seen it end.
     end: Option<Duration>,
     done: bool,
+    /// The last painted frame that drew its node.
+    seen: Option<Duration>,
 }
 
 /// Every node's last `play`.
@@ -48,6 +56,15 @@ pub(crate) struct Plays {
     /// Nodes a preview saw a new `play` on: the next painted frame starts
     /// it.
     pending: HashSet<NodeId>,
+    /// The last painted frame begun.
+    frame: Option<Duration>,
+}
+
+/// Whether some stop of `k` sets `p`.
+pub(crate) fn sets(k: &Keyframes, p: Prop) -> bool {
+    k.stops
+        .iter()
+        .any(|(_, set)| set.iter().any(|(q, _)| *q == p))
 }
 
 /// How long `k` plays after it starts, delay included (`None`: forever).
@@ -84,6 +101,7 @@ impl Plays {
                             start: frame.at,
                             end: None,
                             done: k.repeat.is_some(),
+                            seen: None,
                         },
                     );
                 }
@@ -102,6 +120,7 @@ impl Plays {
                     start: frame.at,
                     end: length(k).map(|l| frame.at.saturating_add(l)),
                     done: false,
+                    seen: None,
                 },
             );
         }
@@ -136,10 +155,26 @@ impl Plays {
         (Some(p.clamp(0.0, 1.0)), true)
     }
 
-    /// Anything `under` a surface playing or about to.
+    /// A painted frame at `at` begins.
+    pub(crate) fn begin(&mut self, at: Duration) {
+        self.frame = Some(at);
+    }
+
+    /// Node `id` was drawn in the painted frame at `at`.
+    pub(crate) fn drawn(&mut self, id: NodeId, at: Duration) {
+        if let Some(p) = self.nodes.get_mut(&id) {
+            p.seen = Some(at);
+        }
+    }
+
+    /// Anything `under` a surface playing or about to: a play the last
+    /// painted frame drew and has not ended, or one a preview saw start.
     pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))
-            || self.nodes.iter().any(|(id, p)| !p.done && under(*id))
+            || self
+                .nodes
+                .iter()
+                .any(|(id, p)| !p.done && p.seen.is_some() && p.seen == self.frame && under(*id))
     }
 
     /// Drops nodes `keep` rejects.
@@ -294,5 +329,45 @@ pub(super) fn offset(
     match at {
         Some(i) => props[i].1 = value,
         None => props.push((prop, value)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(ms: u64) -> Frame {
+        Frame {
+            at: Duration::from_millis(ms),
+            commit: true,
+            prev: None,
+            snap: false,
+        }
+    }
+
+    /// A loop keeps its surface busy only while the last painted frame
+    /// drew it: a node no frame visits (an ancestor hidden) lets the
+    /// scene cache be reused.
+    #[test]
+    fn a_play_is_busy_only_while_drawn() {
+        let id = NodeId::new(7, 0);
+        let mut k = Keyframes::new("spin", 1, Duration::from_millis(1000));
+        k.repeat = None;
+        let mut plays = Plays::default();
+        let all = |_| true;
+        plays.begin(Duration::from_millis(1000));
+        assert_eq!(plays.progress(id, &k, frame(1000)), (Some(0.0), true));
+        assert!(!plays.busy(all), "started, but not drawn");
+        plays.drawn(id, Duration::from_millis(1000));
+        assert!(plays.busy(all), "drawn and looping");
+        // The next painted frame does not visit it.
+        plays.begin(Duration::from_millis(1016));
+        assert!(!plays.busy(all), "not drawn in the last frame");
+        // Drawn again, in phase with its start.
+        plays.begin(Duration::from_millis(1500));
+        let (p, moving) = plays.progress(id, &k, frame(1500));
+        assert!(moving && p.is_some_and(|p| (p - 0.5).abs() < 1e-3));
+        plays.drawn(id, Duration::from_millis(1500));
+        assert!(plays.busy(all));
     }
 }

@@ -43,10 +43,18 @@ impl<'a> Flattener<'a> {
 
     /// (M4) `id` is drawn, or hidden only by something that follows
     /// time: its clock (if it has one) runs from this frame, and the
-    /// surface keeps it.
-    fn run_clock(&mut self, id: strand_scene::NodeId, clock: Option<crate::clock::Clock>) {
+    /// surface keeps it; so does its `play` while `playing`.
+    fn run_clock(
+        &mut self,
+        id: strand_scene::NodeId,
+        clock: Option<crate::clock::Clock>,
+        playing: bool,
+    ) {
         if clock.is_some() {
             self.anim.start_clock(id);
+        }
+        if playing {
+            self.anim.play_drawn(id);
         }
         self.out.clocks.extend(clock);
     }
@@ -145,8 +153,15 @@ impl<'a> Flattener<'a> {
         self.anim.stagger(self.tree, node, &scope);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
-        self.anim
+        let play = self
+            .anim
             .keyframes(node, &mut props, inherited, Some(laid), parent);
+        // A prop its `play` sets follows time while it plays.
+        let playing = play.as_ref().is_some_and(|(_, moving)| *moving);
+        let plays = |p: Prop| {
+            play.as_ref()
+                .is_some_and(|(k, moving)| *moving && crate::anim::keyframes::sets(k, p))
+        };
         self.anim.lean(
             node,
             &mut props,
@@ -368,14 +383,15 @@ impl<'a> Flattener<'a> {
         // A hidden node's clock stops (its subtree is not visited, so
         // theirs do too), unless what hides it follows time.
         let follows = |p: Prop| {
-            node.get(p).is_some_and(|v| {
-                v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
-            })
+            plays(p)
+                || node.get(p).is_some_and(|v| {
+                    v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
+                })
         };
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
             if follows(Prop::Opacity) {
-                self.run_clock(node.id, clock);
+                self.run_clock(node.id, clock, playing);
             }
             return Rect::default();
         }
@@ -385,7 +401,7 @@ impl<'a> Flattener<'a> {
         let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
         if zoom <= 0.0 {
             if follows(Prop::Scale) {
-                self.run_clock(node.id, clock);
+                self.run_clock(node.id, clock, playing);
             }
             return Rect::default();
         }
@@ -1147,7 +1163,7 @@ impl<'a> Flattener<'a> {
             .into_iter()
             .any(follows);
         if !subtree.is_empty() || moves {
-            self.run_clock(node.id, clock);
+            self.run_clock(node.id, clock, playing);
         }
         if let Some(i) = opacity_group {
             self.out.items[i].bounds = subtree;
