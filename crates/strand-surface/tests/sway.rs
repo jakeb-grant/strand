@@ -1414,6 +1414,16 @@ fn popups_nest_under_their_anchors_and_close_on_click_away() {
     assert_eq!(shot.rgb(25, 100), BLUE, "its overhang");
     assert_ne!(shot.rgb(130, 175), BLUE, "nothing past the overhang");
     assert_ne!(shot.rgb(10, 100), BLUE);
+    // (M4) Where each lies on the output, as the host is told: the bar
+    // at the top-left corner, the popup's buffer 10 px outside its box.
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert_eq!(mgr.state().surface(bar).unwrap().origin, Some((0, 0)));
+    assert_eq!(info.origin, Some((20, 32)));
+    assert!(
+        mgr.state().host().placed.contains(&(popup, (20, 32))),
+        "{:?}",
+        mgr.state().host().placed
+    );
 
     // A menu nested in it, anchored to (20, 30, 40, 20) in its buffer.
     let mut menu = spec.clone();
@@ -1434,6 +1444,39 @@ fn popups_nest_under_their_anchors_and_close_on_click_away() {
         })
         .unwrap();
     assert!(ok, "the nested popup maps: {:?}", mgr.state().surfaces());
+    // (M4) A submenu: to the right of its anchor, 6 px away, level with
+    // its top. The anchor is (10, 20, 40, 20) in the calendar's box at
+    // (30, 42), so the menu's box starts at (30 + 50 + 6, 42 + 20), as
+    // sway's configure placed it.
+    let nested = mgr.state().surfaces_of(MENU)[0];
+    assert_eq!(
+        mgr.state().surface(nested).unwrap().origin,
+        Some((86, 62)),
+        "{:?}",
+        mgr.state().host().placed
+    );
+    // `anchor: left` opens it to the left instead, repositioned in
+    // place: from a row at (140, 20) in the calendar's box, it ends 6 px
+    // before the row (30 + 140 - 6 - 80).
+    let mut left = menu.clone();
+    left.anchor = strand_scene::Anchor::Left;
+    left.anchor_rect = Some(LogicalRect::new(150.0, 30.0, 40.0, 20.0));
+    mgr.state_mut().apply_surface_change(
+        MENU,
+        SurfaceChange::Updated {
+            spec: left,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(MENU)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.origin == Some((84, 62)))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().host().placed);
 
     // A click on the desktop ends the grab: both are dismissed.
     let before = mgr.state().host().input.len();

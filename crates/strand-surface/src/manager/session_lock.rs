@@ -644,6 +644,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             blur_sent: Some(Vec::new()),
             pose: strand_scene::SurfacePose::IDENTITY,
             alpha: None,
+            origin: None,
             last_damage: Vec::new(),
             click_through: false,
             input_region: None,

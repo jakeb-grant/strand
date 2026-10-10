@@ -80,6 +80,7 @@ mod catcher;
 mod commit;
 mod effect;
 mod layer;
+mod origin;
 mod outputs;
 mod popup;
 mod pose;
@@ -166,6 +167,17 @@ pub trait SurfaceHost: Painter {
     fn input(&mut self, event: &InputEvent) {
         let _ = event;
     }
+    /// (M4) Where `surface`'s buffer (its top-left corner, shadow
+    /// overhang included) now lies on its output, in the output's
+    /// logical pixels: a layer surface as the compositor arranges one of
+    /// its size and anchors on the whole output, a popup where the
+    /// compositor's configure put it relative to its parent. Called when
+    /// it changes. The host turns a press into an output position with
+    /// it (the tray's click point).
+    fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
+        let _ = (surface, origin);
+    }
+
     /// (M4) The optional protocols the compositor offered, once the
     /// manager has bound its globals; the host hands render what it uses
     /// (`set_compositor_blur`, `set_compositor_poses`). The manager calls
@@ -387,6 +399,9 @@ pub struct SurfaceInfo {
     pub under_layer: Option<Layer>,
     /// (M4) The compositor pose last set on it (identity at rest).
     pub pose: strand_scene::SurfacePose,
+    /// (M4) Where its buffer's top-left corner is on its output, logical
+    /// pixels, as last told to [`SurfaceHost::surface_placed`].
+    pub origin: Option<(i32, i32)>,
     pub stats: Stats,
 }
 
@@ -451,6 +466,8 @@ struct Surface {
     /// `wp_alpha_modifier_surface_v1`, made with the first opacity.
     pose: strand_scene::SurfacePose,
     alpha: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1>,
+    /// (M4) Its buffer's top-left corner on its output (`origin.rs`).
+    origin: Option<(i32, i32)>,
     last_damage: Vec<Rect>,
     click_through: bool,
     /// The input region last sent: `None` the whole surface, `Some(None)`
@@ -591,6 +608,7 @@ impl Surface {
             layer: matches!(self.role, Role::Layer(_)).then_some(self.config.layer),
             under_layer: None,
             pose: self.pose,
+            origin: self.origin,
             stats: self.stats,
         }
     }

@@ -29,6 +29,10 @@ pub struct Host {
     wake: Option<calloop::ping::Ping>,
     /// The node each surface shows (for the blur fallback's diagnostic).
     roots: HashMap<SurfaceId, NodeId>,
+    /// (M4) Where each surface's buffer lies on its output
+    /// (`SurfaceHost::surface_placed`): a press becomes the tray's click
+    /// point with it.
+    origins: HashMap<SurfaceId, (i32, i32)>,
     /// The blur ladder's last rung: says once why `blur` draws its tint.
     blur_fallback: BlurFallback,
     /// Tests: told of every paint and monitor change (`bench.rs`,
@@ -239,6 +243,24 @@ fn to_logic(intent: Intent) -> Option<ToLogic> {
     })
 }
 
+/// The tray's click point for a press at `position` on a surface whose
+/// buffer lies at `origin` on its output: the bottom-left corner of the
+/// pressed node's box `rect` (in the surface), where an app placing a
+/// menu of its own puts its top-left corner (and flips it up from a
+/// bottom bar), in the output's logical pixels; the press itself when no
+/// node was hit.
+fn click_point(
+    origin: (i32, i32),
+    rect: Option<strand_scene::LogicalRect>,
+    position: strand_scene::LogicalPoint,
+) -> (i32, i32) {
+    let (x, y) = rect.map_or((position.x, position.y), |r| (r.x, r.y + r.h));
+    let at = |o: i32, v: f32| {
+        (f64::from(o) + f64::from(v).round()).clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    };
+    (at(origin.0, x), at(origin.1, y))
+}
+
 /// A monitor's logical size: no content-sized surface on it is larger.
 fn monitor_bounds(m: &Monitor) -> Option<strand_scene::LogicalSize> {
     m.logical_size
@@ -298,6 +320,7 @@ impl Host {
             logic: None,
             wake: None,
             roots: HashMap::new(),
+            origins: HashMap::new(),
             blur_fallback: BlurFallback {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
                 ..BlurFallback::default()
@@ -398,6 +421,29 @@ impl Host {
                 sizes: facts,
             });
         }
+    }
+}
+
+impl Host {
+    /// The tray's click point for `event` when it is a press on a placed
+    /// surface ([`click_point`] of the innermost node hit).
+    fn press_point(&self, event: &InputEvent) -> Option<(i32, i32)> {
+        let InputEvent::PointerButton {
+            surface,
+            position,
+            state: strand_scene::ButtonState::Pressed,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let origin = *self.origins.get(surface)?;
+        let rect = self
+            .renderer
+            .hit(*surface, *position)
+            .first()
+            .and_then(|n| self.renderer.node_rect(*surface, *n));
+        Some(click_point(origin, rect, *position))
     }
 }
 
@@ -508,10 +554,15 @@ impl SurfaceHost for Host {
         self.wake_if_changed();
     }
 
+    fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
+        self.origins.insert(surface, origin);
+    }
+
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.renderer.detach_surface(surface);
         self.roots.remove(&surface);
+        self.origins.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -550,6 +601,10 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
+        // A press sets the point tray actions it causes send the app.
+        if let Some((x, y)) = self.press_point(event) {
+            strand_services::tray::set_click_point(x, y);
+        }
         // Surfaces already wanting a frame (animating) get it anyway.
         let idle: Vec<SurfaceId> = self.logic.as_ref().map_or_else(Vec::new, |f| {
             f.surfaces
@@ -710,6 +765,65 @@ mod tests {
             ..CompositorCaps::default()
         };
         assert_eq!(pose(no_alpha), None);
+    }
+
+    /// (M4) A press sets the tray's click point: the bottom-left corner
+    /// of the innermost node pressed, on the output (the surface's
+    /// origin added); the surface's box where no child was hit; nothing
+    /// for a surface not placed yet, gone, or a release. Rounded to
+    /// logical pixels.
+    #[test]
+    fn a_press_sets_the_tray_click_point() {
+        use std::time::Duration;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (panel, icon) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let num = strand_scene::PropValue::Number;
+        let mut d = SceneDiff::new();
+        d.create(panel, strand_scene::NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, num(100.0))
+            .set(panel, Prop::Height, num(100.0))
+            .create(icon, strand_scene::NodeKind::Box, Some(panel), 0)
+            .set(icon, Prop::Width, num(20.0))
+            .set(icon, Prop::Height, num(20.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let mut px = vec![0u8; 100 * 100 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+        let mut t = t.at(Duration::from_secs(1));
+        assert!(!host.paint(s, &mut t).is_empty());
+        let press = |x: f32, y: f32| InputEvent::PointerButton {
+            surface: s,
+            position: strand_scene::LogicalPoint::new(x, y),
+            button: button::RIGHT,
+            state: strand_scene::ButtonState::Pressed,
+            time: 0,
+        };
+        // Not placed yet: no point.
+        assert_eq!(host.press_point(&press(5.0, 5.0)), None);
+        host.surface_placed(s, (1800, 40));
+        assert_eq!(host.press_point(&press(5.0, 5.0)), Some((1800, 60)));
+        assert_eq!(host.press_point(&press(50.0, 80.0)), Some((1800, 140)));
+        let release = InputEvent::PointerButton {
+            surface: s,
+            position: strand_scene::LogicalPoint::new(5.0, 5.0),
+            button: button::RIGHT,
+            state: strand_scene::ButtonState::Released,
+            time: 0,
+        };
+        assert_eq!(host.press_point(&release), None);
+        host.surface_detached(s);
+        assert_eq!(host.press_point(&press(5.0, 5.0)), None);
+        assert_eq!(
+            click_point((10, 20), None, strand_scene::LogicalPoint::new(3.4, 7.6)),
+            (13, 28)
+        );
     }
 
     #[test]

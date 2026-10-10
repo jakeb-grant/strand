@@ -41,10 +41,11 @@ struct Item(Arc<Mutex<State>>);
 
 #[zbus::interface(name = "org.kde.StatusNotifierItem")]
 impl Item {
-    async fn activate(&self, _x: i32, _y: i32) -> zbus::fdo::Result<()> {
+    async fn activate(&self, x: i32, y: i32) -> zbus::fdo::Result<()> {
         let (frozen, refused) = {
             let mut s = self.0.lock().unwrap();
             s.calls.push("Activate".into());
+            s.calls.push(format!("Activate at {x},{y}"));
             (s.frozen, s.no_activate)
         };
         if frozen {
@@ -55,12 +56,10 @@ impl Item {
         }
         Ok(())
     }
-    fn secondary_activate(&self, _x: i32, _y: i32) {
-        self.0
-            .lock()
-            .unwrap()
-            .calls
-            .push("SecondaryActivate".into());
+    fn secondary_activate(&self, x: i32, y: i32) {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push("SecondaryActivate".into());
+        s.calls.push(format!("SecondaryActivate at {x},{y}"));
     }
     fn scroll(&self, delta: i32, orientation: &str) {
         self.0
@@ -69,8 +68,10 @@ impl Item {
             .calls
             .push(format!("Scroll {delta} {orientation}"));
     }
-    fn context_menu(&self, _x: i32, _y: i32) {
-        self.0.lock().unwrap().calls.push("ContextMenu".into());
+    fn context_menu(&self, x: i32, y: i32) {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push("ContextMenu".into());
+        s.calls.push(format!("ContextMenu at {x},{y}"));
     }
     #[zbus(property)]
     fn id(&self) -> String {
@@ -339,13 +340,17 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     assert_eq!(listed, std::slice::from_ref(&it.id));
     assert_eq!(next_listing(&mut changes), std::slice::from_ref(&it.id));
 
-    // Clicks and scrolls reach the app.
+    // Clicks and scrolls reach the app, clicks at the point of the press
+    // the shell's host set (the pressed node's bottom-left corner on its
+    // output; negative on an output left of the first is kept).
     let d = b.tray.dynamic();
+    strand_services::tray::set_click_point(1830, 36);
     d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
-    wait_call(&state, "Activate");
+    wait_call(&state, "Activate at 1830,36");
+    strand_services::tray::set_click_point(-4, 1052);
     d.action(&rt, "secondary", Some(&it.to_data()), &[])
         .unwrap();
-    wait_call(&state, "SecondaryActivate");
+    wait_call(&state, "SecondaryActivate at -4,1052");
     d.action(&rt, "scroll", Some(&it.to_data()), &[Data::Float(-2.0)])
         .unwrap();
     // Two notches up: 120 a notch, positive up (as KDE's host sends).

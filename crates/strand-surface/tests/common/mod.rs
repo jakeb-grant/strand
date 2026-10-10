@@ -313,6 +313,8 @@ pub struct TestHost {
     /// compositor.
     pub attached: Vec<(SurfaceId, NodeId, Option<MonitorId>)>,
     pub entered: Vec<(SurfaceId, MonitorId)>,
+    /// (M4) What [`SurfaceHost::surface_placed`] said, in order.
+    pub placed: Vec<(SurfaceId, (i32, i32))>,
     /// What [`SurfaceHost::input`] saw.
     pub input: Vec<InputEvent>,
     pub configured: Vec<(SurfaceId, Size, Scale)>,
@@ -506,6 +508,10 @@ impl SurfaceHost for TestHost {
 
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
         self.entered.push((surface, monitor.id.clone()));
+    }
+
+    fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
+        self.placed.push((surface, origin));
     }
 
     fn input(&mut self, event: &InputEvent) {

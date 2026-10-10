@@ -125,11 +125,24 @@ impl<H: SurfaceHost + 'static> State<H> {
         let (x, y, w, h) = c.anchor_rect;
         p.set_anchor_rect(x, y, w.max(1), h.max(1));
         use xdg_positioner::{Anchor, ConstraintAdjustment as Adj, Gravity};
-        let (anchor, gravity, offset, flip) = match c.side {
-            PopupSide::Below => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
-            PopupSide::Above => (Anchor::Top, Gravity::Top, (0, -c.gap), Adj::FlipY),
-            PopupSide::Right => (Anchor::Right, Gravity::Right, (c.gap, 0), Adj::FlipX),
-            PopupSide::Left => (Anchor::Left, Gravity::Left, (-c.gap, 0), Adj::FlipX),
+        let (anchor, gravity, offset, flip) = match (c.side, c.aligned) {
+            (PopupSide::Below, _) => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
+            (PopupSide::Above, _) => (Anchor::Top, Gravity::Top, (0, -c.gap), Adj::FlipY),
+            (PopupSide::Right, false) => (Anchor::Right, Gravity::Right, (c.gap, 0), Adj::FlipX),
+            (PopupSide::Left, false) => (Anchor::Left, Gravity::Left, (-c.gap, 0), Adj::FlipX),
+            // A submenu: level with its row's top, growing down.
+            (PopupSide::Right, true) => (
+                Anchor::TopRight,
+                Gravity::BottomRight,
+                (c.gap, 0),
+                Adj::FlipX,
+            ),
+            (PopupSide::Left, true) => (
+                Anchor::TopLeft,
+                Gravity::BottomLeft,
+                (-c.gap, 0),
+                Adj::FlipX,
+            ),
         };
         p.set_anchor(anchor);
         p.set_gravity(gravity);
@@ -281,6 +294,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             blur_sent: Some(Vec::new()),
             pose: strand_scene::SurfacePose::IDENTITY,
             alpha: None,
+            origin: None,
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -485,6 +499,7 @@ impl<H: SurfaceHost + 'static> PopupHandler for State<H> {
         let w = w.saturating_add((l + r).max(0) as u32);
         let h = h.saturating_add((t + b).max(0) as u32);
         self.configured(id, (w, h));
+        self.place_popup(id, config.position);
         // sctk acked it already; the next commit makes it take effect.
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.geometry_dirty = true;

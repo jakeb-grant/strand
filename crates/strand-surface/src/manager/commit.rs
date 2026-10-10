@@ -449,6 +449,7 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
             self.add_secondary_catchers(id, node, &under, global);
         }
         self.host.surface_entered(id, &monitor);
+        self.place_layer(id);
     }
 
     fn surface_leave(

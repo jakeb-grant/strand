@@ -69,8 +69,11 @@ record TrayItem key id {
   /// Its primary action: `on click { item.activate() }`. An item that is
   /// only a menu (`ItemIsMenu`: most libappindicator apps) opens its
   /// menu instead (`menu.opened`), as the StatusNotifierItem spec asks.
+  /// The app is told where: the bottom-left corner of the element
+  /// pressed, in its screen's logical pixels (where an app showing a
+  /// menu of its own puts it).
   action activate()
-  /// Its secondary action.
+  /// Its secondary action, told where as `activate()` is.
   action secondary()
   /// Scrolls on it by `dy` wheel notches (one click is 1, a touchpad
   /// sends fractions; positive is down, as `on scroll(dy)` gives it). The

@@ -2430,6 +2430,18 @@ and the connection):
     pose as pending state, for the GPU hand-off. Render holds
     `Removed`/`open: false` until an exit settles, so a delegated exit
     plays to its end.
+  - Origins and submenus (`manager/origin.rs`, wave 2): the no-op-default
+    hook `SurfaceHost::surface_placed(surface, (x, y))` says where a
+    surface's buffer lies on its output, logical pixels, when that
+    changes: a layer surface as `LayerConfig::position_in` arranges its
+    configured size over the whole output (other surfaces' exclusive
+    zones are not known), a popup from its configure's position under its
+    parent's window geometry. `SurfaceInfo::origin` reads it. The
+    binary's host turns a press into the tray's click point with it
+    (`strand_services::tray::set_click_point`: the pressed node's
+    bottom-left corner on the output). A popup nested in a popup opens
+    beside its anchor (`PopupConfig::aligned`: level with the row's top,
+    flipped in x), right unless its `anchor:` names left, top or bottom.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
     viewporter, for scrims and lock backgrounds; shm when the protocol is
     missing (1×1 with the viewporter, else surface-sized). A spec's

@@ -232,6 +232,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             blur_sent: Some(Vec::new()),
             pose: strand_scene::SurfacePose::IDENTITY,
             alpha: None,
+            origin: None,
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -405,6 +406,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         // The size it got may not be the one it asked for.
         self.update_catcher(id);
+        self.place_layer(id);
         // Size and scale are resolved once, right before the next paint.
         self.mark(id);
     }
