@@ -1308,8 +1308,9 @@ fn window_state_actions_follow_the_compositor() {
 /// ext-image-copy-capture, scaled down to cover the size asked for, in
 /// the window's own colour (a capture of the wrong buffer, read before
 /// `ready`, or all zeros fails it).
-/// Skipped (with a message) on a
-/// compositor that offers no ext-image-copy-capture.
+/// Skipped (with a message) on niri,
+/// which offers no ext-image-copy-capture of toplevels; any other
+/// compositor without the globals fails.
 #[test]
 fn a_window_is_captured_for_its_thumbnail() {
     use strand_services::wm::capture::{CaptureFrame, capture_window};
@@ -1334,6 +1335,13 @@ fn a_window_is_captured_for_its_thumbnail() {
     if !(has("ext_image_copy_capture_manager_v1")
         && has("ext_foreign_toplevel_image_capture_source_manager_v1"))
     {
+        // Only niri is known to offer none (features.md); anywhere else
+        // a missing global is a regression the matrix must not pass.
+        assert_eq!(
+            kind, "niri",
+            "{kind} offers no ext-image-copy-capture of toplevels (globals: {globals:?}); \
+             only niri may skip the thumbnail test"
+        );
         eprintln!(
             "\n*** {kind} offers no ext-image-copy-capture of toplevels: thumbnails skipped ***\n"
         );
