@@ -1,0 +1,14 @@
+// expect: check::lock_popup, check::lock_no_auth
+// A popup never opens on a lock surface, so the field inside it is no way
+// out, and the popup itself is a warning.
+export state locked = false
+lock {
+  open: <-> locked
+  state ask = false
+  state secret = ""
+  box { on click { ask = true }; text "unlock" }
+  popup {
+    open: <-> ask
+    input { type: password; text: <-> secret; on activate { auth.submit(secret) } }
+  }
+}

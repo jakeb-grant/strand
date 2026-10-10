@@ -2461,6 +2461,9 @@ Public interfaces other crates and later stages build on:
     timers, in any branch, and the components it shows) is the error
     `check::lock_no_auth`, judged only on a program with no other error:
     such a lock draws and never faults, so no fallback would ever show.
+    A `popup` or `tooltip` never opens on a lock surface, so a call
+    inside one does not count, and each is the warning
+    `check::lock_popup`.
   - `compositor-rules`: a query over a `Build` listing the surfaces whose
     tree has `blur`, with their namespaces (`strand-<Name>`), for
     `strand compositor-rules` (S-surface owns it). It lives in the binary

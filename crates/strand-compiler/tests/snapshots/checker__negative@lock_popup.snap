@@ -1,0 +1,29 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::lock_no_auth
+
+  × this `lock` has no way out: nothing in it calls `auth.submit`
+   ╭─[lock_popup.strand:5:1]
+ 4 │ export state locked = false
+ 5 │ lock {
+   · ──┬─
+   ·   ╰── only `auth.submit` can unlock the session
+ 6 │   open: <-> locked
+   ╰────
+  help: add a password field: `input { type: password; text: <-> secret; on activate { if secret !
+        = "" { auth.submit(secret) }; secret = "" } }` (an empty Return is not sent: with
+        pam_faillock it would count as a failed login)
+
+check::lock_popup
+
+  ⚠ a `popup` does not open on a lock screen
+    ╭─[lock_popup.strand:10:3]
+  9 │   box { on click { ask = true }; text "unlock" }
+ 10 │   popup {
+    ·   ──┬──
+    ·     ╰── nothing in it is ever shown or run
+ 11 │     open: <-> ask
+    ╰────
+  help: put its content in the lock itself

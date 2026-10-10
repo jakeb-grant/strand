@@ -15,7 +15,9 @@
 //!   is pure, so it cannot). Only an `auth` success unlocks, and a lock that
 //!   draws and never faults shows no built-in field, so a lock with no
 //!   call would lock the session with no way out (decisions.md,
-//!   m4-audit).
+//!   m4-audit). A call inside a `popup` or `tooltip` does not count.
+//! - `check::lock_popup`: a `popup` or `tooltip` in the `lock` is a
+//!   warning: strand-surface never opens one on a lock surface.
 
 use std::collections::{HashMap, HashSet};
 
@@ -83,16 +85,19 @@ fn props(file: FileId, body: &ast::Block<ast::Item>, out: &mut Vec<Diagnostic>) 
     }
 }
 
-/// `check::lock_no_auth`: the config's `lock`, when nothing it can run
-/// calls `auth.submit`.
-pub(super) fn way_out(files: &[FileHir]) -> Option<Diagnostic> {
-    let mut bodies = Bodies::default();
+/// `check::lock_popup` for each `popup` or `tooltip` the config's `lock`
+/// shows and, on a program with no error (`clean`), `check::lock_no_auth`
+/// when nothing the lock can run calls `auth.submit`. A popup never opens
+/// on a lock surface (strand-surface refuses it), so a call inside one is
+/// no way out.
+pub(super) fn way_out(files: &[FileHir], clean: bool) -> Vec<Diagnostic> {
+    let mut bodies = HashMap::new();
     let mut lock = None;
     for f in files {
         for item in &f.items {
             match item {
                 hir::Item::Component(c) => {
-                    bodies.components.insert(c.def, &c.body);
+                    bodies.insert(c.def, (f.file, &c.body[..]));
                 }
                 hir::Item::Surface(s)
                     if lock.is_none() && s.element.kind == ElementKind::Builtin("lock".into()) =>
@@ -103,128 +108,162 @@ pub(super) fn way_out(files: &[FileHir]) -> Option<Diagnostic> {
             }
         }
     }
-    let (file, el) = lock?;
+    let Some((file, el)) = lock else {
+        return Vec::new();
+    };
     let mut walk = Walk {
         bodies: &bodies,
         seen: HashSet::new(),
+        file,
+        submits: false,
+        popups: Vec::new(),
     };
-    if walk.element(el) {
-        return None;
+    walk.element(el);
+    let mut out: Vec<Diagnostic> = walk
+        .popups
+        .into_iter()
+        .map(|(file, span, kind)| {
+            Diagnostic::warning(
+                "check::lock_popup",
+                format!("a `{kind}` does not open on a lock screen"),
+            )
+            .with_label_in(file, span, "nothing in it is ever shown or run")
+            .with_help("put its content in the lock itself")
+        })
+        .collect();
+    if clean && !walk.submits {
+        let head = Span::new(
+            el.span.start,
+            el.span.start.saturating_add(4).min(el.span.end),
+        );
+        out.push(
+            Diagnostic::error(
+                "check::lock_no_auth",
+                "this `lock` has no way out: nothing in it calls `auth.submit`",
+            )
+            .with_label_in(file, head, "only `auth.submit` can unlock the session")
+            .with_help(
+                "add a password field: `input { type: password; text: <-> secret; \
+                 on activate { if secret != \"\" { auth.submit(secret) }; secret = \"\" } }` \
+                 (an empty Return is not sent: with pam_faillock it would count as a failed login)",
+            ),
+        );
     }
-    let head = Span::new(
-        el.span.start,
-        el.span.start.saturating_add(4).min(el.span.end),
-    );
-    Some(
-        Diagnostic::error(
-            "check::lock_no_auth",
-            "this `lock` has no way out: nothing in it calls `auth.submit`",
-        )
-        .with_label_in(file, head, "only `auth.submit` can unlock the session")
-        .with_help(
-            "add a password field: `input { type: password; text: <-> secret; \
-             on activate { if secret != \"\" { auth.submit(secret) }; secret = \"\" } }` \
-             (an empty Return is not sent: with pam_faillock it would count as a failed login)",
-        ),
-    )
+    out
 }
 
-/// The components a lock can show, by name.
-#[derive(Default)]
-struct Bodies<'a> {
-    components: HashMap<DefId, &'a [Node]>,
-}
-
-/// A search for an `auth.submit` call; each component is entered once,
-/// so recursion ends.
+/// A walk of everything the lock shows: whether anything calls
+/// `auth.submit`, and the popups and tooltips it holds (not entered: they
+/// never open on a lock). Each component is entered once, so recursion
+/// ends.
 struct Walk<'a> {
-    bodies: &'a Bodies<'a>,
+    bodies: &'a HashMap<DefId, (FileId, &'a [Node])>,
     seen: HashSet<DefId>,
+    /// The file of the body being walked.
+    file: FileId,
+    submits: bool,
+    popups: Vec<(FileId, Span, String)>,
 }
 
 impl Walk<'_> {
-    fn element(&mut self, el: &hir::Element) -> bool {
-        if let ElementKind::Component(def) = &el.kind
-            && self.seen.insert(*def)
-            && let Some(body) = self.bodies.components.get(def)
-            && self.nodes(body)
-        {
-            return true;
+    fn element(&mut self, el: &hir::Element) {
+        match &el.kind {
+            ElementKind::Builtin(b) if b == "popup" || b == "tooltip" => {
+                let end = el.span.start.saturating_add(b.len() as u32);
+                let head = Span::new(el.span.start, end.min(el.span.end));
+                self.popups.push((self.file, head, b.clone()));
+                return;
+            }
+            ElementKind::Component(def) if self.seen.insert(*def) => {
+                if let Some(&(file, body)) = self.bodies.get(def) {
+                    let saved = std::mem::replace(&mut self.file, file);
+                    self.nodes(body);
+                    self.file = saved;
+                }
+            }
+            _ => {}
         }
-        let props = el.props.iter().any(|p| self.prop(p));
-        props || el.arg.as_ref().is_some_and(|e| self.expr(e)) || self.nodes(&el.children)
-    }
-
-    fn prop(&mut self, p: &hir::Prop) -> bool {
-        self.expr(&p.value) || p.sub.iter().any(|s| self.prop(s))
-    }
-
-    fn nodes(&mut self, nodes: &[Node]) -> bool {
-        nodes.iter().any(|n| match n {
-            Node::Element(e) => self.element(e),
-            Node::If(i) => self.nodes(&i.then) || self.nodes(&i.else_),
-            Node::For(f) => self.nodes(&f.body),
-            Node::Match(m) => m.arms.iter().any(|(_, body)| self.nodes(body)),
-            Node::Handler(h) => self.stmts(&h.body),
-            Node::Timer(t) => self.stmts(&t.body),
-            Node::When(w) => w.props.iter().any(|p| self.prop(p)),
-            Node::Pose(p) => p.props.iter().any(|p| self.prop(p)),
-            Node::Selector(s) => s.props.iter().any(|p| self.prop(p)),
-            Node::Let(l) => self.expr(&l.value),
-            Node::State(_) | Node::Slot(_) | Node::Set(..) | Node::Play(_) => false,
-        })
-    }
-
-    fn stmts(&mut self, stmts: &[Stmt]) -> bool {
-        stmts.iter().any(|s| match &s.kind {
-            StmtKind::Let { value, .. } | StmtKind::Expr(value) => self.expr(value),
-            StmtKind::Assign { target, value, .. } => self.expr(target) || self.expr(value),
-            StmtKind::If { cond, then, else_ } => {
-                self.expr(cond) || self.stmts(then) || self.stmts(else_)
-            }
-            StmtKind::For { iter, body, .. } => self.expr(iter) || self.stmts(body),
-            StmtKind::Match { scrutinee, arms } => {
-                self.expr(scrutinee) || arms.iter().any(|(_, body)| self.stmts(body))
-            }
-            StmtKind::Play(_) | StmtKind::Error => false,
-        })
-    }
-
-    fn expr(&mut self, e: &hir::Expr) -> bool {
-        match &e.kind {
-            ExprKind::Call { callee, args } => {
-                let hit = match callee {
-                    Callee::Method { receiver, name, .. } => {
-                        (name == "submit"
-                            && matches!(&receiver.kind, ExprKind::Service(s) if s == "auth"))
-                            || self.expr(receiver)
-                    }
-                    Callee::Value(v) => self.expr(v),
-                    // A `fn` is pure (`check::impure`): it cannot submit.
-                    Callee::Fn(_) | Callee::Builtin { .. } | Callee::Record(_) | Callee::Error => {
-                        false
-                    }
-                };
-                hit || args.iter().any(|a| self.expr(&a.value))
-            }
-            ExprKind::Field { base, .. } => self.expr(base),
-            ExprKind::Index { base, index } => self.expr(base) || self.expr(index),
-            ExprKind::Unary { expr, .. } => self.expr(expr),
-            ExprKind::Binary { lhs, rhs, .. } => self.expr(lhs) || self.expr(rhs),
-            ExprKind::Ternary { cond, then, else_ } => {
-                self.expr(cond) || self.expr(then) || self.expr(else_)
-            }
-            ExprKind::Lambda { body, .. } => match body {
-                hir::LambdaBody::Expr(e) => self.expr(e),
-                hir::LambdaBody::Block(b) => self.stmts(b),
-            },
-            ExprKind::Match { scrutinee, arms } => {
-                self.expr(scrutinee) || arms.iter().any(|(_, e)| self.expr(e))
-            }
-            ExprKind::List(v) | ExprKind::Commas(v) | ExprKind::Spaced(v) => {
-                v.iter().any(|e| self.expr(e))
-            }
-            _ => false,
+        el.props.iter().for_each(|p| self.prop(p));
+        if let Some(e) = &el.arg {
+            self.expr(e);
         }
+        self.nodes(&el.children);
+    }
+
+    fn prop(&mut self, p: &hir::Prop) {
+        self.expr(&p.value);
+        p.sub.iter().for_each(|s| self.prop(s));
+    }
+
+    fn expr(&mut self, e: &hir::Expr) {
+        self.submits = self.submits || calls(e);
+    }
+
+    fn nodes(&mut self, nodes: &[Node]) {
+        for n in nodes {
+            match n {
+                Node::Element(e) => self.element(e),
+                Node::If(i) => {
+                    self.nodes(&i.then);
+                    self.nodes(&i.else_);
+                }
+                Node::For(f) => self.nodes(&f.body),
+                Node::Match(m) => m.arms.iter().for_each(|(_, body)| self.nodes(body)),
+                Node::Handler(h) => self.submits = self.submits || calls_in(&h.body),
+                Node::Timer(t) => self.submits = self.submits || calls_in(&t.body),
+                Node::When(w) => w.props.iter().for_each(|p| self.prop(p)),
+                Node::Pose(p) => p.props.iter().for_each(|p| self.prop(p)),
+                Node::Selector(s) => s.props.iter().for_each(|p| self.prop(p)),
+                Node::Let(l) => self.expr(&l.value),
+                Node::State(_) | Node::Slot(_) | Node::Set(..) | Node::Play(_) => {}
+            }
+        }
+    }
+}
+
+/// Whether statements (which hold no elements) call `auth.submit`.
+fn calls_in(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match &s.kind {
+        StmtKind::Let { value, .. } | StmtKind::Expr(value) => calls(value),
+        StmtKind::Assign { target, value, .. } => calls(target) || calls(value),
+        StmtKind::If { cond, then, else_ } => calls(cond) || calls_in(then) || calls_in(else_),
+        StmtKind::For { iter, body, .. } => calls(iter) || calls_in(body),
+        StmtKind::Match { scrutinee, arms } => {
+            calls(scrutinee) || arms.iter().any(|(_, body)| calls_in(body))
+        }
+        StmtKind::Play(_) | StmtKind::Error => false,
+    })
+}
+
+/// Whether an expression calls `auth.submit`.
+fn calls(e: &hir::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Call { callee, args } => {
+            let hit = match callee {
+                Callee::Method { receiver, name, .. } => {
+                    (name == "submit"
+                        && matches!(&receiver.kind, ExprKind::Service(s) if s == "auth"))
+                        || calls(receiver)
+                }
+                Callee::Value(v) => calls(v),
+                // A `fn` is pure (`check::impure`): it cannot submit.
+                Callee::Fn(_) | Callee::Builtin { .. } | Callee::Record(_) | Callee::Error => false,
+            };
+            hit || args.iter().any(|a| calls(&a.value))
+        }
+        ExprKind::Field { base, .. } => calls(base),
+        ExprKind::Index { base, index } => calls(base) || calls(index),
+        ExprKind::Unary { expr, .. } => calls(expr),
+        ExprKind::Binary { lhs, rhs, .. } => calls(lhs) || calls(rhs),
+        ExprKind::Ternary { cond, then, else_ } => calls(cond) || calls(then) || calls(else_),
+        ExprKind::Lambda { body, .. } => match body {
+            hir::LambdaBody::Expr(e) => calls(e),
+            hir::LambdaBody::Block(b) => calls_in(b),
+        },
+        ExprKind::Match { scrutinee, arms } => {
+            calls(scrutinee) || arms.iter().any(|(_, e)| calls(e))
+        }
+        ExprKind::List(v) | ExprKind::Commas(v) | ExprKind::Spaced(v) => v.iter().any(calls),
+        _ => false,
     }
 }

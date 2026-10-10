@@ -1235,6 +1235,41 @@ fn a_lock_needs_a_reachable_auth_submit() {
     ));
 }
 
+/// (m4-audit) A popup or tooltip never opens on a lock surface, so an
+/// `auth.submit` inside one is no way out (`check::lock_no_auth`), and
+/// each is the warning `check::lock_popup`, in the lock or in a component
+/// it shows.
+#[test]
+fn a_popup_in_a_lock_is_no_way_out() {
+    let field = "input { type: password; text: <-> s; on activate { auth.submit(s) } }";
+    let codes = |src: String| {
+        let (out, _) = compile_files(&[("shell.strand", src)]);
+        let mut codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+        codes.retain(|c| c.starts_with("check::lock"));
+        codes.sort();
+        codes
+    };
+    assert_eq!(
+        codes(format!(
+            "lock {{ state ask = false\n  state s = \"\"\n  box {{ on click {{ ask = true }}; text \"x\" }}\n  popup {{ open: <-> ask; {field} }} }}\n"
+        )),
+        ["check::lock_no_auth", "check::lock_popup"]
+    );
+    assert_eq!(
+        codes(format!(
+            "lock {{ Face }}\ncomponent Face {{ state s = \"\"\n  box {{ text \"x\"; tooltip {{ {field} }} }} }}\n"
+        )),
+        ["check::lock_no_auth", "check::lock_popup"]
+    );
+    // A field beside the popup is a way out; the popup still warns.
+    assert_eq!(
+        codes(format!(
+            "lock {{ state s = \"\"\n  {field}\n  popup {{ text \"hint\" }} }}\n"
+        )),
+        ["check::lock_popup"]
+    );
+}
+
 /// (m4-audit) `check::lock_no_auth`'s suggested field compiles, gives the
 /// lock its way out, and does not send an empty password: with
 /// pam_faillock each empty Return pressed to wake the screen would count
