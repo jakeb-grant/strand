@@ -392,21 +392,24 @@ fn reflect(path: &str, wgsl: &str) -> Result<Vec<(String, UniformType, u32)>, Pr
                 .next(),
         )
     })?;
-    if let Err(e) = naga::valid::Validator::new(
+    let info = match naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::default(),
     )
     .validate(&module)
     {
-        let mut message = e.as_inner().to_string();
-        let mut src = std::error::Error::source(e.as_inner());
-        while let Some(s) = src {
-            message.push_str(": ");
-            message.push_str(&s.to_string());
-            src = s.source();
+        Ok(info) => info,
+        Err(e) => {
+            let mut message = e.as_inner().to_string();
+            let mut src = std::error::Error::source(e.as_inner());
+            while let Some(s) = src {
+                message.push_str(": ");
+                message.push_str(&s.to_string());
+                src = s.source();
+            }
+            return Err(bad(format!("{}: {message}", at(e.location(&source))), None));
         }
-        return Err(bad(format!("{}: {message}", at(e.location(&source))), None));
-    }
+    };
     // Every pixel gets its own copy of the private and function
     // variables, inside the strand process: a driver that cannot give
     // them (lavapipe puts them on its threads' stacks) kills the process,
@@ -424,13 +427,50 @@ fn reflect(path: &str, wgsl: &str) -> Result<Vec<(String, UniformType, u32)>, Pr
         .iter()
         .filter(|(_, g)| matches!(g.space, AddressSpace::Private | AddressSpace::WorkGroup))
         .fold(0u64, |n, (_, g)| n.saturating_add(bytes(g.ty)));
-    let local = module
-        .functions
-        .iter()
-        .map(|(_, f)| f)
-        .chain(module.entry_points.iter().map(|e| &e.function))
-        .flat_map(|f| f.local_variables.iter())
-        .fold(0u64, |n, (_, v)| n.saturating_add(bytes(v.ty)));
+    let functions = module.functions.iter().map(|(h, f)| (f, &info[h])).chain(
+        module
+            .entry_points
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (&e.function, info.get_entry_point(i))),
+    );
+    let mut local = 0u64;
+    for (f, fi) in functions {
+        local = f
+            .local_variables
+            .iter()
+            .fold(local, |n, (_, v)| n.saturating_add(bytes(v.ty)));
+        // (m4-audit) A by-value array or matrix indexed at run time (a
+        // `let`, a `const`, a parameter or a call's result) is copied
+        // into a function variable of its whole size by the SPIR-V
+        // backend, though no `var` names it; so is a composite passed to
+        // or returned from a function.
+        let composite = |inner: &naga::TypeInner| {
+            matches!(
+                inner,
+                naga::TypeInner::Array { .. } | naga::TypeInner::Matrix { .. }
+            )
+        };
+        let mut spilled = std::collections::HashSet::new();
+        for (_, e) in f.expressions.iter() {
+            if let naga::Expression::Access { base, .. } = *e {
+                let inner = fi[base].ty.inner_with(&module.types);
+                if composite(inner) && spilled.insert(base) {
+                    local = local.saturating_add(inner.try_size(gctx).map_or(u64::MAX, u64::from));
+                }
+            }
+        }
+        for ty in f
+            .arguments
+            .iter()
+            .map(|a| a.ty)
+            .chain(f.result.as_ref().map(|r| r.ty))
+        {
+            if matches!(module.types[ty].inner, naga::TypeInner::Array { .. }) {
+                local = local.saturating_add(bytes(ty));
+            }
+        }
+    }
     let memory = private.saturating_add(local);
     if memory > MAX_PIXEL_MEMORY {
         return Err(bad(
@@ -746,11 +786,13 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
     /// A shader whose private or function variables would take more
     /// than `MAX_PIXEL_MEMORY` per pixel is refused before it reaches the
     /// GPU thread (a driver that cannot give every pixel its copy kills
-    /// the process); small arrays pass.
+    /// the process), including by-value arrays indexed at run time, which
+    /// the backend copies into a variable; small arrays pass.
     #[cfg(feature = "shaders")]
     #[test]
     fn huge_private_and_local_arrays_are_refused() {
         let main = "@fragment fn main() -> @location(0) vec4<f32>";
+        let pos = "@fragment fn main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32>";
         let refused = [
             format!("var<private> a: array<vec4<f32>, 50000000>;\n{main} {{ return a[0]; }}\n"),
             format!("{main} {{ var a: array<vec4<f32>, 4096>; return a[1]; }}\n"),
@@ -762,6 +804,15 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
             format!(
                 "struct S {{ x: array<vec4<f32>, 2000> }}\nvar<private> s: S;\n\
                  {main} {{ return s.x[0]; }}\n"
+            ),
+            // (m4-audit) No `var`: a by-value array indexed at run time is
+            // copied whole into a function variable by the SPIR-V backend.
+            format!("{pos} {{ let a = array<vec4<f32>, 50000000>(); return a[u32(p.x)]; }}\n"),
+            format!("{pos} {{ let a = array<vec4<f32>, 1048576>(); return a[u32(p.x)]; }}\n"),
+            format!("const K = array<vec4<f32>, 2000>();\n{pos} {{ return K[u32(p.x)]; }}\n"),
+            format!(
+                "fn h(a: array<vec4<f32>, 2000>, i: u32) -> vec4<f32> {{ return a[i]; }}\n\
+                 {pos} {{ return h(array<vec4<f32>, 2000>(), u32(p.x)); }}\n"
             ),
         ];
         for wgsl in &refused {
@@ -777,6 +828,13 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
         let fine = format!(
             "var<private> p: array<vec4<f32>, 64>;\n\
              {main} {{ var a: array<f32, 256>; return p[0] + vec4<f32>(a[0]); }}\n"
+        );
+        let (d, _) = run(&bar(""), &[("aurora.wgsl", &fine)]);
+        assert!(d.is_empty(), "{:?}", codes(&d));
+        // A small by-value array indexed at run time passes.
+        let fine = format!(
+            "{pos} {{ let a = array<vec4<f32>, 64>(); let m = mat4x4<f32>(); \
+             return a[u32(p.x)] + m[u32(p.y) % 4u]; }}\n"
         );
         let (d, _) = run(&bar(""), &[("aurora.wgsl", &fine)]);
         assert!(d.is_empty(), "{:?}", codes(&d));
