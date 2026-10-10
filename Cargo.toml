@@ -14,6 +14,7 @@ publish = false
 strand-auth = { path = "crates/strand-auth" }
 strand-compiler = { path = "crates/strand-compiler" }
 strand-core = { path = "crates/strand-core" }
+strand-gpu = { path = "crates/strand-gpu" }
 strand-icons = { path = "crates/strand-icons" }
 strand-introspect = { path = "crates/strand-introspect" }
 strand-render = { path = "crates/strand-render" }
