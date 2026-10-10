@@ -388,28 +388,38 @@ impl Renderer {
         s.query_held = false;
         let scale = s.scale;
         // (M4) A promoted surface: its pixels come from the GPU (or the
-        // CPU draws it in full until they do).
+        // CPU draws it in full until they do). A presented frame is
+        // lowered, crossfade included, so nothing is drawn into `target`.
         #[cfg(feature = "gpu")]
-        let (total, drawn) = match self.backend(surface) {
+        let (total, drawn, lowered) = match self.backend(surface) {
             strand_scene::Backend::GpuReadback => {
                 match self.gpu_readback_paint(surface, &f.items, &f.passes, stats.2, target) {
-                    Some(d) => (d, true),
-                    None => (Damage::full(target.size), false),
+                    Some(d) => (d, true, false),
+                    None => (Damage::full(target.size), false, false),
                 }
             }
-            strand_scene::Backend::GpuPresent => (
-                self.gpu_present_paint(surface, &f.items, &f.passes, target.size, scale),
-                true,
-            ),
-            strand_scene::Backend::Cpu => (total, false),
+            strand_scene::Backend::GpuPresent => {
+                let w = match fade {
+                    super::swap::FadeFrame::Blend(w) => Some(w),
+                    _ => None,
+                };
+                (
+                    self.gpu_present_paint(surface, &f.items, &f.passes, target.size, scale, w),
+                    true,
+                    true,
+                )
+            }
+            strand_scene::Backend::Cpu => (total, false, false),
         };
         #[cfg(not(feature = "gpu"))]
-        let drawn = false;
+        let (drawn, lowered) = (false, false);
         if !drawn {
             self.raster
                 .paint(&f.items, &total, &self.atlas, scale, target);
         }
-        if let super::swap::FadeFrame::Blend(w) = fade {
+        if let super::swap::FadeFrame::Blend(w) = fade
+            && !lowered
+        {
             self.blend_fade(surface, w, target);
         }
         // Nothing changed since flattening: the next paint can reuse it.

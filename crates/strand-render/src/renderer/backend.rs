@@ -258,6 +258,9 @@ pub(super) struct GpuState {
     scratch: Vec<u8>,
     /// A `shader` node was drawn by the last frame of some surface.
     demand: HashSet<SurfaceId>,
+    /// Presented surfaces crossfading: their snapshot as an upload,
+    /// with the snapshot's address it was copied from.
+    fades: HashMap<SurfaceId, (usize, Arc<Pixmap>)>,
 }
 
 impl GpuState {
@@ -299,6 +302,7 @@ impl GpuState {
         }
         self.pending.clear();
         self.uploads.clear();
+        self.fades.clear();
         back
     }
 }
@@ -382,6 +386,7 @@ impl Renderer {
         s.inflight = None;
         s.pixels = None;
         s.hold = None;
+        self.gpu.fades.remove(&surface);
         if backend.is_gpu() {
             if !s.promo.on_gpu() {
                 // Attached for a promotion that has since been undone.
@@ -572,6 +577,7 @@ impl Renderer {
         let live = &self.surfaces;
         self.gpu.surfaces.retain(|id, _| live.contains_key(id));
         self.gpu.demand.retain(|id| live.contains_key(id));
+        self.gpu.fades.retain(|id, _| live.contains_key(id));
         // Passes of surfaces that went away: their pixels have nowhere
         // to go.
         self.gpu
@@ -766,6 +772,11 @@ impl Renderer {
 
     /// In `paint` of a `GpuPresent` surface: lowers the frame for
     /// [`Renderer::paint_gpu`] instead of rasterising it.
+    ///
+    /// `fade`: the new frame's weight in a theme crossfade. The frame
+    /// then draws the snapshot weighted `1 - fade` and adds the new
+    /// frame weighted `fade` over it (a `Plus` layer), which is the CPU's
+    /// blend of the two (`swap::blend`), done on the GPU.
     pub(super) fn gpu_present_paint(
         &mut self,
         surface: SurfaceId,
@@ -773,11 +784,44 @@ impl Renderer {
         passes: &[PassWant],
         size: Size,
         scale: Scale,
+        fade: Option<f32>,
     ) -> Damage {
         let id = self.gpu.frame_id();
-        let frame = self.lower_frame(surface, id, items, passes, size, scale);
+        let mut frame = self.lower_frame(surface, id, items, passes, size, scale);
+        match fade.and_then(|w| Some((w, self.fade_pixmap(surface, size)?))) {
+            Some((w, pm)) => {
+                let image = self.gpu.uploads.id(&pm, &mut frame.uploads);
+                frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), image, size, w);
+            }
+            None => {
+                self.gpu.fades.remove(&surface);
+            }
+        }
         self.gpu.present = Some(frame);
         Damage::full(size)
+    }
+
+    /// `surface`'s crossfade snapshot as a pixmap to upload, copied once
+    /// per snapshot.
+    fn fade_pixmap(&mut self, surface: SurfaceId, size: Size) -> Option<Arc<Pixmap>> {
+        let px = self.fade_pixels(surface, size)?;
+        let at = px.as_ptr() as usize;
+        if let Some((a, pm)) = self.gpu.fades.get(&surface)
+            && *a == at
+        {
+            return Some(pm.clone());
+        }
+        let (w, h) = (u16::try_from(size.w).ok()?, u16::try_from(size.h).ok()?);
+        let mut pm = Pixmap::new(w, h);
+        let bytes = pm.data_as_u8_slice_mut();
+        if bytes.len() != px.len() {
+            return None;
+        }
+        // The CPU raster's bytes are an upload's order already.
+        bytes.copy_from_slice(px);
+        let pm = Arc::new(pm);
+        self.gpu.fades.insert(surface, (at, pm.clone()));
+        Some(pm)
     }
 
     /// Lowers a display list to a GPU frame.
@@ -828,6 +872,41 @@ impl Renderer {
             clear: AlphaColor::TRANSPARENT,
         }
     }
+}
+
+/// A crossfade frame's ops: upload `image` (the snapshot, `size`)
+/// weighted `1 - w`, and the new frame's `ops` added over it weighted
+/// `w`. Both start at the identity transform.
+fn crossfade_ops(ops: Vec<Op>, image: u64, size: Size, w: f32) -> Vec<Op> {
+    use vello_cpu::peniko::{BlendMode, Compose, Mix};
+    let w = if w.is_finite() {
+        w.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let rect = kurbo::Rect::new(0.0, 0.0, size.w as f64, size.h as f64);
+    let mut out = Vec::with_capacity(ops.len() + 7);
+    out.push(Op::Transform(Affine::IDENTITY));
+    out.push(Op::PushLayer(strand_gpu::Layer {
+        opacity: Some(1.0 - w),
+        ..Default::default()
+    }));
+    out.push(Op::Image {
+        rect,
+        image,
+        image_transform: Affine::IDENTITY,
+        tint: None,
+        smooth: false,
+    });
+    out.push(Op::PopLayer);
+    out.push(Op::PushLayer(strand_gpu::Layer {
+        blend: Some(BlendMode::new(Mix::Normal, Compose::Plus)),
+        opacity: Some(w),
+        ..Default::default()
+    }));
+    out.extend(ops);
+    out.push(Op::PopLayer);
+    out
 }
 
 /// Readback rows (BGRA bytes) as a pixmap in the CPU raster's order

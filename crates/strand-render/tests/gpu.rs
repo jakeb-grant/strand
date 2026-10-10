@@ -571,3 +571,230 @@ fn a_canvas_is_drawn_by_the_gpu_like_the_cpu() {
         "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
     );
 }
+
+/// The split palette of `theme_swap.rs`: `$fg` over `$surface` and
+/// `$surface.split`, grey and grey, then black and white, which no
+/// spring keeps readable, so the swap crossfades.
+fn split_tables() -> (TokenTable, TokenTable) {
+    use strand_theme::{Options, from_seed};
+    let grey = Color::from_oklch(Oklch {
+        l: 0.6,
+        c: 0.0,
+        h: 0.0,
+        alpha: 1.0,
+    });
+    let palette = from_seed(
+        hex(strand_theme::defaults::DEFAULT_SEED),
+        Options {
+            dark: false,
+            ..Options::default()
+        },
+    );
+    let mut a = strand_theme::defaults::base_tokens();
+    palette.insert_into(&mut a);
+    a.insert("font.ui", PropValue::Font(font(14.0)));
+    let mut b = a.clone();
+    for t in [&mut a, &mut b] {
+        t.insert("surface.split", PropValue::Color(grey));
+        t.insert_contrast("fg", vec!["surface".into(), "surface.split".into()]);
+    }
+    a.insert("surface", PropValue::Color(grey));
+    b.insert("surface", PropValue::Color(Color::BLACK));
+    b.insert("surface.split", PropValue::Color(Color::WHITE));
+    (a, b)
+}
+
+/// A 640×330 panel (large enough to stay promoted while it crossfades)
+/// in `$surface`, its right half in `$surface.split`, text in `$fg`
+/// over both.
+fn fade_scene(r: &mut Renderer, t: TokenTable) {
+    let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
+    let mut b = Builder::default();
+    b.diff.set_tokens(t, Transition::Instant);
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("surface"))]);
+    b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(320.0)),
+            (Prop::Y, num(0.0)),
+            (Prop::Width, num(320.0)),
+            (Prop::Height, num(330.0)),
+            (Prop::Bg, tok("surface.split")),
+        ],
+    );
+    for x in [40.0, 360.0] {
+        b.node(
+            NodeKind::Text,
+            Some(root),
+            vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(150.0)),
+                (Prop::Text, text("Strand")),
+                (Prop::Color, tok("fg")),
+            ],
+        );
+    }
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+}
+
+/// A presented surface's frame drawn on the GPU (attached for readback,
+/// so the test sees its pixels), as BGRA bytes like a CPU frame.
+fn draw(gpu: &mut Gpu, pings: &mpsc::Receiver<()>, frame: strand_gpu::Frame) -> Vec<u8> {
+    let id = frame.id;
+    gpu.send(GpuRequest::Frame(frame));
+    let deadline = Instant::now() + WAIT;
+    loop {
+        while let Some(reply) = gpu.try_recv() {
+            match reply {
+                GpuReply::Pixels { frame, pixels, .. } if frame == id => {
+                    let mut out = Vec::new();
+                    for y in 0..pixels.height {
+                        out.extend_from_slice(pixels.row(y));
+                    }
+                    return out;
+                }
+                GpuReply::Failed { error, .. } => panic!("frame {id} failed: {error}"),
+                _ => {}
+            }
+        }
+        assert!(Instant::now() < deadline, "no pixels for frame {id}");
+        let _ = pings.recv_timeout(Duration::from_millis(50));
+    }
+}
+
+/// Pixels past the tolerance, and the worst channel difference.
+fn compare_bytes(a: &[u8], b: &[u8]) -> (usize, u8) {
+    assert_eq!(a.len(), b.len());
+    let mut bad = 0;
+    let mut worst = 0;
+    for (x, y) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let d = x
+            .iter()
+            .zip(y)
+            .map(|(p, q)| p.abs_diff(*q))
+            .max()
+            .unwrap_or(0);
+        worst = worst.max(d);
+        if d > GPU_TOLERANCE {
+            bad += 1;
+        }
+    }
+    (bad, worst)
+}
+
+/// A theme crossfade on a `GpuPresent` surface: each frame `paint_gpu`
+/// lowers carries the snapshot of the old frame under the new one, and
+/// the GPU draws it as the CPU blends it (within the GPU tolerance),
+/// from the old frame to exactly the new one.
+#[test]
+fn a_presented_surface_crossfades_on_the_gpu_like_the_cpu() {
+    let Some(opts) = device() else { return };
+    const W: u32 = 640;
+    const H: u32 = 330;
+    let t0 = Duration::from_secs(1);
+    let at = |k: u32| t0 + Duration::from_nanos(1_000_000_000 * k as u64 / 60);
+    let swap = |r: &mut Renderer, t: &TokenTable| {
+        let mut d = SceneDiff::new();
+        d.set_tokens(t.clone(), Transition::Default);
+        assert!(r.apply(d).is_empty());
+        assert_eq!(r.swap_crossfades(), 1, "the swap crossfades");
+    };
+    let (a, b) = split_tables();
+
+    // The CPU's crossfade, frame by frame.
+    let mut cpu = renderer();
+    fade_scene(&mut cpu, a.clone());
+    let mut buf = Buffer::new(W, H, Scale::ONE);
+    buf.paint_at(&mut cpu, S, 0, t0);
+    cpu.update();
+    buf.paint_at(&mut cpu, S, 0, t0);
+    let old = buf.pixels.clone();
+    swap(&mut cpu, &b);
+    let mut want = Vec::new();
+    let mut k = 1;
+    while cpu.wants_frame(S) {
+        buf.paint_at(&mut cpu, S, 0, at(k));
+        want.push(buf.pixels.clone());
+        k += 1;
+        assert!(k < 120, "the CPU's crossfade never settled");
+    }
+    let new = want.last().cloned().expect("crossfade frames");
+    assert!(want.len() > 4, "{} crossfade frames", want.len());
+
+    // The same surface presented: its frames are lowered, not drawn.
+    let mut r = renderer();
+    fade_scene(&mut r, a);
+    let mut first = Buffer::new(W, H, Scale::ONE);
+    first.paint_at(&mut r, S, 0, t0);
+    r.update();
+    first.paint_at(&mut r, S, 0, t0);
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    assert_eq!(r.backend(S), Backend::GpuPresent);
+    let (ping, pings) = mpsc::channel();
+    let mut gpu = Gpu::spawn(
+        Box::new(move || {
+            let _ = ping.send(());
+        }),
+        opts,
+    );
+    gpu.send(GpuRequest::Attach {
+        surface: S,
+        handles: None,
+        size: Size::new(W, H),
+        scale: Scale::ONE,
+        opaque: false,
+    });
+    let frame = r.paint_gpu(S, t0).expect("the switch repaints");
+    let px = draw(&mut gpu, &pings, frame);
+    let (bad, worst) = compare_bytes(&px, &old);
+    assert!(
+        bad as f64 / (W * H) as f64 <= EDGE_SHARE,
+        "the presented frame before the swap: {bad} pixels past {GPU_TOLERANCE} (worst {worst})"
+    );
+
+    swap(&mut r, &b);
+    let mut blended = 0;
+    for (i, cpu_px) in want.iter().enumerate() {
+        let frame = r
+            .paint_gpu(S, at(i as u32 + 1))
+            .unwrap_or_else(|| panic!("crossfade frame {}", i + 1));
+        let fading = frame.ops.iter().any(|o| {
+            matches!(
+                o,
+                strand_gpu::Op::PushLayer(strand_gpu::Layer { blend: Some(_), .. })
+            )
+        });
+        let px = draw(&mut gpu, &pings, frame);
+        let (bad, worst) = compare_bytes(&px, cpu_px);
+        if bad as f64 / (W * H) as f64 > EDGE_SHARE {
+            let rgba: Vec<u8> = px
+                .chunks_exact(4)
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect();
+            write_png(&refs_dir().join("gpu_crossfade.actual.png"), W, H, &rgba);
+            panic!(
+                "crossfade frame {}: {bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})",
+                i + 1
+            );
+        }
+        let (from_old, _) = compare_bytes(&px, &old);
+        let (from_new, _) = compare_bytes(&px, &new);
+        if fading && from_old > 0 && from_new > 0 {
+            blended += 1;
+        }
+    }
+    assert!(
+        blended > 2,
+        "{blended} GPU frames between the old and the new frame"
+    );
+    assert!(!r.swapping(), "the crossfade ended");
+    assert!(
+        r.paint_gpu(S, at(want.len() as u32 + 1)).is_none(),
+        "idle after"
+    );
+    drop(gpu);
+}
