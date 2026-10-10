@@ -411,8 +411,9 @@ strand-services' stores to strand-compiler's VM.
 strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
              bin: the PAM helper, the only code that links libpam
   ^-- strand-services (the `auth` service), strand-surface (the unlock
-      gate), strand (the main thread's fallback client); both `Client`
-      owners pass `child::restore_in_child` in as the spawn's `pre_exec`
+      gate), strand (the fallback lock's `strand-lock-auth` thread);
+      both `Client` owners pass `child::restore_in_child` in as the
+      spawn's `pre_exec`
 
 strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
                      on wayland-server: toplevels, workspaces, toplevel
@@ -2600,7 +2601,15 @@ and the connection):
   again only after that frame's callback (requested while `wants_frame`
   stays true, or always without `wp_presentation`) or its presentation
   feedback (`presented`/`discarded`, requested for every commit). Changes
-  arriving meanwhile coalesce into the next paint.
+  arriving meanwhile coalesce into the next paint. Two exceptions: a new
+  size or scale paints at once (the old frame's feedback comes back
+  discarded and no longer matches), and a frame whose callback or
+  feedback has not come in `THROTTLE_GIVE_UP` (1 s) no longer blocks:
+  the next change paints anyway, counted in `Stats::throttle_given_up`,
+  and a change refused while throttled arms a timer that marks the
+  surface again at the give-up. The cost: a surface the compositor does
+  not show (occluded, DPMS off) paints new content at most once a second
+  instead of not at all (decisions.md, m4-audit round 7).
 - Monitors reach logic through the binary: it forwards the `monitor_*`
   hooks as the `screens` service (design: Monitors → `screens`), from
   which logic instantiates per-monitor surfaces (`Screens::Named`).

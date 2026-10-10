@@ -234,8 +234,9 @@ fn descendants(root: libc::pid_t) -> Vec<libc::pid_t> {
 }
 
 /// Talks to one helper process over a socketpair; fork+execs it again
-/// when it has died. Blocking: the `auth` service calls it on a thread
-/// of its own, the binary's fallback lock on the main thread.
+/// when it has died. Blocking: the `auth` service and the binary's
+/// fallback lock (its `strand-lock-auth` thread) each call it on a thread
+/// of their own, never on the main thread.
 pub struct Client {
     helper_path: PathBuf,
     pre_exec: fn(),
