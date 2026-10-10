@@ -1508,10 +1508,32 @@ fn the_design_launcher_scrolls_2000_apps() {
     if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
         sway.grim(&[], &PathBuf::from(&dir).join("launcher_2000_top.png"));
     }
-    let start = Shot {
-        w: shot.w,
-        h: shot.h,
-        rgb: shot.rgb.clone(),
+    // The first mount's rows (logic's first window, before any window
+    // move), held still: nothing pending on a worker, no frame painted
+    // between two shots 150 ms apart and the box's pixels alike. Once the
+    // window has moved away and back, the rows must match these.
+    let start = {
+        let (left, right) = (b.2 + 24, b.2 + wide(&shot, b) - 25);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last: Option<(Shot, usize)> = None;
+        loop {
+            let lines = damage_lines(&log);
+            let idle = lines.last().is_some_and(|l| {
+                let mut f = l.split_whitespace();
+                f.clone().any(|f| f == "pending=0") && f.any(|f| f == "top=0")
+            });
+            let s = Shot::take(&sway, "HEADLESS-1");
+            if let Some((l, n)) = &last
+                && idle
+                && *n == lines.len()
+                && (top..bottom).all(|y| (left..right).all(|xx| l.px(xx, y) == s.px(xx, y)))
+            {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "the first rows never held still");
+            last = Some((s, lines.len()));
+            std::thread::sleep(Duration::from_millis(150));
+        }
     };
 
     // The wheel, over the list: 600 notches (9,000 px, about 190 rows)
@@ -1677,6 +1699,41 @@ fn the_design_launcher_scrolls_2000_apps() {
         damage_lines(&log).iter().all(|l| field(l, "gaps") == 0),
         "a frame showed a gap"
     );
+    // Back to the top: the rows logic mounts after its window has moved
+    // a hundred rows away and back are the first mount's, pixel for
+    // pixel (within the bursts' tolerance). The bursts compare each shot
+    // only with the one before, so a row that is wrong from the moment
+    // it first shows (an index mounted with its neighbour's data) would
+    // pass them; the first mount, made before any window move, is the
+    // independent reference.
+    for _ in 0..100 {
+        pointer.wheel(-10, over.0, over.1, w, h);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    pointer.motion(off.0, off.1, w, h);
+    let back = still(Some(0));
+    let (mut same, mut total) = (0usize, 0usize);
+    for y in list.clone() {
+        for xx in xs.clone() {
+            total += 1;
+            let (a, c) = (back.px(xx, y), start.px(xx, y));
+            if a.iter().zip(c).all(|(p, q)| p.abs_diff(q) <= 24) {
+                same += 1;
+            }
+        }
+    }
+    assert!(
+        same * 1000 >= total * 998,
+        "back at the top, the rows are not the first mount's ({} of {total} pixels differ)",
+        total - same
+    );
+    // The reference tells neighbours apart: rows one row (48 px) off are
+    // other rows, as a window mounted one index off would show.
+    let shifted = (list.start..list.end - 48)
+        .flat_map(|y| xs.clone().map(move |xx| (xx, y)))
+        .filter(|&(xx, y)| back.px(xx, y) != start.px(xx, y + 48))
+        .count();
+    assert!(shifted > 500, "the first rows look alike ({shifted})");
 
     // Ctrl+End selects the last app (plain End moves the search's
     // caret): not mounted, it is scrolled to, mounted by logic and drawn
