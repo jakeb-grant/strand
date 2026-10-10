@@ -6,9 +6,17 @@ Ubuntu 24.04 with CI's packages, rustc 1.97.0, headless sway 1.9 with
 the pixman renderer, lavapipe from Mesa 25.2.8 as the only Vulkan
 driver), at `e765276` on `laptop/integration-m4-w3`: M4 waves 0–3
 merged, the m4 audit's three rounds of fixes, and the closing
-integrator's one code fix (Lock). The commits after `e765276` change
-docs, two tests' harnesses, and the GPU thread's answer to a frame
-or pass that panics (decisions.md m4-integration-w3, closing). Release figures use the workspace's release profile (fat
+integrator's one code fix (Lock). The commits after `e765276` on
+`main` change docs, two tests' harnesses, and the GPU thread's answer
+to a frame or pass that panics (decisions.md m4-integration-w3,
+closing). The m4 audit's later rounds (4 to 6, on `laptop/m4-audit`
+until merged; decisions.md m4-audit) also change runtime code: the
+GPU path (promotion, a hung or failed pass, a shader file that lost
+the device never run again), bounded reads of shader, image, SVG and
+Lottie files, the per-pixel memory cap, when a lock session begins,
+and drag exports nobody reads. The figures below are at `e765276` and
+do not include them; each round's release `.text` cost is in
+decisions.md m4-audit and handoff.md. Release figures use the workspace's release profile (fat
 LTO, one codegen unit, mimalloc, the 40 per-package `opt-level`s of
 `Cargo.toml`; thin LTO until m4-integration-w2, which switched because
 thin LTO broke the `.text` gates). The latency benches use the
@@ -167,7 +175,13 @@ to the GPU thread
 (`crates/strand-surface/tests/session_lock.rs::a_lock_surface_is_never_handed_to_the_gpu`);
 the pipeline and readback caches are bounded; the run joins the GPU
 thread before its Wayland connection goes; and a shader with more than
-16 KiB of private memory per pixel is refused at check time.
+16 KiB of private memory per pixel is refused at check time. A hung
+device is leaked, not reset (lavapipe has none): since round 5 a
+shader file whose pass or frame lost the device is never run again in
+the process, so a looping shader costs one device, but each edit of a
+file that still loops is new code and can leak one more (a spinning
+CPU thread) at most once per 30 s retry, with no process-wide cap;
+that cap waits on the owner (Open).
 
 ## Lock
 
@@ -236,6 +250,14 @@ Waiting on the owner (decisions.md m4-gpu-effects, m4-audit):
   plus polygons (decisions.md m4-audit, "the shape list is a reading").
 - **xdg-activation** (the notification ActivationToken and the launch
   token) moves past M4, to be scheduled.
+- **A process-wide cap on hung devices** (decisions.md m4-audit round
+  5): each edit of a shader file that still loops forever leaks one
+  more lavapipe device, a spinning CPU thread, at most once per 30 s,
+  without bound. Capping it needs a rule design.md does not have (no
+  GPU for the rest of the process after N lost devices, say); the
+  owner accepts the per-edit cost or names a cap.
+- **The promoted GPU cost on hardware** is unmeasured (below, "Not
+  measured").
 
 Not measured, and why:
 
