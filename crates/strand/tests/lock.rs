@@ -11,7 +11,8 @@
 //! each fault (`STRAND_FAULT`, `run/lock.rs`'s `faults` module and
 //! strand-auth's helper points) the test asserts, from grim's pixels,
 //! that the session stays locked (the desktop, an orange bar drawn by a
-//! client of the test's own, never shows), that the built-in password
+//! client of the test's own, never shows: no pixel of any shot is its
+//! colour), that the built-in password
 //! field appears (its background `#11111b` and field `#1e1e2e`), that a
 //! wrong password is refused (the field turns `#3b202c`) and leaves the
 //! session locked, and that the test user's password (`strand-test`,
@@ -19,7 +20,8 @@
 //!
 //! Faults: the logic thread panics, or stops (the watchdog); the text
 //! worker dies; the PAM helper crashes, hangs, answers garbage or is
-//! missing; a runtime fault freezes the lock's component; the lock never
+//! missing, is SIGKILLed mid-check from outside, or is deleted and
+//! killed mid-session; a runtime fault freezes the lock's component; the lock never
 //! draws a first frame; a session locked with no `lock` compiled;
 //! SIGTERM while locked, and then the content's output unplugged (the
 //! lock's node kept), or the lock unmounted and then the content's
@@ -328,6 +330,17 @@ impl Shot {
 
     fn desktop(&self) -> bool {
         near(self.top(), DESKTOP)
+    }
+
+    /// Any pixel of the output shows the desktop's bar: what a lock
+    /// must hide everywhere, not only where [`Shot::top`] samples it (a
+    /// surface covering part of the output, or part of the bar, still
+    /// leaves some of it).
+    fn desktop_anywhere(&self) -> Option<(usize, usize)> {
+        self.rgb
+            .chunks_exact(3)
+            .position(|p| near([p[0], p[1], p[2]], DESKTOP))
+            .map(|i| (i % self.w, i / self.w))
     }
 
     fn fallback(&self) -> bool {
@@ -1041,10 +1054,9 @@ impl Vm {
         let deadline = Instant::now() + WAIT;
         loop {
             let shot = self.sway.shot(output);
-            if locked {
-                assert!(
-                    !shot.desktop(),
-                    "{output}: the desktop showed while locked, waiting for {what} ({})\n{}",
+            if locked && let Some((x, y)) = shot.desktop_anywhere() {
+                panic!(
+                    "{output}: the desktop showed at {x},{y} while locked, waiting for {what} ({})\n{}",
                     shot.describe(),
                     self.strand.log_text()
                 );
@@ -1065,7 +1077,7 @@ impl Vm {
     /// `strand set lock.locked true`, then the session locked.
     fn lock(&self) {
         self.strand.cli(&["set", "lock.locked", "true"]);
-        self.until("HEADLESS-1", "locked", |s| !s.desktop());
+        self.until("HEADLESS-1", "locked", |s| s.desktop_anywhere().is_none());
     }
 
     /// The config's lock shows. Should it have missed its 1 s first-frame
@@ -1158,6 +1170,70 @@ impl Vm {
         let log = self.strand.log_text();
         assert!(log.contains(text), "the log says {text:?}:\n{log}");
     }
+
+    /// Waits until strand's log (its helpers' stderr included) says
+    /// `text`.
+    fn until_log(&self, text: &str) {
+        let deadline = Instant::now() + WAIT;
+        while !self.strand.log_text().contains(text) {
+            assert!(
+                Instant::now() < deadline,
+                "the log never said {text:?}:\n{}",
+                self.strand.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// SIGKILLs every PAM helper strand runs (what the OOM killer
+    /// does); returns their pids.
+    fn kill_helpers(&self) -> Vec<u32> {
+        let pid = self.strand.pid().expect("strand runs");
+        let helpers: Vec<u32> = std::fs::read_dir(format!("/proc/{pid}/task"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|t| std::fs::read_to_string(t.path().join("children")).ok())
+            .flat_map(|c| {
+                c.split_whitespace()
+                    .filter_map(|p| p.parse::<u32>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|c| {
+                std::fs::read_to_string(format!("/proc/{c}/comm"))
+                    .is_ok_and(|n| n.trim() == "strand-auth")
+            })
+            .collect();
+        for h in &helpers {
+            // SAFETY: kill(2) on strand's child, which runs as us.
+            assert_eq!(unsafe { libc::kill(*h as i32, libc::SIGKILL) }, 0);
+        }
+        helpers
+    }
+}
+
+/// The PAM helper beside the binary under test moved away for the
+/// guard's life (deleted, as far as anything looking for it can tell),
+/// and put back when the guard drops, a failed test included: it lives
+/// in the build directory the host shares.
+struct HelperAway {
+    path: PathBuf,
+    away: PathBuf,
+}
+
+impl HelperAway {
+    fn new() -> HelperAway {
+        let path = Path::new(env!("CARGO_BIN_EXE_strand")).with_file_name("strand-auth");
+        let away = path.with_file_name("strand-auth.away");
+        std::fs::rename(&path, &away).unwrap();
+        HelperAway { path, away }
+    }
+}
+
+impl Drop for HelperAway {
+    fn drop(&mut self) {
+        let _ = std::fs::rename(&self.away, &self.path);
+    }
 }
 
 /// A fault that shows the fallback once the session is locked; `before`
@@ -1246,6 +1322,60 @@ fn pam_helper_garbage_shows_the_fallback() {
 #[test]
 fn pam_helper_missing_shows_the_fallback() {
     auth_fault("auth_missing", "auth_missing");
+}
+
+/// Tier C's helper killed mid-check: the helper reads the right
+/// password and hangs (`auth_hang` with the default timeout,
+/// `auth_hold`), and is then SIGKILLed from outside, as the OOM killer
+/// would. The check is not an unlock: the session stays locked, the
+/// fallback takes over with a helper of its own, and only the right
+/// password unlocks it.
+#[test]
+fn pam_helper_killed_mid_check_shows_the_fallback() {
+    let Some(mut vm) = fallback_scenario(
+        "auth_killed",
+        "auth_hang,auth_hold",
+        Some(|vm| {
+            vm.lock_enter(PASSWORD);
+            vm.until_log("strand-auth: STRAND_FAULT auth_hang");
+            assert_eq!(vm.kill_helpers().len(), 1, "the hung helper");
+        }),
+    ) else {
+        return;
+    };
+    vm.log_has("`auth` failed (the password could not be checked: the PAM helper stopped)");
+    vm.fallback_passwords();
+}
+
+/// Tier C's helper deleted: the helper binary is gone and the running
+/// helper killed, so `auth` cannot start another. The session stays
+/// locked, the fallback shows, and while no helper exists the right
+/// password is refused like any other; once the binary is back the
+/// fallback finds it and only the right password unlocks.
+#[test]
+fn pam_helper_deleted_and_killed_keeps_the_session_locked_until_it_is_back() {
+    let test = "auth_deleted";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    vm.lock();
+    vm.content();
+    let away = HelperAway::new();
+    assert_eq!(vm.kill_helpers().len(), 1, "`auth`'s helper");
+    vm.lock_enter(PASSWORD);
+    vm.fallback();
+    vm.log_has("`auth` failed (the password could not be checked: cannot start the PAM helper");
+    vm.keys.enter(PASSWORD);
+    vm.until_log("no `strand-auth` helper is installed");
+    vm.until_locked(
+        "HEADLESS-1",
+        "the right password refused with no helper",
+        true,
+        |s| near(s.corner(), FALLBACK_BG) && near(s.field(), FIELD_REFUSED),
+    );
+    drop(away);
+    vm.fallback_passwords();
 }
 
 /// The other outputs show the config's lock colour, the fallback's
@@ -1529,7 +1659,7 @@ fn restart_after(test: &str, sig: i32) {
     std::thread::sleep(Duration::from_millis(500));
     let shot = vm.sway.shot("HEADLESS-1");
     assert!(
-        !shot.desktop(),
+        shot.desktop_anywhere().is_none(),
         "locked with no locker: {}",
         shot.describe()
     );
@@ -1688,7 +1818,7 @@ fn a_supervised_strand_dying_while_locked_keeps_the_session_locked() {
         loop {
             let shot = vm.sway.shot("HEADLESS-1");
             assert!(
-                !shot.desktop(),
+                shot.desktop_anywhere().is_none(),
                 "{round}: the desktop showed after signal {sig}: {}\n{}",
                 shot.describe(),
                 vm.strand.log_text()

@@ -411,7 +411,9 @@ struct Shown {
 
 /// The fallback's password checks: a thread holding its own
 /// `strand_auth::Client` (one helper for the lock session), answering
-/// on the main loop's channel.
+/// on the main loop's channel. The helper is looked for at each check
+/// until one is found: one deleted (a package upgrade mid-session) is
+/// refused, never unlocked, and checks work again once it is back.
 struct Checker {
     tx: std::sync::mpsc::Sender<Password>,
 }
@@ -422,9 +424,12 @@ impl Checker {
         std::thread::Builder::new()
             .name("strand-lock-auth".into())
             .spawn(move || {
-                let mut client = strand_auth::default_helper()
-                    .map(|h| Client::new(h, strand_services::child::restore_in_child));
+                let mut client: Option<Client> = None;
                 for password in rx {
+                    if client.is_none() {
+                        client = strand_auth::default_helper()
+                            .map(|h| Client::new(h, strand_services::child::restore_in_child));
+                    }
                     let verdict = match client.as_mut() {
                         Some(c) => c.submit(password),
                         None => Verdict::Failed(AuthError::Spawn(io::Error::new(
@@ -1169,8 +1174,9 @@ pub(crate) mod faults {
 
     /// `auth`'s helper gets `STRAND_FAULT` (`auth_crash`, `auth_hang`,
     /// `auth_garbage`: strand-auth's own points), a 3 s timeout under
-    /// `auth_hang`, and `auth_missing` points it at no helper at all.
-    /// The fallback's own client gets none of it.
+    /// `auth_hang` (unless `auth_hold`: the default timeout, for a test
+    /// that kills the hung helper itself), and `auth_missing` points it
+    /// at no helper at all. The fallback's own client gets none of it.
     pub(crate) fn auth_config(config: &mut strand_services::auth::AuthConfig) {
         let env = value();
         if env.is_empty() {
@@ -1179,7 +1185,7 @@ pub(crate) mod faults {
         if on("auth_missing") {
             config.helper = Some("/nonexistent/strand-auth".into());
         }
-        if on("auth_hang") {
+        if on("auth_hang") && !on("auth_hold") {
             config.timeout = Duration::from_secs(3);
         }
         config.client_hook = Some(Arc::new(move |c: strand_auth::Client| {
