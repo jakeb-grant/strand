@@ -49,6 +49,8 @@ enum SourceValue {
     Chunk(ChunkId, Ty),
     Pose(Vec<Prop>),
     Tokens(Vec<TokenDef>),
+    /// (M4) A tree-level `play shake`: the keyframes once, on mount.
+    Play(ChunkId),
 }
 
 /// Which branch of a [`Switch`] to show (`None`: none).
@@ -1690,7 +1692,7 @@ impl Ctx {
                     SceneProp::Play,
                     Source {
                         cond: None,
-                        value: SourceValue::Chunk(*c, Ty::TEXT),
+                        value: SourceValue::Play(*c),
                         transition: Transition::Default,
                     },
                 ),
@@ -1746,6 +1748,10 @@ impl Ctx {
                 }
                 PropValue::Tokens(Box::new(t))
             }
+            SourceValue::Play(c) => match self.eval(rt, *c, env)? {
+                Value::Keyframes(d) => self.keyframes(rt, d, 0)?,
+                _ => PropValue::Unset,
+            },
         })
     }
 
@@ -1822,7 +1828,7 @@ impl Ctx {
         for s in sources.iter() {
             chunks.extend(s.cond);
             match &s.value {
-                SourceValue::Chunk(c, _) => chunks.push(*c),
+                SourceValue::Chunk(c, _) | SourceValue::Play(c) => chunks.push(*c),
                 SourceValue::Pose(props) => chunks.extend(props.iter().map(|p| p.value)),
                 SourceValue::Tokens(defs) => chunks.extend(defs.iter().map(|d| d.value)),
             }

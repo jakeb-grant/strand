@@ -29,6 +29,7 @@ use strand_scene::{
 
 use crate::tree::{Node, SceneTree};
 
+mod keyframes;
 mod motion;
 mod pages;
 mod pose;
@@ -178,6 +179,8 @@ pub(crate) struct Animator {
     shapes: crate::shapes::morph::Morphs,
     /// (M4) Rolling texts' layouts and rolls (`crate::effects::roll`).
     rolls: crate::effects::roll::Rolls,
+    /// (M4) Nodes' `play`s ([`keyframes`]).
+    plays: keyframes::Plays,
 }
 
 impl Animator {
@@ -295,6 +298,46 @@ impl Animator {
         roll
     }
 
+    /// (M4) Draws node `node`'s `play` (`Prop::Play` in `props`, which
+    /// already hold this frame's springs) over `props`
+    /// ([`keyframes`]). `inh`, `rect` and `parent` as for
+    /// [`Animator::paint`].
+    pub fn keyframes(
+        &mut self,
+        node: &Node,
+        props: &mut Vec<(Prop, Cow<'_, PropValue>)>,
+        inh: Color,
+        rect: Option<LogicalRect>,
+        parent: LogicalRect,
+    ) {
+        let Some(PropValue::Keyframes(k)) = props
+            .iter()
+            .find(|(q, _)| *q == Prop::Play)
+            .map(|(_, v)| v.as_ref())
+        else {
+            self.plays.forget(node.id);
+            return;
+        };
+        let k = k.clone();
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (p, moving) = self.plays.progress(node.id, &k, frame);
+        if moving {
+            self.active = true;
+        }
+        if let Some(p) = p {
+            let boxes = Extents {
+                own: rect.map_or((0.0, 0.0), |r| (r.w, r.h)),
+                parent: (parent.w, parent.h),
+            };
+            keyframes::apply(&k, p, props, inh, boxes);
+        }
+    }
+
     /// (M4) `id` does not roll (any more).
     pub fn forget_roll(&mut self, id: NodeId) {
         self.rolls.forget(id);
@@ -389,6 +432,7 @@ impl Animator {
         self.times.forget(id);
         self.shapes.forget(id);
         self.rolls.forget(id);
+        self.plays.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -457,6 +501,7 @@ impl Animator {
         self.times.retain(&mut keep);
         self.shapes.retain(&mut keep);
         self.rolls.retain(&mut keep);
+        self.plays.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -683,6 +728,7 @@ impl Animator {
             || self.exits.keys().any(under)
             || self.shapes.pending(|id| under(&id))
             || self.rolls.pending(|id| under(&id))
+            || self.plays.busy(|id| under(&id))
     }
 }
 

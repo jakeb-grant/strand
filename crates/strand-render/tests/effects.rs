@@ -1125,3 +1125,150 @@ fn column_of(px: &[u8], x0: u32, x1: u32) -> Vec<[u8; 4]> {
         })
         .collect()
 }
+
+/// A compiled keyframes block, as logic sends it with `play`.
+fn keyframes(
+    name: &str,
+    seq: u32,
+    ms: u64,
+    repeat: Option<u32>,
+    stops: Vec<(f32, Fx)>,
+) -> (Prop, PropValue) {
+    let mut k = Keyframes::new(name, seq, std::time::Duration::from_millis(ms));
+    k.repeat = repeat;
+    k.stops = stops;
+    (Prop::Play, PropValue::Keyframes(std::sync::Arc::new(k)))
+}
+
+fn shake(seq: u32) -> (Prop, PropValue) {
+    keyframes(
+        "shake",
+        seq,
+        400,
+        Some(1),
+        vec![
+            (0.0, vec![(Prop::X, num(0.0))]),
+            (0.25, vec![(Prop::X, num(-8.0))]),
+            (0.75, vec![(Prop::X, num(8.0))]),
+            (1.0, vec![(Prop::X, num(0.0))]),
+        ],
+    )
+}
+
+/// Three 30 px boxes on a 200 × 50 bar, painted first at 1 s: `shake`
+/// (x out and back), `flash` (bg and opacity at 50%, from and back to
+/// the box's own) and `spin` (a quarter turn a second, forever). With
+/// `play: false` the boxes play nothing.
+fn keyframed(play: bool, reduced: bool) -> (Renderer, Buffer, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let plays = [
+        shake(1),
+        keyframes(
+            "flash",
+            1,
+            400,
+            Some(1),
+            vec![(
+                0.5,
+                vec![(Prop::Bg, color("#f38ba8")), (Prop::Opacity, num(0.5))],
+            )],
+        ),
+        keyframes(
+            "spin",
+            1,
+            1000,
+            None,
+            vec![
+                (0.0, vec![(Prop::Rotate, PropValue::Angle(0.0))]),
+                (1.0, vec![(Prop::Rotate, PropValue::Angle(90.0))]),
+            ],
+        ),
+    ];
+    let ids = plays
+        .into_iter()
+        .enumerate()
+        .map(|(i, kf)| {
+            let mut p = at_xy(10.0 + 60.0 * i as f32, 10.0, 30.0, 30.0);
+            p.extend([(Prop::Place, kw("absolute")), (Prop::Bg, color("#cba6f7"))]);
+            if play {
+                p.push(kf);
+            }
+            b.node(NodeKind::Box, Some(root), p)
+        })
+        .collect();
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(200, 50, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf, ids)
+}
+
+/// The pixels of columns `x0..x1`.
+fn columns(b: &Buffer, x0: u32, x1: u32) -> Vec<[u8; 4]> {
+    (x0..x1)
+        .flat_map(|x| (0..b.size.h).map(move |y| (x, y)))
+        .map(|(x, y)| b.px(x, y))
+        .collect()
+}
+
+/// design.md "Motion and time": `keyframes shake { … }` + `play shake`.
+/// A block plays from the first frame that draws it, offsets composed
+/// with the node's own values (x added, opacity multiplied, a colour
+/// from the node's own and back), and draws the node as it is once
+/// played; the same `seq` never replays and a new one restarts it (ref
+/// `effects_keyframes.png` a quarter of the way in).
+#[test]
+fn keyframes_play_once_and_restart_on_a_new_seq() {
+    use std::time::Duration;
+    let (mut r, mut buf, ids) = keyframed(true, false);
+    let (_, rest, _) = keyframed(false, false);
+    let lilac = rest.px(25, 25);
+    assert!(r.wants_frame(S));
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1100));
+    assert_matches_ref("effects_keyframes", &buf, 2);
+    // `shake` at 25%: 8 px left of its box.
+    assert_eq!(buf.px(4, 25), lilac);
+    assert_ne!(buf.px(36, 25), lilac);
+    // `flash` halfway to pink at half opacity: neither lilac nor pink.
+    let f = buf.px(85, 25);
+    assert!(f != lilac && f != rest.px(85, 5), "{f:?}");
+    let mut t = 1100;
+    while t < 1500 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert!(
+        columns(&buf, 0, 120) == columns(&rest, 0, 120),
+        "played: at rest"
+    );
+    assert!(r.wants_frame(S), "the loop keeps playing");
+    let spin = columns(&buf, 120, 200);
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1750));
+    assert!(columns(&buf, 120, 200) != spin, "the loop moves");
+    assert!(columns(&buf, 0, 120) == columns(&rest, 0, 120), "no replay");
+
+    // A new `seq` restarts it.
+    let mut d = SceneDiff::new();
+    d.set(ids[0], Prop::Play, shake(2).1);
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(2000));
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(2100));
+    assert_eq!(buf.px(4, 25), lilac, "playing again");
+}
+
+/// `reduced_motion`: a block that plays a fixed number of times is not
+/// played, and a loop holds still at its start.
+#[test]
+fn reduced_motion_skips_keyframes_and_freezes_loops() {
+    use std::time::Duration;
+    let (mut r, mut buf, _) = keyframed(true, true);
+    let (_, rest, _) = keyframed(false, true);
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1100));
+    assert!(buf.pixels == rest.pixels, "nothing plays; the loop at 0deg");
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1600));
+    assert!(buf.pixels == rest.pixels);
+    assert!(!r.wants_frame(S));
+}

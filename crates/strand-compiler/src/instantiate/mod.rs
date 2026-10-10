@@ -78,6 +78,9 @@ pub(crate) struct Frag {
 /// hanging or exhausting memory.
 pub const MAX_MOUNT_DEPTH: u32 = 256;
 
+/// (M4) How long a keyframes block with no `duration:` plays.
+pub const KEYFRAMES_DURATION: Duration = Duration::from_millis(300);
+
 /// Which node flag render reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeFlag {
@@ -251,19 +254,15 @@ pub(crate) struct Ctx {
 }
 
 impl VmHooks for Ctx {
-    fn play(&self, node: &Rc<NodeState>, keyframes: &str) {
+    fn play(&self, rt: &Runtime, node: &Rc<NodeState>, keyframes: DefId) {
         let Some(id) = node.scene.get() else { return };
         let seq = self.play_seq.get().wrapping_add(1);
         self.play_seq.set(seq);
         // The sequence number makes a repeated `play shake` a new value.
-        self.em.borrow_mut().force(
-            id,
-            SceneProp::Play,
-            PropValue::List(vec![
-                PropValue::Keyword(keyframes.to_string()),
-                PropValue::Number(seq as f32),
-            ]),
-        );
+        match self.keyframes(rt, keyframes, seq) {
+            Ok(v) => self.em.borrow_mut().force(id, SceneProp::Play, v),
+            Err(e) => self.error("play", e),
+        }
     }
 
     fn propagate(&self, rt: &Runtime, ctx: &EventCtx) {
@@ -284,6 +283,49 @@ impl VmHooks for Ctx {
 }
 
 impl Ctx {
+    /// (M4) The keyframes block `d`, evaluated, as `play` sends it: stops
+    /// as fractions in order, settings applied (`repeat: 0` or less
+    /// repeats forever), `seq` restarting it.
+    pub(crate) fn keyframes(&self, rt: &Runtime, d: DefId, seq: u32) -> Result<PropValue, Error> {
+        let prog = self.vm.prog.clone();
+        let types = &prog.types;
+        let Some(k) = prog.keyframes.get(&d) else {
+            return Err(Error::failed("no such keyframes"));
+        };
+        let root = self.vm.root.clone();
+        let mut out = strand_scene::Keyframes::new(k.name.clone(), seq, KEYFRAMES_DURATION);
+        for s in &k.settings {
+            let v = self.vm.eval(rt, s.value, &root)?;
+            match s.name.as_str() {
+                "duration" => out.duration = v.as_duration().unwrap_or(out.duration),
+                "delay" => out.delay = v.as_duration().unwrap_or(out.delay),
+                "repeat" => {
+                    if let Value::Num(n, _) = v {
+                        out.repeat = (n >= 1.0).then(|| n.min(u32::MAX as f64) as u32);
+                    }
+                }
+                "alternate" => out.alternate = matches!(v, Value::Bool(true)),
+                "easing" => out.easing = convert::easing(types, &v).unwrap_or(out.easing),
+                _ => {}
+            }
+        }
+        for (at, props) in &k.stops {
+            let mut set = Vec::with_capacity(props.len());
+            for p in props {
+                if let Some(sp) = p.prop {
+                    let v = self.vm.eval(rt, p.value, &root)?;
+                    set.push((sp, convert::prop_value_for(types, sp, &p.ty, &v)));
+                }
+            }
+            for a in at {
+                let f = (*a / 100.0).clamp(0.0, 1.0) as f32;
+                out.stops.push((f, set.clone()));
+            }
+        }
+        out.stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Ok(PropValue::Keyframes(Arc::new(out)))
+    }
+
     /// An error at `site`, at the failing op's span if the VM noted one.
     pub(crate) fn located(&self, site: &Site, e: Error) -> RuntimeError {
         let (file, span) = self.vm.fault_of(&e).unwrap_or((site.file, site.span));

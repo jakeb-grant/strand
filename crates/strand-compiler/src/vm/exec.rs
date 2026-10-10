@@ -533,9 +533,9 @@ impl Machine {
                     let v = self.pop();
                     if let (Some(hooks), Some(ctx)) = (vm.hooks(), &self.ctx)
                         && let Some(node) = &ctx.node
-                        && let Some(name) = v.as_text()
+                        && let Value::Keyframes(d) = v
                     {
-                        hooks.play(node, name);
+                        hooks.play(rt, node, d);
                     }
                 }
                 Op::Fail(n) => return Err(fail(chunk.names[*n as usize].clone())),
