@@ -29,8 +29,10 @@ owner (Open).
   is promoted to vello_gpu and presented through wgpu's WSI, switching
   only between settled frames; a `shader` on a CPU surface is drawn
   offscreen and read back. The device drops 30 s after the last GPU
-  frame. With no device, everything stays on the CPU and the inspector
-  and `strand report` say why.
+  frame. With no device, everything stays on the CPU and `shader`
+  nodes draw nothing; the reason is logged as a warning and sent once
+  per run as a `strand watch` notice. Showing it in `strand report` and
+  the inspector, which design.md promises, comes with those in M5.
 - **Shaders and canvas**: `.wgsl` files checked by naga against their
   uniforms at check time, hot-reloaded, and refused when their private
   memory passes 16 KiB per pixel. `canvas` draws on the CPU.

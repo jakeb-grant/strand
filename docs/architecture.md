@@ -11,6 +11,8 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, M5's `get \| set \| toggle \| watch \| call`) is a source on this loop | Touch Wayland or pixels |
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
+| Image worker (`strand-image`, one per renderer; one that cannot start stops the shell) | `strand-render` (`image.rs`, `media/`) | Image and icon decodes (an animated GIF, APNG or WebP's player kept between its frames), the `svg` and `lottie` file jobs (`ImageStore::load_file`: read through a bounded read and parsed here, a Lottie's assets with it), and `set_idle_hook`'s allocator trim; each result pings the render loop | Block render: a frame draws nothing, or a stand-in of the same image at another size, until the decode arrives; read a file without a size bound |
+| Render timer (`strand-tooltip`) | `strand-render` (`renderer/wake.rs`) | The render loop's own due times: one wake at the latest time it was sent (a tooltip's delay, the exit of a surface whose output stopped sending frames), through the loop's waker | Any work but the wake: `Renderer::update` runs on the main thread |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
 | Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
@@ -184,10 +186,18 @@ are re-exported from `mod.rs`): `mod.rs` (the messages, `ScreenInfo`,
 signals, cache changes, `run`), `logic.rs` (`Live`, `logic`, the logic
 thread's boot and step loop), `sleep.rs` (the logic thread's calloop
 sleep: `Inbox`, `Sleeper`), `shell.rs` (`Shell`: messages, commits and
-reloads, IPC requests, `strand watch` events), `lock.rs` (the deferred
-load committed after the unlock), `trim.rs` (`trim`, `Trimmer`,
-`structural`) and `tests.rs` (`run::tests`). M4 streams add `feeds.rs`,
-`lists.rs` and `gpu.rs` beside them, and S-lock grows `lock.rs`.
+reloads, IPC requests, `strand watch` events), `lock.rs` (the session
+lock in the binary: `Guard::wire`, which enables the session lock only
+with `auth`'s tokens wired to `State::unlock`; the main loop's fault
+checks, the first-frame timeout and the heartbeat watchdog; the
+built-in fallback (`LockScreen`) and its own `strand_auth::Client`
+(the `Checker`); lock sessions tagging verdicts; the restart marker;
+the password redaction (`Secrets`); and the deferred load committed
+after the unlock), `feeds.rs` (media feeds: one producer per visible
+`spectrum` or `thumbnail`), `lists.rs` (virtualised lists' windows and
+drops' arguments), `gpu.rs` (`GpuHost`: the binary's side of the GPU
+thread), `trim.rs` (`trim`, `Trimmer`, `structural`) and `tests.rs`
+(`run::tests`).
 
 **IPC** (`crates/strand/src/ipc.rs`): a Unix socket at `$STRAND_SOCKET`
 or `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock`, newline-delimited
@@ -221,7 +231,7 @@ render. A client whose socket cannot take its output yet gets a write
 source on the logic loop until it is written (no polling); one more
 than 1 MiB behind is dropped.
 
-**M4 additions (planned; docs/m4-plan.md, waves 0a and 0c).** The GPU
+**M4 additions (planned in docs/m4-plan.md, waves 0a and 0c; as built).** The GPU
 thread, promotion and the surface hand-off are in "`strand-gpu`";
 `run/gpu.rs` is the binary's side of them.
 - `ToLogic::ListWindow { list, first, count }`: the rows a virtualised
@@ -2837,7 +2847,16 @@ catchers), `outputs.rs` (hotplug, monitor identity and expiry),
 `commit.rs` (geometry, paint and commit, frame callbacks, deadlines and
 presentation feedback), `seat.rs` (pointer and keyboard input, key repeat)
 and `protocols.rs` (registry, shm, viewporter, fractional scale and the
-presentation global). New M4 concerns get files of their own beside them.
+presentation global). M4 added `session_lock.rs` (`ext_session_lock_v1`:
+a lock surface per output, hotplug included, the content surface, the
+unlock), `scrim.rs` (solid buffers for catchers and scrims, with the shm
+fallback), `pose.rs` (compositor-animated poses: alpha modifier,
+viewport scale, margins), `effect.rs` (the blur region on
+`ext_background_effect_surface_v1`) and `origin.rs` (each surface's
+place in the compositor's logical layout, for `surface_placed`), and two
+modules kept beside the manager in `src/` but part of it: `dnd.rs`
+(drag and drop over `wl_data_device`) and `gpu_handoff.rs` (a surface's
+hand-off between `wl_shm` and the GPU thread's WSI).
 
 ### `strand-gpu`
 
