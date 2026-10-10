@@ -512,6 +512,8 @@ pub struct Pose {
 
 #[derive(Clone, Debug)]
 pub struct Selector {
+    /// (M4) The `svg_part` node it lowers to.
+    pub node: NodeIdx,
     pub name: String,
     pub props: Vec<Prop>,
     pub span: Span,

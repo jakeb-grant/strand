@@ -1116,7 +1116,15 @@ element canvas: node {
   flags leaf
 }
 /// An SVG whose layers bind by id: `svg "icon.svg" { #needle { … } }`.
-element svg(path -> source): node { flags leaf selectors }
+/// A `#id { … }` block takes `rotate`, `scale`, `x`, `y`, `opacity` and
+/// `fill` for that layer.
+element svg(path -> source): node {
+  /// How the drawing fills its box.
+  fit: Fit
+  /// One colour every shape takes (in a `#id { … }` block: that layer's).
+  fill: paint
+  flags leaf selectors
+}
 /// A Lottie animation: `lottie "loader.json" { speed: 1 }`.
 element lottie(path -> source): node {
   /// Playback speed; 1 is normal.

@@ -151,5 +151,6 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     image source="spin.gif"
     lottie source="loader.json" speed=1
     svg source="icon.svg"
+      svg_part rotate=135deg name="needle"
     image filter=blur(30) fit=cover
     thumbnail source="w1"

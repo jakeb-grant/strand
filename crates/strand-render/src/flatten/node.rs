@@ -78,7 +78,9 @@ impl<'a> Flattener<'a> {
         // Time-bound props (M4) are evaluated at this node's own time.
         let global = &self.tree.tokens;
         let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
-        let timed = timed_scope || crate::time::reads_time(node, global);
+        let timed = timed_scope
+            || crate::time::reads_time(node, global)
+            || node.kind == NodeKind::Svg && self.svg_parts_read_time(node);
         // Its clock: the rate its time props and its own animation run at.
         // (M4) An animated image's frames run on a clock of their own.
         let anim = &mut *self.anim;
@@ -500,6 +502,12 @@ impl<'a> Flattener<'a> {
                 &mut ink,
             );
         }
+        // (M4) An `svg`'s `#id { … }` parts, resolved for this frame.
+        let parts = if has_area && node.kind == NodeKind::Svg {
+            self.svg_parts(node, &tokens, time, inherited, laid)
+        } else {
+            Vec::new()
+        };
         // (M4) A CPU raster node's pixels at its clock's tick, over its
         // background.
         if has_area
@@ -512,6 +520,7 @@ impl<'a> Flattener<'a> {
                 &crate::offscreen::RasterProps {
                     get: &get,
                     color: text_color,
+                    parts: &parts,
                 },
             )
         {
@@ -892,5 +901,58 @@ impl<'a> Flattener<'a> {
             sig,
             ink,
         );
+    }
+}
+
+/// (M4) An `svg`'s `#id { … }` parts (`svg_part` children): what its
+/// raster source applies to each layer.
+type SvgParts = Vec<(String, Vec<(Prop, PropValue)>)>;
+
+impl<'a> Flattener<'a> {
+    /// True if a part of `svg` reads time: the `svg` then has a clock.
+    fn svg_parts_read_time(&self, svg: &Node) -> bool {
+        svg.children.iter().any(|c| {
+            self.tree.get(*c).is_some_and(|n| {
+                n.kind == NodeKind::SvgPart && crate::time::reads_time(n, &self.tree.tokens)
+            })
+        })
+    }
+
+    /// The parts of `svg` with their props resolved at the `svg`'s time,
+    /// springs included.
+    fn svg_parts(
+        &mut self,
+        svg: &Node,
+        tokens: &[&strand_scene::TokenTable],
+        time: Option<strand_scene::TimeContext>,
+        inherited: Color,
+        laid: LogicalRect,
+    ) -> SvgParts {
+        let scope = TokenScope::new(tokens).with_time(time);
+        let mut parts = Vec::new();
+        for c in &svg.children {
+            let Some(part) = self.tree.get(*c).filter(|n| n.kind == NodeKind::SvgPart) else {
+                continue;
+            };
+            let Some(PropValue::Text(name)) = part.get(Prop::Name) else {
+                continue;
+            };
+            let mut props: Vec<(Prop, Cow<'_, PropValue>)> = part
+                .props
+                .iter()
+                .filter(|e| !matches!(e.prop, Prop::Tokens | Prop::Name))
+                .filter_map(|e| scope.resolve(&e.value).map(|v| (e.prop, v)))
+                .collect();
+            self.anim
+                .paint(part, &mut props, &scope, inherited, None, laid);
+            parts.push((
+                name.clone(),
+                props
+                    .into_iter()
+                    .map(|(p, v)| (p, v.into_owned()))
+                    .collect(),
+            ));
+        }
+        parts
     }
 }

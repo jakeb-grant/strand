@@ -259,6 +259,30 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
         .ok_or_else(|| ImageError::NotFound(src.into()))
 }
 
+/// (M4) A local file's bytes, for an `svg`'s or `lottie`'s source: a
+/// path, a `file://` URL or a `~/` path, at most `max` bytes.
+pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
+    let src = src.trim();
+    let path = if let Some(rest) = src.strip_prefix("file://") {
+        PathBuf::from(percent_decode(rest))
+    } else if let Some(rest) = src.strip_prefix("~/") {
+        match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h).join(rest),
+            None => PathBuf::from(src),
+        }
+    } else {
+        PathBuf::from(src)
+    };
+    let meta = std::fs::metadata(&path).map_err(|_| ImageError::NotFound(src.into()))?;
+    if !meta.is_file() {
+        return Err(ImageError::NotFound(src.into()));
+    }
+    if meta.len() > max {
+        return Err(ImageError::TooLarge);
+    }
+    std::fs::read(&path).map_err(|e| ImageError::Io(e.to_string()))
+}
+
 /// The names an icon lookup tries ([`strand_icons::candidates`]: the
 /// name, its other `-symbolic` variant, then its generic fallbacks).
 pub use strand_icons::candidates as icon_candidates;
@@ -557,7 +581,7 @@ fn decode_jpeg_inner(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, 
 
 /// Where a `sw × sh` source goes in a `w × h` box: its scaled size and
 /// offset (logical to the box, may be negative when cropped).
-fn placement(sw: f64, sh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64, f64, f64) {
+pub(crate) fn placement(sw: f64, sh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64, f64, f64) {
     let (dw, dh) = match fit {
         Fit::Fill => (w, h),
         Fit::None => (sw, sh),

@@ -477,6 +477,7 @@ impl<'a> Checker<'a> {
         }
         let (props, _) = self.tree_items(&s.body.items, Place::Props);
         Some(Node::Selector(hir::Selector {
+            node: self.new_node(),
             name: s.name.name.clone(),
             props,
             span,

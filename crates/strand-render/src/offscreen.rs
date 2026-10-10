@@ -440,6 +440,9 @@ pub trait RasterSource: std::fmt::Debug + Send + Sync {
 pub struct RasterProps<'a> {
     pub get: &'a dyn Fn(strand_scene::Prop) -> Option<&'a strand_scene::PropValue>,
     pub color: strand_scene::Color,
+    /// (M4) An `svg`'s `#id { … }` parts: each id and its props as
+    /// resolved for this frame (empty for every other node).
+    pub parts: &'a [(String, Vec<(strand_scene::Prop, strand_scene::PropValue)>)],
 }
 
 impl std::fmt::Debug for RasterProps<'_> {

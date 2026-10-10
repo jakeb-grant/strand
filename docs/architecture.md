@@ -410,7 +410,7 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`, `feed.rs` (media
   sources for the nodes a diff creates, feeds and feed demand; built by
   m4-effects-media, with `media/` beside `renderer/`: `graph.rs`,
-  `spectrum.rs`, `animated.rs`). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
+  `spectrum.rs`, `animated.rs`, `svg.rs`). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
   frames, readback delivery) have no code yet: their streams create
   them, with `promote.rs` (the promotion state machine) and `canvas.rs`
   beside `renderer/`.
@@ -971,6 +971,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     one kind with no schema element) carrying the id it
     selects as `Prop::Name` (`Text`, without the `#`) and ordinary props,
     which render applies to that layer (decisions.md, 2026-10-05 render).
+    Built (m4-effects-media): the compiler lowers `hir::Selector` (which
+    carries its own `NodeIdx`) to a `svg_part` element whose positional
+    is `name`; render's `media/svg.rs` draws the `svg` as a raster node,
+    its parts' props resolved in flattening and handed over in
+    `RasterProps::parts`.
   - **Keyframes.** `Prop::Play` holds `PropValue::Keyframes(Arc<Keyframes>)`
     in place of `[name, seq]`: `Keyframes { name, seq: u32, stops:
     Vec<(f32, Vec<(Prop, PropValue)>)>, duration, delay, repeat:
