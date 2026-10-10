@@ -232,6 +232,10 @@ pub struct Levels {
     pub device: u32,
     /// One peak per channel.
     pub peaks: Vec<f32>,
+    /// (M4) The sound's spectrum when the reading has sound:
+    /// [`BANDS`](super::spectrum::BANDS) bands evenly spaced in pitch,
+    /// each 0 to 1 (see [`super::spectrum`]); empty for a quiet reading.
+    pub bins: Vec<f32>,
 }
 
 impl Levels {
@@ -578,6 +582,7 @@ mod tests {
             target: LevelTarget::DefaultSink,
             device: 31,
             peaks: vec![0.5, 0.25],
+            bins: Vec::new(),
         }))
         .unwrap();
         assert_eq!(

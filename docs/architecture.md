@@ -3444,7 +3444,15 @@ transparent huge pages for life.
     fallback (once per process).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
     (realfft) runs on the audio thread only while a reader is visible,
-    and stops while the source is silent.
+    and stops while the source is silent. Built (m4-effects-media):
+    each meter's data thread keeps its last 4,096 samples mixed to mono
+    in a ring of atomics (`audio::spectrum::Ring`); a reading with sound
+    (at most one a frame) carries `Levels::bins`, a Hann-windowed
+    2,048-point FFT folded into `spectrum::BANDS` (64) bands evenly
+    spaced in pitch from 40 Hz to 16 kHz, each the loudest bin in it in
+    dB from −72 dBFS (0) to 0 dBFS (1); a quiet reading carries none, and
+    a meter sends nothing on silence, so no FFT runs then
+    (`crates/strand-services/tests/audio.rs::a_test_tone_lights_its_spectrum_band`).
   - wm: `ProtoCmd::Capture` on the `strand-toplevel` thread captures a
     window by its `Window::toplevel` identifier through
     ext-image-copy-capture, for `thumbnail`; frames reach render through

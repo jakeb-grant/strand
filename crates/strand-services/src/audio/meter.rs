@@ -37,6 +37,7 @@ use pipewire::spa::pod::serialize::PodSerializer;
 use pipewire::stream::{StreamFlags, StreamListener, StreamRc, StreamState};
 
 use super::model::{Direction, LevelTarget, Levels};
+use super::spectrum::{Analyzer, Ring};
 use super::thread::{FRAME, Queue, Work};
 
 /// The most channels a meter reads (`SPA_AUDIO_MAX_CHANNELS`).
@@ -87,6 +88,10 @@ pub(crate) struct Shared {
     /// The loop will read the meter (it was woken, or reads it on the
     /// frame timer): the data thread does not wake it again.
     armed: AtomicBool,
+    /// (M4) The last samples, mixed to mono, for the spectrum.
+    ring: Ring,
+    /// (M4) The stream's sample rate, Hz (0 until its format is known).
+    rate: AtomicU32,
 }
 
 impl Default for Shared {
@@ -96,6 +101,8 @@ impl Default for Shared {
             peaks: std::array::from_fn(|_| AtomicU32::new(0)),
             cycles: AtomicU32::new(0),
             armed: AtomicBool::new(false),
+            ring: Ring::default(),
+            rate: AtomicU32::new(0),
         }
     }
 }
@@ -110,6 +117,7 @@ impl Shared {
         if !fold_peaks(bytes, &mut local[..channels]) {
             return false;
         }
+        self.ring.push(bytes, channels);
         let mut sound = false;
         for (slot, p) in self.peaks.iter().zip(&local[..channels]) {
             if *p > 0.0 {
@@ -164,6 +172,8 @@ pub(crate) struct Meter {
     /// While sound flows, when the loop reads it next (on the frame
     /// timer); `None` while the data thread wakes the loop instead.
     pub next_tick: Option<Instant>,
+    /// (M4) Its FFT, made on the first reading with sound.
+    analyzer: Option<Analyzer>,
     shared: Arc<Shared>,
     // Dropped after `Drop::drop` disconnected the stream, so the data
     // thread no longer runs the process callback.
@@ -238,6 +248,7 @@ impl Meter {
                 let mut info = AudioInfoRaw::new();
                 if info.parse(param).is_ok() {
                     format_shared.set_channels(info.channels());
+                    format_shared.rate.store(info.rate(), Ordering::Relaxed);
                 }
             })
             .register()
@@ -299,6 +310,7 @@ impl Meter {
             retry_at: None,
             hold: Hold::default(),
             next_tick: None,
+            analyzer: None,
             shared,
             _events: events,
             _process: process,
@@ -418,12 +430,23 @@ impl Hold {
 }
 
 impl Meter {
-    /// The held reading, to send now.
+    /// The held reading, to send now, with the spectrum of the sound's
+    /// last samples when it has sound.
     pub(crate) fn take(&mut self, now: Instant) -> Option<Levels> {
+        let peaks = self.hold.take(now)?;
+        let bins = if peaks.iter().any(|p| *p > 0.0) {
+            let rate = self.shared.rate.load(Ordering::Relaxed);
+            self.analyzer
+                .get_or_insert_with(Analyzer::new)
+                .bands(&self.shared.ring, rate)
+        } else {
+            Vec::new()
+        };
         Some(Levels {
             target: self.target,
             device: self.device,
-            peaks: self.hold.take(now)?,
+            peaks,
+            bins,
         })
     }
 
@@ -433,6 +456,7 @@ impl Meter {
             target: self.target,
             device: self.device,
             peaks: Vec::new(),
+            bins: Vec::new(),
         })
     }
 }
