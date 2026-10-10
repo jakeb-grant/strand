@@ -95,6 +95,65 @@ impl LayerConfig {
         )
     }
 
+    /// Where a surface of this config lands in an output's usable area
+    /// (in the output's logical coordinates), as
+    /// [`LayerConfig::position_in`] places it in an area of that size.
+    pub fn position_in_rect(&self, size: (u32, u32), area: UsableArea) -> (i32, i32) {
+        let (x, y) = self.position_in(size, (area.w, area.h));
+        (x.saturating_add(area.x), y.saturating_add(area.y))
+    }
+
+    /// The edge this surface's exclusive zone reserves, as wlroots
+    /// applies one (`apply_exclusive`): anchored to that edge alone, or
+    /// to it and both of its neighbours. `None` for no zone (0 or -1) or
+    /// any other anchoring.
+    pub fn reserved_edge(&self) -> Option<Edge> {
+        if self.exclusive_zone <= 0 {
+            return None;
+        }
+        let a = self.anchors;
+        match (a.top, a.bottom, a.left, a.right) {
+            (true, false, false, false) | (true, false, true, true) => Some(Edge::Top),
+            (false, true, false, false) | (false, true, true, true) => Some(Edge::Bottom),
+            (false, false, true, false) | (true, true, true, false) => Some(Edge::Left),
+            (false, false, false, true) | (true, true, false, true) => Some(Edge::Right),
+            _ => None,
+        }
+    }
+
+    /// Takes this surface's exclusive zone, and its margin on that edge,
+    /// out of `area`, as the compositor does once it has arranged it.
+    pub fn reserve(&self, area: &mut UsableArea) {
+        let Some(edge) = self.reserved_edge() else {
+            return;
+        };
+        let [mt, mr, mb, ml] = self.margin;
+        let margin = match edge {
+            Edge::Top => mt,
+            Edge::Bottom => mb,
+            Edge::Left => ml,
+            Edge::Right => mr,
+        };
+        let by = i64::from(self.exclusive_zone) + i64::from(margin);
+        if by <= 0 {
+            return;
+        }
+        let shrink = |v: u32| (i64::from(v) - by).max(0) as u32;
+        let by = by.min(i64::from(i32::MAX)) as i32;
+        match edge {
+            Edge::Top => {
+                area.y = area.y.saturating_add(by);
+                area.h = shrink(area.h);
+            }
+            Edge::Bottom => area.h = shrink(area.h),
+            Edge::Left => {
+                area.x = area.x.saturating_add(by);
+                area.w = shrink(area.w);
+            }
+            Edge::Right => area.w = shrink(area.w),
+        }
+    }
+
     /// The box (input region) of a surface of this config, `(w, h)`
     /// logical pixels, arranged in an area of `(aw, ah)`, in that area's
     /// coordinates: the hole a click-away catcher configured to the same
@@ -226,6 +285,58 @@ pub fn posed_margin(config: &LayerConfig, offset: strand_scene::LogicalPoint) ->
         _ => {}
     }
     [t, r, b, l]
+}
+
+/// (M4) Where an output arranges layer surfaces: logical pixels, in the
+/// output's own coordinates (its top-left corner is 0, 0).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct UsableArea {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl UsableArea {
+    /// The whole output of logical size `(w, h)`.
+    pub fn full((w, h): (u32, u32)) -> Self {
+        Self { x: 0, y: 0, w, h }
+    }
+}
+
+/// (M4) The area the layer surface `target` is arranged in on an output
+/// of logical size `full` that holds `surfaces` (ours, in the order they
+/// were made, `target` among them), as wlroots compositors arrange them
+/// (sway's `arrange_layers`, `wlr_scene_layer_surface_v1_configure`):
+/// the surfaces with an exclusive zone first, layer by layer from the
+/// overlay down, each in what the ones before it left and reserving its
+/// zone from it; then every other surface in what is left; a surface
+/// whose zone is -1 in the whole output. Other programs' zones are not
+/// known to a client, so they are not taken out.
+pub fn arranged_area<K: PartialEq>(
+    full: (u32, u32),
+    surfaces: &[(K, &LayerConfig)],
+    target: &K,
+) -> UsableArea {
+    let mut area = UsableArea::full(full);
+    let Some((_, own)) = surfaces.iter().find(|(k, _)| k == target) else {
+        return area;
+    };
+    if own.exclusive_zone < 0 {
+        return area;
+    }
+    for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+        let exclusive = surfaces
+            .iter()
+            .filter(|(_, c)| c.layer == layer && c.exclusive_zone > 0);
+        for (k, c) in exclusive {
+            if k == target {
+                return area;
+            }
+            c.reserve(&mut area);
+        }
+    }
+    area
 }
 
 /// The layer under `layer` (the background has none: itself).
@@ -553,6 +664,112 @@ mod tests {
 
     fn kw(k: &str) -> PropValue {
         PropValue::Keyword(k.into())
+    }
+
+    /// (M4) Layer surfaces are arranged in what the exclusive zones
+    /// before them leave, as wlroots does: a top bar's zone moves a
+    /// corner panel below it and a centred one by half of it, a left
+    /// bar on the overlay layer is taken out before a top bar on the
+    /// top layer (which then starts past it), a zone of -1 ignores them
+    /// all, and a bar's own margin on its edge counts into its zone.
+    #[test]
+    fn layer_surfaces_are_arranged_past_exclusive_zones() {
+        let bar = |edge: &str, h: f32, margin: f32| {
+            let mut c = layer_config(&spec(
+                NodeKind::Bar,
+                &[
+                    (Prop::Edge, kw(edge)),
+                    (Prop::Height, PropValue::Number(h)),
+                    (Prop::Width, PropValue::Number(h)),
+                    (
+                        Prop::Margin,
+                        PropValue::Insets(Insets::from_values(&[margin]).unwrap()),
+                    ),
+                ],
+            ))
+            .unwrap();
+            assert!(c.exclusive_zone > 0, "{c:?}");
+            c.layer = Layer::Top;
+            c
+        };
+        let panel = |anchor: &str| {
+            layer_config(&spec(
+                NodeKind::Panel,
+                &[
+                    (Prop::Anchor, kw(anchor)),
+                    (Prop::Width, PropValue::Number(400.0)),
+                    (Prop::Height, PropValue::Number(300.0)),
+                ],
+            ))
+            .unwrap()
+        };
+        let full = (1920, 1080);
+        let top = bar("top", 36.0, 0.0);
+        assert_eq!(top.reserved_edge(), Some(Edge::Top));
+        let corner = panel("top_right");
+        let centred = panel("center");
+        let list = [(1, &top), (2, &corner), (3, &centred)];
+        let area = arranged_area(full, &list, &2);
+        assert_eq!(
+            area,
+            UsableArea {
+                x: 0,
+                y: 36,
+                w: 1920,
+                h: 1044
+            }
+        );
+        assert_eq!(corner.position_in_rect((400, 300), area), (1520, 36));
+        assert_eq!(
+            centred.position_in_rect((400, 300), arranged_area(full, &list, &3)),
+            (760, 36 + 522 - 150)
+        );
+        // The bar itself is arranged in the whole output.
+        assert_eq!(arranged_area(full, &list, &1), UsableArea::full(full));
+        assert_eq!(
+            top.position_in_rect((1920, 36), UsableArea::full(full)),
+            (0, 0)
+        );
+        // A left bar on the overlay is arranged first: the top bar starts
+        // past it, and the corner panel is below the top bar.
+        let mut left = bar("left", 48.0, 0.0);
+        left.layer = Layer::Overlay;
+        assert_eq!(left.reserved_edge(), Some(Edge::Left));
+        let list = [(1, &top), (2, &corner), (4, &left)];
+        assert_eq!(
+            arranged_area(full, &list, &1),
+            UsableArea {
+                x: 48,
+                y: 0,
+                w: 1872,
+                h: 1080
+            }
+        );
+        assert_eq!(
+            arranged_area(full, &list, &2),
+            UsableArea {
+                x: 48,
+                y: 36,
+                w: 1872,
+                h: 1044
+            }
+        );
+        // A catcher (zone -1) ignores every zone.
+        let mut catcher = panel("top_left");
+        catcher.exclusive_zone = -1;
+        let list = [(1, &top), (5, &catcher)];
+        assert_eq!(arranged_area(full, &list, &5), UsableArea::full(full));
+        // A bar's margin on its edge counts into what it takes.
+        let floating = bar("bottom", 30.0, 8.0);
+        assert_eq!(floating.reserved_edge(), Some(Edge::Bottom));
+        let list = [(1, &floating), (2, &corner)];
+        let area = arranged_area(full, &list, &2);
+        assert_eq!((area.y, area.h), (0, 1080 - 30 - 8));
+        // An unknown target and an empty output.
+        assert_eq!(arranged_area(full, &list, &9), UsableArea::full(full));
+        let mut a = UsableArea::full((10, 10));
+        floating.reserve(&mut a);
+        assert_eq!(a.h, 0);
     }
 
     #[test]

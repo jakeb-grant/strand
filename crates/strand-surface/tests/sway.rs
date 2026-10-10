@@ -2546,3 +2546,113 @@ fn a_posed_panel_is_placed_where_its_margins_put_it() {
     assert_eq!(info.origin, Some((560, 0)));
     assert_eq!(mgr.state().host().placed.last(), Some(&(id, (560, 0))));
 }
+
+/// (M4) A layer surface is placed where sway arranges it, in the
+/// compositor's logical layout: a corner panel past our own bar's
+/// exclusive zone (not over it), again at the top once the bar goes, and
+/// a bar on a second output at that output's position in the layout.
+#[test]
+fn layer_surfaces_are_placed_past_our_zones_in_layout_coordinates() {
+    let Some((sway, mut mgr)) = start(
+        "layer_surfaces_are_placed_past_our_zones_in_layout_coordinates",
+        Config::default(),
+    ) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    // Every surface paints a red square in its top-left corner.
+    mgr.state_mut()
+        .host_mut()
+        .set_square(Some(LogicalRect::new(0.0, 0.0, 10.0, 10.0)));
+    const PANEL: NodeId = NodeId::new(7, 0);
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Created(layer_spec(
+            NodeKind::Panel,
+            "Dash",
+            "top_right",
+            400.0,
+            300.0,
+        )),
+    );
+    let origin_of = |mgr: &strand_surface::SurfaceManager<TestHost>, node: NodeId| {
+        mgr.state()
+            .surfaces_of(node)
+            .iter()
+            .map(|id| mgr.state().surface(*id).and_then(|i| i.origin))
+            .collect::<Vec<_>>()
+    };
+    let wait_origin = |mgr: &mut strand_surface::SurfaceManager<TestHost>,
+                       node: NodeId,
+                       want: Vec<Option<(i32, i32)>>| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces_of(node)
+                    .iter()
+                    .map(|id| s.surface(*id).and_then(|i| i.origin))
+                    .collect::<Vec<_>>()
+                    == want
+            })
+            .unwrap();
+        assert!(
+            ok,
+            "{node:?} placed at {want:?}: {:?}, told {:?}",
+            origin_of(mgr, node),
+            mgr.state().host().placed
+        );
+    };
+    // Top right of 1920 × 1080, below the 36 px bar: where sway draws it.
+    wait_origin(&mut mgr, PANEL, vec![Some((1520, 36))]);
+    pump(&mut mgr, Duration::from_millis(200));
+    let shot = sway.grim("HEADLESS-1");
+    assert_eq!(
+        shot.rgb(1525, 36 + 5),
+        RED,
+        "the panel's corner is drawn there"
+    );
+    assert_eq!(
+        shot.rgb(1525, 5),
+        BLUE,
+        "the bar, not the panel, at the top"
+    );
+    // A second output, right of the first: its bar is at its position.
+    let second = sway.create_output();
+    wait_for_bars(&mut mgr, 2);
+    let position = |mgr: &strand_surface::SurfaceManager<TestHost>| {
+        mgr.state()
+            .monitors()
+            .into_iter()
+            .find(|m| m.connector.as_deref() == Some(second.as_str()))
+            .and_then(|m| m.position)
+    };
+    let _ = mgr.dispatch_until(WAIT, |s| {
+        s.monitors()
+            .iter()
+            .any(|m| m.connector.as_deref() == Some(second.as_str()) && m.position.is_some())
+    });
+    let pos = position(&mgr)
+        .unwrap_or_else(|| panic!("the second output's position: {:?}", mgr.state().monitors()));
+    assert!(pos.0 >= 1920, "{pos:?}");
+    let want = [Some((0, 0)), Some(pos)];
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            let mut got: Vec<_> = s
+                .surfaces_of(BAR)
+                .iter()
+                .map(|id| s.surface(*id).and_then(|i| i.origin))
+                .collect();
+            got.sort();
+            got == want
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the bars, in layout coordinates: {:?}, monitors {:?}",
+        origin_of(&mgr, BAR),
+        mgr.state().monitors()
+    );
+    // The bar gone: the panel moves up to the top, as sway arranges it.
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Removed);
+    wait_origin(&mut mgr, PANEL, vec![Some((1520, 0))]);
+}

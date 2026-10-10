@@ -2543,14 +2543,23 @@ and the connection):
     plays to its end.
   - Origins and submenus (`manager/origin.rs`, wave 2): the no-op-default
     hook `SurfaceHost::surface_placed(surface, (x, y))` says where a
-    surface's buffer lies on its output, logical pixels, when that
-    changes: a layer surface as `LayerConfig::position_in` arranges its
-    configured size over the whole output (other surfaces' exclusive
-    zones are not known), a popup from its configure's position under its
-    parent's window geometry. `SurfaceInfo::origin` reads it. The
-    binary's host turns a press into the tray's click point with it
-    (`strand_services::tray::set_click_point`: the pressed node's
-    bottom-left corner on the output). A popup nested in a popup opens
+    surface's buffer lies in the global layout, logical pixels (its
+    output's position added), when that changes: a layer surface as
+    `placement::arranged_area` arranges it (M4 interaction-finish: the
+    wlroots order, our own exclusive surfaces on that output taken out
+    layer by layer from `overlay` down; other programs' zones are not
+    known), a popup from its configure's position under its parent's
+    window geometry. `SurfaceInfo::origin` reads it; adding, resizing or
+    destroying an exclusive layer surface places its output's others
+    again. The binary's host turns a press into the tray's click point
+    with it (`strand_services::tray::set_click_point`: the pressed node's
+    bottom-left corner in the layout). A tray action takes that point
+    only when called by a handler of an input event
+    (`tray::TrayCall`, the service's action type, reads it in
+    `from_call`; `tray::set_input_probe(strand_compiler::vm::in_input_handler)`
+    at startup, `strand_compiler::vm::INPUT_EVENTS` naming the events;
+    `ActionCall::input` records it); a timer's or an IPC write's sends
+    (0, 0), never the last press's point. A popup nested in a popup opens
     beside its anchor (`PopupConfig::aligned`: level with the row's top,
     flipped in x), right unless its `anchor:` names left, top or bottom.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the

@@ -34,6 +34,9 @@ pub struct ActionCall {
     pub target: String,
     pub name: String,
     pub args: Vec<Value>,
+    /// (M4) Called by a handler of an input event
+    /// ([`crate::vm::in_input_handler`]).
+    pub input: bool,
 }
 
 impl std::fmt::Display for ActionCall {
@@ -858,6 +861,7 @@ impl ServiceHost for SchemaHost {
                 target: label,
                 name: name.to_string(),
                 args: args.to_vec(),
+                input: crate::vm::in_input_handler(),
             });
         }
         if let ActionTarget::Item(v) = target {

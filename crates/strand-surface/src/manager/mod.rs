@@ -176,12 +176,13 @@ pub trait SurfaceHost: Painter {
         let _ = event;
     }
     /// (M4) Where `surface`'s buffer (its top-left corner, shadow
-    /// overhang included) now lies on its output, in the output's
-    /// logical pixels: a layer surface as the compositor arranges one of
-    /// its size and anchors on the whole output, a popup where the
-    /// compositor's configure put it relative to its parent. Called when
-    /// it changes. The host turns a press into an output position with
-    /// it (the tray's click point).
+    /// overhang included) now lies in the compositor's logical layout
+    /// (global logical pixels: its output's position added): a layer
+    /// surface as the compositor arranges one of its size and anchors in
+    /// its output's usable area (our own surfaces' exclusive zones taken
+    /// out), a popup where the compositor's configure put it relative to
+    /// its parent. Called when it changes. The host turns a press into a
+    /// screen position with it (the tray's click point).
     fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
         let _ = (surface, origin);
     }
@@ -423,8 +424,8 @@ pub struct SurfaceInfo {
     pub under_layer: Option<Layer>,
     /// (M4) The compositor pose last set on it (identity at rest).
     pub pose: strand_scene::SurfacePose,
-    /// (M4) Where its buffer's top-left corner is on its output, logical
-    /// pixels, as last told to [`SurfaceHost::surface_placed`].
+    /// (M4) Where its buffer's top-left corner is in the compositor's
+    /// logical layout, as last told to [`SurfaceHost::surface_placed`].
     pub origin: Option<(i32, i32)>,
     pub stats: Stats,
 }

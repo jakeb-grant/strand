@@ -546,7 +546,10 @@ impl Vm {
     }
 
     /// A handler body as a coroutine for `rt.spawn*`: it runs until it
-    /// returns, suspending at each `await`. Dropping it cancels it.
+    /// returns, suspending at each `await`. Dropping it cancels it. While
+    /// a handler of an input event ([`INPUT_EVENTS`]) runs (up to its
+    /// first `await`, and each stretch after one), [`in_input_handler`]
+    /// is true on this thread.
     pub fn handler(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -557,6 +560,9 @@ impl Vm {
     ) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
         let vm = self.clone();
         let weak = rt.downgrade();
+        let input = ctx
+            .as_ref()
+            .is_some_and(|c| INPUT_EVENTS.contains(&c.event.as_str()));
         async move {
             let mut m = exec::Machine::new(chunk, env, frame, None, ctx);
             loop {
@@ -564,6 +570,7 @@ impl Vm {
                     let Some(rt) = weak.upgrade() else {
                         return Ok(());
                     };
+                    let _input = input.then(InputHandler::enter);
                     m.run(&vm, &rt)?
                 };
                 match step {
@@ -706,5 +713,44 @@ impl Vm {
             .enumerate()
             .map(|(i, l)| (l.name.clone(), LocalId(i as u32)))
             .collect()
+    }
+}
+
+/// The element events render's input delivers (`Instance::event`): a
+/// handler of one runs because the user did something.
+pub const INPUT_EVENTS: &[&str] = &[
+    "click",
+    "secondary",
+    "middle",
+    "scroll",
+    "activate",
+    "key",
+    "dismiss",
+    "drop",
+];
+
+thread_local! {
+    static INPUT_HANDLERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// True while a handler of an input event runs on this thread (see
+/// [`Vm::handler`]): the tray takes the press's point only then.
+pub fn in_input_handler() -> bool {
+    INPUT_HANDLERS.with(|c| c.get() > 0)
+}
+
+/// Marks a handler of an input event running until dropped.
+struct InputHandler;
+
+impl InputHandler {
+    fn enter() -> Self {
+        INPUT_HANDLERS.with(|c| c.set(c.get().saturating_add(1)));
+        InputHandler
+    }
+}
+
+impl Drop for InputHandler {
+    fn drop(&mut self) {
+        INPUT_HANDLERS.with(|c| c.set(c.get().saturating_sub(1)));
     }
 }

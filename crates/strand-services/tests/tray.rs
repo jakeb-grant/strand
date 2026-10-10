@@ -340,17 +340,22 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     assert_eq!(listed, std::slice::from_ref(&it.id));
     assert_eq!(next_listing(&mut changes), std::slice::from_ref(&it.id));
 
-    // Clicks and scrolls reach the app, clicks at the point of the press
-    // the shell's host set (the pressed node's bottom-left corner on its
-    // output; negative on an output left of the first is kept).
+    // Clicks and scrolls reach the app, clicks called by a handler of an
+    // input event at the point of the press the shell's host set (the
+    // pressed node's bottom-left corner in the layout; negative left of
+    // the first output is kept).
     let d = b.tray.dynamic();
+    use strand_services::tray::input_scope as input;
     strand_services::tray::set_click_point(1830, 36);
-    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    input(|| d.action(&rt, "activate", Some(&it.to_data()), &[])).unwrap();
     wait_call(&state, "Activate at 1830,36");
     strand_services::tray::set_click_point(-4, 1052);
-    d.action(&rt, "secondary", Some(&it.to_data()), &[])
-        .unwrap();
+    input(|| d.action(&rt, "secondary", Some(&it.to_data()), &[])).unwrap();
     wait_call(&state, "SecondaryActivate at -4,1052");
+    // Called by no input (a timer, an IPC write): the point when none is
+    // known, never the last press's.
+    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    wait_call(&state, "Activate at 0,0");
     d.action(&rt, "scroll", Some(&it.to_data()), &[Data::Float(-2.0)])
         .unwrap();
     // Two notches up: 120 a notch, positive up (as KDE's host sends).
@@ -387,6 +392,7 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     d.action(&rt, "activate", Some(&check.to_data()), &[])
         .unwrap();
     wait_call(&state, "Event 3 clicked");
+    // The item's two activates above, and no third.
     assert!(
         !state
             .lock()
@@ -394,7 +400,7 @@ fn the_tray_is_the_watcher_when_there_is_none() {
             .calls
             .iter()
             .filter(|c| *c == "Activate")
-            .nth(1)
+            .nth(2)
             .is_some(),
         "an entry's activate is not the item's"
     );

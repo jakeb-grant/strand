@@ -407,6 +407,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     }
     // Before any thread starts, so every thread has the signals blocked.
     let signals = signal_fd()?;
+    // (M4) A tray action sends the press's point only when an input
+    // event's handler calls it; a timer's or IPC's sends (0,0).
+    strand_services::tray::set_input_probe(strand_compiler::vm::in_input_handler);
     // The watcher, then the first load (a config broken at boot runs its
     // last good version), then the compiler worker for every later save.
     let (worker_tx, worker_rx) = calloop::channel::channel::<FromWorker>();

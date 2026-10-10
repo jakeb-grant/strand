@@ -1462,6 +1462,41 @@ fn selected_rows_and_activate() {
     assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
 }
 
+/// (M4) A handler of an input event runs as one: its actions are marked
+/// input-driven (the tray then sends the press's point), while the same
+/// action from an `on change` or a timer is not.
+#[test]
+fn actions_know_whether_input_called_them() {
+    let src = "export state n = 0\n\
+               bar B {\n  \
+                 on change n { notifications.clear() }\n  \
+                 box { width: 10; height: 10; on click { notifications.clear(); n = n + 1 } }\n\
+               }\n";
+    let mut shell = boot(&[("b.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(shell.host.take_actions().is_empty());
+    let target = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(target, "click", Vec::new());
+    shell.flush();
+    shell.flush();
+    let calls: Vec<(String, bool)> = shell
+        .host
+        .take_actions()
+        .iter()
+        .map(|a| (a.to_string(), a.input))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("notifications.clear(0)".to_string(), true),
+            ("notifications.clear(0)".to_string(), false)
+        ],
+        "the click's own call, then `on change n`'s"
+    );
+    assert!(!strand_compiler::vm::in_input_handler());
+}
+
 /// Every snippet of design.md (and grammar.md's examples, and the rice)
 /// mounted at once: no binding fails, every diff is consistent.
 #[test]

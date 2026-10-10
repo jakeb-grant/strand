@@ -266,6 +266,12 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         self.by_wl.remove(&s.wl().id());
+        // (M4) An exclusive zone gone: the others on its output are
+        // arranged without it.
+        let zone_gone = match s.role {
+            Role::Layer(_) if s.config.exclusive_zone > 0 => s.monitor.clone(),
+            _ => None,
+        };
         self.dirty.remove(&id);
         self.releasing.remove(&id);
         if self.held_leave == Some(id) {
@@ -299,6 +305,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         self.clock.forget(id);
         self.host.surface_detached(id);
+        if let Some(m) = zone_gone {
+            self.place_layers_on(&m);
+        }
         // `grab_focus` may name it still: the sync moves it on and tells
         // the new target (not the gone one).
         self.sync_popup_keyboard();
