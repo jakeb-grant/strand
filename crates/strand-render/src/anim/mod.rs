@@ -455,6 +455,10 @@ impl Animator {
             prev: self.prev,
             snap: self.snapping(),
         };
+        if self.commit {
+            // Drawn: a swap in flight survives `drop_undrawn_enters`.
+            self.drawn.insert(node.id);
+        }
         let (swap, moving) = self.image_swaps.swap(node.id, source, decode, curve, frame);
         if moving {
             self.active = true;
@@ -762,9 +766,15 @@ impl Animator {
     /// Drops the enter poses of nodes `under` the surface just painted
     /// that it did not draw (a row out of view, a subtree under a
     /// transparent parent): they show at rest when they come into view,
-    /// and a pose never drawn keeps no frames coming.
+    /// and a pose never drawn keeps no frames coming. So do staggered
+    /// children waiting for their turn (a list's rows past its viewport,
+    /// numbered with the rows in view) and image swaps mid-wipe.
     pub fn drop_undrawn_enters(&mut self, mut under: impl FnMut(NodeId) -> bool) {
         self.enter.retain(|id| !under(*id));
+        let drawn = &self.drawn;
+        self.staggers.retain(|id| drawn.contains(&id) || !under(id));
+        self.image_swaps
+            .end_undrawn(|id| !drawn.contains(&id) && under(id));
     }
 
     /// Exits that finished in the frames painted since the last call.

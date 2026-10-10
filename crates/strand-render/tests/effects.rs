@@ -2029,6 +2029,67 @@ fn an_image_swap_wipes_the_new_image_in() {
     }
 }
 
+/// An image hidden mid-wipe (its parent's opacity set to 0 at once)
+/// ends its swap: it wants no frames while unseen, and shows the new
+/// image at rest when it comes back.
+#[test]
+fn an_image_hidden_mid_swap_wants_no_frames() {
+    use std::time::Duration;
+    let red = solid_png("red-hidden.png", [0xf3, 0x8b, 0xa8, 0xff]);
+    let blue = solid_png("blue-hidden.png", [0x89, 0xb4, 0xfa, 0xff]);
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 10.0, 40.0, 40.0);
+    p.push((Prop::Place, kw("absolute")));
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    let img = b.node(
+        NodeKind::Image,
+        Some(holder),
+        vec![
+            (Prop::Size, num(40.0)),
+            (Prop::Source, text(&red)),
+            (Prop::Transition, call("wipe", vec![kw("left")])),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(60, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    let redpx = buf.px(30, 30);
+    let mut d = SceneDiff::new();
+    d.set(img, Prop::Source, text(&blue));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1032));
+    assert!(r.wants_frame(S), "wiping");
+    assert_eq!(buf.px(47, 30), redpx, "the old image still at the right");
+    let hide = |v: f32| {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::SetProp {
+            id: holder,
+            prop: Prop::Opacity,
+            value: num(v),
+            transition: Transition::Instant,
+        });
+        d
+    };
+    assert!(r.apply(hide(0.0)).is_empty());
+    let mut t = 1032;
+    while r.wants_frame(S) && t < 1500 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert!(t < 1100, "hidden: no frames, not until {t} ms");
+    assert!(!r.wants_frame(S) && r.next_wake().is_none());
+    assert!(r.apply(hide(1.0)).is_empty());
+    t += 16;
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    let left = buf.px(12, 30);
+    assert_ne!(left, redpx, "the new image");
+    assert_eq!(buf.px(47, 30), left, "all new, at rest");
+}
+
 /// An image swap under `transition:` to a source that fails to decode (a
 /// missing file, an external input) ends at once: the image draws what
 /// it would without `transition:` (nothing) and wants no more frames.

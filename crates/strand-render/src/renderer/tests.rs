@@ -441,3 +441,56 @@ fn contexts_cover_several_outputs() {
     r.detach_surface(SurfaceId(1));
     assert!(r.raster.contexts() <= 8);
 }
+
+/// A `list` 40 px tall with `stagger: 100ms` whose 40 entering rows run
+/// past its viewport: the rows out of view are numbered with the rest
+/// but never drawn, so once the rows in view have played nothing under
+/// the surface is busy (its scene cache is reused, a content-sized
+/// surface may shrink) long before the last row's turn at 4 s.
+#[test]
+fn a_stagger_past_the_viewport_leaves_nothing_busy() {
+    let (root, list) = (NodeId::new(1, 0), NodeId::new(2, 0));
+    let mut d = SceneDiff::new();
+    d.create(root, NodeKind::Bar, None, 0)
+        .create(list, NodeKind::List, Some(root), 0)
+        .set(list, Prop::Height, PropValue::Number(40.0))
+        .set(
+            list,
+            Prop::Stagger,
+            PropValue::Duration(Duration::from_millis(100)),
+        );
+    let mut r = renderer();
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    let size = Size::new(120, 40);
+    r.attach_surface(s, root);
+    r.configure_surface(s, size, Scale::ONE);
+    let mut px = vec![0u8; 120 * 40 * 4];
+    let mut paint = |r: &mut Renderer, ms: u64| {
+        let t = PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, 1).unwrap();
+        let mut t = t.at(Duration::from_millis(ms));
+        r.paint(s, &mut t);
+    };
+    paint(&mut r, 1000);
+    let mut d = SceneDiff::new();
+    let rows: Vec<NodeId> = (0..40).map(|i| NodeId::new(100 + i, 0)).collect();
+    for (i, n) in rows.iter().enumerate() {
+        d.create(*n, NodeKind::Row, Some(list), i as u32)
+            .set(*n, Prop::Height, PropValue::Number(20.0))
+            .set(*n, Prop::Bg, PropValue::Color(Color::WHITE))
+            .set(
+                *n,
+                Prop::Enter,
+                PropValue::Pose(vec![(Prop::Opacity, PropValue::Number(0.0))]),
+            );
+    }
+    assert!(r.apply(d).is_empty());
+    paint(&mut r, 1016);
+    assert!(r.anim.busy(&r.tree, root), "the second row waits its turn");
+    let mut t = 1016;
+    while r.anim.busy(&r.tree, root) || r.animating(s) {
+        t += 16;
+        paint(&mut r, t);
+        assert!(t < 3000, "still busy at {t} ms");
+    }
+}

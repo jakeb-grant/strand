@@ -509,6 +509,16 @@ impl ImageSwaps {
             .any(|(id, s)| matches!(s.from, Some((_, Some(_)))) && under(*id))
     }
 
+    /// Ends the swaps of images `gone` names (not drawn in the frame just
+    /// painted): they show their new source at rest when they come back.
+    pub(crate) fn end_undrawn(&mut self, mut gone: impl FnMut(NodeId) -> bool) {
+        for (id, s) in self.nodes.iter_mut() {
+            if s.from.is_some() && gone(*id) {
+                s.from = None;
+            }
+        }
+    }
+
     pub(crate) fn forget(&mut self, id: NodeId) {
         self.nodes.remove(&id);
     }
