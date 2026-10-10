@@ -728,3 +728,146 @@ fn an_opaque_region_rides_a_bare_commit() {
     assert_eq!(rec.buffer_commits, 1, "{rec:?}");
     assert!(rec.commits > bare, "a bare commit carried it: {rec:?}");
 }
+
+/// A popup grab's keyboard over a `keyboard: none` bar on a compositor
+/// that keeps the bar focused when it gives `exclusive` back, as the
+/// fake does (sway does too, but sends the leave it owes with the next
+/// grab's enter). A real focus loss after the next grab (a lock,
+/// another exclusive surface) still reaches the grabbing popup; a
+/// leave and enter for the bar arriving together (sway's late leave)
+/// does not.
+#[test]
+fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
+    use strand_scene::{InputEvent, LogicalRect, SurfaceSpec};
+    const BAR: NodeId = NodeId::new(1, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .surfaces(SurfaceGlobals::default())
+        .seats(1)
+        .start();
+    let mut mgr = manager(&fake);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(common::bar_spec("Top", 36.0)));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(BAR)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the bar maps");
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.keyboard_focus() == Some(bar))
+        .unwrap();
+    assert!(ok, "the bar has keyboard focus");
+
+    let popup = |open: bool| {
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+        spec.name = Some("Calendar".into());
+        spec.parent = Some(BAR);
+        spec.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+        spec.width = Some(200.0);
+        spec.height = Some(120.0);
+        spec.open_two_way = true;
+        spec.open = open;
+        spec
+    };
+    // A key press, then a grabbing popup: it has the keys.
+    let open = |mgr: &mut SurfaceManager<TestHost>, first: bool| {
+        fake.cmd(Cmd::Key(1, true));
+        fake.cmd(Cmd::Key(1, false));
+        let n = mgr.state().host().input.len();
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.host().input[n..]
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Key { .. }))
+            })
+            .unwrap();
+        assert!(ok, "the press reached the bar");
+        let change = if first {
+            SurfaceChange::Created(popup(true))
+        } else {
+            SurfaceChange::Updated {
+                spec: popup(true),
+                recreate: false,
+            }
+        };
+        mgr.state_mut().apply_surface_change(POPUP, change);
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces_of(POPUP).first().is_some_and(|p| {
+                    s.host()
+                        .input
+                        .contains(&InputEvent::KeyboardEnter { surface: *p })
+                        && s.host()
+                            .input
+                            .iter()
+                            .rposition(|e| *e == InputEvent::KeyboardEnter { surface: *p })
+                            >= Some(n)
+                })
+            })
+            .unwrap();
+        assert!(ok, "the popup has the keys: {:?}", mgr.state().host().input);
+        assert!(mgr.state().holds_keyboard_for_popup(bar));
+        mgr.state().surfaces_of(POPUP)[0]
+    };
+    let close = |mgr: &mut SurfaceManager<TestHost>| {
+        mgr.state_mut().apply_surface_change(
+            POPUP,
+            SurfaceChange::Updated {
+                spec: popup(false),
+                recreate: false,
+            },
+        );
+        let ok = mgr
+            .dispatch_until(WAIT, |s| s.surfaces_of(POPUP).is_empty())
+            .unwrap();
+        assert!(ok, "closed");
+        assert!(!mgr.state().holds_keyboard_for_popup(bar));
+    };
+    fn leaves_in(host: &TestHost, p: strand_scene::SurfaceId) -> usize {
+        host.input
+            .iter()
+            .filter(|e| **e == InputEvent::KeyboardLeave { surface: p })
+            .count()
+    }
+    let leaves = |mgr: &SurfaceManager<TestHost>, p| leaves_in(mgr.state().host(), p);
+
+    // Opened and closed: the bar gives `exclusive` back while focused,
+    // and the fake sends no leave for it.
+    let _ = open(&mut mgr, true);
+    close(&mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    assert_eq!(mgr.state().keyboard_focus(), Some(bar));
+
+    // Sway's late leave: a leave and an enter for the bar together,
+    // right after the next grab. The popup keeps the keys.
+    let p = open(&mut mgr, false);
+    let before = leaves(&mgr, p);
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    common::pump(&mut mgr, Duration::from_millis(100));
+    assert_eq!(mgr.state().keyboard_focus(), Some(bar));
+    assert_eq!(leaves(&mgr, p), before, "{:?}", mgr.state().host().input);
+    close(&mut mgr);
+
+    // No leave owed: the next grab comes with no leave or enter, and a
+    // real focus loss later reaches the grabbing popup.
+    let p = open(&mut mgr, false);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    let before = leaves(&mgr, p);
+    fake.cmd(Cmd::KeyboardLeave);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| leaves_in(s.host(), p) > before)
+        .unwrap();
+    assert!(
+        ok,
+        "the grabbing popup lost the keyboard: {:?}",
+        mgr.state().host().input
+    );
+    assert_eq!(mgr.state().keyboard_focus(), None);
+}

@@ -6,8 +6,9 @@
 //!   `zwlr_foreign_toplevel_management_v1` with seats: the shape of labwc,
 //!   a compositor with no IPC adapter (`Fake::start*`).
 //! - `strand-surface`'s manager: `wl_compositor`, `wl_shm`, layer shell,
-//!   viewporter, single-pixel buffers, the alpha modifier and
-//!   `ext-background-effect-v1` ([`SurfaceGlobals`], through
+//!   viewporter, single-pixel buffers, the alpha modifier,
+//!   `ext-background-effect-v1`, `xdg_wm_base` for popups and a seat's
+//!   keyboard whose focus tests move ([`SurfaceGlobals`], through
 //!   [`Fake::builder`]), recording what every surface committed
 //!   ([`Fake::surfaces`]). Sway 1.9, the compositor CI tests on, lacks
 //!   the alpha modifier and the background effect.
@@ -15,6 +16,7 @@
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
 mod surfaces;
+mod xdg;
 
 pub use surfaces::{BufferKind, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
 
@@ -38,7 +40,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::server::{
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason, GlobalId};
-use wayland_server::protocol::{wl_output, wl_seat};
+use wayland_server::protocol::{wl_keyboard, wl_output, wl_seat, wl_surface};
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
     Resource,
@@ -68,6 +70,16 @@ pub enum Cmd {
     /// Sends `ext_background_effect_manager_v1.capabilities` with these
     /// flags (1: blur) to every bound manager.
     SetEffectCapabilities(u32),
+    /// Gives keyboard focus to the layer surface with this namespace:
+    /// `wl_keyboard.enter` on every bound keyboard, after a leave for the
+    /// surface that had it.
+    KeyboardEnter(&'static str),
+    /// Takes keyboard focus away (`wl_keyboard.leave` for the surface
+    /// that had it), as a lock or another exclusive surface would.
+    KeyboardLeave,
+    /// A key (evdev code; 1 is Escape, the keymap's one key) pressed
+    /// (true) or released on every bound keyboard.
+    Key(u32, bool),
 }
 
 struct Toplevel {
@@ -155,9 +167,26 @@ struct Server {
     seat_globals: Vec<Option<GlobalId>>,
     /// The surface side ([`SurfaceGlobals`]).
     surf: surfaces::Surfaces,
+    /// Bound keyboards (`wl_seat.get_keyboard`), each sent a keymap.
+    keyboards: Vec<wl_keyboard::WlKeyboard>,
+    /// The surface with keyboard focus.
+    keyboard_focus: Option<wl_surface::WlSurface>,
+    serial: u32,
 }
 
 impl Server {
+    /// Sends a leave for the surface with keyboard focus, if any.
+    fn keyboard_leave(&mut self) {
+        if let Some(from) = self.keyboard_focus.take()
+            && from.is_alive()
+        {
+            self.serial += 1;
+            for k in &self.keyboards {
+                k.leave(self.serial, &from);
+            }
+        }
+    }
+
     fn send_wlr_toplevel(
         dh: &DisplayHandle,
         manager: &ZwlrForeignToplevelManagerV1,
@@ -335,6 +364,28 @@ impl Server {
             }
             Cmd::Done => self.done(),
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
+            Cmd::KeyboardEnter(namespace) => {
+                if let Some(to) = self.surf.layer_surface(namespace) {
+                    self.keyboard_leave();
+                    self.serial += 1;
+                    for k in &self.keyboards {
+                        k.enter(self.serial, &to, Vec::new());
+                    }
+                    self.keyboard_focus = Some(to);
+                }
+            }
+            Cmd::KeyboardLeave => self.keyboard_leave(),
+            Cmd::Key(key, pressed) => {
+                self.serial += 1;
+                let state = if pressed {
+                    wl_keyboard::KeyState::Pressed
+                } else {
+                    wl_keyboard::KeyState::Released
+                };
+                for k in &self.keyboards {
+                    k.key(self.serial, self.serial, key, state);
+                }
+            }
             Cmd::RemoveSeat(n) => {
                 if let Some(id) = self.seat_globals.get_mut(n).and_then(Option::take) {
                     dh.remove_global::<Server>(id);
@@ -705,15 +756,62 @@ impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
 
 impl Dispatch<wl_seat::WlSeat, usize> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         _: &wl_seat::WlSeat,
-        _: wl_seat::Request,
+        request: wl_seat::Request,
         _: &usize,
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        // Only the keyboard is offered (`capabilities`).
+        if let wl_seat::Request::GetKeyboard { id } = request {
+            let k = init.init(id, ());
+            if let Some(file) = keymap_file() {
+                use std::os::fd::AsFd;
+                k.keymap(
+                    wl_keyboard::KeymapFormat::XkbV1,
+                    file.as_fd(),
+                    KEYMAP.len() as u32 + 1,
+                );
+            }
+            state.keyboards.push(k);
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        k: &wl_keyboard::WlKeyboard,
+        _: wl_keyboard::Request,
+        _: &(),
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
+        // `release` is the only request.
+        state.keyboards.retain(|o| o != k);
     }
+}
+
+/// A self-contained keymap with one key, Escape (no xkeyboard-config
+/// includes).
+const KEYMAP: &str = "xkb_keymap {\n\
+    xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <ESC> = 9; };\n\
+    xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+    xkb_compatibility \"strand\" { };\n\
+    xkb_symbols \"strand\" { key <ESC> { [ Escape ] }; };\n\
+    };\n";
+
+/// [`KEYMAP`], NUL-terminated, in an unlinked file to send.
+fn keymap_file() -> Option<std::fs::File> {
+    use std::io::{Seek, Write};
+    let mut f = tempfile::tempfile().ok()?;
+    f.write_all(KEYMAP.as_bytes()).ok()?;
+    f.write_all(&[0]).ok()?;
+    f.rewind().ok()?;
+    Some(f)
 }
 
 /// The fake compositor on its own thread.

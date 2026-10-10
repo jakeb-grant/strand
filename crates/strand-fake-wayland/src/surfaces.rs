@@ -1,7 +1,8 @@
 //! The surface side of the fake: `wl_compositor`, `wl_region`, `wl_shm`,
 //! `wl_subcompositor`, `zwlr_layer_shell_v1`, `wp_viewporter`, `wp_single_pixel_buffer_v1`,
-//! `wp_alpha_modifier_v1` and `ext_background_effect_v1`, enough for the
-//! surface manager (`strand-surface`) to map layer surfaces, and recording
+//! `wp_alpha_modifier_v1` and `ext_background_effect_v1` (and, in
+//! `xdg.rs`, `xdg_wm_base` for popups), enough for the surface manager
+//! (`strand-surface`) to map layer surfaces and popups, and recording
 //! what each surface committed so tests can check the protocol state the
 //! compositor saw (sway 1.9 in CI offers neither the alpha modifier nor
 //! the background effect).
@@ -193,6 +194,10 @@ struct LayerRequest {
 struct Live {
     /// Index into the records (creation order).
     index: usize,
+    /// The surface itself (keyboard focus names it).
+    wl: wl_surface::WlSurface,
+    /// Its `xdg_popup` role, if it has one.
+    popup: Option<crate::xdg::PopupState>,
     pending: Pending,
     /// The buffer on screen, released when another replaces it.
     current: Option<wl_buffer::WlBuffer>,
@@ -229,6 +234,27 @@ impl Surfaces {
         {
             f(rec);
         }
+    }
+
+    /// Gives `surface` its `xdg_popup` role.
+    pub(crate) fn set_popup(&mut self, surface: &ObjectId, popup: crate::xdg::PopupState) {
+        if let Some(l) = self.live.get_mut(surface) {
+            l.popup = Some(popup);
+        }
+    }
+
+    /// The live layer surface with `namespace`, if any.
+    pub(crate) fn layer_surface(&self, namespace: &str) -> Option<wl_surface::WlSurface> {
+        let records = self.records.lock().ok()?;
+        self.live
+            .values()
+            .filter(|l| l.layer.is_some())
+            .find(|l| {
+                records
+                    .get(l.index)
+                    .is_some_and(|r| r.namespace.as_deref() == Some(namespace))
+            })
+            .map(|l| l.wl.clone())
     }
 
     /// Sends new capability flags to every bound effect manager.
@@ -302,6 +328,12 @@ impl Surfaces {
             layer.configure(live.serial, cw, ch);
             live.layer_configured = Some(r);
             configure = Some((cw, ch));
+        }
+        if let Some(p) = live.popup.as_mut()
+            && !p.configured
+        {
+            live.serial += 1;
+            p.configure(live.serial);
         }
         let index = live.index;
         let margin = live.layer.as_ref().map(|_| live.layer_request.margin);
@@ -389,6 +421,8 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for Server {
                     s.id(),
                     Live {
                         index,
+                        wl: s.clone(),
+                        popup: None,
                         pending: Pending::default(),
                         current: None,
                         layer: None,
@@ -948,6 +982,7 @@ pub(crate) fn create_globals(dh: &DisplayHandle, g: &SurfaceGlobals) {
     dh.create_global::<Server, wl_subcompositor::WlSubcompositor, ()>(1, ());
     dh.create_global::<Server, wl_shm::WlShm, ()>(1, ());
     dh.create_global::<Server, ZwlrLayerShellV1, ()>(4, ());
+    crate::xdg::create_global(dh);
     if g.viewporter {
         dh.create_global::<Server, WpViewporter, ()>(1, ());
     }

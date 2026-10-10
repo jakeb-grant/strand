@@ -709,6 +709,11 @@ pub struct State<H: SurfaceHost + 'static> {
     /// enter of the next grab), and must not close a popup that grabbed
     /// since.
     releasing: BTreeSet<SurfaceId>,
+    /// A leave that came for a `releasing` layer surface while a new
+    /// grab of its held the keyboard: stale if an enter for it follows in
+    /// the same dispatch (sway), else a real focus loss, told to the
+    /// grabbing popup once the dispatch ends ([`State::resolve_held_leave`]).
+    held_leave: Option<SurfaceId>,
     /// The grabbing popup keys go to while its layer surface has keyboard
     /// focus (told a `KeyboardEnter` of its own).
     grab_focus: Option<SurfaceId>,
@@ -915,6 +920,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             last_action: None,
             grab_keyboard: BTreeSet::new(),
             releasing: BTreeSet::new(),
+            held_leave: None,
             grab_focus: None,
             dismissed: BTreeSet::new(),
             modifiers: Modifiers::default(),

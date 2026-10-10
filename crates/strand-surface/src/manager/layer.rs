@@ -264,6 +264,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.by_wl.remove(&s.wl().id());
         self.dirty.remove(&id);
+        self.releasing.remove(&id);
+        if self.held_leave == Some(id) {
+            self.held_leave = None;
+        }
         if self.keyboard_focus == Some(id) {
             self.keyboard_focus = None;
             // A compositor may skip the leave for a destroyed surface:

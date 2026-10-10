@@ -330,6 +330,26 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
     }
 }
 
+impl<H: SurfaceHost + 'static> State<H> {
+    /// Ends a held leave ([`State::held_leave`]) once the dispatch that
+    /// brought it is over: no enter for its layer surface followed, so
+    /// the keyboard really left, and the grabbing popup loses it too.
+    pub(super) fn resolve_held_leave(&mut self) {
+        let Some(layer) = self.held_leave.take() else {
+            return;
+        };
+        if self.keyboard_focus == Some(layer) {
+            return;
+        }
+        log::trace!("keyboard leave {layer:?} held, not stale");
+        if let Some(p) = self.grab_focus.take()
+            && self.surfaces.contains_key(&p)
+        {
+            self.send_input(InputEvent::KeyboardLeave { surface: p });
+        }
+    }
+}
+
 impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
     fn enter(
         &mut self,
@@ -344,6 +364,11 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         if let Some(id) = self.keyboard_target(surface) {
             log::trace!("keyboard enter {id:?} (grab focus {:?})", self.grab_focus);
             self.releasing.remove(&id);
+            if self.held_leave == Some(id) {
+                // The held leave was stale: the grabbing popup keeps
+                // the keys.
+                self.held_leave = None;
+            }
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
@@ -364,14 +389,22 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         if self.keyboard_focus == id {
             self.keyboard_focus = None;
         }
-        // The leave for a grab given back, arriving after a new grab
-        // took the keyboard again: the enter that follows it gives the
-        // keys back, and the new popup keeps them.
-        let stale =
-            id.is_some_and(|id| self.releasing.remove(&id) && self.grab_keyboard.contains(&id));
+        // Maybe the leave for a grab given back, arriving after a new
+        // grab took the keyboard again (sway sends it with the new grab's
+        // enter, which gives the keys back): held until this dispatch
+        // ends, when an enter for the same surface has made it stale or
+        // its absence makes it a real focus loss. A compositor that kept
+        // focus through the release sends no such leave, and a real one
+        // later is told then all the same.
+        let suspect = id.filter(|id| self.releasing.remove(id) && self.grab_keyboard.contains(id));
+        if let Some(l) = suspect {
+            self.held_leave = Some(l);
+            self.handle
+                .insert_idle(|state: &mut State<H>| state.resolve_held_leave());
+        }
         // The keyboard left the layer surface: its grabbing popup loses it
         // too.
-        if !stale
+        if suspect.is_none()
             && let Some(p) = self.grab_focus.take()
             && self.surfaces.contains_key(&p)
         {
