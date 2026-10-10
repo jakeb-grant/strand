@@ -598,8 +598,18 @@ fn stored_on(b: &Builtin, rt: &Runtime, output: &str) -> Result<Real, String> {
     })
 }
 
-/// The stores agree with the compositor (polled: either may lag).
-fn agree(rt: &Runtime, s: &Services, b: &Builtin, live: &Live, what: &str) -> Real {
+/// The compositor has reached the state `want` asks for and the stores
+/// agree with it (polled: either may lag). An action is fire-and-forget,
+/// so agreement alone can still be the state before it: `want` is what
+/// tells the two apart.
+fn agree(
+    rt: &Runtime,
+    s: &Services,
+    b: &Builtin,
+    live: &Live,
+    what: &str,
+    want: impl Fn(&Real) -> bool,
+) -> Real {
     let mut last = None;
     until(what, || {
         s.pump(rt);
@@ -607,7 +617,11 @@ fn agree(rt: &Runtime, s: &Services, b: &Builtin, live: &Live, what: &str) -> Re
         let real = live.real();
         let ours = stored(b, rt, live)?;
         last = Some(real.clone());
-        if ours == real {
+        if !want(&real) {
+            Err(format!(
+                "compositor not there yet: {real}\nstores:     {ours}"
+            ))
+        } else if ours == real {
             Ok(())
         } else {
             Err(format!("compositor: {real}\nstores:     {ours}"))
@@ -616,6 +630,16 @@ fn agree(rt: &Runtime, s: &Services, b: &Builtin, live: &Live, what: &str) -> Re
     let real = last.unwrap_or_else(|| live.real());
     eprintln!("matrix: {what}: {real}");
     real
+}
+
+/// `Real::window` for a focused window `app_id` titled `title`.
+fn focused(app_id: &str, title: &str) -> Option<(String, String)> {
+    Some((app_id.into(), title.into()))
+}
+
+/// The workspace `name` is focused.
+fn on(real: &Real, name: &str) -> bool {
+    real.workspaces.iter().any(|w| w.name == name && w.focused)
 }
 
 fn workspace_named(b: &Builtin, rt: &Runtime, name: &str) -> WorkspaceItem {
@@ -654,12 +678,16 @@ fn the_stores_report_the_live_compositor() {
             other => Err(format!("{other:?}")),
         }
     });
-    let boot = agree(&rt, &s, &b, &live, "boot");
+    let boot = agree(&rt, &s, &b, &live, "boot", |r| {
+        r.workspaces.iter().any(|w| w.focused)
+    });
     assert!(boot.workspaces.iter().any(|w| w.focused), "{boot}");
 
     // A real window on the focused workspace.
     let win = TestWindow::open(&live.socket, "strand-matrix", "matrix one");
-    let real = agree(&rt, &s, &b, &live, "a window");
+    let real = agree(&rt, &s, &b, &live, "a window", |r| {
+        r.window == focused("strand-matrix", "matrix one")
+    });
     assert_eq!(
         real.window,
         Some(("strand-matrix".into(), "matrix one".into()))
@@ -688,7 +716,9 @@ fn the_stores_report_the_live_compositor() {
 
     // Its title changes.
     win.set_title("matrix two");
-    let real = agree(&rt, &s, &b, &live, "the title");
+    let real = agree(&rt, &s, &b, &live, "the title", |r| {
+        r.window == focused("strand-matrix", "matrix two")
+    });
     assert_eq!(
         real.window,
         Some(("strand-matrix".into(), "matrix two".into()))
@@ -697,7 +727,9 @@ fn the_stores_report_the_live_compositor() {
     // `win.focus()`: a second window takes the focus, the first gets it
     // back through the store.
     let second = TestWindow::open(&live.socket, "strand-matrix-two", "matrix three");
-    let real = agree(&rt, &s, &b, &live, "a second window");
+    let real = agree(&rt, &s, &b, &live, "a second window", |r| {
+        r.window == focused("strand-matrix-two", "matrix three")
+    });
     assert_eq!(
         real.window,
         Some(("strand-matrix-two".into(), "matrix three".into()))
@@ -714,13 +746,17 @@ fn the_stores_report_the_live_compositor() {
     b.windows
         .act(&rt, WindowAction::Focus { item: first })
         .unwrap();
-    let real = agree(&rt, &s, &b, &live, "win.focus()");
+    let real = agree(&rt, &s, &b, &live, "win.focus()", |r| {
+        r.window == focused("strand-matrix", "matrix two")
+    });
     assert_eq!(
         real.window,
         Some(("strand-matrix".into(), "matrix two".into()))
     );
     drop(second);
-    let real = agree(&rt, &s, &b, &live, "the second window gone");
+    let real = agree(&rt, &s, &b, &live, "the second window gone", |r| {
+        r.window == focused("strand-matrix", "matrix two")
+    });
     assert_eq!(
         real.window,
         Some(("strand-matrix".into(), "matrix two".into()))
@@ -729,7 +765,9 @@ fn the_stores_report_the_live_compositor() {
     // A switch from outside, to an empty workspace.
     let other = live.other(&real);
     live.switch(&other);
-    let real = agree(&rt, &s, &b, &live, "switched from outside");
+    let real = agree(&rt, &s, &b, &live, "switched from outside", |r| {
+        on(r, &other) && r.window.is_none()
+    });
     assert!(
         real.workspaces.iter().any(|w| w.name == other && w.focused),
         "{real}"
@@ -741,7 +779,7 @@ fn the_stores_report_the_live_compositor() {
     b.workspaces
         .act(&rt, WorkspaceAction::Focus { item })
         .unwrap();
-    let real = agree(&rt, &s, &b, &live, "ws.focus()");
+    let real = agree(&rt, &s, &b, &live, "ws.focus()", |r| on(r, &home));
     assert!(
         real.workspaces.iter().any(|w| w.name == home && w.focused),
         "{real}"
@@ -754,7 +792,11 @@ fn the_stores_report_the_live_compositor() {
     if live.kind == Kind::Hyprland {
         live.switch("name:matrix");
         let named = TestWindow::open(&live.socket, "strand-matrix-named", "matrix named");
-        let real = agree(&rt, &s, &b, &live, "a named workspace");
+        let real = agree(&rt, &s, &b, &live, "a named workspace", |r| {
+            r.workspaces
+                .iter()
+                .any(|w| w.name == "matrix" && w.focused && w.occupied)
+        });
         assert!(
             real.workspaces
                 .iter()
@@ -765,12 +807,26 @@ fn the_stores_report_the_live_compositor() {
         b.workspaces
             .act(&rt, WorkspaceAction::Focus { item })
             .unwrap();
-        agree(&rt, &s, &b, &live, "ws.focus() off the named workspace");
+        agree(
+            &rt,
+            &s,
+            &b,
+            &live,
+            "ws.focus() off the named workspace",
+            |r| on(r, &home),
+        );
         let item = workspace_named(&b, &rt, "matrix");
         b.workspaces
             .act(&rt, WorkspaceAction::Focus { item })
             .unwrap();
-        let real = agree(&rt, &s, &b, &live, "ws.focus() on the named workspace");
+        let real = agree(
+            &rt,
+            &s,
+            &b,
+            &live,
+            "ws.focus() on the named workspace",
+            |r| on(r, "matrix"),
+        );
         assert!(
             real.workspaces
                 .iter()
@@ -782,7 +838,9 @@ fn the_stores_report_the_live_compositor() {
         b.workspaces
             .act(&rt, WorkspaceAction::Focus { item })
             .unwrap();
-        let real = agree(&rt, &s, &b, &live, "back from the named workspace");
+        let real = agree(&rt, &s, &b, &live, "back from the named workspace", |r| {
+            on(r, &home)
+        });
         assert!(
             real.workspaces.iter().any(|w| w.name == home && w.focused),
             "{real}"
@@ -841,7 +899,7 @@ fn the_stores_report_the_live_compositor() {
         }
     });
     drop(win);
-    let real = agree(&rt, &s, &b, &live, "closed");
+    let real = agree(&rt, &s, &b, &live, "closed", |r| r.window.is_none());
     assert_eq!(real.window, None);
 
     // Nothing changes: nothing wakes the logic thread.
