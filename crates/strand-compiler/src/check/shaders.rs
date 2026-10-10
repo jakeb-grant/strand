@@ -167,12 +167,31 @@ fn load(path: &str, read: &Read<'_>) -> Result<Arc<ShaderCode>, Problem> {
         label: "this shader file".into(),
         help: Some("a relative path is under the config directory".into()),
     })?;
-    let uniforms = reflect(path, &wgsl)?;
+    let uniforms = guarded(path, || reflect(path, &wgsl))?;
     Ok(Arc::new(ShaderCode {
         path: path.to_string(),
         wgsl,
         uniforms: ShaderCode::packed(uniforms),
     }))
+}
+
+/// `f`, with a panic (naga's parser or validator on a malformed file) as a
+/// `check::shader` problem: the checker never panics, and a bad file
+/// being edited must not end the compile thread or, at boot, strand.
+fn guarded<T>(path: &str, f: impl FnOnce() -> Result<T, Problem>) -> Result<T, Problem> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let why = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(Problem {
+            code: "check::shader",
+            message: format!("{path}: the WGSL parser failed on this file: {why}"),
+            label: "this shader file".into(),
+            help: None,
+        })
+    })
 }
 
 /// Every `shader` element of the program, with its file.
@@ -599,6 +618,18 @@ fn reflect(path: &str, wgsl: &str) -> Result<Vec<(String, UniformType, u32)>, Pr
 mod tests {
     use super::*;
     use crate::SourceMap;
+
+    /// (m4-audit) A panic while a shader file is parsed is a
+    /// `check::shader` problem naming the file, not a panic of the caller.
+    #[test]
+    fn a_parser_panic_is_a_shader_problem() {
+        let got = guarded::<()>("fx/bad.wgsl", || panic!("naga fell over"));
+        let p = got.unwrap_err();
+        assert_eq!(p.code, "check::shader");
+        assert!(p.message.contains("fx/bad.wgsl"), "{}", p.message);
+        assert!(p.message.contains("naga fell over"), "{}", p.message);
+        assert_eq!(guarded("x", || Ok(3)).unwrap(), 3);
+    }
 
     #[cfg_attr(not(feature = "shaders"), allow(dead_code))]
     const AURORA: &str = "\
