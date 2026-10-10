@@ -2036,6 +2036,49 @@ fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
         ]),
         "once each, at once: {ev}"
     );
+    // A reload that moves the first box down a line and removes the
+    // second: the moved box is told at its new place, once, and the old
+    // notices are no longer replayed.
+    std::fs::write(
+        dir.join("bar.strand"),
+        "state pad = 0\nbar Top {\n  box { blur: 24; width: 10; height: 10 }\n}\n",
+    )
+    .unwrap();
+    m.until("one box", |s| s.of_kind(NodeKind::Box).len() == 1);
+    assert_eq!(m.scene.of_kind(NodeKind::Box)[0], boxes[0], "kept");
+    let moved = format!(
+        "{file}:3:3: `box` in strand-Top asks for blur and draws its tint fallback \
+         (alpha + 0.15; `blur_fallback: none` turns it off): {why}"
+    );
+    let mut told = Vec::new();
+    loop {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+        let ev: Json = serde_json::from_str(&line).unwrap();
+        if ev["event"] == "reload" {
+            break;
+        }
+        assert_eq!(ev["event"], "notices", "{ev}");
+        told.extend(ev["notices"].as_array().unwrap().clone());
+    }
+    assert_eq!(told, [json!(moved)], "the new place only");
+    // The same report again says nothing new; a later watcher hears the
+    // current notices only.
+    to_logic
+        .send(ToLogic::BlurFallback {
+            surface: "strand-Top".into(),
+            nodes: vec![(boxes[0], NodeKind::Box, true)],
+            why: why.into(),
+        })
+        .unwrap();
+    let mut late =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ok = ipc::request(&mut late, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+    assert_eq!(ok["ok"], true);
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut late, &mut line).unwrap();
+    let ev: Json = serde_json::from_str(&line).unwrap();
+    assert_eq!(ev["notices"], json!([moved]), "{ev}");
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(&dir);
