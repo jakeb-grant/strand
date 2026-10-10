@@ -416,6 +416,38 @@ pub trait RasterSource: std::fmt::Debug + Send + Sync {
 
     /// How often it changes: its clock's rate.
     fn rate(&self) -> Rate;
+
+    /// (M4, S-effects) Its clock, if it has one: `rate()` by default. A
+    /// source whose pixels change only when fed (a spectrum) has none,
+    /// so it costs no frame between feeds.
+    fn clock(&self) -> Option<Rate> {
+        Some(self.rate())
+    }
+
+    /// (M4, S-effects) Reads the node's resolved props for the frame
+    /// being drawn and returns a hash of everything besides size, scale
+    /// and time that its pixels depend on (its props, what it was fed):
+    /// the pixmap is drawn again when it changes. Called on every
+    /// flatten that draws the node, so it must not count calls.
+    fn state(&self, _props: &RasterProps<'_>) -> u64 {
+        0
+    }
+}
+
+/// (M4) What a [`RasterSource`] reads of its node: its props as resolved
+/// for this frame (tokens and springs applied) and the colour it
+/// inherits.
+pub struct RasterProps<'a> {
+    pub get: &'a dyn Fn(strand_scene::Prop) -> Option<&'a strand_scene::PropValue>,
+    pub color: strand_scene::Color,
+}
+
+impl std::fmt::Debug for RasterProps<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RasterProps")
+            .field("color", &self.color)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Raster sources by node, and each node's last pixmap.
@@ -449,9 +481,9 @@ impl RasterNodes {
             .retain(|id, _| sources.contains_key(id));
     }
 
-    /// `node`'s clock rate, if it is a raster node.
+    /// `node`'s clock rate, if it is a raster node with a clock.
     pub fn rate(&self, node: NodeId) -> Option<Rate> {
-        self.sources.get(&node).map(|s| s.rate())
+        self.sources.get(&node).and_then(|s| s.clock())
     }
 
     /// Pixmaps drawn so far (tests).
@@ -478,12 +510,14 @@ impl RasterNodes {
         h: u32,
         scale: f32,
         time: TimeContext,
+        props: &RasterProps<'_>,
     ) -> Option<(u64, Arc<Pixmap>)> {
         let source = self.sources.get(&node)?;
         let (w16, h16) = (u16::try_from(w).ok()?, u16::try_from(h).ok()?);
         if w16 == 0 || h16 == 0 {
             return None;
         }
+        let state = source.state(props);
         let mut k = DefaultHasher::new();
         (
             w,
@@ -492,6 +526,7 @@ impl RasterNodes {
             time.t.to_bits(),
             time.index,
             time.count,
+            state,
         )
             .hash(&mut k);
         let key = k.finish();

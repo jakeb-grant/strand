@@ -18,6 +18,7 @@ use crate::raster::{AtlasMirror, Raster};
 use crate::tree::SceneTree;
 
 mod apply;
+mod feed;
 mod frame;
 mod layout_pass;
 mod lists;
@@ -29,6 +30,7 @@ mod text;
 mod tooltip;
 mod wake;
 
+pub use feed::{FeedDemand, FeedKind};
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use text::TextBackend;
 use text::{TextSlot, TextState};

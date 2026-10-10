@@ -128,7 +128,9 @@ fn write_webp(path: &Path) {
     vp8x.extend_from_slice(&u24(15));
     chunk(&mut body, b"VP8X", &vp8x);
     chunk(&mut body, b"ANIM", &[0, 0, 0, 0, 0, 0]);
-    let frames: [(u32, u32, u32, &[u8; 4], u32, u8); 3] = [
+    // (x, y, side, colour, delay ms, flags)
+    type Frame<'a> = (u32, u32, u32, &'a [u8; 4], u32, u8);
+    let frames: [Frame; 3] = [
         (0, 0, 16, &RED, 100, 0),
         (4, 4, 8, &GREEN, 100, 1),
         (0, 0, 8, &BLUE, 200, 0),

@@ -42,10 +42,10 @@ pub use layout::{
     Boxes, CH_EM, FLING_DECAY, LAYOUT_OVERSCAN, LIST_ROW_ESTIMATE, ListBox, ListWindow,
     MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
 };
-pub use offscreen::{OFFSCREEN_BYTES, RasterSource};
+pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT, QUERY_WAIT,
     RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,
 };
-pub use renderer::{ListFrames, ScrollInput, ScrollKind};
+pub use renderer::{FeedDemand, FeedKind, ListFrames, ScrollInput, ScrollKind};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

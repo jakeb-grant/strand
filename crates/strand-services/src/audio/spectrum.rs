@@ -184,7 +184,7 @@ impl Analyzer {
 
 /// An amplitude (1 is full scale) as a band's 0 to 1.
 fn level(a: f32) -> f32 {
-    if !(a > 0.0) {
+    if a.is_nan() || a <= 0.0 {
         return 0.0;
     }
     let db = 20.0 * a.log10();

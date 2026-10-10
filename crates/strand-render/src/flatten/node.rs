@@ -137,7 +137,7 @@ impl<'a> Flattener<'a> {
         // (text, the widgets that draw labels, tracks and fills, and a
         // symbolic icon, which an `image` of an icon name can resolve to
         // too: freedesktop symbolic icons are always drawn in the
-        // foreground colour).
+        // foreground colour; a `graph`'s line and a `spectrum`'s bars too).
         let is_text = matches!(
             node.kind,
             NodeKind::Text | NodeKind::Button | NodeKind::Input
@@ -150,6 +150,8 @@ impl<'a> Flattener<'a> {
                     | NodeKind::Slider
                     | NodeKind::Icon
                     | NodeKind::Image
+                    | NodeKind::Graph
+                    | NodeKind::Spectrum
             );
         let color = if themed {
             own_color.unwrap_or_else(|| default_color(&scope))
@@ -507,6 +509,10 @@ impl<'a> Flattener<'a> {
                 frame.height().round() as u32,
                 self.scale.as_f32(),
                 time.unwrap_or_default(),
+                &crate::offscreen::RasterProps {
+                    get: &get,
+                    color: text_color,
+                },
             )
         {
             let rect = kurbo::Rect::new(

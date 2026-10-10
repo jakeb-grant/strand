@@ -294,6 +294,8 @@ pub struct Extras {
     pub effects: crate::layers::NodeEffects,
     /// (M4) CPU raster nodes' sources and pixmaps.
     pub rasters: crate::offscreen::RasterNodes,
+    /// (M4) Media nodes' sources (graphs, spectra), by node.
+    pub media: crate::media::Media,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
