@@ -382,6 +382,111 @@ fn shape_masks_cut_a_subtree_to_its_outline() {
     assert_matches_ref("effects_mask_shapes", &buf, 1);
 }
 
+/// One `w × h` box carrying `props`, alone on the dark bar at `scale`,
+/// painted at rest: its pixels.
+fn solo(props: Fx, w: f32, h: f32, scale: Scale) -> Vec<u8> {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = vec![
+        (Prop::X, num(4.0)),
+        (Prop::Y, num(4.0)),
+        (Prop::Width, num(w)),
+        (Prop::Height, num(h)),
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#cba6f7")),
+    ];
+    p.extend(props);
+    b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new(
+        ((w + 8.0) * k).round() as u32,
+        ((h + 8.0) * k).round() as u32,
+        scale,
+    );
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    buf.pixels
+}
+
+/// Owner decision 2026-10-10 (shapes): a shape goes only if the others
+/// draw it exactly. None does: every pair of the 13 differs in pixels in
+/// every box tried (square, wide, tall, odd; 1× and 1.5×), except that
+/// `circle` and `pill` coincide in a square box (and only there: an
+/// ellipse is not a capsule). Outside the library, `rect` draws as a box
+/// with no `shape:` and `pill` as `radius: full`, but neither of those
+/// morphs (`only_named_shapes_morph`), so both stay.
+#[test]
+fn no_shape_duplicates_another() {
+    let boxes = [(56.0, 56.0), (96.0, 40.0), (40.0, 96.0), (31.0, 57.0)];
+    let scales = [Scale::ONE, Scale::new(180).unwrap()];
+    let variants: Vec<(f32, f32, Scale)> = boxes
+        .iter()
+        .flat_map(|&(w, h)| scales.iter().map(move |&s| (w, h, s)))
+        .collect();
+    let draw = |props: Fx| -> Vec<Vec<u8>> {
+        variants
+            .iter()
+            .map(|&(w, h, s)| solo(props.clone(), w, h, s))
+            .collect()
+    };
+    let shaped: Vec<Vec<Vec<u8>>> = SHAPES
+        .iter()
+        .map(|s| draw(vec![(Prop::Shape, kw(s))]))
+        .collect();
+    for i in 0..SHAPES.len() {
+        for j in i + 1..SHAPES.len() {
+            for (v, &(w, h, _)) in variants.iter().enumerate() {
+                let same = shaped[i][v] == shaped[j][v];
+                let expected = (SHAPES[i], SHAPES[j]) == ("circle", "pill") && w == h;
+                assert_eq!(
+                    same, expected,
+                    "{} and {} in a {w}×{h} box (variant {v})",
+                    SHAPES[i], SHAPES[j]
+                );
+            }
+        }
+    }
+    // The static spellings outside the library.
+    let plain = draw(vec![]);
+    let full = draw(vec![(Prop::Radius, kw("full"))]);
+    assert!(plain == shaped[0], "`shape: rect` draws a plain box");
+    assert!(full == shaped[2], "`shape: pill` draws `radius: full`");
+    for (v, &(w, h, _)) in variants.iter().enumerate() {
+        assert_eq!(full[v] == shaped[1][v], w == h, "circle vs radius: full");
+    }
+}
+
+/// Why `rect`, `circle` and `pill` stay beside the plain-box spellings
+/// they draw: a `shape:` change morphs by spring, but a box that gains
+/// `shape:` snaps, so only a named shape can start a morph at a plain
+/// rect, disc or capsule.
+#[test]
+fn only_named_shapes_morph() {
+    use std::time::Duration;
+    let ms = |m: u64| Duration::from_millis(1000 + m);
+    for from in ["rect", "circle", "pill"] {
+        let (mut r, mut buf, ids) = boxes(vec![vec![(Prop::Shape, kw(from))]], Scale::ONE, 1000);
+        let mut d = SceneDiff::new();
+        d.set(ids[0], Prop::Shape, kw("cookie"));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, ms(16));
+        assert!(r.wants_frame(S), "{from} morphs to a cookie");
+    }
+    // No `shape:` (a plain box, or `radius: full`): gaining one snaps.
+    let (_, cookie, _) = boxes(vec![vec![(Prop::Shape, kw("cookie"))]], Scale::ONE, 1000);
+    for plain in [vec![], vec![(Prop::Radius, kw("full"))]] {
+        let (mut r, mut buf, ids) = boxes(vec![plain], Scale::ONE, 1000);
+        let mut d = SceneDiff::new();
+        d.set(ids[0], Prop::Shape, kw("cookie"));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, ms(16));
+        assert!(!r.wants_frame(S), "a box gaining `shape:` snaps");
+        assert!(buf.pixels == cookie.pixels, "snapped to the cookie");
+    }
+}
+
 fn shadow(x: f32, y: f32, blur: f32, c: &str) -> PropValue {
     PropValue::Shadow(vec![Shadow {
         x,

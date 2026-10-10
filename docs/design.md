@@ -459,7 +459,7 @@ This catalogue comes from a survey of popular Quickshell shells (end-4, caelesti
 | --- | --- | --- |
 | Per-corner radii, squircle corners | `radius: 14, 14, 0, 0; corners: squircle` | Trivial |
 | Concave fillets, so a panel grows out of the bar or screen edge | `attach: top` on a popup or panel | Trivial |
-| Shape library with morphing (Material 3 cookie, clover, burst, pill, polygons) | `shape: cookie` → `when loading { shape: burst }`; morphs by spring | Trivial |
+| Shape library with morphing: `rect`, `circle`, `pill`, Material 3's `cookie`, `clover`, `burst`, `flower`, `sunny`, `gem` and `heart`, and the polygons `triangle`, `pentagon`, `hexagon` (none draws another exactly; `rect`, `circle` and `pill` let a morph start or end at a plain box) | `shape: cookie` → `when loading { shape: burst }`; morphs by spring | Trivial |
 | Stroke styles: dash, trim, caps, wavy | `stroke: 3, $accent { trim: 0, progress; wave: 2, 18px; cap: round }` | Trivial |
 | Arc and ring gauges | `arc { value: cpu.usage; sweep: 270deg; width: 4 }` | Trivial |
 | Goo merge (metaballs): children melt together | `merge 10 { … }` around siblings | Ok, via marching squares |
