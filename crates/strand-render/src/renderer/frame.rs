@@ -297,6 +297,9 @@ impl Renderer {
         // Every painted frame, cached or not, is checked for a list
         // showing a gap or held at its mounted rows.
         self.check_list_gaps(surface);
+        // (M4) Clocked passes a GPU-drawn surface runs in every frame.
+        #[cfg(feature = "gpu")]
+        let clocked = self.gpu_clocked_damage(surface, &f.items, &f.passes);
         if fresh {
             // Exits under this surface it did not draw (a row scrolled
             // out of view) end: nobody sees them, unless another surface
@@ -347,10 +350,16 @@ impl Renderer {
         } else {
             frame = Damage::full(target.size);
         }
+        #[cfg(feature = "gpu")]
+        frame.union_clipped(&clocked, bounds);
         // (M4) Promotion's input, and whether a GPU-drawn surface must
         // send this frame.
         #[cfg(feature = "gpu")]
-        let stats = (frame.area(), animating, animating || s.records != f.records);
+        let stats = (
+            frame.area(),
+            animating,
+            animating || !clocked.is_empty() || s.records != f.records,
+        );
         s.records = f.records.clone();
         s.hits = f.hits.clone();
 

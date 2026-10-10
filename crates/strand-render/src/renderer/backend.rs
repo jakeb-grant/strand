@@ -656,6 +656,33 @@ impl Renderer {
         }
     }
 
+    /// The boxes of the clocked passes (`strand.time`) of a surface the
+    /// GPU draws. Its passes run in its GPU frames, so no new pixels come
+    /// back to change their records as on a CPU surface, yet each frame
+    /// draws them anew: their boxes are this frame's damage, for
+    /// promotion (a presented aurora is not an idle surface) and for a
+    /// readback surface's decision to send the frame.
+    pub(super) fn gpu_clocked_damage(
+        &self,
+        surface: SurfaceId,
+        items: &[DisplayItem],
+        passes: &[PassWant],
+    ) -> Damage {
+        let mut out = Damage::new();
+        if !self.backend(surface).is_gpu() || !passes.iter().any(|p| p.timed) {
+            return out;
+        }
+        let timed: HashSet<NodeId> = passes.iter().filter(|p| p.timed).map(|p| p.node).collect();
+        for d in items {
+            if let Item::Raster { node, .. } = &d.item
+                && timed.contains(node)
+            {
+                out.add(d.bounds);
+            }
+        }
+        out
+    }
+
     /// The passes a frame of `surface` wants: those whose pixels are not
     /// its node's last are asked for (one in flight per node). `hold`: the
     /// frame is not painted yet, so it may wait for them.

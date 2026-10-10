@@ -85,6 +85,9 @@ mod host {
         scale: Scale,
         /// A frame was sent and its `Presented` has not come.
         in_flight: bool,
+        /// `Release` was sent: no frame goes after it (the thread would
+        /// answer it for a surface no longer attached).
+        releasing: bool,
     }
 
     /// The `Gpu` and what the main thread knows of the surfaces it draws.
@@ -146,6 +149,9 @@ mod host {
                     Release::Send => {
                         if let Some(g) = &self.gpu {
                             g.send(GpuRequest::Release(id));
+                        }
+                        if let Some(p) = self.presented.get_mut(&id) {
+                            p.releasing = true;
                         }
                     }
                     // Taken back (and so destroyed) once that thread has
@@ -214,6 +220,7 @@ mod host {
                                     size,
                                     scale,
                                     in_flight: false,
+                                    releasing: false,
                                 },
                             );
                         }
@@ -287,6 +294,9 @@ mod host {
                         // Its swapchain goes first; `Released` takes the
                         // surface back.
                         g.send(GpuRequest::Release(id));
+                        if let Some(p) = self.presented.get_mut(&id) {
+                            p.releasing = true;
+                        }
                     }
                 }
                 BackendChange::Drop => {
@@ -327,7 +337,7 @@ mod host {
                         scale,
                     });
                 }
-                if p.in_flight {
+                if p.in_flight || p.releasing {
                     continue;
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;

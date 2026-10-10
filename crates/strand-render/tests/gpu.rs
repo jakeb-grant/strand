@@ -872,3 +872,57 @@ fn a_colour_uniform_paints_like_the_same_bg() {
         assert!(close, "{tint}: the pass {shaded:?}, the bg {bg:?}");
     }
 }
+
+/// A clocked shader (`strand.time`) on a surface the GPU draws runs in
+/// its GPU frames, so no pass pixels come back to change its record:
+/// its box is still each frame's damage. Without that a promoted
+/// surface showing only an animated shader painted nothing (a readback
+/// surface sent no frames) and, its frames empty, went back to the CPU
+/// as idle 500 ms after every promotion. Needs no device.
+#[test]
+fn a_clocked_shader_on_a_gpu_surface_damages_every_frame() {
+    let clocked = Arc::new(ShaderCode {
+        path: "clock.wgsl".into(),
+        wgsl: "@fragment\n\
+               fn main(v: StrandVertex) -> @location(0) vec4<f32> {\n\
+                   return vec4<f32>(fract(strand.time), 0.0, 0.0, 1.0);\n\
+               }\n"
+        .into(),
+        uniforms: ShaderCode::packed(vec![]),
+    });
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    b.node(
+        NodeKind::Shader,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(20.0)),
+            (Prop::Shader, PropValue::Shader(clocked)),
+        ],
+    );
+    let t0 = Duration::from_secs(1);
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    assert!(!buf.paint_at(&mut r, S, 0, t0).is_empty());
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuReadback);
+    assert_eq!(r.backend(S), Backend::GpuReadback);
+    assert!(!buf.paint_at(&mut r, S, 1, ms(16)).is_empty(), "the switch");
+    assert!(
+        r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Frame(_))),
+        "the first GPU frame"
+    );
+    // Only the clock moves (and the frame sent is still in flight): the
+    // shader's box is damaged, so the frame is painted (by the CPU,
+    // until the GPU's pixels come) rather than skipped.
+    let d = buf.paint_at(&mut r, S, 1, ms(33));
+    assert!(!d.is_empty(), "a frame with only the clock moving");
+}
