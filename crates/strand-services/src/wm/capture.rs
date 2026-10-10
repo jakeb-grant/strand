@@ -23,8 +23,10 @@
 //! answers it only once the window has changed (the protocol's damage
 //! tracking), so a still window costs no frames. A `failed` frame for new
 //! constraints waits for the session's next `done`; a stopped session
-//! (the window closed) ends; another failure retries after
-//! [`RETRY`]. The capture's `transform` is ignored (windows are not
+//! ends, and is replaced after [`RETRY`] if its window is still wanted
+//! and listed (a compositor may stop a session for reasons of its own;
+//! a closed window leaves the list, and its wants with it); another
+//! failure retries after [`RETRY`]. The capture's `transform` is ignored (windows are not
 //! rotated) and the cursor is not painted.
 //!
 //! A tap whose window is no longer listed (it closed) is called once
@@ -287,11 +289,20 @@ struct Session {
     frame: Option<ExtImageCopyCaptureFrameV1>,
     /// When the next frame may be asked for (`None`: wait for `done`).
     next_at: Option<Instant>,
-    /// The session stopped (the window closed): it captures no more.
-    stopped: bool,
+    /// The session stopped and ended: when a new one may replace it.
+    stopped: Option<Instant>,
 }
 
 impl Session {
+    /// The compositor stopped it: it ends, to be replaced after
+    /// [`RETRY`].
+    fn stop(&mut self) {
+        if self.stopped.is_none() {
+            self.end();
+            self.stopped = Some(Instant::now() + RETRY);
+        }
+    }
+
     fn end(&mut self) {
         if let Some(f) = self.frame.take() {
             f.destroy();
@@ -321,11 +332,15 @@ pub(crate) struct Captures {
 
 impl Captures {
     /// When the loop must wake to ask for a frame.
+    /// (Or to replace a stopped session.)
     pub(crate) fn due(&self) -> Option<Instant> {
         self.sessions
             .iter()
-            .filter(|s| !s.stopped && s.frame.is_none() && s.shm.is_some())
-            .filter_map(|s| s.next_at)
+            .filter_map(|s| match s.stopped {
+                Some(at) => Some(at),
+                None if s.frame.is_none() && s.shm.is_some() => s.next_at,
+                None => None,
+            })
             .min()
     }
 
@@ -370,6 +385,10 @@ impl Client {
         }
         caps.served = served;
         caps.sessions.retain_mut(|s| {
+            if let Some(at) = s.stopped {
+                // Ended already; gone once it may be replaced.
+                return at > now && caps.wants.iter().any(|w| w.identifier == s.identifier);
+            }
             let keep = caps.wants.iter().any(|w| w.identifier == s.identifier);
             if !keep {
                 s.end();
@@ -403,13 +422,13 @@ impl Client {
                     shm: None,
                     frame: None,
                     next_at: None,
-                    stopped: false,
+                    stopped: None,
                 });
             }
         }
         for s in &mut caps.sessions {
             let due = s.next_at.is_some_and(|t| t <= now);
-            if s.stopped || s.frame.is_some() || !due {
+            if s.stopped.is_some() || s.frame.is_some() || !due {
                 continue;
             }
             let Some(shm) = &s.shm else {
@@ -561,8 +580,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, u64> for Client {
             Event::Done => state.session_done(*key, qh),
             Event::Stopped => {
                 if let Some(s) = state.captures.session_mut(*key) {
-                    s.stopped = true;
-                    s.end();
+                    s.stop();
                 }
             }
             _ => {}
@@ -592,10 +610,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, u64> for Client {
                 match reason {
                     // New constraints follow, then `done`.
                     WEnum::Value(FailureReason::BufferConstraints) => s.next_at = None,
-                    WEnum::Value(FailureReason::Stopped) => {
-                        s.stopped = true;
-                        s.end();
-                    }
+                    WEnum::Value(FailureReason::Stopped) => s.stop(),
                     _ => s.next_at = Some(Instant::now() + RETRY),
                 }
             }

@@ -5,7 +5,8 @@
 //! the protocol thread, frames come only when the window changes and at
 //! most `MAX_FPS` a second, new buffer constraints are followed (in any
 //! order before their `done`), and the
-//! session ends with the last tap or the window; a tap whose window
+//! session ends with the last tap or the window (one the compositor
+//! stops while its window stays is replaced); a tap whose window
 //! closed is told so (`None`) once.
 
 mod common;
@@ -115,9 +116,21 @@ async fn a_tap_captures_its_window_as_it_changes() {
             .is_some_and(|f| (f.width, f.height) == (96, 24) && rgba(&f) == [0, 0, 255, 255])
     });
 
+    // The compositor stops the session while the window stays listed:
+    // after RETRY a new session replaces it, its first frame at once.
+    let _ = rx.try_iter().count();
+    fake.cmd(Cmd::StopCapture("cap-1"));
+    wait("stopped", || count(&fake, "stopped cap-1") == 1);
+    wait("the stopped session ended", || {
+        count(&fake, "end cap-1") == 1
+    });
+    let again = next(&rx, "the new session's first frame");
+    assert_eq!(count(&fake, "session cap-1"), 2, "replaced");
+    assert_eq!((again.width, again.height), (96, 24));
+
     // The last tap goes: the session ends.
     drop(tap);
-    wait("the session ended", || count(&fake, "end cap-1") == 1);
+    wait("the session ended", || count(&fake, "end cap-1") == 2);
 
     // A window that closes stops its session; its tap is told the window
     // is gone, once, and gets nothing more.

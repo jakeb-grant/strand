@@ -80,6 +80,9 @@ pub enum Cmd {
     /// A toplevel's size changes: its capture sessions get new buffer
     /// constraints.
     ResizeToplevel(&'static str, u32, u32),
+    /// A toplevel's capture sessions stop while it stays listed, as a
+    /// compositor-side reset would.
+    StopCapture(&'static str),
 }
 
 struct Toplevel {
@@ -354,6 +357,7 @@ impl Server {
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
             Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
             Cmd::ResizeToplevel(ident, w, h) => self.capture_resize(ident, w, h),
+            Cmd::StopCapture(ident) => self.capture_closed(ident),
             Cmd::RemoveSeat(n) => {
                 if let Some(id) = self.seat_globals.get_mut(n).and_then(Option::take) {
                     dh.remove_global::<Server>(id);

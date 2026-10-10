@@ -3494,7 +3494,9 @@ transparent huge pages for life.
     the compositor reports the window changed and at most
     `capture::MAX_FPS` (15) a second, into a memfd `wl_shm` buffer
     following the session's buffer constraints; a failed session retries
-    after a second, a stopped one (the window closed) ends. A
+    after a second, a stopped one ends and is replaced after that second
+    while its window is still wanted and listed (a closed window leaves
+    the list). A
     `CaptureFrame { width, height, pixels: Arc<[u8]> }` is premultiplied
     BGRA, scaled down (box filter) to cover `max` (0 for no limit). The
     callback runs on the protocol thread. Frames reach render through the

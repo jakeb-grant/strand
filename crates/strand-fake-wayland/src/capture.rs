@@ -136,7 +136,7 @@ impl Server {
         }
     }
 
-    /// `ident` closed: its sessions stop.
+    /// `ident` closed (or its capture was reset): its sessions stop.
     pub(crate) fn capture_closed(&mut self, ident: &str) {
         let mut stopped = 0;
         for s in &mut self.capture.sessions {
