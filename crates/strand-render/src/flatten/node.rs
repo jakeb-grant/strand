@@ -22,8 +22,8 @@ use super::text::{Shaped, TextSpec, natural_spec, pick, place_text, sane_font, s
 use super::widget::{CaretAt, WidgetCtx, caret_x};
 use super::{
     DisplayItem, FillShape, Flattener, GlyphCells, HitBox, Inherited, Item, MAX_BLUR, NodeRecord,
-    TOLERANCE, angle, default_color, default_font, finite, finite_or_zero, length, map_rect,
-    number,
+    RingCells, TOLERANCE, angle, default_color, default_font, finite, finite_or_zero, length,
+    map_rect, number,
 };
 use crate::tree::Node;
 
@@ -808,7 +808,10 @@ impl<'a> Flattener<'a> {
                 self.push(item, cover(reach), &mut sig, &mut ink);
             }
         }
-        // Border, drawn inside the box.
+        // Border, drawn inside the box. Along the box (no `shape:`), it
+        // is hashed apart from the rest, with the strips it lies in: a
+        // change of the border alone damages only its ring.
+        let mut ring: Option<(u64, [Rect; 4])> = None;
         if has_area
             && let Some(PropValue::Border(Border { width, paint })) = get(Prop::Border)
             && let Some(width) = finite(*width)
@@ -829,16 +832,46 @@ impl<'a> Flattener<'a> {
                     None => path.extend(shape_path(inner, ir, squircle)),
                 }
             }
-            self.push(
-                Item::Border {
-                    path,
-                    paint: paint.clone(),
-                    frame,
-                },
-                phys,
-                &mut sig,
-                &mut ink,
-            );
+            let item = Item::Border {
+                path,
+                paint: paint.clone(),
+                frame,
+            };
+            let corner = [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+                .into_iter()
+                .fold(0.0f64, f64::max);
+            let band = (bw.max(corner).ceil() as i32).saturating_add(2);
+            let outer = phys.inflate(1);
+            let strips = (outline.is_none()
+                && i64::from(outer.w) > 2 * i64::from(band)
+                && i64::from(outer.h) > 2 * i64::from(band))
+            .then(|| {
+                let (w, h, b) = (outer.w, outer.h, band as u32);
+                [
+                    Rect::new(outer.x, outer.y, w, b),
+                    Rect::new(outer.x, outer.y + band + (h - 2 * b) as i32, w, b),
+                    Rect::new(outer.x, outer.y + band, b, h - 2 * b),
+                    Rect::new(
+                        outer.x + band + (w - 2 * b) as i32,
+                        outer.y + band,
+                        b,
+                        h - 2 * b,
+                    ),
+                ]
+                .map(|c| {
+                    map_rect(self.xform, c)
+                        .intersect(inh.clip)
+                        .unwrap_or_default()
+                })
+            });
+            match strips {
+                Some(cells) => {
+                    let mut h = DefaultHasher::new();
+                    self.push(item, phys, &mut h, &mut ink);
+                    ring = Some((h.finish(), cells));
+                }
+                None => self.push(item, phys, &mut sig, &mut ink),
+            }
         }
         // (M4) `stroke:` with its styles (`crate::shapes::stroke`), along
         // the outline inset by half its width, so it is drawn inside the
@@ -1127,17 +1160,32 @@ impl<'a> Flattener<'a> {
                 .intersect(self.surface)
                 .unwrap_or_default();
         }
+        // The border, hashed apart, still counts in the whole and in what
+        // the glyphs leave out.
+        let rest = sig.finish();
+        let whole = match ring {
+            Some((r, _)) => {
+                let mut h = DefaultHasher::new();
+                (rest, r).hash(&mut h);
+                h.finish()
+            }
+            None => rest,
+        };
         self.out.records.insert(
             node.id,
             NodeRecord {
                 bounds,
-                sig: sig.finish(),
-                glyphs: glyph_cells.map(|(rest, cells)| {
+                sig: whole,
+                glyphs: glyph_cells.map(|(mut glyph_rest, cells)| {
+                    if let Some((r, _)) = ring {
+                        r.hash(&mut glyph_rest);
+                    }
                     Arc::new(GlyphCells {
-                        rest: rest.finish(),
+                        rest: glyph_rest.finish(),
                         cells,
                     })
                 }),
+                ring: ring.map(|(_, cells)| Arc::new(RingCells { rest, cells })),
             },
         );
 

@@ -157,6 +157,20 @@ pub struct NodeRecord {
     /// the glyphs that changed (a clock tick repaints its last digit,
     /// design.md: "a clock tick repaints about 60×20 px").
     pub glyphs: Option<Arc<GlyphCells>>,
+    /// A node with a border along its box: what it draws besides the
+    /// border, and the ring's four strips (buffer pixels), so a change of
+    /// the border alone (a gradient turning with `t`) damages only the
+    /// ring (design.md: "only the ring repaints").
+    pub ring: Option<Arc<RingCells>>,
+}
+
+/// A node's border ring for damage diffing (see [`NodeRecord::ring`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RingCells {
+    /// The hash of everything the node draws but its border.
+    pub rest: u64,
+    /// The strips the ring lies in: top, bottom, left and right.
+    pub cells: [Rect; 4],
 }
 
 /// A text node's glyphs for damage diffing (see [`NodeRecord::glyphs`]).

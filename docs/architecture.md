@@ -908,7 +908,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   just to free them, so an idle shell does zero work between ticks); a
   text node's record keeps its glyph cells (`NodeRecord::glyphs`), so a
   change that only swaps glyphs damages those glyphs (a clock tick
-  repaints its last digit); a gradient is cached
+  repaints its last digit), and a node's border along its box keeps
+  its ring's strips (`NodeRecord::ring`), so a change of the border
+  alone (a conic turning with `t`) damages only the ring; a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
   uncached. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the

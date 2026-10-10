@@ -1964,6 +1964,105 @@ fn a_time_signal_node_damages_only_itself() {
     assert!(buf.pixels == full.pixels, "partial differs from full");
 }
 
+/// design.md "Paint and light": `border: 2, conic(from: t * 60deg, …)`
+/// turns with time and "only the ring repaints": each frame's damage lies
+/// in the border's strips, never over the box's middle (where a child
+/// sits), and the partial repaints add up to a full paint.
+#[test]
+fn a_turning_gradient_border_repaints_only_its_ring() {
+    let stop = |offset, c: &str| GradientStop {
+        offset,
+        color: hex(c),
+    };
+    let border = PropValue::Token(TokenExpr::Template {
+        value: Box::new(PropValue::Border(Border {
+            width: 2.0,
+            paint: Paint::Conic {
+                from: 0.0,
+                stops: vec![
+                    stop(0.0, "#89b4fa"),
+                    stop(0.5, "#f5c2e7"),
+                    stop(1.0, "#89b4fa"),
+                ],
+            },
+        })),
+        colors: vec![],
+        numbers: vec![
+            None,
+            Some(TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Time),
+                rhs: Box::new(TokenExpr::value(num(60.0))),
+            }),
+        ],
+    });
+    let scene = |border: PropValue| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let ring = b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+                (Prop::X, num(60.0)),
+                (Prop::Y, num(10.0)),
+                (Prop::Width, num(80.0)),
+                (Prop::Height, num(40.0)),
+                (Prop::Radius, num(8.0)),
+                (Prop::Bg, color("#313244")),
+                (Prop::Border, border),
+            ],
+        );
+        b.node(
+            NodeKind::Box,
+            Some(ring),
+            vec![
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+                (Prop::X, num(30.0)),
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(20.0)),
+                (Prop::Bg, color("#a6e3a1")),
+            ],
+        );
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(BAR, r.tree().roots()[0]);
+        r
+    };
+    let mut r = scene(border);
+    let mut buf = Buffer::new(200, 60, Scale::ONE);
+    buf.paint_at(&mut r, BAR, 0, T0);
+    // The middle: the box less its corner radius, border and a margin.
+    let middle = Rect::new(60 + 12, 10 + 12, 80 - 24, 40 - 24);
+    for k in 1..=15 {
+        assert!(r.wants_frame(BAR), "frame {k}: the clock runs");
+        let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+        assert!(!d.is_empty(), "frame {k} repaints the ring");
+        for rect in d.rects() {
+            assert!(
+                !rect.intersects(middle),
+                "frame {k}: damage {rect:?} over the middle {middle:?}"
+            );
+        }
+    }
+    // A quarter second in: the gradient turned 15°.
+    let still = PropValue::Border(Border {
+        width: 2.0,
+        paint: Paint::Conic {
+            from: 15.0,
+            stops: vec![
+                stop(0.0, "#89b4fa"),
+                stop(0.5, "#f5c2e7"),
+                stop(1.0, "#89b4fa"),
+            ],
+        },
+    });
+    let mut full_r = scene(still);
+    let mut full = Buffer::new(200, 60, Scale::ONE);
+    full.paint(&mut full_r, BAR, 0);
+    assert!(buf.pixels == full.pixels, "partial differs from full");
+}
+
 /// The box `id` is drawn in at 1× (its laid-out box moved by its `x`,
 /// `y`), grown by `m` pixels.
 fn drawn_box(r: &Renderer, id: NodeId, (x, y): (f32, f32), m: i32) -> Rect {
