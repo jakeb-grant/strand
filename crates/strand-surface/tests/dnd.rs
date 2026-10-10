@@ -1077,10 +1077,21 @@ fn a_slowly_read_drag_export_is_written_whole() {
             }
         }
     };
-    // True if the writer has closed its end, without reading.
-    let hung_up = |pipe: &std::io::PipeReader| -> bool {
+    // True if the writer has closed its end, without reading. The pipe
+    // was drained before the pause, so a writer that stopped without
+    // closing its end shows neither: a bounded wait fails then instead
+    // of hanging the job.
+    let hung_up = |pipe: &std::io::PipeReader, round: usize| -> bool {
         let mut fds = [PollFd::new(pipe, PollFlags::IN)];
-        poll(&mut fds, None).unwrap();
+        let bound = rustix::event::Timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let n = poll(&mut fds, Some(&bound)).unwrap();
+        assert!(
+            n > 0,
+            "pause {round}: neither data nor a hang-up in 5 s (the writer stopped without closing)"
+        );
         fds[0].revents().contains(PollFlags::HUP)
     };
     // Three pauses of 3 s, each with the pipe full and unread, a drain
@@ -1089,7 +1100,7 @@ fn a_slowly_read_drag_export_is_written_whole() {
     for round in 0..3 {
         pump_mgr(&mut mgr, PAUSE);
         assert!(
-            !hung_up(&pipe),
+            !hung_up(&pipe, round),
             "given up in pause {round}, {:?} in, {got} read",
             begun.elapsed()
         );
