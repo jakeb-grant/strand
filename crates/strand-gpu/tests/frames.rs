@@ -350,3 +350,61 @@ fn even_odd_clips_cut_holes_and_retired_uploads_go() {
     let px = frame(&mut h, f(2, vec![image], vec![], vec![5]));
     assert_eq!(pixel(&px, 1, 1), [0, 0, 0, 0], "retired");
 }
+
+/// Every frame and pass is answered, also those that cannot be drawn
+/// (a surface not attached, a zero or over-large size, a pass that
+/// draws nothing): the host sends a surface's next frame only after the
+/// answer to its last, and render waits for a pass's.
+#[test]
+fn frames_and_passes_that_cannot_be_drawn_are_answered() {
+    let Some(mut h) = start() else { return };
+    let empty = |id: u64, size: Size| Frame {
+        surface: S,
+        id,
+        size,
+        scale: Scale::ONE,
+        ops: vec![],
+        uploads: vec![],
+        retire: Vec::new(),
+        clear: AlphaColor::TRANSPARENT,
+    };
+    let failed = |h: &mut Harness, what: &str| match h.next() {
+        GpuReply::Failed { surface, error, .. } => {
+            assert_eq!(surface, Some(S), "{what}");
+            assert_eq!(error.kind, GpuErrorKind::Render, "{what}");
+        }
+        other => panic!("{what}: expected Failed, got {other:?}"),
+    };
+    h.gpu.send(GpuRequest::Frame(empty(1, Size::new(4, 4))));
+    failed(&mut h, "not attached");
+    attach(&mut h, Size::new(4, 4));
+    h.gpu.send(GpuRequest::Frame(empty(2, Size::new(0, 4))));
+    failed(&mut h, "zero width");
+    h.gpu
+        .send(GpuRequest::Frame(empty(3, Size::new(70_000, 4))));
+    failed(&mut h, "past the device's limit");
+    let pass = ShaderPass {
+        code: ShaderRef::File(code(
+            "@fragment fn main(v: StrandVertex) -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+            vec![],
+        )),
+        uniforms: Arc::from([].as_slice()),
+        input: ShaderInput::None,
+    };
+    h.gpu.send(GpuRequest::Pass(PassFrame {
+        key: 5,
+        id: 4,
+        size: Size::new(0, 0),
+        pass,
+        globals: PassGlobals::default(),
+    }));
+    match h.next() {
+        GpuReply::Failed { surface, key, .. } => {
+            assert_eq!((surface, key), (None, Some(5)), "a pass of no size");
+        }
+        other => panic!("a pass of no size: expected Failed, got {other:?}"),
+    }
+    // Still up: a frame renders.
+    let px = frame(&mut h, empty(5, Size::new(4, 4)));
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 0, 0]);
+}

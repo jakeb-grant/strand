@@ -218,7 +218,13 @@ mod host {
                         self.presented.remove(&id);
                         state.take_back(id);
                     }
-                    GpuReply::Presented { surface, .. } => {
+                    GpuReply::Presented { surface, .. }
+                    | GpuReply::Failed {
+                        surface: Some(surface),
+                        ..
+                    } => {
+                        // A frame that failed is answered too: render
+                        // takes the surface back if it cannot be drawn.
                         if let Some(p) = self.presented.get_mut(surface) {
                             p.in_flight = false;
                         }

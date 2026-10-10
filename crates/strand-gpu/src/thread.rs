@@ -294,10 +294,29 @@ impl State {
         (out, failed)
     }
 
+    /// Draws a frame; every frame is answered (`Presented`, `Pixels` or
+    /// `Failed`), since the host sends a surface's next frame only after
+    /// the answer to its last.
     fn frame(&mut self, dev: &Device, frame: Frame, reply: &Reply<'_>) {
         let surface = frame.surface;
+        if let Err(error) = self.draw_frame(dev, frame, reply) {
+            reply.send(GpuReply::Failed {
+                surface: Some(surface),
+                key: None,
+                error,
+            });
+        }
+    }
+
+    fn draw_frame(
+        &mut self,
+        dev: &Device,
+        frame: Frame,
+        reply: &Reply<'_>,
+    ) -> Result<(), GpuError> {
+        let surface = frame.surface;
         let Some(target) = self.targets.get(&surface) else {
-            return;
+            return Err(render_error(format!("{surface:?} is not attached")));
         };
         let (w, h) = (frame.size.w, frame.size.h);
         let max = dev
@@ -306,7 +325,9 @@ impl State {
             .max_texture_dimension_2d
             .min(u32::from(u16::MAX));
         if w == 0 || h == 0 || w > max || h > max {
-            return;
+            return Err(render_error(format!(
+                "a {w}×{h} frame of {surface:?} is outside the device's 1–{max} pixels"
+            )));
         }
         let presenting = target.present.is_some();
         let mut encoder = dev
@@ -342,7 +363,7 @@ impl State {
         }
         // The frame texture at this size.
         let Some(target) = self.targets.get_mut(&surface) else {
-            return;
+            return Err(render_error(format!("{surface:?} is not attached")));
         };
         if target
             .frame
@@ -374,7 +395,7 @@ impl State {
             });
         }
         let Some(ft) = target.frame.as_ref() else {
-            return;
+            return Err(render_error("no frame texture"));
         };
         let size = vello_gpu::RenderSize {
             width: w as u16,
@@ -393,16 +414,11 @@ impl State {
             vello_gpu::TargetInit::Clear(vello_gpu::ClearSettings::Viewport { color: frame.clear }),
         );
         if let Err(e) = rendered {
-            reply.send(GpuReply::Failed {
-                surface: Some(surface),
-                key: None,
-                error: GpuError::new(GpuErrorKind::Render, e.to_string()),
-            });
-            return;
+            return Err(render_error(e.to_string()));
         }
         if presenting {
             let Some(p) = target.present.as_mut() else {
-                return;
+                return Err(render_error("no swapchain"));
             };
             let tex = match p.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(t)
@@ -418,12 +434,7 @@ impl State {
                 }
             };
             let Some(tex) = tex else {
-                reply.send(GpuReply::Failed {
-                    surface: Some(surface),
-                    key: None,
-                    error: GpuError::new(GpuErrorKind::Render, "no swapchain image"),
-                });
-                return;
+                return Err(render_error("no swapchain image"));
             };
             let dst = tex
                 .texture
@@ -437,28 +448,24 @@ impl State {
                 surface,
                 at: Instant::now(),
             });
+            Ok(())
         } else {
             if target.read.as_ref().is_none_or(|r| !r.fits(w, h)) {
                 target.read = Some(ReadBuffer::new(dev, w, h));
             }
             let Some(read) = target.read.as_ref() else {
-                return;
+                return Err(render_error("no readback buffer"));
             };
             read.record(&mut encoder, &ft.texture);
             dev.queue.submit([encoder.finish()]);
             drop(keep);
-            match read.read(dev) {
-                Ok(pixels) => reply.send(GpuReply::Pixels {
-                    surface,
-                    frame: frame.id,
-                    pixels,
-                }),
-                Err(e) => reply.send(GpuReply::Failed {
-                    surface: Some(surface),
-                    key: None,
-                    error: e,
-                }),
-            }
+            let pixels = read.read(dev)?;
+            reply.send(GpuReply::Pixels {
+                surface,
+                frame: frame.id,
+                pixels,
+            });
+            Ok(())
         }
     }
 
@@ -474,7 +481,16 @@ impl State {
             .draw(dev, &mut encoder, &p.pass, w, h, p.globals)
         {
             Ok(Some(d)) => d,
-            Ok(None) => return,
+            Ok(None) => {
+                // A zero or over-large size, or a bundled pass not built
+                // yet: answered, so render stops waiting for it.
+                reply.send(GpuReply::Failed {
+                    surface: None,
+                    key: Some(p.key),
+                    error: render_error(format!("a {w}×{h} pass draws nothing")),
+                });
+                return;
+            }
             Err(e) => {
                 reply.send(GpuReply::Failed {
                     surface: None,
@@ -506,4 +522,8 @@ impl State {
             }),
         }
     }
+}
+
+fn render_error(message: impl Into<String>) -> GpuError {
+    GpuError::new(GpuErrorKind::Render, message)
 }
