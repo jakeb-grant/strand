@@ -38,8 +38,11 @@
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
-//! - `the_release_binary_code_stays_within_15_mib`: the release binary's
-//!   `.text` (most of it resident on a large-folio page cache).
+//! - `the_release_binary_code_stays_within_its_gate`: the release
+//!   binary's `.text` (most of it resident on a large-folio page cache):
+//!   18.5 MiB with the GPU backend (the default build), 15 MiB for the
+//!   CPU core (`--no-default-features`; docs/architecture.md,
+//!   "`strand-gpu`", "Budgets and tests").
 //!
 //! The idle window and the minute tick's one burst are timing claims:
 //! run this binary on its own (CI runs it as a step of its own, with
@@ -1543,6 +1546,14 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "design bar on the real services: PSS {pss} kB ({what} {limit} kB)"
     ));
     assert_eq!(huge, 0, "huge pages resident\n{}", memory_report(pid));
+    // (M4) The GPU backend is linked but cold: no Vulkan library is
+    // mapped before anything needs the GPU (docs/architecture.md,
+    // "`strand-gpu`", "Budgets and tests").
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
+    assert!(
+        !maps.contains("libvulkan"),
+        "a Vulkan library is mapped by a bar that needs no GPU"
+    );
     warn_over_target("design bar on the real services", pss, PSS_TARGET_KB);
     assert!(
         pss <= limit,
@@ -2245,21 +2256,32 @@ fn the_report_states_the_owner_confirmed_memory_gates() {
 /// profile (`[profile.release.package]`: services and glue built for
 /// size).
 #[test]
-fn the_release_binary_code_stays_within_15_mib() {
+fn the_release_binary_code_stays_within_its_gate() {
     if cfg!(debug_assertions) {
         eprintln!("skipped: a debug build's code is not the release binary's");
         return;
     }
     let elf = std::fs::read(env!("CARGO_BIN_EXE_strand")).unwrap();
     let text = text_size(&elf).expect("an ELF64 binary with a .text");
-    eprintln!("strand's .text: {text} bytes");
+    // The GPU backend's build: the spike's 17,683,543 B plus 9.7%
+    // (decisions.md, m4-gpu-spike); the CPU core keeps 15 MiB.
+    let (gate, build) = if cfg!(feature = "gpu") {
+        (TEXT_GATE_GPU, "the default build (GPU backend)")
+    } else {
+        (TEXT_GATE_CPU, "the CPU-only build (--no-default-features)")
+    };
+    eprintln!("strand's .text: {text} bytes, {build}");
     notice(&format!(
-        "strand's .text: {text} bytes (gate {})",
-        15u64 << 20
+        "strand's .text: {text} bytes (gate {gate}, {build})"
     ));
     assert!(
-        text <= 15 << 20,
-        "strand's .text is {text} bytes, over 15 MiB: code that runs at event rates belongs at \
-         opt-level \"s\" or \"z\" (Cargo.toml, [profile.release.package])"
+        text <= gate,
+        "strand's .text is {text} bytes, over {gate} for {build}: code that runs at event \
+         rates belongs at opt-level \"s\" or \"z\" (Cargo.toml, [profile.release.package])"
     );
 }
+
+/// `.text` of the default (GPU) release build: 18.5 MiB.
+const TEXT_GATE_GPU: u64 = 19_398_656;
+/// `.text` of the CPU-only release build: 15 MiB.
+const TEXT_GATE_CPU: u64 = 15 << 20;

@@ -167,6 +167,8 @@ step "cargo test --release -p strand --test services" 60 \
   cargo test --release -p strand --test services -- --test-threads=1
 step "cargo test --release -p strand --test budgets" 60 \
   cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
+step "cargo test --release -p strand --no-default-features --test budgets (.text gate)" 60 \
+  cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
 
 job=acceptance
 step "cargo test --release -p strand --test acceptance" 60 \

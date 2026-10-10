@@ -2740,8 +2740,11 @@ to say why.
   9.7%); `strand --no-default-features` at most 15 MiB (the spike's CPU
   build had 1.14 MiB to spare). The spike measured the GPU build's bar
   PSS at a mean of 33.7 MB, about 0.3 MB under the 34 MB target, all of
-  it cold-code mapping and relocations; S-gpu measures again when the
-  backend lands.
+  it cold-code mapping and relocations. With the backend landed
+  (m4-gpu-w2): `.text` 18,456,983 B (default) and 15,118,167 B
+  (`--no-default-features`, its own CI step), and the design bar's PSS
+  33,731–34,016 kB over three runs, under the 34 MiB (34,816 kB) target,
+  with no `libvulkan` mapped (asserted there).
 - Cold (`strand/tests/gpu_cold.rs`, per feature set with `cargo
   metadata`): wgpu, vello_gpu and naga reach `strand` only through
   `strand-gpu`, and naga also through `strand-compiler`'s `shaders`;

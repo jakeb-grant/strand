@@ -136,6 +136,9 @@ jobs:
       # (launcher open at 2x, two toasts, the OSD) printed against
       # design.md's 59-64 MB (64 MB target warns, 70 MB ceiling fails).
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
+      # The CPU core's .text keeps its 15 MiB gate behind the GPU
+      # backend's 18.5 MiB (docs/architecture.md, "`strand-gpu`").
+      - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
 
   # M2 exit: design.md's four example shells and theme.strand, byte for
   # byte, in `strand run` on headless sway with two outputs against the
