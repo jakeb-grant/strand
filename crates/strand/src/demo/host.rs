@@ -450,15 +450,10 @@ impl Host {
     /// What follows every painted frame, the CPU's or (M4) one the GPU
     /// thread presents (`run/gpu.rs`): the lock's and the blur
     /// fallback's bookkeeping, effect notices, layout facts and list
-    /// windows to logic, fed nodes' producers, and the `damage` log line.
-    pub(crate) fn painted(
-        &mut self,
-        surface: SurfaceId,
-        damage: &Damage,
-        size: Size,
-        scale: Scale,
-        age: u8,
-    ) {
+    /// windows to logic, and fed nodes' producers. The frame's `damage`
+    /// log line is [`Host::log_frame`]'s: a CPU frame's at once, a
+    /// presented one's when the GPU thread says it presented it.
+    pub(crate) fn painted(&mut self, surface: SurfaceId, damage: &Damage) {
         self.lock.painted(surface, damage);
         self.note_blur_fallback(surface);
         // (M4) CPU fallbacks for GPU effects, once a run each.
@@ -477,6 +472,17 @@ impl Host {
             crate::run::feeds::sync(&mut self.renderer, feeds);
         }
         self.wake_if_changed();
+    }
+
+    /// The `damage` log line of a frame shown (with `--log-damage`).
+    pub(crate) fn log_frame(
+        &self,
+        surface: SurfaceId,
+        damage: &Damage,
+        size: Size,
+        scale: Scale,
+        age: u8,
+    ) {
         if !damage.is_empty() && self.log_damage {
             let rects: Vec<String> = damage
                 .rects()
@@ -551,7 +557,7 @@ impl Painter for Host {
             return damage;
         }
         let damage = self.renderer.paint(surface, target);
-        self.painted(surface, &damage, target.size, target.scale, target.age);
+        self.painted(surface, &damage);
         #[cfg(test)]
         if let Some(p) = &self.probe {
             p.0.painted(surface, !damage.is_empty(), target.scale, &self.renderer);
@@ -559,6 +565,7 @@ impl Painter for Host {
                 p.0.frame(surface, target);
             }
         }
+        self.log_frame(surface, &damage, target.size, target.scale, target.age);
         damage
     }
 
@@ -1509,7 +1516,7 @@ mod tests {
             .renderer
             .paint_gpu(s, Duration::from_secs(1))
             .expect("the switch repaints");
-        host.painted(s, &Damage::full(frame.size), frame.size, frame.scale, 0);
+        host.painted(s, &Damage::full(frame.size));
         let sent = drain(&mut el);
         assert!(
             sent.iter()

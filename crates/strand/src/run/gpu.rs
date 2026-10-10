@@ -85,6 +85,9 @@ mod host {
         scale: Scale,
         /// A frame was sent and its `Presented` has not come.
         in_flight: bool,
+        /// The sent frame's size and scale, for its `damage` log line
+        /// once presented.
+        sent: Option<(Size, Scale)>,
     }
 
     /// A surface attached (asked or answered).
@@ -282,6 +285,7 @@ mod host {
                                     size,
                                     scale,
                                     in_flight: false,
+                                    sent: None,
                                 },
                             );
                         }
@@ -293,8 +297,24 @@ mod host {
                         self.presented.remove(&id);
                         state.take_back(id);
                     }
-                    GpuReply::Presented { surface, .. }
-                    | GpuReply::Failed {
+                    GpuReply::Presented { surface, .. } => {
+                        if let Some(p) = self.presented.get_mut(surface) {
+                            p.in_flight = false;
+                            // Shown now: its `damage` line, as a CPU
+                            // frame's at its commit (a presented frame
+                            // is whole).
+                            if let Some((size, scale)) = p.sent.take() {
+                                state.host().log_frame(
+                                    *surface,
+                                    &Damage::full(size),
+                                    size,
+                                    scale,
+                                    0,
+                                );
+                            }
+                        }
+                    }
+                    GpuReply::Failed {
                         surface: Some(surface),
                         ..
                     } => {
@@ -302,6 +322,7 @@ mod host {
                         // takes the surface back if it cannot be drawn.
                         if let Some(p) = self.presented.get_mut(surface) {
                             p.in_flight = false;
+                            p.sent = None;
                         }
                     }
                     GpuReply::Exited => {
@@ -411,12 +432,11 @@ mod host {
                     let (size, scale) = (frame.size, frame.scale);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
+                    p.sent = Some((size, scale));
                     // What follows a CPU frame follows this one too:
-                    // layout facts and list windows to logic, fed nodes,
-                    // the damage log line (a presented frame is whole).
-                    state
-                        .host_mut()
-                        .painted(*id, &Damage::full(size), size, scale, 0);
+                    // layout facts and list windows to logic, fed nodes
+                    // (its `damage` line waits for `Presented`).
+                    state.host_mut().painted(*id, &Damage::full(size));
                 }
             }
         }
