@@ -89,7 +89,6 @@ impl Hashes {
                 shaders.push((file, e.span.start, path.clone()));
             }
         });
-        shaders.sort();
         let mut m = Merkle {
             id,
             map,
@@ -167,7 +166,7 @@ struct Merkle<'a> {
     map: &'a SourceMap,
     hir: &'a hir::Program,
     refs: Vec<&'a hir::Reference>,
-    /// Every `shader` node with a literal path, by `(file, start)`.
+    /// Every `shader` node with a literal path: its file and start.
     shaders: Vec<(FileId, u32, String)>,
     /// The checked shader files, by path as written.
     codes: &'a crate::check::shaders::Shaders,
@@ -226,12 +225,11 @@ impl Merkle<'_> {
         // A lock's region (and the components it mounts) covers the code
         // of the shader files it draws, not only their paths.
         if components {
-            let lo = self
-                .shaders
-                .partition_point(|(f, s, _)| (*f, *s) < (file, span.start));
-            for (f, s, path) in &self.shaders[lo..] {
-                if *f != file || *s >= span.end {
-                    break;
+            // In source order (`each_shader` walks each file in order);
+            // few enough to scan whole, and no sort is linked for them.
+            for (f, s, path) in &self.shaders {
+                if *f != file || *s < span.start || *s >= span.end {
+                    continue;
                 }
                 h.update(b"\x01shader\0");
                 h.update(path.as_bytes());
