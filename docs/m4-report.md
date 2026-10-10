@@ -40,9 +40,10 @@ number below comes from a test in the tree; the tests that gate fail
 when their gate is missed, and the ones that only report are marked
 so.
 
-M4's three exits are ticked in `docs/features.md`, with 14 of its 15
-boxes. The open box is the bundled noise field, which waits on the
-owner (Open).
+M4's three exits are ticked in `docs/features.md`, with all 15 of its
+boxes. The last, the bundled noise field, was ticked on 2026-10-10,
+when the owner accepted reading it as a `.wgsl` shader on the bundled
+path (decisions.md m4-owner-docs).
 
 ## What M4 delivered
 
@@ -284,11 +285,8 @@ handoff.md notes it.
 
 ## Open
 
-Waiting on the owner (decisions.md m4-gpu-effects, m4-audit):
+Waiting on the owner (decisions.md m4-gpu-effects, m4-audit, m4-owner-docs):
 
-- **The bundled noise field** (features.md's open M4 box): design.md
-  counts "aurora and noise fields" among the eight bundled effects but
-  names no spelling for one, and inventing one would add syntax.
 - **A hung frame on a presented surface that is not a lock** is bounded
   only by the WSI's acquire timeout. A lock is not affected (GPU).
 - **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate** has little or
@@ -298,16 +296,25 @@ Waiting on the owner (decisions.md m4-gpu-effects, m4-audit):
   1.64 ms.
 - **The shape list**: whether to trim the 13 shapes to design.md's five
   plus polygons (decisions.md m4-audit, "the shape list is a reading").
-- **xdg-activation** (the notification ActivationToken and the launch
-  token) moves past M4, to be scheduled.
 - **A process-wide cap on hung devices** (decisions.md m4-audit round
   5): each edit of a shader file that still loops forever leaks one
   more lavapipe device, a spinning CPU thread, at most once per 30 s,
   without bound. Capping it needs a rule design.md does not have (no
   GPU for the rest of the process after N lost devices, say); the
   owner accepts the per-edit cost or names a cap.
+- **A 4K surface's crossfade** (decisions.md m4-owner-docs): with the
+  snapshot caps gone it fades instead of snapping, at 3.9–5.9 ms of
+  swap work and 10–20 ms of blending per fade frame on the laptop
+  (`theme_swap_bench.rs::a_4k_surface_crossfade_is_measured`, reported,
+  not gated); the owner accepts it or picks a cheaper blend or a size
+  past which it snaps for time.
 - **The promoted GPU cost on hardware** is unmeasured (below, "Not
   measured").
+
+Answered by the owner on 2026-10-10 (decisions.md m4-owner-docs): the
+bundled noise field is a `.wgsl` shader on a `shader` node (its box is
+ticked), and xdg-activation (the notification ActivationToken and the
+launch token) is scheduled for M5 (features.md's M5 box).
 
 Not measured, and why:
 

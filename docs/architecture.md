@@ -2540,8 +2540,9 @@ its queue before shaping (and folds in newly arrived cancels before each
 request) and survives a panicking request: it starts a fresh engine and
 answers with an empty layout whose `is_reset()` is true, on which render
 drops its mirror and every layout and re-requests its text. Each scale's
-atlas is capped at `AtlasConfig::max_bytes` of alpha (1 MiB by default;
-glyphs that do not fit are skipped), fonts at `MAX_FONT_PX` (512) and
+atlas is capped at `AtlasConfig::max_bytes` of alpha (8 MiB by default,
+a bound on hostile text, not the memory budget; glyphs that do not fit
+are skipped), fonts at `MAX_FONT_PX` (512) and
 text at `MAX_TEXT_BYTES` (64 KiB) per request. A layout that had to
 skip glyphs for want of atlas room says so (`is_incomplete`; render asks
 again a bounded number of times), and each layout lists its scale's live

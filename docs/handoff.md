@@ -9,8 +9,10 @@ below.
 
 ## State
 
-- M0–M4 are complete, but for one M4 box that waits on the owner (the
-  bundled noise field). M4's three exits are ticked in features.md:
+- M0–M4 are complete: the last M4 box, the bundled noise field, was
+  ticked when the owner accepted reading it as a `.wgsl` shader
+  (2026-10-10, decisions.md m4-owner-docs). M4's three exits are
+  ticked in features.md:
   smooth 2,000-row scrolling, GPU released when idle, and lock fails
   closed under faults (docs/m4-report.md, "Result").
 - `main` holds all of M4: the owner merged `laptop/integration-m4-w3`
@@ -24,8 +26,8 @@ below.
   them partly left to the owner (item 7 below). They change runtime
   code as well as docs and tests (docs/m4-report.md, "Audit", has each
   round's count and fixes).
-- `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
-  M5 0/9 (boxes and exit criteria, counted 2026-10-10). The open M1
+- `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 18/18,
+  M5 0/10 (boxes and exit criteria, counted 2026-10-10). The open M1
   box is the tree-sitter grammar, which M5 owns.
 - Budgets at `e765276` (laptop; docs/m4-report.md has CI's): `.text`
   19,006,471 B of 19,398,656 with the GPU backend and 15,634,439 B of
@@ -58,7 +60,10 @@ below.
 ## Open items for the owner
 
 From M4 (docs/m4-report.md, "Open"; decisions.md m4-gpu-effects and
-m4-audit):
+m4-audit). Items 1 and 5 were answered on 2026-10-10 and are under
+"m4-owner-docs": the noise field is a `.wgsl` shader (its box is
+ticked) and xdg-activation is scheduled for M5 (its box is in M5's
+list). The rest keep their numbers.
 
 2. **A hung frame on a presented (`GpuPresent`) surface** is bounded
    only by the WSI's acquire timeout. This does not reach the lock: a
@@ -76,9 +81,6 @@ m4-audit):
 4. **The shape list**: keep the 13 shapes (a reading of design.md,
    recorded with its reasons) or trim them to design.md's five plus
    polygons.
-5. **xdg-activation**: the notification server's ActivationToken (spec
-   1.2) and the `XDG_ACTIVATION_TOKEN` of app launches moved past M4
-   and need a milestone.
 6. **The promoted GPU cost on hardware** is unmeasured: ANV cannot
    present on the advisory leg's pixman sway, and presenting needs a
    compositor on a KMS card, which the laptop rules keep out of
@@ -93,6 +95,15 @@ m4-audit):
    process after N lost devices, the CPU drawing everything and
    `shader` nodes nothing. Accept the per-edit cost (a developer's
    loop, one device per save at most every 30 s) or name a cap.
+8. **A 4K surface's crossfade costs frame time.** Since the snapshot
+   caps went (memory budgets are test targets; decisions.md
+   m4-owner-docs), a 3840×2160 scrim or overlay crossfades instead of
+   snapping. `theme_swap_bench.rs::a_4k_surface_crossfade_is_measured`
+   reports it without a gate: on the laptop 3.9–5.9 ms of swap work
+   (against the 5 ms; no headroom for a gate on GitHub's runners) and
+   10–20 ms blending each fade frame (the shell's three surfaces are
+   held to 4 ms). Accept it, make the blend cheaper, or let a large
+   surface snap for time rather than memory.
 
 ## Owner decisions already answered
 
@@ -305,8 +316,8 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
 M4's, for the merge of `laptop/integration-m4-w3` (m4-plan.md's
 "Closing M4"). M3's checklist is in git history (`f4899c0`).
 
-- [x] Every M4 box ticked with its test, but the noise field (owner);
-  the three exits cite their tests and runs (features.md).
+- [x] Every M4 box ticked with its test (the noise field on the
+  owner's acceptance, 2026-10-10); the three exits cite their tests and runs (features.md).
 - [x] `docs/m4-report.md` written with the figures at `e765276`.
 - [x] Budgets at `e765276`: `CI_JOB=budgets scripts/container/run.sh ci`
   passed (both `.text` gates, the bar, the full shell with the launcher
