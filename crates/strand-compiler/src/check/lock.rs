@@ -123,7 +123,8 @@ pub(super) fn way_out(files: &[FileHir]) -> Option<Diagnostic> {
         .with_label_in(file, head, "only `auth.submit` can unlock the session")
         .with_help(
             "add a password field: `input { type: password; text: <-> secret; \
-             on activate { auth.submit(secret); secret = \"\" } }`",
+             on activate { if secret != \"\" { auth.submit(secret) }; secret = \"\" } }` \
+             (an empty Return is not sent: with pam_faillock it would count as a failed login)",
         ),
     )
 }

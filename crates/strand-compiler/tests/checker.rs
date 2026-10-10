@@ -1235,6 +1235,33 @@ fn a_lock_needs_a_reachable_auth_submit() {
     ));
 }
 
+/// (m4-audit) `check::lock_no_auth`'s suggested field compiles, gives the
+/// lock its way out, and does not send an empty password: with
+/// pam_faillock each empty Return pressed to wake the screen would count
+/// as a failed login.
+#[test]
+fn the_lock_no_auth_help_compiles_and_skips_an_empty_password() {
+    let (out, _) = compile_files(&[("shell.strand", "lock { text \"x\" }\n".to_string())]);
+    let help = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::lock_no_auth")
+        .and_then(|d| d.help.clone())
+        .unwrap();
+    let field = help.split('`').nth(1).unwrap();
+    assert!(
+        field.contains("if secret != \"\" { auth.submit(secret) }"),
+        "{field}"
+    );
+    let src = format!("lock {{ state secret = \"\"\n  {field} }}\n");
+    let (out, map) = compile_files(&[("shell.strand", src)]);
+    assert!(
+        !out.diagnostics.iter().any(|d| d.is_error()),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
 /// (m4-audit) `transition:` takes design.md's masks (`wipe(left)`, `disc`,
 /// `dissolve`, `pixelate`) or `none`; `crossfade`, which the schema once
 /// offered and render never drew, is an error.

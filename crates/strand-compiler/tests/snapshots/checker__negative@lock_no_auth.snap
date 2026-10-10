@@ -12,5 +12,6 @@ check::lock_no_auth
    ·   ╰── only `auth.submit` can unlock the session
  6 │   open: <-> locked
    ╰────
-  help: add a password field: `input { type: password; text: <-> secret; on activate
-        { auth.submit(secret); secret = "" } }`
+  help: add a password field: `input { type: password; text: <-> secret; on activate { if secret !
+        = "" { auth.submit(secret) }; secret = "" } }` (an empty Return is not sent: with
+        pam_faillock it would count as a failed login)

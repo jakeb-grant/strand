@@ -9,8 +9,10 @@ service auth {
   /// The last password was refused, or could not be checked.
   failed: bool
   /// Checks `password`: `input { type: password; text: <-> secret;
-  /// focus: true; on activate { auth.submit(secret); secret = "" } }`
-  /// (Return in the field activates it). Ignored while one is being
-  /// checked.
+  /// focus: true; on activate { if secret != "" { auth.submit(secret) };
+  /// secret = "" } }` (Return in the field activates it; an empty field
+  /// is not sent, since with pam_faillock each empty Return pressed to
+  /// wake the screen would count as a failed login). Every password,
+  /// empty or not, goes to PAM. Ignored while one is being checked.
   action submit(password: text)
 }
