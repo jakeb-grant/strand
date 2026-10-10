@@ -508,11 +508,15 @@ fn a_broken_palette_file_keeps_the_last_good_palette() {
 /// from the write of `theme.look` to the `SetTokens` op leaving the
 /// flush: `material()` and the guard run again, the whole token table
 /// (palette, base tokens, component tokens, the chosen set) is rebuilt
-/// and sent. Gated at design.md's 5 ms by the median of 15 swaps, in
-/// every build (about 1 ms in a debug build, so the gate holds wherever
-/// the tests run).
+/// and sent. Gated at design.md's 5 ms by the median of 15 swaps in an
+/// optimised build (CI's `timing` job: `cargo test --profile timing -p
+/// strand-compiler --test theme a_theme_swap`), checked once at the end,
+/// after the functional assertions, with the `GATE_MISS` marker; a debug
+/// build only reports the times (m4-audit: a wall-clock gate is not a
+/// functional assertion, CLAUDE.md).
 #[test]
 fn a_theme_swap_is_under_five_milliseconds_of_logic() {
+    let gated = !cfg!(debug_assertions);
     let dir = temp_dir("swap-time");
     let config = dir.join("config");
     std::fs::create_dir_all(&config).unwrap();
@@ -567,17 +571,33 @@ fn a_theme_swap_is_under_five_milliseconds_of_logic() {
         );
         worst.push((median, from, to));
     }
-    for (median, from, to) in worst {
-        assert!(
-            median < Duration::from_millis(5),
-            "{from} → {to}: {median:?} of logic"
-        );
-    }
     drop(shell);
     if let Some(p) = &storage.persist {
         assert!(p.sync(Duration::from_secs(5)));
     }
     let _ = std::fs::remove_dir_all(dir);
+    let misses: Vec<String> = worst
+        .into_iter()
+        .filter(|(median, _, _)| *median >= Duration::from_millis(5))
+        .map(|(median, from, to)| format!("{from} → {to}: {median:?} of logic"))
+        .collect();
+    if gated && !misses.is_empty() {
+        panic!("{GATE_MISS}: {}", misses.join("\n"));
+    }
+}
+
+/// The start of every wall-clock gate's failure message: the laptop's
+/// container suite warns, instead of failing, only on failures that all
+/// carry it (`scripts/container/gate-misses.sh`). Functional assertions
+/// never carry it.
+const GATE_MISS: &str = "timing gate missed";
+
+/// The container suite's gate-miss check reads the marker this gate's
+/// failure starts with.
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
 }
 
 /// A fresh instance on the same runtime (a hard reload) leaves no task

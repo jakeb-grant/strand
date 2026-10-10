@@ -207,6 +207,10 @@ jobs:
       # 60 Hz refresh and the median within half of it, on an optimised
       # build (features.md, M2's motion box).
       - run: cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
+      # The logic side of a theme swap (design.md's theme.strand, from
+      # the write of `theme.look` to `SetTokens`) within design.md's
+      # 5 ms by the median of 15 swaps, on an optimised build.
+      - run: cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 
   # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's
   # bar in `strand run` against each live compositor, compared with what
