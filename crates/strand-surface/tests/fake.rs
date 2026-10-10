@@ -1192,11 +1192,38 @@ fn late_presentation_feedback_cancels_the_give_up() {
         "held while in flight: {held:?}"
     );
     assert!(held.throttled > stats.throttled, "{held:?}");
+    // Every earlier frame settled through its feedback: a give-up from
+    // here on can only be this held frame's.
+    assert_eq!(held.throttle_given_up, 0, "{held:?}");
     assert!(
         mgr.state().give_up_armed(id),
         "a refused paint arms the give-up"
     );
+    // Read until the held feedback arrives, whatever the surface makes of
+    // it: the manager's own count goes up for any feedback, settled or
+    // not, so a broken settle cannot hide behind a stalled runner.
+    let arrived = mgr.state().stats().presented;
     fake.cmd(Cmd::HoldFeedback(false));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.stats().presented > arrived)
+        .unwrap();
+    let read = mgr.state().surface(id).unwrap().stats;
+    assert!(ok, "the held feedback never arrived: {read:?}");
+    if read.throttle_given_up != 0 {
+        // A runner stalled past the give-up before the feedback was read
+        // (the give-up was counted first): the give-up painted instead,
+        // which is the other test's case.
+        eprintln!(
+            "the give-up came first ({:?} after the paint); the cancel was not checked",
+            painted.elapsed()
+        );
+        return;
+    }
+    // The feedback came first: it settled the frame and cancelled the
+    // give-up timer...
+    assert!(read.presented > stats.presented, "not settled: {read:?}");
+    assert!(!mgr.state().give_up_armed(id), "not cancelled: {read:?}");
+    // ...and the held content is painted for it, not by a give-up.
     let ok = mgr
         .dispatch_until(WAIT, |s| {
             s.surface(id)
@@ -1205,23 +1232,14 @@ fn late_presentation_feedback_cancels_the_give_up() {
         .unwrap();
     let after = mgr.state().surface(id).unwrap().stats;
     assert!(ok, "the held content was never painted: {after:?}");
-    assert!(after.presented > stats.presented, "{after:?}");
-    if after.throttle_given_up == 0 {
-        // The feedback settled the frame before the give-up: its timer is
-        // gone, not left to fire.
-        assert!(!mgr.state().give_up_armed(id), "{after:?}");
-        common::pump(&mut mgr, Duration::from_millis(1200));
-        let quiet = mgr.state().surface(id).unwrap().stats;
-        assert_eq!(quiet.throttle_given_up, 0, "{quiet:?}");
-        assert_eq!(quiet.commits, after.commits, "nothing painted at 1 s");
-    } else {
-        // A runner stalled past the give-up before the feedback was
-        // read: the give-up painted instead, which is the other test's.
-        eprintln!(
-            "the give-up came first ({:?} after the paint); the cancel was not checked",
-            painted.elapsed()
-        );
-    }
+    assert_eq!(
+        after.throttle_given_up, 0,
+        "painted by the give-up: {after:?}"
+    );
+    common::pump(&mut mgr, Duration::from_millis(1200));
+    let quiet = mgr.state().surface(id).unwrap().stats;
+    assert_eq!(quiet.throttle_given_up, 0, "{quiet:?}");
+    assert_eq!(quiet.commits, after.commits, "nothing painted at 1 s");
 }
 
 /// (m4-audit) On a compositor without `ext-session-lock` (the fake offers
