@@ -508,7 +508,8 @@ fn a_broken_palette_file_keeps_the_last_good_palette() {
 /// from the write of `theme.look` to the `SetTokens` op leaving the
 /// flush: `material()` and the guard run again, the whole token table
 /// (palette, base tokens, component tokens, the chosen set) is rebuilt
-/// and sent. Gated at design.md's 5 ms by the median of 15 swaps in an
+/// and sent. Gated at design.md's 5 ms by the median of 15 swaps that
+/// solve `material(seed:)` again (its palette memo forgotten) in an
 /// optimised build (CI's `timing` job: `cargo test --profile timing -p
 /// strand-compiler --test theme a_theme_swap`), checked once at the end,
 /// after the functional assertions, with the `GATE_MISS` marker; a debug
@@ -545,8 +546,18 @@ fn a_theme_swap_is_under_five_milliseconds_of_logic() {
         ("wallpaper", "auto"),
     ] {
         let mut times = Vec::new();
-        for _ in 0..15 {
+        let mut kept = Vec::new();
+        for i in 0..30 {
             shell.look(from);
+            // Even swaps solve material(seed:) again (a seed not shown
+            // before: the gated figure); odd ones reuse the palette kept
+            // from the swap before (reported), so the memo's saving is
+            // not mistaken for a cheaper solve (decisions.md,
+            // m4-owner-swap).
+            let fresh = i % 2 == 0;
+            if fresh {
+                strand_theme::material::forget_kept_palettes();
+            }
             let look = shell.host.variant("Look", to);
             let t = std::time::Instant::now();
             shell.inst.set("theme.look", look).unwrap();
@@ -561,13 +572,15 @@ fn a_theme_swap_is_under_five_milliseconds_of_logic() {
                 "{from} → {to}: no SetTokens"
             );
             shell.scene.apply(&u.diff).unwrap();
-            times.push(dt);
+            if fresh { &mut times } else { &mut kept }.push(dt);
         }
         times.sort();
+        kept.sort();
         let median = times[times.len() / 2];
         eprintln!(
-            "theme swap {from} → {to}: median {median:?}, max {:?}",
-            times[times.len() - 1]
+            "theme swap {from} → {to}: median {median:?}, max {:?} (palette kept: median {:?})",
+            times[times.len() - 1],
+            kept[kept.len() / 2]
         );
         worst.push((median, from, to));
     }

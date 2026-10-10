@@ -153,6 +153,21 @@ pub fn from_seed(seed: Color, opts: Options) -> Palette {
     p
 }
 
+/// Drops the palettes [`from_seed`] keeps on this thread, so the next
+/// call for any seed solves the scheme again. For the timing benches
+/// (theme_swap_bench, strand-compiler's theme swap): a gate measures a
+/// swap to a seed not shown before (a new wallpaper, a changed seed),
+/// the solve's worst case, not a palette kept from the swap before
+/// (decisions.md, m4-owner-swap).
+#[doc(hidden)]
+pub fn forget_kept_palettes() {
+    SEEDS.with(|m| {
+        let (kept, next) = &mut *m.borrow_mut();
+        kept.clear();
+        *next = 0;
+    });
+}
+
 /// [`from_seed`] without the memo.
 fn solve_seed(rgb: Rgb, variant: Variant, dark: bool, contrast: f64) -> Palette {
     let source: Hct = rgb.into();
@@ -369,6 +384,29 @@ mod tests {
             from_seed(b, Options::default())
         );
         assert_eq!(super::SEEDS.with(|m| m.borrow().0.len()), super::SEED_MEMO);
+    }
+
+    #[test]
+    fn forgotten_palettes_are_solved_again_alike() {
+        let kept = || super::SEEDS.with(|m| m.borrow().0.len());
+        let seed = Color::new(0.2, 0.4, 0.8, 1.0);
+        let want = from_seed(seed, Options::default());
+        assert!(kept() >= 1);
+        super::forget_kept_palettes();
+        assert_eq!(kept(), 0);
+        assert_eq!(super::SEEDS.with(|m| m.borrow().1), 0);
+        // The next call is a miss: solved again, the same palette, and
+        // kept once more.
+        assert_eq!(from_seed(seed, Options::default()), want);
+        assert_eq!(kept(), 1);
+        // Forgetting is per thread: another thread's palettes are its own.
+        std::thread::spawn(move || {
+            super::forget_kept_palettes();
+            assert_eq!(from_seed(seed, Options::default()), want);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(kept(), 1);
     }
 
     #[test]

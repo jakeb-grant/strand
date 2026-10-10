@@ -1405,7 +1405,11 @@ table.
   opaque what it was given, derives the rest by one table, then
   guards).
 - `material::from_seed(Color, Options { variant, dark, contrast })`:
-  `material-colors` 0.5, spec 2021 pinned (`material::SPEC`).
+  `material-colors` 0.5, spec 2021 pinned (`material::SPEC`). Each
+  thread keeps its last eight palettes (keyed by 8-bit seed, variant,
+  mode and clamped contrast); `material::forget_kept_palettes()`
+  (hidden, for the timing benches) drops this thread's, so a gate
+  times the solve, not a kept palette.
 - `image::Quantiser`: `lookup(path) -> Lookup::{Ready(seed), Pending {
   last }, Failed { error, last }}` from a `stat` on the calling thread;
   a worker thread reads the file through one descriptor, BLAKE3-hashes
