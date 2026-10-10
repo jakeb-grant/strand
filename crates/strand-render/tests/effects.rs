@@ -466,7 +466,7 @@ fn no_shape_duplicates_another() {
 /// `shape:` snaps (`Morphs::outline` has no entry for it), so only a
 /// named shape can start a morph at a plain rect, disc or capsule. The
 /// snap is what the shapes decision (docs/decisions.md, 2026-10-10
-/// m4-owner-shapes) keeps `rect` and `pill` for, not a fixed fact: if
+/// m4-owner-2) keeps `rect` and `pill` for, not a fixed fact: if
 /// this test fails because a plain box now morphs, revisit that decision
 /// (both would then duplicate a plain box and `radius: full` exactly)
 /// rather than only updating the assertion.
@@ -493,7 +493,7 @@ fn only_named_shapes_morph() {
         assert!(
             !r.wants_frame(S),
             "a box gaining `shape:` now morphs: the 2026-10-10 shapes decision \
-             (docs/decisions.md, m4-owner-shapes) keeps `rect` and `pill` only \
+             (docs/decisions.md, m4-owner-2) keeps `rect` and `pill` only \
              because this snapped; revisit it, since both now duplicate a plain \
              box and `radius: full` exactly"
         );

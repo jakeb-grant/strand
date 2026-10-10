@@ -264,7 +264,7 @@ target was raised.
 
 ## Decisions the owner made in M4
 
-All on 2026-10-09 (decisions.md m4-owner):
+On 2026-10-09 (decisions.md m4-owner):
 
 - GPU tests run on lavapipe in the container and CI, enforced, with an
   advisory leg on the laptop's GPU through `/dev/dri/renderD128` only.
@@ -279,24 +279,44 @@ All on 2026-10-09 (decisions.md m4-owner):
 - The lock VM container gets `/dev/kvm`.
 - `letters` keeps no positional; it animates its enclosing `text`.
 
+On 2026-10-10 (decisions.md m4-owner-2, merged on `laptop/m4-owner`):
+
+- Noise fields are `.wgsl` shaders on the bundled path, written like
+  the aurora (`shader "noise.wgsl" { … }`); the box is ticked.
+- The theme swap was made cheaper and its 5 ms gate kept: the gated
+  8-scope `spring(1600, 1)` whole swap is 1.35 ms on the laptop
+  (1.61 ms at `73eabe7`), its apply 540 µs (783 µs), logic solving the
+  palette 271 µs; every gated swap solves its palette, never the memo's
+  kept one.
+- The shape set stays at 13 (`rect`, `circle`, `pill`, `cookie`,
+  `clover`, `burst`, `flower`, `sunny`, `gem`, `heart`, `triangle`,
+  `pentagon`, `hexagon`): no shape draws and morphs exactly as another
+  does (`effects.rs::no_shape_duplicates_another`,
+  `::only_named_shapes_morph`). design.md lists them.
+- xdg-activation is scheduled for M5 (features.md's M5 box).
+- The Lottie structure check refuses reference cycles (a precomp or
+  matte that refers back to itself); playback looping and time
+  remapping are unaffected.
+- Memory budgets are benchmark and test targets, never caps on a
+  user's shell. The theme-swap snapshot caps went, notification history
+  keeps 1,000, a Lottie's image assets are bounded as images are, and
+  the glyph atlas's cap is an 8 MiB hostile-text bound per scale.
+
+Release `.text` on the merged tree (laptop): 15,656,519 B CPU-only
+(72,121 B under 15 MiB) and 19,039,879 B with the GPU backend
+(358,777 B under 18.5 MiB), each about 3 KB smaller than at `73eabe7`.
+No budget, gate or target was raised.
+
 M3's release-profile sign-off (laptop-decisions, owner decision 1)
 predates the switch to fat LTO and 40 overrides (m4-integration-w2);
 handoff.md notes it.
 
 ## Open
 
-Waiting on the owner (decisions.md m4-gpu-effects, m4-audit, m4-owner-docs):
+Waiting on the owner (decisions.md m4-gpu-effects, m4-audit, m4-owner-docs, m4-owner-2):
 
 - **A hung frame on a presented surface that is not a lock** is bounded
   only by the WSI's acquire timeout. A lock is not affected (GPU).
-- **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate** had little or
-  no headroom on GitHub: 2.53–5.06 ms over fifteen timing jobs against
-  5 ms, one failure. Answered 2026-10-10 (decisions.md m4-owner-swap):
-  the owner kept the gate and chose a cheaper swap, which took the
-  laptop's figure from 1.61 to 1.36 ms (the render thread's apply;
-  logic's palette solve is unchanged and still timed).
-- **The shape list**: whether to trim the 13 shapes to design.md's five
-  plus polygons (decisions.md m4-audit, "the shape list is a reading").
 - **A process-wide cap on hung devices** (decisions.md m4-audit round
   5): each edit of a shader file that still loops forever leaks one
   more lavapipe device, a spinning CPU thread, at most once per 30 s,
@@ -311,11 +331,18 @@ Waiting on the owner (decisions.md m4-gpu-effects, m4-audit, m4-owner-docs):
   past which it snaps for time.
 - **The promoted GPU cost on hardware** is unmeasured (below, "Not
   measured").
+- **A lock with no `strand-auth` helper**: strand warns at start, but a
+  lock asked for then still holds the session with no way out but a
+  TTY (decisions.md m4-audit round 9).
 
-Answered by the owner on 2026-10-10 (decisions.md m4-owner-docs): the
-bundled noise field is a `.wgsl` shader on a `shader` node (its box is
-ticked), and xdg-activation (the notification ActivationToken and the
-launch token) is scheduled for M5 (features.md's M5 box).
+Answered by the owner on 2026-10-10 (decisions.md m4-owner-2, and
+"Decisions the owner made in M4" above): the bundled noise field is a
+`.wgsl` shader on a `shader` node (its box is ticked); the theme swap
+is cheaper and its 5 ms gate kept (GitHub had shown 2.53–5.06 ms over
+fifteen timing jobs before, one failure; no GitHub timing job had run
+on the cheaper swap when this was written); the 13 shapes stay; and
+xdg-activation (the notification ActivationToken and the launch
+token) is scheduled for M5 (features.md's M5 box).
 
 Not measured, and why:
 

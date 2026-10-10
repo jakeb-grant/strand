@@ -21,9 +21,10 @@ below.
   measured head is `e765276` (docs/m4-report.md); the commits after it
   change docs, two tests' harnesses and the GPU thread's answer to a
   request that panics (decisions.md m4-integration-w3, closing). The
-  fourth to ninth m4 audit rounds' fixes are on `laptop/m4-audit`
-  (decisions.md m4-audit): 67 confirmed findings, all fixed, one of
-  them partly left to the owner (item 7 below). They change runtime
+  fourth to ninth m4 audit rounds' fixes reached `main` too
+  (`laptop/m4-audit` fast-forwarded to `73eabe7`; decisions.md
+  m4-audit): 67 confirmed findings, all fixed, one of them partly left
+  to the owner (item 7 below). They change runtime
   code as well as docs and tests (docs/m4-report.md, "Audit", has each
   round's count and fixes).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 18/18,
@@ -46,6 +47,14 @@ below.
   15,659,527 B CPU-only (69,113 B left) and 19,043,079 B with the GPU
   backend (355,577 B left); the bar not measured again, since neither
   round adds work a bar at rest does.
+- The owner's M4 decisions of 2026-10-10 (noise field, theme swap,
+  shapes, xdg-activation, Lottie wording, memory budgets) are merged on
+  `laptop/m4-owner` from `laptop/m4-owner-docs`, `-swap` and `-shapes`
+  (decisions.md m4-owner-2). On it the laptop measures `.text`
+  15,656,519 B CPU-only (72,121 B left) and 19,039,879 B with the GPU
+  backend (358,777 B left), and the gated 8-scope theme swap 1.35 ms
+  against 5 ms (1.61 ms at `73eabe7`). It is not on `main` until the
+  owner merges it.
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
@@ -53,17 +62,20 @@ below.
   on lavapipe (`run.sh`, CI) and advisorily on the laptop's GPU
   (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
   (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
-- Remote branches: `origin/main` and `origin/laptop/m4-audit` (audit
-  rounds 4 to 9, until it is merged). The integration branch and
+- Remote branches: `origin/main`, and `origin/laptop/m4-owner` with
+  the three owner-decision branches it merges (`laptop/m4-owner-docs`,
+  `-swap`, `-shapes`). The integration branch and
   the wave-3 branches it merged are deleted.
 
 ## Open items for the owner
 
 From M4 (docs/m4-report.md, "Open"; decisions.md m4-gpu-effects and
-m4-audit). Items 1 and 5 were answered on 2026-10-10 and are under
-"m4-owner-docs": the noise field is a `.wgsl` shader (its box is
-ticked) and xdg-activation is scheduled for M5 (its box is in M5's
-list). The rest keep their numbers.
+m4-audit). Items 1, 3, 4 and 5 were answered on 2026-10-10
+(decisions.md m4-owner-2): the noise field is a `.wgsl` shader (its
+box is ticked), the theme swap is cheaper with its gate unchanged, the
+13 shapes stay, and xdg-activation is scheduled for M5 (its box is in
+M5's list). Items 2, 6, 7, 8 and 9 still wait on the owner. The rest
+keep their numbers so other branches merge cleanly.
 
 2. **A hung frame on a presented (`GpuPresent`) surface** is bounded
    only by the WSI's acquire timeout. This does not reach the lock: a
@@ -82,9 +94,12 @@ list). The rest keep their numbers.
    palette (about 0.26 ms, unchanged), not the memo's kept palette
    (0.07 ms). Whether GitHub's 2.53–5.06 ms spread now clears 5 ms is
    for the next timing jobs to show.
-4. **The shape list**: keep the 13 shapes (a reading of design.md,
-   recorded with its reasons) or trim them to design.md's five plus
-   polygons.
+4. **The shape list: answered.** The owner asked (2026-10-10) to
+   remove only a shape the others express exactly and keep any that
+   adds capability. None qualifies, so all 13 stay and design.md lists
+   them (decisions.md m4-owner-2;
+   `strand-render/tests/effects.rs::no_shape_duplicates_another`,
+   `::only_named_shapes_morph`).
 6. **The promoted GPU cost on hardware** is unmeasured: ANV cannot
    present on the advisory leg's pixman sway, and presenting needs a
    compositor on a KMS card, which the laptop rules keep out of
@@ -108,6 +123,11 @@ list). The rest keep their numbers.
    10–20 ms blending each fade frame (the shell's three surfaces are
    held to 4 ms). Accept it, make the blend cheaper, or let a large
    surface snap for time rather than memory.
+9. **A lock with no `strand-auth` helper installed.** Since m4-audit
+   round 9, `strand run` warns at start when it finds no helper, but a
+   lock asked for then still takes the session with no way to unlock
+   it but a TTY (decisions.md m4-audit round 9, "a missing helper is
+   said when strand starts"). Whether that stays is the owner's call.
 
 ## Owner decisions already answered
 

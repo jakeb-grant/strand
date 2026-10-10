@@ -31,8 +31,9 @@ without a gap), drag and drop, directional `pages` transitions,
 compositor-animated poses, tray menus, and the lock screen on
 `ext-session-lock` with a forked PAM helper (`strand-auth`) that fails
 closed, tested in a local QEMU VM with injected faults. Its three exits
-are met; one box, the bundled noise field, waits on the owner, with
-the other owner items handoff.md lists. M4 is merged to `main`.
+are met and every box is ticked (the bundled noise field on the
+owner's 2026-10-10 reading: a `.wgsl` shader); the owner items still
+open are in handoff.md. M4 is merged to `main`.
 M3's exit gates are met (see
 [`docs/m3-report.md`](docs/m3-report.md)): every builtin service is
 real (`auth` since M4). The portal, cpu, memory, battery
