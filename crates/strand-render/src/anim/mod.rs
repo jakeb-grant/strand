@@ -200,6 +200,9 @@ pub(crate) struct Animator {
     /// following the pointer, `Some` with its offset) or springing back
     /// to it (`None`); both paint above their siblings.
     lifted: HashMap<NodeId, Option<[f32; 2]>>,
+    /// (M4) Jelly: dragged nodes' squash and stretch
+    /// (`crate::effects::jelly`).
+    jellies: crate::effects::jelly::Jellies,
 }
 
 impl Animator {
@@ -759,6 +762,7 @@ impl Animator {
         self.reveals.forget(id);
         self.shared.forget(id);
         self.image_swaps.forget(id);
+        self.jellies.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -779,6 +783,9 @@ impl Animator {
         self.staggers.retain(|id| drawn.contains(&id) || !under(id));
         self.image_swaps
             .end_undrawn(|id| !drawn.contains(&id) && under(id));
+        // A morph a preview saw start whose painted frame did not draw
+        // the node: it shows at rest, as an unseen enter pose does.
+        self.shared.drop_pending(&mut under);
     }
 
     /// Exits that finished in the frames painted since the last call.
@@ -840,6 +847,7 @@ impl Animator {
         self.reveals.retain(&mut keep);
         self.shared.retain(&mut keep);
         self.image_swaps.retain(&mut keep);
+        self.jellies.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -879,6 +887,42 @@ impl Animator {
                 }
             }
         }
+    }
+
+    /// (M4) The squash and stretch `node` draws (its `jelly`, `amount`)
+    /// with its drawn `offset` (a lift's or the glide back): the
+    /// deformation `crate::effects::jelly::matrix` turns into a
+    /// transform, if any.
+    pub fn jelly(
+        &mut self,
+        node: &Node,
+        amount: f32,
+        offset: (f32, f32),
+        scope: &TokenScope<'_>,
+    ) -> Option<[f32; 2]> {
+        let held = matches!(self.lifted.get(&node.id), Some(Some(_)));
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Jelly)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = match transition {
+            Transition::Default => crate::effects::jelly::wobble(),
+            t => Curve::of(&scope.transition(&t, Prop::Jelly)),
+        };
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (d, moving) =
+            self.jellies
+                .sample(node.id, amount, [offset.0, offset.1], held, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        d
     }
 
     /// (M4) `id` is lifted or springing back from a lift (it paints
@@ -1141,6 +1185,7 @@ impl Animator {
             || self.reveals.busy(self.time, |id| under(&id))
             || self.shared.busy(|id| under(&id))
             || self.image_swaps.busy(|id| under(&id))
+            || self.jellies.busy(|id| under(&id))
     }
 }
 

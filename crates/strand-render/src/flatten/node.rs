@@ -260,6 +260,11 @@ impl<'a> Flattener<'a> {
             own = (own.0 + m[0], own.1 + m[1]);
         }
         let (morph_sx, morph_sy) = shared.map_or((1.0, 1.0), |m| (m[2] as f64, m[3] as f64));
+        // (M4) A dragged node's squash and stretch, from its drawn offset.
+        let jelly = number(get(Prop::Jelly))
+            .filter(|a| *a > 0.0)
+            .and_then(|a| self.anim.jelly(node, a, glide, &scope))
+            .and_then(crate::effects::jelly::matrix);
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
         let rect = LogicalRect::new(
             laid.x + offset.0,
@@ -435,16 +440,19 @@ impl<'a> Flattener<'a> {
         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
         let saved = self.xform;
         let morphs = morph_sx != 1.0 || morph_sy != 1.0;
-        let transform_group = (zoom != 1.0 || turn != 0.0 || morphs).then(|| {
-            let c = frame.center();
-            let local = kurbo::Affine::translate(c.to_vec2())
-                * kurbo::Affine::rotate((turn as f64).to_radians())
-                * kurbo::Affine::scale(zoom as f64)
-                * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
-                * kurbo::Affine::translate(-c.to_vec2());
-            self.xform = saved * local;
-            self.marker(Item::PushTransform(self.xform))
-        });
+        let transform_group =
+            (zoom != 1.0 || turn != 0.0 || morphs || jelly.is_some()).then(|| {
+                let c = frame.center();
+                let [ja, jb, jc, jd] = jelly.unwrap_or([1.0, 0.0, 0.0, 1.0]);
+                let local = kurbo::Affine::translate(c.to_vec2())
+                    * kurbo::Affine::rotate((turn as f64).to_radians())
+                    * kurbo::Affine::scale(zoom as f64)
+                    * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
+                    * kurbo::Affine::new([ja, jb, jc, jd, 0.0, 0.0])
+                    * kurbo::Affine::translate(-c.to_vec2());
+                self.xform = saved * local;
+                self.marker(Item::PushTransform(self.xform))
+            });
 
         let mut sig = DefaultHasher::new();
         (inh.ctx, node.kind, node.epoch).hash(&mut sig);

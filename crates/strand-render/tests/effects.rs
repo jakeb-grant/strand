@@ -1971,6 +1971,55 @@ fn a_shared_morph_starts_from_the_named_box() {
     assert_eq!(buf.px(20, 30), bg);
 }
 
+/// A shared morph that a preview (the flatten at the last frame's time
+/// before a paint) sees start begins on the painted frame, from the
+/// offsets of that frame: inside a parent whose `x` springs, the morph
+/// (a slow linear 10 s one, so its first frame is all but its start)
+/// still starts over the pill's box, not where the parent was a frame
+/// before.
+#[test]
+fn a_preview_leaves_a_shared_morph_to_the_painted_frame() {
+    use std::time::Duration;
+    let (mut r, mut buf, _, [pill, bar, _]) = morphing(false);
+    let orange = buf.px(20, 30);
+    let bg = buf.px(100, 5);
+    let holder = NodeId::new(300, 0);
+    let mut d = SceneDiff::new();
+    d.create(holder, NodeKind::Box, Some(bar), 1);
+    for (p, v) in at_xy(0.0, 0.0, 200.0, 60.0) {
+        set_now(&mut d, holder, p, v);
+    }
+    set_now(&mut d, holder, Prop::Place, kw("absolute"));
+    assert!(r.apply(d).is_empty());
+    let t = settle(&mut r, &mut buf, 1000);
+    let big = NodeId::new(400, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: pill,
+        window: false,
+    });
+    d.set(holder, Prop::X, num(-40.0));
+    morph_box(&mut d, big, holder, (120.0, 5.0, 60.0, 50.0));
+    d.push(SceneOp::SetProp {
+        id: big,
+        prop: Prop::Morph,
+        value: text("m"),
+        transition: Transition::Duration {
+            duration: Duration::from_secs(10),
+            easing: Easing::Linear,
+        },
+    });
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t + 16));
+    // The pill's box was 10..30 × 20..40.
+    for (x, y) in [(11, 21), (28, 38), (20, 30)] {
+        assert_eq!(buf.px(x, y), orange, "over the pill at ({x}, {y})");
+    }
+    for (x, y) in [(8, 30), (32, 30), (20, 18), (20, 42)] {
+        assert_eq!(buf.px(x, y), bg, "only the pill's box at ({x}, {y})");
+    }
+}
+
 /// `merge 10` (200 × 60) on a bar holding three 20 px discs: two 6 px
 /// apart at x 20 and 46, one far off at x 120 (`#89b4fa`, `#cba6f7`,
 /// `#a6e3a1`).
@@ -2174,4 +2223,101 @@ fn an_image_swap_to_a_broken_source_settles() {
     assert!(t < 1100, "settled at once, not after {t} ms");
     assert!(!r.wants_frame(S) && r.next_wake().is_none());
     assert_eq!(buf.px(30, 30), bg, "nothing drawn, as without transition");
+}
+
+/// A 160 × 60 bar with a 20 px `drag:`-style box at (20, 20) with
+/// `jelly: amount` (none at 0), painted at 1 s.
+fn jellied(amount: f32, reduced: bool) -> (Renderer, Buffer, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(20.0, 20.0, 20.0, 20.0);
+    p.extend([(Prop::Place, kw("absolute")), (Prop::Bg, color("#f9e2af"))]);
+    if amount > 0.0 {
+        p.push((Prop::Jelly, num(amount)));
+    }
+    let id = b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(160, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf, id)
+}
+
+/// The drawn box of the yellow box: `(left, right, top, bottom)` of the
+/// pixels it covers more than half.
+fn yellow_extent(buf: &Buffer) -> (u32, u32, u32, u32) {
+    let yellow = |x: u32, y: u32| buf.px(x, y)[1] > 140;
+    let xs: Vec<u32> = (0..buf.size.w)
+        .filter(|x| (0..buf.size.h).any(|y| yellow(*x, y)))
+        .collect();
+    let ys: Vec<u32> = (0..buf.size.h)
+        .filter(|y| (0..buf.size.w).any(|x| yellow(x, *y)))
+        .collect();
+    (xs[0], xs[xs.len() - 1], ys[0], ys[ys.len() - 1])
+}
+
+/// design.md "Motion and time": `jelly: 0.4` squashes and stretches a
+/// dragged node. Dragged right fast it is longer along x and shorter
+/// along y (area kept), drawn as a transform (ref `effects_jelly.png`
+/// mid-drag); stopped, it rings out through a squash and settles back to
+/// its 20 px square with no frames wanted. Without `jelly`, or under
+/// `reduced_motion`, the dragged box keeps its shape.
+#[test]
+fn jelly_stretches_a_dragged_node_and_wobbles_out() {
+    use std::time::Duration;
+    let drag = |r: &mut Renderer, buf: &mut Buffer, id: NodeId| {
+        let mut t = 1000;
+        for k in 1..=5 {
+            t += 16;
+            r.lift(id, Some(LogicalPoint::new(20.0 * k as f32, 0.0)));
+            buf.paint_at(r, S, 1, Duration::from_millis(t));
+        }
+        t
+    };
+    let (mut r, mut buf, id) = jellied(0.4, false);
+    let mut t = drag(&mut r, &mut buf, id);
+    // At 1,250 px/s (smoothed, and the spring on its way): stretched
+    // along x, squashed along y.
+    let (l, rt, top, bottom) = yellow_extent(&buf);
+    let (w, h) = (rt - l + 1, bottom - top + 1);
+    assert!(w >= 22 && h <= 18, "stretched: {w} × {h}");
+    let centre = (l + rt) / 2;
+    assert!((128..=132).contains(&centre), "about its centre: {centre}");
+    assert_matches_ref("effects_jelly", &buf, 2);
+    // Held still: the stretch rings out through a squash (taller than
+    // wide) and settles to its square.
+    let mut squashed = false;
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        let (l, rt, top, bottom) = yellow_extent(&buf);
+        squashed |= bottom - top > rt - l + 1;
+        assert!(t < 6000, "settles");
+    }
+    assert!(squashed, "overshoots into a squash");
+    assert_eq!(yellow_extent(&buf), (120, 139, 20, 39), "square at rest");
+    // Let go: it glides home, stretching on the way, and settles.
+    r.lift(id, None);
+    let mut stretched = false;
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        let (l, rt, top, bottom) = yellow_extent(&buf);
+        stretched |= rt - l > bottom - top + 1;
+        assert!(t < 9000, "settles");
+    }
+    assert!(stretched, "stretches as it springs back");
+    assert_eq!(yellow_extent(&buf), (20, 39, 20, 39), "home and square");
+
+    for (amount, reduced) in [(0.0, false), (0.4, true)] {
+        let (mut r, mut buf, id) = jellied(amount, reduced);
+        drag(&mut r, &mut buf, id);
+        assert_eq!(
+            yellow_extent(&buf),
+            (120, 139, 20, 39),
+            "no jelly (amount {amount}, reduced {reduced})"
+        );
+    }
 }

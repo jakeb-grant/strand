@@ -18,7 +18,7 @@
 //! plays its `enter` pose instead. `reduced_motion` and frames with no
 //! clock show it in place at once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use strand_scene::{Curve, LogicalRect, Motion, NodeId};
@@ -54,6 +54,9 @@ pub(crate) struct SharedMorphs {
     kept: usize,
     /// Per node: `[dx, dy, sx, sy]` springing to `[0, 0, 1, 1]`.
     flights: HashMap<NodeId, Motion<4>>,
+    /// Nodes a preview saw start a morph: the next painted frame starts
+    /// it, from the boxes and offsets of its own time.
+    pending: HashSet<NodeId>,
 }
 
 impl SharedMorphs {
@@ -74,6 +77,12 @@ impl SharedMorphs {
         frame: Frame,
     ) -> (Option<[f32; 4]>, bool, bool) {
         let mut started = false;
+        // A morph a preview saw start begins on the painted frame.
+        let entering = if frame.commit {
+            self.pending.remove(&id) || entering
+        } else {
+            entering
+        };
         if entering
             && !frame.snap
             && let Some(seen) = self.seen.get(key)
@@ -94,6 +103,15 @@ impl SharedMorphs {
                 scale(seen.rect.w, rect.w),
                 scale(seen.rect.h, rect.h),
             ];
+            if from.iter().all(|v| v.is_finite()) && !frame.commit {
+                // A preview is drawn at the last frame's time, with its
+                // ancestors' offsets of then: starting here would carry
+                // their one-frame-old offsets into the whole morph. The
+                // painted frame starts it (`busy` asks for a fresh
+                // flatten), and the node plays no enter pose meanwhile.
+                self.pending.insert(id);
+                return (None, false, true);
+            }
             if from.iter().all(|v| v.is_finite()) {
                 let mut m = Motion::rest(from, EPS).sampled_at(frame.prev);
                 m.retarget([0.0, 0.0, 1.0, 1.0], curve);
@@ -146,17 +164,28 @@ impl SharedMorphs {
 
     /// Anything `under` a surface morphing.
     pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
-        self.flights.keys().any(|id| under(*id))
+        self.flights
+            .keys()
+            .chain(&self.pending)
+            .any(|id| under(*id))
     }
 
     /// `id` morphs no more (its box stays remembered, so a node replacing
     /// it can start there).
     pub(crate) fn forget(&mut self, id: NodeId) {
         self.flights.remove(&id);
+        self.pending.remove(&id);
+    }
+
+    /// Drops the morphs a preview saw start for nodes `under` a surface
+    /// whose painted frame did not draw them.
+    pub(crate) fn drop_pending(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        self.pending.retain(|id| !under(*id));
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.flights.retain(|id, _| keep(*id));
+        self.pending.retain(|id| keep(*id));
         self.latest.retain(|root, _| keep(*root));
         let latest = &self.latest;
         self.seen.retain(|_, s| latest.contains_key(&s.root));
