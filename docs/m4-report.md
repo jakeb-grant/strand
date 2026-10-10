@@ -7,8 +7,8 @@ the pixman renderer, lavapipe from Mesa 25.2.8 as the only Vulkan
 driver), at `e765276` on `laptop/integration-m4-w3`: M4 waves 0–3
 merged, the m4 audit's three rounds of fixes, and the closing
 integrator's one code fix (Lock). The commits after `e765276` change
-only docs and two tests' harnesses (decisions.md m4-integration-w3,
-closing). Release figures use the workspace's release profile (fat
+docs, two tests' harnesses, and the GPU thread's answer to a frame
+or pass that panics (decisions.md m4-integration-w3, closing). Release figures use the workspace's release profile (fat
 LTO, one codegen unit, mimalloc, the 40 per-package `opt-level`s of
 `Cargo.toml`; thin LTO until m4-integration-w2, which switched because
 thin LTO broke the `.text` gates). The latency benches use the
@@ -145,6 +145,16 @@ on the leg's pixman sway (no linux-dmabuf), so the panel ran in
 is still unmeasured on hardware**: presenting through ANV needs a
 compositor on a KMS card, which the laptop rules keep out of
 containers.
+
+The closing run of the leg found one real difference from lavapipe. On
+ANV the kernel resets a context running a shader that never ends after
+about 6 s, before `HUNG_AFTER`, and wgpu then panics in `poll` ("Parent
+device is lost"). The thread caught the panic and reported the device
+lost, but it never answered the pass, against its contract that every
+frame and pass is answered. It now answers `Failed` first
+(`crates/strand-gpu/src/thread.rs::tests::a_panicking_pass_or_frame_is_answered_and_loses_the_device`),
+and `crates/strand-gpu/tests/hang.rs` accepts either way of losing
+the device; it passes on lavapipe (10 s) and on ANV (6 s).
 
 From the audit: a readback that never ends loses the device after
 `HUNG_AFTER` (10 s, `crates/strand-gpu/tests/hang.rs`); a readback

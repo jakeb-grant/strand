@@ -2887,7 +2887,11 @@ Wayland crate. Its interface:
   frame answers `Failed`, then `Lost` ("stopped answering") and
   `Exited`, and the thread leaks the hung device instead of dropping it
   (a drop would wait for the queue), so a validated shader that never
-  ends cannot leave render waiting on a reply. The thread keeps at most
+  ends cannot leave render waiting on a reply. A hardware driver may
+  reset the hung context first (ANV after about 6 s), and wgpu then
+  panics in `poll`: the thread catches it, answers the frame or pass
+  `Failed`, then `Lost` ("was lost") and `Exited` (m4-integration-w3).
+  Every frame and pass is answered, a panic included. The thread keeps at most
   64 compiled pipelines and 16 pass readback buffers (by size), least
   recently used first out.
 - `Frame { surface, id: u64, size, scale, ops: Vec<Op>, uploads:

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -44,6 +44,41 @@ fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
         .map(|s| s.to_string())
         .or_else(|| p.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "a panic".into())
+}
+
+/// The answer a frame or pass still owes if handling it panics: every
+/// one is answered, so render stops waiting for it.
+fn owed(req: &GpuRequest) -> Option<(Option<SurfaceId>, Option<u64>)> {
+    match req {
+        GpuRequest::Frame(f) => Some((Some(f.surface), None)),
+        GpuRequest::Pass(p) => Some((None, Some(p.key))),
+        _ => None,
+    }
+}
+
+/// Runs `handle`; a panic in it (wgpu panics when a driver resets a hung
+/// device under `poll`: ANV after a few seconds, before `HUNG_AFTER`)
+/// marks the device lost and answers what the request owed with
+/// `Failed`.
+fn handle_caught(
+    lost: &AtomicBool,
+    owed: Option<(Option<SurfaceId>, Option<u64>)>,
+    reply: &Reply<'_>,
+    handle: impl FnOnce(),
+) {
+    let Err(p) = catch_unwind(AssertUnwindSafe(handle)) else {
+        return;
+    };
+    let why = panic_text(&*p);
+    log::warn!("the GPU thread panicked: {why}");
+    lost.store(true, Ordering::SeqCst);
+    if let Some((surface, key)) = owed {
+        reply.send(GpuReply::Failed {
+            surface,
+            key,
+            error: GpuError::new(GpuErrorKind::Lost, format!("the GPU panicked: {why}")),
+        });
+    }
 }
 
 pub(crate) fn run(
@@ -86,11 +121,8 @@ pub(crate) fn run(
         if matches!(req, GpuRequest::Shutdown) {
             break;
         }
-        let r = catch_unwind(AssertUnwindSafe(|| state.handle(&dev, req, &reply)));
-        if let Err(p) = r {
-            log::warn!("the GPU thread panicked: {}", panic_text(&*p));
-            dev.lost.store(true, Ordering::SeqCst);
-        }
+        let owed = owed(&req);
+        handle_caught(&dev.lost, owed, &reply, || state.handle(&dev, req, &reply));
         if dev.is_lost() {
             let why = if dev.hung.load(Ordering::SeqCst) {
                 "stopped answering"
@@ -631,4 +663,82 @@ fn input_texture(dev: &Device, px: &crate::Pixmap) -> Option<(wgpu::Texture, wgp
 
 fn render_error(message: impl Into<String>) -> GpuError {
     GpuError::new(GpuErrorKind::Render, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn replies(
+        owed: Option<(Option<SurfaceId>, Option<u64>)>,
+        panics: bool,
+    ) -> (bool, Vec<GpuReply>) {
+        let (tx, rx) = mpsc::channel();
+        let lost = AtomicBool::new(false);
+        let woke = std::sync::atomic::AtomicUsize::new(0);
+        let waker = || {
+            woke.fetch_add(1, Ordering::SeqCst);
+        };
+        let reply = Reply {
+            tx: &tx,
+            waker: &waker,
+        };
+        handle_caught(&lost, owed, &reply, || {
+            if panics {
+                panic!("Error in Device::poll: Parent device is lost");
+            }
+        });
+        drop(tx);
+        let got: Vec<GpuReply> = rx.iter().collect();
+        assert_eq!(
+            woke.load(Ordering::SeqCst),
+            got.len(),
+            "each reply wakes the loop"
+        );
+        (lost.load(Ordering::SeqCst), got)
+    }
+
+    /// (m4-integration-w3) A pass or frame whose handling panics (wgpu's
+    /// `poll` after a hardware driver reset a hung device) is still
+    /// answered, so render never waits on it, and the device counts as
+    /// lost.
+    #[test]
+    fn a_panicking_pass_or_frame_is_answered_and_loses_the_device() {
+        let (lost, got) = replies(Some((None, Some(9))), true);
+        assert!(lost);
+        match got.as_slice() {
+            [
+                GpuReply::Failed {
+                    surface: None,
+                    key: Some(9),
+                    error,
+                },
+            ] => {
+                assert_eq!(error.kind, GpuErrorKind::Lost);
+                assert!(error.message.contains("Parent device is lost"), "{error}");
+            }
+            other => panic!("expected the pass's Failed, got {other:?}"),
+        }
+        let (lost, got) = replies(Some((Some(SurfaceId(3)), None)), true);
+        assert!(lost);
+        assert!(
+            matches!(
+                got.as_slice(),
+                [GpuReply::Failed {
+                    surface: Some(SurfaceId(3)),
+                    key: None,
+                    ..
+                }]
+            ),
+            "{got:?}"
+        );
+        // A request that owes nothing (a release, say) only loses the device.
+        let (lost, got) = replies(None, true);
+        assert!(lost && got.is_empty(), "{got:?}");
+        // No panic: nothing added, the device kept.
+        let (lost, got) = replies(Some((None, Some(9))), false);
+        assert!(!lost && got.is_empty(), "{got:?}");
+        assert_eq!(owed(&GpuRequest::Release(SurfaceId(1))), None);
+        assert_eq!(owed(&GpuRequest::Shutdown), None);
+    }
 }

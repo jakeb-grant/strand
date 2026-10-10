@@ -59,8 +59,15 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
         GpuReply::Failed { key, .. } => assert_eq!(key, Some(9), "the pass fails"),
         other => panic!("expected the pass to fail, got {other:?}"),
     }
+    // Lavapipe never resets: the read gives up after `HUNG_AFTER`. A
+    // hardware driver resets the hung context first (ANV after about
+    // 6 s) and wgpu reports the device lost; either way the pass failed
+    // above and the device is gone.
     match h.next() {
-        GpuReply::Lost(e) => assert!(e.message.contains("stopped answering"), "{e}"),
+        GpuReply::Lost(e) => assert!(
+            e.message.contains("stopped answering") || e.message.contains("was lost"),
+            "{e}"
+        ),
         other => panic!("expected Lost, got {other:?}"),
     }
     assert!(matches!(h.next(), GpuReply::Exited));
