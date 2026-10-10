@@ -9,7 +9,7 @@ merged, the m4 audit's three rounds of fixes, and the closing
 integrator's one code fix (Lock). The commits after `e765276` on
 `main` change docs, two tests' harnesses, and the GPU thread's answer
 to a frame or pass that panics (decisions.md m4-integration-w3,
-closing). The m4 audit's later rounds (4 to 7, on `laptop/m4-audit`
+closing). The m4 audit's later rounds (4 to 9, on `laptop/m4-audit`
 until merged; decisions.md m4-audit) also change runtime code: the
 GPU path (promotion, a hung or failed pass, a shader file that lost
 the device never run again), bounded reads of shader, image, SVG and
@@ -18,7 +18,17 @@ and drag exports nobody reads; round 7 a lock's shader files in its
 reload hash, `transition:`'s values, the fallback field's empty
 Return, the auth helper's reaping, file results kept for a burst of
 sources, the IPC socket's bind, and a frame whose callback or
-presentation never comes. The figures below are at `e765276` and
+presentation never comes; round 8 the lock's keyboard focus following
+its content to another output, pixmaps without `XDG_RUNTIME_DIR` in a
+private `strand-<uid>` directory with `O_EXCL` temporary files, and the
+lock check's help no longer sending an empty password; round 9 a popup
+in a lock (no way out, and a warning), a panic in the compiler's shader
+parse made a diagnostic, the auth helper's socket moved off stdin and
+stdout before PAM runs, start notices for a missing helper or a
+compositor without ext-session-lock (whose refused lock is now
+reported `Finished`), offscreen cache entries pinning the pixmaps
+their keys name, and the audio meter's state lines at info. The
+figures below are at `e765276` and
 do not include them; each round's release `.text` cost is in
 decisions.md m4-audit and handoff.md. Release figures use the workspace's release profile (fat
 LTO, one codegen unit, mimalloc, the 40 per-package `opt-level`s of
