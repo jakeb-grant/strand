@@ -15,7 +15,9 @@ each item below.
   gpu-effects, interaction-finish) is merged on
   `laptop/integration-m4-w3` (CI run 38041985436 at 22b8688 passed all
   seven jobs, `lock-vm` included), with the m4 audit's fixes on top
-  (decisions.md m4-audit); it has not reached `main` yet.
+  (decisions.md m4-audit; CI run 38048149054 at 70af44f passed all seven
+  jobs, the new lock tests in `lock-vm` included); it has not reached
+  `main` yet.
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
   M5 0/9 (boxes and exit criteria, counted 2026-10-10; the earlier
   M0 21/21 counted differently). M4's exits: smooth 2,000-row scrolling,
