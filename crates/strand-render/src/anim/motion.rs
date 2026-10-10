@@ -111,6 +111,9 @@ pub(super) fn encode(p: Prop, v: Option<&PropValue>, inh: Color, b: Extents) -> 
         (Prop::Bg, None) => Enc::Four(color_channels(Color::TRANSPARENT)),
         (Prop::Color, None) => Enc::Four(color_channels(inh)),
         (Prop::Bg | Prop::Color, Some(v)) => Enc::Four(color_channels(solid(v)?)),
+        // (M4) A text's solid `fill:` (no fill draws in `color`, which is
+        // no colour to spring from: it snaps).
+        (Prop::Fill, Some(v)) => Enc::Four(color_channels(solid(v)?)),
         // (M4) `trim: from, to`; `wave: amplitude[, wavelength]`; `glow:
         // radius, colour` (a lone radius glows in `inh`, which callers set
         // to the node's colour, [`glow_color`]).

@@ -499,6 +499,46 @@ fn a_lone_radius_glow_springs_in_the_nodes_colour() {
     assert!(red(buf.px(24, 40)), "settled: {:?}", buf.px(24, 40));
 }
 
+/// A text's solid `fill:` springs like the other drawn props (m4-plan:
+/// newly drawn props join the springs).
+#[test]
+fn a_solid_text_fill_springs() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#000000"))]);
+    let mut words = at_xy(10.0, 10.0, 80.0, 40.0);
+    words.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Text, text("\u{2588}\u{2588}")),
+        (Prop::Font, PropValue::Font(font(32.0))),
+        (Prop::Fill, PropValue::Paint(Paint::Solid(hex("#ff0000")))),
+    ]);
+    let t = b.node(NodeKind::Text, Some(root), words);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(100, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    // (BGRA.)
+    let ink = buf.px(30, 30);
+    assert!(ink[2] > 200 && ink[0] < 40, "red letters {ink:?}");
+    let mut d = SceneDiff::new();
+    d.set(
+        t,
+        Prop::Fill,
+        PropValue::Paint(Paint::Solid(hex("#0000ff"))),
+    );
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1060));
+    assert!(r.wants_frame(S), "springing");
+    let mid = buf.px(30, 30);
+    assert!(mid[0] > 20 && mid[2] > 20, "between red and blue: {mid:?}");
+    settle(&mut r, &mut buf, 1060);
+    let end = buf.px(30, 30);
+    assert!(end[0] > 200 && end[2] < 40, "blue letters {end:?}");
+}
+
 /// design.md "Paint and light": `glow:` on a box (a shadow-like halo)
 /// and on text (its letters' own halo), `inner_shadow:` with `rim: top`,
 /// and `grain:` (refs `effects_light.png` at 1× and 2×).

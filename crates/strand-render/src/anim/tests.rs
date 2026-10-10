@@ -24,6 +24,10 @@ fn values_round_trip_through_channels() {
             }),
         ),
         (Prop::Radius, PropValue::Corners(Corners::all(6.0))),
+        (
+            Prop::Fill,
+            PropValue::Paint(Paint::Solid(Color::from_rgba8(10, 200, 30, 255))),
+        ),
     ] {
         let e = encode(p, Some(&v), white, b).unwrap();
         let back = decode(p, &e);
@@ -75,6 +79,15 @@ fn values_round_trip_through_channels() {
         ],
     });
     assert_eq!(encode(Prop::Bg, Some(&grad), white, b), None);
+    assert_eq!(encode(Prop::Fill, Some(&grad), white, b), None);
+    // No `fill` draws in `color`: nothing to spring from.
+    assert_eq!(encode(Prop::Fill, None, white, b), None);
+    // `blur:` is the compositor's (its region is re-sent only when the
+    // shape changes): it snaps.
+    assert_eq!(
+        encode(Prop::Blur, Some(&PropValue::Number(6.0)), white, b),
+        None
+    );
     assert_eq!(encode(Prop::Opacity, None, white, b), Some(Enc::One([1.0])));
 }
 

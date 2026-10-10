@@ -44,7 +44,7 @@ pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
-pub(crate) const ANIMATED: [Prop; 16] = [
+pub(crate) const ANIMATED: [Prop; 17] = [
     Prop::X,
     Prop::Y,
     Prop::Opacity,
@@ -59,11 +59,14 @@ pub(crate) const ANIMATED: [Prop; 16] = [
     Prop::Value,
     Prop::Track,
     // (M4) Effects: a stroke (width and solid paint), its trim, a wave's
-    // amplitude (a wavy meter flattens when paused), a glow.
+    // amplitude (a wavy meter flattens when paused), a glow and a text's
+    // solid `fill` (gradients still snap; `blur:` is the compositor's,
+    // decisions.md m4-effects-paint-w2).
     Prop::Stroke,
     Prop::Trim,
     Prop::Wave,
     Prop::Glow,
+    Prop::Fill,
 ];
 
 /// Props whose change springs the laid-out size.
@@ -77,7 +80,7 @@ fn eps(p: Prop) -> f32 {
         Prop::Opacity => 0.002,
         Prop::Scale => 0.0005,
         Prop::Rotate => 0.05,
-        Prop::Bg | Prop::Color | Prop::Track => 0.002,
+        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill => 0.002,
         Prop::Value => 0.0005,
         _ => 0.05,
     }
