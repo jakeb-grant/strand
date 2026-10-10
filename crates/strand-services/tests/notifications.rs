@@ -363,9 +363,16 @@ fn the_server_serves_the_spec_and_the_store() {
     }
 }
 
+/// `all` keeps 1,000 notifications (owner, 2026-10-10: a bound on a
+/// client sending in a loop, not the memory budget's 100; decisions.md
+/// m4-owner-docs), the oldest beyond it closing as expired, and lying
+/// pictures are refused.
 #[test]
 fn history_is_bounded_and_lying_pictures_are_refused() {
     use strand_services::notifications::KEPT;
+    // Written out, not `KEPT`: a smaller bound must fail here.
+    const HISTORY: usize = 1_000;
+    assert_eq!(KEPT, HISTORY);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -421,9 +428,9 @@ fn history_is_bounded_and_lying_pictures_are_refused() {
         .unwrap();
     assert!(std::path::Path::new(&file).exists());
 
-    // KEPT + 10 more: the oldest close as expired, and `all` holds KEPT.
+    // 1,010 more: the oldest close as expired, and `all` holds 1,000.
     let mut last = 0;
-    for i in 0..KEPT + 10 {
+    for i in 0..HISTORY + 10 {
         last = notify(&tokio, &conn, 0, &format!("n{i}"), &[], HashMap::new(), -1);
     }
     until(&rt, &s, "the last one", || {
@@ -433,7 +440,7 @@ fn history_is_bounded_and_lying_pictures_are_refused() {
     });
     assert_eq!(
         b.notifications.cells().count.get_untracked(&rt),
-        Ok(KEPT as i64)
+        Ok(HISTORY as i64)
     );
     wait_heard(&heard, &format!("Closed {lied} 1"));
     wait_heard(&heard, &format!("Closed {pictured} 1"));

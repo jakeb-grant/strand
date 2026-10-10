@@ -247,11 +247,12 @@ fn image_layers_draw_embedded_and_neighbouring_assets() {
 }
 
 /// An asset authored at 4000 × 2000 (from a 4 × 2 PNG, left half red,
-/// right half green) is decoded within the asset budget but drawn over
-/// its whole authored box: a layer scaled to 1 % shows it at 40 × 20, red
-/// on the left and green on the right, and nothing past it.
+/// right half green) is decoded within the asset bound (at its authored
+/// size, which fits) and drawn over its whole authored box: a layer
+/// scaled to 1 % shows it at 40 × 20, red on the left and green on the
+/// right, and nothing past it.
 #[test]
-fn a_large_asset_is_decoded_small_and_drawn_over_its_box() {
+fn a_large_asset_is_drawn_over_its_box() {
     let mut png_bytes = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut png_bytes, 4, 2);

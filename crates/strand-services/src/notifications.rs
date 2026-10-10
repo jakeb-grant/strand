@@ -61,9 +61,11 @@ pub const NAME: &str = "org.freedesktop.Notifications";
 pub const PATH: &str = "/org/freedesktop/Notifications";
 
 /// How many notifications `all` keeps: beyond it, the oldest closes as
-/// expired (design.md's memory budget holds notification history to a few
-/// megabytes).
-pub const KEPT: usize = 100;
+/// expired. A bound on a client sending notifications in a loop, which
+/// would otherwise grow memory without end, not the memory budget
+/// (design.md: budgets are test targets, never limits on a shell): far
+/// past any history a person reads (mako keeps 5, dunst 20).
+pub const KEPT: usize = 1000;
 
 /// How many `image-data` pictures may wait to be written: beyond it a
 /// new notification's picture is left out.
@@ -171,7 +173,7 @@ pub struct Notifications {
     /// dismissed.
     #[store(keyed)]
     pub popups: Vec<Notification>,
-    /// Every notification kept, popups included: the newest 100 (older
+    /// Every notification kept, popups included: the newest 1,000 (older
     /// ones close as expired).
     #[store(keyed)]
     pub all: Vec<Notification>,

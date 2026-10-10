@@ -417,15 +417,23 @@ fn split_table(grey: bool) -> TokenTable {
 /// frame's blending time.
 type Rounds = (Vec<Duration>, Vec<(Duration, Duration, u32)>, Vec<Duration>);
 
-/// One crossfade bench run: `rounds` crossfading swaps on two 2560×36
-/// bars and a 1280×960 panel, with a clock tick painted between swaps.
+/// The crossfade bench's surfaces: two 2560×36 bars and a 1280×960
+/// launcher-sized panel.
+const SHELL: &[(NodeKind, u32, u32)] = &[
+    (NodeKind::Bar, 2560, 36),
+    (NodeKind::Bar, 2560, 36),
+    (NodeKind::Panel, 1280, 960),
+];
+
+/// One crossfade bench run: `rounds` crossfading swaps on `surfaces`
+/// ([`SHELL`], or a 4K scrim), with a clock tick painted between swaps.
 /// `double`: each surface paints into two buffers in turn (age 2, as
 /// under a compositor that holds the last buffer: a snapshot is then the
 /// buffer's copy with the last frame's damage drawn again), else into
 /// one (age 1). Returns each swap's work (apply with its planning, and
 /// the swap's work in every frame, snapshots included), its parts, and
 /// each frame's blending time.
-fn crossfade_rounds(double: bool, rounds: u32) -> Rounds {
+fn crossfade_rounds(surfaces: &[(NodeKind, u32, u32)], double: bool, rounds: u32) -> Rounds {
     let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
     let mut b = Builder::default();
     b.diff.set_tokens(split_table(true), Transition::Instant);
@@ -433,7 +441,7 @@ fn crossfade_rounds(double: bool, rounds: u32) -> Rounds {
     // clock.
     let mut roots = Vec::new();
     let mut clocks = Vec::new();
-    for kind in [NodeKind::Bar, NodeKind::Bar, NodeKind::Panel] {
+    for &(kind, _, _) in surfaces {
         let root = b.node(kind, None, vec![(Prop::Bg, tok("surface"))]);
         b.node(
             NodeKind::Box,
@@ -471,7 +479,7 @@ fn crossfade_rounds(double: bool, rounds: u32) -> Rounds {
     }
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    let sizes = [(2560, 36), (2560, 36), (1280, 960)];
+    let sizes = surfaces.iter().map(|&(_, w, h)| (w, h));
     // Per surface: its buffers, the one it paints next, and which hold
     // a frame.
     let mut bufs: Vec<(SurfaceId, [Buffer; 2], usize, [bool; 2])> = Vec::new();
@@ -564,7 +572,8 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
     for double in [false, true] {
         let age = if double { 2 } else { 1 };
         let (m, blend) = {
-            let (totals, parts, blends) = crossfade_rounds(double, samples(CROSSFADES) as u32);
+            let (totals, parts, blends) =
+                crossfade_rounds(SHELL, double, samples(CROSSFADES) as u32);
             let m = median(&totals);
             let i = totals.iter().position(|t| *t == m).unwrap();
             let (apply, work, frames) = parts[i];
@@ -591,6 +600,40 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
         }
     }
     gates.hold();
+}
+
+/// A 3840×2160 surface (a 4K scrim or overlay) crossfades too since
+/// the snapshot caps went (owner, 2026-10-10: memory budgets are test
+/// targets; decisions.md m4-owner-docs), so its swap is measured and
+/// reported, not gated: the swap's work, its full-buffer snapshot
+/// included, against design.md's 5 ms, and each frame's blend of its
+/// 33 MB beside [`BLEND_BUDGET`], which is for the shell's three
+/// surfaces. The laptop measured 3.9–5.9 ms of work (the larger with
+/// two buffers, beside the other benches) and 10–20 ms of blending per
+/// frame, with no headroom for a gate on GitHub's runners; whether a large surface's fade may cost that is the owner's
+/// call (handoff.md). The test checks that each swap crossfades over
+/// more than four frames; a debug build runs one swap per age.
+#[test]
+fn a_4k_surface_crossfade_is_measured() {
+    const SCRIM: &[(NodeKind, u32, u32)] = &[(NodeKind::Panel, 3840, 2160)];
+    let rounds = if cfg!(debug_assertions) { 1 } else { 9 };
+    for double in [false, true] {
+        let age = if double { 2 } else { 1 };
+        let (totals, parts, blends) = crossfade_rounds(SCRIM, double, rounds);
+        let m = median(&totals);
+        let i = totals.iter().position(|t| *t == m).unwrap();
+        let (apply, work, frames) = parts[i];
+        assert!(frames > 4, "age {age}: {frames} frames: it fades");
+        eprintln!(
+            "4K crossfading swap, buffers of age {age} (reported, not gated): median {m:?}, \
+                 worst {:?} (apply with the snapshot {apply:?}, frames {work:?} over {frames} \
+                 frames; design.md: {BUDGET:?}); blend per frame {:?} (p95 {:?}; the shell's \
+                 three surfaces: {BLEND_BUDGET:?})",
+            totals.iter().max().unwrap(),
+            median(&blends),
+            quantile(&blends, 0.95)
+        );
+    }
 }
 
 /// Light and dark tables of the default seed, both with

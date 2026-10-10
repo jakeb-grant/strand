@@ -72,9 +72,20 @@ pub struct AtlasConfig {
     /// Hard cap on the alpha bytes of one scale's pages (the render
     /// thread's mirror holds four times this as RGBA). A glyph that would
     /// need a page past it is not drawn, so one layout full of huge or
-    /// distinct glyphs cannot grow the atlas without bound.
+    /// distinct glyphs cannot grow the atlas without bound. A bound on
+    /// hostile text, not the memory budget (design.md: budgets are test
+    /// targets): the default is far past what a shell shows at once.
     pub max_bytes: usize,
 }
+
+/// [`AtlasConfig::max_bytes`] by default: 8 MiB of alpha per scale (32
+/// MiB in the render thread's RGBA mirror), 128 regular pages, room for
+/// some 8,000 distinct CJK glyph masks at 2× (a 14 px font, every
+/// quarter-pixel position counted apart), while the most one 64 KiB
+/// request of distinct 512 px glyphs can claim stays bounded. Pages are
+/// only made as glyphs need them, so a shell that shows little holds
+/// little (decisions.md m4-owner-docs).
+pub const DEFAULT_MAX_BYTES: usize = 8 << 20;
 
 /// Largest page side; a glyph mask bigger than this minus one pixel of
 /// padding is not drawn (font sizes are capped well below it).
@@ -91,7 +102,7 @@ impl Default for AtlasConfig {
         Self {
             page_size: 256,
             max_pages: 4,
-            max_bytes: 1 << 20,
+            max_bytes: DEFAULT_MAX_BYTES,
         }
     }
 }
@@ -473,6 +484,43 @@ mod tests {
         let second = a.allocate(40, 20, 1).unwrap();
         assert_eq!(first.page, second.page, "both fit one 64 px page");
         assert_eq!(a.page_count(), 1);
+    }
+
+    /// (owner, 2026-10-10: memory budgets are test targets, never limits
+    /// on a shell) Every glyph a text-heavy shell shows at once is drawn
+    /// with the default config: 1,200 distinct CJK glyphs at 2× (29 px
+    /// masks with padding: a 14 px font), each at all four quarter-pixel
+    /// positions, every page leased by a visible layout, all find room.
+    /// The old 1 MiB cap held about 1,000 such masks.
+    #[test]
+    fn a_text_heavy_shell_fits_the_default_atlas() {
+        let mut a = GlyphAtlas::new(Scale::ONE, AtlasConfig::default());
+        let mut leases = Vec::new();
+        for i in 0..1_200 * 4u64 {
+            let s = a.allocate(28, 28, i + 1);
+            let Some(s) = s else {
+                panic!("mask {i} found no room ({} bytes)", a.bytes());
+            };
+            leases.push(a.touch(s.page, i + 1));
+        }
+        assert!(a.bytes() <= DEFAULT_MAX_BYTES);
+        assert!(a.bytes() > 1 << 20, "past the old cap");
+    }
+
+    /// The default still bounds hostile text: one request of distinct
+    /// glyphs as large as a page may hold (2,047 px masks, each on its
+    /// own 2,048 px page, 4 MiB) gets two pages, and the rest are skipped.
+    #[test]
+    fn the_default_atlas_bounds_one_request_of_huge_glyphs() {
+        let mut a = GlyphAtlas::new(Scale::ONE, AtlasConfig::default());
+        let drawn = (0..64)
+            .filter(|_| {
+                a.allocate(MAX_PAGE_SIZE - 1, MAX_PAGE_SIZE - 1, 1)
+                    .is_some()
+            })
+            .count();
+        assert_eq!(drawn, DEFAULT_MAX_BYTES / (4 << 20));
+        assert!(a.bytes() <= DEFAULT_MAX_BYTES);
     }
 
     /// One request full of distinct huge glyphs cannot grow the atlas past

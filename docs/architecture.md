@@ -945,8 +945,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   painted in full and reporting no opaque region. The snapshot is taken
   at that first frame: the `PaintTarget`'s copy with the damage of the
   frames its age missed drawn again from the old display list kept from
-  planning (in full for a new or invalid buffer); at most 1920×1080×4
-  bytes per surface and in all (a larger surface snaps). A crossfade
+  planning (in full for a new or invalid buffer), for a surface of any
+  size (no memory cap: design.md's budgets are test targets). A crossfade
   landing mid-crossfade takes the blend on screen as its snapshot; a
   surface that paints nothing for the exit stall loses its snapshot; a
   table that changes no colour leaves fades running, a snapping one
@@ -2540,8 +2540,9 @@ its queue before shaping (and folds in newly arrived cancels before each
 request) and survives a panicking request: it starts a fresh engine and
 answers with an empty layout whose `is_reset()` is true, on which render
 drops its mirror and every layout and re-requests its text. Each scale's
-atlas is capped at `AtlasConfig::max_bytes` of alpha (1 MiB by default;
-glyphs that do not fit are skipped), fonts at `MAX_FONT_PX` (512) and
+atlas is capped at `AtlasConfig::max_bytes` of alpha (8 MiB by default,
+a bound on hostile text, not the memory budget; glyphs that do not fit
+are skipped), fonts at `MAX_FONT_PX` (512) and
 text at `MAX_TEXT_BYTES` (64 KiB) per request. A layout that had to
 skip glyphs for want of atlas room says so (`is_incomplete`; render asks
 again a bounded number of times), and each layout lists its scale's live

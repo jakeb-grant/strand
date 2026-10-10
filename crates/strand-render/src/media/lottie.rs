@@ -20,9 +20,13 @@
 //! and all of a file's assets together within [`MAX_ASSET_PIXELS`] (all
 //! shrunk alike to fit, then in id order to what is left), and drawn
 //! scaled to its
-//! authored box: a downloaded file cannot hold more than 4 MiB of pixels
-//! however large its assets say they are. An asset that cannot be read
-//! or decoded, or that no budget is left for, draws nothing. The rest of
+//! authored box: a downloaded file cannot hold more than 64 MiB of
+//! pixels (an image's own decode bound, [`crate::image::MAX_DECODE_BYTES`])
+//! however large or many its assets say they are. These bound hostile
+//! files, not the memory budget (design.md: budgets are test targets):
+//! an asset a shell would show is decoded at its authored size. An asset
+//! that cannot be read or decoded, or that no pixels are left for, draws
+//! nothing. The rest of
 //! velato's support holds.
 //!
 //! velato draws a file's structure as it stands (m4-audit): a precomp
@@ -30,10 +34,13 @@
 //! stack overflowed (an abort no `catch_unwind` stops), precomps that
 //! fan out cost 2^N layers, and a repeater's copy count is unbounded
 //! (`1e18` cloned geometry until memory ran out). A file is refused at
-//! load unless its precomps and mattes form no cycle, nest at most
-//! [`MAX_NESTING`] deep, and one frame draws at most [`MAX_WORK`] layer
-//! and shape instances, each precomp instance and repeater copy counted
-//! at the most its keyframes (and their easing) can reach.
+//! load unless its precomps and mattes form no reference cycle (a
+//! precomp or matte that refers back to itself, directly or through
+//! others), nest at most [`MAX_NESTING`] deep, and one frame draws at
+//! most [`MAX_WORK`] layer and shape instances, each precomp instance and
+//! repeater copy counted at the most its keyframes (and their easing) can
+//! reach. Playback looping and time remapping (`tm`) are not reference
+//! cycles and are unaffected: the check reads only what refers to what.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -59,11 +66,13 @@ pub const MAX_LOTTIE_BYTES: u64 = 8 << 20;
 /// The largest image asset read or embedded.
 pub const MAX_ASSET_BYTES: u64 = 16 << 20;
 
-/// The longest side an image asset is decoded at.
-pub const MAX_ASSET_SIDE: u32 = 1024;
+/// The longest side an image asset is decoded at: an image's largest
+/// drawn side.
+pub const MAX_ASSET_SIDE: u32 = 4096;
 
-/// The most pixels a file's image assets hold together (4 MiB of RGBA).
-pub const MAX_ASSET_PIXELS: u64 = 1 << 20;
+/// The most pixels a file's image assets hold together (64 MiB of RGBA,
+/// an image decode's peak): a bound on a hostile file, not a budget.
+pub const MAX_ASSET_PIXELS: u64 = (crate::image::MAX_DECODE_BYTES / 4) as u64;
 
 /// The most layer and shape instances one frame of a file may draw.
 pub const MAX_WORK: u64 = 100_000;
@@ -214,7 +223,8 @@ fn load(source: &str) -> Result<File, String> {
 type LayerAt<'a> = (Option<&'a str>, usize);
 
 /// Refuses a file velato could not draw within bounds (see the module
-/// docs): a cycle, nesting past [`MAX_NESTING`], or past [`MAX_WORK`].
+/// docs): a reference cycle, nesting past [`MAX_NESTING`], or past
+/// [`MAX_WORK`].
 fn check_work(comp: &velato::Composition) -> Result<(), String> {
     let mut walk = Walk {
         comp,
@@ -233,7 +243,8 @@ struct Walk<'a> {
     comp: &'a velato::Composition,
     /// Each layer's cost, once known.
     done: HashMap<LayerAt<'a>, u64>,
-    /// The layers being costed, outermost first.
+    /// The layers being costed, outermost first: one met again is a
+    /// reference cycle.
     stack: Vec<LayerAt<'a>>,
 }
 
@@ -256,7 +267,7 @@ impl<'a> Walk<'a> {
             return Ok(*c);
         }
         if self.stack.contains(&at) {
-            return Err("a precomp or matte contains itself".into());
+            return Err("a precomp or matte refers back to itself (a reference cycle)".into());
         }
         if self.stack.len() >= MAX_NESTING {
             return Err(format!("precomps or mattes nest deeper than {MAX_NESTING}"));
@@ -636,39 +647,77 @@ mod tests {
         format!(r#"{{"id":"{id}","layers":[{}]}}"#, layers.join(","))
     }
 
-    /// (m4-audit) velato draws a file's structure as it stands, so a
-    /// file it could not draw within bounds is refused at load: a precomp
-    /// instancing itself or a cycle of two (a stack overflow, which aborts
-    /// strand), a matte that is its own, precomps fanning out 2^20
-    /// layers, a chain nested past `MAX_NESTING`, and a repeater of 1e18
-    /// copies, fixed or reached through its easing. Files within bounds
-    /// load, a repeater's copies counted.
-    #[test]
-    fn files_velato_cannot_draw_within_bounds_are_refused() {
-        let refused = |tag: &str, assets: &[String], layers: &[String], why: &str| match load_of(
-            tag, assets, layers,
-        ) {
+    /// `load_of`, which must fail with an error containing `why`.
+    fn refused(tag: &str, assets: &[String], layers: &[String], why: &str) {
+        match load_of(tag, assets, layers) {
             Err(e) => assert!(e.contains(why), "{tag}: {e}"),
             Ok(_) => panic!("{tag}: loaded"),
-        };
+        }
+    }
+
+    /// (m4-audit) A reference cycle, a precomp or matte that refers back
+    /// to itself, made velato recurse until the stack overflowed (an
+    /// abort): a precomp instancing itself, a cycle of two, and a layer
+    /// that is its own matte are refused at load, named as reference
+    /// cycles.
+    #[test]
+    fn reference_cycles_are_refused() {
         refused(
             "self",
             &[asset("a", &[precomp(1, "a")])],
             &[precomp(1, "a")],
-            "contains itself",
+            "reference cycle",
         );
         refused(
-            "cycle",
+            "two",
             &[
                 asset("a", &[precomp(1, "b")]),
                 asset("b", &[precomp(1, "a")]),
             ],
             &[precomp(1, "a")],
-            "contains itself",
+            "reference cycle",
         );
         let own_matte =
             format!(r#"{{"ty":4,"ind":1,"tt":1,"tp":1,"ip":0,"op":60,"st":0,{KS},"shapes":[]}}"#);
-        refused("matte", &[], &[own_matte], "contains itself");
+        refused("matte", &[], &[own_matte], "reference cycle");
+    }
+
+    /// (owner, 2026-10-10) Playback looping and time remapping are not
+    /// reference cycles: a precomp whose `tm` keyframes run its time
+    /// backwards and around again, instanced twice from the top level and
+    /// once from another precomp, loads, and its frames still loop.
+    #[test]
+    fn looping_and_time_remapping_are_not_reference_cycles() {
+        let remapped = |ind: u32, id: &str| {
+            format!(
+                r#"{{"ty":0,"ind":{ind},"refId":"{id}","w":100,"h":100,"ip":0,"op":60,"st":0,{KS},"tm":{{"a":1,"k":[{{"t":0,"s":[1.5],"i":{{"x":[0.5],"y":[0.5]}},"o":{{"x":[0.5],"y":[0.5]}}}},{{"t":30,"s":[0]}},{{"t":60,"s":[1.5]}}]}}}}"#
+            )
+        };
+        let file = load_of(
+            "remap",
+            &[
+                asset("inner", &[repeated(1, r#"{"a":0,"k":3}"#)]),
+                asset("outer", &[remapped(1, "inner")]),
+            ],
+            &[
+                remapped(1, "inner"),
+                remapped(2, "inner"),
+                precomp(3, "outer"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(file.comp.layers.len(), 3);
+        assert_eq!(frame_at(&file.comp, 2.5, 1.0), 15.0, "loops");
+    }
+
+    /// (m4-audit) velato draws a file's structure as it stands, so a
+    /// file it could not draw within bounds is refused at load (reference
+    /// cycles: [`reference_cycles_are_refused`]): precomps fanning out
+    /// 2^20 layers, a chain nested past `MAX_NESTING`, and a repeater of
+    /// 1e18 copies, fixed or reached through its easing. Files within
+    /// bounds load, a repeater's copies counted.
+    #[test]
+    fn files_velato_cannot_draw_within_bounds_are_refused() {
         // Each level instances the next twice: 2^20 leaves.
         let fan: Vec<String> = (0..20)
             .map(|i| {
@@ -717,7 +766,7 @@ mod tests {
     /// no side over [`MAX_ASSET_SIDE`] and no more than
     /// [`MAX_ASSET_PIXELS`] together, and each keeps its authored box.
     #[test]
-    fn assets_are_decoded_within_the_budget() {
+    fn assets_are_decoded_within_their_bound() {
         let mut png = Vec::new();
         {
             let mut e = ::png::Encoder::new(&mut png, 2, 2);
@@ -769,11 +818,39 @@ mod tests {
             total += u64::from(w) * u64::from(h);
         }
         assert!(total <= MAX_ASSET_PIXELS, "{total}");
-        // Each capped at 1024², then all four shrunk alike to 512².
+        // Each within 4096², then all four shrunk alike to 2048².
         assert_eq!(file.images.len(), 4);
         for a in file.images.values() {
-            assert_eq!((a.pixmap.width(), a.pixmap.height()), (512, 512));
+            assert_eq!((a.pixmap.width(), a.pixmap.height()), (2048, 2048));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (owner, 2026-10-10: memory budgets are test targets, never limits
+    /// on a shell) An asset a shell would show, authored at 1920 × 1080,
+    /// is decoded at that size, not shrunk to stay under a budget; the
+    /// bound only stops a file whose assets claim more than an image
+    /// decode may hold.
+    #[test]
+    fn an_asset_a_shell_shows_is_decoded_at_its_authored_size() {
+        let mut png = Vec::new();
+        {
+            let mut e = ::png::Encoder::new(&mut png, 2, 2);
+            e.set_color(::png::ColorType::Rgba);
+            e.set_depth(::png::BitDepth::Eight);
+            let mut w = e.write_header().unwrap();
+            w.write_image_data(&[255u8; 16]).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("strand-lottie-hd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("bg.png"), &png).unwrap();
+        let json = r#"{"v":"5.7.0","fr":30,"ip":0,"op":60,"w":100,"h":100,"assets":[{"id":"bg","w":1920,"h":1080,"u":"","p":"bg.png","e":0}],"layers":[]}"#;
+        let path = dir.join("hd.json");
+        std::fs::write(&path, json).unwrap();
+        let file = load(path.to_str().unwrap()).unwrap();
+        let a = &file.images["bg"];
+        assert_eq!((a.pixmap.width(), a.pixmap.height()), (1920, 1080));
+        const { assert!(MAX_ASSET_PIXELS >= 1920 * 1080 * 8, "room for several") };
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

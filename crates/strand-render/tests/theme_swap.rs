@@ -1196,11 +1196,13 @@ fn span_colours_follow_the_swap_without_reshaping() {
     assert!(mids > 4, "{mids} frames mid-swap");
 }
 
-/// A surface whose snapshot would pass the crossfade's memory cap (a
-/// buffer larger than 1920×1080) snaps to the new frame instead of
-/// fading; a smaller one beside it fades.
+/// (owner, 2026-10-10: memory budgets are test targets, never limits
+/// on a shell) A surface larger than 1920×1080 (a 4K scrim or overlay)
+/// crossfades like a small one beside it: it does not snap to the new
+/// frame, its corner blends as the small one does, and both end on the
+/// new frame exactly.
 #[test]
-fn a_surface_too_large_to_snapshot_snaps() {
+fn a_surface_larger_than_1080p_crossfades_too() {
     const BIG: SurfaceId = SurfaceId(2);
     let (a, b) = split_tables();
     let (diff, root) = scene(a);
@@ -1218,19 +1220,28 @@ fn a_surface_too_large_to_snapshot_snaps() {
     assert_eq!(r.swap_crossfades(), 1);
     let mut fresh = Stage::new(b, 320, 72);
     fresh.paint(frame(1));
-    small.paint_at(&mut r, S, 1, frame(1));
-    big.paint_at(&mut r, BIG, 1, frame(1));
-    assert_ne!(small.pixels, fresh.buf.pixels, "the small one fades");
-    // The big one shows the new frame at once: its top-left corner is
-    // the small one's new frame.
-    for y in 0..72 {
-        let row = &big.pixels[y * 2000 * 4..y * 2000 * 4 + 320 * 4];
-        assert_eq!(
-            row,
-            &fresh.buf.pixels[y * 320 * 4..(y + 1) * 320 * 4],
-            "row {y}"
-        );
+    // The big buffer's top-left 320 × 72, where it draws what the small
+    // one does.
+    let corner = |buf: &Buffer| -> Vec<u8> {
+        (0..72)
+            .flat_map(|y| buf.pixels[y * 2000 * 4..y * 2000 * 4 + 320 * 4].to_vec())
+            .collect()
+    };
+    let mut k = 1;
+    let mut mids = 0;
+    while r.wants_frame(S) || r.wants_frame(BIG) {
+        small.paint_at(&mut r, S, 1, frame(k));
+        big.paint_at(&mut r, BIG, 1, frame(k));
+        assert_eq!(corner(&big), small.pixels, "frame {k}: alike");
+        if small.pixels != fresh.buf.pixels {
+            mids += 1;
+        }
+        k += 1;
+        assert!(k < 200, "never settled");
     }
+    assert!(mids > 4, "{mids} blended frames");
+    assert_eq!(small.pixels, fresh.buf.pixels, "the small one ends on it");
+    assert_eq!(corner(&big), fresh.buf.pixels, "the big one ends on it");
 }
 
 /// The largest difference of one channel between two frames.
