@@ -2824,6 +2824,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "strand-auth",
  "strand-compiler",
  "strand-core",
  "strand-gpu",

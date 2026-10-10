@@ -43,6 +43,8 @@
 //!   18.5 MiB with the GPU backend (the default build), 15 MiB for the
 //!   CPU core (`--no-default-features`; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
+//! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
+//!   default build (the lock's `faults` feature).
 //!
 //! The idle window and the minute tick's one burst are timing claims:
 //! run this binary on its own (CI runs it as a step of its own, with
@@ -2285,3 +2287,28 @@ fn the_release_binary_code_stays_within_its_gate() {
 const TEXT_GATE_GPU: u64 = 19_398_656;
 /// `.text` of the CPU-only release build: 15 MiB.
 const TEXT_GATE_CPU: u64 = 15 << 20;
+/// The lock's fault injection never ships (decisions.md, m4-lock-w2):
+/// the `faults` feature's `STRAND_FAULT` points are not in the binary a
+/// default build makes, in the dev profile here and in release in CI's
+/// budgets job (which runs this file with `--release`). Built with
+/// `--features faults` (the lock VM's build) the same check is the
+/// positive control: the strings must be there.
+#[test]
+fn the_binary_holds_no_fault_code() {
+    let bin = std::fs::read(env!("CARGO_BIN_EXE_strand")).unwrap();
+    for needle in [
+        b"STRAND_FAULT".as_slice(),
+        b"logic_panic",
+        b"lock_no_frame",
+        b"auth_missing",
+    ] {
+        let holds = bin.windows(needle.len()).any(|w| w == needle);
+        assert_eq!(
+            holds,
+            cfg!(feature = "faults"),
+            "{:?} in strand's binary (faults: {})",
+            String::from_utf8_lossy(needle),
+            cfg!(feature = "faults")
+        );
+    }
+}

@@ -8,7 +8,10 @@
 //! config's content, a [`Surface`] the host paints like any other (its
 //! keys reach the host as usual); every other output shows a solid in the
 //! lock's colour ([`State::set_lock_color`], opaque), whose keyboard focus
-//! counts as the content's. The host hears [`SurfaceHost::lock_changed`]:
+//! counts as the content's. A solid is one `wp_single_pixel_buffer_v1`
+//! pixel the viewporter stretches over the output (design.md: "Scrims and
+//! lock backgrounds use single-pixel buffers"), or the same shm fallback
+//! as a scrim's when the compositor lacks the protocol ([`crate::solid`]). The host hears [`SurfaceHost::lock_changed`]:
 //! `Locked` once the compositor says every output is covered, `Finished`
 //! when it refuses or ends the lock, `Unlocked` after an unlock.
 //!
@@ -50,6 +53,8 @@
 //!   only right before the buffer commit at that size, and never makes a
 //!   bare commit before its first buffer.
 
+use super::scrim::{ScrimObject, shm_solid};
+use crate::solid::{SolidBuffer, solid_buffer};
 use smithay_client_toolkit::shm::raw::RawPool;
 use strand_auth::UnlockToken;
 use strand_scene::Color;
@@ -197,7 +202,8 @@ struct Solid {
     lock_surface: ExtSessionLockSurfaceV1,
     wl: wl_surface::WlSurface,
     viewport: Option<WpViewport>,
-    buffer: Option<(RawPool, wl_buffer::WlBuffer)>,
+    /// Its buffer: a single pixel (no pool) or an shm one.
+    buffer: Option<(Option<RawPool>, wl_buffer::WlBuffer)>,
     /// The size of its last configure (acked): every buffer matches it.
     size: Option<(u32, u32)>,
 }
@@ -247,10 +253,6 @@ pub enum LockSurfaceTag {
     Content(SurfaceId),
     Solid(u32),
 }
-
-/// User data of a solid's buffer (never written after it is made).
-#[derive(Debug)]
-pub struct SolidBuffer;
 
 /// The config every lock surface has (the layer fields are unused: a
 /// lock surface has no layer, anchors or margins; the compositor sizes
@@ -675,53 +677,68 @@ impl<H: SurfaceHost + 'static> State<H> {
         );
     }
 
-    /// Fills solid `global` at `(w, h)` logical pixels and commits it:
-    /// a 1×1 buffer scaled by the viewport, or one of the whole size
-    /// without viewporter (buffer scale 1, so the surface is `(w, h)`).
+    /// Fills solid `global` at `(w, h)` logical pixels and commits it,
+    /// as a scrim is filled (`catcher.rs`): one single-pixel buffer the
+    /// viewport stretches when the compositor offers both protocols, a
+    /// 1×1 shm pixel with the viewporter alone, else an shm buffer of the
+    /// whole size (buffer scale 1, so the surface is `(w, h)`).
     fn paint_solid(&mut self, global: u32, (w, h): (u32, u32)) {
-        let color = self.session_lock.color.to_argb8888_premul();
+        let color = self.session_lock.color;
+        let single_pixel = self.single_pixel.clone();
+        let Some(s) = self.session_lock.solids.get(&global) else {
+            return;
+        };
+        let solid = solid_buffer(color, (w, h), single_pixel.is_some(), s.viewport.is_some());
+        let (buffer, (bw, bh)) = match (solid, &single_pixel) {
+            (SolidBuffer::SinglePixel([r, g, b, a]), Some(sp)) => (
+                (
+                    None,
+                    sp.create_u32_rgba_buffer(r, g, b, a, &self.qh, ScrimObject),
+                ),
+                (1, 1),
+            ),
+            (
+                SolidBuffer::Shm {
+                    width,
+                    height,
+                    pixel,
+                },
+                _,
+            ) => match shm_solid(&self.shm, &self.qh, width, height, pixel) {
+                Some(made) => made,
+                None => {
+                    log::warn!("no buffer for a lock background");
+                    return;
+                }
+            },
+            // Not reached: a single pixel is chosen only with the manager.
+            (SolidBuffer::SinglePixel(_), None) => return,
+        };
         let Some(s) = self.session_lock.solids.get_mut(&global) else {
             return;
         };
-        let (bw, bh) = if s.viewport.is_some() { (1, 1) } else { (w, h) };
-        let (Ok(bw), Ok(bh)) = (i32::try_from(bw.max(1)), i32::try_from(bh.max(1))) else {
-            return;
-        };
-        let Some(len) = (bw as usize)
-            .checked_mul(bh as usize)
-            .and_then(|n| n.checked_mul(4))
-        else {
-            return;
-        };
-        let mut pool = match RawPool::new(len, &self.shm) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("no buffer for a lock background: {e}");
-                return;
-            }
-        };
-        for px in pool.mmap().chunks_exact_mut(4) {
-            px.copy_from_slice(&color);
-        }
-        let buffer = pool.create_buffer(
-            0,
-            bw,
-            bh,
-            bw * 4,
-            wl_shm::Format::Argb8888,
-            SolidBuffer,
-            &self.qh,
-        );
         if let Some(v) = &s.viewport {
             v.set_destination(clamp_i32(w.max(1)), clamp_i32(h.max(1)));
         }
         s.wl.set_buffer_scale(1);
-        s.wl.attach(Some(&buffer), 0, 0);
+        s.wl.attach(Some(&buffer.1), 0, 0);
         s.wl.damage_buffer(0, 0, bw, bh);
         s.wl.commit();
-        if let Some((_, old)) = s.buffer.replace((pool, buffer)) {
+        if let Some((_, old)) = s.buffer.replace(buffer) {
             old.destroy();
         }
+    }
+
+    /// The buffer kind of solid lock surface `output` (connector name,
+    /// else monitor id): `Some(true)` for a single pixel, `Some(false)`
+    /// for shm, `None` when it has none yet.
+    pub fn lock_solid_is_single_pixel(&self, output: &str) -> Option<bool> {
+        self.session_lock.solids.iter().find_map(|(g, s)| {
+            let id = self.monitors.id_of(*g)?;
+            let m = self.monitors.get(id)?;
+            let name = m.connector.clone().unwrap_or_else(|| id.to_string());
+            (name == output).then(|| s.buffer.as_ref().map(|(pool, _)| pool.is_none()))?
+        })
     }
 
     /// The surface whose keys a keyboard focus on `wl` delivers: ours, or
@@ -878,18 +895,6 @@ impl<H: SurfaceHost + 'static> Dispatch2<ExtSessionLockSurfaceV1, State<H>> for 
         {
             state.lock_surface_configure(*self, serial, (width, height));
         }
-    }
-}
-
-impl<H: SurfaceHost + 'static> Dispatch2<wl_buffer::WlBuffer, State<H>> for SolidBuffer {
-    fn event(
-        &self,
-        _: &mut State<H>,
-        _: &wl_buffer::WlBuffer,
-        _: wl_buffer::Event,
-        _: &Connection,
-        _: &QueueHandle<State<H>>,
-    ) {
     }
 }
 

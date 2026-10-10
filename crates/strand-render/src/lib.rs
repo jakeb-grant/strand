@@ -27,6 +27,7 @@ pub mod image;
 pub mod input;
 mod layers;
 mod layout;
+pub mod lock_fallback;
 mod markup;
 mod media;
 mod offscreen;

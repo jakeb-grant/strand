@@ -82,3 +82,40 @@ fn pam_unix_takes_only_the_right_password() {
         Service::Strand => assert_eq!(warning, None),
     }
 }
+
+/// `pam_faillock` (the scenario `faillock.sh` installs a stack with
+/// `deny=3` around `pam_unix`): after three wrong passwords the right one
+/// is refused too, by this helper and by a new one, and it is a refusal,
+/// never a failure the lock would treat as a fault. The session stays
+/// locked, as the stack's owner asked.
+#[test]
+fn pam_faillock_locks_out_after_three_wrong_passwords() {
+    let test = "pam_faillock_locks_out_after_three_wrong_passwords";
+    let Some(helper) = in_lock_vm(test) else {
+        return;
+    };
+    assert_eq!(
+        std::env::var("STRAND_LOCK_VM_SERVICE").as_deref(),
+        Ok("faillock"),
+        "run by scripts/lockvm/scenarios/faillock.sh"
+    );
+    let mut client = Client::new(helper.clone(), no_hook).with_timeout(Duration::from_secs(20));
+    // The stack works: before any failure the right password unlocks.
+    let v = check(&mut client, "strand-test");
+    assert!(v.is_unlocked(), "right, before the failures: {v:?}");
+    for n in 1..=3 {
+        let v = check(&mut client, "wrong-password");
+        assert!(matches!(v, Verdict::Denied { .. }), "wrong #{n}: {v:?}");
+    }
+    let v = check(&mut client, "strand-test");
+    assert!(
+        matches!(v, Verdict::Denied { .. }),
+        "the right password while locked out: {v:?}"
+    );
+    let mut fresh = Client::new(helper, no_hook).with_timeout(Duration::from_secs(20));
+    let v = check(&mut fresh, "strand-test");
+    assert!(
+        matches!(v, Verdict::Denied { .. }),
+        "a new helper while locked out: {v:?}"
+    );
+}

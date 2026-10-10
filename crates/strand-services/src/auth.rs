@@ -17,8 +17,10 @@
 //! manager's unlock, the only way a session lock is released); this store
 //! never unlocks anything itself. Anything else sets `failed`. A check
 //! that could not be made (no helper, a crash, a timeout, a PAM error) is
-//! also a warning diagnostic, and the helper's `login` fallback warns
-//! once per process (decisions.md, m4-owner).
+//! also a warning diagnostic and goes to the [`FailureSink`] (the binary
+//! then shows its built-in password field, whose own client may still
+//! work: decisions.md, m4-lock-w2), and the helper's `login` fallback
+//! warns once per process (decisions.md, m4-owner).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -36,6 +38,16 @@ pub const SCHEMA: &str = strand_services_schema::AUTH;
 /// blocking task's thread.
 pub type UnlockSink = Arc<dyn Fn(UnlockToken) + Send + Sync>;
 
+/// Told why a password could not be checked (no helper, a crash, a
+/// timeout, a PAM error; never a refusal): the binary's main loop, which
+/// shows the built-in password field. Called on the services thread.
+pub type FailureSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Applied to every [`Client`] the store makes, before its first
+/// password (the binary's `faults` build passes `STRAND_FAULT` through
+/// with `Client::with_test_env`).
+pub type ClientHook = Arc<dyn Fn(Client) -> Client + Send + Sync>;
+
 /// What the `auth` store uses from its next start on.
 #[derive(Clone)]
 pub struct AuthConfig {
@@ -46,6 +58,10 @@ pub struct AuthConfig {
     /// Where unlocks go. Without one an accepted password unlocks
     /// nothing (and says so in the log).
     pub sink: Option<UnlockSink>,
+    /// Where failures to check go.
+    pub failed: Option<FailureSink>,
+    /// Applied to each client made.
+    pub client_hook: Option<ClientHook>,
 }
 
 impl Default for AuthConfig {
@@ -54,6 +70,8 @@ impl Default for AuthConfig {
             helper: None,
             timeout: strand_auth::DEFAULT_TIMEOUT,
             sink: None,
+            failed: None,
+            client_hook: None,
         }
     }
 }
@@ -64,6 +82,8 @@ impl std::fmt::Debug for AuthConfig {
             .field("helper", &self.helper)
             .field("timeout", &self.timeout)
             .field("sink", &self.sink.is_some())
+            .field("failed", &self.failed.is_some())
+            .field("client_hook", &self.client_hook.is_some())
             .finish()
     }
 }
@@ -111,7 +131,18 @@ impl Auth {
         let config = config();
         let helper = config.helper.clone().or_else(strand_auth::default_helper);
         let start = |path: &PathBuf| {
-            Client::new(path.clone(), crate::child::restore_in_child).with_timeout(config.timeout)
+            let c = Client::new(path.clone(), crate::child::restore_in_child)
+                .with_timeout(config.timeout);
+            match &config.client_hook {
+                Some(hook) => hook(c),
+                None => c,
+            }
+        };
+        let fail = |cx: &mut Cx<Self>, why: String| {
+            if let Some(f) = &config.failed {
+                f(&why);
+            }
+            cx.warn(why);
         };
         let mut client = helper.as_ref().map(start);
         if helper.is_none() {
@@ -165,7 +196,7 @@ impl Auth {
                             true
                         }
                         Verdict::Failed(e) => {
-                            cx.warn(format!("the password could not be checked: {e}"));
+                            fail(&mut cx, format!("the password could not be checked: {e}"));
                             true
                         }
                     };
@@ -186,7 +217,11 @@ impl Auth {
                             continue;
                         }
                         let Some(mut c) = client.take() else {
-                            cx.warn("no `strand-auth` helper is installed: the password could not be checked");
+                            fail(
+                                &mut cx,
+                                "no `strand-auth` helper is installed: the password could not be checked"
+                                    .to_string(),
+                            );
                             if !cx.update(|s| s.failed = true) {
                                 return Ok(());
                             }

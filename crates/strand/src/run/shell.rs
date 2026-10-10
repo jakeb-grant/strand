@@ -79,6 +79,9 @@ pub(super) struct Shell {
     pub(super) layout_seen: Option<u64>,
     /// (M4) The GPU status render last reported.
     pub(super) gpu: strand_scene::GpuStatus,
+    /// The password inputs' values, redacted from fault messages
+    /// (`lock.rs`).
+    pub(super) secrets: super::lock::Secrets,
 }
 
 impl Shell {
@@ -117,8 +120,9 @@ impl Shell {
                 self.layout_seen = Some(seq);
             }
             ToLogic::Write { node, prop, value } => {
+                self.secrets.see_write(node, prop, &value);
                 if let Err(e) = inst.write(node, prop, value) {
-                    log::debug!("write to {prop}: {e}");
+                    log::debug!("write to {prop}: {}", self.secrets.redact_error(&e));
                 }
             }
             ToLogic::Flag { node, flag, on } => inst.set_flag(node, flag, on),
@@ -142,6 +146,8 @@ impl Shell {
             }
             ToLogic::Notice(_) => {}
             ToLogic::GpuStatus(status) => self.gpu_status(status),
+            ToLogic::LockState(state) => self.lock_state(state),
+            ToLogic::Beat(seq) => super::lock::beat(seq),
             ToLogic::Shutdown => {}
         }
     }
@@ -488,8 +494,12 @@ impl Shell {
     /// After a step: send the reload events it drew (and answer the
     /// clients waiting for a reload), report runtime faults.
     pub(super) fn after_step(&mut self, update: &strand_compiler::instantiate::Update) {
+        self.lock_faults(&update.errors);
         for e in &update.errors {
-            log::error!("{e}");
+            // A password's value read by a failing expression is never
+            // printed (`lock::Secrets`).
+            let message = self.secrets.redact_fault(e);
+            log::error!("{message}");
             // A runtime fault freezes its component, outlined red.
             let frozen = self.inst.freeze(e);
             if let Some(s) = &mut self.server {
@@ -502,7 +512,7 @@ impl Shell {
                 };
                 s.broadcast(&json!({
                     "event": "fault",
-                    "message": e.to_string(),
+                    "message": message,
                     "at": at,
                     "frozen": frozen,
                 }));

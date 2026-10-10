@@ -584,13 +584,18 @@ fn a_config_broken_at_first_boot_runs_once_fixed() {
 /// While the lock is shown, saves that change it wait: `strand watch`
 /// and `strand reload` hear `"deferred": true` at once, a second
 /// deferred save absorbs the first, and after the unlock both the
-/// lock edit and the bar edit land.
+/// lock edit and the bar edit land. The lock is driven as the binary
+/// drives it (`run/lock.rs`): the compositor's `Locked` and, after an
+/// `auth` success, `Unlocked` reach logic as `ToLogic::LockState`; while
+/// locked a config write of `false` changes nothing, and the unlock
+/// writes the two-way `open` false itself.
 #[test]
 fn lock_edits_wait_for_the_unlock_and_then_land() {
+    use strand_compiler::instantiate::SessionLock;
     let dir = temp_dir("lock");
     let src = |lock: &str, bar: &str| {
         format!(
-            "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  text \"{lock}\"\n}}\nbar Top {{\n  on click {{ locked = true }}\n  text \"{bar}\"\n}}\n"
+            "export state locked = true\nlock L {{\n  open: <-> locked\n  on click {{ locked = false }}\n  text \"{lock}\"\n}}\nbar Top {{\n  on click {{ locked = true }}\n  text \"{bar}\"\n}}\n"
         )
     };
     let file = dir.join("shell.strand");
@@ -602,6 +607,10 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
         t.sort();
         t == ["bar a", "lock a"]
     });
+    // The compositor locks the session.
+    to_logic
+        .send(ToLogic::LockState(SessionLock::Locked))
+        .unwrap();
     let mut events =
         std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
     let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
@@ -652,13 +661,42 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     assert_eq!(ans["event"]["deferred"], true, "{ans}");
     let _ = next_event();
     assert_eq!(m.texts(), ["bar a2", "lock a"], "nothing committed yet");
-    // Unlock: the newest deferred build lands, with both edits.
+    // A config write of `false` while locked: the lock stays shown and
+    // the edits keep waiting (only a password unlocks).
     let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
     to_logic
         .send(ToLogic::Event {
             node: lock,
             event: NodeEvent::Click,
         })
+        .unwrap();
+    // `strand watch` hears why (and the overlay says so).
+    let ev = next_event();
+    assert_eq!(ev["event"], "notices", "{ev}");
+    assert_eq!(
+        ev["notices"],
+        json!([strand_compiler::instantiate::IGNORED_CLOSE]),
+        "{ev}"
+    );
+    m.until("the ignored close's notice", |s| {
+        s.texts()
+            .contains(&strand_compiler::instantiate::IGNORED_CLOSE.to_string())
+    });
+    m.settle("the ignored close", Duration::from_millis(300));
+    let texts = m.texts();
+    assert!(
+        texts.contains(&"bar a2".to_string()) && texts.contains(&"lock a".to_string()),
+        "still locked: {texts:?}"
+    );
+    assert!(
+        !texts.contains(&"bar c".to_string()),
+        "nothing committed: {texts:?}"
+    );
+    assert_eq!(m.scene.of_kind(strand_scene::NodeKind::Lock), [lock]);
+    // Unlock (`auth`'s token released the compositor's lock): the
+    // newest deferred build lands, with both edits.
+    to_logic
+        .send(ToLogic::LockState(SessionLock::Unlocked))
         .unwrap();
     m.until("the bar edit", |s| s.texts().contains(&"bar c".to_string()));
     let ev = next_event();
@@ -669,6 +707,7 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
             .any(|p| p.as_str().is_some_and(|p| p.ends_with("shell.strand")))),
         "{ev}"
     );
+    // The unlock wrote `locked` false through the two-way `open`.
     // Locked again: the lock shows its edit.
     let bar = m.scene.of_kind(strand_scene::NodeKind::Bar)[0];
     to_logic
@@ -684,6 +723,55 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     assert_eq!(t.join().unwrap(), Ok(()));
     drop(compiler);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A runtime fault whose message holds a password input's value, here
+/// transformed (`secret.upper()`, which no search for the value finds),
+/// reaches `strand watch` and the log with its error redacted whole
+/// while the password input is mounted, its location kept
+/// (architecture.md, "The lock"; `lock::Secrets`).
+#[test]
+fn a_password_value_is_redacted_from_fault_messages() {
+    let dir = temp_dir("redact");
+    std::fs::write(
+        dir.join("shell.strand"),
+        "bar Top {\n  state secret = \"\"\n  input { type: password; text: <-> secret }\n  \
+         text clock.format(secret.upper())\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (_compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("the input", |s| {
+        !s.of_kind(strand_scene::NodeKind::Input).is_empty()
+    });
+    let input = m.scene.of_kind(strand_scene::NodeKind::Input)[0];
+    let mut next = watch(&socket);
+    // `%Q` is no time pattern: `clock.format` fails, quoting it.
+    let password = "pa%Qss";
+    to_logic
+        .send(ToLogic::Write {
+            node: input,
+            prop: Prop::Text,
+            value: PropValue::Text(password.into()),
+        })
+        .unwrap();
+    let ev = loop {
+        let ev = next();
+        if ev["event"] == "fault" {
+            break ev;
+        }
+    };
+    let message = ev["message"].as_str().unwrap_or_default();
+    assert!(
+        message.ends_with(": <redacted>")
+            && !message.contains(password)
+            && !message.contains(&password.to_uppercase()),
+        "{ev}"
+    );
+    assert!(ev["at"].as_str().is_some_and(|a| !a.is_empty()), "{ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A watcher on `socket`: the next event it hears.

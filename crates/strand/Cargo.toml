@@ -14,8 +14,17 @@ default = ["gpu"]
 # gate measures.
 gpu = ["strand-render/gpu", "strand-surface/gpu", "strand-compiler/shaders", "dep:strand-gpu"]
 
+# The lock's fault injection points (`STRAND_FAULT`) for the lock VM's
+# fault matrix (tests/lock.rs, scripts/lockvm/scenarios/strand_lock.sh),
+# with strand-auth's own (the helper's faults, `Client::with_test_env`).
+# Never in a default or release build: budgets.rs's
+# `the_binary_holds_no_fault_code` checks the binary's bytes.
+faults = ["strand-auth/faults"]
+
 [dependencies]
 strand-gpu = { workspace = true, optional = true }
+# The built-in fallback lock's own password client (`run/lock.rs`).
+strand-auth.workspace = true
 strand-compiler.workspace = true
 strand-core.workspace = true
 strand-render.workspace = true
@@ -66,3 +75,9 @@ tempfile = "3.27.0"
 
 [lints]
 workspace = true
+
+# The lock VM's fault matrix: run only there (each test skips elsewhere),
+# built by scripts/lockvm/scenarios/build.sh with `--features faults`.
+[[test]]
+name = "lock"
+required-features = ["faults"]

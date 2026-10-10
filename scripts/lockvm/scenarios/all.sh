@@ -7,7 +7,9 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 failed=()
-for s in session_lock pam; do
+# pam.sh last: it removes /etc/pam.d/strand (faillock.sh puts its own
+# stack there and the image's back).
+for s in session_lock strand_lock faillock pam; do
   echo "=== scenario $s"
   if bash "$here/$s.sh"; then
     echo "=== $s PASSED"

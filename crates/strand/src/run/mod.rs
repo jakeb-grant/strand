@@ -35,7 +35,10 @@
 //! - SIGINT, SIGTERM and the compositor going away end the run the same
 //!   way: the main thread sends [`ToLogic::Shutdown`] and joins the logic
 //!   thread, which unmounts the instance and drops its stores, so
-//!   debounced `persist` and settings writes reach the disk.
+//!   debounced `persist` and settings writes reach the disk. While a
+//!   session lock is asked for or held, the main thread outlives logic
+//!   ending and the signals, and shows the built-in password field
+//!   (`lock.rs`); the run ends after the unlock.
 
 use std::cell::Cell;
 use std::io;
@@ -76,7 +79,7 @@ use strand_watch::{CacheKind, Role};
 pub(crate) mod feeds;
 mod gpu;
 mod lists;
-mod lock;
+pub(crate) mod lock;
 mod logic;
 mod shell;
 mod sleep;
@@ -232,6 +235,11 @@ pub enum ToLogic {
     /// frame shows a `shader` node (`Renderer::gpu_status`): logged once
     /// per reason, a `strand watch` notice, kept for `strand report`.
     GpuStatus(strand_scene::GpuStatus),
+    /// The session lock as the compositor reports it
+    /// (`Instance::set_session_lock`).
+    LockState(strand_compiler::instantiate::SessionLock),
+    /// The lock's watchdog: logic answers by taking it (`lock.rs`).
+    Beat(u64),
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,
@@ -406,9 +414,14 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
-    let worker =
-        TextWorker::spawn_with_waker(FontConfig::default(), Some(Box::new(move || ping.ping())))
-            .map_err(DemoError::Text)?;
+    let worker = TextWorker::spawn_with_waker(
+        FontConfig::default(),
+        Some(Box::new(move || {
+            lock::faults::text_waker();
+            ping.ping()
+        })),
+    )
+    .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
     #[cfg(feature = "gpu")]
@@ -468,6 +481,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    // `auth`'s unlocks reach the surface manager, which may then lock.
+    let mut guard = lock::Guard::wire(&handle, mgr.state_mut())?;
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);
     handle
@@ -508,19 +523,33 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // to the system once it has been quiet a moment too ([`trim`]).
     let mut trimmer = Trimmer::default();
     let end = loop {
-        if hung_up.get() {
-            break End::LogicEnded;
-        }
-        if signalled.get() {
+        let now = Instant::now();
+        // While a lock is asked for or held, logic ending and the signals
+        // leave it up with the built-in password field; the run ends
+        // after the unlock.
+        guard.check(
+            mgr.state_mut(),
+            now,
+            hung_up.get(),
+            signalled.get(),
+            &to_logic,
+        );
+        let held = guard.holds(mgr.state());
+        if signalled.get() && !held {
             break End::Done;
         }
-        let now = Instant::now();
+        if hung_up.get() && !held {
+            break End::LogicEnded;
+        }
         if shaped.take() {
             trimmer.arm(now);
         }
         trimmer.run(now);
         trimmer.settle(now, mgr.state().host().renderer.in_motion());
-        let wait = trimmer.wait(now);
+        let wait = [trimmer.wait(now), guard.wait(now, mgr.state())]
+            .into_iter()
+            .flatten()
+            .min();
         // (M4) A GPU thread that is ending is joined at a short poll.
         #[cfg(feature = "gpu")]
         let wait = [wait, gpu.wait()].into_iter().flatten().min();
