@@ -59,7 +59,7 @@ service notifications {
   /// The notifications to show now; each leaves when it expires or is
   /// dismissed.
   popups: [Notification]
-  /// Every notification kept, popups included: the newest 100 (older
+  /// Every notification kept, popups included: the newest 1,000 (older
   /// ones close as expired).
   all: [Notification]
   /// How many notifications are kept.

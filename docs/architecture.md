@@ -945,8 +945,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   painted in full and reporting no opaque region. The snapshot is taken
   at that first frame: the `PaintTarget`'s copy with the damage of the
   frames its age missed drawn again from the old display list kept from
-  planning (in full for a new or invalid buffer); at most 1920×1080×4
-  bytes per surface and in all (a larger surface snaps). A crossfade
+  planning (in full for a new or invalid buffer), for a surface of any
+  size (no memory cap: design.md's budgets are test targets). A crossfade
   landing mid-crossfade takes the blend on screen as its snapshot; a
   surface that paints nothing for the exit stall loses its snapshot; a
   table that changes no colour leaves fades running, a snapping one

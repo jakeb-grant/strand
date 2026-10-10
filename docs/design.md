@@ -521,7 +521,7 @@ Tuning the compositor's blur (saturation, noise, vibrancy) belongs to the compos
 
 ### Bundled GPU effects
 
-These 8 start the GPU only while visible and release it 30 s after: bloom, liquid-glass refraction (dispersion, fresnel rim, pointer specular), particles above 1,000, true 3D perspective, raster wobble, CRT and chromatic aberration, aurora and noise fields, and large full-resolution backdrop blur. Your own `.wgsl` shaders use the same path. The ones without a node or prop of their own are spelled `filter: bloom(r)`, `filter: crt()`, `filter: chromatic(px)`, `filter: wobble(amp)` and `backdrop: glass()`. Without a usable GPU each falls back to a CPU version (particles cap at 1,000, tilt stays 2D, bloom becomes glow, glass becomes blur and tint) or, for the shader-only ones, draws the node unfiltered.
+These 8 start the GPU only while visible and release it 30 s after: bloom, liquid-glass refraction (dispersion, fresnel rim, pointer specular), particles above 1,000, true 3D perspective, raster wobble, CRT and chromatic aberration, aurora and noise fields, and large full-resolution backdrop blur. Your own `.wgsl` shaders use the same path, and noise fields are written that way: a `.wgsl` shader on a `shader` node, with no node or prop of their own. The ones without a node or prop of their own are spelled `filter: bloom(r)`, `filter: crt()`, `filter: chromatic(px)`, `filter: wobble(amp)` and `backdrop: glass()`. Without a usable GPU each falls back to a CPU version (particles cap at 1,000, tilt stays 2D, bloom becomes glow, glass becomes blur and tint) or, for the shader-only ones, draws the node unfiltered.
 
 **Left out of v1:** video wallpapers (use mpvpaper or the compositor), Rive, wallpaper subject separation (depth masks) and mesh-warp minimise effects.
 
@@ -575,6 +575,8 @@ File saves and system changes enter at the top and become writes into the reacti
 - Frame callbacks are requested only while something is dirty or a spring is unsettled. Timing comes from `wp_presentation` feedback, so frames lock to the real refresh rate, not a free-running clock.
 
 **Memory budget** (PSS in MB, design estimates to be measured in M0 and M3). The totals are targets: CI warns above them and fails only above a ceiling, 38 MB for the two-monitor bar and 70 MB for the full shell, so runner variance and real icon themes do not flip the build while growth past the target stays visible.
+
+The budgets are targets for Strand's own benchmarks and tests, never limits on a user's shell: nothing refuses, truncates or degrades what a config shows to stay under them. Bounds against hostile or broken input (one file or client that would crash, hang or grow memory without end) and fixed-size caches that evict and redo work stay.
 
 | Item | Bar only, 2×1440p | Full shell, launcher open |
 | --- | --- | --- |

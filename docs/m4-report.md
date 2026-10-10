@@ -248,7 +248,7 @@ paragraph under decisions.md "## m4-audit".
 
 | Round | Confirmed | What was fixed |
 | --- | --- | --- |
-| 4 | 15 | promotion on a spring's last frame; a failed or hung pass answered `Failed` alone, its demoted surface not hanging a second device; shader, SVG `<image href>` and Lottie reads bounded (Lottie cycles, nesting past 32 and frames past 100,000 instances refused); verdicts tagged with their lock session; the VM's absence checks; the theme-swap gate in the timing job |
+| 4 | 15 | promotion on a spring's last frame; a failed or hung pass answered `Failed` alone, its demoted surface not hanging a second device; shader, SVG `<image href>` and Lottie reads bounded (Lottie reference cycles, nesting past 32 and frames past 100,000 instances refused); verdicts tagged with their lock session; the VM's absence checks; the theme-swap gate in the timing job |
 | 5 | 10 | image, SVG and Lottie reads through one capped read (procfs refused); the memory cap counting run-time-indexed arrays and matrices; a lock session begun when a lock is first asked for; a drag export held unread given up after 5 s; a shader file that lost the device never run again |
 | 6 | 8 | a verdict in the dispatch that asked for the lock; the spectrum test's diagnostics; the glyph-damage test off the wall clock; docs (threads table, Open, the GPU paragraph, the round costs) |
 | 7 | 11 | a lock's shader files in its reload hash; `transition:`'s values; the fallback field's empty Return; the auth helper's reaping; file results kept for a burst of sources; the IPC socket's bind; a frame whose callback or presentation never comes (1 s give-up); the watcher tests off the wall clock; docs (`.text` growth, the Shaders box) |

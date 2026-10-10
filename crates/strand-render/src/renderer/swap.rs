@@ -106,15 +106,6 @@ pub const CHECK_SCOPES: usize = 32;
 /// slow or bouncy the spring and however many scopes are shown.
 pub const CHECK_WORK: u32 = 9_000;
 
-/// Largest snapshot a crossfade keeps for one surface (a 1920×1080
-/// buffer); a larger surface (a 4K scrim or overlay) snaps to the new
-/// frame instead of fading.
-pub const SNAPSHOT_MAX: usize = 1920 * 1080 * 4;
-
-/// Most bytes all of a crossfade's snapshots keep at once (two 1440p
-/// bars and a launcher at 2× fit); surfaces past it snap.
-pub const SNAPSHOTS_MAX: usize = SNAPSHOT_MAX;
-
 /// A moment that reaches [`MIN_CONTRAST`] but not this is "only just":
 /// the moments around it are checked finely.
 pub const CHECK_NEAR: f64 = 3.3;
@@ -1097,37 +1088,24 @@ impl Renderer {
     }
 
     /// Snapshots of the frames `ids` show now (those shown with a
-    /// clock, smallest first, within [`SNAPSHOT_MAX`] and
-    /// [`SNAPSHOTS_MAX`]: the others snap to the new frame), each fading
-    /// along `curve` from its first frame. A surface already crossfading
+    /// clock, whatever their size: the memory budget is a test target,
+    /// never a reason to snap a surface instead of fading it; design.md),
+    /// each fading along `curve` from its first frame. A surface already crossfading
     /// takes the blend it shows as its snapshot and fades on from there.
     fn snapshots(
         &mut self,
         ids: &HashSet<SurfaceId>,
         curve: Curve,
     ) -> HashMap<SurfaceId, Snapshot> {
-        let mut order: Vec<(usize, SurfaceId)> = self
+        let order: Vec<SurfaceId> = self
             .shown_with_clock()
             .filter(|(id, _)| ids.contains(id))
-            .map(|(id, s)| (s.size.w as usize * s.size.h as usize * 4, id))
+            .map(|(id, _)| id)
             .collect();
-        order.sort();
-        // What the fades left alone keep.
-        let mut kept: usize = self
-            .swap
-            .fade
-            .iter()
-            .filter(|(id, _)| !ids.contains(id))
-            .map(|(_, s)| s.bytes())
-            .sum();
         let mut out = HashMap::new();
         let now = Instant::now();
-        for (bytes, id) in order {
+        for id in order {
             let prev = self.swap.fade.remove(&id);
-            if bytes > SNAPSHOT_MAX || kept + bytes > SNAPSHOTS_MAX {
-                continue;
-            }
-            kept += bytes;
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };

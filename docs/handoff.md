@@ -60,11 +60,6 @@ below.
 From M4 (docs/m4-report.md, "Open"; decisions.md m4-gpu-effects and
 m4-audit):
 
-1. **The bundled noise field.** design.md counts "aurora and noise
-   fields" among the eight bundled GPU effects but names no spelling
-   for a noise field. m4-gpu-effects reads noise fields as `.wgsl`
-   shaders on the same path; the box stays open until the owner names
-   a spelling or accepts that reading.
 2. **A hung frame on a presented (`GpuPresent`) surface** is bounded
    only by the WSI's acquire timeout. This does not reach the lock: a
    lock surface is never lent or handed to the GPU thread
@@ -247,8 +242,8 @@ and the full shell warns above 64 MB and fails above 70 MB
   `Notification.time` has no time of day yet. M4 did not take up
   xdg-activation (neither features.md's M4 boxes nor m4-plan.md list
   it), nor the `XDG_ACTIVATION_TOKEN` for app launches (decisions.md
-  wave4-a3 said "left for M4"): both move to a later milestone, to
-  be scheduled by the owner (decisions.md m4-audit).
+  wave4-a3 said "left for M4"): both are scheduled for M5 (owner,
+  2026-10-10; features.md's M5 xdg-activation box).
 - Tray: Activate and ContextMenu get the press's output-logical point
   (`demo/host.rs::a_press_sets_the_tray_click_point`); (0, 0) only before
   the first press and for actions no press caused (`dismiss`, `scroll`,
