@@ -729,6 +729,61 @@ fn an_opaque_region_rides_a_bare_commit() {
     assert!(rec.commits > bare, "a bare commit carried it: {rec:?}");
 }
 
+/// While the compositor scales a surface, its surface-local coordinates
+/// are the destination's: the opaque and blur regions go out scaled
+/// with the pose (a 400 × 300 panel at half size claims and blurs only
+/// its 200 × 150), and back at full size at rest.
+#[test]
+fn regions_follow_a_delegated_scale() {
+    use strand_scene::SurfacePose;
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let half = SurfacePose {
+        scale: 0.5,
+        ..SurfacePose::IDENTITY
+    };
+    {
+        let host = mgr.state_mut().host_mut();
+        host.opaque = true;
+        host.blur = vec![rounded(400, 300, 16.0)];
+        host.poses = [half].into_iter().collect();
+    }
+    show_panel(&fake, &mut mgr);
+    wait_blur_sets(&fake, &mut mgr, 1);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.pose, half);
+    assert_eq!(
+        info.opaque_region,
+        vec![strand_scene::Rect::new(0, 0, 200, 150)],
+        "{info:?}"
+    );
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.viewport, Some((200, 150)), "{rec:?}");
+    let blur = rec.blur.clone().expect("a blur region");
+    assert!(blur.contains(100, 75) && blur.contains(100, 0) && blur.contains(0, 75));
+    assert!(!blur.contains(0, 0) && !blur.contains(201, 75) && !blur.contains(100, 151));
+    let corners = 4.0 * (8.0f64 * 8.0) * (1.0 - std::f64::consts::PI / 4.0);
+    let missing = (200 * 150) as f64 - blur.area() as f64;
+    assert!(
+        (missing - corners).abs() < 4.0 * 8.0,
+        "the half-size corners are left out: {missing} px (about {corners})"
+    );
+    // At rest: the whole box again.
+    mgr.state_mut().host_mut().poses = [SurfacePose::IDENTITY].into_iter().collect();
+    mgr.state_mut().poll();
+    wait_blur_sets(&fake, &mut mgr, 2);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(
+        info.opaque_region,
+        vec![strand_scene::Rect::new(0, 0, 400, 300)]
+    );
+    let blur = fake.layer("strand-Dash")[0].blur.clone().unwrap();
+    assert!(blur.contains(399, 150) && blur.contains(200, 299));
+}
+
 /// A popup grab's keyboard over a `keyboard: none` bar on a compositor
 /// that keeps the bar focused when it gives `exclusive` back, as the
 /// fake does (sway does too, but sends the leave it owes with the next

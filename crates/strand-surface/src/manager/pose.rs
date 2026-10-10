@@ -7,6 +7,14 @@
 //! only what a surface's placement lets the compositor apply exactly
 //! (`strand_render`'s `pose.rs`); a part this surface cannot take (an
 //! offset on a popup, or on an axis it is centred on) is ignored here.
+//!
+//! While the compositor scales a surface, its surface-local coordinates
+//! are the destination's, not the buffer's logical ones: the pointer
+//! arrives in them and the opaque, input and blur regions are read in
+//! them. So the manager maps every region it sends through the pose's
+//! scale ([`Surface::pose_factor`]) and every position it hands the host
+//! back (`State::send_input`), and the host hit-tests the content at
+//! rest it painted.
 
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::{
     self, WpAlphaModifierSurfaceV1,
@@ -33,6 +41,35 @@ pub(super) fn destination((w, h): (u32, u32), scale: f32) -> (i32, i32) {
     (d(w), d(h))
 }
 
+/// A logical rectangle (`x, y, w, h`) of a surface at rest in the
+/// surface-local coordinates of its pose's scale `(fx, fy)`
+/// ([`Surface::pose_factor`]): with `inner`, the largest whole-pixel
+/// rectangle inside it (an opaque or blur region must not claim a pixel
+/// the shrunken content does not cover), else the nearest one. `None`
+/// when nothing is left.
+pub(super) fn posed_rect(
+    (x, y, w, h): (i64, i64, i64, i64),
+    (fx, fy): (f64, f64),
+    inner: bool,
+) -> Option<(i32, i32, i32, i32)> {
+    let edge = |v: i64, f: f64, up: bool| {
+        let v = v as f64 * f;
+        let v = match (inner, up) {
+            (false, _) => v.round(),
+            (true, true) => v.ceil(),
+            (true, false) => v.floor(),
+        };
+        v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i64
+    };
+    let (x0, y0) = (edge(x, fx, true), edge(y, fy, true));
+    let (x1, y1) = (
+        edge(x.saturating_add(w), fx, false),
+        edge(y.saturating_add(h), fy, false),
+    );
+    let dim = |a: i64, b: i64| i32::try_from(b - a).ok().filter(|d| *d > 0);
+    Some((x0 as i32, y0 as i32, dim(x0, x1)?, dim(y0, y1)?))
+}
+
 impl<H: SurfaceHost + 'static> State<H> {
     /// Sets `id`'s pose for its next commit if render reports a new one;
     /// returns true when something was set (a commit must follow for it
@@ -56,7 +93,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                 .get_or_insert_with(|| am.get_surface(&wl, qh, SurfaceTag(id)));
             alpha.set_multiplier(multiplier(want.opacity));
         }
-        if want.scale != old.scale {
+        let rescaled = want.scale != old.scale;
+        if rescaled {
             s.send_destination();
         }
         let moved = want.offset != old.offset
@@ -69,6 +107,10 @@ impl<H: SurfaceHost + 'static> State<H> {
             };
         s.stats.poses += 1;
         self.stats.poses += 1;
+        if rescaled {
+            // Read in the destination's coordinates now.
+            self.sync_input_region(id);
+        }
         if moved {
             // Where it lies now (the tray's click point).
             self.place_layer(id);
@@ -98,10 +140,25 @@ impl<H: SurfaceHost + 'static> State<H> {
             let [t, r, b, l] = s.config.margin;
             layer.set_margin(t, r, b, l);
         }
+        if old.scale != 1.0 {
+            self.sync_input_region(id);
+        }
     }
 }
 
 impl Surface {
+    /// How the compositor scales this surface's coordinates under its
+    /// pose, per axis: the viewport destination over the logical size
+    /// (1 at rest, without a viewport, or before a configure).
+    pub(super) fn pose_factor(&self) -> (f64, f64) {
+        let (w, h) = self.logical;
+        if self.viewport.is_none() || self.pose.scale == 1.0 || w == 0 || h == 0 {
+            return (1.0, 1.0);
+        }
+        let (dw, dh) = destination(self.logical, self.pose.scale);
+        (f64::from(dw) / f64::from(w), f64::from(dh) / f64::from(h))
+    }
+
     /// Sets the viewport's destination for the current logical size and
     /// pose scale: the logical size on the fractional path, unset on the
     /// integer one at rest (its buffer scale sizes it).
@@ -147,5 +204,26 @@ mod tests {
         assert_eq!(destination((300, 200), 0.8), (240, 160));
         assert_eq!(destination((300, 200), 0.0), (1, 1));
         assert_eq!(destination((300, 200), 1.0), (300, 200));
+    }
+
+    #[test]
+    fn regions_follow_the_pose_scale() {
+        // A 200 × 100 box 20 px inside its shadow, at half size.
+        let half = (0.5, 0.5);
+        assert_eq!(
+            posed_rect((20, 20, 200, 100), half, true),
+            Some((10, 10, 100, 50))
+        );
+        // Inner rounds inwards, nearest rounds to the nearest pixel.
+        let f = (0.9, 0.9);
+        assert_eq!(posed_rect((5, 5, 10, 10), f, true), Some((5, 5, 8, 8)));
+        assert_eq!(posed_rect((5, 5, 10, 10), f, false), Some((5, 5, 9, 9)));
+        // At rest nothing moves; what vanishes is dropped.
+        assert_eq!(
+            posed_rect((3, 4, 5, 6), (1.0, 1.0), true),
+            Some((3, 4, 5, 6))
+        );
+        assert_eq!(posed_rect((3, 3, 1, 1), (0.01, 0.01), true), None);
+        assert_eq!(posed_rect((0, 0, 0, 10), (1.0, 1.0), false), None);
     }
 }

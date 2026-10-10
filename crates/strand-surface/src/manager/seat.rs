@@ -91,7 +91,17 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.grab_keyboard.contains(&id)
     }
 
-    pub(super) fn send_input(&mut self, event: InputEvent) {
+    /// Hands `event` to the host and the input channel, its position
+    /// mapped back from the coordinates of its surface's pose scale to
+    /// the content at rest (`pose.rs`).
+    pub(super) fn send_input(&mut self, mut event: InputEvent) {
+        let factor = self
+            .surfaces
+            .get(&event.surface())
+            .map_or((1.0, 1.0), |s| s.pose_factor());
+        if factor != (1.0, 1.0) {
+            unpose(&mut event, factor);
+        }
         self.host.input(&event);
         if let Some(tx) = &self.input
             && tx.send(event).is_err()
@@ -100,6 +110,28 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.input = None;
         }
     }
+}
+
+/// Maps `event`'s position from a posed surface's coordinates (scaled
+/// by `(fx, fy)`, [`Surface::pose_factor`]) back to its content's.
+fn unpose(event: &mut InputEvent, (fx, fy): (f64, f64)) {
+    let p = match event {
+        InputEvent::PointerEnter { position, .. }
+        | InputEvent::PointerMotion { position, .. }
+        | InputEvent::PointerButton { position, .. }
+        | InputEvent::PointerAxis { position, .. } => position,
+        InputEvent::DragEnter { at, .. }
+        | InputEvent::DragMotion { at, .. }
+        | InputEvent::DragDrop { at, .. } => at,
+        InputEvent::PointerLeave { .. }
+        | InputEvent::KeyboardEnter { .. }
+        | InputEvent::KeyboardLeave { .. }
+        | InputEvent::Key { .. }
+        | InputEvent::ClickAway { .. }
+        | InputEvent::DragLeave { .. } => return,
+    };
+    p.x = (f64::from(p.x) / fx) as f32;
+    p.y = (f64::from(p.y) / fy) as f32;
 }
 
 /// A keysym's xkb name without its `XK_` prefix (`Escape`, `Return`,
@@ -512,5 +544,26 @@ mod tests {
         assert_eq!(repeat_interval(2_000_000), Duration::from_millis(1));
         assert_eq!(repeat_interval(u32::MAX), Duration::from_millis(1));
         assert_eq!(repeat_interval(0), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_posed_surface_hands_back_content_positions() {
+        let surface = SurfaceId(3);
+        let mut press = InputEvent::PointerButton {
+            surface,
+            position: LogicalPoint::new(80.0, 40.0),
+            button: 0x110,
+            state: ButtonState::Pressed,
+            time: 0,
+        };
+        // At 0.8 the content under destination (80, 40) is at (100, 50).
+        unpose(&mut press, (0.8, 0.8));
+        let InputEvent::PointerButton { position, .. } = press else {
+            unreachable!()
+        };
+        assert!((position.x - 100.0).abs() < 1e-3 && (position.y - 50.0).abs() < 1e-3);
+        let mut key = InputEvent::KeyboardLeave { surface };
+        unpose(&mut key, (0.5, 0.5));
+        assert_eq!(key, InputEvent::KeyboardLeave { surface });
     }
 }

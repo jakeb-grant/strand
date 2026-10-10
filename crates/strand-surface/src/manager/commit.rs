@@ -131,23 +131,26 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.stats.paints += 1;
         self.stats.paints += 1;
         let wants_more = self.host.wants_frame(id);
-        // What this frame asks the compositor to blur, sent with its
-        // commit when it changed (the blur ladder's first rung).
-        let blur = self
-            .blurs()
-            .then(|| crate::blur::region_rects(&self.host.blur_region(id), scale));
         // A compositor pose (M4) rides this frame's commit, or a bare one
         // when it drew nothing.
         let posed = self.sync_pose(id);
+        // What this frame asks the compositor to blur, sent with its
+        // commit when it changed (the blur ladder's first rung), in the
+        // coordinates of the pose just set.
+        let mut blur = self.blurs().then(|| self.blur_rects(id, scale));
         // So does a new opaque region: a delegated fade that settles
         // claims its region with the bare commit that ends it.
         let opaqued = self.sync_opaque(id, scale);
+        // And a blur region a scale pose moved, on a frame that drew
+        // nothing.
+        let blurred =
+            damage.is_empty() && blur.take().is_some_and(|rects| self.set_blur(id, rects));
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
         let wl = s.wl().clone();
         if damage.is_empty() {
-            if posed || opaqued {
+            if posed || opaqued || blurred {
                 s.ack_pending = true;
             }
             // Nothing drawn, nothing recorded: the buffer keeps its age.
@@ -277,6 +280,29 @@ impl<H: SurfaceHost + 'static> State<H> {
         let opaque = scale.inner_logical_region(&self.host.opaque_region(id));
         let Some(s) = self.surfaces.get_mut(&id) else {
             return false;
+        };
+        // In the coordinates of its pose's scale: the shrunken content
+        // claims only what it covers.
+        let factor = s.pose_factor();
+        let opaque: Vec<Rect> = if factor == (1.0, 1.0) {
+            opaque
+        } else {
+            opaque
+                .iter()
+                .filter_map(|r| {
+                    let (x, y, w, h) = pose::posed_rect(
+                        (
+                            i64::from(r.x),
+                            i64::from(r.y),
+                            i64::from(r.w),
+                            i64::from(r.h),
+                        ),
+                        factor,
+                        true,
+                    )?;
+                    Some(Rect::new(x, y, w as u32, h as u32))
+                })
+                .collect()
         };
         if opaque == s.opaque {
             return false;

@@ -384,34 +384,54 @@ impl<H: SurfaceHost + 'static> State<H> {
             s.geometry_dirty = true;
         }
         s.logical = (w, h);
-        let region = s.config.input_region((w, h));
-        if region != s.input_region {
-            s.input_region = region;
-            let wl = s.wl().clone();
-            let ns = s.config.namespace.clone();
-            match region {
-                None => wl.set_input_region(None),
-                Some(rect) => match Region::new(&self.compositor) {
-                    Ok(r) => {
-                        if let Some((x, y, w, h)) = rect {
-                            r.add(x, y, w, h);
-                        }
-                        wl.set_input_region(Some(r.wl_region()));
-                    }
-                    Err(e) => log::warn!("{ns}: no input region: {e}"),
-                },
-            }
-        }
         let first = !s.configured;
         s.configured = true;
         s.ack_pending = true;
         if first {
             s.repaint = true;
         }
+        self.sync_input_region(id);
         // The size it got may not be the one it asked for.
         self.update_catcher(id);
         self.place_layer(id);
         // Size and scale are resolved once, right before the next paint.
         self.mark(id);
+    }
+
+    /// Sends `id`'s input region when it changed: the box inside the
+    /// shadow overhang for its configured size, in the coordinates of its
+    /// pose's scale ([`Surface::pose_factor`]), or empty (click-through).
+    /// Pending state, committed with the surface's next commit.
+    pub(super) fn sync_input_region(&mut self, id: SurfaceId) {
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let factor = s.pose_factor();
+        let region = s.config.input_region(s.logical).map(|rect| {
+            rect.and_then(|(x, y, w, h)| {
+                pose::posed_rect(
+                    (i64::from(x), i64::from(y), i64::from(w), i64::from(h)),
+                    factor,
+                    false,
+                )
+            })
+        });
+        if region == s.input_region {
+            return;
+        }
+        s.input_region = region;
+        let wl = s.wl().clone();
+        match region {
+            None => wl.set_input_region(None),
+            Some(rect) => match Region::new(&self.compositor) {
+                Ok(r) => {
+                    if let Some((x, y, w, h)) = rect {
+                        r.add(x, y, w, h);
+                    }
+                    wl.set_input_region(Some(r.wl_region()));
+                }
+                Err(e) => log::warn!("{}: no input region: {e}", s.config.namespace),
+            },
+        }
     }
 }
