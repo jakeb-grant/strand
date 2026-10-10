@@ -528,9 +528,15 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         let want = self.lock_output();
+        // (m4-audit) Keyboard focus on the content (its own, or a solid's
+        // that counts as its) moves with it: the compositor sends no new
+        // enter while the focused solid stays, and the new content has
+        // another id.
+        let mut refocus = false;
         if let Some(id) = self.session_lock.content {
             let on = self.surfaces.get(&id).and_then(|s| s.output);
             if on.is_none() || on != want {
+                refocus = self.keyboard_focus == Some(id);
                 self.session_lock.content = None;
                 self.destroy_surface(id);
             }
@@ -551,6 +557,10 @@ impl<H: SurfaceHost + 'static> State<H> {
             && let Some(g) = want
         {
             self.create_lock_content(&lock, g);
+        }
+        if refocus && let Some(id) = self.session_lock.content {
+            self.keyboard_focus = Some(id);
+            self.send_input(crate::InputEvent::KeyboardEnter { surface: id });
         }
         let missing: Vec<u32> = self
             .outputs

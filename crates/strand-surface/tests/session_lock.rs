@@ -396,19 +396,26 @@ fn only_a_token_unlocks_whatever_the_shell_does() {
 /// Keys typed while locked reach the content surface (a virtual
 /// keyboard), and a lock with no spec (`State::lock`, the binary's
 /// fallback when no lock is compiled) still gets a content surface.
-#[test]
-fn keys_reach_the_lock_and_a_lock_without_a_spec_has_content() {
-    use std::io::Write as _;
-    use std::os::fd::AsFd;
-    use wayland_client::globals::{GlobalListContents, registry_queue_init};
-    use wayland_client::protocol::{wl_keyboard, wl_registry, wl_seat};
+/// A virtual keyboard on sway's seat with one key, `a` (evdev 30).
+struct VirtualKeyboard {
+    queue: wayland_client::EventQueue<Kbd>,
+    keyboard: wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    time: u32,
+    _conn: wayland_client::Connection,
+}
+
+struct Kbd;
+
+mod kbd {
+    use super::Kbd;
+    use wayland_client::globals::GlobalListContents;
+    use wayland_client::protocol::{wl_registry, wl_seat};
     use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
     use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
         zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
         zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
     };
 
-    struct Kbd;
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Kbd {
         fn event(
             _: &mut Self,
@@ -423,7 +430,71 @@ fn keys_reach_the_lock_and_a_lock_without_a_spec_has_content() {
     delegate_noop!(Kbd: ignore ZwpVirtualKeyboardManagerV1);
     delegate_noop!(Kbd: ignore ZwpVirtualKeyboardV1);
     delegate_noop!(Kbd: ignore wl_seat::WlSeat);
+}
 
+impl VirtualKeyboard {
+    fn new(sway: &Sway) -> VirtualKeyboard {
+        use std::io::Write as _;
+        use std::os::fd::AsFd;
+        use wayland_client::globals::registry_queue_init;
+        use wayland_client::protocol::wl_seat;
+        use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
+        let conn = sway.connect();
+        let (globals, mut queue) = registry_queue_init::<Kbd>(&conn).unwrap();
+        let qh = queue.handle();
+        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+        let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+        let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+        // One key, `a` (keycode 38 = evdev 30 + 8).
+        let keymap = "xkb_keymap {\n\
+            xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AC01> = 38; };\n\
+            xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+            xkb_compatibility \"strand\" { };\n\
+            xkb_symbols \"strand\" { key <AC01> { [ a ] }; };\n\
+            };\n";
+        let path = std::env::temp_dir().join(format!("strand-lock-keymap-{}", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(keymap.as_bytes()).unwrap();
+        file.write_all(&[0]).unwrap();
+        file.flush().unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
+        queue.roundtrip(&mut Kbd).unwrap();
+        let _ = std::fs::remove_file(&path);
+        VirtualKeyboard {
+            queue,
+            keyboard,
+            time: 0,
+            _conn: conn,
+        }
+    }
+
+    /// Presses and releases `a`.
+    fn tap(&mut self) {
+        use wayland_client::protocol::wl_keyboard;
+        self.time += 1;
+        self.keyboard
+            .key(self.time, 30, wl_keyboard::KeyState::Pressed.into());
+        self.time += 1;
+        self.keyboard
+            .key(self.time, 30, wl_keyboard::KeyState::Released.into());
+        self.queue.roundtrip(&mut Kbd).unwrap();
+    }
+}
+
+/// Waits until a key reached `surface` after the first `from` input
+/// events; whether one did.
+fn key_reached(mgr: &mut SurfaceManager<LockHost>, from: usize, surface: SurfaceId) -> bool {
+    mgr.dispatch_until(WAIT, |s| {
+        s.host().input[from..]
+            .iter()
+            .any(|e| matches!(e, InputEvent::Key { surface: to, .. } if *to == surface))
+    })
+    .unwrap()
+}
+
+#[test]
+fn keys_reach_the_lock_and_a_lock_without_a_spec_has_content() {
     let test = "keys_reach_the_lock_and_a_lock_without_a_spec_has_content";
     if !in_lock_vm(test) {
         return;
@@ -445,46 +516,90 @@ fn keys_reach_the_lock_and_a_lock_without_a_spec_has_content() {
             .attached
             .contains(&(content, strand_surface::LOCK_FALLBACK_NODE))
     );
-
-    let conn = sway.connect();
-    let (globals, mut queue) = registry_queue_init::<Kbd>(&conn).unwrap();
-    let qh = queue.handle();
-    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
-    let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
-    let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
-    // One key, `a` (keycode 38 = evdev 30 + 8).
-    let keymap = "xkb_keymap {\n\
-        xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AC01> = 38; };\n\
-        xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
-        xkb_compatibility \"strand\" { };\n\
-        xkb_symbols \"strand\" { key <AC01> { [ a ] }; };\n\
-        };\n";
-    let path = std::env::temp_dir().join(format!("strand-lock-keymap-{}", std::process::id()));
-    let mut file = std::fs::File::create(&path).unwrap();
-    file.write_all(keymap.as_bytes()).unwrap();
-    file.write_all(&[0]).unwrap();
-    file.flush().unwrap();
-    let file = std::fs::File::open(&path).unwrap();
-    keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
-    queue.roundtrip(&mut Kbd).unwrap();
+    let mut keyboard = VirtualKeyboard::new(&sway);
     settle(&mut lock, &mut desk, Duration::from_millis(300));
-    keyboard.key(1, 30, wl_keyboard::KeyState::Pressed.into());
-    keyboard.key(2, 30, wl_keyboard::KeyState::Released.into());
-    queue.roundtrip(&mut Kbd).unwrap();
-    let _ = std::fs::remove_file(&path);
-    let ok = lock
-        .dispatch_until(WAIT, |s| {
-            s.host()
-                .input
-                .iter()
-                .any(|e| matches!(e, InputEvent::Key { surface, .. } if *surface == content))
-        })
-        .unwrap();
+    keyboard.tap();
     assert!(
-        ok,
+        key_reached(&mut lock, 0, content),
         "the key reached the lock content: {:?}",
         lock.state().host().input
     );
+    assert!(lock.state_mut().unlock(token()));
+}
+
+/// (m4-audit) Keys follow the content when it moves to another output
+/// (the focused monitor changes) while the compositor's keyboard focus
+/// stays on a solid that is not replaced: no new enter comes, yet the
+/// keys reach the new content, as a solid's focus counts as the
+/// content's. The content visits the three outputs in an order that
+/// leaves the focus on a surviving solid in at least one move.
+#[test]
+fn keys_follow_the_lock_content_to_another_output() {
+    let test = "keys_follow_the_lock_content_to_another_output";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let second = sway.create_output();
+    let third = sway.create_output();
+    let mut desk = desktop(&sway, 3);
+    let mut lock = locker(&sway);
+    let _input = lock.take_input().unwrap();
+    lock.state_mut()
+        .lock()
+        .expect("sway offers ext-session-lock");
+    wait_lock(&mut lock, LockState::Locked);
+    let mut keyboard = VirtualKeyboard::new(&sway);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    let first = lock.state().lock_content().expect("a content surface");
+    keyboard.tap();
+    assert!(
+        key_reached(&mut lock, 0, first),
+        "{:?}",
+        lock.state().host().input
+    );
+    // sway refocuses a replaced lock surface's focus to the first
+    // mapped one in output order; this order leaves the focus on a solid
+    // that survives a move whichever surface it starts on.
+    let outputs = [
+        third.as_str(),
+        second.as_str(),
+        "HEADLESS-1",
+        third.as_str(),
+        second.as_str(),
+    ];
+    for (round, target) in outputs.into_iter().enumerate() {
+        let monitor = lock
+            .state()
+            .monitors()
+            .into_iter()
+            .find(|m| m.connector.as_deref() == Some(target))
+            .unwrap();
+        lock.state_mut().set_focused_monitor(Some(monitor.id));
+        let ok = lock
+            .dispatch_until(WAIT, |s| {
+                let solids = s.lock_solid_outputs();
+                solids.len() == 2
+                    && !solids.iter().any(|o| o == target)
+                    && s.lock_content()
+                        .and_then(|c| s.surface(c))
+                        .is_some_and(|i| i.stats.commits > 0)
+            })
+            .unwrap();
+        assert!(ok, "round {round}: the content never moved to {target}");
+        settle(&mut lock, &mut desk, Duration::from_millis(300));
+        let content = lock.state().lock_content().unwrap();
+        let from = lock.state().host().input.len();
+        keyboard.tap();
+        assert!(
+            key_reached(&mut lock, from, content),
+            "round {round}: no key reached the content on {target} (focus {:?}): {:?}",
+            lock.state().keyboard_focus(),
+            &lock.state().host().input[from..]
+        );
+    }
     assert!(lock.state_mut().unlock(token()));
 }
 
