@@ -247,3 +247,100 @@ fn shader_files_refuse_fifos_devices_and_huge_files() {
     assert_eq!(read_file(&ok).as_deref(), Ok(AURORA));
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// (m4-audit) A saved `.wgsl` file the lock draws is a lock edit
+/// (design.md, "What each edit does": anything inside `lock` waits for
+/// the unlock): its code is part of the lock's hash, whether the lock
+/// names the file itself or through a component it mounts, so while the
+/// lock is shown the build waits and the lock's node keeps its code. A
+/// save of a file only a bar draws still commits at once.
+#[test]
+fn a_saved_shader_file_the_lock_draws_waits_for_the_unlock() {
+    use strand_compiler::reconcile::EditClass;
+    const PLAIN: &str = "@fragment\nfn main(v: StrandVertex) -> @location(0) vec4<f32> {\n    return vec4<f32>(v.uv.x, 0.0, 0.0, 1.0);\n}\n";
+    let d = dir("lock");
+    write(
+        &d,
+        "shell.strand",
+        "component Halo {\n  shader \"halo.wgsl\" { width: 10 }\n}\n\
+         lock L {\n  on key(k) { auth.submit(k.name) }\n  shader \"glow.wgsl\" { width: 10 }\n  Halo\n}\n\
+         bar Top { edge: top; height: 30\n  shader \"aurora.wgsl\" { width: 10 }\n}\n",
+    );
+    let glow = write(&d, "glow.wgsl", PLAIN);
+    let halo = write(&d, "halo.wgsl", PLAIN);
+    let aurora = write(&d, "aurora.wgsl", PLAIN);
+    let mut l = Loader::new(&d, Schema::builtin().clone(), None);
+    let out = l.boot();
+    let build = out.build.expect("the config compiles");
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));
+    let screen = host.record(
+        "Screen",
+        &[
+            ("id", Value::text("Mock | DP-1 | Display")),
+            ("name", Value::text("DP-1")),
+            ("make", Value::text("Mock")),
+            ("model", Value::text("DP-1")),
+            ("description", Value::text("Display")),
+        ],
+    );
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let mut inst = Instance::from_build(&rt, &build, host, Storage::none());
+    let mut scene = SceneMirror::new();
+    let u = inst.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    scene.apply(&u.diff).unwrap();
+    assert!(inst.lock_shown());
+    let codes = |scene: &SceneMirror| -> Vec<String> {
+        let mut v: Vec<String> = scene
+            .of_kind(NodeKind::Shader)
+            .into_iter()
+            .map(|n| match scene.prop(n, Prop::Shader) {
+                Some(PropValue::Shader(c)) => format!("{}: {}", c.path, c.wgsl.len()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = codes(&scene);
+    assert_eq!(before.len(), 3, "{before:?}");
+    let locks = build.hashes.locks();
+
+    // The bar's file: the lock's hash is unchanged and the build commits.
+    let longer = PLAIN.replace("0.0, 0.0", "0.25, 0.0");
+    std::fs::write(&aurora, &longer).unwrap();
+    let build = l.changed([(aurora.clone(), true)]).build.expect("built");
+    assert_eq!(build.hashes.locks(), locks);
+    let report = inst.reload(&build);
+    assert!(
+        !report.classes.contains(&EditClass::LockDeferred),
+        "{:?}",
+        report.classes
+    );
+    scene.apply(&inst.flush().diff).unwrap();
+    let committed = codes(&scene);
+    assert_ne!(committed, before);
+
+    // The lock's own file, then the file of a component it mounts: each
+    // changes the lock's hash and waits while the lock is shown.
+    for file in [&glow, &halo] {
+        std::fs::write(file, &longer).unwrap();
+        let build = l.changed([(file.clone(), true)]).build.expect("built");
+        assert_ne!(build.hashes.locks(), locks, "{}", file.display());
+        let report = inst.reload(&build);
+        assert_eq!(
+            report.classes,
+            [EditClass::LockDeferred],
+            "{}",
+            file.display()
+        );
+        scene.apply(&inst.flush().diff).unwrap();
+        assert_eq!(codes(&scene), committed, "{}", file.display());
+        std::fs::write(file, PLAIN).unwrap();
+        let back = l.changed([(file.clone(), true)]).build.expect("built");
+        assert_eq!(back.hashes.locks(), locks, "{}", file.display());
+    }
+    let _ = std::fs::remove_dir_all(d);
+}

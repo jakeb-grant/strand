@@ -7,7 +7,9 @@
 //! and whitespace do not count, so reformatting changes nothing) and the
 //! hashes of the declarations it names that hold code: `fn`s, `let`s,
 //! `type`s and `enum`s, keyframes, custom services and, for a `lock`
-//! surface, the components it mounts, each in turn over what it names.
+//! surface, the components it mounts, each in turn over what it names,
+//! and the checked code of each `shader` file it draws: a saved `.wgsl`
+//! a lock uses is a lock edit, deferred until the unlock like one.
 
 use std::collections::{HashMap, HashSet};
 
@@ -77,11 +79,24 @@ impl Hashes {
     ) -> Hashes {
         let mut refs: Vec<&hir::Reference> = hir.refs.iter().collect();
         refs.sort_by_key(|r| (r.file, r.span.start));
+        let mut shaders = Vec::new();
+        crate::check::shaders::each_shader(hir, &mut |file, e| {
+            if let Some(hir::Expr {
+                kind: hir::ExprKind::Text(path),
+                ..
+            }) = &e.arg
+            {
+                shaders.push((file, e.span.start, path.clone()));
+            }
+        });
+        shaders.sort();
         let mut m = Merkle {
             id,
             map,
             hir,
             refs,
+            shaders,
+            codes: &prog.shaders,
             defs: HashMap::new(),
             out: Hashes::default(),
         };
@@ -152,6 +167,10 @@ struct Merkle<'a> {
     map: &'a SourceMap,
     hir: &'a hir::Program,
     refs: Vec<&'a hir::Reference>,
+    /// Every `shader` node with a literal path, by `(file, start)`.
+    shaders: Vec<(FileId, u32, String)>,
+    /// The checked shader files, by path as written.
+    codes: &'a crate::check::shaders::Shaders,
     /// Memoised declaration hashes (with and without components).
     defs: HashMap<Key, u64>,
     out: Hashes,
@@ -202,6 +221,30 @@ impl Merkle<'_> {
             for t in f.tokens_in(span) {
                 h.update(f.texts[t].as_bytes());
                 h.update(b"\0");
+            }
+        }
+        // A lock's region (and the components it mounts) covers the code
+        // of the shader files it draws, not only their paths.
+        if components {
+            let lo = self
+                .shaders
+                .partition_point(|(f, s, _)| (*f, *s) < (file, span.start));
+            for (f, s, path) in &self.shaders[lo..] {
+                if *f != file || *s >= span.end {
+                    break;
+                }
+                h.update(b"\x01shader\0");
+                h.update(path.as_bytes());
+                h.update(b"\0");
+                match self.codes.get(path) {
+                    Some(code) => {
+                        h.update(code.wgsl.as_bytes());
+                        h.update(b"\x01");
+                    }
+                    None => {
+                        h.update(b"\x02");
+                    }
+                }
             }
         }
         let lo = self

@@ -176,7 +176,7 @@ fn load(path: &str, read: &Read<'_>) -> Result<Arc<ShaderCode>, Problem> {
 }
 
 /// Every `shader` element of the program, with its file.
-fn each_shader(program: &hir::Program, f: &mut dyn FnMut(FileId, &hir::Element)) {
+pub(crate) fn each_shader(program: &hir::Program, f: &mut dyn FnMut(FileId, &hir::Element)) {
     for file in &program.files {
         for item in &file.items {
             match item {
