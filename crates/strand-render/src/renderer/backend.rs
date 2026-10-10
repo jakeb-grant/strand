@@ -610,7 +610,10 @@ impl Renderer {
             self.gpu.status = GpuStatus::Unused;
             self.gpu.changes.push(BackendChange::Drop);
             self.gpu.uploads.clear();
-            self.extras.shaders.map.clear();
+            // The pass results stay: they are CPU pixmaps a still
+            // `shader` node keeps drawing, and asked for again only when
+            // its inputs change (a clocked one is asked for every frame
+            // anyway, which keeps the device up).
             for s in self.gpu.surfaces.values_mut() {
                 s.inflight = None;
                 s.pixels = None;

@@ -276,6 +276,48 @@ fn the_device_is_dropped_after_idle_at_one_wake() {
     drop(gpu);
 }
 
+/// A still `shader` node keeps its pixels across the device's drop: they
+/// are CPU pixmaps, not GPU memory. A later frame of its surface (the
+/// bar's clock ticking) repaints it from them, asks for no new pass, and
+/// so does not start the device again.
+#[test]
+fn a_still_shader_keeps_its_pixels_when_the_device_drops() {
+    let Some(opts) = device() else { return };
+    let mut r = renderer();
+    r.set_gpu_idle(Duration::from_millis(50));
+    let (diff, _) = shader_scene("#ff0000");
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    let mut host = Host::new(opts);
+    buf.paint(&mut r, S, 0);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::PassPixels { .. }));
+    buf.paint(&mut r, S, 1);
+    assert_eq!(buf.px(20, 20), [0, 0, 255, 255], "red, from the pass");
+    // Idle: the device drops at its wake.
+    let wake = r.next_wake().expect("render wakes to drop the device");
+    std::thread::sleep(wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5));
+    r.update();
+    assert_eq!(r.take_backend_changes(), [BackendChange::Drop]);
+    assert_eq!(r.gpu_status(), GpuStatus::Unused);
+    drop(host.gpu.take());
+    // Something else on the bar changes: the shader still shows red, in
+    // a full repaint too, and nothing asks for the device.
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Bg, color("#313244"));
+    assert!(r.apply(d).is_empty());
+    buf.pixels.fill(0);
+    buf.paint(&mut r, S, 0);
+    assert_eq!(buf.px(20, 20), [0, 0, 255, 255], "the pass's pixels stay");
+    assert_ne!(buf.px(100, 20), [0, 0, 0, 0], "the frame was painted");
+    assert!(r.take_gpu_requests().is_empty(), "no new pass");
+    assert!(r.take_backend_changes().is_empty());
+    assert_eq!(r.gpu_status(), GpuStatus::Unused, "the device stays down");
+    assert_eq!(r.next_wake(), None, "nothing to wake for");
+}
+
 /// A scene with what lowering covers: solid and gradient fills, a
 /// border, a shadow, an opacity group, a masked layer (drawn on the CPU)
 /// and text.
