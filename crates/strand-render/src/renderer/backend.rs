@@ -261,6 +261,11 @@ pub(super) struct GpuState {
     /// Presented surfaces crossfading: their snapshot as an upload,
     /// with the snapshot's address it was copied from.
     fades: HashMap<SurfaceId, (usize, Arc<Pixmap>)>,
+    /// The last reason the device was unavailable that was logged as a
+    /// warning (a retry every 30 s with the same reason is not), and
+    /// how many were (tests).
+    warned: Option<String>,
+    warnings: u64,
 }
 
 impl GpuState {
@@ -337,6 +342,12 @@ impl Renderer {
         !self.gpu.demand.is_empty()
     }
 
+    /// (M4) Unavailable reasons logged as warnings so far (tests).
+    #[doc(hidden)]
+    pub fn gpu_warnings(&self) -> u64 {
+        self.gpu.warnings
+    }
+
     /// (M4) Readback frames copied into `wl_shm` buffers so far (tests).
     #[doc(hidden)]
     pub fn gpu_frames_copied(&self) -> u64 {
@@ -408,6 +419,7 @@ impl Renderer {
         let now = Instant::now();
         match reply {
             GpuReply::Ready(info) => {
+                self.gpu.warned = None;
                 self.gpu.device.up();
                 self.gpu.status = GpuStatus::Up(info);
                 // Passes wanted while it started.
@@ -416,7 +428,16 @@ impl Renderer {
                 }
             }
             GpuReply::Unavailable(e) | GpuReply::Lost(e) => {
-                log::warn!("GPU: {e}");
+                // Asked again every 30 s while demand lasts: a reason that
+                // cannot change (no adapter, only a software one) is
+                // said once.
+                if self.gpu.warned.as_deref() == Some(e.message.as_str()) {
+                    log::debug!("GPU: {e}");
+                } else {
+                    log::warn!("GPU: {e}");
+                    self.gpu.warned = Some(e.message.clone());
+                    self.gpu.warnings += 1;
+                }
                 self.gpu.device.failed(now);
                 self.gpu.status = GpuStatus::Unavailable { reason: e.message };
                 self.repaint_fallen();

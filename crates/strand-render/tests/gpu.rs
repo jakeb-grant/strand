@@ -798,3 +798,43 @@ fn a_presented_surface_crossfades_on_the_gpu_like_the_cpu() {
     );
     drop(gpu);
 }
+
+/// A start that fails the same way at every retry (once per 30 s while a
+/// `shader` node shows: no adapter, only a software one) is a warning
+/// once; a new reason, or the same after the device was up, is said
+/// again. Needs no device.
+#[test]
+fn an_unavailable_reason_is_warned_once() {
+    let mut r = renderer();
+    let unavailable = |kind, message: &str| {
+        GpuReply::Unavailable(strand_gpu::GpuError {
+            kind,
+            message: message.into(),
+        })
+    };
+    let none = "no Vulkan adapter";
+    r.deliver_gpu(unavailable(GpuErrorKind::NoAdapter, none));
+    r.deliver_gpu(GpuReply::Exited);
+    for _ in 0..3 {
+        r.deliver_gpu(unavailable(GpuErrorKind::NoAdapter, none));
+        r.deliver_gpu(GpuReply::Exited);
+    }
+    assert_eq!(r.gpu_warnings(), 1, "the same reason, once");
+    assert_eq!(
+        r.gpu_status(),
+        GpuStatus::Unavailable {
+            reason: none.into()
+        }
+    );
+    r.deliver_gpu(unavailable(
+        GpuErrorKind::Software,
+        "only a software adapter",
+    ));
+    assert_eq!(r.gpu_warnings(), 2, "a new reason");
+    r.deliver_gpu(GpuReply::Ready(AdapterInfo::default()));
+    r.deliver_gpu(unavailable(
+        GpuErrorKind::Software,
+        "only a software adapter",
+    ));
+    assert_eq!(r.gpu_warnings(), 3, "again after the device was up");
+}
