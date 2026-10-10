@@ -2712,7 +2712,9 @@ would have been) and sends it. One frame is in flight per surface.
   buffer size or scale from the manager sends `Resize`; `Released`,
   `Exited`, or the end of a thread dropped while it had a surface's
   handles (handed off, or its `Attach` not answered yet) takes it back.
-  Once a thread has ended the binary calls libc's `malloc_trim(0)` and
+  A `Gpu` is started only once every dropped thread has ended (one
+  device per process); requests meanwhile wait in the host. Once a
+  thread has ended the binary calls libc's `malloc_trim(0)` and
   mimalloc's collect (the driver's freed arena pages).
   `STRAND_GPU_IDLE_MS` shortens the 30 s idle for tests.
 

@@ -110,6 +110,9 @@ mod host {
         /// whose handles they held are taken back then (their swapchains
         /// are gone).
         exiting: Vec<(Gpu, Vec<SurfaceId>)>,
+        /// Requests for a `Gpu` not started yet: one starts only once
+        /// every ending thread has ended (one device per process).
+        queued: Vec<GpuRequest>,
         opts: GpuOptions,
         /// Wakes the main loop after every reply.
         ping: calloop::ping::Ping,
@@ -122,6 +125,7 @@ mod host {
             f.debug_struct("GpuHost")
                 .field("running", &self.gpu.is_some())
                 .field("exiting", &self.exiting.len())
+                .field("queued", &self.queued.len())
                 .field("attached", &self.attached)
                 .field("presented", &self.presented)
                 .finish()
@@ -135,6 +139,7 @@ mod host {
             Self {
                 gpu: None,
                 exiting: Vec::new(),
+                queued: Vec::new(),
                 opts: GpuOptions::from_env(),
                 ping,
                 attached: BTreeMap::new(),
@@ -142,18 +147,28 @@ mod host {
             }
         }
 
-        /// Sends `r` to the running `Gpu`, or starts one.
+        /// Sends `r` to the running `Gpu`, or starts one, or, while a
+        /// dropped thread is still ending, queues it for the next.
         fn send(&mut self, r: GpuRequest) {
-            let ping = self.ping.clone();
-            let opts = self.opts;
-            self.gpu
-                .get_or_insert_with(|| Gpu::spawn(Box::new(move || ping.ping()), opts))
-                .send(r);
+            match send_route(self.gpu.is_some(), !self.exiting.is_empty()) {
+                SendRoute::Send => {
+                    if let Some(g) = &self.gpu {
+                        g.send(r);
+                    }
+                }
+                SendRoute::Spawn => {
+                    let ping = self.ping.clone();
+                    let g = Gpu::spawn(Box::new(move || ping.ping()), self.opts);
+                    g.send(r);
+                    self.gpu = Some(g);
+                }
+                SendRoute::Queue => self.queued.push(r),
+            }
         }
 
-        /// A thread runs.
+        /// A thread runs or will once the ending ones have ended.
         fn running(&self) -> bool {
-            self.gpu.is_some()
+            self.gpu.is_some() || !self.queued.is_empty()
         }
 
         /// Asks the thread to let go of `id` (once).
@@ -206,6 +221,12 @@ mod host {
             }
             if ended {
                 release_freed();
+            }
+            // The last ending thread has ended: the next one starts.
+            if self.gpu.is_none() && self.exiting.is_empty() {
+                for r in std::mem::take(&mut self.queued) {
+                    self.send(r);
+                }
             }
         }
 
@@ -344,7 +365,7 @@ mod host {
                 BackendChange::Drop => {
                     // Render has forgotten the device. Its replies are no
                     // longer read: a surface whose handles the thread has
-                    // (handed off, or its `Attach` not answered yet) is
+                    // (handed off, or its `Attach` still queued there) is
                     // taken back once the thread has ended, any swapchain
                     // on it dropped first.
                     self.presented.clear();
@@ -353,6 +374,8 @@ mod host {
                         g.send(GpuRequest::Shutdown);
                         self.exiting.push((g, held));
                     } else {
+                        // Never sent: no thread holds them.
+                        self.queued.clear();
                         for id in held {
                             state.take_back(id);
                         }
@@ -389,6 +412,27 @@ mod host {
                     p.in_flight = true;
                 }
             }
+        }
+    }
+
+    /// Where a request goes.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum SendRoute {
+        /// To the running thread.
+        Send,
+        /// To a thread started for it.
+        Spawn,
+        /// Kept until the ending threads have ended: a second device
+        /// (and, under lavapipe, a second copy of LLVM's state) would
+        /// live beside the one still being dropped.
+        Queue,
+    }
+
+    fn send_route(running: bool, ending: bool) -> SendRoute {
+        match (running, ending) {
+            (true, _) => SendRoute::Send,
+            (false, false) => SendRoute::Spawn,
+            (false, true) => SendRoute::Queue,
         }
     }
 
@@ -542,6 +586,16 @@ mod host {
                 },
             );
             assert_eq!(lent(&attached), [SurfaceId(1), SurfaceId(2)]);
+        }
+
+        /// One device per process: a thread is started only when no
+        /// dropped one is still ending.
+        #[test]
+        fn no_thread_starts_while_another_is_ending() {
+            assert_eq!(send_route(true, false), SendRoute::Send);
+            assert_eq!(send_route(true, true), SendRoute::Send);
+            assert_eq!(send_route(false, false), SendRoute::Spawn);
+            assert_eq!(send_route(false, true), SendRoute::Queue);
         }
 
         #[test]
