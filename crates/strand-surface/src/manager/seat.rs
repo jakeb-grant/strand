@@ -342,6 +342,8 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: &[Keysym],
     ) {
         if let Some(id) = self.keyboard_target(surface) {
+            log::trace!("keyboard enter {id:?} (grab focus {:?})", self.grab_focus);
+            self.releasing.remove(&id);
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
@@ -358,12 +360,19 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
     ) {
         self.stop_repeat();
         let id = self.keyboard_target(surface).or(self.keyboard_focus);
+        log::trace!("keyboard leave {id:?} (grab focus {:?})", self.grab_focus);
         if self.keyboard_focus == id {
             self.keyboard_focus = None;
         }
+        // The leave for a grab given back, arriving after a new grab
+        // took the keyboard again: the enter that follows it gives the
+        // keys back, and the new popup keeps them.
+        let stale =
+            id.is_some_and(|id| self.releasing.remove(&id) && self.grab_keyboard.contains(&id));
         // The keyboard left the layer surface: its grabbing popup loses it
         // too.
-        if let Some(p) = self.grab_focus.take()
+        if !stale
+            && let Some(p) = self.grab_focus.take()
             && self.surfaces.contains_key(&p)
         {
             self.send_input(InputEvent::KeyboardLeave { surface: p });

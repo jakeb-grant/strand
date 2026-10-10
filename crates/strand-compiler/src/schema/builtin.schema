@@ -975,7 +975,12 @@ element grid: node {
 /// Scrolls its content.
 element scroll: node {}
 /// Virtualised; arrow keys move the selection.
-element list: node {}
+element list: node {
+  /// Takes keyboard focus when shown: arrows move its selection, Return
+  /// activates the selected row, and Right opens a popup the row holds
+  /// (a menu's submenu).
+  focus: bool
+}
 /// Start, centre and end, with a truly centred middle.
 element split: node {}
 /// The start part of a `split`.

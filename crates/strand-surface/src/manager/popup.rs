@@ -376,11 +376,15 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Role::Layer(layer) = &s.role else {
             return;
         };
+        log::trace!("{id:?}: grab keyboard {on}");
         let k = if on {
             self.grab_keyboard.insert(id);
             Keyboard::Exclusive
         } else {
             self.grab_keyboard.remove(&id);
+            if s.config.keyboard == Keyboard::None && self.keyboard_focus == Some(id) {
+                self.releasing.insert(id);
+            }
             s.config.keyboard
         };
         layer.set_keyboard_interactivity(match k {

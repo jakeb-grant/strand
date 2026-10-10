@@ -703,6 +703,12 @@ pub struct State<H: SurfaceHost + 'static> {
     /// because a grabbing popup of theirs is open (see
     /// [`State::sync_popup_keyboard`]).
     grab_keyboard: BTreeSet<SurfaceId>,
+    /// Layer surfaces that gave a grab's `exclusive` back for `none`
+    /// while they had keyboard focus: the compositor's leave for that may
+    /// come only with its next keyboard change (sway sends it with the
+    /// enter of the next grab), and must not close a popup that grabbed
+    /// since.
+    releasing: BTreeSet<SurfaceId>,
     /// The grabbing popup keys go to while its layer surface has keyboard
     /// focus (told a `KeyboardEnter` of its own).
     grab_focus: Option<SurfaceId>,
@@ -908,6 +914,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             last_pressed: None,
             last_action: None,
             grab_keyboard: BTreeSet::new(),
+            releasing: BTreeSet::new(),
             grab_focus: None,
             dismissed: BTreeSet::new(),
             modifiers: Modifiers::default(),

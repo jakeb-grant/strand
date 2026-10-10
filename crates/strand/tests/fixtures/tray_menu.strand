@@ -1,0 +1,57 @@
+// tray_menu.strand: tray icons whose menus (DBusMenu) open as nested
+// popups: a right click opens an item's menu under its icon, a submenu
+// opens beside its row (click it, or Right on the selected row; Left
+// closes it), Return or a click chooses an entry, and Escape or a click
+// away closes the menu. The colours are plain so a test can find them.
+bar Tray {
+  edge: top; height: 36; bg: #202020; color: #ffffff
+  row { pad: 0, 8; gap: 8; align: center; grow: 1
+    for item in tray.items { TrayIcon item }
+  }
+}
+
+component TrayIcon(item: TrayItem) {
+  state open = false
+  // The app's menu opens on `secondary`, and on `activate` for an item
+  // that is only a menu; it closes when an entry is chosen.
+  on change item.menu.opened { open = item.menu.opened }
+  image item.icon { size: 16
+    on click     { item.activate() }
+    on secondary { item.menu.open() }
+    popup { open: <-> open                // Escape and click-away write false
+      on hide { item.menu.close() }
+      Menu item.menu.items { menu: item.menu }
+    }
+  }
+}
+
+component Menu(entries: [TrayMenuItem], menu: TrayMenu, sub: bool = false) {
+  list { focus: true; width: 180; pad: 4; gap: 0; bg: #3050a0; radius: 6
+    when sub { bg: #30a050 }
+    for e in entries { Entry e { menu: menu } }
+  }
+}
+
+component Entry(e: TrayMenuItem, menu: TrayMenu) {
+  state sub = false
+  // A menu opens again with its submenus closed.
+  on change menu.opened { sub = false }
+  row { height: 24; pad: 0, 8; gap: 8; align: center
+    when hover    { bg: #e0a020 }
+    when selected { bg: #e0a020 }
+    when e.kind == "separator" { height: 1; bg: #ffffff40 }
+    when !e.enabled { color: #ffffff80 }
+    text e.label { grow: 1 }
+    if e.children.len > 0 { text ">" }
+    on click {
+      if e.children.len > 0 { sub = true } else if e.enabled { e.activate(); menu.close() }
+    }
+    on activate {
+      if e.children.len > 0 { sub = true } else if e.enabled { e.activate(); menu.close() }
+    }
+    popup { open: <-> sub                 // beside the row: right, flipping left
+      on show { e.open() }
+      Menu e.children { menu: menu; sub: true }
+    }
+  }
+}
