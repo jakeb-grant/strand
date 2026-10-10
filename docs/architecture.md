@@ -235,6 +235,21 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   built-in fallback lock. The main thread then owns the unlock gate and a
   `strand_auth::Client` of its own. SIGINT and SIGTERM end `strand run`
   only while no lock is shown.
+  As built (m4-lock wave 2, `run/lock.rs`; decisions.md m4-lock-w2):
+  `lock::Guard::wire` connects `auth`'s tokens (`AuthConfig::sink`) and
+  failures (`AuthConfig::failed`) to the main loop and only then calls
+  `State::enable_session_lock`. The host's `lock::LockScreen` forwards
+  `SurfaceHost::lock_changed` as `ToLogic::LockState` and, once a fault
+  shows the fallback, paints the lock's content surface with
+  `strand_render::lock_fallback` and takes its keys. The watchdog is
+  `ToLogic::Beat(seq)`, sent only while locked, 1 s after the last
+  answer, with 3 s to answer. The faults also include a runtime fault
+  inside the lock, the text worker stopping, `auth` failing to check,
+  `finished` after `locked` and a lock with no `lock` open. A marker,
+  `$XDG_RUNTIME_DIR/strand-<display>.locked`, is kept while the
+  compositor says locked; a strand started while it exists locks at once
+  with the fallback. The `faults` feature (`STRAND_FAULT`) injects each
+  fault for `tests/lock.rs`, which runs only in the lock VM.
 - The PAM helper is a process, not a thread: the `strand-auth` binary,
   fork+exec'd over a socketpair by `strand_auth::Client`, one per lock
   session, respawned when it dies. The `Client`'s owner hands it
@@ -2474,14 +2489,16 @@ and the connection):
     spec's node, or `LOCK_FALLBACK_NODE` when `State::lock()` was called
     with no `lock` spec: the seam for render's built-in fallback);
     `State::lock_content()` names it. The other outputs get a
-    manager-painted 1×1 shm buffer scaled by `wp_viewporter` (a
-    full-size one without it) in `set_lock_color`'s colour, and a keyboard focus on one of them is
+    manager-painted solid in `set_lock_color`'s colour: a
+    `wp_single_pixel_buffer_v1` buffer, else a 1×1 shm buffer, scaled by
+    `wp_viewporter` (a full-size shm one without it), from the scrims'
+    `solid` helper (wave 2), and a keyboard focus on one of them is
     delivered as the content's. A spec closing (`open: false`) or going
     away never unlocks: the surfaces stay and only `unlock` releases the
     lock; a closed spec re-arms it, so an open spec locks again only
-    after it closed. `Finished` after `Locked` sends nothing (the
-    protocol leaves the session's state to the compositor) and asks for
-    a new lock at once, once per lock session, so a session the
+    after it closed. `Finished` after `Locked` is answered with
+    `unlock_and_destroy` (the compositor no longer uses the object) and
+    asks for a new lock at once, once per lock session, so a session the
     compositor keeps locked gets its password field back; the host
     hears `Finished`, then `Locked` or `Finished` for the new lock. The tests take a session lock
     only inside the lock VM (`scripts/lockvm/scenarios/`).
