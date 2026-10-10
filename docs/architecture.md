@@ -2559,7 +2559,10 @@ Wayland crate. Its interface:
   as a shader that fails to compile on the device; the device stays
   up), `Lost(GpuError)`, `Exited`.
 - `Frame { surface, id: u64, size, scale, ops: Vec<Op>, uploads:
-  Vec<Upload>, retire: Vec<u64>, readback: Option<Rect> }` is what render lowers its
+  Vec<Upload>, retire: Vec<u64>, clear: AlphaColor<Srgb> }` (`clear`: the
+  background the frame is cleared to; no `readback` field, since an
+  attached surface's mode decides and a pass on a CPU surface is its
+  own `Pass` request: decisions.md, m4-gpu-w2) is what render lowers its
   display list into (`renderer/backend.rs`): fills and strokes of
   kurbo paths with peniko paints and transforms, images by texture id,
   clips (`PushClipEvenOdd` for a shadow's ring), blends and opacity as
@@ -2578,10 +2581,8 @@ requested without a surface, so readback works whatever the WSI can do.
 A software adapter (`DeviceType::Cpu`, lavapipe) counts as no device:
 it would draw on the CPU and keep about 80 MiB mapped after the drop.
 `STRAND_GPU_SOFTWARE=1` accepts it, and a user never needs it. The
-lavapipe tier is to set it beside `STRAND_REQUIRE_GPU=1`; that is
-pending: CI's env, `run.sh` and `ci.sh` set only `STRAND_REQUIRE_GPU`
-today, and the integrator adds `STRAND_GPU_SOFTWARE=1` with S-gpu's
-first test that needs it. The adapter is requested with
+lavapipe tier sets it beside `STRAND_REQUIRE_GPU=1` (CI's env, `run.sh`
+and `ci.sh`). The adapter is requested with
 `PowerPreference::HighPerformance`, so a hardware adapter wins when both
 exist. The thread waits on its
 channel and on presents, never on a timer: it does not decide when to
@@ -2782,7 +2783,10 @@ to say why.
   (m4-gpu-w2): `.text` 18,456,983 B (default) and 15,118,167 B
   (`--no-default-features`, its own CI step), and the design bar's PSS
   33,731–34,016 kB over three runs, under the 34 MiB (34,816 kB) target,
-  with no `libvulkan` mapped (asserted there).
+  with no `libvulkan` mapped (asserted there). That is the spike's
+  prediction for the GPU build (mean 33.7 MB, about 1.3 MB over the CPU
+  build measured alternately with it), not a regression of the landed
+  backend: features.md's 31.2–32.3 MB are the CPU build's.
 - Cold (`strand/tests/gpu_cold.rs`, per feature set with `cargo
   metadata`): wgpu, vello_gpu and naga reach `strand` only through
   `strand-gpu`, and naga also through `strand-compiler`'s `shaders`;
