@@ -2551,6 +2551,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2804,6 +2810,7 @@ dependencies = [
  "serde_json",
  "strand-compiler",
  "strand-core",
+ "strand-gpu",
  "strand-icons",
  "strand-introspect",
  "strand-render",
@@ -2841,6 +2848,7 @@ dependencies = [
  "image",
  "insta",
  "miette",
+ "naga",
  "proptest",
  "serde_json",
  "similar",
@@ -2923,6 +2931,7 @@ dependencies = [
  "resvg",
  "strand-compiler",
  "strand-core",
+ "strand-gpu",
  "strand-icons",
  "strand-scene",
  "strand-text",
@@ -2992,6 +3001,7 @@ dependencies = [
  "calloop",
  "log",
  "png",
+ "raw-window-handle",
  "rustix",
  "smithay-client-toolkit",
  "strand-auth",
@@ -2999,6 +3009,7 @@ dependencies = [
  "strand-render",
  "strand-scene",
  "strand-text",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-misc",
@@ -3680,6 +3691,7 @@ dependencies = [
  "cc",
  "downcast-rs",
  "rustix",
+ "scoped-tls",
  "smallvec",
  "wayland-sys",
 ]
@@ -3801,6 +3813,8 @@ version = "0.31.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8eab23fefc9e41f8e841df4a9c707e8a8c4ed26e944ef69297184de2785e3be"
 dependencies = [
+ "dlib",
+ "log",
  "pkg-config",
 ]
 

@@ -7,8 +7,15 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["shaders"]
+# `check::shaders`: naga parses and validates each `.wgsl` file and
+# reflects its `u_*` uniforms (the same naga wgpu links).
+shaders = ["dep:naga"]
+
 [dependencies]
 strand-core.workspace = true
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"], optional = true }
 strand-scene.workspace = true
 strand-theme.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }

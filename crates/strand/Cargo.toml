@@ -7,7 +7,15 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["gpu"]
+# The GPU backend, in every build people install (decisions.md,
+# m4-owner); `--no-default-features` is the CPU core the 15 MiB `.text`
+# gate measures.
+gpu = ["strand-render/gpu", "strand-surface/gpu", "strand-compiler/shaders", "dep:strand-gpu"]
+
 [dependencies]
+strand-gpu = { workspace = true, optional = true }
 strand-compiler.workspace = true
 strand-core.workspace = true
 strand-render.workspace = true

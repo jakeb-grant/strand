@@ -7,8 +7,15 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["gpu"]
+# The GPU backend: promotion, lowering to strand-gpu's frames, shader
+# passes (docs/architecture.md, "`strand-gpu`").
+gpu = ["dep:strand-gpu"]
+
 [dependencies]
 strand-scene.workspace = true
+strand-gpu = { workspace = true, optional = true }
 strand-text.workspace = true
 # Single-threaded f32 pipeline only: no worker threads (vello's filters
 # panic multi-threaded), and none of the default png/text extras.
