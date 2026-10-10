@@ -138,6 +138,15 @@ impl Renderer {
     pub(super) fn flatten_tokens(&mut self, id: SurfaceId) -> Flattened {
         let layouts = self.shaped();
         self.lay_out(id, &layouts);
+        // (M4) A GPU-presented surface paints its poses (`Extras`).
+        #[cfg(feature = "gpu")]
+        if let Some(root) = self.surfaces.get(&id).map(|s| s.root) {
+            if self.backend(id) == strand_scene::Backend::GpuPresent {
+                self.extras.gpu_presented.insert(root);
+            } else {
+                self.extras.gpu_presented.remove(&root);
+            }
+        }
         let Some(s) = self.surfaces.get(&id) else {
             return Flattened::default();
         };

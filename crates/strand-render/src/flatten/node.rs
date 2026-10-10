@@ -192,7 +192,7 @@ impl<'a> Flattener<'a> {
             self.logical,
         );
         // (M4) The root paints at rest what the compositor applies.
-        if root && self.extras.compositor_poses {
+        if root && self.extras.delegates_pose(node.id) {
             let scale = !self.extras.compositor_pose_scale_off;
             self.out.pose = crate::pose::delegate(node.kind, &mut props, laid, scale);
         }
@@ -892,7 +892,8 @@ impl<'a> Flattener<'a> {
         // An `icon` or `image`: decoded at the box's size.
         if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
             self.image(
-                node, &get, frame, phys, &box_path, &r, text_color, &scope, time, &mut sig, &mut ink,
+                node, &get, frame, phys, &box_path, &r, text_color, &scope, time, &mut sig,
+                &mut ink,
             );
         }
         // Text. (M4) `fill:` paints its glyphs, `text_stroke:` outlines

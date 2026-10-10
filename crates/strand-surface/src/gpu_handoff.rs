@@ -115,6 +115,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.repaint = false;
         self.gpu.lent.remove(&surface);
         self.gpu.on.insert(surface);
+        // Render paints its poses into the GPU's frames from now on:
+        // the compositor's goes back to identity with the first present.
+        self.clear_pose(surface);
         true
     }
 

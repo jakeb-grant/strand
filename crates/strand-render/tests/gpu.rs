@@ -1110,3 +1110,62 @@ fn a_clocked_shader_on_a_gpu_surface_damages_every_frame() {
     let d = buf.paint_at(&mut r, S, 1, ms(33));
     assert!(!d.is_empty(), "a frame with only the clock moving");
 }
+
+/// (m4-integration-w2) A surface the GPU thread presents paints its pose
+/// into its frames (architecture.md, "Surface hand-off"): with
+/// compositor poses on, a root's static `opacity: 0.5` is delegated while
+/// the CPU draws, nothing is delegated once the surface is `GpuPresent`
+/// (its lowered frame carries the opacity group instead), and delegation
+/// comes back when the CPU draws it again.
+#[test]
+fn a_presented_surface_paints_its_pose() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Anchor, PropValue::Keyword("top_right".into())),
+            (Prop::Opacity, num(0.5)),
+        ],
+    );
+    let mut r = renderer();
+    r.set_compositor_poses(true);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, root);
+    r.configure_surface(S, Size::new(80, 40), Scale::ONE);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    buf.paint_at(&mut r, S, 0, t0);
+    let pose = r.surface_pose(S).expect("delegated while the CPU draws");
+    assert!((pose.opacity - 0.5).abs() < 1e-3, "{pose:?}");
+    let opacity_group = |ops: &[strand_gpu::Op]| {
+        ops.iter().any(|op| {
+            matches!(op, strand_gpu::Op::PushLayer(l)
+                if l.opacity.is_some_and(|o| (o - 0.5).abs() < 1e-3))
+        })
+    };
+
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    assert_eq!(r.backend(S), Backend::GpuPresent);
+    let frame = r
+        .paint_gpu(S, t0 + Duration::from_millis(16))
+        .expect("the switch repaints");
+    assert_eq!(
+        r.surface_pose(S),
+        None,
+        "a presented surface delegates nothing"
+    );
+    assert!(
+        opacity_group(&frame.ops),
+        "the opacity is painted into the GPU's frame"
+    );
+
+    r.set_backend(S, Backend::Cpu);
+    buf.paint_at(&mut r, S, 0, t0 + Duration::from_millis(33));
+    let pose = r.surface_pose(S).expect("delegated again on the CPU");
+    assert!((pose.opacity - 0.5).abs() < 1e-3, "{pose:?}");
+}

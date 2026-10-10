@@ -45,13 +45,16 @@ impl Renderer {
     /// root ([`crate::pose::delegate`]); `None` when nothing is
     /// delegated.
     pub fn delegated_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        // (M4) A surface the GPU thread presents paints its poses.
+        #[cfg(feature = "gpu")]
+        if self.backend(surface) == strand_scene::Backend::GpuPresent {
+            return None;
+        }
+        let s = self.surfaces.get(&surface)?;
         if !self.extras.compositor_poses {
             return None;
         }
-        self.surfaces
-            .get(&surface)
-            .and_then(|s| s.cache.as_ref())
-            .and_then(|f| f.pose)
+        s.cache.as_ref().and_then(|f| f.pose)
     }
 
     /// Ghosts under surface node `root` still play their exit.

@@ -307,6 +307,11 @@ pub struct Extras {
     /// and the viewporter): a root's opacity, scale and offset go to
     /// it where its placement allows ([`crate::pose`]).
     pub compositor_poses: bool,
+    /// (M4) Roots of the surfaces the GPU thread presents: their poses
+    /// are painted into their frames, never delegated (architecture.md,
+    /// "Surface hand-off").
+    #[cfg(feature = "gpu")]
+    pub gpu_presented: std::collections::HashSet<NodeId>,
     /// (M4) The compositor draws a layer surface stretched to its
     /// arranged box whatever its viewport (Hyprland): a root's scale is
     /// painted, not delegated.
@@ -330,6 +335,20 @@ pub struct Extras {
 
     /// (M4) Media nodes' sources (graphs, spectra), by node.
     pub media: crate::media::Media,
+}
+
+impl Extras {
+    /// (M4) Whether the surface whose root is `root` hands its pose to
+    /// the compositor: it delegates poses, and the GPU thread does not
+    /// present it.
+    pub(crate) fn delegates_pose(&self, root: NodeId) -> bool {
+        #[cfg(feature = "gpu")]
+        if self.gpu_presented.contains(&root) {
+            return false;
+        }
+        let _ = root;
+        self.compositor_poses
+    }
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.

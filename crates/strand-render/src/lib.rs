@@ -31,9 +31,9 @@ pub mod lock_fallback;
 mod markup;
 mod media;
 mod offscreen;
+mod pose;
 #[cfg(feature = "gpu")]
 pub mod promote;
-mod pose;
 mod raster;
 mod renderer;
 mod shapes;

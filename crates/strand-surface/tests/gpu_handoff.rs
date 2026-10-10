@@ -258,3 +258,31 @@ fn a_handed_off_surface_shows_its_new_size_at_the_next_present() {
     assert_eq!(shot.rgb(10, 69), common::BLUE);
     assert_ne!(shot.rgb(10, 73), common::BLUE, "past the new size");
 }
+
+/// (m4-integration-w2) Handing a posed surface to the GPU thread drops
+/// its compositor pose (render paints poses into the GPU's frames): the
+/// surface goes back to identity as pending state, committed by the next
+/// present.
+#[test]
+fn a_handed_off_surface_drops_its_compositor_pose() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let posed = SurfacePose {
+        opacity: 0.5,
+        scale: 0.8,
+        offset: LogicalPoint::new(40.0, 0.0),
+    };
+    mgr.state_mut().host_mut().poses = [posed].into_iter().collect();
+    let id = show_panel(&fake, &mut mgr);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surface(id).is_some_and(|i| i.pose == posed))
+        .unwrap();
+    assert!(ok, "the pose never reached the surface");
+    assert!(mgr.state_mut().hand_off(id));
+    assert_eq!(
+        mgr.state().surface(id).map(|i| i.pose),
+        Some(SurfacePose::IDENTITY),
+        "the GPU's frames carry the pose, not the compositor"
+    );
+}
