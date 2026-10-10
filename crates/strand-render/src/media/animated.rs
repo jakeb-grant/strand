@@ -41,8 +41,12 @@ const MAX_PLAYERS: usize = 16;
 /// Bytes all players may hold together ([`Player::bytes`]: their files,
 /// each counted once however many sizes play it, their canvases and
 /// their decoders' frames). Past it the least recently used players go,
-/// never the one being drawn: one animation larger than this still plays,
-/// alone (decisions.md, m4-effects-media-w2).
+/// but never the one being drawn nor one a live frame draws
+/// ([`Players::with_live`]): those are kept past the budget rather than
+/// dropped and rebuilt (re-read and decoded from frame 0) at every frame
+/// change of two animations drawn together, so one animation larger
+/// than this still plays, and so do several (decisions.md,
+/// m4-effects-media-w2).
 pub const MAX_PLAYER_BYTES: usize = 16 << 20;
 
 /// An animated image's frames in time.
@@ -610,15 +614,41 @@ fn blend(canvas: &mut [u8], cw: u32, ch: u32, src: &[u8], rect: [u32; 4]) {
     }
 }
 
+/// Whether a live frame draws an image (by its frame-0 key).
+type LiveFn = Box<dyn Fn(&ImageKey) -> bool + Send>;
+
 /// The players of the images being drawn, by key (a frame's key with
-/// `frame` 0): at most [`MAX_PLAYERS`], least recently used dropped.
-#[derive(Debug, Default)]
+/// `frame` 0): within [`MAX_PLAYERS`] and [`MAX_PLAYER_BYTES`], least
+/// recently used dropped first, never one being drawn.
+#[derive(Default)]
 pub struct Players {
     players: HashMap<ImageKey, Player>,
     tick: u64,
+    /// The images live frames draw: never dropped for the budget.
+    live: Option<LiveFn>,
+}
+
+impl std::fmt::Debug for Players {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Players")
+            .field("players", &self.players.len())
+            .field("tick", &self.tick)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Players {
+    /// Players that never drop one `live` says a live frame draws (its
+    /// frame-0 key) to make room: only the ones no frame draws any more
+    /// go for the budget. Without it, every player but the one being
+    /// drawn may go.
+    pub fn with_live(live: impl Fn(&ImageKey) -> bool + Send + 'static) -> Self {
+        Self {
+            live: Some(Box::new(live)),
+            ..Self::default()
+        }
+    }
+
     /// The player of `key`'s image, made from the file at `read()` the
     /// first time.
     pub fn get(
@@ -645,20 +675,25 @@ impl Players {
             let p = Player::new(data, format)?;
             self.players.insert(k.clone(), p);
             // Within the count and the bytes, the least recently used
-            // first; the new one stays.
-            while self.players.len() > 1
+            // first; the new one and the live ones stay.
+            let mut kept: Vec<ImageKey> = vec![k.clone()];
+            while self.players.len() > kept.len()
                 && (self.players.len() > MAX_PLAYERS || self.bytes() > MAX_PLAYER_BYTES)
             {
                 let Some(old) = self
                     .players
                     .iter()
-                    .filter(|(o, _)| **o != k)
+                    .filter(|(o, _)| !kept.contains(o))
                     .min_by_key(|(_, p)| p.used)
                     .map(|(o, _)| o.clone())
                 else {
                     break;
                 };
-                self.players.remove(&old);
+                if self.live.as_ref().is_some_and(|live| live(&old)) {
+                    kept.push(old);
+                } else {
+                    self.players.remove(&old);
+                }
             }
         }
         let p = self
@@ -841,6 +876,61 @@ mod tests {
             .unwrap();
         assert_eq!(p.frame(1).unwrap().len(), 2048 * 2048 * 4);
         assert_eq!(players.len(), 1);
+    }
+
+    /// Two animations drawn together past the budget both keep their
+    /// players: each frame change of one does not drop the other, so
+    /// neither is read again or decoded from its start; one no frame
+    /// draws any more goes first.
+    #[test]
+    fn players_drawn_together_are_kept_past_the_budget() {
+        let live = Arc::new(std::sync::Mutex::new(vec![
+            key("/a.gif", 48),
+            key("/b.gif", 48),
+        ]));
+        let l = live.clone();
+        let mut players = Players::with_live(move |k| l.lock().unwrap().contains(k));
+        // 1300 × 1300: 13.5 MB each with its decoder's frame, so two
+        // are over the budget.
+        let (a, b) = (big_gif(1300), big_gif(1300));
+        let mut reads = 0;
+        for frame in 0..6 {
+            for (k, file) in [(key("/a.gif", 48), &a), (key("/b.gif", 48), &b)] {
+                let p = players
+                    .get(&k, || {
+                        reads += 1;
+                        Ok((file.clone(), Format::Gif))
+                    })
+                    .unwrap();
+                p.frame(frame % 2).unwrap();
+            }
+        }
+        assert_eq!(reads, 2, "each file read once, not at every frame");
+        assert_eq!(players.len(), 2);
+        assert!(players.bytes() > MAX_PLAYER_BYTES, "kept past the budget");
+        // `a` no longer drawn: the next new player drops it, not `b`.
+        live.lock().unwrap()[0] = key("/c.gif", 48);
+        players
+            .get(&key("/c.gif", 48), || Ok((big_gif(64), Format::Gif)))
+            .unwrap();
+        assert!(!players.players.contains_key(&key("/a.gif", 48)));
+        assert!(players.players.contains_key(&key("/b.gif", 48)));
+        // Without a live set, the same pair evicts each other (the
+        // budget's old behaviour, kept for one-shot loads).
+        let mut lone = Players::default();
+        let mut reads = 0;
+        for _ in 0..3 {
+            for (k, file) in [(key("/a.gif", 48), &a), (key("/b.gif", 48), &b)] {
+                lone.get(&k, || {
+                    reads += 1;
+                    Ok((file.clone(), Format::Gif))
+                })
+                .unwrap()
+                .frame(1)
+                .unwrap();
+            }
+        }
+        assert_eq!(reads, 6);
     }
 
     #[test]

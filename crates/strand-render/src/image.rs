@@ -770,7 +770,19 @@ impl ImageWorker {
             .name("strand-image".into())
             .spawn(move || {
                 let mut gate = HookGate::default();
-                let mut players = Players::default();
+                // A player some live frame draws is never dropped for the
+                // budget (two animations drawn together would otherwise
+                // rebuild each other at every frame change).
+                let live = still.clone();
+                let players_live = move || {
+                    let live = live.clone();
+                    Players::with_live(move |k| {
+                        live.lock()
+                            .map(|w| w.iter().any(|x| x.first() == *k))
+                            .unwrap_or(true)
+                    })
+                };
+                let mut players = players_live();
                 loop {
                     let key = match req_rx.try_recv() {
                         Ok(key) => key,
@@ -818,7 +830,7 @@ impl ImageWorker {
                             .unwrap_or_else(|_| {
                                 // A decoder that panicked may be left
                                 // half-way: start every image again.
-                                players = Players::default();
+                                players = players_live();
                                 Err(ImageError::Decode("decoder panicked".into()))
                             }),
                         )
@@ -914,7 +926,9 @@ impl ImageStore {
             frames: HashMap::new(),
             latest: HashMap::new(),
             stale: HashSet::new(),
-            players: Players::default(),
+            // Inline, the players are those of the frames (`want` drops
+            // the others at each change): all live.
+            players: Players::with_live(|_| true),
             timelines: HashMap::new(),
         }
     }
