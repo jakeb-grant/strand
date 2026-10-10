@@ -314,6 +314,13 @@ fn list(names: &[&str]) -> String {
         .join(", ")
 }
 
+/// The most bytes of private (and workgroup) globals plus every
+/// function's local variables a shader may declare (decisions.md,
+/// m4-audit): far above a real effect's few dozen floats, far below what
+/// a driver thread's stack holds.
+#[cfg(feature = "shaders")]
+const MAX_PIXEL_MEMORY: u64 = 16 * 1024;
+
 /// Without naga: no slots (the node draws nothing).
 #[cfg(not(feature = "shaders"))]
 fn reflect(_path: &str, _wgsl: &str) -> Result<Vec<(String, UniformType, u32)>, Problem> {
@@ -365,6 +372,49 @@ fn reflect(path: &str, wgsl: &str) -> Result<Vec<(String, UniformType, u32)>, Pr
             src = s.source();
         }
         return Err(bad(format!("{}: {message}", at(e.location(&source))), None));
+    }
+    // Every pixel gets its own copy of the private and function
+    // variables, inside the strand process: a driver that cannot give
+    // them (lavapipe puts them on its threads' stacks) kills the process,
+    // past any error scope, and under a lock that leaves the session
+    // locked with no client. naga bounds a type only at 1 GiB.
+    let gctx = module.to_ctx();
+    let bytes = |ty: naga::Handle<naga::Type>| {
+        module.types[ty]
+            .inner
+            .try_size(gctx)
+            .map_or(u64::MAX, u64::from)
+    };
+    let private = module
+        .global_variables
+        .iter()
+        .filter(|(_, g)| matches!(g.space, AddressSpace::Private | AddressSpace::WorkGroup))
+        .fold(0u64, |n, (_, g)| n.saturating_add(bytes(g.ty)));
+    let local = module
+        .functions
+        .iter()
+        .map(|(_, f)| f)
+        .chain(module.entry_points.iter().map(|e| &e.function))
+        .flat_map(|f| f.local_variables.iter())
+        .fold(0u64, |n, (_, v)| n.saturating_add(bytes(v.ty)));
+    let memory = private.saturating_add(local);
+    if memory > MAX_PIXEL_MEMORY {
+        return Err(bad(
+            format!(
+                "{path}: the shader's private and function variables take {} bytes per pixel, \
+                 over the {MAX_PIXEL_MEMORY}-byte limit",
+                if memory == u64::MAX {
+                    "too many".to_string()
+                } else {
+                    memory.to_string()
+                }
+            ),
+            Some(
+                "every pixel gets its own copy: pass large data as uniforms or compute it \
+                 instead of storing it"
+                    .into(),
+            ),
+        ));
     }
     let fragments = module
         .entry_points
@@ -657,6 +707,45 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
                 "cannot read `aurora.wgsl`: no such file"
             )]
         );
+    }
+
+    /// A shader whose private or function variables would take more
+    /// than `MAX_PIXEL_MEMORY` per pixel is refused before it reaches the
+    /// GPU thread (a driver that cannot give every pixel its copy kills
+    /// the process); small arrays pass.
+    #[cfg(feature = "shaders")]
+    #[test]
+    fn huge_private_and_local_arrays_are_refused() {
+        let main = "@fragment fn main() -> @location(0) vec4<f32>";
+        let refused = [
+            format!("var<private> a: array<vec4<f32>, 50000000>;\n{main} {{ return a[0]; }}\n"),
+            format!("{main} {{ var a: array<vec4<f32>, 4096>; return a[1]; }}\n"),
+            // Split across a helper and the entry, under the limit each.
+            format!(
+                "fn h() -> f32 {{ var a: array<f32, 3000>; return a[2]; }}\n\
+                 {main} {{ var b: array<f32, 3000>; return vec4<f32>(h() + b[1]); }}\n"
+            ),
+            format!(
+                "struct S {{ x: array<vec4<f32>, 2000> }}\nvar<private> s: S;\n\
+                 {main} {{ return s.x[0]; }}\n"
+            ),
+        ];
+        for wgsl in &refused {
+            let (d, shaders) = run(&bar(""), &[("aurora.wgsl", wgsl)]);
+            assert!(shaders.is_empty(), "{wgsl}");
+            assert_eq!(codes(&d).len(), 1, "{wgsl}: {:?}", codes(&d));
+            assert!(
+                d[0].message.contains("bytes per pixel"),
+                "{wgsl}: {}",
+                d[0].message
+            );
+        }
+        let fine = format!(
+            "var<private> p: array<vec4<f32>, 64>;\n\
+             {main} {{ var a: array<f32, 256>; return p[0] + vec4<f32>(a[0]); }}\n"
+        );
+        let (d, _) = run(&bar(""), &[("aurora.wgsl", &fine)]);
+        assert!(d.is_empty(), "{:?}", codes(&d));
     }
 
     /// A file without uniforms needs no props; two nodes share one check.
