@@ -1223,3 +1223,48 @@ fn late_presentation_feedback_cancels_the_give_up() {
         );
     }
 }
+
+/// (m4-audit) On a compositor without `ext-session-lock` (the fake offers
+/// none, so nothing can lock here), an open `lock` is refused as
+/// `Finished`: the host hears it, so logic stops counting the lock as
+/// shown, and it is not asked again until the spec closes and reopens.
+#[test]
+fn a_lock_without_ext_session_lock_is_reported_finished() {
+    use strand_scene::{NodeKind, Prop, PropValue, SurfaceSpec};
+    use strand_surface::LockState;
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    assert!(!mgr.state().session_lock_supported());
+    mgr.state_mut().enable_session_lock();
+    let spec = |open: bool| {
+        SurfaceSpec::resolve(NodeKind::Lock, |p| {
+            (p == Prop::Open).then_some(PropValue::Bool(open))
+        })
+    };
+    const LOCK: NodeId = NodeId::new(9, 0);
+    let finished = |mgr: &mut SurfaceManager<TestHost>, n: usize| {
+        mgr.state_mut().poll();
+        let heard = mgr.dispatch_until(WAIT, |s| s.host().locks.len() >= n);
+        assert!(heard.expect("dispatch"), "{:?}", mgr.state().host().locks);
+        assert_eq!(mgr.state().host().locks, vec![LockState::Finished; n]);
+        assert!(!mgr.state().lock_active());
+    };
+    mgr.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(spec(true)));
+    finished(&mut mgr, 1);
+    mgr.state_mut().poll();
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .expect("dispatch");
+    assert_eq!(mgr.state().host().locks.len(), 1, "asked once per opening");
+    for open in [false, true] {
+        let change = SurfaceChange::Updated {
+            spec: spec(open),
+            recreate: false,
+        };
+        mgr.state_mut().apply_surface_change(LOCK, change);
+        mgr.state_mut().poll();
+        mgr.dispatch_until(Duration::from_millis(50), |_| false)
+            .expect("dispatch");
+    }
+    finished(&mut mgr, 2);
+}

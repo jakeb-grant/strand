@@ -294,6 +294,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.session_lock.enabled
     }
 
+    /// The compositor offers `ext_session_lock_manager_v1`: without it a
+    /// `lock` cannot lock the session ([`LockError::Unsupported`]).
+    pub fn session_lock_supported(&self) -> bool {
+        self.session_lock.manager.is_some()
+    }
+
     /// Asks the compositor to lock the session, if no lock is asked for
     /// or held. Every output gets a lock surface at once (the protocol
     /// asks for them before `locked`); the host hears `Locked` or
@@ -499,9 +505,13 @@ impl<H: SurfaceHost + 'static> State<H> {
                         log::warn!("`lock`: {e}");
                     }
                 }
-                Err(e) => {
+                // No ext-session-lock: the lock is refused like one the
+                // compositor finished, so the host and logic stop
+                // counting it as shown (decisions.md, m4-audit).
+                Err(e @ LockError::Unsupported) => {
                     log::warn!("{e}");
                     self.session_lock.spent = true;
+                    self.host.lock_changed(LockState::Finished);
                 }
             }
             return;

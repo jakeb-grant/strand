@@ -253,8 +253,9 @@ pub trait SurfaceHost: Painter {
 pub enum LockState {
     /// `locked`: every output shows a lock surface.
     Locked,
-    /// `finished`: the compositor refused or ended the lock. Without a
-    /// `locked` before it, the lock was never shown.
+    /// `finished`: the compositor refused or ended the lock, or offers no
+    /// `ext-session-lock` at all. Without a `locked` before it, the lock
+    /// was never shown.
     Finished,
     /// The lock was released with an `UnlockToken`.
     Unlocked,

@@ -321,6 +321,8 @@ pub struct TestHost {
     pub detached: Vec<SurfaceId>,
     /// (M4) What [`SurfaceHost::gpu_release`] was told.
     pub gpu_released: Vec<SurfaceId>,
+    /// (M4) What [`SurfaceHost::lock_changed`] said, in order.
+    pub locks: Vec<strand_surface::LockState>,
     pub monitors_added: Vec<(Monitor, bool)>,
     pub monitors_removed: Vec<Monitor>,
     pub monitors_changed: Vec<Monitor>,
@@ -548,6 +550,10 @@ impl SurfaceHost for TestHost {
 
     fn gpu_release(&mut self, surface: SurfaceId) {
         self.gpu_released.push(surface);
+    }
+
+    fn lock_changed(&mut self, state: strand_surface::LockState) {
+        self.locks.push(state);
     }
 }
 

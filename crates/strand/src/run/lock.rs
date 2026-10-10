@@ -841,17 +841,32 @@ pub(super) struct Guard {
     marked: bool,
 }
 
-/// What `strand run` says at start when no `strand-auth` helper is
-/// installed (`cargo install --path crates/strand` alone): the session
-/// lock still takes when asked, since a lock that does not lock fails
-/// open, but no password can then end it, the fallback's included, so
-/// the user hears it before the first lock rather than at it
-/// (decisions.md, m4-audit). A mocked run never locks.
-pub(super) fn missing_helper(found: bool, mocked: bool) -> Option<&'static str> {
-    (!found && !mocked).then_some(
-        "lock: no `strand-auth` helper is installed: a `lock` would lock the session \
-         with no way to unlock it but a TTY: install it (`cargo install --locked --path crates/strand-auth`)",
-    )
+/// What `strand run` says at start (a WARN and a `strand watch` notice)
+/// when a `lock` could not work, so the user hears it before the first
+/// lock rather than at it (decisions.md, m4-audit); a mocked run never
+/// locks. No `strand-auth` helper (`cargo install --path crates/strand`
+/// alone): the session lock still takes when asked, since a lock that
+/// does not lock fails open, but no password can end it, the fallback's
+/// included. No `ext-session-lock`: a lock never locks.
+pub(super) fn start_notices(helper: bool, supported: bool, mocked: bool) -> Vec<&'static str> {
+    if mocked {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if !helper {
+        out.push(
+            "lock: no `strand-auth` helper is installed: a `lock` would lock the session \
+             with no way to unlock it but a TTY: install it \
+             (`cargo install --locked --path crates/strand-auth`)",
+        );
+    }
+    if !supported {
+        out.push(
+            "lock: the compositor does not offer ext-session-lock: a `lock` cannot lock \
+             the session here",
+        );
+    }
+    out
 }
 
 /// `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.locked`.
@@ -1371,15 +1386,19 @@ mod tests {
     use strand_scene::{ButtonState, KeyInput, Modifiers, Scale, Size};
     use strand_surface::SurfaceHost as _;
 
-    /// (m4-audit) Without a helper, `strand run` warns at start (a log
-    /// line and a `strand watch` notice) instead of at the first lock;
-    /// with one, or under the mock, it says nothing.
+    /// (m4-audit) Without a helper, or on a compositor without
+    /// ext-session-lock, `strand run` warns at start (a log line and a
+    /// `strand watch` notice) instead of at the first lock; with both, or
+    /// under the mock, it says nothing.
     #[test]
-    fn a_missing_helper_is_said_at_start() {
-        let why = missing_helper(false, false).unwrap();
-        assert!(why.contains("strand-auth") && why.contains("TTY"), "{why}");
-        assert_eq!(missing_helper(true, false), None);
-        assert_eq!(missing_helper(false, true), None);
+    fn what_cannot_lock_is_said_at_start() {
+        let both = start_notices(false, false, false);
+        assert_eq!(both.len(), 2);
+        assert!(both[0].contains("strand-auth") && both[0].contains("TTY"));
+        assert!(both[1].contains("ext-session-lock"));
+        assert_eq!(start_notices(true, false, false), &both[1..]);
+        assert!(start_notices(true, true, false).is_empty());
+        assert!(start_notices(false, false, true).is_empty());
     }
 
     fn key(name: &str, text: &str) -> InputEvent {

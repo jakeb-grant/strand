@@ -2833,7 +2833,11 @@ and the connection):
     tokens reach `State::unlock` (wave 2, `run/lock.rs`), so no build
     can take a lock it cannot release. A token given while the lock is
     pending is kept and spent when `locked` arrives (`destroy` would be
-    a protocol error if `locked` is already on the wire).
+    a protocol error if `locked` is already on the wire). On a compositor
+    without `ext_session_lock_manager_v1` (`State::session_lock_supported()`
+    false) an open spec gets `LockError::Unsupported` and the host hears
+    `Finished`, so logic stops counting the lock as shown; the binary
+    says so at start, in its log and to `strand watch` (m4-audit).
   - Drag and drop (`src/dnd.rs`, included as `manager::dnd`): a
     `wl_data_device` per seat produces `InputEvent::Drag*` (external
     files, apps and text as `DropPayload::External`, read through calloop
