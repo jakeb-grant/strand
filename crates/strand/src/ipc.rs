@@ -794,7 +794,9 @@ mod tests {
 
         let notes = dir.join("notes.txt");
         std::fs::write(&notes, "keep me").unwrap();
-        let e = Server::bind(&notes, &handle).err().expect("refused");
+        let Err(e) = Server::bind(&notes, &handle) else {
+            panic!("bound over a regular file");
+        };
         assert_eq!(e.kind(), io::ErrorKind::AlreadyExists, "{e}");
         assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep me");
         let link = dir.join("link.sock");
