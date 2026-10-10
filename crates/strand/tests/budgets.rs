@@ -2039,7 +2039,19 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     settled(&mut desk, "the launcher closed", limit);
     let closed = pss_kb(pid);
     desk.alive("at the end");
-    let peak = full.max(toasts);
+    // (m4-audit) None of these shells has a shader, a filter, a backdrop
+    // or a large long animation, so none starts the GPU: the launcher's
+    // opening and closing seconds apart once added up to a promotion and
+    // left lavapipe's ~100 MB mapped ("launcher closed" at 136-147 MB).
+    let log = desk.log_text();
+    let gpu: Vec<&str> = log.lines().filter(|l| l.contains("GPU: ")).collect();
+    assert!(
+        gpu.is_empty(),
+        "the full shell started the GPU: {gpu:?}\n{}",
+        memory_report(pid)
+    );
+    // The launcher closed is gated too (it was only printed).
+    let peak = full.max(toasts).max(closed);
     eprintln!(
         "full shell on the real services ({entries} desktop entries: {machine} in \
          /usr/share/applications, {} the test's), \

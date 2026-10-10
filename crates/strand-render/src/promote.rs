@@ -8,7 +8,10 @@
 //!   frame after that with no spring in flight that is itself large (a
 //!   clock-driven animation: shader time, particles). A run that ends in
 //!   a small settled frame (a long spring that came to rest) has nothing
-//!   left to speed up, and starts over.
+//!   left to speed up, and starts over; so does one with a pause of more
+//!   than [`RUN_GAP`] between two frames, since large frames apart (a
+//!   panel's opening, then its closing seconds later) are not an
+//!   animation (m4-audit: the design launcher's close was promoted).
 //! - Demotion is the rule reversed: more than [`PROMOTE_AFTER`] of small
 //!   frames, then the next settled frame; a promoted surface that paints
 //!   nothing for [`PROMOTE_AFTER`] is settled and goes back at once (its
@@ -22,6 +25,11 @@ use std::time::{Duration, Instant};
 
 /// How long every frame must be large (or small) before a switch.
 pub const PROMOTE_AFTER: Duration = Duration::from_millis(500);
+
+/// The longest pause between two large frames that keeps a run toward
+/// promotion going: many dropped frames at any refresh rate (a slow
+/// debug frame included), half of [`PROMOTE_AFTER`].
+pub const RUN_GAP: Duration = Duration::from_millis(250);
 
 /// Damage that counts as a large frame: 0.2 Mpx.
 pub const LARGE_DAMAGE: u64 = 200_000;
@@ -68,6 +76,16 @@ impl Promotion {
     pub fn frame(&mut self, now: Instant, damage: u64, springs: bool) -> Option<Switch> {
         if damage == 0 {
             return None;
+        }
+        // A pause on the CPU ends the run: large frames that are not one
+        // animation do not add up. (On the GPU a pause is `idle`'s.)
+        if !self.gpu
+            && self
+                .last
+                .is_some_and(|t| now.saturating_duration_since(t) > RUN_GAP)
+        {
+            self.run = None;
+            self.due = false;
         }
         self.last = Some(now);
         let large = damage >= LARGE_DAMAGE;
@@ -297,6 +315,28 @@ mod tests {
             out.extend(p.frame(*t, damage, springs));
         }
         out
+    }
+
+    /// (m4-audit) Large frames with pauses between them are not one
+    /// animation: the design launcher's opening (a dozen large frames),
+    /// seconds open with nothing painted, then its closing (a dozen more)
+    /// had added up to "more than 500 ms of large frames" and started the
+    /// GPU in a shell with no GPU effect. A pause past `RUN_GAP` starts
+    /// the run over; one within it does not.
+    #[test]
+    fn large_frames_apart_are_not_one_run() {
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        assert!(run(&mut p, &mut t, Duration::from_millis(200), 1_000_000, false).is_empty());
+        t += Duration::from_secs(3);
+        assert!(run(&mut p, &mut t, Duration::from_millis(200), 1_000_000, false).is_empty());
+        t += RUN_GAP + FRAME;
+        assert!(run(&mut p, &mut t, Duration::from_millis(480), 1_000_000, false).is_empty());
+        assert!(!p.on_gpu());
+        // A pause within RUN_GAP (dropped frames) keeps the run.
+        t += RUN_GAP - FRAME;
+        let got = run(&mut p, &mut t, Duration::from_millis(60), 1_000_000, false);
+        assert_eq!(got, [Switch::ToGpu]);
     }
 
     #[test]
