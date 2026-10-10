@@ -251,9 +251,11 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   (an unlock, or a lock the compositor refused); a strand started while
   it exists locks at once with the fallback. While the config's lock
   shows, the other outputs' solids take the `lock` node's `bg`; while
-  the fallback shows, its background. Logic redacts the current values
-  of `type: password` inputs from the runtime fault messages it logs and
-  streams to `strand watch` (`lock::Secrets`). The `faults` feature
+  the fallback shows, its background. While any `type: password` input
+  is mounted, logic replaces the error of every runtime fault that can
+  carry values with `<redacted>` (keeping what failed and where) in the
+  messages it logs and streams to `strand watch`; otherwise it replaces
+  the inputs' current values (`lock::Secrets`). The `faults` feature
   (`STRAND_FAULT`) injects each fault for `tests/lock.rs`, which runs
   only in the lock VM.
   Residual risk: rendering runs on the main thread, and the main thread

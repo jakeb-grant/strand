@@ -725,16 +725,18 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// A runtime fault whose message holds a password input's value (an
-/// expression reading the password's `state`) reaches `strand watch`
-/// with the value redacted (architecture.md, "The lock"; `lock::Secrets`).
+/// A runtime fault whose message holds a password input's value, here
+/// transformed (`secret.upper()`, which no search for the value finds),
+/// reaches `strand watch` and the log with its error redacted whole
+/// while the password input is mounted, its location kept
+/// (architecture.md, "The lock"; `lock::Secrets`).
 #[test]
 fn a_password_value_is_redacted_from_fault_messages() {
     let dir = temp_dir("redact");
     std::fs::write(
         dir.join("shell.strand"),
         "bar Top {\n  state secret = \"\"\n  input { type: password; text: <-> secret }\n  \
-         text clock.format(secret)\n}\n",
+         text clock.format(secret.upper())\n}\n",
     )
     .unwrap();
     let socket = dir.join("ipc.sock");
@@ -761,10 +763,12 @@ fn a_password_value_is_redacted_from_fault_messages() {
     };
     let message = ev["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains("<redacted>") && !message.contains(password),
+        message.ends_with(": <redacted>")
+            && !message.contains(password)
+            && !message.contains(&password.to_uppercase()),
         "{ev}"
     );
-    assert!(message.contains("not a valid time pattern"), "{ev}");
+    assert!(ev["at"].as_str().is_some_and(|a| !a.is_empty()), "{ev}");
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(&dir);

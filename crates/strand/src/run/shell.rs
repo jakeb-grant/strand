@@ -120,7 +120,7 @@ impl Shell {
             ToLogic::Write { node, prop, value } => {
                 self.secrets.see_write(node, prop, &value);
                 if let Err(e) = inst.write(node, prop, value) {
-                    log::debug!("write to {prop}: {}", self.secrets.redact(&e.to_string()));
+                    log::debug!("write to {prop}: {}", self.secrets.redact_error(&e));
                 }
             }
             ToLogic::Flag { node, flag, on } => inst.set_flag(node, flag, on),
@@ -472,7 +472,7 @@ impl Shell {
         for e in &update.errors {
             // A password's value read by a failing expression is never
             // printed (`lock::Secrets`).
-            let message = self.secrets.redact(&e.to_string()).into_owned();
+            let message = self.secrets.redact_fault(e);
             log::error!("{message}");
             // A runtime fault freezes its component, outlined red.
             let frozen = self.inst.freeze(e);

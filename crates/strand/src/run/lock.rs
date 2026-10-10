@@ -209,6 +209,40 @@ impl Secrets {
         }
     }
 
+    /// A runtime fault's message as it may be logged and streamed:
+    /// `what` (a prop, handler or state name, never a value), then the
+    /// error through [`Secrets::redact_error`].
+    pub(super) fn redact_fault(&self, e: &strand_compiler::instantiate::RuntimeError) -> String {
+        format!("{}: {}", e.what, self.redact_error(&e.error))
+    }
+
+    /// An error's message as it may be logged and streamed. While any
+    /// `type: password` input is mounted, an error that can carry values
+    /// (a handler's or builtin's own message, a keyed collection's key)
+    /// is replaced whole by [`REDACTED`]: the value may be in it
+    /// transformed (`secret.upper()`, a slice, an escaped quote) or
+    /// copied to another state before the field was emptied, where no
+    /// search for the current value finds it. The errors that carry only
+    /// node ids and names, and every error while no password input is
+    /// mounted, keep their text with current values replaced
+    /// ([`Secrets::redact`]).
+    pub(super) fn redact_error(&self, e: &strand_core::Error) -> std::borrow::Cow<'static, str> {
+        use strand_core::Error as E;
+        let names_only = matches!(
+            e,
+            E::Disposed(_)
+                | E::TypeMismatch(_)
+                | E::Cycle(_)
+                | E::WriteInDerived { .. }
+                | E::Reentrant
+                | E::Cancelled
+        );
+        if !names_only && !self.inputs.is_empty() {
+            return std::borrow::Cow::Borrowed(REDACTED);
+        }
+        std::borrow::Cow::Owned(self.redact(&e.to_string()).into_owned())
+    }
+
     /// `text` with every password input's current value replaced by
     /// [`REDACTED`].
     pub(super) fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
@@ -1317,6 +1351,68 @@ mod tests {
         secrets.see_diff(&d);
         assert_eq!(secrets.redact("again"), "again", "removed");
         assert!(matches!(secrets.redact("x"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// While a password input is mounted, an error that can carry values
+    /// is redacted whole, so a transformed or copied password (upper
+    /// case, a slice, an escaped quote, another state's copy after the
+    /// field emptied) never prints; errors made of ids and names keep
+    /// their text, and with no password input mounted only current
+    /// values are replaced.
+    #[test]
+    fn a_fault_that_can_carry_values_is_redacted_whole_while_a_password_is_mounted() {
+        use strand_core::Error;
+        let pw = NodeId::new(1, 0);
+        let fault = |msg: &str| strand_compiler::instantiate::RuntimeError {
+            what: "text.text".into(),
+            error: Error::failed(msg),
+            file: None,
+            span: None,
+            node: None,
+            component: None,
+            scope: None,
+        };
+        let mut secrets = Secrets::default();
+        // No password input: the message stays.
+        assert_eq!(
+            secrets.redact_fault(&fault("`HUNTER` is not a valid time pattern")),
+            "text.text: `HUNTER` is not a valid time pattern"
+        );
+        let mut d = SceneDiff::new();
+        d.create(pw, NodeKind::Input, None, 0)
+            .set(pw, Prop::InputType, PropValue::Keyword("password".into()))
+            .set(pw, Prop::Text, PropValue::Text("hunter\"q".into()));
+        secrets.see_diff(&d);
+        for leaked in [
+            "`HUNTER\"Q` is not a valid time pattern",
+            "`hunt` is not a valid time pattern",
+            "\"hunter\\\"q\" is not a number",
+        ] {
+            assert_eq!(
+                secrets.redact_fault(&fault(leaked)),
+                "text.text: <redacted>",
+                "{leaked}"
+            );
+        }
+        // Emptied on submit, a copy elsewhere faults: still redacted.
+        secrets.see_write(pw, Prop::Text, &PropValue::Text(String::new()));
+        assert_eq!(
+            secrets.redact_fault(&fault("`hunter\"q` is not a valid time pattern")),
+            "text.text: <redacted>"
+        );
+        // Ids and names only: kept.
+        assert_eq!(
+            secrets.redact_error(&Error::Cancelled),
+            Error::Cancelled.to_string()
+        );
+        // The input gone: messages print again.
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: pw,
+            window: false,
+        });
+        secrets.see_diff(&d);
+        assert_eq!(secrets.redact_error(&Error::failed("x")), "x");
     }
 
     /// The host passes the compositor's reports to logic as the
