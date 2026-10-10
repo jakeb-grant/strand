@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,7 +28,7 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop, event_created_child,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
@@ -198,7 +199,10 @@ fn pump_mgr(mgr: &mut Mgr, d: Duration) {
 /// What the other program's drags offer: MIME types and their bytes.
 type Offers = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
-/// What the other program did.
+/// What the other program did. Each drag counts once, as the first of
+/// `cancelled` and `dnd_finished` its source got: under load a source
+/// can see a `cancelled` after its `dnd_finished` (the finished offer
+/// going away), and that is not a second drag ending.
 #[derive(Default, Debug)]
 struct Log {
     mapped: bool,
@@ -206,6 +210,7 @@ struct Log {
     sent: Vec<String>,
     cancelled: u32,
     finished: u32,
+    ended: HashSet<wayland_client::backend::ObjectId>,
 }
 
 /// Another program: a 300 px layer surface along the bottom edge whose
@@ -213,6 +218,9 @@ struct Log {
 struct Program {
     log: Arc<Mutex<Log>>,
     offers: Offers,
+    hang: Arc<AtomicBool>,
+    /// Pipes asked for while hanging: kept open, never written.
+    held: Vec<std::fs::File>,
     qh: QueueHandle<Program>,
     shm: WlShm,
     surface: WlSurface,
@@ -227,6 +235,8 @@ struct Program {
 struct ProgramHandle {
     log: Arc<Mutex<Log>>,
     offers: Offers,
+    /// While set, a drop's pipe is held open and never written.
+    hang: Arc<AtomicBool>,
 }
 
 impl ProgramHandle {
@@ -247,9 +257,11 @@ impl Program {
     fn spawn(conn: Connection, file: PathBuf) -> ProgramHandle {
         let log = Arc::new(Mutex::new(Log::default()));
         let offers = Arc::new(Mutex::new(Vec::new()));
+        let hang = Arc::new(AtomicBool::new(false));
         let handle = ProgramHandle {
             log: log.clone(),
             offers: offers.clone(),
+            hang: hang.clone(),
         };
         std::thread::spawn(move || {
             let (globals, mut queue) = registry_queue_init::<Program>(&conn).unwrap();
@@ -279,6 +291,8 @@ impl Program {
             let mut p = Program {
                 log,
                 offers,
+                hang,
+                held: Vec::new(),
                 qh,
                 shm,
                 surface,
@@ -402,6 +416,10 @@ impl Dispatch<WlDataSource, ()> for Program {
         _: &QueueHandle<Self>,
     ) {
         match event {
+            wl_data_source::Event::Send { mime_type, fd } if p.hang.load(Ordering::SeqCst) => {
+                p.held.push(std::fs::File::from(fd));
+                p.log.lock().unwrap().sent.push(mime_type);
+            }
             wl_data_source::Event::Send { mime_type, fd } => {
                 let bytes = p
                     .offers
@@ -417,11 +435,17 @@ impl Dispatch<WlDataSource, ()> for Program {
             }
             wl_data_source::Event::Cancelled => {
                 source.destroy();
-                p.log.lock().unwrap().cancelled += 1;
+                let mut log = p.log.lock().unwrap();
+                if log.ended.insert(source.id()) {
+                    log.cancelled += 1;
+                }
             }
             wl_data_source::Event::DndFinished => {
                 source.destroy();
-                p.log.lock().unwrap().finished += 1;
+                let mut log = p.log.lock().unwrap();
+                if log.ended.insert(source.id()) {
+                    log.finished += 1;
+                }
             }
             _ => {}
         }
@@ -612,6 +636,61 @@ fn another_programs_text_and_files_drop_on_a_strand_surface() {
         InputEvent::DragEnter { kinds, .. } if kinds == &[DropKind::Files]
     )));
     wait(&mut mgr, "finished", |_| program.log(|l| l.finished == 2));
+}
+
+/// A drop that cannot be read lands nowhere: more than `MAX_DROP_BYTES`,
+/// or a sender that never closes its pipe (given up after
+/// `DROP_READ_TIMEOUT`), ends with `DragLeave` and no `DragDrop`, and
+/// the offer is destroyed unfinished, which the compositor tells the
+/// other program as `cancelled` (never `dnd_finished`).
+#[test]
+fn a_drop_that_cannot_be_read_lands_nowhere() {
+    // dnd.rs's limits (the module is the manager's own, not exported).
+    const MAX_DROP_BYTES: usize = 4 << 20;
+    const DROP_READ_TIMEOUT: Duration = Duration::from_secs(5);
+    let Some((_sway, mut mgr, bar, mut p, program)) =
+        desk("a_drop_that_cannot_be_read_lands_nowhere")
+    else {
+        return;
+    };
+    mgr.state_mut().host_mut().accept.insert(bar);
+    let left = |m: &Mgr| {
+        m.state()
+            .host()
+            .input
+            .iter()
+            .any(|e| matches!(e, InputEvent::DragLeave { surface } if *surface == bar))
+    };
+    // Too much.
+    let big = vec![b'x'; MAX_DROP_BYTES + 1];
+    program.offer(&[("text/plain", &big)]);
+    drag_in(&mut mgr, &mut p, &program, (960, 18));
+    wait(&mut mgr, "the program sees the drop cancelled", |_| {
+        program.log(|l| l.cancelled == 1)
+    });
+    wait(&mut mgr, "the host sees the offer leave", left);
+    assert!(drops(mgr.state().host()).is_empty());
+    assert_eq!(program.log(|l| (l.sent.len(), l.finished)), (1, 0));
+
+    // Never closed: given up after the time limit.
+    mgr.state_mut().host_mut().input.clear();
+    program.offer(&[("text/plain", b"never sent")]);
+    program.hang.store(true, Ordering::SeqCst);
+    drag_in(&mut mgr, &mut p, &program, (960, 18));
+    wait(&mut mgr, "the program is asked for the bytes", |_| {
+        program.log(|l| l.sent.len() == 2)
+    });
+    let deadline = Instant::now() + DROP_READ_TIMEOUT + WAIT;
+    while !(left(&mgr) && program.log(|l| l.cancelled == 2)) {
+        assert!(
+            Instant::now() < deadline,
+            "the read is given up: {:#?}",
+            mgr.state().host().input
+        );
+        mgr.dispatch(Some(Duration::from_millis(20))).unwrap();
+    }
+    assert!(drops(mgr.state().host()).is_empty());
+    assert_eq!(program.log(|l| l.finished), 0);
 }
 
 /// A Strand drag that leaves its surface with the button held is handed

@@ -38,7 +38,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use calloop::PostAction;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Duration;
+
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{PostAction, RegistrationToken};
 use smithay_client_toolkit::data_device_manager::data_device::{
     DataDevice, DataDeviceData, DataDeviceHandler,
 };
@@ -56,6 +61,11 @@ use super::*;
 /// The most of another program's drop that is read: more is a drop of
 /// nothing (a warning), not unbounded memory.
 pub const MAX_DROP_BYTES: usize = 4 << 20;
+
+/// The longest another program's drop is read for: a sender that never
+/// closes its pipe is a drop of nothing after this, not a reader (and up
+/// to [`MAX_DROP_BYTES`]) kept for the life of the process.
+pub const DROP_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `text/uri-list` (files; an app when every file is a `.desktop` entry).
 const URI_LIST: &str = "text/uri-list";
@@ -248,54 +258,118 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     /// Reads another program's drop without blocking the loop, then
-    /// hands it to the host and finishes the offer.
+    /// hands it to the host and finishes the offer. A drop that cannot be
+    /// read (no pipe, a read error, more than [`MAX_DROP_BYTES`], or no
+    /// end within [`DROP_READ_TIMEOUT`]) is a drop of nothing: see
+    /// [`State::end_drop`].
     fn read_drop(&mut self, surface: SurfaceId, at: LogicalPoint, offer: DragOffer, mime: String) {
         let pipe = match offer.receive(mime.clone()) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("cannot read a drop ({mime}): {e}");
+                self.end_drop(surface, at, offer, None);
                 return;
             }
         };
+        // Whichever ends first, the read or the time limit, takes the
+        // offer and ends the drop; the other source is then removed.
+        let pending = Rc::new(RefCell::new(Some(offer)));
+        let limit: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
         let mut buf = Vec::new();
-        let read = self.handle.insert_source(pipe, move |_, file, state| {
-            let mut chunk = [0u8; 16 * 1024];
-            // Level-triggered: one read per wakeup never blocks.
-            let mut f: &File = file;
-            match f.read(&mut chunk) {
-                Ok(0) => {
-                    offer.finish();
-                    if state.surfaces.contains_key(&surface) {
-                        let payload = payload_of(&mime, &buf);
-                        state.send_input(InputEvent::DragDrop {
-                            surface,
-                            at,
-                            payload,
-                        });
+        let read = self.handle.insert_source(pipe, {
+            let (pending, limit) = (pending.clone(), limit.clone());
+            move |_, file, state| {
+                let end = |state: &mut Self, payload: Option<DropPayload>| {
+                    if let Some(t) = limit.take() {
+                        state.handle.remove(t);
+                    }
+                    if let Some(offer) = pending.borrow_mut().take() {
+                        state.end_drop(surface, at, offer, payload);
                     }
                     PostAction::Remove
-                }
-                Ok(n) if buf.len() + n > MAX_DROP_BYTES => {
-                    log::warn!("a drop over {MAX_DROP_BYTES} bytes ({mime}) is ignored");
-                    offer.finish();
-                    PostAction::Remove
-                }
-                Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    PostAction::Continue
-                }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
-                    PostAction::Continue
-                }
-                Err(e) => {
-                    log::warn!("cannot read a drop ({mime}): {e}");
-                    PostAction::Remove
+                };
+                let mut chunk = [0u8; 16 * 1024];
+                // Level-triggered: one read per wakeup never blocks.
+                let mut f: &File = file;
+                match f.read(&mut chunk) {
+                    Ok(0) => end(state, Some(payload_of(&mime, &buf))),
+                    Ok(n) if buf.len() + n > MAX_DROP_BYTES => {
+                        log::warn!("a drop over {MAX_DROP_BYTES} bytes ({mime}) is ignored");
+                        end(state, None)
+                    }
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        PostAction::Continue
+                    }
+                    Err(e)
+                        if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+                    {
+                        PostAction::Continue
+                    }
+                    Err(e) => {
+                        log::warn!("cannot read a drop ({mime}): {e}");
+                        end(state, None)
+                    }
                 }
             }
         });
-        if let Err(e) = read {
-            log::warn!("cannot read a drop: {}", e.error);
+        let read = match read {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("cannot read a drop: {}", e.error);
+                if let Some(offer) = pending.borrow_mut().take() {
+                    self.end_drop(surface, at, offer, None);
+                }
+                return;
+            }
+        };
+        let timer = Timer::from_duration(DROP_READ_TIMEOUT);
+        let timed = self.handle.insert_source(timer, move |_, _, state| {
+            if let Some(offer) = pending.borrow_mut().take() {
+                log::warn!(
+                    "a drop not read within {DROP_READ_TIMEOUT:?} is ignored (its sender never \
+                     closed the pipe)"
+                );
+                state.handle.remove(read);
+                state.end_drop(surface, at, offer, None);
+            }
+            TimeoutAction::Drop
+        });
+        match timed {
+            Ok(t) => limit.set(Some(t)),
+            Err(e) => log::warn!("a drop is read with no time limit: {}", e.error),
         }
+    }
+
+    /// Ends a dropped offer over `surface`. Read (`payload`): the offer is
+    /// finished (its source sees `dnd_finished`) and the host gets
+    /// `DragDrop`. Not read (`None`): the offer is destroyed unfinished,
+    /// which the compositor tells its source as `cancelled`, and the host
+    /// gets `DragLeave`, so nothing keeps the offer. Either way the
+    /// dropped offer is destroyed: after a drop it is the client's to
+    /// destroy.
+    fn end_drop(
+        &mut self,
+        surface: SurfaceId,
+        at: LogicalPoint,
+        offer: DragOffer,
+        payload: Option<DropPayload>,
+    ) {
+        if payload.is_some() {
+            offer.finish();
+        }
+        offer.destroy();
+        if !self.surfaces.contains_key(&surface) {
+            return;
+        }
+        self.send_input(match payload {
+            Some(payload) => InputEvent::DragDrop {
+                surface,
+                at,
+                payload,
+            },
+            None => InputEvent::DragLeave { surface },
+        });
     }
 }
 
@@ -378,23 +452,23 @@ impl<H: SurfaceHost + 'static> DataDeviceHandler for State<H> {
             return;
         };
         let Some(offer) = drag_offer(device) else {
+            // The offer is gone already: nothing to read or finish.
+            self.send_input(InputEvent::DragLeave {
+                surface: over.surface,
+            });
             return;
         };
+        let at = LogicalPoint::new(offer.x as f32, offer.y as f32);
         if over.accepted != Some(true) {
+            // wlroots never drops an offer nobody accepted; another
+            // compositor may. It lands nowhere.
+            self.end_drop(over.surface, at, offer, None);
             return;
         }
-        let at = LogicalPoint::new(offer.x as f32, offer.y as f32);
         match over.what {
             Carried::Ours => {
-                let Some(node) = self.dnd.ours.as_ref().map(|o| o.node) else {
-                    return;
-                };
-                offer.finish();
-                self.send_input(InputEvent::DragDrop {
-                    surface: over.surface,
-                    at,
-                    payload: DropPayload::Node(node),
-                });
+                let payload = self.dnd.ours.as_ref().map(|o| DropPayload::Node(o.node));
+                self.end_drop(over.surface, at, offer, payload);
             }
             Carried::Outside { mime } => self.read_drop(over.surface, at, offer, mime),
         }
