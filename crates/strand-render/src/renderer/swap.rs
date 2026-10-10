@@ -189,6 +189,9 @@ pub(super) struct Swap {
     /// The colour curve of the swap in flight (crossfades that start
     /// while it springs fade along it).
     curve: Option<Curve>,
+    /// [`Renderer::sample_tokens`]'s scratch: whether each root has
+    /// settled at the frame's time.
+    settled: Vec<bool>,
 }
 
 /// What a `SetTokens` will do, worked out before the diff applies (the
@@ -233,18 +236,18 @@ impl FadeFrame {
 /// Whether `text` can reach 3:1 over `bgs` both in `from` (the old
 /// table's scope) and in `to` (the new one's), each background's
 /// luminance looked up once per scope (`memo`).
-fn readable_in(
+fn readable_in<'b>(
     [from, to]: [&TokenScope<'_>; 2],
-    memo: &mut [HashMap<String, Option<f64>>; 2],
+    memo: &mut [HashMap<&'b str, Option<f64>>; 2],
     text: &str,
-    bgs: &[String],
+    bgs: &'b [String],
 ) -> bool {
     let mut lums = Vec::with_capacity(bgs.len());
     for (scope, memo) in [from, to].into_iter().zip(memo.iter_mut()) {
         lums.clear();
         for b in bgs.iter().filter(|b| b.as_str() != text) {
             let l = *memo
-                .entry(b.clone())
+                .entry(b.as_str())
                 .or_insert_with(|| match scope.lookup(b) {
                     Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c.relative_luminance()),
                     _ => None,
@@ -385,19 +388,43 @@ enum Src {
     Skip,
 }
 
+/// A root read by the play-through, as it is at one moment.
+#[derive(Clone, Copy, Debug)]
+struct Probe {
+    /// Its channels, velocity and whether it has settled
+    /// ([`Motion::probe`]).
+    pos: [f32; 4],
+    vel: [f32; 4],
+    settled: bool,
+    /// Its colour (gamut-mapped) and that colour's luminance (NaN:
+    /// translucent).
+    color: Color,
+    lum: f64,
+}
+
 /// The play-through of one swap.
 struct Play<'a> {
     paths: Vec<&'a str>,
     /// The roots the pairs read: (index into `paths`, motion).
     sims: Vec<(usize, Motion<4>)>,
-    /// The new table with the roots of the moment written in.
-    scratch: TokenTable,
+    /// The new table with the roots of the moment written in, for the
+    /// slots (none without them).
+    scratch: Option<TokenTable>,
+    /// Every root read at each moment looked at, worked out once: by
+    /// the moment (in nanoseconds), its first entry in `probed` (one per
+    /// sim, in order). The motions are pure functions of time once the
+    /// play-through starts, so the `set { }` scopes' pass and the speed
+    /// and settling checks read what the global pass already worked out.
+    probes: HashMap<u64, usize>,
+    probed: Vec<Probe>,
     /// Override chains of the scopes checked (index 0: global, empty).
     chains: Vec<Vec<&'a TokenTable>>,
     /// The scopes' surfaces.
     owners: Vec<Vec<SurfaceId>>,
     /// Backgrounds evaluated once per sample: (scope, path).
     slots: Vec<(usize, String)>,
+    /// The roots (by index into `paths`) some slot reads.
+    slot_roots: Vec<bool>,
     /// Pairs to judge: (scope, backgrounds).
     pairs: Vec<(usize, Vec<Src>)>,
     /// Per moment: luminance of each root (NaN: translucent) and slot,
@@ -437,10 +464,13 @@ impl<'a> Play<'a> {
         let mut play = Play {
             paths: paths.clone(),
             sims: Vec::new(),
-            scratch: table.clone(),
+            scratch: None,
+            probes: HashMap::new(),
+            probed: Vec::new(),
             chains: vec![Vec::new()],
             owners: vec![Vec::new()],
             slots: Vec::new(),
+            slot_roots: Vec::new(),
             pairs: Vec::new(),
             lum: vec![f64::NAN; paths.len()],
             slot_lum: Vec::new(),
@@ -473,7 +503,7 @@ impl<'a> Play<'a> {
             {
                 Src::Root(i)
             } else if moving(r) {
-                play.slot(0, b)
+                play.slot(0, b, r)
             } else {
                 match scope.lookup(b) {
                     Some(PropValue::Color(c)) if c.a >= 1.0 => Src::Fixed(c.relative_luminance()),
@@ -569,7 +599,7 @@ impl<'a> Play<'a> {
             let mut src_of: HashMap<&str, Src> = HashMap::new();
             for (b, r) in &scope_reads {
                 let src = if moving(r) {
-                    play.slot(si, b)
+                    play.slot(si, b, r)
                 } else {
                     match lscope.lookup(b) {
                         Some(PropValue::Color(c)) if c.a >= 1.0 => {
@@ -600,21 +630,15 @@ impl<'a> Play<'a> {
                 play.add_pair(si, srcs);
             }
         }
-        // The roots the pairs read, directly or through a slot.
-        let mut read = vec![false; paths.len()];
+        // The roots the pairs read, directly or through a slot (marked
+        // as each slot was made).
+        let mut read = std::mem::take(&mut play.slot_roots);
+        read.resize(paths.len(), false);
         for (_, srcs) in &play.pairs {
             for s in srcs {
                 if let Src::Root(i) = s {
                     read[*i] = true;
                 }
-            }
-        }
-        for (si, b) in &play.slots {
-            let mut levels: Vec<&TokenTable> = vec![table];
-            levels.extend(play.chains[*si].iter().copied());
-            let r = reads(&levels, b);
-            for (i, p) in paths.iter().enumerate() {
-                read[i] |= r.contains(*p);
             }
         }
         play.sims = roots
@@ -623,6 +647,14 @@ impl<'a> Play<'a> {
             .filter(|(i, _)| read[*i])
             .map(|(i, r)| (i, r.motion.clone()))
             .collect();
+        if !play.slots.is_empty() {
+            // What evaluation reads of the new table (never its origins).
+            let mut scratch = TokenTable::default();
+            scratch.tokens = table.tokens.clone();
+            scratch.derived = table.derived.clone();
+            scratch.contrast = table.contrast.clone();
+            play.scratch = Some(scratch);
+        }
         play.slot_lum = vec![f64::NAN; play.slots.len()];
         play.slot_at = vec![0; play.slots.len()];
         play.near_last = vec![false; play.pairs.len()];
@@ -635,7 +667,10 @@ impl<'a> Play<'a> {
         (!play.pairs.is_empty() || failed).then_some(play)
     }
 
-    fn slot(&mut self, scope: usize, path: &str) -> Src {
+    /// The slot evaluating `path` in `scope`, whose evaluation `reads`
+    /// (every path, as [`reads`] in the scope's levels): made once, its
+    /// roots marked as read.
+    fn slot(&mut self, scope: usize, path: &str, reads: &HashSet<String>) -> Src {
         let i = match self
             .slots
             .iter()
@@ -644,6 +679,10 @@ impl<'a> Play<'a> {
             Some(i) => i,
             None => {
                 self.slots.push((scope, path.to_string()));
+                self.slot_roots.resize(self.paths.len(), false);
+                for (read, p) in self.slot_roots.iter_mut().zip(&self.paths) {
+                    *read |= reads.contains(*p);
+                }
                 self.slots.len() - 1
             }
         };
@@ -674,16 +713,13 @@ impl<'a> Play<'a> {
         self.moments += 1;
         let cost = self.sims.len() as u32;
         self.work = self.work.checked_sub(cost)?;
-        let slots = !self.slots.is_empty();
-        for (i, m) in &self.sims {
-            let c = channels_color(m.peek(at)).gamut_mapped();
-            self.lum[*i] = if c.a >= 1.0 {
-                c.relative_luminance()
-            } else {
-                f64::NAN
-            };
-            if slots && let Some(slot) = self.scratch.tokens.get_mut(self.paths[*i]) {
-                *slot = PropValue::Color(c);
+        let first = self.probe(at);
+        for ((i, _), p) in self.sims.iter().zip(&self.probed[first..]) {
+            self.lum[*i] = p.lum;
+            if let Some(scratch) = &mut self.scratch
+                && let Some(slot) = scratch.tokens.get_mut(self.paths[*i])
+            {
+                *slot = PropValue::Color(p.color);
             }
         }
         let mut any_near = false;
@@ -723,6 +759,37 @@ impl<'a> Play<'a> {
         Some(any_near)
     }
 
+    /// The roots read at `at`, worked out the first time a moment asks:
+    /// the index of the first in `probed`.
+    fn probe(&mut self, at: Duration) -> usize {
+        // (A moment past u64 nanoseconds, some 584 years, is not kept.)
+        let key = u64::try_from(at.as_nanos()).ok();
+        if let Some(&first) = key.and_then(|k| self.probes.get(&k)) {
+            return first;
+        }
+        let first = self.probed.len();
+        for (_, m) in &self.sims {
+            let (pos, vel, settled) = m.probe(at);
+            let color = channels_color(pos).gamut_mapped();
+            let lum = if color.a >= 1.0 {
+                color.relative_luminance()
+            } else {
+                f64::NAN
+            };
+            self.probed.push(Probe {
+                pos,
+                vel,
+                settled,
+                color,
+                lum,
+            });
+        }
+        if let Some(k) = key {
+            self.probes.insert(k, first);
+        }
+        first
+    }
+
     /// Slot `k`'s luminance at this moment, evaluated once per moment.
     fn slot_lum(&mut self, k: usize) -> Option<f64> {
         if self.slot_at[k] == self.moments {
@@ -730,9 +797,23 @@ impl<'a> Play<'a> {
         }
         self.work = self.work.checked_sub(2)?;
         let (si, path) = &self.slots[k];
-        let mut levels: Vec<&TokenTable> = vec![&self.scratch];
-        levels.extend(self.chains[*si].iter().copied());
-        self.slot_lum[k] = match TokenScope::new(&levels).lookup(path) {
+        let Some(scratch) = &self.scratch else {
+            return Some(f64::NAN);
+        };
+        let chain = &self.chains[*si];
+        // The scope's levels, on the stack for the usual short chain.
+        let mut inline: [&TokenTable; 4] = [scratch; 4];
+        let heap: Vec<&TokenTable>;
+        let levels: &[&TokenTable] = if chain.len() < inline.len() {
+            inline[1..=chain.len()].copy_from_slice(chain);
+            &inline[..=chain.len()]
+        } else {
+            heap = std::iter::once(scratch)
+                .chain(chain.iter().copied())
+                .collect();
+            &heap
+        };
+        self.slot_lum[k] = match TokenScope::new(levels).lookup(path) {
             Some(PropValue::Color(c)) if c.a >= 1.0 => c.relative_luminance(),
             _ => f64::NAN,
         };
@@ -802,8 +883,11 @@ impl<'a> Play<'a> {
     }
 
     /// Whether every root read has settled at `at`.
-    fn settled(&self, at: Duration) -> bool {
-        self.sims.iter().all(|(_, m)| m.is_settled(at))
+    fn settled(&mut self, at: Duration) -> bool {
+        let first = self.probe(at);
+        self.probed[first..first + self.sims.len()]
+            .iter()
+            .all(|p| p.settled)
     }
 
     /// How fast the roots move at `at`, in OKLab channels per second:
@@ -815,9 +899,10 @@ impl<'a> Play<'a> {
         if first {
             self.last = vec![[0.0; 4]; self.sims.len()];
         }
-        for ((_, m), last) in self.sims.iter().zip(self.last.iter_mut()) {
-            let now = m.peek(at);
-            let v = m.velocity(at);
+        let from = self.probe(at);
+        let probed = &self.probed[from..from + self.sims.len()];
+        for (p, last) in probed.iter().zip(self.last.iter_mut()) {
+            let (now, v) = (p.pos, p.vel);
             for c in 0..4 {
                 let moved = if first {
                     0.0
@@ -1416,6 +1501,9 @@ impl Renderer {
         let started = Instant::now();
         let snap = self.anim.reduced();
         let tokens = &mut self.tree.tokens.tokens;
+        // Whether each root (in order) has settled at `at`, asked once.
+        let mut settled = std::mem::take(&mut self.swap.settled);
+        settled.clear();
         for (path, r) in self.swap.roots.iter_mut() {
             let ch = if snap {
                 None
@@ -1425,8 +1513,16 @@ impl Renderer {
                 Some(r.motion.peek(at))
             };
             let c = match ch {
-                Some(ch) if !r.motion.is_settled(at) => channels_color(ch).gamut_mapped(),
-                _ => r.target,
+                Some(ch) => {
+                    let done = r.motion.is_settled(at);
+                    settled.push(done);
+                    if done {
+                        r.target
+                    } else {
+                        channels_color(ch).gamut_mapped()
+                    }
+                }
+                None => r.target,
             };
             if let Some(slot) = tokens.get_mut(path) {
                 *slot = PropValue::Color(c);
@@ -1435,8 +1531,12 @@ impl Renderer {
         if snap {
             self.swap.roots.clear();
         } else if commit {
-            self.swap.roots.retain(|_, r| !r.motion.is_settled(at));
+            let mut done = settled.iter();
+            self.swap
+                .roots
+                .retain(|_, _| !done.next().copied().unwrap_or(false));
         }
+        self.swap.settled = settled;
         if self.swap.roots.is_empty() {
             // Landed: the tree's table is the held one now.
             self.swap.held = None;
@@ -1572,5 +1672,117 @@ impl Renderer {
         let mut v: Vec<SurfaceId> = self.swap.held_for.iter().copied().collect();
         v.sort();
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use strand_scene::{Spring, TokenMethod};
+
+    /// The default seed's palette and base tokens, light or dark, with
+    /// `$motion.effects` at the design's spring.
+    fn table(dark: bool) -> TokenTable {
+        let mut t = strand_theme::defaults::base_tokens();
+        strand_theme::from_seed(
+            Color::from_hex(strand_theme::defaults::DEFAULT_SEED).unwrap_or(Color::BLACK),
+            strand_theme::Options {
+                dark,
+                ..strand_theme::Options::default()
+            },
+        )
+        .insert_into(&mut t);
+        t.freeze();
+        t
+    }
+
+    /// Every colour that differs springs from `old` to `new`, as
+    /// `plan_swap` sets them up.
+    fn roots(old: &TokenTable, new: &TokenTable, base: Duration) -> BTreeMap<String, Root> {
+        let curve = Curve::of(&Transition::of_spring(Spring::new(1600.0, 1.0).unwrap()));
+        new.tokens
+            .iter()
+            .filter_map(|(path, v)| {
+                let (PropValue::Color(to), Some(PropValue::Color(from))) = (v, old.get(path))
+                else {
+                    return None;
+                };
+                (from != to).then(|| {
+                    let mut motion =
+                        Motion::rest(color_channels(*from), ROOT_EPS).sampled_at(Some(base));
+                    motion.retarget(color_channels(*to), curve);
+                    (
+                        path.clone(),
+                        Root {
+                            motion,
+                            target: *to,
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// The play-through works each root out once per moment, and what it
+    /// keeps is what the motion gives then: both passes (the global
+    /// scope's, then the `set { }` scopes') read the same moments.
+    #[test]
+    fn the_play_through_probes_each_moment_once_and_exactly() {
+        let (old, new) = (table(false), table(true));
+        let base = Duration::from_secs(1);
+        let roots = roots(&old, &new, base);
+        assert!(!roots.is_empty());
+        let overrides: Vec<TokenTable> = (0..4)
+            .map(|i| {
+                let mut set = TokenTable::default();
+                set.insert(
+                    "surface",
+                    PropValue::Token(TokenExpr::path("surface").call(
+                        TokenMethod::Mix,
+                        vec![
+                            TokenExpr::path("accent"),
+                            TokenExpr::value(PropValue::Number(0.1 + 0.2 * i as f32)),
+                        ],
+                    )),
+                );
+                set
+            })
+            .collect();
+        let scopes: Vec<ShownScope<'_>> = overrides
+            .iter()
+            .enumerate()
+            .map(|(i, t)| ShownScope {
+                chain: vec![t],
+                surfaces: vec![SurfaceId(i as u32 + 1)],
+            })
+            .collect();
+        let Some(mut play) = Play::new(&old, &new, &scopes, &roots) else {
+            panic!("nothing to play through");
+        };
+        assert!(!play.slots.is_empty(), "the scopes' backgrounds are slots");
+        for (_, m) in &mut play.sims {
+            m.sample(base + CHECK_STEP);
+        }
+        assert!(play.pass(base, true), "the global scope is decided");
+        let (global_moments, global_probes) = (play.moments, play.probes.len());
+        assert!(global_probes > 0 && global_probes <= global_moments as usize);
+        assert!(play.pass(base, false), "the scopes are decided");
+        // The scopes' pass looked at as many moments again, but probed
+        // only the moments the global pass did not (finer ones, if any).
+        assert!(play.moments > global_moments);
+        assert!(play.probes.len() < play.moments as usize);
+        for (&nanos, &first) in &play.probes {
+            let at = Duration::from_nanos(nanos);
+            for (k, (_, m)) in play.sims.iter().enumerate() {
+                let p = play.probed[first + k];
+                let pos = m.peek(at);
+                assert_eq!(p.pos, pos, "{at:?}");
+                assert_eq!(p.vel, m.velocity(at));
+                assert_eq!(p.settled, m.is_settled(at));
+                let c = channels_color(pos).gamut_mapped();
+                assert_eq!(p.color, c);
+                assert_eq!(p.lum.to_bits(), c.relative_luminance().to_bits());
+            }
+        }
     }
 }
