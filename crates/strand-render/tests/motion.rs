@@ -1505,16 +1505,34 @@ fn a_stalled_exit_wakes_the_loop_by_itself() {
     assert_eq!(woken.load(Ordering::SeqCst), after, "woken while idle");
 }
 
-/// Frame time while the design's animated surfaces move (release builds
-/// only: `cargo test --release -p strand-render --test motion --
-/// --ignored`): the launcher's `enter { opacity: 0; scale: 0.96 }` over a
-/// 640×480 panel of rows, and a toast leaving a stack of three (slide,
-/// fade and collapse while the next slides up). Every frame must fit a
-/// 60 Hz refresh (16.7 ms), and most of them half of it.
+/// The start of every wall-clock gate's failure message: the laptop's
+/// container suite warns, instead of failing, only on failures that all
+/// carry it (`scripts/container/gate-misses.sh`). Functional assertions
+/// never carry it.
+const GATE_MISS: &str = "timing gate missed";
+
+/// The container suite's gate-miss check reads the marker these gates'
+/// failures start with.
 #[test]
-#[ignore = "release-mode frame-time bench"]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
+}
+
+/// Frame time while the design's animated surfaces move: the launcher's
+/// `enter { opacity: 0; scale: 0.96 }` over a 640×480 panel of rows, and
+/// a toast leaving a stack of three (slide, fade and collapse while the
+/// next slides up). In an optimised build (CI's `timing` job: `cargo
+/// test --profile timing -p strand-render --test motion
+/// animated_frames_fit_the_refresh_budget`) every frame must fit a 60 Hz
+/// refresh (16.7 ms), and the median half of it; the gates are checked
+/// once at the end, after the functional assertions, with the
+/// `GATE_MISS` marker. A debug build only reports the times.
+#[test]
 fn animated_frames_fit_the_refresh_budget() {
-    fn check(name: &str, mut times: Vec<Duration>) {
+    let gated = !cfg!(debug_assertions);
+    let misses = std::cell::RefCell::new(Vec::<String>::new());
+    let check = |name: &str, mut times: Vec<Duration>| {
         assert!(times.len() >= 5, "{name}: only {} frames", times.len());
         times.sort();
         let median = times[times.len() / 2];
@@ -1523,9 +1541,17 @@ fn animated_frames_fit_the_refresh_budget() {
             "{name}: {} frames, median {median:?}, worst {worst:?}",
             times.len()
         );
-        assert!(median < Duration::from_micros(8_333), "{name}: {median:?}");
-        assert!(worst < Duration::from_micros(16_667), "{name}: {worst:?}");
-    }
+        if gated && median >= Duration::from_micros(8_333) {
+            misses
+                .borrow_mut()
+                .push(format!("{name}: median {median:?} over 8.333 ms"));
+        }
+        if gated && worst >= Duration::from_micros(16_667) {
+            misses
+                .borrow_mut()
+                .push(format!("{name}: worst {worst:?} over 16.667 ms"));
+        }
+    };
     let timed = |h: &mut Host| {
         let mut times = Vec::new();
         loop {
@@ -1646,6 +1672,10 @@ fn animated_frames_fit_the_refresh_budget() {
     h.apply(d);
     let times = timed(&mut h);
     check("toast exit", times);
+    let misses = misses.into_inner();
+    if !misses.is_empty() {
+        panic!("{GATE_MISS}: {}", misses.join("\n"));
+    }
 }
 
 /// Logic creating a node under the id of a ghost still playing its exit

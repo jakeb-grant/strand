@@ -185,6 +185,8 @@ timing_step "reload_latency (--profile timing, STRAND_LATENCY_ROUNDS=50)" 60 \
   env STRAND_LATENCY_ROUNDS=50 cargo test --profile timing -p strand --bin strand reload_latency -- --nocapture --test-threads=1
 timing_step "cargo test --profile timing -p strand-render --test list_scroll_bench" 30 \
   cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
+timing_step "cargo test --profile timing -p strand-render --test motion (frame time)" 30 \
+  cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
 
 echo
 if [ "${#warned[@]}" -gt 0 ]; then

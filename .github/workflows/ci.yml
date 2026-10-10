@@ -203,6 +203,10 @@ jobs:
       # with logic's window answers 50 ms late and no stalled frame
       # (decisions.md m4-lists-w1).
       - run: cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
+      # The launcher's enter and a toast's exit: every frame within a
+      # 60 Hz refresh and the median within half of it, on an optimised
+      # build (features.md, M2's motion box).
+      - run: cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
 
   # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's
   # bar in `strand run` against each live compositor, compared with what
