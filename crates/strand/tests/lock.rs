@@ -98,17 +98,39 @@ lock Gate {
   when auth.failed { bg: #a02040 }
   when secret != "" { bg: #20a050 }
   input { type: password; text: <-> secret; focus: true
-    on activate { auth.submit(secret); secret = "" }
+    on activate { if secret != "" { auth.submit(secret) }; secret = "" }
   }
   text pct(10 / zero)
 }
 "#;
 
+/// auth.schema's `on activate` handler, which [`CONFIG`] uses.
+const IDIOM: &str = r#"on activate { if secret != "" { auth.submit(secret) }; secret = "" }"#;
+
+/// (m4-audit) [`CONFIG`]'s field is the one auth.schema documents (and
+/// `check::lock_no_auth`'s help suggests), so the VM unlocks with the
+/// field users copy. Only text is compared: nothing locks here.
+#[test]
+fn the_vm_config_uses_the_documented_field() {
+    let schema = include_str!("../../strand-services-schema/src/auth.schema");
+    let doc: String = schema
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("///"))
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        doc.contains(IDIOM),
+        "auth.schema no longer documents {IDIOM}"
+    );
+    assert!(CONFIG.contains(IDIOM));
+}
+
 /// [`CONFIG`] submitting through `on key` instead, the form m4-lock-w2
 /// documented before Return activated a plain `input`; it keeps working.
 fn config_on_key() -> String {
     CONFIG.replace(
-        r#"on activate { auth.submit(secret); secret = "" }"#,
+        IDIOM,
         r#"on key(k) { if k.name == "Return" { auth.submit(secret); secret = "" } }"#,
     )
 }
