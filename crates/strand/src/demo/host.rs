@@ -33,6 +33,9 @@ pub struct Host {
     /// (`SurfaceHost::surface_placed`): a press becomes the tray's click
     /// point with it.
     origins: HashMap<SurfaceId, (i32, i32)>,
+    /// (M4) The output each surface is on (its monitor's identity), for
+    /// render's surface origins (shared-element morphs across surfaces).
+    outputs: HashMap<SurfaceId, String>,
     /// The surfaces idle before an input event, kept between events so
     /// pointer motion allocates nothing.
     idle: Vec<SurfaceId>,
@@ -339,6 +342,7 @@ impl Host {
             wake: None,
             roots: HashMap::new(),
             origins: HashMap::new(),
+            outputs: HashMap::new(),
             idle: Vec::new(),
             blur_fallback: BlurFallback {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
@@ -515,6 +519,17 @@ impl Host {
 }
 
 impl Host {
+    /// (M4) Hands render where `surface` lies on its output, once it is
+    /// placed (a popup, with no monitor of its own, takes its parent's).
+    fn send_origin(&mut self, surface: SurfaceId) {
+        if let Some(&(x, y)) = self.origins.get(&surface) {
+            let at = strand_scene::LogicalPoint::new(x as f32, y as f32);
+            let output = self.outputs.get(&surface).cloned();
+            self.renderer
+                .set_surface_origin(surface, Some((output, at)));
+        }
+    }
+
     /// The tray's click point `event` sets, if any: on a press on a
     /// placed surface, [`click_point`] of the innermost node hit; on a
     /// press on a surface not placed yet (a popup before its configure,
@@ -604,6 +619,9 @@ impl SurfaceHost for Host {
             );
         }
         self.renderer.attach_surface(surface, node);
+        if let Some(m) = monitor {
+            self.outputs.insert(surface, m.id.as_str().to_string());
+        }
         let kind = self.renderer.tree().get(node).map(|n| n.kind);
         self.lock.attached(surface, node, kind);
         self.roots.insert(surface, node);
@@ -618,6 +636,9 @@ impl SurfaceHost for Host {
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
         self.renderer
             .set_surface_bounds(surface, monitor_bounds(monitor));
+        self.outputs
+            .insert(surface, monitor.id.as_str().to_string());
+        self.send_origin(surface);
         self.wake_if_changed();
     }
 
@@ -642,6 +663,7 @@ impl SurfaceHost for Host {
 
     fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
         self.origins.insert(surface, origin);
+        self.send_origin(surface);
     }
 
     fn surface_detached(&mut self, surface: SurfaceId) {
@@ -654,6 +676,7 @@ impl SurfaceHost for Host {
         }
         self.roots.remove(&surface);
         self.origins.remove(&surface);
+        self.outputs.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -1278,6 +1301,52 @@ mod tests {
         let _ = pings();
         host.input(&wheel);
         assert_eq!(pings(), 1);
+    }
+
+    /// (M4) The host hands render where each surface lies and on which
+    /// output (shared-element morphs across surfaces): a layer surface
+    /// takes its monitor's identity, a popup with no monitor its parent's,
+    /// whichever is placed first, and follows the parent to another one.
+    #[test]
+    fn surfaces_are_placed_on_their_outputs_for_render() {
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (bar, item, popup) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+        let mut d = SceneDiff::new();
+        d.create(bar, strand_scene::NodeKind::Bar, None, 0)
+            .create(item, strand_scene::NodeKind::Box, Some(bar), 0)
+            .create(popup, strand_scene::NodeKind::Popup, Some(item), 0);
+        assert!(host.renderer.apply(d).is_empty());
+        let (s, p) = (SurfaceId(1), SurfaceId(2));
+        let dp1 = monitor("A", "DP-1");
+        host.surface_attached(s, bar, Some(&dp1));
+        host.surface_attached(p, popup, None);
+        assert_eq!(host.renderer.surface_origin(s), None, "not placed yet");
+        let origin = |host: &Host, id| {
+            host.renderer
+                .surface_origin(id)
+                .map(|o| (o.output.clone(), o.at.x, o.at.y))
+        };
+        // The popup placed before its parent: no output yet, then its
+        // parent's once the parent is placed.
+        host.surface_placed(p, (40, 36));
+        assert_eq!(origin(&host, p), None, "its parent is not placed");
+        host.surface_placed(s, (0, 0));
+        let name = dp1.id.as_str().to_string();
+        assert_eq!(origin(&host, s), Some((name.clone(), 0.0, 0.0)));
+        assert_eq!(origin(&host, p), Some((name, 40.0, 36.0)));
+        // The parent moved to another monitor: the popup follows it.
+        let hdmi = monitor("B", "HDMI-A-1");
+        host.surface_entered(s, &hdmi);
+        let hdmi_name = hdmi.id.as_str().to_string();
+        assert_eq!(origin(&host, s), Some((hdmi_name.clone(), 0.0, 0.0)));
+        assert_eq!(origin(&host, p), Some((hdmi_name, 40.0, 36.0)));
+        host.surface_detached(p);
+        assert_eq!(host.renderer.surface_origin(p), None);
     }
 
     /// (M4) A still aurora and capped particles (CPU fallbacks for GPU

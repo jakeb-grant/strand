@@ -248,6 +248,13 @@ impl Renderer {
     pub(super) fn poll_text(&mut self) {
         // Decoded images: the surfaces drawing them repaint.
         let arrived = self.extras.images.poll();
+        // (M4) A media source's file read on the worker: every surface
+        // flattens again, and the node whose source it is draws it.
+        if self.extras.images.files_arrived() {
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
         if !arrived.is_empty() {
             let images = &self.extras.images;
             for (id, s) in self.surfaces.iter_mut() {

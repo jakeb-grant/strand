@@ -157,3 +157,49 @@ async fn a_tap_captures_its_window_as_it_changes() {
     assert!(rx2.try_recv().is_err(), "told once, then nothing");
     service.abort();
 }
+
+/// A frame's `transform` turns it upright: a window whose buffer is
+/// turned a quarter (48 × 64 in the buffer) or flipped comes as it looks,
+/// 64 × 48 with its colour on the left and white on the right.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transformed_frames_come_upright() {
+    let fake = Fake::builder().capture(true).start();
+    fake.cmd(Cmd::AddToplevel("cap-t", "turned", "foot"));
+    fake.cmd(Cmd::AddToplevel("cap-f", "flipped", "foot"));
+    fake.cmd(Cmd::ResizeToplevel("cap-t", 48, 64));
+    fake.cmd(Cmd::TransformToplevel("cap-t", 1)); // 90
+    fake.cmd(Cmd::TransformToplevel("cap-f", 6)); // flipped_180
+    fake.cmd(Cmd::Paint("cap-t", [255, 0, 0, 255]));
+    fake.cmd(Cmd::Paint("cap-f", [0, 0, 255, 255]));
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: None,
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("the windows", |m| m.windows.len() == 2).await;
+    for (ident, colour) in [("cap-t", [255, 0, 0, 255]), ("cap-f", [0, 0, 255, 255])] {
+        let (tx, rx) = mpsc::channel();
+        let _tap = capture_window(ident, (0, 0), move |f| {
+            if let Some(f) = f {
+                let _ = tx.send(f.clone());
+            }
+        });
+        let f = next(&rx, ident);
+        assert_eq!((f.width, f.height), (64, 48), "{ident} upright");
+        let at = |x: u32, y: u32| {
+            let i = ((y * f.width + x) * 4) as usize;
+            let p = &f.pixels[i..i + 4];
+            [p[2], p[1], p[0], p[3]]
+        };
+        for y in [0, 24, 47] {
+            assert_eq!(at(0, y), colour, "{ident} left at {y}");
+            assert_eq!(at(31, y), colour, "{ident}");
+            assert_eq!(at(32, y), [255; 4], "{ident} right at {y}");
+            assert_eq!(at(63, y), [255; 4], "{ident}");
+        }
+    }
+    service.abort();
+}

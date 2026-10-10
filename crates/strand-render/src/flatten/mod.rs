@@ -157,6 +157,21 @@ pub struct NodeRecord {
     /// the glyphs that changed (a clock tick repaints its last digit,
     /// design.md: "a clock tick repaints about 60×20 px").
     pub glyphs: Option<Arc<GlyphCells>>,
+    /// A node with a border along its box: what it draws besides the
+    /// border, and the ring's four strips (buffer pixels), so a change of
+    /// the border alone (a gradient turning with `t`) damages only the
+    /// ring (design.md: "only the ring repaints").
+    pub ring: Option<Arc<RingCells>>,
+}
+
+/// A node's border ring for damage diffing (see [`NodeRecord::ring`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RingCells {
+    /// The hash of everything the node draws but its border.
+    pub rest: u64,
+    /// The strips the ring lies in: the top and bottom rows between the
+    /// corners, and the left and right columns holding them.
+    pub cells: [Rect; 4],
 }
 
 /// A text node's glyphs for damage diffing (see [`NodeRecord::glyphs`]).
@@ -330,11 +345,29 @@ pub struct Extras {
     /// root node, logical pixels (`Router::pointer`, handed over by the
     /// host): `parallax` and `tilt` follow it.
     pub pointers: HashMap<NodeId, strand_scene::LogicalPoint>,
+    /// (M4) Where each surface lies on its output, by the surface's root
+    /// node (handed over by the host): shared-element morphs across
+    /// surfaces start from boxes moved by it.
+    pub origins: HashMap<NodeId, SurfaceOrigin>,
+    /// (M4) What the host placed, by the surface's root: its own output
+    /// (`None` for a popup) and position; `origins` is resolved from it.
+    pub placed: HashMap<NodeId, (Option<String>, strand_scene::LogicalPoint)>,
     /// (M4) The CPU fallbacks drawn in place of GPU effects, said once.
     pub fallbacks: crate::effects::raster::Fallbacks,
 
     /// (M4) Media nodes' sources (graphs, spectra), by node.
     pub media: crate::media::Media,
+}
+
+/// (M4) Where a surface's buffer (its top-left corner) lies on an
+/// output: the output's name and the position, in the output's logical
+/// pixels (`SurfaceHost::surface_placed`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceOrigin {
+    /// The output it is on (any name that tells outputs apart).
+    pub output: String,
+    /// Its top-left corner on that output.
+    pub at: strand_scene::LogicalPoint,
 }
 
 impl Extras {

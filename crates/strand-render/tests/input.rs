@@ -1767,3 +1767,73 @@ fn a_password_input_is_edited_like_any_input() {
         .collect();
     assert_eq!(texts, ["h", "hu", "hnu", "hn"]);
 }
+
+/// Return in an `input` with no `nav:` list activates the input itself
+/// (`on activate`, as on a list's selected row), after `on key` hears it,
+/// and writes no text.
+#[test]
+fn return_activates_a_plain_input() {
+    use strand_scene::{Modifiers, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, input) = (id(0), id(1));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(40.0))
+        .create(input, NodeKind::Input, Some(panel), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(
+            input,
+            Prop::InputType,
+            PropValue::Keyword("password".into()),
+        )
+        .set(input, Prop::Text, PropValue::Text("hunter2".into()));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 40 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(200, 40), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.drain();
+    for name in ["Return", "KP_Enter"] {
+        f.input(
+            &InputEvent::Key {
+                surface: s,
+                key: KeyInput {
+                    name: name.into(),
+                    text: "\r".into(),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                    time: 0,
+                },
+            },
+            &mut r,
+        );
+        assert_eq!(
+            f.drain(),
+            vec![
+                Intent::Event {
+                    node: input,
+                    event: NodeEvent::Key {
+                        name: name.into(),
+                        text: "\r".into(),
+                        modifiers: Modifiers::default()
+                    }
+                },
+                Intent::Event {
+                    node: input,
+                    event: NodeEvent::Activate
+                },
+            ]
+        );
+    }
+}

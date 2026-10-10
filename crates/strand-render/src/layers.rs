@@ -43,17 +43,23 @@ pub struct Layer {
     /// The transform in force at the group (its node's and its
     /// ancestors' `scale`/`rotate`): an offscreen group is drawn under it.
     pub xform: Affine,
+    /// `pixelate`'s mosaic: the group drawn at one sample per square cell
+    /// of this many physical pixels (each cell its pixels' average, the
+    /// low-resolution drawing sampled back up by nearest neighbour), the
+    /// cells aligned to `frame`'s corner. An offscreen group.
+    pub mosaic: Option<u16>,
 }
 
 impl Layer {
     /// True if a cell can draw the layer with `push_layer` alone; else
     /// it is an offscreen group ([`crate::offscreen`]).
     pub fn cell_local(&self) -> bool {
-        self.effects.iter().all(|e| {
-            !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_))
-                && !cpu_glow(e)
-                && !crate::backdrop::is_backdrop(e)
-        })
+        self.mosaic.is_none()
+            && self.effects.iter().all(|e| {
+                !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_))
+                    && !cpu_glow(e)
+                    && !crate::backdrop::is_backdrop(e)
+            })
     }
 }
 
@@ -239,6 +245,7 @@ mod tests {
             frame: kurbo::Rect::new(10.0, 10.0, 110.0, 50.0),
             scale: 2.0,
             xform: Affine::IDENTITY,
+            mosaic: None,
         }
     }
 

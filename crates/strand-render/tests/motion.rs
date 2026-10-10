@@ -2478,3 +2478,44 @@ fn pages_slide_by_source_order() {
     assert_eq!(spans(&st, 30), (Some((0, 119)), None));
     assert!(!st.r.wants_frame(S));
 }
+
+/// A node created on a shown surface starts at its props' values: the
+/// diff that creates it sets them, but they replace nothing on screen,
+/// so nothing springs from the props' defaults (a red box does not fade
+/// in from transparent, nor a moved one slide in from 0). Only its enter
+/// pose moves, and only the props the pose names.
+#[test]
+fn a_created_node_starts_at_its_values() {
+    let mut ids = Vec::new();
+    let mut st = Stage::new(80, 40, |b, root| {
+        ids.push(b.node(NodeKind::Row, Some(root), vec![]));
+    });
+    let row = ids[0];
+    let (plain, posed) = (NodeId::new(100, 0), NodeId::new(101, 0));
+    let mut d = SceneDiff::new();
+    for id in [plain, posed] {
+        d.create(id, NodeKind::Box, Some(row), u32::MAX)
+            .set(id, Prop::Bg, color("#ff0000"))
+            .set(id, Prop::Size, num(20.0));
+    }
+    d.set(plain, Prop::X, num(4.0))
+        .set(posed, Prop::Enter, pose(vec![(Prop::Scale, num(0.5))]));
+    st.apply(d);
+    st.paint(frame(1));
+    // No fade or slide: red and opaque at once, moved by its `x`.
+    assert_eq!(st.rect(plain).x, 0.0);
+    assert_eq!(st.red_from(10), Some(4), "drawn at its x at once");
+    let px = st.buf.px(10, 10);
+    assert!(
+        px[2] > 250 && px[3] == 255,
+        "red at once, not from transparent: {px:?}"
+    );
+    // The posed box scales in, at full colour all the while.
+    let c = st.rect(posed);
+    let mid = st
+        .buf
+        .px((c.x + c.w / 2.0) as u32, (c.y + c.h / 2.0) as u32);
+    assert!(mid[2] > 250, "its colour does not spring: {mid:?}");
+    assert!(st.r.wants_frame(S), "the enter pose plays");
+    st.settle(2);
+}

@@ -1964,6 +1964,133 @@ fn a_time_signal_node_damages_only_itself() {
     assert!(buf.pixels == full.pixels, "partial differs from full");
 }
 
+/// design.md "Paint and light": `border: 2, conic(from: t * 60deg, …)`
+/// turns with time and "only the ring repaints": each frame's damage lies
+/// in the border's strips, never over the box's middle (where a child
+/// sits), and the partial repaints add up to a full paint. Both for a
+/// rounded box and for the rice's pill (`radius: full; corners:
+/// squircle` over a backdrop blur), whose round ends hold the ring's
+/// corners and whose middle stays out of it.
+#[test]
+fn a_turning_gradient_border_repaints_only_its_ring() {
+    let stop = |offset, c: &str| GradientStop {
+        offset,
+        color: hex(c),
+    };
+    let stops = vec![
+        stop(0.0, "#89b4fa"),
+        stop(0.5, "#f5c2e7"),
+        stop(1.0, "#89b4fa"),
+    ];
+    let border = PropValue::Token(TokenExpr::Template {
+        value: Box::new(PropValue::Border(Border {
+            width: 2.0,
+            paint: Paint::Conic {
+                from: 0.0,
+                stops: stops.clone(),
+            },
+        })),
+        colors: vec![],
+        numbers: vec![
+            None,
+            Some(TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Time),
+                rhs: Box::new(TokenExpr::value(num(60.0))),
+            }),
+        ],
+    });
+    // A quarter second in: the gradient turned 15°.
+    let still = PropValue::Border(Border {
+        width: 2.0,
+        paint: Paint::Conic { from: 15.0, stops },
+    });
+    let boxed = vec![
+        (Prop::Width, num(80.0)),
+        (Prop::Height, num(40.0)),
+        (Prop::Radius, num(8.0)),
+        (Prop::Bg, color("#313244")),
+    ];
+    let pill = vec![
+        (Prop::Width, num(120.0)),
+        (Prop::Height, num(28.0)),
+        (Prop::Radius, PropValue::Keyword("full".into())),
+        (Prop::Corners, PropValue::Keyword("squircle".into())),
+        (Prop::Bg, PropValue::Color(hex("#313244").alpha(0.7))),
+        (Prop::Blur, num(24.0)),
+    ];
+    // The middles: the box less its corner radius, border and a margin;
+    // the pill less its round ends (a squircle's reach is capped at half
+    // its height) and its border rows.
+    let cases = [
+        (boxed, Rect::new(60 + 12, 10 + 12, 80 - 24, 40 - 24)),
+        (pill, Rect::new(60 + 18, 10 + 6, 120 - 36, 28 - 12)),
+    ];
+    for (i, (props, middle)) in cases.into_iter().enumerate() {
+        let scene = |border: PropValue| {
+            let mut b = Builder::default();
+            let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+            // Something behind for the pill's blur to read.
+            b.node(
+                NodeKind::Box,
+                Some(root),
+                vec![
+                    (Prop::Place, PropValue::Keyword("absolute".into())),
+                    (Prop::X, num(100.0)),
+                    (Prop::Y, num(0.0)),
+                    (Prop::Width, num(20.0)),
+                    (Prop::Height, num(60.0)),
+                    (Prop::Bg, color("#f38ba8")),
+                ],
+            );
+            let mut p = vec![
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+                (Prop::X, num(60.0)),
+                (Prop::Y, num(10.0)),
+                (Prop::Border, border),
+            ];
+            p.extend(props.clone());
+            let ring = b.node(NodeKind::Box, Some(root), p);
+            b.node(
+                NodeKind::Box,
+                Some(ring),
+                vec![
+                    (Prop::Place, PropValue::Keyword("absolute".into())),
+                    (Prop::X, num(30.0)),
+                    (Prop::Y, num(4.0)),
+                    (Prop::Size, num(20.0)),
+                    (Prop::Bg, color("#a6e3a1")),
+                ],
+            );
+            let mut r = renderer();
+            assert!(r.apply(b.diff).is_empty());
+            r.attach_surface(BAR, r.tree().roots()[0]);
+            r
+        };
+        let mut r = scene(border.clone());
+        let mut buf = Buffer::new(200, 60, Scale::ONE);
+        buf.paint_at(&mut r, BAR, 0, T0);
+        for k in 1..=15 {
+            assert!(r.wants_frame(BAR), "case {i} frame {k}: the clock runs");
+            let d = buf.paint_at(&mut r, BAR, 1, at_hz(60, k));
+            assert!(!d.is_empty(), "case {i} frame {k} repaints the ring");
+            for rect in d.rects() {
+                assert!(
+                    !rect.intersects(middle),
+                    "case {i} frame {k}: damage {rect:?} over the middle {middle:?}"
+                );
+            }
+        }
+        let mut full_r = scene(still.clone());
+        let mut full = Buffer::new(200, 60, Scale::ONE);
+        full.paint(&mut full_r, BAR, 0);
+        assert!(
+            buf.pixels == full.pixels,
+            "case {i}: partial differs from full"
+        );
+    }
+}
+
 /// The box `id` is drawn in at 1× (its laid-out box moved by its `x`,
 /// `y`), grown by `m` pixels.
 fn drawn_box(r: &Renderer, id: NodeId, (x, y): (f32, f32), m: i32) -> Rect {

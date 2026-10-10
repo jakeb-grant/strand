@@ -11,7 +11,10 @@
 //! not match the size fails with `buffer_constraints`; a resize sends the
 //! new constraints (its formats before its size, which the protocol
 //! allows) and fails the frame in flight; a closed toplevel stops
-//! its sessions. What happens is logged in [`crate::Fake::captures`]:
+//! its sessions. A toplevel given a transform
+//! ([`crate::Cmd::TransformToplevel`]) sends it with each frame, and
+//! fills the buffer so that, turned upright, its left half is its colour
+//! and its right half white. What happens is logged in [`crate::Fake::captures`]:
 //! `session <ident>`, `frame <ident>`, `failed <ident>`, `stopped
 //! <ident>`, `end <ident>` (the client destroyed its session).
 
@@ -32,7 +35,7 @@ use wayland_protocols::ext::image_copy_capture::v1::server::{
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
 };
 use wayland_server::backend::{ClientId, ObjectId};
-use wayland_server::protocol::{wl_buffer, wl_shm};
+use wayland_server::protocol::{wl_buffer, wl_output, wl_shm};
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
 
 use crate::Server;
@@ -66,6 +69,7 @@ pub(crate) struct Capture {
     sessions: Vec<Session>,
     sizes: HashMap<String, (u32, u32)>,
     colours: HashMap<String, [u8; 4]>,
+    transforms: HashMap<String, u32>,
     pub(crate) log: Arc<Mutex<Vec<String>>>,
 }
 
@@ -116,6 +120,11 @@ impl Server {
             self.capture_fill(&shm, ident, &frame, &buffer);
         }
         self.shm_buffers = shm;
+    }
+
+    /// `ident`'s buffer is transformed by `t` from its next frame on.
+    pub(crate) fn capture_transform(&mut self, ident: &str, t: u32) {
+        self.capture.transforms.insert(ident.to_string(), t);
     }
 
     /// `ident` resized: new constraints, and the frame in flight fails.
@@ -180,10 +189,38 @@ impl Server {
             .unwrap_or([128, 128, 128, 255]);
         let m = |c: u8| ((c as u32 * a as u32 + 127) / 255) as u8;
         let px = [m(bl), m(g), m(r), a];
-        let row: Vec<u8> = px.iter().copied().cycle().take(w as usize * 4).collect();
-        for y in 0..h as i64 {
-            let at = b.offset as i64 + y * b.stride as i64;
-            let _ = rustix::io::pwrite(b.fd.as_fd(), &row, at as u64);
+        let t = self.capture.transforms.get(ident).copied().unwrap_or(0) & 7;
+        if t == 0 {
+            let row: Vec<u8> = px.iter().copied().cycle().take(w as usize * 4).collect();
+            for y in 0..h as i64 {
+                let at = b.offset as i64 + y * b.stride as i64;
+                let _ = rustix::io::pwrite(b.fd.as_fd(), &row, at as u64);
+            }
+        } else {
+            if let Ok(tr) = wl_output::Transform::try_from(t) {
+                frame.transform(tr);
+            }
+            // The upright image, put where the transform takes each of
+            // its pixels: flipped first, then turned a quarter
+            // counter-clockwise at a time.
+            let (uw, uh) = if t % 2 == 1 { (h, w) } else { (w, h) };
+            let mut buf = vec![0u8; (b.stride as usize) * h as usize];
+            for y in 0..uh {
+                for x in 0..uw {
+                    let (mut bx, mut by, mut cw, mut ch) = (x, y, uw, uh);
+                    if t >= 4 {
+                        bx = cw - 1 - bx;
+                    }
+                    for _ in 0..t % 4 {
+                        (bx, by) = (by, cw - 1 - bx);
+                        (cw, ch) = (ch, cw);
+                    }
+                    let c = if x < uw / 2 { px } else { [255; 4] };
+                    let i = by as usize * b.stride as usize + bx as usize * 4;
+                    buf[i..i + 4].copy_from_slice(&c);
+                }
+            }
+            let _ = rustix::io::pwrite(b.fd.as_fd(), &buf, b.offset as u64);
         }
         frame.damage(0, 0, w as i32, h as i32);
         frame.presentation_time(0, 0, 0);

@@ -26,8 +26,16 @@
 //! ends, and is replaced after [`RETRY`] if its window is still wanted
 //! and listed (a compositor may stop a session for reasons of its own;
 //! a closed window leaves the list, and its wants with it); another
-//! failure retries after [`RETRY`]. The capture's `transform` is ignored (windows are not
-//! rotated) and the cursor is not painted.
+//! failure retries after [`RETRY`].
+//!
+//! A frame's `transform` (sent before `ready`) says how the buffer's
+//! contents are transformed, as a `wl_surface` buffer transform does: the
+//! frame is turned upright by its inverse before it is scaled, so a
+//! window drawn with a rotated or flipped buffer (or on a rotated output)
+//! shows as it looks on screen. Sessions are made without
+//! `paint_cursors`, so the protocol leaves the pointer out: a thumbnail
+//! shows the window, not where the pointer was over it (cursor sessions
+//! are not used).
 //!
 //! A tap whose window is no longer listed (it closed) is called once
 //! with `None`, so its thumbnail stops showing the window's last frame.
@@ -37,7 +45,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use wayland_client::protocol::{wl_buffer, wl_registry, wl_shm, wl_shm_pool};
+use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
@@ -287,6 +295,8 @@ struct Session {
     pending_formats: Vec<wl_shm::Format>,
     shm: Option<Shm>,
     frame: Option<ExtImageCopyCaptureFrameV1>,
+    /// The frame in flight's `transform` (normal unless it says).
+    transform: wl_output::Transform,
     /// When the next frame may be asked for (`None`: wait for `done`).
     next_at: Option<Instant>,
     /// The session stopped and ended: when a new one may replace it.
@@ -421,6 +431,7 @@ impl Client {
                     pending_formats: Vec::new(),
                     shm: None,
                     frame: None,
+                    transform: wl_output::Transform::Normal,
                     next_at: None,
                     stopped: None,
                 });
@@ -439,6 +450,7 @@ impl Client {
             frame.damage_buffer(0, 0, shm.width as i32, shm.height as i32);
             frame.capture();
             s.frame = Some(frame);
+            s.transform = wl_output::Transform::Normal;
             s.next_at = None;
         }
     }
@@ -503,6 +515,7 @@ impl Client {
         if rustix::io::pread(shm.fd.as_fd(), &mut data[..], 0).is_err() {
             return;
         }
+        let (data, width, height) = upright(data, shm.width, shm.height, s.transform);
         let taps: Vec<&Want> = wants
             .iter()
             .filter(|w| w.identifier == s.identifier)
@@ -520,12 +533,47 @@ impl Client {
             max
         };
         let opaque = shm.format == wl_shm::Format::Xrgb8888;
-        let frame = downscale(&data, shm.width, shm.height, stride, opaque, max);
+        let frame = downscale(&data, width, height, width * 4, opaque, max);
         for w in taps {
             deliver(w.tap, Some(&frame));
         }
         self.captures.delivered += 1;
     }
+}
+
+/// A `w × h` buffer of 4-byte pixels (rows tightly packed) whose
+/// contents are transformed by `t` (a `wl_output.transform`, the way a
+/// `wl_surface` buffer transform is: rotations counter-clockwise, a flip
+/// about the vertical axis first), turned upright: the pixels and their
+/// upright size. Each upright pixel `(x, y)` (`W × H`) is the buffer's
+/// pixel at `t` applied to it.
+pub fn upright(src: Vec<u8>, w: u32, h: u32, t: wl_output::Transform) -> (Vec<u8>, u32, u32) {
+    use wl_output::Transform as T;
+    if t == T::Normal || src.len() < (w as usize) * (h as usize) * 4 {
+        return (src, w, h);
+    }
+    let turned = matches!(t, T::_90 | T::_270 | T::Flipped90 | T::Flipped270);
+    let (uw, uh) = if turned { (h, w) } else { (w, h) };
+    let (mw, mh) = (uw as usize - 1, uh as usize - 1);
+    let mut out = vec![0u8; src.len()];
+    for y in 0..uh as usize {
+        for x in 0..uw as usize {
+            let (bx, by) = match t {
+                T::_90 => (y, mw - x),
+                T::_180 => (mw - x, mh - y),
+                T::_270 => (mh - y, x),
+                T::Flipped => (mw - x, y),
+                T::Flipped90 => (y, x),
+                T::Flipped180 => (x, mh - y),
+                T::Flipped270 => (mh - y, mw - x),
+                _ => (x, y),
+            };
+            let i = (by * w as usize + bx) * 4;
+            let o = (y * uw as usize + x) * 4;
+            out[o..o + 4].copy_from_slice(&src[i..i + 4]);
+        }
+    }
+    (out, uw, uh)
 }
 
 /// A memfd-backed shm buffer of `w × h` in `format`.
@@ -599,6 +647,13 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, u64> for Client {
     ) {
         use ext_image_copy_capture_frame_v1::Event;
         match event {
+            Event::Transform {
+                transform: WEnum::Value(t),
+            } => {
+                if let Some(s) = state.captures.session_mut(*key) {
+                    s.transform = t;
+                }
+            }
             Event::Ready => state.frame_ready(*key),
             Event::Failed { reason } => {
                 let Some(s) = state.captures.session_mut(*key) else {
@@ -718,6 +773,34 @@ mod tests {
         let f = downscale(&src, 4, 2, 16, false, (0, 0));
         assert_eq!((f.width, f.height), (4, 2));
         assert_eq!(f.pixels[3], 7, "ARGB keeps its alpha");
+    }
+
+    /// Each transform turns the buffer upright: a 3 × 2 upright image
+    /// (pixels 0..6 in reading order) transformed as the protocol says
+    /// comes back as it was.
+    #[test]
+    fn frames_are_turned_upright() {
+        use wl_output::Transform as T;
+        // The upright image, and each transform's buffer of it, written
+        // out by hand (rotations counter-clockwise, a flip first).
+        let upright_px = [0u8, 1, 2, 3, 4, 5];
+        let cases: [(T, (u32, u32), [u8; 6]); 8] = [
+            (T::Normal, (3, 2), [0, 1, 2, 3, 4, 5]),
+            (T::_90, (2, 3), [2, 5, 1, 4, 0, 3]),
+            (T::_180, (3, 2), [5, 4, 3, 2, 1, 0]),
+            (T::_270, (2, 3), [3, 0, 4, 1, 5, 2]),
+            (T::Flipped, (3, 2), [2, 1, 0, 5, 4, 3]),
+            (T::Flipped90, (2, 3), [0, 3, 1, 4, 2, 5]),
+            (T::Flipped180, (3, 2), [3, 4, 5, 0, 1, 2]),
+            (T::Flipped270, (2, 3), [5, 2, 4, 1, 3, 0]),
+        ];
+        for (t, (w, h), buffer) in cases {
+            let src: Vec<u8> = buffer.iter().flat_map(|&v| [v, v, v, 255]).collect();
+            let (out, uw, uh) = upright(src, w, h, t);
+            assert_eq!((uw, uh), (3, 2), "{t:?}");
+            let got: Vec<u8> = out.chunks(4).map(|p| p[0]).collect();
+            assert_eq!(got, upright_px, "{t:?}");
+        }
     }
 
     #[test]

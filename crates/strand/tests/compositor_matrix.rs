@@ -1331,12 +1331,10 @@ fn a_window_is_captured_for_its_thumbnail() {
         };
         let centre = |f: &CaptureFrame| at(f, f.width / 2, f.height / 2);
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
-        // The window's colour anywhere in the frame: sway and labwc capture
-        // the 64 x 64 buffer, Hyprland the tiled window's whole box, whose
-        // centre lies outside that buffer (transparent; its top-left
-        // corner is the buffer's).
-        let coloured =
-            |f: &CaptureFrame| (0..f.height).any(|y| (0..f.width).any(|x| near(at(f, x, y), RGBA)));
+        // The window fills the size its compositor configures (a tile),
+        // so the frame's centre is the window's own colour on every
+        // compositor (its whole box, its buffer covering it).
+        let coloured = |f: &CaptureFrame| near(centre(f), RGBA);
         // The first frame may come before the window's buffer is shown
         // (a compositor may capture the toplevel before its first
         // commit lands): the colour must arrive within the patience.

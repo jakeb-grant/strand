@@ -446,7 +446,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   sources for the nodes a diff creates, feeds and feed demand; built by
   m4-effects-media, with `media/` beside `renderer/`: `graph.rs`,
   `spectrum.rs`, `animated.rs`, `svg.rs`, `lottie.rs` (velato with
-  `default-features = false`, drawn through a vello_cpu `RenderSink`)). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
+  `default-features = false`, drawn through a vello_cpu `RenderSink`;
+  its image assets decoded with the file); the `svg` and `lottie` files
+  are read and parsed on the image decode worker as file jobs
+  (`ImageStore::load_file`, reached from `RasterProps::files`), whose
+  arrival marks every surface dirty). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
   frames, readback delivery) have no code yet: their streams create
   them, with `promote.rs` (the promotion state machine) and `canvas.rs`
   beside `renderer/`.
@@ -462,7 +466,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   playback composed over the springs), `stagger.rs` (M4, S-effects:
   children entering one `stagger:` step apart), `morph.rs` (M4,
   S-effects: shared-element `morph:` from the box its name was last
-  drawn at, same surface only), `pages.rs` (page slides), `tests.rs`.
+  drawn at, on the same surface or, moved by the surfaces' origins
+  (`Renderer::set_surface_origin(surface, Option<(Option<String>,
+  LogicalPoint)>)`, which the binary's host calls from
+  `SurfaceHost::surface_placed` with the surface's monitor; a popup
+  takes its parent's output, looked up again whenever a surface is
+  placed, moves or goes), on another surface of the same output),
+  `pages.rs` (page slides), `tests.rs`.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
   `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
   (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
@@ -472,8 +482,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `letters.rs` (a text's `letters`, one letter at a time), `roll.rs`
   (`roll: true` texts rolling their changed letters), `lean.rs`
   (`parallax:` and the CPU's 2D `tilt:` following the pointer),
-  `transition.rs` (transition masks: clip paths, pixelate's blur),
-  `goo.rs` (`merge d`'s goo field, a CPU raster under the children).
+  `jelly.rs` (`jelly:` squash and stretch of a dragged node, from its
+  drawn offset),
+  `transition.rs` (transition masks: clip paths, pixelate's mosaic),
+  `goo.rs` (`merge d`'s goo field contoured by marching squares, a CPU
+  raster under the children).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
@@ -896,7 +909,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   just to free them, so an idle shell does zero work between ticks); a
   text node's record keeps its glyph cells (`NodeRecord::glyphs`), so a
   change that only swaps glyphs damages those glyphs (a clock tick
-  repaints its last digit); a gradient is cached
+  repaints its last digit), and a node's border along its box keeps
+  its ring's strips (`NodeRecord::ring`), so a change of the border
+  alone (a conic turning with `t`) damages only the ring; a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
   uncached. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the

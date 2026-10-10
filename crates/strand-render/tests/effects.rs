@@ -774,6 +774,89 @@ fn strokes_arcs_and_wavy_meters_draw() {
     assert_matches_ref("effects_strokes_2x", &buf, 2);
 }
 
+/// The outlines scene, on a dark bar 168 × 64: a box with a 6 px blue
+/// `border:`, a 2 px pink `stroke:` over its outer edge and a white top
+/// `rim`; and three nested boxes, each 4 px inside the last, with 2 px
+/// pink, blue and green borders.
+fn outlines(scale: Scale) -> Buffer {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let border = |w: f32, c: &str| {
+        (
+            Prop::Border,
+            PropValue::Border(Border {
+                width: w,
+                paint: Paint::Solid(hex(c)),
+            }),
+        )
+    };
+    let mut one = at_xy(8.0, 8.0, 64.0, 48.0);
+    one.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Radius, num(12.0)),
+        border(6.0, "#89b4fa"),
+        stroke(2.0, "#f38ba8"),
+        (
+            Prop::Rim,
+            pair(kw("top"), PropValue::Color(hex("#ffffff").alpha(0.7))),
+        ),
+    ]);
+    b.node(NodeKind::Box, Some(root), one);
+    let mut parent = root;
+    for (i, c) in ["#f38ba8", "#89b4fa", "#a6e3a1"].into_iter().enumerate() {
+        let k = i as f32 * 4.0;
+        let (x, y) = if i == 0 { (96.0, 8.0) } else { (4.0, 4.0) };
+        let mut p = at_xy(x, y, 64.0 - 2.0 * k, 48.0 - 2.0 * k);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Radius, num(12.0 - k)),
+            border(2.0, c),
+        ]);
+        parent = b.node(NodeKind::Box, Some(parent), p);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new((168.0 * k).round() as u32, (64.0 * k).round() as u32, scale);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(1));
+    buf
+}
+
+/// design.md "Paint and light": "multiple outlines", composed rather
+/// than a list-valued `border:` (decisions.md, m4-effects-finish): a
+/// `stroke:` over a wider `border:` is two concentric outlines with a
+/// `rim` lighting their top, and nested bordered boxes are separate rings
+/// (refs `effects_outlines.png` at 1× and 2×).
+#[test]
+fn multiple_outlines_compose_from_border_stroke_rim_and_nesting() {
+    let buf = outlines(Scale::ONE);
+    assert_matches_ref("effects_outlines", &buf, 2);
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    let pink = [0xa8, 0x8b, 0xf3, 0xff];
+    let blue = [0xfa, 0xb4, 0x89, 0xff];
+    let green = [0xa1, 0xe3, 0xa6, 0xff];
+    let px = |x: u32, y: u32| buf.px(x, y);
+    // Along the first box's left edge: 2 px of stroke, then 4 px of the
+    // border it does not cover, then the bar.
+    assert_eq!([px(8, 32), px(9, 32)], [pink, pink]);
+    assert_eq!([px(10, 32), px(13, 32)], [blue, blue]);
+    assert_eq!(px(14, 32), bg);
+    assert_eq!(px(7, 32), bg);
+    // The rim lights the top: lighter than the same stroke at the side.
+    let (top, side) = (px(40, 8), px(8, 32));
+    assert!(top[1] > side[1] + 20, "rim {top:?} over {side:?}");
+    // The nested boxes, from x = 96: pink, a gap, blue, a gap, green.
+    let row: Vec<[u8; 4]> = (96..108).map(|x| px(x, 32)).collect();
+    assert_eq!(
+        row,
+        vec![pink, pink, bg, bg, blue, blue, bg, bg, green, green, bg, bg]
+    );
+
+    let buf = outlines(Scale::new(240).unwrap());
+    assert_matches_ref("effects_outlines_2x", &buf, 2);
+}
+
 /// design.md: a wavy meter "flattens when paused": `wave: 3` → `0`
 /// springs, and `reduced_motion` snaps.
 #[test]
@@ -901,6 +984,56 @@ fn backdrop_blurs_what_is_behind() {
 
     let (_, buf, _) = backdrop_scene(fx(), Scale::new(240).unwrap());
     assert_matches_ref("effects_backdrop_2x", &buf, 2);
+}
+
+/// A `backdrop:` inside an offscreen ancestor (a `filter: grayscale(1)`
+/// holder) shows what is behind it on the surface, blurred, and the
+/// ancestor filters it with the rest of its content: grey and mixed
+/// inside, the stripes untouched outside (ref `effects_backdrop_nested.png`).
+#[test]
+fn a_backdrop_inside_a_filtered_ancestor_shows_what_is_behind() {
+    let colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"];
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    for i in 0..12 {
+        let mut p = at_xy(i as f32 * 10.0, 0.0, 10.0, 64.0);
+        p.push((Prop::Bg, color(colors[i % 4])));
+        p.push((Prop::Place, kw("absolute")));
+        b.node(NodeKind::Box, Some(root), p);
+    }
+    let mut p = at_xy(12.0, 12.0, 64.0, 40.0);
+    p.push((Prop::Place, kw("absolute")));
+    p.push((Prop::Filter, call("grayscale", vec![num(1.0)])));
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    let mut p = at_xy(0.0, 0.0, 64.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Radius, num(12.0)),
+        (Prop::Backdrop, call("blur", vec![num(16.0)])),
+    ]);
+    b.node(NodeKind::Box, Some(holder), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(120, 64, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    assert_matches_ref("effects_backdrop_nested", &buf, 2);
+    // Grey, but for the little of the sharp stripes that shows where the
+    // blur reaches past the surface's edge (transparent there).
+    let chroma = |p: [u8; 4]| p[..3].iter().max().unwrap() - p[..3].iter().min().unwrap();
+    let grey = |p: [u8; 4]| chroma(p) <= 16;
+    let pure = [buf.px(45, 2), buf.px(35, 2), buf.px(55, 2)];
+    for x in [30, 45, 60] {
+        let p = buf.px(x, 32);
+        assert!(grey(p) && p[3] == 255, "({x}, 32) grey: {p:?}");
+        assert!(!pure.contains(&p));
+    }
+    // Neighbouring stripes blend: not one stripe's own grey.
+    assert_ne!(buf.px(31, 32), buf.px(39, 32));
+    assert!(
+        !grey(buf.px(45, 2)),
+        "outside, the stripes keep their colour"
+    );
 }
 
 /// The five built-in effects and a particle field, 72×48 each, on a
@@ -1795,6 +1928,78 @@ fn transition_masks_reveal_and_hide() {
     assert!(!r.wants_frame(S));
 }
 
+/// design.md "Motion and time": `transition: pixelate` draws the subtree
+/// at low resolution and samples it back up: partway, every pixel of a
+/// cell (square, aligned to the box's corner) is the cell's average, so
+/// 1 px stripes spread into blocks (ref `effects_pixelate.png`); the cells
+/// shrink to the plain drawing as it fades in.
+#[test]
+fn pixelate_draws_a_mosaic_that_refines() {
+    use std::time::Duration;
+    let build = |masks: bool| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(80, 64, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let mut d = SceneDiff::new();
+        let n = NodeId::new(200, 0);
+        d.create(n, NodeKind::Box, Some(root), 0);
+        for (p, v) in at_xy(10.0, 8.0, 48.0, 48.0) {
+            set_now(&mut d, n, p, v);
+        }
+        set_now(&mut d, n, Prop::Place, kw("absolute"));
+        set_now(&mut d, n, Prop::Bg, color("#89b4fa"));
+        if masks {
+            d.set(n, Prop::Transition, kw("pixelate"));
+        }
+        // 1 px stripes every 4 px.
+        for i in 0..12u32 {
+            let c = NodeId::new(300 + i, 0);
+            d.create(c, NodeKind::Box, Some(n), i);
+            for (p, v) in at_xy(1.0 + 4.0 * i as f32, 0.0, 1.0, 48.0) {
+                set_now(&mut d, c, p, v);
+            }
+            set_now(&mut d, c, Prop::Place, kw("absolute"));
+            set_now(&mut d, c, Prop::Bg, color("#f38ba8"));
+        }
+        // And a 13 px square (no cell size divides it) in the corner.
+        let sq = NodeId::new(400, 0);
+        d.create(sq, NodeKind::Box, Some(n), 12);
+        for (p, v) in at_xy(0.0, 0.0, 13.0, 13.0) {
+            set_now(&mut d, sq, p, v);
+        }
+        set_now(&mut d, sq, Prop::Place, kw("absolute"));
+        set_now(&mut d, sq, Prop::Bg, color("#a6e3a1"));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+        (r, buf)
+    };
+    let (mut r, mut buf) = build(true);
+    let (_, plain) = build(false);
+    let mut t = 1016;
+    while t < 1064 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert_matches_ref("effects_pixelate", &buf, 2);
+    // Every pixel is its cell's (cells of `c` from the box's corner).
+    let (x0, y0) = (10u32, 8u32);
+    let cells_of = |buf: &Buffer, c: u32| {
+        (y0..y0 + 48).all(|y| {
+            (x0..x0 + 48)
+                .all(|x| buf.px(x, y) == buf.px(x0 + (x - x0) / c * c, y0 + (y - y0) / c * c))
+        })
+    };
+    let c = (2..=12).rev().find(|&c| cells_of(&buf, c));
+    assert!(c.is_some_and(|c| c >= 3), "a mosaic: cells of {c:?} px");
+    assert!(!cells_of(&plain, 2));
+    settle(&mut r, &mut buf, t);
+    assert!(buf.pixels == plain.pixels, "refined to the plain drawing");
+}
+
 /// A `pages` swap under `transition: wipe(left)`: the new page is
 /// revealed from the left over the old (created after it) or, created
 /// before it, the old page is hidden by the rest of the wipe over the new
@@ -1912,8 +2117,8 @@ fn morph_box(d: &mut SceneDiff, id: NodeId, parent: NodeId, (x, y, w, h): (f32, 
 /// that enters with the name of one drawn on its surface starts from
 /// that box and springs to its own, moved and scaled, in place of its
 /// enter pose (ref `effects_morph_shared.png` on its way); another
-/// surface's box is unknown (render has no surface origins), so there
-/// it plays its enter pose; `reduced_motion` shows it in place.
+/// surface's box is unknown while the surfaces' origins are, so there it
+/// plays its enter pose; `reduced_motion` shows it in place.
 #[test]
 fn a_shared_morph_starts_from_the_named_box() {
     use std::time::Duration;
@@ -1969,6 +2174,110 @@ fn a_shared_morph_starts_from_the_named_box() {
     buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
     assert_eq!(buf.px(150, 30), orange);
     assert_eq!(buf.px(20, 30), bg);
+}
+
+/// design.md: "Shared-element morph across surfaces, so the bar's media
+/// pill becomes the media panel". With both surfaces placed on the same
+/// output (`Renderer::set_surface_origin`), a node entering on the panel
+/// starts over the bar's pill, moved by the difference of the origins
+/// (ref `effects_morph_across.png` on its way), and springs to its own
+/// box; on another output it plays its enter pose in place.
+#[test]
+fn a_shared_morph_crosses_surfaces_on_one_output() {
+    use std::time::Duration;
+    let at = |x: f32, y: f32| strand_scene::LogicalPoint::new(x, y);
+    for same in [true, false] {
+        let (mut r, buf, mut buf2, [_, _, panel]) = morphing(false);
+        let orange = buf.px(20, 30);
+        // The panel lies 30 px below the bar's top, on DP-1 or another.
+        r.set_surface_origin(S, Some((Some("DP-1".into()), at(0.0, 0.0))));
+        let other = if same { "DP-1" } else { "DP-2" };
+        r.set_surface_origin(S2, Some((Some(other.into()), at(0.0, 30.0))));
+        // The pill is drawn again (its box remembered with its place).
+        buf2.paint_at(&mut r, S2, 1, Duration::from_millis(1000));
+        let mut bar = Buffer::new(200, 60, Scale::ONE);
+        bar.paint_at(&mut r, S, 1, Duration::from_millis(1008));
+        let big = NodeId::new(401, 0);
+        let mut d = SceneDiff::new();
+        morph_box(&mut d, big, panel, (40.0, 20.0, 40.0, 30.0));
+        assert!(r.apply(d).is_empty());
+        buf2.paint_at(&mut r, S2, 1, Duration::from_millis(1016));
+        if same {
+            // The pill's box (10..30 × 20..40 on the bar) is 10..30 ×
+            // -10..10 on the panel: its lower half shows, in full colour.
+            assert_eq!(buf2.px(20, 5), orange, "starts at the pill");
+            assert_ne!(buf2.px(70, 40), orange, "not yet at its box");
+            let mut t = 1016;
+            while t < 1064 {
+                t += 16;
+                buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
+            }
+            assert_matches_ref("effects_morph_across", &buf2, 2);
+        } else {
+            let p = buf2.px(60, 35);
+            assert!(
+                p != orange && p != buf2.px(5, 5),
+                "another output: fading in in place: {p:?}"
+            );
+            assert_ne!(buf2.px(20, 5), orange);
+        }
+        let mut t = 1100;
+        while r.wants_frame(S2) {
+            t += 16;
+            buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
+            assert!(t < 5000, "settles");
+        }
+        assert_eq!(buf2.px(60, 35), orange, "at its own box");
+    }
+}
+
+/// A shared morph that a preview (the flatten at the last frame's time
+/// before a paint) sees start begins on the painted frame, from the
+/// offsets of that frame: inside a parent whose `x` springs, the morph
+/// (a slow linear 10 s one, so its first frame is all but its start)
+/// still starts over the pill's box, not where the parent was a frame
+/// before.
+#[test]
+fn a_preview_leaves_a_shared_morph_to_the_painted_frame() {
+    use std::time::Duration;
+    let (mut r, mut buf, _, [pill, bar, _]) = morphing(false);
+    let orange = buf.px(20, 30);
+    let bg = buf.px(100, 5);
+    let holder = NodeId::new(300, 0);
+    let mut d = SceneDiff::new();
+    d.create(holder, NodeKind::Box, Some(bar), 1);
+    for (p, v) in at_xy(0.0, 0.0, 200.0, 60.0) {
+        set_now(&mut d, holder, p, v);
+    }
+    set_now(&mut d, holder, Prop::Place, kw("absolute"));
+    assert!(r.apply(d).is_empty());
+    let t = settle(&mut r, &mut buf, 1000);
+    let big = NodeId::new(400, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: pill,
+        window: false,
+    });
+    d.set(holder, Prop::X, num(-40.0));
+    morph_box(&mut d, big, holder, (120.0, 5.0, 60.0, 50.0));
+    d.push(SceneOp::SetProp {
+        id: big,
+        prop: Prop::Morph,
+        value: text("m"),
+        transition: Transition::Duration {
+            duration: Duration::from_secs(10),
+            easing: Easing::Linear,
+        },
+    });
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t + 16));
+    // The pill's box was 10..30 × 20..40.
+    for (x, y) in [(11, 21), (28, 38), (20, 30)] {
+        assert_eq!(buf.px(x, y), orange, "over the pill at ({x}, {y})");
+    }
+    for (x, y) in [(8, 30), (32, 30), (20, 18), (20, 42)] {
+        assert_eq!(buf.px(x, y), bg, "only the pill's box at ({x}, {y})");
+    }
 }
 
 /// `merge 10` (200 × 60) on a bar holding three 20 px discs: two 6 px
@@ -2174,4 +2483,101 @@ fn an_image_swap_to_a_broken_source_settles() {
     assert!(t < 1100, "settled at once, not after {t} ms");
     assert!(!r.wants_frame(S) && r.next_wake().is_none());
     assert_eq!(buf.px(30, 30), bg, "nothing drawn, as without transition");
+}
+
+/// A 160 × 60 bar with a 20 px `drag:`-style box at (20, 20) with
+/// `jelly: amount` (none at 0), painted at 1 s.
+fn jellied(amount: f32, reduced: bool) -> (Renderer, Buffer, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(20.0, 20.0, 20.0, 20.0);
+    p.extend([(Prop::Place, kw("absolute")), (Prop::Bg, color("#f9e2af"))]);
+    if amount > 0.0 {
+        p.push((Prop::Jelly, num(amount)));
+    }
+    let id = b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(160, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf, id)
+}
+
+/// The drawn box of the yellow box: `(left, right, top, bottom)` of the
+/// pixels it covers more than half.
+fn yellow_extent(buf: &Buffer) -> (u32, u32, u32, u32) {
+    let yellow = |x: u32, y: u32| buf.px(x, y)[1] > 140;
+    let xs: Vec<u32> = (0..buf.size.w)
+        .filter(|x| (0..buf.size.h).any(|y| yellow(*x, y)))
+        .collect();
+    let ys: Vec<u32> = (0..buf.size.h)
+        .filter(|y| (0..buf.size.w).any(|x| yellow(x, *y)))
+        .collect();
+    (xs[0], xs[xs.len() - 1], ys[0], ys[ys.len() - 1])
+}
+
+/// design.md "Motion and time": `jelly: 0.4` squashes and stretches a
+/// dragged node. Dragged right fast it is longer along x and shorter
+/// along y (area kept), drawn as a transform (ref `effects_jelly.png`
+/// mid-drag); stopped, it rings out through a squash and settles back to
+/// its 20 px square with no frames wanted. Without `jelly`, or under
+/// `reduced_motion`, the dragged box keeps its shape.
+#[test]
+fn jelly_stretches_a_dragged_node_and_wobbles_out() {
+    use std::time::Duration;
+    let drag = |r: &mut Renderer, buf: &mut Buffer, id: NodeId| {
+        let mut t = 1000;
+        for k in 1..=5 {
+            t += 16;
+            r.lift(id, Some(LogicalPoint::new(20.0 * k as f32, 0.0)));
+            buf.paint_at(r, S, 1, Duration::from_millis(t));
+        }
+        t
+    };
+    let (mut r, mut buf, id) = jellied(0.4, false);
+    let mut t = drag(&mut r, &mut buf, id);
+    // At 1,250 px/s (smoothed, and the spring on its way): stretched
+    // along x, squashed along y.
+    let (l, rt, top, bottom) = yellow_extent(&buf);
+    let (w, h) = (rt - l + 1, bottom - top + 1);
+    assert!(w >= 22 && h <= 18, "stretched: {w} × {h}");
+    let centre = (l + rt) / 2;
+    assert!((128..=132).contains(&centre), "about its centre: {centre}");
+    assert_matches_ref("effects_jelly", &buf, 2);
+    // Held still: the stretch rings out through a squash (taller than
+    // wide) and settles to its square.
+    let mut squashed = false;
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        let (l, rt, top, bottom) = yellow_extent(&buf);
+        squashed |= bottom - top > rt - l + 1;
+        assert!(t < 6000, "settles");
+    }
+    assert!(squashed, "overshoots into a squash");
+    assert_eq!(yellow_extent(&buf), (120, 139, 20, 39), "square at rest");
+    // Let go: it glides home, stretching on the way, and settles.
+    r.lift(id, None);
+    let mut stretched = false;
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        let (l, rt, top, bottom) = yellow_extent(&buf);
+        stretched |= rt - l > bottom - top + 1;
+        assert!(t < 9000, "settles");
+    }
+    assert!(stretched, "stretches as it springs back");
+    assert_eq!(yellow_extent(&buf), (20, 39, 20, 39), "home and square");
+
+    for (amount, reduced) in [(0.0, false), (0.4, true)] {
+        let (mut r, mut buf, id) = jellied(amount, reduced);
+        drag(&mut r, &mut buf, id);
+        assert_eq!(
+            yellow_extent(&buf),
+            (120, 139, 20, 39),
+            "no jelly (amount {amount}, reduced {reduced})"
+        );
+    }
 }

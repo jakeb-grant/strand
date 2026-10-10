@@ -221,6 +221,18 @@ impl<'a> Build<'a> {
                 )),
                 NodeKind::Meter => Some(Ctx::Fixed(0.0, 4.0)),
                 NodeKind::Arc => Some(Ctx::Square(24.0)),
+                // (M4) A `spectrum` or `graph` given no size is a small
+                // inline visualiser, 64 × 24 (an `arc`'s 24 px tall), so
+                // design.md's `spectrum audio.sink { width: 72 }` in a
+                // row that centres it shows (decisions.md,
+                // m4-effects-finish).
+                // A fully sized one keeps no content size, as an image.
+                NodeKind::Spectrum | NodeKind::Graph
+                    if get(Prop::Size).is_none()
+                        && (get(Prop::Width).is_none() || get(Prop::Height).is_none()) =>
+                {
+                    Some(Ctx::Fixed(64.0, 24.0))
+                }
                 NodeKind::Input => Some(Ctx::Fixed(0.0, (font * 1.25).ceil())),
                 NodeKind::Segmented => Some(Ctx::Segmented {
                     node: node.id,

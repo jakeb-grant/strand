@@ -10,7 +10,9 @@
 //! own `fill` colours the whole drawing the same way, and `fit` places it
 //! like an image's.
 //!
-//! The file is read once per source, on the first draw, and the parts'
+//! The file is read once per source, on the image worker (inline where
+//! there is none; never on the render thread, which draws nothing until
+//! it is in and is woken when it is), and the parts'
 //! elements wrapped in groups of their own (`<g id="__strand_part_N">`)
 //! by their byte ranges, so every SVG feature inside a layer (gradients,
 //! clips, masks, filters) is kept. A part's transform is written in its
@@ -272,15 +274,27 @@ struct Svg {
 }
 
 impl Svg {
-    /// Reads the source and wraps its parts, when either changed.
-    fn prepare(&mut self) {
+    /// Asks for the source's text (from `props`' worker), and wraps its
+    /// parts when either changed.
+    fn prepare(&mut self, props: &RasterProps<'_>) {
         if self.text.is_none() && !self.source.is_empty() {
-            self.text = Some(
-                crate::image::read_local(&self.source, MAX_SVG_BYTES)
-                    .map_err(|e| e.to_string())
-                    .and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()))
-                    .map(Arc::from),
-            );
+            let src = self.source.clone();
+            self.text = props
+                .load_file(&format!("svg:{}", self.source), move || {
+                    crate::image::read_local(&src, MAX_SVG_BYTES)
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()))
+                        .map(|t| {
+                            Arc::new(Arc::<str>::from(t)) as Arc<dyn std::any::Any + Send + Sync>
+                        })
+                })
+                .map(|r| {
+                    r.and_then(|a| {
+                        a.downcast::<Arc<str>>()
+                            .map(|t| (*t).clone())
+                            .map_err(|_| "not text".to_string())
+                    })
+                });
         }
         let names: Vec<String> = self.parts.iter().map(|p| p.name.clone()).collect();
         let stale = self.doc.as_ref().is_none_or(|d| d.names != names)
@@ -407,7 +421,7 @@ impl RasterSource for SvgSource {
             .iter()
             .map(|(name, p)| Part::of(name, p))
             .collect();
-        s.prepare();
+        s.prepare(props);
         let mut h = DefaultHasher::new();
         s.source.hash(&mut h);
         s.fit.hash(&mut h);
@@ -459,15 +473,22 @@ mod tests {
             parts: vec![Part::of("needle", &[])],
             ..Default::default()
         };
+        let get = |_| None;
+        let props = RasterProps {
+            get: &get,
+            color: Color::WHITE,
+            parts: &[],
+            files: None,
+        };
         for _ in 0..3 {
-            s.prepare();
+            s.prepare(&props);
         }
         assert!(s.doc.is_none());
         assert_eq!(s.parses, 1);
         // Other names: tried again, once.
         s.parts = vec![Part::of("face", &[])];
-        s.prepare();
-        s.prepare();
+        s.prepare(&props);
+        s.prepare(&props);
         assert_eq!(s.parses, 2);
     }
 

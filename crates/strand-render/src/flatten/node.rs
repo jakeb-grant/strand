@@ -22,8 +22,8 @@ use super::text::{Shaped, TextSpec, natural_spec, pick, place_text, sane_font, s
 use super::widget::{CaretAt, WidgetCtx, caret_x};
 use super::{
     DisplayItem, FillShape, Flattener, GlyphCells, HitBox, Inherited, Item, MAX_BLUR, NodeRecord,
-    TOLERANCE, angle, default_color, default_font, finite, finite_or_zero, length, map_rect,
-    number,
+    RingCells, TOLERANCE, angle, default_color, default_font, finite, finite_or_zero, length,
+    map_rect, number,
 };
 use crate::tree::Node;
 
@@ -165,7 +165,8 @@ impl<'a> Flattener<'a> {
                 laid.w.max(0.0),
                 laid.h.max(0.0),
             );
-            self.anim.shared_morph(node, &scope, root, at)
+            self.anim
+                .shared_morph(node, &scope, root, at, &self.extras.origins)
         });
         // (M4) A transition mask, decided before the springs so a ghost
         // it needs is kept (`crate::effects::transition`).
@@ -260,6 +261,11 @@ impl<'a> Flattener<'a> {
             own = (own.0 + m[0], own.1 + m[1]);
         }
         let (morph_sx, morph_sy) = shared.map_or((1.0, 1.0), |m| (m[2] as f64, m[3] as f64));
+        // (M4) A dragged node's squash and stretch, from its drawn offset.
+        let jelly = number(get(Prop::Jelly))
+            .filter(|a| *a > 0.0)
+            .and_then(|a| self.anim.jelly(node, a, glide, &scope))
+            .and_then(crate::effects::jelly::matrix);
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
         let rect = LogicalRect::new(
             laid.x + offset.0,
@@ -435,16 +441,19 @@ impl<'a> Flattener<'a> {
         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
         let saved = self.xform;
         let morphs = morph_sx != 1.0 || morph_sy != 1.0;
-        let transform_group = (zoom != 1.0 || turn != 0.0 || morphs).then(|| {
-            let c = frame.center();
-            let local = kurbo::Affine::translate(c.to_vec2())
-                * kurbo::Affine::rotate((turn as f64).to_radians())
-                * kurbo::Affine::scale(zoom as f64)
-                * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
-                * kurbo::Affine::translate(-c.to_vec2());
-            self.xform = saved * local;
-            self.marker(Item::PushTransform(self.xform))
-        });
+        let transform_group =
+            (zoom != 1.0 || turn != 0.0 || morphs || jelly.is_some()).then(|| {
+                let c = frame.center();
+                let [ja, jb, jc, jd] = jelly.unwrap_or([1.0, 0.0, 0.0, 1.0]);
+                let local = kurbo::Affine::translate(c.to_vec2())
+                    * kurbo::Affine::rotate((turn as f64).to_radians())
+                    * kurbo::Affine::scale(zoom as f64)
+                    * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
+                    * kurbo::Affine::new([ja, jb, jc, jd, 0.0, 0.0])
+                    * kurbo::Affine::translate(-c.to_vec2());
+                self.xform = saved * local;
+                self.marker(Item::PushTransform(self.xform))
+            });
 
         let mut sig = DefaultHasher::new();
         (inh.ctx, node.kind, node.epoch).hash(&mut sig);
@@ -471,6 +480,7 @@ impl<'a> Flattener<'a> {
                 frame,
                 scale: self.scale.as_f32(),
                 xform: self.xform,
+                mosaic: None,
             })))
         });
         // (M4) The transition mask over the node and its subtree.
@@ -564,6 +574,7 @@ impl<'a> Flattener<'a> {
                     frame,
                     scale: self.scale.as_f32(),
                     xform: self.xform,
+                    mosaic: None,
                 })),
                 phys,
                 &mut sig,
@@ -712,6 +723,7 @@ impl<'a> Flattener<'a> {
                         get: &get,
                         color: text_color,
                         parts: &parts,
+                        files: Some(&self.extras.images),
                     },
                 )
             }
@@ -796,7 +808,10 @@ impl<'a> Flattener<'a> {
                 self.push(item, cover(reach), &mut sig, &mut ink);
             }
         }
-        // Border, drawn inside the box.
+        // Border, drawn inside the box. Along the box (no `shape:`), it
+        // is hashed apart from the rest, with the strips it lies in: a
+        // change of the border alone damages only its ring.
+        let mut ring: Option<(u64, [Rect; 4])> = None;
         if has_area
             && let Some(PropValue::Border(Border { width, paint })) = get(Prop::Border)
             && let Some(width) = finite(*width)
@@ -817,16 +832,55 @@ impl<'a> Flattener<'a> {
                     None => path.extend(shape_path(inner, ir, squircle)),
                 }
             }
-            self.push(
-                Item::Border {
-                    path,
-                    paint: paint.clone(),
-                    frame,
-                },
-                phys,
-                &mut sig,
-                &mut ink,
-            );
+            let item = Item::Border {
+                path,
+                paint: paint.clone(),
+                frame,
+            };
+            // The ring lies in two columns as wide as its corners reach
+            // (or the border, if wider) and, between them, two rows as tall
+            // as the border, each 2 px more for antialiasing: a pill's
+            // round ends are its columns, and its middle is left out.
+            let corner = [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+                .into_iter()
+                .fold(0.0f64, f64::max);
+            // A squircle's corner eases further along its edges.
+            let corner = if squircle {
+                (corner * super::paint::SQUIRCLE_REACH)
+                    .min(frame.width().min(frame.height()) / 2.0)
+                    .max(corner)
+            } else {
+                corner
+            };
+            let col = (bw.max(corner).ceil() as i32).saturating_add(2);
+            let row = (bw.ceil() as i32).saturating_add(2);
+            let outer = phys.inflate(1);
+            let strips = (outline.is_none()
+                && i64::from(outer.w) > 2 * i64::from(col)
+                && i64::from(outer.h) > 2 * i64::from(row))
+            .then(|| {
+                let (w, h, c, b) = (outer.w, outer.h, col as u32, row as u32);
+                let mid = w - 2 * c;
+                [
+                    Rect::new(outer.x + col, outer.y, mid, b),
+                    Rect::new(outer.x + col, outer.y + (h - b) as i32, mid, b),
+                    Rect::new(outer.x, outer.y, c, h),
+                    Rect::new(outer.x + (w - c) as i32, outer.y, c, h),
+                ]
+                .map(|c| {
+                    map_rect(self.xform, c)
+                        .intersect(inh.clip)
+                        .unwrap_or_default()
+                })
+            });
+            match strips {
+                Some(cells) => {
+                    let mut h = DefaultHasher::new();
+                    self.push(item, phys, &mut h, &mut ink);
+                    ring = Some((h.finish(), cells));
+                }
+                None => self.push(item, phys, &mut sig, &mut ink),
+            }
         }
         // (M4) `stroke:` with its styles (`crate::shapes::stroke`), along
         // the outline inset by half its width, so it is drawn inside the
@@ -1115,17 +1169,32 @@ impl<'a> Flattener<'a> {
                 .intersect(self.surface)
                 .unwrap_or_default();
         }
+        // The border, hashed apart, still counts in the whole and in what
+        // the glyphs leave out.
+        let rest = sig.finish();
+        let whole = match ring {
+            Some((r, _)) => {
+                let mut h = DefaultHasher::new();
+                (rest, r).hash(&mut h);
+                h.finish()
+            }
+            None => rest,
+        };
         self.out.records.insert(
             node.id,
             NodeRecord {
                 bounds,
-                sig: sig.finish(),
-                glyphs: glyph_cells.map(|(rest, cells)| {
+                sig: whole,
+                glyphs: glyph_cells.map(|(mut glyph_rest, cells)| {
+                    if let Some((r, _)) = ring {
+                        r.hash(&mut glyph_rest);
+                    }
                     Arc::new(GlyphCells {
-                        rest: rest.finish(),
+                        rest: glyph_rest.finish(),
                         cells,
                     })
                 }),
+                ring: ring.map(|(_, cells)| Arc::new(RingCells { rest, cells })),
             },
         );
 

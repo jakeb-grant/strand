@@ -141,8 +141,16 @@ pub(super) fn diff_records(
             Some(o) if o == n => {}
             // Only its glyphs changed: the glyphs that differ, where
             // they were and where they are.
-            Some(o) => match (&o.glyphs, &n.glyphs) {
-                (Some(a), Some(b)) if a.rest == b.rest => glyph_damage(&a.cells, &b.cells, d),
+            Some(o) => match (&o.glyphs, &n.glyphs, &o.ring, &n.ring) {
+                (Some(a), Some(b), ..) if a.rest == b.rest => glyph_damage(&a.cells, &b.cells, d),
+                // Only its border changed, in the same place: its ring.
+                (_, _, Some(a), Some(b))
+                    if a.rest == b.rest && a.cells == b.cells && o.bounds == n.bounds =>
+                {
+                    for c in b.cells {
+                        d.add(c);
+                    }
+                }
                 _ => {
                     d.add(o.bounds);
                     d.add(n.bounds);
