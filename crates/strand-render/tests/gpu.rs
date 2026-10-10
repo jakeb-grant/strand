@@ -1111,6 +1111,77 @@ fn a_clocked_shader_on_a_gpu_surface_damages_every_frame() {
     assert!(!d.is_empty(), "a frame with only the clock moving");
 }
 
+/// (m4-integration-w2) A presented frame in flight is not idleness: a
+/// promoted surface whose frame the GPU thread has not presented yet
+/// (lavapipe's first frame compiles its pipelines, hundreds of ms on a
+/// loaded machine) stays on the GPU past promotion's 500 ms idle window,
+/// and its idle window starts at the frame's `Presented`. Without it
+/// `strand/tests/gpu_idle.rs` saw an animating panel released at its
+/// first frame. Needs no device; waits in real time (the renderer's
+/// clock is `Instant::now`).
+#[test]
+fn a_frame_in_flight_keeps_its_surface_promoted() {
+    let mut b = Builder::default();
+    b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    assert!(
+        !buf.paint_at(&mut r, S, 0, Duration::from_secs(1))
+            .is_empty()
+    );
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    assert!(
+        r.paint_gpu(S, Duration::from_secs(1)).is_some(),
+        "the switch's frame"
+    );
+    let idle = strand_render::promote::PROMOTE_AFTER + Duration::from_millis(150);
+    std::thread::sleep(idle);
+    r.update();
+    assert_eq!(
+        r.backend(S),
+        Backend::GpuPresent,
+        "demoted with a frame in flight"
+    );
+    assert!(
+        !r.take_backend_changes()
+            .iter()
+            .any(|c| matches!(c, BackendChange::Demote(_))),
+        "a demotion asked for with a frame in flight"
+    );
+    // Presented: idle from now, so the next wake demotes it.
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        at: Instant::now(),
+    });
+    r.update();
+    assert!(
+        !r.take_backend_changes()
+            .iter()
+            .any(|c| matches!(c, BackendChange::Demote(_))),
+        "demoted at once on its Presented"
+    );
+    std::thread::sleep(idle);
+    r.update();
+    assert!(
+        r.take_backend_changes()
+            .iter()
+            .any(|c| matches!(c, BackendChange::Demote(id) if *id == S)),
+        "idle after its frame was shown"
+    );
+}
+
 /// (m4-integration-w2) A surface the GPU thread presents paints its pose
 /// into its frames (architecture.md, "Surface hand-off"): with
 /// compositor poses on, a root's static `opacity: 0.5` is delegated while

@@ -127,6 +127,15 @@ impl Promotion {
         }
     }
 
+    /// A frame of the promoted surface reached the screen at `now` (a
+    /// presented frame's `Presented`): its idle window starts there, not
+    /// when it was painted.
+    pub fn shown(&mut self, now: Instant) {
+        if self.gpu {
+            self.last = Some(self.last.map_or(now, |t| t.max(now)));
+        }
+    }
+
     /// On the GPU at once (a test seam: `Renderer::promote_now`).
     pub fn force_gpu(&mut self) {
         self.gpu = true;
@@ -249,6 +258,27 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (m4-integration-w2) A presented frame reaching the screen late
+    /// moves the idle window to its `Presented`; on the CPU it changes
+    /// nothing.
+    #[test]
+    fn a_shown_frame_restarts_the_idle_window() {
+        let t = Instant::now();
+        let mut p = Promotion::default();
+        p.shown(t);
+        assert_eq!(p.wake(), None, "on the CPU");
+        p.force_gpu();
+        assert_eq!(p.frame(t, LARGE_DAMAGE, false), None);
+        assert_eq!(p.wake(), Some(t + PROMOTE_AFTER));
+        let late = t + Duration::from_millis(800);
+        p.shown(late);
+        assert_eq!(p.wake(), Some(late + PROMOTE_AFTER));
+        assert_eq!(p.idle(t + PROMOTE_AFTER), None, "not idle at the old wake");
+        p.shown(t);
+        assert_eq!(p.wake(), Some(late + PROMOTE_AFTER), "never earlier");
+        assert_eq!(p.idle(late + PROMOTE_AFTER), Some(Switch::ToCpu));
+    }
 
     const FRAME: Duration = Duration::from_millis(16);
 

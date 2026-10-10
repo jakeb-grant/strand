@@ -190,7 +190,15 @@ mod host {
         /// presented surfaces.
         pub(crate) fn pump(&mut self, state: &mut State<Host>) {
             // Replies first: they can attach, hand off and take back.
-            self.replies(state);
+            if self.replies(state) {
+                // A pass's pixels (or a readback's, a failure) dirtied a
+                // node: render runs its update and its surfaces are asked
+                // for frames, as after the text worker's layouts. The
+                // GPU ping itself does nothing, so without this a CPU
+                // surface waiting on a pass repainted only when the
+                // renderer's timer happened to fire.
+                crate::demo::text_ready(state);
+            }
             for id in std::mem::take(&mut state.host_mut().gpu_released) {
                 let held = self.exiting.iter().map(|(_, held)| held.as_slice());
                 match release_route(id, self.running(), held) {
@@ -240,7 +248,11 @@ mod host {
             (!self.exiting.is_empty()).then_some(JOIN_POLL)
         }
 
-        fn replies(&mut self, state: &mut State<Host>) {
+        /// Delivers the thread's replies to render; true when one may
+        /// have changed what a surface shows (anything but a
+        /// `Presented`).
+        fn replies(&mut self, state: &mut State<Host>) -> bool {
+            let mut changed = false;
             while let Some(reply) = self.gpu.as_mut().and_then(Gpu::try_recv) {
                 match &reply {
                     GpuReply::Attached { surface, mode } => {
@@ -339,8 +351,10 @@ mod host {
                     }
                     _ => {}
                 }
+                changed |= !matches!(reply, GpuReply::Presented { .. });
                 state.host_mut().renderer.deliver_gpu(reply);
             }
+            changed
         }
 
         fn change(&mut self, state: &mut State<Host>, change: BackendChange) {

@@ -225,10 +225,24 @@ struct Surf {
     backend: Backend,
     /// Its readback frame in flight, and since when.
     inflight: Option<(u64, Instant)>,
+    /// A presented frame was handed out ([`Renderer::paint_gpu`]) and
+    /// its `Presented` (or `Failed`) has not come: not idle, however long
+    /// the GPU takes (lavapipe's first frame compiles its pipelines).
+    presenting: bool,
     /// Pixels of its last readback frame, not copied in yet.
     pixels: Option<Readback>,
     /// Until when its next frame holds (a pass or readback in flight).
     hold: Option<Instant>,
+}
+
+impl Surf {
+    /// Whether promotion's idle rule applies: only to a surface the GPU
+    /// draws (one still waiting for its `Attached` has painted on the
+    /// CPU, and a device start, hundreds of ms on lavapipe, can stall
+    /// the loop past the idle window) with no presented frame in flight.
+    fn idles(&self) -> bool {
+        self.backend.is_gpu() && !self.presenting
+    }
 }
 
 /// One `shader` node's pass in flight.
@@ -300,6 +314,7 @@ impl GpuState {
                 back.push(*id);
             }
             s.inflight = None;
+            s.presenting = false;
             s.pixels = None;
             s.hold = None;
         }
@@ -396,6 +411,7 @@ impl Renderer {
         }
         s.backend = backend;
         s.inflight = None;
+        s.presenting = false;
         s.pixels = None;
         s.hold = None;
         self.gpu.fades.remove(&surface);
@@ -406,6 +422,9 @@ impl Renderer {
                 self.gpu.changes.push(BackendChange::Demote(surface));
                 return;
             }
+            // The idle window starts at the attach: the device's start
+            // (hundreds of ms on lavapipe) is not the surface's idleness.
+            s.promo.shown(Instant::now());
         } else {
             s.promo.force_cpu();
         }
@@ -458,7 +477,14 @@ impl Renderer {
                 self.set_backend(surface, backend);
             }
             GpuReply::Released(surface) => self.set_backend(surface, Backend::Cpu),
-            GpuReply::Presented { .. } => self.gpu.device.used(now),
+            GpuReply::Presented { surface, .. } => {
+                self.gpu.device.used(now);
+                if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+                    s.presenting = false;
+                    // On screen from now: the idle window starts here.
+                    s.promo.shown(now);
+                }
+            }
             GpuReply::Pixels {
                 surface,
                 frame,
@@ -519,6 +545,7 @@ impl Renderer {
                 {
                     // A frame that cannot be drawn: back to the CPU.
                     s.inflight = None;
+                    s.presenting = false;
                     s.hold = None;
                     if s.promo.on_gpu() {
                         s.promo.force_cpu();
@@ -560,6 +587,7 @@ impl Renderer {
             .gpu
             .surfaces
             .values()
+            .filter(|s| s.idles())
             .filter_map(|s| s.promo.wake())
             .min();
         // A detached surface is forgotten at the next tick: it keeps
@@ -588,7 +616,7 @@ impl Renderer {
     pub(super) fn gpu_tick(&mut self, now: Instant) {
         let mut back = Vec::new();
         for (id, s) in self.gpu.surfaces.iter_mut() {
-            if s.promo.idle(now) == Some(Switch::ToCpu) {
+            if s.idles() && s.promo.idle(now) == Some(Switch::ToCpu) {
                 back.push(*id);
             }
         }
@@ -616,6 +644,7 @@ impl Renderer {
             // anyway, which keeps the device up).
             for s in self.gpu.surfaces.values_mut() {
                 s.inflight = None;
+                s.presenting = false;
                 s.pixels = None;
                 s.hold = None;
             }
@@ -827,6 +856,9 @@ impl Renderer {
         let frame = self.gpu.present.take();
         if frame.is_some() {
             self.gpu.device.used(Instant::now());
+            if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+                s.presenting = true;
+            }
         }
         frame
     }
