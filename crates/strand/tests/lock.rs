@@ -25,8 +25,10 @@
 //! lock's node kept), or the lock unmounted and then the content's
 //! output unplugged; strand killed (SIGKILL) or aborted (SIGABRT, what
 //! an allocation failure does) while locked and
-//! started again, by the test or by a supervisor (a restart loop like
-//! systemd's `Restart=on-failure`), twice in a row; the compositor ends a lock it granted (`finished` after
+//! started again, by the test or by a supervisor (a restart loop with
+//! the documented systemd unit's policy, read from architecture.md),
+//! twice in a row and then in a crash loop past systemd's default start
+//! limit; the compositor ends a lock it granted (`finished` after
 //! `locked`, played by a Wayland proxy, tests/lock/proxy.rs: sway 1.9
 //! never sends it); the compositor refusing the lock (another locker
 //! holds it: not a fault, nothing shows, the run goes on); an output
@@ -611,9 +613,8 @@ struct Strand {
     config: PathBuf,
     log: PathBuf,
     starts: usize,
-    /// `child` is a supervisor: a restart loop running strand again
-    /// whenever it exits other than cleanly (what systemd's
-    /// `Restart=on-failure` does).
+    /// `child` is a supervisor: [`Supervisor::documented`], the restart
+    /// policy of the user unit architecture.md gives.
     supervised: bool,
 }
 
@@ -671,17 +672,10 @@ impl Strand {
             .unwrap();
         writeln!(log, "---- start {}", self.starts).unwrap();
         let mut cmd = if self.supervised {
-            // Runs strand again whenever it exits with a failure or a
-            // signal, as systemd's `Restart=on-failure` does.
-            let mut c = Command::new("sh");
-            c.arg("-c")
-                .arg(
-                    "while :; do \"$0\" run \"$1\"; s=$?; [ \"$s\" -eq 0 ] && exit 0; \
-                     echo \"---- supervisor: strand exited ($s), starting it again\"; done",
-                )
-                .arg(env!("CARGO_BIN_EXE_strand"))
-                .arg(&self.config);
-            c
+            Supervisor::documented().command(
+                std::ffi::OsStr::new(env!("CARGO_BIN_EXE_strand")),
+                &self.config,
+            )
         } else {
             let mut c = Command::new(env!("CARGO_BIN_EXE_strand"));
             c.arg("run").arg(&self.config);
@@ -792,14 +786,21 @@ impl Strand {
     }
 
     /// The running strand's pid: the child's, or under a supervisor its
-    /// child's (`None` between two runs).
+    /// child named `strand` (`None` between two runs, while it waits out
+    /// its restart delay in a `sleep`).
     fn pid(&self) -> Option<u32> {
         let pid = self.child.as_ref()?.id();
         if !self.supervised {
             return Some(pid);
         }
         let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
-        children.split_whitespace().next()?.parse().ok()
+        children
+            .split_whitespace()
+            .filter_map(|c| c.parse::<u32>().ok())
+            .find(|c| {
+                std::fs::read_to_string(format!("/proc/{c}/comm"))
+                    .is_ok_and(|n| n.trim() == "strand")
+            })
     }
 
     /// The restart marker (run/lock.rs).
@@ -826,6 +827,136 @@ impl Drop for Strand {
             // SAFETY: kill(2) on the supervisor's child, ours to end.
             unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         }
+    }
+}
+
+// ---- the supervisor ---------------------------------------------------------------
+
+/// The user unit architecture.md documents for running strand, the
+/// first ```ini block after "A user unit for it".
+fn documented_unit() -> &'static str {
+    const ARCH: &str = include_str!("../../../docs/architecture.md");
+    let at = ARCH
+        .find("A user unit for it")
+        .expect("architecture.md documents a user unit");
+    let rest = &ARCH[at..];
+    let start = rest.find("```ini\n").expect("the unit's ini block") + "```ini\n".len();
+    let len = rest[start..].find("```").expect("the ini block ends");
+    &rest[start..start + len]
+}
+
+/// systemd's restart policy for a unit, as a restart loop runs it: with
+/// `Restart=on-failure` it starts the service again after a non-zero
+/// exit or a signal and stops after a clean exit; the n-th restart
+/// waits `delays[n]` (the last for every later one); a start that would
+/// be the `burst + 1`-th within `interval` is refused and the loop gives
+/// up, as systemd marks the unit failed (`interval` zero: no limit).
+#[derive(Debug)]
+struct Supervisor {
+    delays: Vec<Duration>,
+    burst: u32,
+    interval: Duration,
+}
+
+impl Supervisor {
+    /// [`documented_unit`]'s policy.
+    fn documented() -> Supervisor {
+        Supervisor::of_unit(documented_unit())
+    }
+
+    /// The policy of unit file `ini`, with systemd's defaults
+    /// (`DefaultStartLimitIntervalSec=10s`, `DefaultStartLimitBurst=5`,
+    /// `RestartSec=100ms`) for what it leaves out. With `RestartSteps`
+    /// (systemd 254) the delay grows from `RestartSec` to
+    /// `RestartMaxDelaySec` over that many restarts, geometrically, as
+    /// systemd interpolates it.
+    fn of_unit(ini: &str) -> Supervisor {
+        let key = |k: &str| {
+            ini.lines()
+                .filter_map(|l| l.trim().split_once('='))
+                .filter(|(name, _)| name.trim() == k)
+                .map(|(_, v)| v.trim().to_string())
+                .next_back()
+        };
+        assert_eq!(key("Restart").as_deref(), Some("on-failure"), "{ini}");
+        let span = |k: &str, default: Duration| key(k).map_or(default, |v| timespan(&v));
+        let restart = span("RestartSec", Duration::from_millis(100));
+        let max = span("RestartMaxDelaySec", restart);
+        let steps: u32 = key("RestartSteps").map_or(0, |v| v.parse().expect("RestartSteps"));
+        let delays = if steps == 0 || max <= restart {
+            vec![restart]
+        } else if restart.is_zero() {
+            (0..=steps).map(|i| max * i / steps).collect()
+        } else {
+            let ratio = max.as_secs_f64() / restart.as_secs_f64();
+            (0..=steps)
+                .map(|i| restart.mul_f64(ratio.powf(f64::from(i) / f64::from(steps))))
+                .collect()
+        };
+        Supervisor {
+            delays,
+            burst: key("StartLimitBurst").map_or(5, |v| v.parse().expect("StartLimitBurst")),
+            interval: span("StartLimitIntervalSec", Duration::from_secs(10)),
+        }
+    }
+
+    /// A shell running `strand run config` under this policy, saying
+    /// `---- supervisor: strand exited (<status>), starting it again`
+    /// after each failure and `---- supervisor: start limit hit` when it
+    /// gives up.
+    fn command(&self, strand: &std::ffi::OsStr, config: &Path) -> Command {
+        const SCRIPT: &str = r#"strand=$1 config=$2 delays=$3 burst=$4 interval=$5
+n=0 starts=
+while :; do
+  if [ "$interval" -gt 0 ]; then
+    now=$(($(date +%s%N) / 1000000)) recent= k=0
+    for t in $starts; do
+      if [ $((now - t)) -lt "$interval" ]; then recent="$recent $t" k=$((k + 1)); fi
+    done
+    if [ "$k" -ge "$burst" ]; then
+      echo "---- supervisor: start limit hit ($k starts in $interval ms), giving up"
+      exit 1
+    fi
+    starts="$recent $now"
+  fi
+  "$strand" run "$config"
+  s=$?
+  [ "$s" -eq 0 ] && exit 0
+  echo "---- supervisor: strand exited ($s), starting it again"
+  i=0 d=0
+  for x in $delays; do d=$x; [ "$i" -ge "$n" ] && break; i=$((i + 1)); done
+  n=$((n + 1))
+  sleep "$d"
+done"#;
+        let delays: Vec<String> = self
+            .delays
+            .iter()
+            .map(|d| format!("{:.3}", d.as_secs_f64()))
+            .collect();
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(SCRIPT)
+            .arg("supervisor")
+            .arg(strand)
+            .arg(config)
+            .arg(delays.join(" "))
+            .arg(self.burst.to_string())
+            .arg(self.interval.as_millis().to_string());
+        c
+    }
+}
+
+/// A systemd time span: `0`, `100ms`, `2s`, `5min`, or bare seconds.
+fn timespan(v: &str) -> Duration {
+    let (n, unit) = v
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or((v, ""), |i| v.split_at(i));
+    let n: u64 = n.parse().unwrap_or_else(|_| panic!("time span {v:?}"));
+    match unit.trim() {
+        "" | "s" | "sec" => Duration::from_secs(n),
+        "ms" | "msec" => Duration::from_millis(n),
+        "min" | "m" => Duration::from_secs(n * 60),
+        other => panic!("time span unit {other:?} in {v:?}"),
     }
 }
 
@@ -1450,14 +1581,55 @@ fn aborted_while_locked_locks_again_on_restart() {
     restart_after("sigabrt", libc::SIGABRT);
 }
 
+/// (M4) The supervisor stand-in behaves as systemd does: under a unit
+/// with no start limit of its own (systemd's default, 5 starts in 10 s)
+/// a strand that dies at once is started five times and then given up
+/// on, which would leave a locked session with no password field. The
+/// documented unit lifts the limit (`StartLimitIntervalSec=0`) and backs
+/// off to a bounded delay instead. Runs anywhere (no lock taken).
+#[test]
+fn the_supervisor_gives_up_as_systemd_does_unless_the_unit_lifts_the_limit() {
+    let default = Supervisor::of_unit("[Service]\nRestart=on-failure\nRestartSec=0\n");
+    assert_eq!(default.interval, Duration::from_secs(10));
+    assert_eq!(default.burst, 5);
+    // `false run <config>` fails at once, as a strand crashing at start.
+    let out = default
+        .command(std::ffi::OsStr::new("false"), Path::new("/nonexistent"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert_eq!(text.matches("strand exited (1)").count(), 5, "{text}");
+    assert!(text.contains("start limit hit (5 starts"), "{text}");
+
+    let documented = Supervisor::documented();
+    assert_eq!(
+        documented.interval,
+        Duration::ZERO,
+        "the documented unit sets StartLimitIntervalSec=0:\n{}",
+        documented_unit()
+    );
+    let longest = documented.delays.iter().max().copied().unwrap_or_default();
+    assert!(
+        documented.delays.len() > 1 && longest <= Duration::from_secs(5),
+        "it backs off, to a bounded delay: {documented:?}"
+    );
+}
+
 /// (M4) The deployment architecture.md asks for: strand under a
-/// supervisor that starts it again when it exits abnormally (a restart
-/// loop standing in for systemd's `Restart=on-failure`). Killed while
-/// locked (SIGKILL), and killed again by an abort (SIGABRT) once back,
-/// the session never shows the desktop: every shot from each kill until
-/// the supervisor's new strand shows the built-in password field hides
-/// it, no test step starts strand, and only the right password unlocks.
-/// The supervisor and its strand run on after the unlock.
+/// supervisor that starts it again when it exits abnormally, with the
+/// restart policy of the unit it documents ([`Supervisor::documented`],
+/// read from architecture.md itself). Killed while locked (SIGKILL), and
+/// killed again by an abort (SIGABRT) once back, the session never shows
+/// the desktop: every shot from each kill until the supervisor's new
+/// strand shows the built-in password field hides it. Then a crash loop:
+/// six more deaths, each as soon as the new strand runs, more starts
+/// than systemd's default limit allows in its 10 s (the supervisor gives
+/// up under it, as the test above shows); under the documented unit the
+/// session stays locked throughout and the field comes back. No test
+/// step starts strand, and only the right password unlocks. The
+/// supervisor and its strand run on after the unlock.
 #[test]
 fn a_supervised_strand_dying_while_locked_keeps_the_session_locked() {
     let test = "supervised";
@@ -1472,17 +1644,18 @@ fn a_supervised_strand_dying_while_locked_keeps_the_session_locked() {
     vm.until("HEADLESS-1", "the restart marker written", |_| {
         marker.exists()
     });
-    for (round, sig) in [libc::SIGKILL, libc::SIGABRT].into_iter().enumerate() {
+    // Kills the supervised strand with `sig`; shots until the supervisor
+    // runs a new one never show the desktop.
+    let kill_and_wait_restart = |vm: &mut Vm, round: &str, sig: i32| {
         let pid = vm.strand.pid().expect("strand under its supervisor");
         // SAFETY: kill(2) on the supervisor's child.
         assert_eq!(unsafe { libc::kill(pid as i32, sig) }, 0, "kill {sig}");
-        // Locked while no strand runs, until the supervisor's next one.
         let deadline = Instant::now() + WAIT;
         loop {
             let shot = vm.sway.shot("HEADLESS-1");
             assert!(
                 !shot.desktop(),
-                "round {round}: the desktop showed after signal {sig}: {}\n{}",
+                "{round}: the desktop showed after signal {sig}: {}\n{}",
                 shot.describe(),
                 vm.strand.log_text()
             );
@@ -1491,16 +1664,42 @@ fn a_supervised_strand_dying_while_locked_keeps_the_session_locked() {
             }
             assert!(
                 Instant::now() < deadline,
-                "round {round}: the supervisor never started strand again\n{}",
+                "{round}: the supervisor never started strand again\n{}",
                 vm.strand.log_text()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+    };
+    for (round, sig) in [libc::SIGKILL, libc::SIGABRT].into_iter().enumerate() {
+        kill_and_wait_restart(&mut vm, &format!("round {round}"), sig);
         vm.fallback();
         assert!(marker.exists(), "round {round}: still locked, still marked");
     }
-    vm.log_has("---- supervisor: strand exited (137)");
-    vm.log_has("---- supervisor: strand exited (134)");
+    // The crash loop.
+    for (death, sig) in [libc::SIGKILL, libc::SIGABRT]
+        .repeat(3)
+        .into_iter()
+        .enumerate()
+    {
+        kill_and_wait_restart(&mut vm, &format!("crash loop death {death}"), sig);
+    }
+    vm.fallback();
+    assert!(
+        marker.exists(),
+        "after the crash loop: still locked, still marked"
+    );
+    let log = vm.strand.log_text();
+    assert_eq!(
+        log.matches("---- supervisor: strand exited (137)").count(),
+        4,
+        "{log}"
+    );
+    assert_eq!(
+        log.matches("---- supervisor: strand exited (134)").count(),
+        4,
+        "{log}"
+    );
+    assert!(!log.contains("start limit hit"), "{log}");
     vm.log_has("locking again");
     assert_eq!(vm.strand.starts, 1, "only the supervisor started strand");
     vm.fallback_passwords();

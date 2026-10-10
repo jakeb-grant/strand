@@ -282,33 +282,48 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   started again, and strand ships no supervisor: a session that uses
   the lock must run strand under one that restarts it when it exits
   abnormally (a systemd user unit with `Restart=on-failure`, or a
-  restart loop in the compositor's autostart). Without one, a main
+  restart loop with a short sleep in the compositor's autostart). Without one, a main
   thread fault while locked needs another way into the session (a VT,
   ssh) to start strand again. With one, the session stays locked
   throughout and the field is back as soon as the new strand runs:
   `tests/lock.rs::a_supervised_strand_dying_while_locked_keeps_the_session_locked`
-  (lock VM) kills a supervised strand twice while locked (SIGKILL, then
-  SIGABRT once it is back) and finds the desktop hidden in every shot
-  until the restarted strand's field shows, with no test step starting
-  strand. A user unit for it:
+  (lock VM) runs strand under a restart loop with the policy of the unit
+  below, read from this file, kills it twice while locked (SIGKILL, then
+  SIGABRT once it is back) and then six more times in a crash loop, each
+  as soon as the new strand runs, and finds the desktop hidden in every
+  shot until the restarted strand's field shows, with no test step
+  starting strand. A user unit for it:
 
   ```ini
   [Unit]
   Description=Strand shell
   PartOf=graphical-session.target
   After=graphical-session.target
+  StartLimitIntervalSec=0
 
   [Service]
   ExecStart=strand run
   Restart=on-failure
-  RestartSec=0
+  RestartSec=100ms
+  RestartSteps=5
+  RestartMaxDelaySec=2s
 
   [Install]
   WantedBy=graphical-session.target
   ```
 
-  (`RestartSec=0`: systemd's default 100 ms only delays the field; the
-  compositor keeps the session locked meanwhile.)
+  `StartLimitIntervalSec=0` is what keeps a crash loop from ending the
+  lock's way out. Without it systemd's default start limit (5 starts in
+  10 s) marks the unit failed after the fifth quick death and starts
+  strand no more, and the compositor holds the abandoned lock with no
+  password field: exactly the state the supervisor is there to end
+  (`tests/lock.rs::the_supervisor_gives_up_as_systemd_does_unless_the_unit_lifts_the_limit`
+  plays both). With no limit, the restart delay is the brake instead:
+  100 ms at first, growing over five restarts to 2 s (`RestartSteps`,
+  systemd 254; older systemd ignores the two keys and waits 100 ms each
+  time), so a strand that cannot start costs a restart every 2 s, not
+  a busy loop, and strand is started again at most 2 s after any
+  death. The compositor keeps the session locked meanwhile.
 - The PAM helper is a process, not a thread: the `strand-auth` binary,
   fork+exec'd over a socketpair by `strand_auth::Client`, one per lock
   session, respawned when it dies. The `Client`'s owner hands it
