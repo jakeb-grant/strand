@@ -829,6 +829,29 @@ pub fn set_idle_hook(hook: fn()) {
 /// (an `svg`'s text, a `lottie`'s model and decoded images), or why not.
 pub(crate) type Loaded = Result<Arc<dyn std::any::Any + Send + Sync>, String>;
 
+/// (m4-audit) Room for one more file result. Results no source came
+/// back for are not kept for ever: once `MAX_FILES_DONE` are held, those
+/// older than `FILE_RESULT_STALE` go, and past `MAX_FILES_HELD` the
+/// oldest. Fresh results stay, so a burst of sources first drawn
+/// together (a launcher of `svg`s) is not read and parsed again because
+/// the worker outran the render loop.
+fn make_room(done: &mut HashMap<String, (Loaded, Instant)>, now: Instant) {
+    if done.len() < MAX_FILES_DONE {
+        return;
+    }
+    done.retain(|_, (_, at)| now.saturating_duration_since(*at) < FILE_RESULT_STALE);
+    while done.len() >= MAX_FILES_HELD {
+        let Some(oldest) = done
+            .iter()
+            .min_by_key(|(_, (_, at))| *at)
+            .map(|(k, _)| k.clone())
+        else {
+            break;
+        };
+        done.remove(&oldest);
+    }
+}
+
 /// (M4) A media source's file job: read and parse on the worker.
 pub(crate) struct FileJob {
     key: String,
@@ -850,14 +873,27 @@ impl std::fmt::Debug for Job {
     }
 }
 
-/// (M4) File results kept for their sources to take.
+/// (M4) File results kept for their sources to take before stale ones
+/// are dropped.
 const MAX_FILES_DONE: usize = 64;
+
+/// (m4-audit) How long a file result waits for its source before it
+/// counts as one no source came back for (its source changed while it
+/// was read): a waiting source's surface flattens within a frame or so
+/// of the wake.
+const FILE_RESULT_STALE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// (m4-audit) Most file results kept however fresh: past it the oldest
+/// go (a burst of more fresh results than this, which no scene asks
+/// for at once, is read again).
+const MAX_FILES_HELD: usize = 4 * MAX_FILES_DONE;
 
 /// (M4) File jobs in flight and done, by key.
 #[derive(Default)]
 struct FileLoads {
     pending: HashSet<String>,
-    done: HashMap<String, Loaded>,
+    /// Each result with when it arrived.
+    done: HashMap<String, (Loaded, Instant)>,
     /// A job finished since the render loop last looked.
     arrived: bool,
 }
@@ -953,14 +989,9 @@ impl ImageWorker {
                             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
                                 .unwrap_or_else(|_| Err("parser panicked".into()));
                             if let Ok(mut f) = loads.lock() {
-                                // Results no source came back for (its
-                                // source changed while it was read) are
-                                // not kept for ever.
-                                if f.done.len() >= MAX_FILES_DONE {
-                                    f.done.clear();
-                                }
+                                make_room(&mut f.done, Instant::now());
                                 f.pending.remove(&key);
-                                f.done.insert(key, r);
+                                f.done.insert(key, (r, Instant::now()));
                                 f.arrived = true;
                             }
                             if let Some(w) = &waker {
@@ -1288,7 +1319,7 @@ impl ImageStore {
         let Ok(mut f) = w.files.lock() else {
             return Some(Err("image worker poisoned".into()));
         };
-        if let Some(r) = f.done.remove(key) {
+        if let Some((r, _)) = f.done.remove(key) {
             return Some(r);
         }
         if f.pending.contains(key) {
@@ -1803,6 +1834,70 @@ mod tests {
         assert!(load(&k("", true), &theme).is_err());
         assert!(load(&k("../../etc/passwd", true), &theme).is_err());
         assert_eq!(percent_decode("/a%20b.png"), "/a b.png");
+    }
+
+    /// (m4-audit) More file results than `MAX_FILES_DONE` finishing
+    /// before the render loop takes them are all kept: each is taken
+    /// without running its job again.
+    #[test]
+    fn a_burst_of_file_results_is_kept_for_its_sources() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let worker = ImageWorker::spawn(IconTheme::named("StrandTest"), None).unwrap();
+        let store = ImageStore::new(ImageBackend::Worker(worker));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let n = MAX_FILES_DONE * 2;
+        let job = |runs: &Arc<AtomicUsize>| {
+            let runs = runs.clone();
+            move || -> Loaded {
+                runs.fetch_add(1, Ordering::SeqCst);
+                Ok(Arc::new(()))
+            }
+        };
+        for i in 0..n {
+            assert!(store.load_file(&format!("k{i}"), job(&runs)).is_none());
+        }
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while runs.load(Ordering::SeqCst) < n
+            || matches!(&store.backend, ImageBackend::Worker(w)
+                if !w.files.lock().unwrap().pending.is_empty())
+        {
+            assert!(Instant::now() < deadline, "the worker answers");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        for i in 0..n {
+            let got = store.load_file(&format!("k{i}"), job(&runs));
+            assert!(matches!(got, Some(Ok(_))), "k{i}: {got:?}");
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), n, "no job ran twice");
+    }
+
+    /// (m4-audit) Past `MAX_FILES_DONE` only stale results go; past
+    /// `MAX_FILES_HELD` the oldest go too.
+    #[test]
+    fn only_stale_or_surplus_file_results_are_dropped() {
+        let t0 = Instant::now();
+        let ok = || -> Loaded { Ok(Arc::new(())) };
+        let mut done: HashMap<String, (Loaded, Instant)> = HashMap::new();
+        for i in 0..MAX_FILES_DONE {
+            done.insert(format!("old{i}"), (ok(), t0));
+        }
+        let later = t0 + FILE_RESULT_STALE / 2;
+        done.insert("fresh".into(), (ok(), later));
+        make_room(&mut done, later);
+        assert_eq!(done.len(), MAX_FILES_DONE + 1, "nothing stale yet");
+        make_room(&mut done, t0 + FILE_RESULT_STALE);
+        assert_eq!(done.keys().collect::<Vec<_>>(), ["fresh"]);
+        let mut done: HashMap<String, (Loaded, Instant)> = HashMap::new();
+        for i in 0..MAX_FILES_HELD {
+            let at = t0 + std::time::Duration::from_millis(i as u64);
+            done.insert(format!("k{i}"), (ok(), at));
+        }
+        make_room(
+            &mut done,
+            t0 + std::time::Duration::from_millis(MAX_FILES_HELD as u64),
+        );
+        assert_eq!(done.len(), MAX_FILES_HELD - 1);
+        assert!(!done.contains_key("k0"), "the oldest went");
     }
 
     /// A media source's file job runs on the worker's thread, once while
