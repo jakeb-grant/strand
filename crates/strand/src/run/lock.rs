@@ -386,7 +386,10 @@ impl LockScreen {
         }
     }
 
-    /// `auth` could not check a password.
+    /// `auth` could not check a password. Kept only while a lock is
+    /// asked for or held: [`Guard::check`] drops it otherwise
+    /// ([`LockScreen::idle`]), so a check that failed while unlocked
+    /// never shows the fallback on the next, healthy lock.
     pub(crate) fn auth_failed(&mut self, why: String) {
         if self.fallback.is_none() && self.pending.is_none() {
             self.pending = Some(format!("`auth` failed ({why})"));
@@ -415,6 +418,12 @@ impl LockScreen {
             field: LockFallback::new(),
             dirty: true,
         });
+    }
+
+    /// No lock is asked for or held: a reason to show the fallback has
+    /// nothing to show it on, and must not wait for the next lock.
+    fn idle(&mut self) {
+        self.pending = None;
     }
 
     /// No lock any more: the fallback and its reasons go.
@@ -565,6 +574,7 @@ impl Guard {
             if self.since.take().is_some() {
                 state.host_mut().lock.reset();
             }
+            state.host_mut().lock.idle();
             self.waiting = None;
             self.next_beat = None;
             if let Ok(mut f) = FAULTS.lock() {
@@ -964,7 +974,8 @@ mod tests {
     }
 
     /// The compositor ending a lock it held is a reason to show the
-    /// fallback on the lock asked for next; a refusal is not.
+    /// fallback on the lock asked for next; a refusal is not, nor is
+    /// `auth` failing while no lock is asked for or held.
     #[test]
     fn finished_after_locked_is_a_fault_and_a_refusal_is_not() {
         let mut s = LockScreen::default();
@@ -981,8 +992,11 @@ mod tests {
         );
         s.changed(LockState::Unlocked);
         assert_eq!(s.pending, None);
+        // `auth` failing with no lock: the main loop's next turn with no
+        // lock drops it, so the next lock shows the config's content.
         s.auth_failed("the helper stopped".into());
-        assert!(s.pending.as_deref().is_some_and(|p| p.contains("helper")));
+        s.idle();
+        assert_eq!(s.pending, None, "no fallback on the next, healthy lock");
     }
 
     /// The fallback's verdicts: only a success yields a token.
