@@ -837,7 +837,9 @@ impl Guard {
             marked: false,
         };
         if mocked {
-            log::warn!(
+            // Info, not a warning: every mocked run says it, and the
+            // design shells' tests fail on any WARN line.
+            log::info!(
                 "lock: STRAND_MOCK has no `auth` service, so this run never locks the session"
             );
             return Ok(guard);
