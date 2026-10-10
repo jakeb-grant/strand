@@ -1879,3 +1879,60 @@ fn main_thread_notices_reach_watchers_that_come_later() {
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// (M4) A GPU status from the main thread (`ToLogic::GpuStatus`): an
+/// unavailable device's reason is a `strand watch` notice once, however
+/// often it is reported, and a device that comes up says nothing there.
+#[test]
+fn an_unavailable_gpu_is_a_notice_once() {
+    let dir = temp_dir("gpu-status");
+    std::fs::write(dir.join("bar.strand"), "bar Top { text \"x\" }\n").unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let gone = strand_scene::GpuStatus::Unavailable {
+        reason: "no Vulkan adapter".into(),
+    };
+    to_logic.send(ToLogic::GpuStatus(gone.clone())).unwrap();
+    to_logic.send(ToLogic::GpuStatus(gone)).unwrap();
+    to_logic
+        .send(ToLogic::GpuStatus(strand_scene::GpuStatus::Up(
+            strand_scene::AdapterInfo {
+                name: "a GPU".into(),
+                driver: "a driver".into(),
+                software: false,
+            },
+        )))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["x"]);
+    let mut events =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+    assert_eq!(ok["ok"], true);
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+    let ev: Json = serde_json::from_str(&line).unwrap();
+    assert_eq!(ev["event"], "notices", "{ev}");
+    assert_eq!(
+        ev["notices"],
+        json!(["GPU unavailable: no Vulkan adapter; shaders draw nothing (CPU fallback)"]),
+        "{ev}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
