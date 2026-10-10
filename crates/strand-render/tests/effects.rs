@@ -774,6 +774,89 @@ fn strokes_arcs_and_wavy_meters_draw() {
     assert_matches_ref("effects_strokes_2x", &buf, 2);
 }
 
+/// The outlines scene, on a dark bar 168 × 64: a box with a 6 px blue
+/// `border:`, a 2 px pink `stroke:` over its outer edge and a white top
+/// `rim`; and three nested boxes, each 4 px inside the last, with 2 px
+/// pink, blue and green borders.
+fn outlines(scale: Scale) -> Buffer {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let border = |w: f32, c: &str| {
+        (
+            Prop::Border,
+            PropValue::Border(Border {
+                width: w,
+                paint: Paint::Solid(hex(c)),
+            }),
+        )
+    };
+    let mut one = at_xy(8.0, 8.0, 64.0, 48.0);
+    one.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Radius, num(12.0)),
+        border(6.0, "#89b4fa"),
+        stroke(2.0, "#f38ba8"),
+        (
+            Prop::Rim,
+            pair(kw("top"), PropValue::Color(hex("#ffffff").alpha(0.7))),
+        ),
+    ]);
+    b.node(NodeKind::Box, Some(root), one);
+    let mut parent = root;
+    for (i, c) in ["#f38ba8", "#89b4fa", "#a6e3a1"].into_iter().enumerate() {
+        let k = i as f32 * 4.0;
+        let (x, y) = if i == 0 { (96.0, 8.0) } else { (4.0, 4.0) };
+        let mut p = at_xy(x, y, 64.0 - 2.0 * k, 48.0 - 2.0 * k);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Radius, num(12.0 - k)),
+            border(2.0, c),
+        ]);
+        parent = b.node(NodeKind::Box, Some(parent), p);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new((168.0 * k).round() as u32, (64.0 * k).round() as u32, scale);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(1));
+    buf
+}
+
+/// design.md "Paint and light": "multiple outlines", composed rather
+/// than a list-valued `border:` (decisions.md, m4-effects-finish): a
+/// `stroke:` over a wider `border:` is two concentric outlines with a
+/// `rim` lighting their top, and nested bordered boxes are separate rings
+/// (refs `effects_outlines.png` at 1× and 2×).
+#[test]
+fn multiple_outlines_compose_from_border_stroke_rim_and_nesting() {
+    let buf = outlines(Scale::ONE);
+    assert_matches_ref("effects_outlines", &buf, 2);
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    let pink = [0xa8, 0x8b, 0xf3, 0xff];
+    let blue = [0xfa, 0xb4, 0x89, 0xff];
+    let green = [0xa1, 0xe3, 0xa6, 0xff];
+    let px = |x: u32, y: u32| buf.px(x, y);
+    // Along the first box's left edge: 2 px of stroke, then 4 px of the
+    // border it does not cover, then the bar.
+    assert_eq!([px(8, 32), px(9, 32)], [pink, pink]);
+    assert_eq!([px(10, 32), px(13, 32)], [blue, blue]);
+    assert_eq!(px(14, 32), bg);
+    assert_eq!(px(7, 32), bg);
+    // The rim lights the top: lighter than the same stroke at the side.
+    let (top, side) = (px(40, 8), px(8, 32));
+    assert!(top[1] > side[1] + 20, "rim {top:?} over {side:?}");
+    // The nested boxes, from x = 96: pink, a gap, blue, a gap, green.
+    let row: Vec<[u8; 4]> = (96..108).map(|x| px(x, 32)).collect();
+    assert_eq!(
+        row,
+        vec![pink, pink, bg, bg, blue, blue, bg, bg, green, green, bg, bg]
+    );
+
+    let buf = outlines(Scale::new(240).unwrap());
+    assert_matches_ref("effects_outlines_2x", &buf, 2);
+}
+
 /// design.md: a wavy meter "flattens when paused": `wave: 3` → `0`
 /// springs, and `reduced_motion` snaps.
 #[test]

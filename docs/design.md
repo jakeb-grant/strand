@@ -539,7 +539,7 @@ component Now {
 }
 ```
 
-Nine lines give a squircle pill with a slowly rotating gradient border, a spinning cookie-shaped album cover, a live spectrum and a breathing glow. Only the pill's own pixels repaint, and only while music plays.
+Nine lines give a squircle pill with a slowly rotating gradient border, a spinning cookie-shaped album cover, a live spectrum and a breathing glow. Only the pill's own pixels repaint; when the music stops, the cover, spectrum and glow go still, and only the turning border's ring repaints.
 
 ### Runtime changes these need
 

@@ -837,26 +837,35 @@ impl<'a> Flattener<'a> {
                 paint: paint.clone(),
                 frame,
             };
+            // The ring lies in two columns as wide as its corners reach
+            // (or the border, if wider) and, between them, two rows as tall
+            // as the border, each 2 px more for antialiasing: a pill's
+            // round ends are its columns, and its middle is left out.
             let corner = [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
                 .into_iter()
                 .fold(0.0f64, f64::max);
-            let band = (bw.max(corner).ceil() as i32).saturating_add(2);
+            // A squircle's corner eases further along its edges.
+            let corner = if squircle {
+                (corner * super::paint::SQUIRCLE_REACH)
+                    .min(frame.width().min(frame.height()) / 2.0)
+                    .max(corner)
+            } else {
+                corner
+            };
+            let col = (bw.max(corner).ceil() as i32).saturating_add(2);
+            let row = (bw.ceil() as i32).saturating_add(2);
             let outer = phys.inflate(1);
             let strips = (outline.is_none()
-                && i64::from(outer.w) > 2 * i64::from(band)
-                && i64::from(outer.h) > 2 * i64::from(band))
+                && i64::from(outer.w) > 2 * i64::from(col)
+                && i64::from(outer.h) > 2 * i64::from(row))
             .then(|| {
-                let (w, h, b) = (outer.w, outer.h, band as u32);
+                let (w, h, c, b) = (outer.w, outer.h, col as u32, row as u32);
+                let mid = w - 2 * c;
                 [
-                    Rect::new(outer.x, outer.y, w, b),
-                    Rect::new(outer.x, outer.y + band + (h - 2 * b) as i32, w, b),
-                    Rect::new(outer.x, outer.y + band, b, h - 2 * b),
-                    Rect::new(
-                        outer.x + band + (w - 2 * b) as i32,
-                        outer.y + band,
-                        b,
-                        h - 2 * b,
-                    ),
+                    Rect::new(outer.x + col, outer.y, mid, b),
+                    Rect::new(outer.x + col, outer.y + (h - b) as i32, mid, b),
+                    Rect::new(outer.x, outer.y, c, h),
+                    Rect::new(outer.x + (w - c) as i32, outer.y, c, h),
                 ]
                 .map(|c| {
                     map_rect(self.xform, c)

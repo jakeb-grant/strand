@@ -581,7 +581,8 @@ fn assert_matches_ref(name: &str, size: Size, pixels: &[u8], tolerance: u8) {
 /// `rice_now_500ms`, `rice_now_1000ms`). Only the pill's own pixels
 /// repaint. Paused, the cover stops turning, the glow goes and the
 /// spectrum rests; the border, whose `conic(from: t * 40deg, …)` reads
-/// `t` whether or not music plays, keeps turning (decisions.md,
+/// `t` whether or not music plays, keeps turning, and only its ring
+/// repaints (design.md's sentence under the snippet; decisions.md,
 /// m4-effects-finish).
 #[test]
 fn rice_now_renders_at_fixed_times() {
@@ -741,8 +742,40 @@ fn rice_now_renders_at_fixed_times() {
         out
     };
     let before = shot(&pixels);
+    // Paused, only the turning border repaints, and only its ring: the
+    // pill's round ends (which hold its corners) and the border's rows
+    // between them. Nothing past the pill (the glow is gone), and nothing
+    // over its middle, where the spectrum rests.
+    let b = r.boxes(surface).unwrap().rects[&pill];
+    let (x0, y0) = (b.x.floor() as i32, b.y.floor() as i32);
+    let (x1, y1) = ((b.x + b.w).ceil() as i32, (b.y + b.h).ceil() as i32);
+    let end = (b.h / 2.0).ceil() as i32 + 4;
+    let middle = strand_scene::Rect::new(
+        x0 + end,
+        y0 + 5,
+        (x1 - x0 - 2 * end) as u32,
+        (y1 - y0 - 10) as u32,
+    );
+    for k in 0..30 {
+        assert!(r.wants_frame(surface), "the border's `t` keeps turning");
+        at += Duration::from_millis(16);
+        let damage = paint(&mut r, &mut pixels, at);
+        assert!(!damage.is_empty(), "paused frame {k}: the ring turns");
+        for d in damage.rects() {
+            assert!(
+                d.x >= x0 - 1
+                    && d.y >= y0 - 1
+                    && d.x + d.w as i32 <= x1 + 1
+                    && d.y + d.h as i32 <= y1 + 1,
+                "paused frame {k}: damage {d:?} past the pill {b:?}"
+            );
+            assert!(
+                !d.intersects(middle),
+                "paused frame {k}: damage {d:?} over the pill's middle {middle:?}"
+            );
+        }
+    }
     at += Duration::from_millis(500);
     paint(&mut r, &mut pixels, at);
     assert!(before == shot(&pixels), "paused: the cover holds still");
-    assert!(r.wants_frame(surface), "the border's `t` keeps turning");
 }
