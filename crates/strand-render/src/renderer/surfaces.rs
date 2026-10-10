@@ -65,24 +65,28 @@ impl Renderer {
             None => crate::flatten::Flattened::default(),
         };
         self.anim.release(node, still);
-        // Drawn into a surface-sized buffer, only its box rasterised.
-        let stride = size.w as usize * 4;
-        let mut px = vec![0u8; stride * size.h as usize];
-        let target = strand_scene::PaintTarget::new(&mut px, size, size.w * 4, scale, 0).ok()?;
+        // Drawn into a buffer of the box's size, the surface's pixels
+        // from its corner on.
+        let (w, h) = (box_.w as usize, box_.h as usize);
+        let mut pixels = vec![0u8; w * h * 4];
+        let target = strand_scene::PaintTarget::new(
+            &mut pixels,
+            Size::new(box_.w, box_.h),
+            box_.w * 4,
+            scale,
+            0,
+        )
+        .ok()?;
         let mut target = target.at(time);
-        self.raster.paint(
+        self.raster.paint_window(
             &f.items,
             &Damage::from_rect(box_),
             &self.atlas,
             scale,
             &mut target,
+            strand_scene::Rect::from_size(size),
+            (x0, y0),
         );
-        let (w, h) = (box_.w as usize, box_.h as usize);
-        let mut pixels = Vec::with_capacity(w * h * 4);
-        for y in box_.y as usize..box_.y as usize + h {
-            let row = y * stride + box_.x as usize * 4;
-            pixels.extend_from_slice(&px[row..row + w * 4]);
-        }
         Some(strand_scene::DragImage {
             size: Size::new(box_.w, box_.h),
             scale,
