@@ -1947,3 +1947,40 @@ fn an_image_swap_wipes_the_new_image_in() {
         }
     }
 }
+
+/// An image swap under `transition:` to a source that fails to decode (a
+/// missing file, an external input) ends at once: the image draws what
+/// it would without `transition:` (nothing) and wants no more frames.
+#[test]
+fn an_image_swap_to_a_broken_source_settles() {
+    use std::time::Duration;
+    let red = solid_png("red-broken.png", [0xf3, 0x8b, 0xa8, 0xff]);
+    let missing = format!("{red}.missing.png");
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 10.0, 40.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Source, text(&red)),
+        (Prop::Transition, call("wipe", vec![kw("left")])),
+    ]);
+    let img = b.node(NodeKind::Image, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(60, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    let bg = buf.px(5, 5);
+    assert_ne!(buf.px(30, 30), bg, "the red image");
+    let mut d = SceneDiff::new();
+    d.set(img, Prop::Source, text(&missing));
+    assert!(r.apply(d).is_empty());
+    let mut t = 1000;
+    while r.wants_frame(S) && t < 1500 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert!(t < 1100, "settled at once, not after {t} ms");
+    assert!(!r.wants_frame(S) && r.next_wake().is_none());
+    assert_eq!(buf.px(30, 30), bg, "nothing drawn, as without transition");
+}

@@ -366,6 +366,48 @@ mod tests {
             Some(Kind::Pixelate)
         );
     }
+
+    /// A swap waiting for its decode holds the old image without asking
+    /// for frames or keeping the surface busy; a decode that fails ends
+    /// it; one that arrives wipes the new image in.
+    #[test]
+    fn an_image_swap_waits_without_frames_and_ends_on_a_failed_decode() {
+        use std::time::Duration;
+        let frame = |ms: u64| Frame {
+            at: Duration::from_millis(ms),
+            commit: true,
+            prev: None,
+            snap: false,
+        };
+        let curve = Curve::Timed {
+            duration: Duration::from_millis(200),
+            easing: strand_scene::Easing::Linear,
+        };
+        let id = NodeId::new(3, 0);
+        let all = |_| true;
+        for end in [Decode::Failed, Decode::Ready] {
+            let mut swaps = ImageSwaps::default();
+            swaps.swap(id, "a.png", Decode::Ready, curve, frame(1000));
+            assert_eq!(
+                swaps.swap(id, "b.png", Decode::Waiting, curve, frame(1016)),
+                (Some(("a.png".to_string(), 0.0)), false),
+                "waiting: the old image, no frames"
+            );
+            assert!(!swaps.busy(all));
+            assert_eq!(
+                swaps.swap(id, "b.png", Decode::Waiting, curve, frame(2000)),
+                (Some(("a.png".to_string(), 0.0)), false)
+            );
+            let (swap, moving) = swaps.swap(id, "b.png", end, curve, frame(2016));
+            if end == Decode::Failed {
+                assert_eq!((swap, moving), (None, false), "failed: ended");
+                assert!(!swaps.busy(all));
+            } else {
+                assert!(moving && swap.is_some(), "arrived: it wipes");
+                assert!(swaps.busy(all));
+            }
+        }
+    }
 }
 
 /// One image node's swap: the source it shows and, while it swaps, the
@@ -377,24 +419,37 @@ struct ImageSwap {
     from: Option<(String, Option<Motion<1>>)>,
 }
 
+/// Where an image's new source is in decoding.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Decode {
+    /// Decoded (or a decode at another size stands in).
+    Ready,
+    /// On its way: the old image stays whole, and no frames are wanted
+    /// meanwhile (the arrival repaints).
+    Waiting,
+    /// It failed (a missing or corrupt file): the swap ends at once.
+    Failed,
+}
+
 /// `image`s with `transition:` swapping sources (design.md: transition
 /// masks on "image swaps"): the new image comes in over the old through
 /// the mask, starting once it is decoded (the old one stays whole until
-/// then).
+/// then, without asking for frames); a source that fails to decode ends
+/// the swap, drawing what an image without `transition:` would.
 #[derive(Debug, Default)]
 pub(crate) struct ImageSwaps {
     nodes: HashMap<NodeId, ImageSwap>,
 }
 
 impl ImageSwaps {
-    /// Image `id` now showing `source` (`ready`: decoded) in `frame`:
-    /// the source it swaps from and the mask's progress, while it swaps;
-    /// also whether it still moves.
+    /// Image `id` now showing `source` (`decode`: how far its decode is)
+    /// in `frame`: the source it swaps from and the mask's progress, while
+    /// it swaps; also whether it still moves.
     pub(crate) fn swap(
         &mut self,
         id: NodeId,
         source: &str,
-        ready: bool,
+        decode: Decode,
         curve: Curve,
         frame: Frame,
     ) -> (Option<(String, f32)>, bool) {
@@ -420,13 +475,13 @@ impl ImageSwaps {
         let Some((old, motion)) = &mut s.from else {
             return (None, false);
         };
-        if frame.snap {
+        if frame.snap || decode == Decode::Failed {
             if frame.commit {
                 s.from = None;
             }
             return (None, false);
         }
-        if motion.is_none() && ready {
+        if motion.is_none() && decode == Decode::Ready {
             let mut m = Motion::rest([0.0], EPS).sampled_at(frame.prev);
             m.retarget([1.0], curve);
             *motion = Some(m);
@@ -434,7 +489,8 @@ impl ImageSwaps {
         let p = match motion {
             Some(m) if frame.commit => m.sample(frame.at)[0],
             Some(m) => m.peek(frame.at)[0],
-            None => 0.0,
+            // Waiting for the decode: the old image, still.
+            None => return (Some((old.clone(), 0.0)), false),
         };
         let settled = motion.as_ref().is_some_and(|m| m.is_settled(frame.at));
         if settled {
@@ -446,10 +502,11 @@ impl ImageSwaps {
         (Some((old.clone(), p.clamp(0.0, 1.0))), true)
     }
 
+    /// Anything `under` a surface wiping in (not waiting for a decode).
     pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.nodes
             .iter()
-            .any(|(id, s)| s.from.is_some() && under(*id))
+            .any(|(id, s)| matches!(s.from, Some((_, Some(_)))) && under(*id))
     }
 
     pub(crate) fn forget(&mut self, id: NodeId) {

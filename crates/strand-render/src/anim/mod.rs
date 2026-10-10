@@ -421,14 +421,14 @@ impl Animator {
         Some(masked(p, false))
     }
 
-    /// (M4) An `image` with `transition:` showing `source` (`ready`:
-    /// decoded): the source it swaps from and the mask the new one comes
+    /// (M4) An `image` with `transition:` showing `source` (`decode`:
+    /// how far its decode is): the source it swaps from and the mask the new one comes
     /// in through, while it swaps (`crate::effects::transition`).
     pub fn image_swap(
         &mut self,
         node: &Node,
         source: &str,
-        ready: bool,
+        decode: crate::effects::transition::Decode,
         scope: &TokenScope<'_>,
     ) -> Option<(String, crate::effects::transition::Masked)> {
         use crate::effects::transition::{Kind, Masked};
@@ -452,7 +452,7 @@ impl Animator {
             prev: self.prev,
             snap: self.snapping(),
         };
-        let (swap, moving) = self.image_swaps.swap(node.id, source, ready, curve, frame);
+        let (swap, moving) = self.image_swaps.swap(node.id, source, decode, curve, frame);
         if moving {
             self.active = true;
         }

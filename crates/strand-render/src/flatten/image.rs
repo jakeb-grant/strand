@@ -45,6 +45,7 @@ impl Flattener<'_> {
             scale: self.scale.as_f32().ceil().clamp(1.0, 8.0) as u16,
         };
         let key = key_of(source.clone());
+        let failed = matches!(self.extras.images.get(&key), Some(Err(_)));
         let decoded = match self.extras.images.get(&key) {
             Some(Ok(d)) => Some(d.clone()),
             Some(Err(_)) => None,
@@ -61,11 +62,16 @@ impl Flattener<'_> {
         // (M4) An image swap under `transition:`: the old source under
         // the new one, which comes in through the mask once decoded
         // (`crate::effects::transition`).
+        let decode = {
+            use crate::effects::transition::Decode;
+            match (decoded.is_some(), failed) {
+                (true, _) => Decode::Ready,
+                (false, true) => Decode::Failed,
+                (false, false) => Decode::Waiting,
+            }
+        };
         let swap = (node.kind == NodeKind::Image)
-            .then(|| {
-                self.anim
-                    .image_swap(node, &source, decoded.is_some(), scope)
-            })
+            .then(|| self.anim.image_swap(node, &source, decode, scope))
             .flatten();
         let old = swap.as_ref().and_then(|(from, _)| {
             let k = key_of(from.clone());
