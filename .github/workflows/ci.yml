@@ -311,6 +311,8 @@ jobs:
               - 'crates/strand-surface/src/manager/seat.rs'
               - 'crates/strand-surface/src/manager/mod.rs'
               - 'crates/strand-surface/src/manager/popup.rs'
+              # No GPU hand-off or lent handles for a lock surface.
+              - 'crates/strand-surface/src/gpu_handoff.rs'
               - 'crates/**/*lock_fallback*'
               - 'crates/strand/src/lock.rs'
               - 'crates/strand/src/run/lock.rs'
@@ -334,6 +336,9 @@ jobs:
               - 'crates/strand-services/tests/auth.rs'
               - 'crates/strand-services-schema/src/auth.schema'
               - 'crates/strand-compiler/src/check/lock.rs'
+              # The lock's runtime rules: only an auth token unlocks,
+              # `open` held while locked, the write-back after Unlocked.
+              - 'crates/strand-compiler/src/instantiate/lock.rs'
               - 'scripts/lockvm/**'
               - 'scripts/container/*lockvm*'
               - 'scripts/container/lockvm/**'

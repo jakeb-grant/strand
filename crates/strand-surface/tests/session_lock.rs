@@ -635,3 +635,48 @@ fn a_remounted_lock_takes_over() {
     assert!(ok, "reopened, it locks again");
     assert!(lock.state_mut().unlock(token()));
 }
+
+/// (M4) A lock surface is never lent to or handed off to the GPU thread
+/// (docs/architecture.md, "Surface hand-off"): its handles are refused,
+/// so a promoted lock is read back (bounded by `HUNG_AFTER`), and the
+/// manager keeps committing it, so the lock's own commits never wait on
+/// the GPU.
+#[test]
+fn a_lock_surface_is_never_handed_to_the_gpu() {
+    let test = "a_lock_surface_is_never_handed_to_the_gpu";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let mut lock = locker(&sway);
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    wait_lock(&mut lock, LockState::Locked);
+    let content = lock.state().lock_content().expect("a content surface");
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.surface(content).is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(painted, "the content is painted");
+    #[cfg(feature = "gpu")]
+    assert!(
+        lock.state_mut().raw_handles(content).is_none(),
+        "a lock surface's handles are never lent"
+    );
+    assert!(
+        !lock.state_mut().hand_off(content),
+        "a lock surface is never handed off"
+    );
+    assert!(!lock.state().is_handed_off(content));
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(
+        shot(&sway, "HEADLESS-1"),
+        [BLUE, BLUE],
+        "the manager still draws the lock"
+    );
+    assert!(lock.state_mut().unlock(token()));
+}
