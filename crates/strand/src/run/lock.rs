@@ -281,15 +281,16 @@ impl Checker {
 #[derive(Default)]
 pub(crate) struct LockScreen {
     /// The lock's content surface and the node it shows (a `lock`'s, or
-    /// [`LOCK_FALLBACK_NODE`]).
+    /// [`LOCK_FALLBACK_NODE`]). strand-surface's `State::lock_content`
+    /// decides which surface it is ([`LockScreen::sync_content`], each
+    /// main-loop turn); `attached` only takes it early when render's
+    /// tree already says so.
     content: Option<(SurfaceId, NodeId)>,
-    /// The node the lock's content was last attached with, kept while
-    /// the content surface is away (its output unplugged or no longer
-    /// focused): strand-surface makes it again with the same node even
-    /// once that node has left render's tree (the spec gone while
-    /// locked: SIGTERM unmounting, the lock no longer mounted), when
-    /// the tree can no longer say it is a `lock`.
-    node: Option<NodeId>,
+    /// The node each attached surface shows, so the content named by
+    /// `State::lock_content` can be paired with its node even after
+    /// that node left render's tree (the spec gone while locked: a
+    /// reload or SIGTERM unmounting the `lock`).
+    nodes: std::collections::HashMap<SurfaceId, NodeId>,
     /// The content committed a frame with damage in this lock session
     /// (a content surface moved to another output does not start the
     /// first-frame deadline again).
@@ -333,23 +334,42 @@ impl LockScreen {
         self.fallback.is_some() && self.on_content(surface)
     }
 
-    /// A surface was attached: the lock's content when it shows a `lock`
-    /// node (`kind`), the fallback node, or the node the content had
-    /// before (made again on another output after its node left the
-    /// tree).
+    /// A surface was attached. It is taken as the lock's content at once
+    /// when it shows the fallback node or a node render's tree calls a
+    /// `lock` (`kind`); otherwise [`LockScreen::sync_content`] decides on
+    /// the main loop's next turn, from strand-surface's own answer.
     pub(crate) fn attached(&mut self, surface: SurfaceId, node: NodeId, kind: Option<NodeKind>) {
-        if node == LOCK_FALLBACK_NODE || kind == Some(NodeKind::Lock) || self.node == Some(node) {
-            self.content = Some((surface, node));
-            self.node = Some(node);
-            if let Some(f) = &mut self.fallback {
-                f.dirty = true;
-            }
+        self.nodes.insert(surface, node);
+        if node == LOCK_FALLBACK_NODE || kind == Some(NodeKind::Lock) {
+            self.set_content(Some((surface, node)));
         }
     }
 
     pub(crate) fn detached(&mut self, surface: SurfaceId) {
+        self.nodes.remove(&surface);
         if self.on_content(surface) {
             self.content = None;
+        }
+    }
+
+    /// The lock's content as strand-surface made it (`State::lock_content`):
+    /// the only answer that holds when render's tree no longer knows the
+    /// node the content was made with (the `lock` unmounted while no
+    /// output existed, then an output came back).
+    pub(crate) fn sync_content(&mut self, surface: Option<SurfaceId>) {
+        let content =
+            surface.map(|s| (s, self.nodes.get(&s).copied().unwrap_or(LOCK_FALLBACK_NODE)));
+        if content != self.content {
+            self.set_content(content);
+        }
+    }
+
+    fn set_content(&mut self, content: Option<(SurfaceId, NodeId)>) {
+        self.content = content;
+        if content.is_some()
+            && let Some(f) = &mut self.fallback
+        {
+            f.dirty = true;
         }
     }
 
@@ -520,7 +540,6 @@ impl LockScreen {
         self.pending = None;
         self.drew = false;
         self.asked = None;
-        self.node = None;
         // The helper goes with the lock session.
         self.checker = None;
     }
@@ -659,6 +678,8 @@ impl Guard {
     ) {
         self.keep_marker(state);
         faults::unmount_lock(state);
+        let content = state.lock_content();
+        state.host_mut().lock.sync_content(content);
         if !state.lock_active() {
             if self.since.take().is_some() {
                 state.host_mut().lock.reset();
@@ -931,8 +952,36 @@ pub(crate) mod faults {
     /// The lock leaves render's tree once it drew while locked
     /// (`lock_unmount`), as logic removing it would: strand-surface keeps
     /// the lock and its content's node, which render no longer knows.
+    ///
+    /// `lock_unmount_unseen` removes it instead while a lock is asked for
+    /// or held with no content surface yet (no output: a reload while
+    /// pending), so the content strand-surface makes once an output comes
+    /// is on a node this lock session never attached and render does
+    /// not know.
     pub(crate) fn unmount_lock(state: &mut super::State<super::Host>) {
         static DONE: AtomicBool = AtomicBool::new(false);
+        if state.lock_active()
+            && state.lock_content().is_none()
+            && !DONE.load(Ordering::Acquire)
+            && on("lock_unmount_unseen")
+        {
+            let tree = state.host().renderer.tree();
+            let lock = tree.roots().iter().copied().find(|n| {
+                tree.get(*n)
+                    .is_some_and(|n| n.kind == super::NodeKind::Lock)
+            });
+            if let Some(node) = lock {
+                DONE.store(true, Ordering::Release);
+                log::warn!("STRAND_FAULT lock_unmount_unseen");
+                let mut diff = super::SceneDiff::new();
+                diff.push(super::SceneOp::Remove {
+                    id: node,
+                    window: false,
+                });
+                super::apply(state, diff);
+            }
+            return;
+        }
         if !state.is_locked() || DONE.load(Ordering::Acquire) || !on("lock_unmount") {
             return;
         }
@@ -1057,33 +1106,60 @@ mod tests {
 
     /// The content made again on another output after its node left
     /// render's tree (the spec gone while locked: SIGTERM unmounting)
-    /// is still the lock's content: the fallback paints it and takes its
-    /// keys.
+    /// is still the lock's content, because strand-surface says so: the
+    /// fallback paints it and takes its keys.
     #[test]
     fn the_content_made_again_with_its_node_gone_keeps_the_fallback() {
         let mut s = LockScreen::default();
         let node = NodeId::new(2, 0);
         s.attached(SurfaceId(5), node, Some(NodeKind::Lock));
+        s.sync_content(Some(SurfaceId(5)));
         s.show("test");
         // Its output goes, then the spec: the node leaves the tree.
         s.detached(SurfaceId(5));
+        s.sync_content(None);
         assert!(!s.shown_on(SurfaceId(5)));
         s.attached(SurfaceId(3), node, None);
+        // Another surface on a node the tree does not know is not it.
+        s.attached(SurfaceId(4), NodeId::new(7, 0), None);
+        s.sync_content(Some(SurfaceId(3)));
         assert!(
             s.shown_on(SurfaceId(3)),
             "the new content shows the fallback"
         );
+        assert!(!s.shown_on(SurfaceId(4)));
         assert_eq!(s.wants_frame(SurfaceId(3)), Some(true));
         assert!(paint(&mut s, SurfaceId(3)).is_some_and(|d| !d.is_empty()));
         assert!(s.input(&key("a", "a")), "its keys never reach the Router");
-        // Another surface on a node the tree does not know is not it.
-        s.attached(SurfaceId(4), NodeId::new(7, 0), None);
-        assert!(s.shown_on(SurfaceId(3)) && !s.shown_on(SurfaceId(4)));
-        // After the unlock the node is forgotten.
-        s.changed(LockState::Unlocked);
-        s.detached(SurfaceId(3));
-        s.attached(SurfaceId(6), node, None);
+        assert_eq!(s.content, Some((SurfaceId(3), node)));
+        // strand-surface's answer wins over a guess made at attach time.
+        s.sync_content(None);
         assert_eq!(s.content, None);
+    }
+
+    /// The lock asked for with no output, its `lock` unmounted before an
+    /// output came (a reload while pending): strand-surface makes the
+    /// content with the old node, which render's tree no longer knows and
+    /// this lock session never attached. The content is still the
+    /// surface strand-surface names, so the main loop shows the fallback
+    /// ("no longer mounted") on it and its keys reach the fallback.
+    #[test]
+    fn the_first_content_on_a_node_already_gone_is_the_content() {
+        let mut s = LockScreen::default();
+        let node = NodeId::new(2, 0);
+        s.attached(SurfaceId(3), node, None);
+        assert_eq!(s.content, None, "render's tree cannot tell");
+        s.sync_content(Some(SurfaceId(3)));
+        assert_eq!(s.content, Some((SurfaceId(3), node)));
+        s.show("the lock is no longer mounted");
+        assert!(s.shown_on(SurfaceId(3)));
+        assert_eq!(s.wants_frame(SurfaceId(3)), Some(true));
+        assert!(paint(&mut s, SurfaceId(3)).is_some_and(|d| !d.is_empty()));
+        assert!(s.input(&key("a", "a")), "its keys never reach the Router");
+        // A content surface with no attach seen falls back to the
+        // fallback node: "locked with no `lock` open", never nothing.
+        s.sync_content(Some(SurfaceId(9)));
+        assert_eq!(s.content, Some((SurfaceId(9), LOCK_FALLBACK_NODE)));
     }
 
     /// The compositor ending a lock it held is a reason to show the

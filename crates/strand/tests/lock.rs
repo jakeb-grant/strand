@@ -706,6 +706,19 @@ impl Strand {
         assert!(self.try_cli(args), "strand {args:?}:\n{}", self.log_text());
     }
 
+    /// Waits for the log to say `text`.
+    fn until_log(&self, text: &str) {
+        let deadline = Instant::now() + WAIT;
+        while !self.log_text().contains(text) {
+            assert!(
+                Instant::now() < deadline,
+                "the log never said {text:?}:\n{}",
+                self.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn signal(&mut self, sig: i32) {
         let pid = self.child.as_ref().expect("running").id();
         // SAFETY: kill(2) on our own child's pid.
@@ -1231,6 +1244,36 @@ fn lock_unmounted_then_the_contents_output_unplugged_keeps_the_fallback() {
         Shot::fallback,
     );
     vm.fallback_passwords_on(&second);
+    assert!(vm.strand.running(), "logic is alive: the run goes on");
+}
+
+/// A lock asked for while no output exists (lid closed, monitors gone),
+/// its `lock` gone from render's tree before any output came back
+/// (`lock_unmount_unseen`, as a reload while pending would): the content
+/// strand-surface makes on the returning output carries a node this lock
+/// session never attached and render does not know. It is still the
+/// lock's content (`State::lock_content` says so): the fallback paints
+/// it and takes the passwords, not a blank surface whose keys reach the
+/// `Router`.
+#[test]
+fn lock_unmounted_with_no_output_then_an_output_keeps_the_fallback() {
+    let test = "unmount_no_output";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "lock_unmount_unseen");
+    vm.sway.unplug("HEADLESS-1");
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.strand.until_log("STRAND_FAULT lock_unmount_unseen");
+    let output = vm.sway.plug();
+    vm.until_locked(
+        &output,
+        "the built-in password field on the returning output",
+        true,
+        Shot::fallback,
+    );
+    vm.fallback_logged();
+    vm.fallback_passwords_on(&output);
     assert!(vm.strand.running(), "logic is alive: the run goes on");
 }
 
