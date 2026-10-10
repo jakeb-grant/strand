@@ -351,22 +351,25 @@ fn a_file_written_continuously_does_not_delay_a_save() {
         })
     };
     std::thread::sleep(Duration::from_millis(100));
-    let saved = Instant::now();
     fs::write(fx.cfg.join("theme.strand"), NEW).unwrap();
     let b = next_files(&fx.rx, FIRST).expect("no batch");
-    let took = saved.elapsed();
     stop.store(true, Ordering::Relaxed);
     writer.join().unwrap();
+    // The appends reach the core as writes in progress, never as
+    // completed writes: the first batch after them is the save alone,
+    // with no stalled-write notice. That a write in progress never moves
+    // the quiet period (it used to stretch it to `max_delay`, 500 ms) is
+    // proved on the core's own clock by
+    // `core.rs::tests::busy_never_moves_the_quiet_period`, without a
+    // wall-clock bound here (decisions.md, m4-audit round 7).
     assert_eq!(b.changes.len(), 1, "{b:#?}");
     assert_modified(&b.changes[0], &fx.cfg.join("theme.strand"), NEW);
-    // The appends never moved the quiet period (they used to stretch it
-    // to `max_delay`, 500 ms).
+    assert!(b.notices.is_empty(), "{b:#?}");
     assert!(
         b.last_event - b.first_event < Duration::from_millis(50),
         "{:?}",
         b.last_event - b.first_event
     );
-    assert!(took < Duration::from_millis(400), "{took:?}");
 }
 
 /// A new module and a new settings file written in two halves (`curl -o`,
@@ -1552,10 +1555,8 @@ fn a_file_linked_in_from_o_tmpfile_is_reported_outside_the_config() {
     rustix::io::write(&fd, b"png").unwrap();
     let proc_path = format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&fd));
     rustix::fs::linkat(CWD, proc_path.as_str(), CWD, &wall, AtFlags::SYMLINK_FOLLOW).unwrap();
-    let start = Instant::now();
     drop(fd);
     let b = next_files(&fx.rx, FIRST).expect("no batch");
-    let took = start.elapsed();
     if let Some(extra) = next_files(&fx.rx, SETTLE) {
         panic!("a second batch: {extra:#?}");
     }
@@ -1563,8 +1564,9 @@ fn a_file_linked_in_from_o_tmpfile_is_reported_outside_the_config() {
     assert_eq!(b.changes[0].path, wall);
     assert_eq!(b.changes[0].kind, ChangeKind::Created);
     assert_eq!(b.changes[0].hash, Some(hash_bytes(b"png")));
+    // Ended by its `CLOSE_WRITE`: without it the write would only end
+    // when it stalled, with a notice (and 5 s later).
     assert!(b.notices.is_empty(), "{b:#?}");
-    assert!(took < Duration::from_millis(200), "{took:?}");
 }
 
 /// An ancestor of a watched directory moved while its own parent holds no
