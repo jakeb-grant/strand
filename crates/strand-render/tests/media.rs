@@ -221,6 +221,23 @@ fn only_visible_spectra_are_fed() {
     let _: Option<Vec<FeedDemand>> = r.take_feed_demand();
 }
 
+/// The demand follows a node removed and a surface detached before any
+/// paint: the host asks then (`run/feeds.rs`, `sync`), so a producer
+/// stops even when no surface paints again.
+#[test]
+fn demand_drops_without_a_paint() {
+    let (mut r, ids, mut buf) = spectrum_scene();
+    buf.paint_at(&mut r, S, 0, T0);
+    assert_eq!(r.take_feed_demand().map(|d| d.len()), Some(4));
+    let mut diff = SceneDiff::default();
+    diff.remove(ids[0]);
+    assert!(r.apply(diff).is_empty());
+    assert_eq!(r.take_feed_demand().map(|d| d.len()), Some(3), "removed");
+    r.detach_surface(S);
+    assert_eq!(r.take_feed_demand(), Some(Vec::new()), "detached");
+    assert_eq!(r.take_feed_demand(), None);
+}
+
 #[test]
 fn reduced_motion_rests_the_spectrum_and_stops_its_feeds() {
     let (mut r, ids, mut buf) = spectrum_scene();

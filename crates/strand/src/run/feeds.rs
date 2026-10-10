@@ -1,6 +1,7 @@
 //! (M4) Media feeds (architecture.md, "M4 additions"): render says which
 //! fed nodes are visible ([`strand_render::Renderer::take_feed_demand`],
-//! asked after each paint by the host), and this keeps one producer per
+//! asked by [`sync`] after each paint and each surface detach, and when a
+//! producer sends), and this keeps one producer per
 //! visible node: a `spectrum`'s audio level tap, whose readings (64
 //! bands FFT'd on the audio thread) cross to the main thread on a
 //! channel and are fed to the renderer there ([`fed`]), and a
@@ -150,9 +151,26 @@ impl Feeds {
     }
 }
 
-/// Bands or a frame arrived for a node: it repaints.
+/// Runs producers for the fed nodes visible now, if that changed (after
+/// a paint, a surface detached, or a producer sent something): the
+/// spectra that lost theirs are fed silence.
+pub(crate) fn sync(renderer: &mut strand_render::Renderer, feeds: &mut Feeds) {
+    if let Some(demand) = renderer.take_feed_demand() {
+        for node in feeds.demand(demand) {
+            renderer.feed(node, &[]);
+        }
+    }
+}
+
+/// Bands or a frame arrived for a node: it repaints. A producer whose
+/// node is no longer visible with no paint since (its surface detached,
+/// the others idle) is stopped here, at its first send.
 pub(super) fn fed(state: &mut strand_surface::State<crate::demo::host::Host>, fed: Fed) {
-    let renderer = &mut state.host_mut().renderer;
+    let host = state.host_mut();
+    if let Some(feeds) = &mut host.feeds {
+        sync(&mut host.renderer, feeds);
+    }
+    let renderer = &mut host.renderer;
     match fed {
         Fed::Bands(node, bands) => renderer.feed(node, &bands),
         Fed::Frame(node, frame) => renderer.feed_frame(node, Some(frame)),

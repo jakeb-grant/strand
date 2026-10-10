@@ -414,12 +414,8 @@ impl Painter for Host {
         // for the rows they show.
         self.forward_list_windows();
         // Fed nodes shown or hidden: their producers start or stop.
-        if let Some(feeds) = &mut self.feeds
-            && let Some(demand) = self.renderer.take_feed_demand()
-        {
-            for node in feeds.demand(demand) {
-                self.renderer.feed(node, &[]);
-            }
+        if let Some(feeds) = &mut self.feeds {
+            crate::run::feeds::sync(&mut self.renderer, feeds);
         }
         self.wake_if_changed();
         #[cfg(test)]
@@ -519,6 +515,10 @@ impl SurfaceHost for Host {
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.renderer.detach_surface(surface);
+        // Its fed nodes are hidden now, whether or not a paint follows.
+        if let Some(feeds) = &mut self.feeds {
+            crate::run::feeds::sync(&mut self.renderer, feeds);
+        }
         self.roots.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);
