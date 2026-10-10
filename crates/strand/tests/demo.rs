@@ -1567,12 +1567,17 @@ fn the_design_launcher_scrolls_2000_apps() {
     // Row continuity in grim's pixels. The list's own clip: the rows that
     // changed between the top and the scrolled shot (two pixels in from
     // the first and last, which may be blank in both), and the box's
-    // width less its corners.
+    // width less its corners. A pixel changed when a channel moved by
+    // more than the continuity check's own 24: the GPU may have drawn
+    // one shot (the launcher's opening animation promotes it) and the
+    // CPU the other, which differ by a level or two everywhere (the
+    // search field above the list included), never by a row's contrast.
     let (top_px, _, left) = b;
     let right = left + wide(&shot, b) - 1;
     let xs = left + 24..right - 24;
+    let moved = |p: [u8; 3], q: [u8; 3]| p.iter().zip(q).any(|(a, c)| a.abs_diff(c) > 24);
     let changed: Vec<usize> = (top_px..bottom)
-        .filter(|&y| xs.clone().any(|xx| start.px(xx, y) != shot.px(xx, y)))
+        .filter(|&y| xs.clone().any(|xx| moved(start.px(xx, y), shot.px(xx, y))))
         .collect();
     let list = changed[0] + 2..changed[changed.len() - 1] - 1;
     assert!(
