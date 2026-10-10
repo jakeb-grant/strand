@@ -2851,7 +2851,6 @@ name = "strand-auth"
 version = "0.0.0"
 dependencies = [
  "libc",
- "strand-auth",
  "tempfile",
  "zeroize",
 ]

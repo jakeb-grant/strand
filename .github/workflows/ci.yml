@@ -88,6 +88,9 @@ jobs:
       # The reload fuzzer runs on its own below (timing-sensitive saves),
       # and the 100 reloads too.
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
+      # strand-auth's PAM tier and its no-faults check need the helper's
+      # test hooks, asked for by name: no plain test build turns them on.
+      - run: cargo test -p strand-auth --features faults
       # M3 exit, "100 reloads with no reconnects": a shell reading every
       # builtin service but screens and auth (python-dbusmock's daemons,
       # a mock portal, a tray item and an MPRIS player on a private bus,

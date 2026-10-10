@@ -27,10 +27,22 @@ libc = "0.2.190"
 zeroize = "1.9.1"
 
 [dev-dependencies]
-# The crate's own tests run with its test hooks on (a dev-dependency
-# on itself only adds the feature to test builds).
-strand-auth = { path = ".", features = ["faults"] }
 tempfile = "3.27.0"
+
+# The tests that need the hooks name the feature, and run only with
+# `cargo test -p strand-auth --features faults` (CI's test job). A
+# dev-dependency of the crate on itself with `faults` turned the hooks
+# on in every test build, and cargo copies a test build's binary to
+# `target/<profile>/strand-auth`, so `cargo test --release` left a
+# helper with the hooks where a package installs from
+# (tests/plain_build.rs; decisions.md, m4-audit).
+[[test]]
+name = "pam"
+required-features = ["faults"]
+
+[[test]]
+name = "no_faults"
+required-features = ["faults"]
 
 [lints]
 workspace = true

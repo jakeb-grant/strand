@@ -42,8 +42,8 @@ debug=$(dirname "$(dirname "$strand_lock")")
 for b in strand strand-auth; do
   [ -x "$debug/$b" ] || { echo "build.sh: no $debug/$b" >&2; exit 1; }
 done
-# Its own target directory: the test build above has the `faults`
-# feature on (strand-auth's dev-dependency on itself).
+# Its own target directory: the strand-auth build above has the
+# `faults` feature on, in the same output path.
 cargo build -p strand-auth --bin strand-auth --release --target-dir "$out/helper"
 helper=$out/helper/release/strand-auth
 [ -x "$helper" ] || { echo "build.sh: no helper at $helper" >&2; exit 1; }

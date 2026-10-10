@@ -426,8 +426,10 @@ and `take_service_warning()` (the `login` fallback's warning, once per
 process). A timeout or a bad frame kills the helper and everything it
 started; the next password starts another. Under `faults` the helper
 also takes a private PAM confdir (`STRAND_AUTH_PAM_CONFDIR`,
-`pam_start_confdir`), which the tier-A tests use; the crate's own tests
-turn `faults` on through a dev-dependency on itself.
+`pam_start_confdir`), which the tier-A tests use; those tests
+(`pam`, `no_faults`) name the feature (`required-features`) and run with
+`cargo test -p strand-auth --features faults`, so no plain test build
+leaves a helper with the hooks in `target/`.
 
 `strand-gpu` (M4) holds every GPU crate: wgpu, vello_gpu and, through
 wgpu, naga's runtime use. Its only Strand dependency is `strand-scene`.
