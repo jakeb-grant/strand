@@ -9,7 +9,8 @@
 //! compositor, a session's first frame is ready at once and a later one
 //! only once its toplevel changed (a paint). A frame whose buffer does
 //! not match the size fails with `buffer_constraints`; a resize sends the
-//! new constraints and fails the frame in flight; a closed toplevel stops
+//! new constraints (its formats before its size, which the protocol
+//! allows) and fails the frame in flight; a closed toplevel stops
 //! its sessions. What happens is logged in [`crate::Fake::captures`]:
 //! `session <ident>`, `frame <ident>`, `failed <ident>`, `stopped
 //! <ident>`, `end <ident>` (the client destroyed its session).
@@ -79,11 +80,20 @@ impl Capture {
         self.sizes.get(ident).copied().unwrap_or(DEFAULT_SIZE)
     }
 
-    fn send_constraints(&self, session: &ExtImageCopyCaptureSessionV1, ident: &str) {
+    /// A batch of buffer constraints. The protocol fixes only that
+    /// `done` ends it: a session's first batch gives the size first, a
+    /// resize's gives the formats first, so clients must not depend on
+    /// the order.
+    fn send_constraints(&self, session: &ExtImageCopyCaptureSessionV1, ident: &str, resize: bool) {
         let (w, h) = self.size(ident);
-        session.buffer_size(w, h);
+        if !resize {
+            session.buffer_size(w, h);
+        }
         session.shm_format(wl_shm::Format::Argb8888);
         session.shm_format(wl_shm::Format::Xrgb8888);
+        if resize {
+            session.buffer_size(w, h);
+        }
         session.done();
     }
 }
@@ -121,7 +131,7 @@ impl Server {
         }
         for s in &self.capture.sessions {
             if s.ident == ident {
-                self.capture.send_constraints(&s.session, ident);
+                self.capture.send_constraints(&s.session, ident, true);
             }
         }
     }
@@ -274,7 +284,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Server {
             let session = init.init(session, ident.clone());
             state.capture.note(format!("session {ident}"));
             if state.toplevels.iter().any(|t| t.ident == ident) {
-                state.capture.send_constraints(&session, &ident);
+                state.capture.send_constraints(&session, &ident, false);
             } else {
                 session.stopped();
                 state.capture.note(format!("stopped {ident}"));

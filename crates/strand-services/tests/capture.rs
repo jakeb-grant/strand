@@ -3,7 +3,8 @@
 //! `ext-image-copy-capture-v1` (sway 1.9 in CI offers none; the live
 //! proof is the compositor matrix): a tap captures its window through
 //! the protocol thread, frames come only when the window changes and at
-//! most `MAX_FPS` a second, new buffer constraints are followed, and the
+//! most `MAX_FPS` a second, new buffer constraints are followed (in any
+//! order before their `done`), and the
 //! session ends with the last tap or the window.
 
 mod common;

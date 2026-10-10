@@ -416,15 +416,19 @@ impl Client {
         let Some(s) = self.captures.session_mut(key) else {
             return;
         };
-        let Some((w, h)) = s
-            .pending_size
-            .filter(|(w, h)| (1..=MAX_SIDE).contains(w) && (1..=MAX_SIDE).contains(h))
+        // A batch ends here, whatever order its events came in (the
+        // protocol fixes only that `done` is last); the next one starts
+        // empty.
+        let size = s.pending_size.take();
+        let formats = std::mem::take(&mut s.pending_formats);
+        let Some((w, h)) =
+            size.filter(|(w, h)| (1..=MAX_SIDE).contains(w) && (1..=MAX_SIDE).contains(h))
         else {
             return;
         };
         let format = [wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888]
             .into_iter()
-            .find(|f| s.pending_formats.contains(f));
+            .find(|f| formats.contains(f));
         let (Some(format), Some(shm_global)) = (format, shm_global) else {
             log::debug!("thumbnail {}: no shm format we read", s.identifier);
             return;
@@ -531,7 +535,6 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, u64> for Client {
             Event::BufferSize { width, height } => {
                 if let Some(s) = state.captures.session_mut(*key) {
                     s.pending_size = Some((width, height));
-                    s.pending_formats.clear();
                 }
             }
             Event::ShmFormat {
