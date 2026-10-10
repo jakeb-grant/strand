@@ -2492,7 +2492,7 @@ fn strand_run_drags_from_one_surface_to_another() {
         .env("XDG_CACHE_HOME", sway.dir.join("cache"))
         .env("XDG_STATE_HOME", sway.dir.join("state"))
         .env("WAYLAND_DISPLAY", &sway.display)
-        .env("STRAND_LOG", "damage,info")
+        .env("STRAND_LOG", "damage,debug")
         .stdin(Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
@@ -2513,7 +2513,30 @@ fn strand_run_drags_from_one_surface_to_another() {
     }
     let desk = px(1200, 700);
     let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
-    std::thread::sleep(Duration::from_millis(300));
+    // The pointer over the box until strand hears it enter the bar: the
+    // seat gains a pointer strand binds late, so a press sent at once can
+    // reach nothing (the replugged bar's test hit this on CI). Nudged a
+    // pixel each try so every motion is a new one.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut nudge = 0;
+    while !text()
+        .lines()
+        .any(|l| l.contains("pointer entered surface "))
+    {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            text()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the pointer never entered: {}",
+            text()
+        );
+        pointer.motion(50 + nudge % 2, 16, w, h);
+        nudge += 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // Held on the box, then carried down out of the bar in steps.
     pointer.press(50, 16, w, h);
     std::thread::sleep(Duration::from_millis(100));

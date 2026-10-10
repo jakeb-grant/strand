@@ -1009,8 +1009,18 @@ fn a_drag_from_another_strand_process_is_read_as_its_data() {
     both(&mut mgr, &mut other, Duration::from_millis(50));
     mgr.state_mut().host_mut().source = Some((bar, PIN));
     p.to(100, 60);
-    both(&mut mgr, &mut other, Duration::from_millis(100));
-    assert!(mgr.state().carrying_drag());
+    // The hand-over is a round trip through the compositor: wait for it,
+    // bounded, as `drag_out_of_bar` does (a fixed window flakes when the
+    // runner is slow).
+    let deadline = Instant::now() + WAIT;
+    while !mgr.state().carrying_drag() {
+        assert!(
+            Instant::now() < deadline,
+            "the drag is never handed over: {:#?}",
+            mgr.state().host().input
+        );
+        both(&mut mgr, &mut other, Duration::from_millis(20));
+    }
     for i in 1..=12u32 {
         let lerp = |a: u32, b: u32| a + (b - a) * i / 12;
         p.to(lerp(100, 960), lerp(60, 540));

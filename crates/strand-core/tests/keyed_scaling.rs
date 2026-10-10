@@ -177,7 +177,10 @@ fn a_shuffled_keyed_diff_scales_n_log_n() {
 /// each other key that shares its 7-bit tag in the probed groups: a rare
 /// lookup does a few more operations than the usual handful. Each lookup is
 /// bounded loosely (`MAX_OPS`, far below a scan's thousands) and the mean
-/// tightly.
+/// tightly. The seed also moves the mean: `contains_key` (one hash, one
+/// compare, plus tag collisions) measured 2.70 at 16,000 rows on a GitHub
+/// run (38049112726), so its bound is 3.5, not the 2.5 that run failed;
+/// a scan would average thousands (decisions.md m4-audit).
 #[test]
 fn key_lookups_do_constant_key_work() {
     const MAX_OPS: u64 = 24;
@@ -214,7 +217,7 @@ fn key_lookups_do_constant_key_work() {
             );
             assert!(get_mean <= 8.0, "{what} at {n}: get mean {get_mean:.2}");
             assert!(
-                has_mean <= 2.5,
+                has_mean <= 3.5,
                 "{what} at {n}: contains_key mean {has_mean:.2}"
             );
             let (missing, ops) = key_ops(|| v.index_of(&Key(u32::MAX)));
