@@ -1,10 +1,11 @@
 //! (M4) Media and data nodes (design.md, "Generative, data-driven and
 //! media"): animated images (through the image store), and the CPU
-//! raster sources of `graph`, `spectrum` and `svg`, attached to their nodes when
+//! raster sources of `graph`, `spectrum`, `svg` and `lottie`, attached to their nodes when
 //! logic creates them ([`Media`]).
 
 pub mod animated;
 pub mod graph;
+pub mod lottie;
 pub mod spectrum;
 pub mod svg;
 
@@ -30,7 +31,10 @@ pub(crate) fn created(diff: &SceneDiff) -> Vec<(NodeId, NodeKind)> {
 
 /// The kinds drawn by a source of their own.
 pub(crate) fn is_media(kind: NodeKind) -> bool {
-    matches!(kind, NodeKind::Graph | NodeKind::Spectrum | NodeKind::Svg)
+    matches!(
+        kind,
+        NodeKind::Graph | NodeKind::Spectrum | NodeKind::Svg | NodeKind::Lottie
+    )
 }
 
 /// One media node's source, typed for what feeds it.
@@ -39,6 +43,7 @@ pub(crate) enum Source {
     Graph(Arc<graph::GraphSource>),
     Spectrum(Arc<spectrum::SpectrumSource>),
     Svg(Arc<svg::SvgSource>),
+    Lottie(Arc<lottie::LottieSource>),
 }
 
 impl Source {
@@ -47,6 +52,7 @@ impl Source {
             NodeKind::Graph => Source::Graph(Arc::default()),
             NodeKind::Spectrum => Source::Spectrum(Arc::default()),
             NodeKind::Svg => Source::Svg(Arc::default()),
+            NodeKind::Lottie => Source::Lottie(Arc::default()),
             _ => return None,
         })
     }
@@ -57,6 +63,7 @@ impl Source {
             Source::Graph(g) => g.clone(),
             Source::Spectrum(s) => s.clone(),
             Source::Svg(s) => s.clone(),
+            Source::Lottie(s) => s.clone(),
         }
     }
 }

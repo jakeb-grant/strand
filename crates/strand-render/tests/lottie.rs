@@ -1,0 +1,163 @@
+//! (M4) `lottie "loader.json" { speed: 1 }` (design.md: Lottie via
+//! velato): drawn by velato into vello_cpu on a clock at the file's frame
+//! rate, looping. Offline PNGs at fixed times. Regenerate with
+//! `STRAND_BLESS=1 cargo test -p strand-render --test lottie`.
+
+mod common;
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use common::*;
+use strand_render::Renderer;
+use strand_scene::*;
+
+const S: SurfaceId = SurfaceId(1);
+const TOLERANCE: u8 = 2;
+const T0: Duration = Duration::from_secs(1);
+
+/// 100 × 100 at 30 fps, 60 frames: a red 20 × 20 square moving from
+/// x = 20 to x = 80 along y = 50, linearly.
+const SLIDE: &str = r#"{"v":"5.7.0","fr":30,"ip":0,"op":60,"w":100,"h":100,"layers":[
+ {"ty":4,"ind":1,"ip":0,"op":60,"st":0,
+  "ks":{"o":{"a":0,"k":100},"r":{"a":0,"k":0},
+        "p":{"a":1,"k":[{"t":0,"s":[20,50,0],"i":{"x":[1],"y":[1]},"o":{"x":[0],"y":[0]}},{"t":60,"s":[80,50,0]}]},
+        "a":{"a":0,"k":[0,0,0]},"s":{"a":0,"k":[100,100,100]}},
+  "shapes":[{"ty":"gr","it":[
+    {"ty":"rc","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[20,20]},"r":{"a":0,"k":0}},
+    {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}},
+    {"ty":"tr","p":{"a":0,"k":[0,0]},"a":{"a":0,"k":[0,0]},"s":{"a":0,"k":[100,100]},"r":{"a":0,"k":0},"o":{"a":0,"k":100}}]}]}]}"#;
+
+fn file(name: &str, text: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("strand-lottie-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("slide.json");
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+/// A 100 × 100 bar holding the animation at its own size.
+fn scene(source: &str, speed: f32) -> (Renderer, NodeId, Buffer) {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#1e1e2e")),
+        ],
+    );
+    let l = b.node(
+        NodeKind::Lottie,
+        Some(root),
+        vec![
+            (Prop::Source, text(source)),
+            (Prop::Size, num(100.0)),
+            (Prop::Speed, num(speed)),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    (r, l, Buffer::new(100, 100, Scale::ONE))
+}
+
+fn red(buf: &Buffer, x: u32, y: u32) -> bool {
+    let [b, g, r, _] = buf.px(x, y);
+    r > 200 && g < 60 && b < 60
+}
+
+/// Paints at 60 Hz from `from` to `to`, as the frame clock asks.
+fn run(r: &mut Renderer, buf: &mut Buffer, from: Duration, to: Duration) -> u32 {
+    let mut painted = 0;
+    let mut at = from;
+    while at < to {
+        at += Duration::from_micros(16_667);
+        if (r.wants_frame(S) || r.next_wake().is_some()) && !buf.paint_at(r, S, 1, at).is_empty() {
+            painted += 1;
+        }
+    }
+    painted
+}
+
+#[test]
+fn a_lottie_plays_at_its_frame_rate_and_loops() {
+    let f = file("play", SLIDE);
+    let (mut r, _l, mut buf) = scene(f.to_str().unwrap(), 1.0);
+    buf.paint_at(&mut r, S, 0, T0);
+    // Frame 0: the square centred at (20, 50).
+    assert!(red(&buf, 20, 50) && !red(&buf, 50, 50));
+    assert_matches_ref("lottie_frame0", &buf, TOLERANCE);
+    // The file has been read: its clock runs at 30 fps, under refresh.
+    let painted = run(&mut r, &mut buf, T0, T0 + Duration::from_secs(1));
+    assert!(
+        (25..=31).contains(&painted),
+        "{painted} frames drawn in 1 s at 30 fps"
+    );
+    // One second in: frame 30, the square at (50, 50).
+    assert!(red(&buf, 50, 50) && !red(&buf, 20, 50));
+    assert_matches_ref("lottie_frame30", &buf, TOLERANCE);
+    // Two seconds in it has looped back to the start.
+    run(
+        &mut r,
+        &mut buf,
+        T0 + Duration::from_secs(1),
+        T0 + Duration::from_secs(2),
+    );
+    assert!(red(&buf, 20, 50) || red(&buf, 22, 50), "looped");
+}
+
+#[test]
+fn speed_hidden_and_reduced_motion() {
+    let f = file("speed", SLIDE);
+    let (mut r, l, mut buf) = scene(f.to_str().unwrap(), 2.0);
+    buf.paint_at(&mut r, S, 0, T0);
+    run(&mut r, &mut buf, T0, T0 + Duration::from_millis(500));
+    // Half a second at speed 2: frame 30.
+    assert!(red(&buf, 50, 50), "speed 2");
+    // Hidden: no clock.
+    let mut d = SceneDiff::default();
+    d.set(l, Prop::Opacity, num(0.0));
+    assert!(r.apply(d).is_empty());
+    let mut at = T0 + Duration::from_millis(500);
+    let mut k = 0;
+    while r.wants_frame(S) {
+        at += Duration::from_millis(16);
+        buf.paint_at(&mut r, S, 1, at);
+        k += 1;
+        assert!(k < 100, "hiding settles");
+    }
+    assert_eq!(r.next_wake(), None, "a hidden lottie has no clock");
+    // Shown under reduced motion: frozen.
+    r.set_reduced_motion(true);
+    let mut d = SceneDiff::default();
+    d.set(l, Prop::Opacity, num(1.0));
+    assert!(r.apply(d).is_empty());
+    while r.wants_frame(S) {
+        at += Duration::from_millis(16);
+        buf.paint_at(&mut r, S, 1, at);
+        k += 1;
+        assert!(k < 200, "showing settles");
+    }
+    assert_eq!(r.next_wake(), None, "frozen under reduced motion");
+}
+
+#[test]
+fn a_broken_or_missing_file_draws_nothing_and_has_no_clock() {
+    for (name, source) in [
+        ("missing", "/nonexistent/slide.json".to_string()),
+        (
+            "broken",
+            file("broken", "{not lottie").to_str().unwrap().to_string(),
+        ),
+    ] {
+        let (mut r, _l, mut buf) = scene(&source, 1.0);
+        buf.paint_at(&mut r, S, 0, T0);
+        buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
+        assert!(!r.wants_frame(S), "{name}");
+        assert_eq!(r.next_wake(), None, "{name}");
+        let [b, g, rr, _] = buf.px(50, 50);
+        assert_eq!((rr, g, b), (0x1e, 0x1e, 0x2e), "{name}");
+    }
+}

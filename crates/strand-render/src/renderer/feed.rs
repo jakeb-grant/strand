@@ -96,7 +96,7 @@ impl Renderer {
                     };
                     FeedKind::Spectrum { device }
                 }
-                Source::Graph(_) | Source::Svg(_) => continue,
+                Source::Graph(_) | Source::Svg(_) | Source::Lottie(_) => continue,
             };
             now.push(FeedDemand { node: *id, kind });
         }
