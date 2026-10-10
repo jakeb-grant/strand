@@ -67,6 +67,10 @@ pub struct Program {
     /// Each chunk's assignment targets, by chunk id: what a handler
     /// running it declares with `rt.writes_to`.
     pub writes: Vec<Vec<WriteTarget>>,
+    /// The checked `shader` files, by path as written (M4): what a
+    /// `shader` node's `Prop::Shader` carries. Set from
+    /// [`crate::Compiled::shaders`] by `Build::lowered`.
+    pub shaders: crate::check::shaders::Shaders,
 }
 
 /// A no-code service (design.md: `service ppd from dbus system

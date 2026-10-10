@@ -28,6 +28,7 @@ mod expr;
 mod lock;
 pub mod paths;
 mod prepin;
+pub mod shaders;
 mod stmt;
 mod surfaces;
 mod tokens;

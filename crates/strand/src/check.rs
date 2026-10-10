@@ -142,7 +142,12 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
             focus_id = Some(id);
         }
     }
-    let compiled = strand_compiler::compile_with(&map, crate::services::schema());
+    let mut compiled = strand_compiler::compile_with(&map, crate::services::schema());
+    // `shader "x.wgsl"` files, checked with naga as the loader does.
+    compiled.check_shaders(&|p: &str| {
+        std::fs::read_to_string(strand_compiler::check::shaders::resolve(p, dir))
+            .map_err(|e| e.to_string())
+    });
     let mut diags = compiled.diagnostics;
     // `from dbus` services against the bus's introspection (a warning
     // when the bus cannot be reached).

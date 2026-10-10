@@ -117,6 +117,10 @@ pub struct Loader {
     /// Checks beyond the checker's, on each compile: `strand run`'s D-Bus
     /// introspection of `from dbus` services ([`Loader::with_check`]).
     extra: Option<ExtraCheck>,
+    /// The `shader` files the compiles read, by resolved path (their text,
+    /// or why it cannot be read), until a change to one of them
+    /// ([`Loader::changed`]) or a rescan drops it.
+    wgsl: std::cell::RefCell<BTreeMap<PathBuf, Result<Arc<str>, String>>>,
 }
 
 /// A check run on each compiled config, adding diagnostics
@@ -158,6 +162,7 @@ impl Loader {
             standing: Default::default(),
             tried: None,
             extra: None,
+            wgsl: Default::default(),
         }
     }
 
@@ -173,6 +178,12 @@ impl Loader {
     /// Compile `map` with the schema and the extra check.
     fn compile(&self, map: &SourceMap) -> crate::Compiled {
         let mut c = crate::compile_with(map, &self.schema);
+        c.check_shaders(&|path: &str| {
+            let full = crate::check::shaders::resolve(path, &self.root);
+            let mut cache = self.wgsl.borrow_mut();
+            let text = cache.entry(full.clone()).or_insert_with(|| read(&full));
+            text.as_ref().map(|t| t.to_string()).map_err(Clone::clone)
+        });
         if let Some(extra) = &self.extra {
             let more = (extra.0)(&c);
             if !more.is_empty() {
@@ -197,6 +208,17 @@ impl Loader {
     /// Directories the module set lives in (link targets included).
     pub fn dirs(&self) -> &[PathBuf] {
         &self.dirs
+    }
+
+    /// The `shader` files the compiles read (resolved), with the text
+    /// they read (`None`: unreadable): what the watcher follows as
+    /// `Role::Shader`, from those bytes.
+    pub fn shader_files(&self) -> Vec<(PathBuf, Option<Arc<str>>)> {
+        self.wgsl
+            .borrow()
+            .iter()
+            .map(|(p, t)| (p.clone(), t.as_ref().ok().cloned()))
+            .collect()
     }
 
     /// The running build.
@@ -274,14 +296,23 @@ impl Loader {
     /// Files changed on disk (`None`: removed): re-read them and commit
     /// what is consistent.
     pub fn changed(&mut self, paths: impl IntoIterator<Item = (PathBuf, bool)>) -> Outcome {
+        // A shader file is no module: it is read again by the compile
+        // that needs it, which must run though no module changed.
+        let mut shader = false;
         for (p, exists) in paths {
+            if self.wgsl.get_mut().remove(&p).is_some()
+                || p.extension().is_some_and(|e| e == "wgsl")
+            {
+                shader = true;
+                continue;
+            }
             if exists {
                 self.disk.insert(p.clone(), read(&p));
             } else {
                 self.disk.remove(&p);
             }
         }
-        self.reconcile(false)
+        self.reconcile(shader)
     }
 
     /// `strand reload`: list the module set again, re-read every file and
@@ -290,6 +321,14 @@ impl Loader {
         match self.list() {
             Ok(files) => {
                 self.disk.clear();
+                // Shader files read again: a change compiles though no
+                // module changed.
+                let mut shaders = false;
+                for (p, t) in self.wgsl.get_mut().iter_mut() {
+                    let now = read(p);
+                    shaders |= now != *t;
+                    *t = now;
+                }
                 for f in &files {
                     self.disk.insert(f.clone(), read(f));
                 }
@@ -305,7 +344,7 @@ impl Loader {
                             .insert(p.clone(), Err(format!("{}: {e}", d.display())));
                     }
                 }
-                self.reconcile(false)
+                self.reconcile(shaders)
             }
             Err(e) => {
                 self.dirty = true;
@@ -567,6 +606,13 @@ impl Loader {
             }
         }
         let build = Build::lowered(self.last.as_ref(), map, c, &self.schema);
+        // Only the shader files the running program uses stay followed.
+        let used: BTreeSet<PathBuf> = c
+            .shaders
+            .keys()
+            .map(|p| crate::check::shaders::resolve(p, &self.root))
+            .collect();
+        self.wgsl.get_mut().retain(|p, _| used.contains(p));
         // Best effort: a cache that cannot be written only loses the
         // fallback for the next broken boot.
         if let Some(cache) = &self.cache {

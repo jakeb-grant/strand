@@ -52,6 +52,11 @@ pub struct Compiled {
     pub program: hir::Program,
     /// Syntax diagnostics, then checker diagnostics, by file.
     pub diagnostics: Vec<Diagnostic>,
+    /// The `shader` files checked against the program
+    /// ([`check::shaders`]), by path as written: filled by
+    /// [`Compiled::check_shaders`] (the loader, `strand check`), since
+    /// reading them touches the disk; empty after [`compile`] alone.
+    pub shaders: check::shaders::Shaders,
 }
 
 impl Compiled {
@@ -61,6 +66,23 @@ impl Compiled {
 
     pub fn warnings(&self) -> usize {
         self.diagnostics.len() - self.errors()
+    }
+
+    /// Checks the program's `shader` nodes against their files, read with
+    /// `read` (by path as written), and keeps the checked code for the
+    /// build. Nothing is read when there is no `shader` node.
+    pub fn check_shaders(&mut self, read: &check::shaders::Read<'_>) {
+        if !check::shaders::any(&self.program) {
+            self.shaders.clear();
+            return;
+        }
+        let (diags, shaders) = check::shaders::check(&self.program, read);
+        self.shaders = shaders;
+        if !diags.is_empty() {
+            self.diagnostics.extend(diags);
+            self.diagnostics
+                .sort_by_key(|d| (d.file(), d.primary_span().map_or(0, |s| s.start)));
+        }
     }
 }
 
@@ -120,5 +142,6 @@ pub fn compile_with(map: &SourceMap, schema: &schema::Schema) -> Compiled {
         parses,
         program: checked.program,
         diagnostics,
+        shaders: Default::default(),
     }
 }

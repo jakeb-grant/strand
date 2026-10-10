@@ -73,7 +73,8 @@ impl Build {
         compiled: &crate::Compiled,
         schema: &crate::schema::Schema,
     ) -> Build {
-        let program = lower::lower(&compiled.program, schema);
+        let mut program = lower::lower(&compiled.program, schema);
+        program.shaders = compiled.shaders.clone();
         let identity = Identity::derive(prev.map(|p| &*p.identity), &map, &program);
         let hashes = Hashes::compute(&identity, &map, &compiled.program, &program);
         Build {

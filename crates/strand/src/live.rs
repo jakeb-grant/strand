@@ -379,6 +379,13 @@ fn run(
         std::collections::HashMap::new();
     // Who is told when a cache source changes.
     let mut caches: Option<CacheSink> = None;
+    // The referenced files the program gave (settings, theme files) and
+    // the shader files the loader read: the watcher has both, as one set.
+    let mut given: Vec<(PathBuf, Role)> = Vec::new();
+    let mut shaders: Vec<(PathBuf, Option<Arc<str>>)> = Vec::new();
+    if let Some(w) = &watcher {
+        sync_shaders(&loader, w, &given, &mut shaders);
+    }
     while let Ok(job) = jobs.recv() {
         // Everything queued now is one batch of work.
         let mut queue = vec![job];
@@ -433,7 +440,8 @@ fn run(
         let mut settings: Vec<PathBuf> = Vec::new();
         let mut theme: Vec<PathBuf> = Vec::new();
         if let (Some(r), Some(w)) = (referenced, &watcher) {
-            match w.set_referenced(r.clone()) {
+            given = r.clone();
+            match w.set_referenced(with_shaders(&r, &shaders)) {
                 // A file edited after the program read it and before the
                 // watcher had it (a save right after boot or a reload)
                 // was not seen: each newly registered file is read again
@@ -471,7 +479,9 @@ fn run(
             notices.extend(b.notices.iter().map(notice_text));
             for c in &b.changes {
                 match c.role {
-                    Role::Module => {
+                    // A shader file goes to the loader too, which reads it
+                    // again and compiles though no module changed.
+                    Role::Module | Role::Shader => {
                         modules.retain(|(p, _)| *p != c.path);
                         modules.push((c.path.clone(), c.kind != ChangeKind::Removed));
                     }
@@ -541,6 +551,9 @@ fn run(
         if let Some(e) = loader.cache_error() {
             log::warn!("last-good cache: {e}");
         }
+        if let Some(w) = &watcher {
+            sync_shaders(&loader, w, &given, &mut shaders);
+        }
         // The watcher's own re-listing after a reload, or a save that
         // changed nothing the loader keeps: nothing to report. A save
         // that reverts a broken one to the last good text changes
@@ -576,9 +589,96 @@ fn run(
     }
 }
 
+/// The referenced set the watcher gets: `given` and the shader files,
+/// each with the hash of the text the loader read, so an edit made
+/// between that read and the registration is still reported.
+fn with_shaders(
+    given: &[(PathBuf, Role)],
+    shaders: &[(PathBuf, Option<Arc<str>>)],
+) -> Vec<strand_watch::Referenced> {
+    let mut out: Vec<strand_watch::Referenced> = given.iter().cloned().map(Into::into).collect();
+    for (p, text) in shaders {
+        out.push(match text {
+            Some(t) => (
+                p.clone(),
+                Role::Shader,
+                strand_watch::hash_bytes(t.as_bytes()),
+            )
+                .into(),
+            None => (p.clone(), Role::Shader).into(),
+        });
+    }
+    out
+}
+
+/// Registers the loader's shader files with the watcher when they
+/// changed (a `shader` node added, removed, or its file edited).
+fn sync_shaders(
+    loader: &Loader,
+    w: &Watcher,
+    given: &[(PathBuf, Role)],
+    shaders: &mut Vec<(PathBuf, Option<Arc<str>>)>,
+) {
+    let now = loader.shader_files();
+    if now == *shaders {
+        return;
+    }
+    *shaders = now;
+    if let Err(e) = w.set_referenced(with_shaders(given, shaders)) {
+        log::warn!("watching shader files: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `shader` node's file is watched as `Role::Shader`: saving it
+    /// compiles the config again though no module changed, and the build
+    /// carries the new text (a referenced set given later keeps it
+    /// watched).
+    #[test]
+    fn a_saved_shader_file_reloads() {
+        let dir = std::env::temp_dir().join(format!("strand-live-wgsl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(
+            dir.join("config/shell.strand"),
+            "panel P { width: 10; height: 10\n  shader \"a.wgsl\" { u_k: 1 }\n}\n",
+        )
+        .unwrap();
+        let wgsl = dir.join("config/a.wgsl");
+        let text = "@group(1) @binding(0) var<uniform> u_k: f32;\n\
+                    @fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(u_k); }\n";
+        std::fs::write(&wgsl, text).unwrap();
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, boot) = Worker::spawn(&dir.join("config"), None, out).unwrap();
+        assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+        worker
+            .jobs()
+            .send(Job::Referenced {
+                files: vec![(dir.join("config/prefs.toml"), Role::Settings)],
+                settings: Vec::new(),
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let edited = text.replace("vec4<f32>(u_k)", "vec4<f32>(u_k * 0.5)");
+        std::fs::write(&wgsl, &edited).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut loaded = None;
+        while loaded.is_none() && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(FromWorker::Loaded(l)) => loaded = Some(l),
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        let loaded = loaded.expect("the save reloads");
+        let build = loaded.outcome.build.as_ref().expect("a build");
+        assert_eq!(build.program.shaders["a.wgsl"].wgsl, edited);
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A referenced file is read once more as soon as the watcher has
     /// it: an edit made between the program's read and the registration
