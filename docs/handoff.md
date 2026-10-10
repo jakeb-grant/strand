@@ -1,70 +1,34 @@
-# Handoff: state during M4's close (updated 2026-10-10)
+# Handoff: M4 to M5 (updated 2026-10-10)
 
-Where the project stands, what the owner still has to decide, and what was
-deliberately left for later. Read this first when picking the repo up again,
-then `docs/m3-report.md` and `docs/m4-report.md` for the measured numbers,
-`docs/m4-plan.md` and `docs/features.md` for M4, and `docs/decisions.md`
-for the reasoning behind each item below.
+Where the project stands at M4's close, what the owner still has to
+decide, and what was deliberately left for later. Read this first when
+picking the repo up again, then `docs/m4-report.md` (and
+`docs/m3-report.md`) for the measured numbers, `docs/features.md` for
+M5's boxes, and `docs/decisions.md` for the reasoning behind each item
+below.
 
 ## State
 
-- `main` is at `f4899c0` (M4 waves 0–2 merged, "render: promotion's idle
-  rule waits for the attach and a presented frame"); its nightly run
-  38042666058 passed (`lock-vm`, the `archlinux:latest` compositors,
-  `nightly`). M0–M3 are complete. M4's wave 3 (effects-finish,
-  gpu-effects, interaction-finish) is merged on
-  `laptop/integration-m4-w3` (CI run 38041985436 at 22b8688 passed all
-  seven jobs, `lock-vm` included), with the m4 audit's fixes on top
-  (decisions.md m4-audit; CI run 38048149054 at 70af44f passed all seven
-  jobs, the new lock tests in `lock-vm` included), then the audit's
-  second round of fixes (decisions.md m4-audit, from "a lock with no
-  way out is a check error"; the lock VM passed at 6a27238); it has not
-  reached `main` yet.
+- M0–M4 are complete, but for one M4 box that waits on the owner (the
+  bundled noise field). M4's three exits are ticked in features.md:
+  smooth 2,000-row scrolling, GPU released when idle, and lock fails
+  closed under faults (docs/m4-report.md, "Result").
+- `main` is at `f4899c0` (M4 waves 0–2). Wave 3 (effects-finish,
+  gpu-effects, interaction-finish), the m4 audit's three rounds of
+  fixes and the closing integrator's fix are on
+  `laptop/integration-m4-w3`, which has not reached `main` yet. Its
+  measured head is `e765276` (docs/m4-report.md); the commits after it
+  change only docs.
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
-  M5 0/9 (boxes and exit criteria, counted 2026-10-10; the earlier
-  M0 21/21 counted differently). M4's exits: smooth 2,000-row scrolling,
-  GPU released when idle, and lock fails closed under faults are all
-  ticked (the lock exit on a lock VM run of the integration tree,
-  2026-10-10). The open M1 box is the tree-sitter grammar (M5).
-- M4 still open:
-  - The bundled noise field, waiting on the owner: design.md counts
-    "aurora and noise fields" among the eight bundled GPU effects but
-    names no spelling for a noise field (decisions.md m4-gpu-effects).
-  - The promoted GPU cost against design.md's +20–40 MB is not measured
-    on hardware: ANV cannot present on the advisory leg's sway, so the
-    laptop run measured readback mode only (PSS 4,636 kB over the
-    pre-GPU baseline after the drop; decisions.md m4-gpu-effects).
-  - From the audit, for the owner (decisions.md m4-audit): a hung frame
-    on a promoted (`GpuPresent`) surface is bounded only by the WSI's
-    acquire timeout. This does not reach the lock: a lock surface is
-    never lent or handed off to the GPU thread
-    (`strand-surface/tests/session_lock.rs::a_lock_surface_is_never_handed_to_the_gpu`,
-    lock VM), so a promoted lock is read back, each frame holds for the
-    GPU at most `GPU_WAIT` (8 ms) before the CPU draws it
-    (`strand-render/tests/gpu.rs::a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait`), and a
-    readback that never ends loses the device after `HUNG_AFTER` (10 s),
-    after which the CPU draws everything. A GPU stall can slow a lock's
-    shader, not freeze its password field. The earlier entry said
-    otherwise; it was wrong (decisions.md m4-audit, the correction).
-  - Two functional tests still bound wall-clock time with wide margins
-    (`strand-scene/src/tokens.rs::huge_fan_out_fails_fast`,
-    `strand-dev/tests/lsp.rs`'s hung-bus case), left to their owners.
-  - PSS after the GPU has run on lavapipe stays about 90 MB up (the
-    debug `gpu_idle` run): the software driver's mappings (libLLVM
-    about 60 MB). The release full shell's "launcher closed" figure
-    (136–147 MB in docs/m4-report.md) was this: the closing launcher
-    was promoted, because large frames seconds apart counted as one
-    animation. Fixed in the audit's third round (`promote.rs`'s
-    `RUN_GAP`), and the full-shell budget now gates that figure and
-    asserts the design shells never start the GPU (decisions.md m4-audit,
-    "large frames seconds apart are not one animation").
-  - `theme_swap_bench`'s 8-scope `spring(1600, 1)` gate has little or no
-    headroom on GitHub: 2.53–5.06 ms over the last fifteen timing jobs
-    against 5 ms, one failure (decisions.md m4-audit, round 3, for the
-    owner: accept, a larger runner, or a cheaper swap).
-  - The closing steps: merging the integration branch to `main` and
-    deleting the merged wave branches. `docs/m4-report.md` is written
-    (2026-10-10, at `6a27238`).
+  M5 0/9 (boxes and exit criteria, counted 2026-10-10). The open M1
+  box is the tree-sitter grammar, which M5 owns.
+- Budgets at `e765276` (laptop; docs/m4-report.md has CI's): `.text`
+  19,006,471 B of 19,398,656 with the GPU backend and 15,634,439 B of
+  15,728,640 CPU-only (about 94 KB left: the tightest budget in the
+  tree); design.md's bar 34,187 kB against its 34,816 kB target (CI
+  measures it over the target, 35,557 kB at `70af44f` and 35,617 kB at
+  `e765276`, which warns; the ceiling is 38,912 kB);
+  the full shell 42–50 MB against 64 MB.
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
@@ -77,12 +41,50 @@ for the reasoning behind each item below.
   `laptop/m4-gpu-effects`, `laptop/m4-interaction-finish`), to be
   deleted once the integration branch reaches `main`.
 
-## Owner decisions (answered 2026-10-08)
+## Open items for the owner
 
-All four are answered; each is recorded in `docs/decisions.md` under
-"laptop-decisions". The M4 decisions (GPU testing, the GPU backend in
-every build, the bundled effects' syntax, the PAM fallback, `/dev/kvm`)
-were answered on 2026-10-09 and are under "m4-owner".
+From M4 (docs/m4-report.md, "Open"; decisions.md m4-gpu-effects and
+m4-audit):
+
+1. **The bundled noise field.** design.md counts "aurora and noise
+   fields" among the eight bundled GPU effects but names no spelling
+   for a noise field. m4-gpu-effects reads noise fields as `.wgsl`
+   shaders on the same path; the box stays open until the owner names
+   a spelling or accepts that reading.
+2. **A hung frame on a presented (`GpuPresent`) surface** is bounded
+   only by the WSI's acquire timeout. This does not reach the lock: a
+   lock surface is never lent or handed to the GPU thread
+   (`strand-surface/tests/session_lock.rs::a_lock_surface_is_never_handed_to_the_gpu`),
+   each of its frames holds for the GPU at most `GPU_WAIT` (8 ms)
+   before the CPU draws it
+   (`strand-render/tests/gpu.rs::a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait`),
+   and a readback that never ends loses the device after `HUNG_AFTER`
+   (10 s).
+3. **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate** has little or
+   no headroom on GitHub: 2.53–5.06 ms over fifteen timing jobs against
+   5 ms, one failure (run 38050248241). Accept the occasional failure,
+   use a larger runner, or make the swap cheaper.
+4. **The shape list**: keep the 13 shapes (a reading of design.md,
+   recorded with its reasons) or trim them to design.md's five plus
+   polygons.
+5. **xdg-activation**: the notification server's ActivationToken (spec
+   1.2) and the `XDG_ACTIVATION_TOKEN` of app launches moved past M4
+   and need a milestone.
+6. **The promoted GPU cost on hardware** is unmeasured: ANV cannot
+   present on the advisory leg's pixman sway, and presenting needs a
+   compositor on a KMS card, which the laptop rules keep out of
+   containers. The leg's readback mode passed at `e765276` (PSS 4,723
+   kB over the pre-GPU baseline after the drop, bound 6 MiB).
+
+## Owner decisions already answered
+
+The M4 decisions (GPU tests on lavapipe with an advisory hardware leg,
+the GPU backend in every build with its own `.text` gate, the bundled
+effects' syntax, the `login` PAM fallback, `/dev/kvm` for the lock VM,
+`letters` without a positional) were answered on 2026-10-09 and are
+under "m4-owner" (summarised in docs/m4-report.md). The four below,
+from M3's close, were answered on 2026-10-08 and are under
+"laptop-decisions".
 
 1. **Release build settings: signed off.** The 27
    `[profile.release.package]` `opt-level` overrides stay as they are.
@@ -121,6 +123,10 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### CI
 
+- Two functional tests still bound wall-clock time, with wide margins:
+  `strand-scene/src/tokens.rs::huge_fan_out_fails_fast` (< 500 ms) and
+  `strand-dev/tests/lsp.rs`'s hung-bus case (< 1500 ms). Left to their
+  crates' owners (decisions.md m4-audit).
 - The matrix test helper `compositor_matrix.rs` still drives Hyprland
   through `hyprctl` with the classic syntax (outside `strand-services`);
   that is its own check of the compositor, not the adapter's.
@@ -176,7 +182,7 @@ and the full shell warns above 64 MB and fails above 70 MB
   gap: it reads its replies while the stream is quiet and records in
   `marks.txt` the stream line where each set falls.
 
-### Known limits, recorded and not M3 blockers
+### Known limits, recorded and not M4 blockers
 
 - No IPC adapter for labwc, wayfire or river.
   `zwlr_foreign_toplevel_management_v1` is the fallback for windows:
@@ -262,40 +268,28 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
 
 ## Handoff checklist
 
-M3's checklist, kept as it was closed; M4's closing steps are
-m4-plan.md's "Closing M4" and the open items under State.
+M4's, for the merge of `laptop/integration-m4-w3` (m4-plan.md's
+"Closing M4"). M3's checklist is in git history (`f4899c0`).
 
-- [x] CI green on `main`'s head (`gh run list --repo jakeb-grant/strand -L 3`):
-  run 37921942812 on `f56aade`, all six jobs.
-- [x] `scripts/container/matrix.sh` passes locally: sway, niri and labwc
-  on 2026-10-09 at `f56aade` (Hyprland skipped: it needs a KMS card;
-  CI's vkms leg covers it).
-- [ ] `scripts/container/run.sh ci` exits 0 locally (timing steps may
-  warn; `STRAND_STRICT_TIMING=1` to enforce them). On 2026-10-09 at
-  `f56aade` only its `test` job was run, and it passed; the whole run
-  last passed on 2026-10-08 at `b87865a` (laptop/gates:
-  `reload_latency` warned). CI's run 37921942812 covers every job.
-- [x] Open decisions 1–4 answered and recorded in `docs/decisions.md`
-  (laptop-decisions); the audio read again and COSMIC too (laptop-open).
-- [x] Remote branches `wave4/*` and `laptop/*` deleted (2026-10-09;
-  `origin/main` remains, with `laptop/cleanup` until it merges, then
-  deleted as well).
-- [x] README status, `docs/features.md` and `docs/m3-report.md` agree
-  with the code (audited 2026-10-09 on branch `laptop/cleanup`). Every
-  `file.rs::name` citation in the four docs (382) and every backticked
-  test or fixture name was checked against the tree; three renamed tests
-  (four citations in features.md) are fixed. Stale claims fixed:
-  README (Hyprland/sway second output "not yet checked", the
-  format-on-save check listed as open, sign-offs owed), m3-report (the
-  opt-level overrides as unconfirmed, the latency margin and
-  `strand-introspect`'s connection per refresh as open, the CI jobs),
-  features.md (the services tier's `check` job). COSMIC appears only as
-  out of scope (design.md still names it as an example of a compositor
-  with only `ext-foreign-toplevel-list`, and in its blur risk row; neither
-  promises support).
-- [x] `scripts/m3-shots.sh` not re-run: the shell's look has not changed
-  since `docs/images/m3-*.png` (`dbe2104`, 2026-10-08). Since then the
-  only render source change is `a595513` (a percentage-sized
-  `image`/`icon` may shrink; no fixture sizes one in percent), plus a test
-  font (`d43cb46`); the fixtures and the shots' extra component are
-  unchanged.
+- [x] Every M4 box ticked with its test, but the noise field (owner);
+  the three exits cite their tests and runs (features.md).
+- [x] `docs/m4-report.md` written with the figures at `e765276`.
+- [x] Budgets at `e765276`: `CI_JOB=budgets scripts/container/run.sh ci`
+  passed (both `.text` gates, the bar, the full shell with the launcher
+  closed, the idle window); `CI_JOB=timing` passed with
+  `reload_latency` warning as usual (token p95 22.2 ms headless; the
+  list-scroll and frame-time benches inside their gates).
+- [x] The advisory hardware leg at `e765276`: `gpu_idle` in release on
+  ANV, readback mode, 4,723 kB over the baseline after the drop.
+- [ ] The full local set on the branch's final head, one at a time:
+  `scripts/container/run.sh ci`, `scripts/container/matrix.sh`, the lock
+  VM (`scripts/container/run.sh bash scripts/lockvm/scenarios/build.sh`,
+  then `scripts/container/lockvm.sh bash scripts/lockvm/scenarios/all.sh`,
+  which prints LOCK VM SCENARIOS PASSED) and `scripts/container/gpu.sh`;
+  then GitHub CI green on that head. The closing integrator runs these
+  after the last docs commit, so their results are in its hand-back,
+  not here.
+- [ ] Merge `laptop/integration-m4-w3` to `main` (the owner's step), then
+  delete the merged wave branches and the integration branch.
+- [ ] Delete worktree `target/` directories (each agent at its task's
+  end; the cargo registry stays in its volumes).

@@ -19,18 +19,22 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status: v0.1, M3 complete; M4 (power features) being closed.** Where
-the project stands and what is still open are in
-[`docs/handoff.md`](docs/handoff.md); M4's boxes and the tests behind
-them are in [`docs/features.md`](docs/features.md). M4 has landed GPU
-promotion (vello_gpu on wgpu, its device dropped after 30 s idle),
-shaders, canvas and the bundled GPU effects, the effects catalogue,
-lists that mount only their window (2,000 rows scroll without a gap),
-drag and drop, directional `pages` transitions, compositor-animated
-poses, tray menus, and the lock screen on `ext-session-lock` with a
-forked PAM helper (`strand-auth`) that fails closed, tested in a local
-QEMU VM with injected faults. Open: the bundled noise field (waiting on
-the owner) and the items handoff.md lists. M3's exit gates are met (see
+**Status: v0.1, M4 (power features) exits met; M5 (developer experience
+and 1.0) next.** Where the project stands and what is still open are in
+[`docs/handoff.md`](docs/handoff.md); M4's measured exit is in
+[`docs/m4-report.md`](docs/m4-report.md), and its boxes and the tests
+behind them in [`docs/features.md`](docs/features.md). M4 landed GPU
+promotion (vello_gpu on wgpu, in every build, its device dropped after
+30 s idle), shaders, canvas and the bundled GPU effects, the effects
+catalogue, lists that mount only their window (2,000 rows scroll
+without a gap), drag and drop, directional `pages` transitions,
+compositor-animated poses, tray menus, and the lock screen on
+`ext-session-lock` with a forked PAM helper (`strand-auth`) that fails
+closed, tested in a local QEMU VM with injected faults. Its three exits
+are met; one box, the bundled noise field, waits on the owner, with
+the other owner items handoff.md lists. M4 is on the integration
+branch `laptop/integration-m4-w3` until the owner merges it.
+M3's exit gates are met (see
 [`docs/m3-report.md`](docs/m3-report.md)): every builtin service is
 real (`auth` since M4). The portal, cpu, memory, battery
 (UPower), brightness (logind), network (NetworkManager), Bluetooth
@@ -55,8 +59,8 @@ reconnecting, and on
 two 2560×1440 monitors with the real services uses about 34 MB in
 today's default build, which links the GPU backend (33,731–34,016 kB
 when it landed, 34.1–34.5 MB in the M4 integration's laptop budget
-runs and 35,557 kB in CI's run at `70af44f`, over the target, which
-warned; target 34,816 kB, ceiling 38 MiB; docs/m4-report.md, "Budgets";
+runs and 34,187 kB at M4's close; 35,557 and 35,617 kB in CI's runs at `70af44f` and `e765276`,
+over the target, which warned; target 34,816 kB, ceiling 38 MiB; docs/m4-report.md, "Budgets";
 docs/architecture.md, "`strand-gpu`").
 M3's CPU-only build used 31–32 MiB, and with the launcher, two toasts
 and the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
