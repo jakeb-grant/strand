@@ -52,10 +52,13 @@ design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
 job, which also checks the stores and window actions on labwc, a
 compositor with no IPC), takes 100 live reloads without a service
 reconnecting, and on
-two 2560×1440 monitors with the real services uses about 31–32 MiB
-(target 34, ceiling 38); the full shell with the launcher, two toasts and
-the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
-measured here and in CI (design.md: 59–64; figures in
+two 2560×1440 monitors with the real services uses about 34 MB in
+today's default build, which links the GPU backend (33,731–34,016 kB
+when it landed, 34.1–34.5 MB in the M4 integration's budget runs;
+target 34,816 kB, ceiling 38 MiB; docs/architecture.md, "`strand-gpu`").
+M3's CPU-only build used 31–32 MiB, and with the launcher, two toasts
+and the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
+measured then (design.md: 59–64; those figures are M3's, in
 docs/m3-report.md). `STRAND_MOCK=desktop` still fills everything with
 a mock desktop for tests. What M3 leaves open is listed in
 docs/m3-report.md's Open section and docs/handoff.md: a second output is
@@ -143,9 +146,41 @@ and 1.0 at week 52.
 ## Building and installing
 
 ```sh
-cargo build --release                    # target/release/strand
+cargo build --release                    # target/release/strand and strand-auth
 cargo install --locked --path crates/strand
+cargo install --locked --path crates/strand-auth   # the lock's PAM helper
 ```
+
+The lock screen checks passwords in a separate helper, the `strand-auth`
+binary of its own package: `cargo install --path crates/strand` alone
+does not install it, and without it no password can unlock a `lock`.
+strand looks for it beside its own executable (`~/.cargo/bin` after the
+commands above, `target/release` in the build tree), then in
+`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`.
+A package installs it at one of those.
+
+The helper authenticates with the PAM service `strand`, read from
+`/etc/pam.d/strand`. Without that file it uses `login` and says so once
+(design.md, "Lock screen"). A minimal file includes the system's usual
+stack: on Debian and Ubuntu (the lock VM's file)
+
+```
+@include common-auth
+@include common-account
+```
+
+and on Arch and Fedora `auth include system-auth` and
+`account include system-auth`. A file in `/usr/lib/pam.d` counts
+only where the system keeps its own `login` there (decisions.md,
+m4-audit).
+
+If strand dies while the session is locked, the compositor keeps it
+locked and a restarted strand shows the password field again, so run
+it under a supervisor that restarts it. docs/architecture.md
+("Threads", the lock's entry) has the systemd user unit. Its
+`StartLimitIntervalSec=0` matters: systemd's default start limit
+would otherwise stop restarting a strand that keeps dying and leave
+the lock with no password field.
 
 Release builds use the workspace's `[profile.release]` in the root
 `Cargo.toml`: thin LTO, one codegen unit, and 27 per-package `opt-level`
