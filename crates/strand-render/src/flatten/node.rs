@@ -881,7 +881,10 @@ impl<'a> Flattener<'a> {
                     &mut sig,
                     &mut ink,
                 );
-                self.out.passes.push(want);
+                // (m4-audit) A file that lost a device is never run again.
+                if !self.extras.shaders.lost(code) {
+                    self.out.passes.push(want);
+                }
             }
         }
         // (M4) A `canvas`: what its `draw:` recorded (`canvas.rs`).

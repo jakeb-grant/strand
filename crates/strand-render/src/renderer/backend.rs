@@ -160,6 +160,12 @@ pub struct ShaderResults {
     map: HashMap<PassId, PassResult>,
     /// Nodes a filter pass has answered for (a tilt then turns in 3-D).
     answered: HashSet<NodeId>,
+    /// (m4-audit) Shader files whose pass or frame lost the device (ran
+    /// past `HUNG_AFTER`, or panicked): a hung device is leaked with its
+    /// spinning queue, so such a file is never run again in this process,
+    /// whatever its uniforms, size or node; a reload that changes its
+    /// text is new code.
+    lost: HashSet<Arc<ShaderCode>>,
 }
 
 #[derive(Debug)]
@@ -184,6 +190,24 @@ impl ShaderResults {
     /// True if the last pass asked for `id` failed.
     pub(crate) fn failed(&self, id: PassId) -> bool {
         self.map.get(&id).is_some_and(|r| r.failed)
+    }
+
+    /// True if `code` lost a device: its `shader` nodes want no pass.
+    pub(crate) fn lost(&self, code: &ShaderCode) -> bool {
+        self.lost.contains(code)
+    }
+
+    /// `code` cost a device: never asked again (see `lost`).
+    fn lose(&mut self, code: Option<Arc<ShaderCode>>) {
+        if let Some(code) = code
+            && !self.lost.contains(&*code)
+        {
+            log::warn!(
+                "GPU: `{}` lost the device; it draws nothing until its file changes",
+                code.path
+            );
+            self.lost.insert(code);
+        }
     }
 
     /// True if a filter pass of `node` has given pixels.
@@ -211,7 +235,7 @@ impl ShaderResults {
     /// rather than drawing flat until a new device answers. One that holds
     /// them keeps drawing them.
     fn device_gone(&mut self) {
-        let Self { map, answered } = self;
+        let Self { map, answered, .. } = self;
         answered.retain(|n| {
             map.get(&PassId::new(*n, Slot::Filter))
                 .is_some_and(|r| !r.failed)
@@ -226,6 +250,17 @@ impl ShaderResults {
             .map(|r| r.got.1.data_as_u8_slice().len())
             .sum()
     }
+}
+
+/// The shader file `w` runs, if any (a `shader` node's pass; a bundled
+/// effect runs Strand's own code).
+fn file_code(w: &PassWant) -> Option<Arc<ShaderCode>> {
+    std::iter::once(&w.pass)
+        .chain(&w.then)
+        .find_map(|p| match &p.code {
+            ShaderRef::File(c) => Some(c.clone()),
+            ShaderRef::Bundled(_) => None,
+        })
 }
 
 /// A transparent pixel: what a `shader` node with no pixels yet draws.
@@ -481,10 +516,10 @@ struct Surf {
     /// Until when its next frame holds (a pass or readback in flight).
     hold: Option<Instant>,
     /// The `shader` nodes' passes its GPU frames draw inline (their id,
-    /// key and base), from its last frame's wants: recorded as failed
-    /// when a frame of it hangs or panics, so that the demoted surface
-    /// does not ask a new device for the same pass (m4-audit).
-    inline: Vec<(PassId, u64, u64)>,
+    /// key, base and file), from its last frame's wants: recorded as
+    /// failed, and their files as lost, when a frame of it hangs or
+    /// panics, so that no new device is asked for them (m4-audit).
+    inline: Vec<(PassId, u64, u64, Option<Arc<ShaderCode>>)>,
 }
 
 impl Surf {
@@ -504,6 +539,8 @@ struct Pending {
     key: u64,
     base: u64,
     surface: SurfaceId,
+    /// Its shader file: lost with the device if the pass hangs.
+    code: Option<Arc<ShaderCode>>,
 }
 
 /// The GPU backend's state in the renderer.
@@ -814,6 +851,9 @@ impl Renderer {
                     // node then draws nothing; a bundled pass's node, its
                     // CPU version (`ShaderResults::usable`).
                     if let Some(p) = self.gpu.pending.remove(&id) {
+                        if error.kind == GpuErrorKind::Lost {
+                            self.extras.shaders.lose(p.code.clone());
+                        }
                         let r = PassResult {
                             got: (p.key, empty_pixmap()),
                             surface: p.surface,
@@ -834,10 +874,11 @@ impl Renderer {
                     // with it) took its inline passes along: one of them
                     // may be the culprit, and the demoted surface would
                     // ask a new device for it as a pass of its own, to
-                    // hang (and leak) that device too. Like a failed
-                    // pass, none is asked again while its base stays.
+                    // hang (and leak) that device too. Like a pass that
+                    // lost the device, their files are not run again.
                     if key.is_none() && error.kind == GpuErrorKind::Lost {
-                        for (id, key, base) in std::mem::take(&mut s.inline) {
+                        for (id, key, base, code) in std::mem::take(&mut s.inline) {
+                            self.extras.shaders.lose(code);
                             self.extras.shaders.map.insert(
                                 id,
                                 PassResult {
@@ -1079,7 +1120,7 @@ impl Renderer {
                     wants
                         .iter()
                         .filter(|w| w.id.slot == Slot::Node)
-                        .map(|w| (w.id, w.key, w.base)),
+                        .map(|w| (w.id, w.key, w.base, file_code(w))),
                 );
             }
         }
@@ -1140,6 +1181,7 @@ impl Renderer {
                     key: w.key,
                     base: w.base,
                     surface,
+                    code: file_code(w),
                 },
             );
             // Only an up device answers within the wait; a clocked pass

@@ -79,6 +79,15 @@ m4-audit):
    compositor on a KMS card, which the laptop rules keep out of
    containers. The leg's readback mode passed at `e765276` (PSS 4,723
    kB over the pre-GPU baseline after the drop, bound 6 MiB).
+7. **A process-wide cap on hung devices.** A shader file whose pass or
+   frame loses the device is never run again in that process (m4-audit
+   round 5), but every *edit* of a file that still loops forever is new
+   code, and each hangs and leaks one more lavapipe device (a spinning
+   CPU thread) after the 30 s retry. Bounding that needs a rule the
+   design does not have: for example, no GPU for the rest of the
+   process after N lost devices, the CPU drawing everything and
+   `shader` nodes nothing. Accept the per-edit cost (a developer's
+   loop, one device per save at most every 30 s) or name a cap.
 
 ## Owner decisions already answered
 

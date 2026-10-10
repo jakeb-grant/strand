@@ -1359,7 +1359,8 @@ fn a_hung_frame_records_its_inline_passes_as_failed() {
             .any(|q| matches!(q, GpuRequest::Pass(_))),
         "the pass that hung is not asked for again"
     );
-    // Its base changes (a uniform): asked again.
+    // (m4-audit round 5) Its uniforms change: still not asked, since the
+    // file lost a device. A reload that changes its text is new code.
     let mut d = SceneDiff::new();
     d.set(
         node,
@@ -1370,9 +1371,114 @@ fn a_hung_frame_records_its_inline_passes_as_failed() {
     r.update();
     buf.paint(&mut r, S, 2);
     assert!(
+        !r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_))),
+        "the file that hung is not asked for with new uniforms"
+    );
+    let mut d = SceneDiff::new();
+    d.set(node, Prop::Shader, PropValue::Shader(edited_tint_code()));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    buf.paint(&mut r, S, 0);
+    assert!(
         r.take_gpu_requests()
             .iter()
             .any(|q| matches!(q, GpuRequest::Pass(_))),
-        "a changed pass is asked for"
+        "an edited file is asked for"
     );
+}
+
+/// [`tint_code`] after an edit (a comment added): new code.
+fn edited_tint_code() -> Arc<ShaderCode> {
+    let mut c = (*tint_code()).clone();
+    c.wgsl.push_str("// edited\n");
+    Arc::new(c)
+}
+
+/// (m4-audit) A `shader` node's pass that loses the device (it ran past
+/// `HUNG_AFTER`: the GPU thread leaks the hung device with its spinning
+/// queue) is answered `Failed` (kind `Lost`) with its key. Its file is
+/// then never asked of a new device in this process: not with new
+/// uniforms (a bound value changing), not at a new size, not on a new
+/// node (a popup closed and opened again), each of which used to leak
+/// one more device per retry. Edited, it is new code and asked for.
+/// Needs no device: replies are delivered by hand, and the device is
+/// left up so that only the record stops the ask.
+#[test]
+fn a_shader_file_that_hung_a_pass_is_never_run_again() {
+    let mut r = renderer();
+    let (diff, node) = shader_scene("#ff0000");
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    up_without_a_device(&mut r);
+    buf.paint(&mut r, S, 0);
+    let pass = r
+        .take_gpu_requests()
+        .into_iter()
+        .find_map(|q| match q {
+            GpuRequest::Pass(p) => Some(p),
+            _ => None,
+        })
+        .expect("the node's pass is asked for");
+    r.deliver_gpu(GpuReply::Failed {
+        surface: None,
+        key: Some(pass.key),
+        error: strand_gpu::GpuError {
+            kind: GpuErrorKind::Lost,
+            message: "the GPU ran past 10s on one submission".into(),
+        },
+    });
+    // The device comes back (30 s later, in a run).
+    up_without_a_device(&mut r);
+    // Painted whole each time (buffer age 0).
+    let asked = |r: &mut Renderer, buf: &mut Buffer| {
+        r.update();
+        buf.paint(r, S, 0);
+        r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_)))
+    };
+    let mut d = SceneDiff::new();
+    d.set(
+        node,
+        Prop::Uniforms,
+        PropValue::Uniforms(vec![("u_tint".into(), color("#0000ff"))]),
+    );
+    assert!(r.apply(d).is_empty());
+    assert!(!asked(&mut r, &mut buf), "new uniforms");
+    let mut d = SceneDiff::new();
+    d.set(node, Prop::Width, num(60.0));
+    assert!(r.apply(d).is_empty());
+    assert!(!asked(&mut r, &mut buf), "a new size");
+    // The node goes and the same file comes back on a new one.
+    let mut d = SceneDiff::new();
+    d.remove(node);
+    assert!(r.apply(d).is_empty());
+    let _ = asked(&mut r, &mut buf);
+    let again = NodeId::new(100, 0);
+    let mut d = SceneDiff::new();
+    d.create(again, NodeKind::Shader, Some(root), u32::MAX);
+    for (p, v) in [
+        (Prop::X, num(10.0)),
+        (Prop::Y, num(10.0)),
+        (Prop::Width, num(40.0)),
+        (Prop::Height, num(20.0)),
+        (Prop::Shader, PropValue::Shader(tint_code())),
+        (
+            Prop::Uniforms,
+            PropValue::Uniforms(vec![("u_tint".into(), color("#ff0000"))]),
+        ),
+    ] {
+        d.set(again, p, v);
+    }
+    assert!(r.apply(d).is_empty());
+    assert!(!asked(&mut r, &mut buf), "a new node");
+    // Edited: new code, asked for.
+    let mut d = SceneDiff::new();
+    d.set(again, Prop::Shader, PropValue::Shader(edited_tint_code()));
+    assert!(r.apply(d).is_empty());
+    assert!(asked(&mut r, &mut buf), "an edited file is asked for");
 }

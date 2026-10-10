@@ -2901,7 +2901,11 @@ Wayland crate. Its interface:
   reset the hung context first (ANV after about 6 s), and wgpu then
   panics in `poll`: the thread catches it, answers the frame or pass
   `Failed`, then `Lost` ("was lost") and `Exited` (m4-integration-w3).
-  Every frame and pass is answered, a panic included. The thread keeps at most
+  Every frame and pass is answered, a panic included. Render never runs
+  a shader file whose pass or frame was answered `Failed` with kind
+  `Lost` again in that process, whatever its uniforms, size or node
+  (`ShaderResults::lost`; an edit is new code), so a looping file leaks
+  at most one device (m4-audit round 5). The thread keeps at most
   64 compiled pipelines and 16 pass readback buffers (by size), least
   recently used first out.
 - `Frame { surface, id: u64, size, scale, ops: Vec<Op>, uploads:
