@@ -1184,14 +1184,21 @@ fn a_bad_service_source_is_one_diagnostic() {
 #[test]
 fn a_text_holds_letters_and_nothing_else() {
     one("bar B {\n  text \"x\" { letters { y: 2 * wave(1s, phase: index * 0.1) } }\n}\n");
-    let (out, map) = compile_files(&[(
-        "a.strand",
-        "bar B {\n  text \"x\" { box {} }\n}\n".to_string(),
-    )]);
-    let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
-    assert!(
-        codes.contains(&"check::children_not_allowed"),
-        "{}",
-        render(&out.diagnostics, &map, Style::Plain)
-    );
+    // Any other child of a `text`, and `letters` in any other leaf, are
+    // still refused.
+    for src in [
+        "text \"x\" { box {} }",
+        "icon \"x\" { letters { y: 2 } }",
+        "meter { letters { y: 2 } }",
+        "image { letters { y: 2 } }",
+        "input { letters { y: 2 } }",
+    ] {
+        let (out, map) = compile_files(&[("a.strand", format!("bar B {{\n  {src}\n}}\n"))]);
+        let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            codes.contains(&"check::children_not_allowed"),
+            "{src}: {}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
 }

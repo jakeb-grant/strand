@@ -1021,7 +1021,7 @@ impl<'a> Checker<'a> {
         children: &[Node],
     ) {
         if schema.flags.leaf
-            && let Some(child) = children.iter().find_map(rendered_child)
+            && let Some(child) = children.iter().find_map(|c| rendered_child(c, kind))
         {
             self.error(
                 "check::children_not_allowed",
@@ -2721,14 +2721,16 @@ fn uniform_ty() -> Ty {
     Ty::Union(alts)
 }
 
-/// A child that renders inside its parent, for "takes no children"
-/// (a `popup` or `tooltip` is its own surface, so a leaf may hold one).
-fn rendered_child(n: &Node) -> Option<Span> {
+/// A child that renders inside its parent (of kind `parent`), for
+/// "takes no children" (a `popup` or `tooltip` is its own surface, so a
+/// leaf may hold one).
+fn rendered_child(n: &Node, parent: &str) -> Option<Span> {
     match n {
         Node::Element(e) => match &e.kind {
+            ElementKind::Builtin(k) if k == "popup" || k == "tooltip" => None,
             // (M4) `letters` animates the text it is in (decisions.md,
-            // m4-owner): a leaf `text` holds it.
-            ElementKind::Builtin(k) if k == "popup" || k == "tooltip" || k == "letters" => None,
+            // m4-owner): of the leaves, only `text` holds it.
+            ElementKind::Builtin(k) if k == "letters" && parent == "text" => None,
             _ => Some(e.span),
         },
         Node::If(i) => Some(i.span),
