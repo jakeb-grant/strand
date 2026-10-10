@@ -748,3 +748,76 @@ fn a_wavy_meter_flattens_by_spring() {
         assert_eq!(rows(&buf), 4, "flat");
     }
 }
+
+/// Stripes of colour across a 240×64 bar with a `backdrop:` box over
+/// them (`fx` its backdrop and more props), painted at 1 s.
+fn backdrop_scene(fx: Vec<Fx>, scale: Scale) -> (Renderer, Buffer, Vec<NodeId>) {
+    let colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"];
+    let mut nodes: Vec<(NodeKind, Fx)> = (0..24)
+        .map(|i| {
+            let mut p = at_xy(i as f32 * 10.0, 0.0, 10.0, 64.0);
+            p.push((Prop::Bg, color(colors[i % 4])));
+            (NodeKind::Box, p)
+        })
+        .collect();
+    let n = nodes.len();
+    for (i, more) in fx.into_iter().enumerate() {
+        let mut p = at_xy(12.0 + i as f32 * 76.0, 12.0, 64.0, 40.0);
+        p.push((Prop::Radius, num(12.0)));
+        p.extend(more);
+        nodes.push((NodeKind::Box, p));
+    }
+    let (r, buf, ids) = scene(nodes, (240.0, 64.0), scale, 1000);
+    (r, buf, ids[n..].to_vec())
+}
+
+/// design.md "Filters and compositing": `backdrop: blur(16)` blurs the
+/// surface's own content behind a box (at quarter scale), in its
+/// outline and under its background; `backdrop: glass()` falls back to
+/// a blur and a tint (refs `effects_backdrop.png` at 1× and 2×). A
+/// change behind it repaints it.
+#[test]
+fn backdrop_blurs_what_is_behind() {
+    let fx = || {
+        vec![
+            vec![(Prop::Backdrop, call("blur", vec![num(16.0)]))],
+            vec![
+                (Prop::Backdrop, call("blur", vec![num(3.0)])),
+                (Prop::Bg, PropValue::Color(hex("#1e1e2e").alpha(0.3))),
+            ],
+            vec![(Prop::Backdrop, call("glass", vec![]))],
+        ]
+    };
+    let (mut r, mut buf, ids) = backdrop_scene(fx(), Scale::ONE);
+    assert_matches_ref("effects_backdrop", &buf, 2);
+    // Unblurred stripes are pure; under the strong blur each pixel mixes
+    // its neighbours: no channel at a stripe's own extreme.
+    let stripe = buf.px(5, 32);
+    assert_eq!(stripe, [0xa8, 0x8b, 0xf3, 0xff]);
+    let mixed = buf.px(45, 32);
+    let pure = [buf.px(45, 2), buf.px(35, 2), buf.px(55, 2)];
+    assert!(!pure.contains(&mixed), "{mixed:?} {pure:?}");
+    // Outside its rounded corner, the stripes are untouched.
+    assert_eq!(buf.px(12, 12), buf.px(12, 2));
+    // Glass is lighter than the plain blur of similar content.
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let glass = (170..220).map(|x| lum(buf.px(x, 32))).sum::<u32>();
+    let plain = (180..230).map(|x| lum(buf.px(x, 2))).sum::<u32>();
+    assert!(glass > plain * 9 / 10, "{glass} {plain}");
+    // A stripe behind the blur changes colour: the box repaints with it.
+    let before = buf.px(44, 32);
+    let mut d = SceneDiff::new();
+    let stripe_id = NodeId::new(ids[0].index - 20, ids[0].generation);
+    d.set(stripe_id, Prop::Bg, color("#11111b"));
+    assert!(r.apply(d).is_empty());
+    let damage = buf.paint_at(&mut r, S, 1, std::time::Duration::from_millis(1100));
+    assert!(!damage.is_empty());
+    assert_ne!(
+        buf.px(44, 32),
+        before,
+        "the backdrop follows what is behind"
+    );
+
+    let (_, buf, _) = backdrop_scene(fx(), Scale::new(240).unwrap());
+    assert_matches_ref("effects_backdrop_2x", &buf, 2);
+}

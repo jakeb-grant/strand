@@ -149,11 +149,23 @@ impl Offscreen {
                 i += 1;
             }
         }
-        // Inner groups (later in the list) first.
+        // Inner groups (later in the list) first; backdrops last, in
+        // order, as they show the groups behind them.
+        let backdrops: Vec<usize> = groups
+            .iter()
+            .copied()
+            .filter(|&i| {
+                matches!(&items[i].item, Item::PushLayer(l)
+                    if crate::backdrop::pass(l, scale).is_some())
+            })
+            .collect();
         for &i in groups.iter().rev() {
             let Item::PushLayer(layer) = &items[i].item else {
                 continue;
             };
+            if backdrops.contains(&i) {
+                continue;
+            }
             let Some(region) = items[i].bounds.intersect(surface).filter(|r| !r.is_empty()) else {
                 continue;
             };
@@ -188,6 +200,39 @@ impl Offscreen {
                     let Some(drawn) =
                         render_group(inner, layer, region, atlas, cache, scale, &self.current)
                     else {
+                        continue;
+                    };
+                    self.builds += 1;
+                    self.insert(key, drawn)
+                }
+            };
+            self.current.insert(layer_key(layer), drawn);
+        }
+        for i in backdrops {
+            let Item::PushLayer(layer) = &items[i].item else {
+                continue;
+            };
+            let (Some(pass), Some(region)) = (
+                crate::backdrop::pass(layer, scale),
+                items[i].bounds.intersect(surface).filter(|r| !r.is_empty()),
+            ) else {
+                continue;
+            };
+            let key = crate::backdrop::key(items, i, pass, region, scale, &self.current);
+            let drawn = match self.get(key) {
+                Some(d) => d,
+                None => {
+                    let Some(drawn) = crate::backdrop::render(
+                        items,
+                        i,
+                        pass,
+                        region,
+                        surface,
+                        atlas,
+                        cache,
+                        scale,
+                        &self.current,
+                    ) else {
                         continue;
                     };
                     self.builds += 1;

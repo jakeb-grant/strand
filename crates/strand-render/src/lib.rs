@@ -16,6 +16,7 @@
 //! it by the buffer's age and rasterises only inside it.
 
 mod anim;
+mod backdrop;
 mod cache;
 mod clock;
 mod effects;

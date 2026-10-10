@@ -438,6 +438,36 @@ impl<'a> Flattener<'a> {
         {
             self.shadow(&g.shadow(), frame, &r, &box_path, &mut sig, &mut ink);
         }
+        // (M4) `backdrop:`: what is drawn behind the box, filtered, in its
+        // outline under its background (`crate::backdrop`); its damage
+        // follows what is behind it.
+        if has_area
+            && !inert
+            && let Some(e) =
+                get(Prop::Backdrop).and_then(|v| crate::backdrop::effect(v, self.scale.as_f32()))
+        {
+            let read = map_rect(self.xform, phys)
+                .inflate(crate::backdrop::reach_of(&e, self.scale))
+                .intersect(self.surface)
+                .unwrap_or_default();
+            let end = self.out.items.len();
+            crate::backdrop::hash_behind(&self.out.items, end, read, &mut sig);
+            crate::layers::hash_effects(&mut sig, std::slice::from_ref(&e));
+            self.push(Item::PushClip(box_path.clone()), phys, &mut sig, &mut ink);
+            self.push(
+                Item::PushLayer(Arc::new(crate::layers::Layer {
+                    effects: Arc::from([e]),
+                    frame,
+                    scale: self.scale.as_f32(),
+                    xform: self.xform,
+                })),
+                phys,
+                &mut sig,
+                &mut ink,
+            );
+            self.push(Item::PopLayer, phys, &mut sig, &mut ink);
+            self.push(Item::PopClip, phys, &mut sig, &mut ink);
+        }
         let light = crate::effects::light::BoxLight {
             frame,
             path: &box_path,

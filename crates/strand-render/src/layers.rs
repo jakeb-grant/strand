@@ -16,7 +16,8 @@
 //!   an image under the cell-local part. On the CPU a `bloom` pass is an
 //!   offscreen group too, drawn as a glow of its own pixels
 //!   ([`crate::effects::glow`]); the other shader passes' groups draw
-//!   unfiltered. `Mask::Shape` is the shape library's outline
+//!   unfiltered; a backdrop pass's group is what is drawn behind it,
+//!   blurred ([`crate::backdrop`]). `Mask::Shape` is the shape library's outline
 //!   ([`crate::shapes::Polygon`]) over the group's box.
 //!
 //! The effects are built from each node's props (`filter:`, `blend:`,
@@ -48,9 +49,11 @@ impl Layer {
     /// True if a cell can draw the layer with `push_layer` alone; else
     /// it is an offscreen group ([`crate::offscreen`]).
     pub fn cell_local(&self) -> bool {
-        self.effects
-            .iter()
-            .all(|e| !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_)) && !cpu_glow(e))
+        self.effects.iter().all(|e| {
+            !matches!(e, Effect::Blur { .. } | Effect::ColorMatrix(_))
+                && !cpu_glow(e)
+                && !crate::backdrop::is_backdrop(e)
+        })
     }
 }
 

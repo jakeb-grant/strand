@@ -417,6 +417,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
   (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
   (raster sources built from props: `grain:`).
+- `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
+  fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
   paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
   morphs, held by the `Animator`), `stroke.rs` (stroke styles: trim,
