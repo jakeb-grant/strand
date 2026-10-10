@@ -647,7 +647,8 @@ impl Renderer {
     /// The end of a diff: each `pages` whose current page changed slides
     /// the new page in and the old one out, by their order (forward in
     /// from the right). A page with its own `enter` or `exit` plays that;
-    /// a `pages` with a `transition:` leaves the swap to its mask; with
+    /// a `pages` with a `transition:` mask leaves the swap to it
+    /// (`transition: none` names no mask: the pages slide); with
     /// no direction (no `row_first` before) or under `reduced_motion`
     /// the old page goes at once.
     pub(super) fn settle_pages(&mut self) {
@@ -661,10 +662,10 @@ impl Renderer {
             });
         let reduced = self.anim.reduced();
         for s in settled {
-            let masked = self
-                .tree
-                .get(s.pages)
-                .is_some_and(|n| n.get(Prop::Transition).is_some());
+            let masked = self.tree.get(s.pages).is_some_and(|n| {
+                n.get(Prop::Transition)
+                    .is_some_and(crate::effects::transition::is_mask)
+            });
             let slides = s.moved && !masked && !reduced;
             let forward = s.swap.forward;
             if let Some(e) = s.swap.entering

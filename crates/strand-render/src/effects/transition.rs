@@ -84,13 +84,19 @@ impl Kind {
     }
 }
 
+/// True if `transition:`'s value names a mask (or a token that may):
+/// `none` names none.
+pub(crate) fn is_mask(v: &PropValue) -> bool {
+    Kind::of(v).is_some() || v.has_tokens()
+}
+
 /// True if `node` leaves through its own transition mask: removed, it
 /// plays out as a ghost.
 pub(crate) fn leaves_masked(node: &crate::tree::Node) -> bool {
     node.kind != strand_scene::NodeKind::Pages
         && node
             .get(strand_scene::Prop::Transition)
-            .is_some_and(|v| Kind::of(v).is_some() || v.has_tokens())
+            .is_some_and(is_mask)
 }
 
 /// What a node draws under its mask this frame.

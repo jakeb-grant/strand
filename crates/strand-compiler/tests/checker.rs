@@ -1234,3 +1234,27 @@ fn a_lock_needs_a_reachable_auth_submit() {
         "lock { Face }\ncomponent Face { text \"x\" }\nbar Top { on key(k) { auth.submit(k.name) }; text \"b\" }\n"
     ));
 }
+
+/// (m4-audit) `transition:` takes design.md's masks (`wipe(left)`, `disc`,
+/// `dissolve`, `pixelate`) or `none`; `crossfade`, which the schema once
+/// offered and render never drew, is an error.
+#[test]
+fn transition_takes_the_design_masks_only() {
+    for ok in ["wipe(left)", "disc", "dissolve", "pixelate", "none"] {
+        let (out, _) = compile_files(&[(
+            "a.strand",
+            format!("bar Top {{\n  box {{ transition: {ok}; width: 10 }}\n}}\n"),
+        )]);
+        let errors: Vec<_> = out.diagnostics.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{ok}: {errors:?}");
+    }
+    let (out, _) = compile_files(&[(
+        "a.strand",
+        "bar Top {\n  box { transition: crossfade; width: 10 }\n}\n".to_string(),
+    )]);
+    assert!(
+        out.diagnostics.iter().any(|d| d.is_error()),
+        "{:?}",
+        out.diagnostics
+    );
+}

@@ -2509,6 +2509,54 @@ fn pages_slide_by_source_order() {
     assert!(!st.r.wants_frame(S));
 }
 
+/// (m4-audit) `transition: none` names no mask, so a `pages` with it
+/// slides as one without: the old page is not held back for a mask that
+/// never runs, which swapped the pages with no transition at all.
+#[test]
+fn a_pages_with_transition_none_still_slides() {
+    let mut pages = None;
+    let mut a = None;
+    let mut st = Stage::new(200, 60, |b, root| {
+        let p = b.node(
+            NodeKind::Pages,
+            Some(root),
+            vec![
+                (Prop::Width, num(120.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::RowFirst, num(10.0)),
+                (Prop::Transition, PropValue::Keyword("none".into())),
+            ],
+        );
+        pages = Some(p);
+        a = Some(b.node(NodeKind::Page, Some(p), vec![(Prop::Bg, color("#ff0000"))]));
+    });
+    let (pages, a) = (pages.unwrap(), a.unwrap());
+    let b = NodeId::new(500, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: a,
+        window: false,
+    });
+    d.create(b, NodeKind::Page, Some(pages), 0)
+        .set(b, Prop::Bg, color("#00ff00"));
+    d.set(pages, Prop::RowFirst, num(20.0));
+    st.apply(d);
+    st.paint(frame(1));
+    let (r, g) = spans(&st, 30);
+    let gx = g.map_or(120, |(x0, _)| x0);
+    assert!(
+        gx > 40 && gx < 120,
+        "the new page on its way in: {r:?} {g:?}"
+    );
+    assert!(
+        r.is_some_and(|(x0, x1)| x0 == 0 && x1 < gx),
+        "the old page leaving left: {r:?} {g:?}"
+    );
+    st.settle(2);
+    assert_eq!(spans(&st, 30), (None, Some((0, 119))));
+    assert!(st.r.tree().get(a).is_none(), "the old page is gone");
+}
+
 /// A node created on a shown surface starts at its props' values: the
 /// diff that creates it sets them, but they replace nothing on screen,
 /// so nothing springs from the props' defaults (a red box does not fade

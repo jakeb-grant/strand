@@ -27,7 +27,7 @@ enum BlurFallback { tint, none }
 enum Shape { rect, circle, pill, cookie, clover, burst, flower, gem, sunny, triangle, pentagon, hexagon, heart }
 enum Cap { butt, round, square }
 enum PoseName { none, fade, slidefade }
-enum SwapKind { none, crossfade, disc, dissolve, pixelate }
+enum SwapKind { none, disc, dissolve, pixelate }
 enum Curve { linear, ease_in, ease_out, ease_in_out, in_back, out_back, out_elastic, out_bounce, standard, emphasized }
 enum Instant { instant }
 enum SpectrumStyle { bars, mirror, wave, line }
@@ -893,7 +893,7 @@ group node {
   /// The pose it leaves by; the subtree unmounts once it has played.
   exit: Pose | PoseName
   /// How its content swaps on `if`, `pages` and image changes:
-  /// `wipe(left)`, `crossfade`, `disc`, `dissolve` or `pixelate`.
+  /// `wipe(left)`, `disc`, `dissolve` or `pixelate`; `none` for no mask.
   transition: SwapTransition | SwapKind
   /// Makes it a drag source carrying this value: `drag: pin`.
   drag: any
