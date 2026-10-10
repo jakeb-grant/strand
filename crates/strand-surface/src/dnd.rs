@@ -79,6 +79,12 @@ pub const MAX_DROP_BYTES: usize = 4 << 20;
 /// to [`MAX_DROP_BYTES`]) kept for the life of the process.
 pub const DROP_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// (m4-audit) The longest a drag's export waits on a reader that takes
+/// nothing: a program that asks for it and holds the pipe unread costs a
+/// source and a copy of the bytes for this long, not for the life of the
+/// process. Reset by every write that makes progress.
+pub const DRAG_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// `text/uri-list` (files; an app when every file is a `.desktop` entry).
 const URI_LIST: &str = "text/uri-list";
 /// Text, in the order taken.
@@ -653,7 +659,10 @@ impl<H: SurfaceHost + 'static> DataSourceHandler for State<H> {
     /// Our drags carry their node by identity: the private type is
     /// never written (a reader gets nothing). A type the drag exports is
     /// written a pipe-buffer's worth per wakeup, so the loop never blocks
-    /// on a slow reader; a reader that closes early ends it.
+    /// on a slow reader; a reader that closes early ends it, and one that
+    /// reads nothing for [`DRAG_WRITE_TIMEOUT`] is given up on (the pipe
+    /// closed). The drag ending does not cut a write short: a receiver
+    /// may finish the drop before it has read it all.
     fn send_request(
         &mut self,
         _: &Connection,
@@ -673,31 +682,67 @@ impl<H: SurfaceHost + 'static> DataSourceHandler for State<H> {
             drop(fd);
             return;
         };
-        let mut done = 0;
-        let written = self.handle.insert_source(fd, move |_, file, _| {
-            // POLLOUT on a pipe: at least PIPE_BUF (4096) bytes fit.
-            let end = (done + 4096).min(bytes.len());
-            let mut f: &File = file;
-            match std::io::Write::write(&mut f, &bytes[done..end]) {
-                Ok(n) => {
-                    done += n;
-                    if done >= bytes.len() {
-                        PostAction::Remove
-                    } else {
+        // When the write last made progress, and the time limit's source:
+        // whichever ends first, the write or the limit, removes the other.
+        let progress = Rc::new(Cell::new(std::time::Instant::now()));
+        let limit: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
+        let written = self.handle.insert_source(fd, {
+            let (progress, limit) = (progress.clone(), limit.clone());
+            let mut done = 0;
+            move |_, file, state| {
+                let end = |state: &mut Self| {
+                    if let Some(t) = limit.take() {
+                        state.handle.remove(t);
+                    }
+                    PostAction::Remove
+                };
+                // POLLOUT on a pipe: at least PIPE_BUF (4096) bytes fit.
+                let stop = (done + 4096).min(bytes.len());
+                let mut f: &File = file;
+                match std::io::Write::write(&mut f, &bytes[done..stop]) {
+                    Ok(n) => {
+                        done += n;
+                        progress.set(std::time::Instant::now());
+                        if done >= bytes.len() {
+                            end(state)
+                        } else {
+                            PostAction::Continue
+                        }
+                    }
+                    Err(e)
+                        if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+                    {
                         PostAction::Continue
                     }
-                }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
-                    PostAction::Continue
-                }
-                Err(e) => {
-                    log::debug!("a drag's {mime} was not all read: {e}");
-                    PostAction::Remove
+                    Err(e) => {
+                        log::debug!("a drag's {mime} was not all read: {e}");
+                        end(state)
+                    }
                 }
             }
         });
-        if let Err(e) = written {
-            log::warn!("cannot give a drag's data: {}", e.error);
+        let written = match written {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("cannot give a drag's data: {}", e.error);
+                return;
+            }
+        };
+        let timed = self.handle.insert_source(
+            Timer::from_duration(DRAG_WRITE_TIMEOUT),
+            move |due, _, state| {
+                let next = progress.get() + DRAG_WRITE_TIMEOUT;
+                if next > due {
+                    return TimeoutAction::ToInstant(next);
+                }
+                log::warn!("a drag's data not read for {DRAG_WRITE_TIMEOUT:?} is given up");
+                state.handle.remove(written);
+                TimeoutAction::Drop
+            },
+        );
+        match timed {
+            Ok(t) => limit.set(Some(t)),
+            Err(e) => log::warn!("a drag's data is written with no time limit: {}", e.error),
         }
     }
 

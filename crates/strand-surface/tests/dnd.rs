@@ -231,6 +231,8 @@ struct Log {
     ended: HashSet<wayland_client::backend::ObjectId>,
     /// Drops it took: the MIME type read and its bytes.
     received: Vec<(String, Vec<u8>)>,
+    /// Drops it asked for while hanging: the pipe held, never read.
+    unread: Vec<std::io::PipeReader>,
 }
 
 /// Another program: a 300 px layer surface along the bottom edge whose
@@ -521,6 +523,10 @@ impl Dispatch<WlDataDevice, ()> for Program {
                 offer.receive(mime.clone(), write.as_fd());
                 drop(write);
                 conn.flush().unwrap();
+                if p.hang.load(Ordering::SeqCst) {
+                    p.log.lock().unwrap().unread.push(read);
+                    return;
+                }
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(&mut read, &mut bytes).unwrap();
                 offer.finish();
@@ -963,6 +969,63 @@ fn a_strand_drag_carries_its_data_to_another_program() {
     wait(&mut mgr, "the origin's drag ends", far);
     pump_mgr(&mut mgr, Duration::from_millis(200));
     assert_eq!(program.log(|l| l.received.len()), 2, "nothing read");
+}
+
+/// (m4-audit) A program that asks for a drag's export and never reads
+/// it does not keep the write for the life of the process: past a pipe
+/// buffer (about 64 KiB) the write waits, and after
+/// `DRAG_WRITE_TIMEOUT` with no progress it is given up and the pipe
+/// closed, so the program reads what fitted and then the end of file
+/// (before the fix it read what fitted and then waited for good).
+#[test]
+fn an_unread_drag_export_is_given_up() {
+    // dnd.rs's limit (the module is the manager's own, not exported).
+    const DRAG_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+    let Some((_sway, mut mgr, bar, mut p, program)) = desk("an_unread_drag_export_is_given_up")
+    else {
+        return;
+    };
+    const PIN: NodeId = NodeId::new(42, 7);
+    let text = "x".repeat(1 << 20);
+    mgr.state_mut().host_mut().export = Some(DropPayload::External {
+        kind: DropKind::Text,
+        files: vec![],
+        text: text.clone(),
+        app_id: None,
+    });
+    *program.want.lock().unwrap() = Some("text/plain;charset=utf-8".into());
+    program.hang.store(true, Ordering::SeqCst);
+    drag_out_of_bar(&mut mgr, &mut p, bar, PIN);
+    glide(&mut mgr, &mut p, (100, 60), (960, 950));
+    p.button(wl_pointer::ButtonState::Released);
+    wait(&mut mgr, "the other program asks for the export", |_| {
+        program.log(|l| l.unread.len() == 1)
+    });
+    let mut pipe = program.log(|l| l.unread[0].try_clone().unwrap());
+    rustix::io::ioctl_fionbio(&pipe, true).unwrap();
+    // Reads what is there; true once the writer has closed its end.
+    let mut got = 0usize;
+    let mut drain = |pipe: &mut std::io::PipeReader| -> bool {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match std::io::Read::read(pipe, &mut buf) {
+                Ok(0) => return true,
+                Ok(n) => got += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return false,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    };
+    // The pipe fills, the write waits on it, and with no progress past
+    // the time limit it is given up and the pipe closed. Unread until
+    // then: reading would let the write go on.
+    pump_mgr(&mut mgr, DRAG_WRITE_TIMEOUT + Duration::from_secs(1));
+    let deadline = Instant::now() + DRAG_WRITE_TIMEOUT + WAIT;
+    while !drain(&mut pipe) {
+        assert!(Instant::now() < deadline, "the write is never given up");
+        mgr.dispatch(Some(Duration::from_millis(20))).unwrap();
+    }
+    assert!(got > 0 && got < text.len(), "{got} of {}", text.len());
 }
 
 /// (M4) A drag from another Strand process (another manager, on its own
