@@ -22,6 +22,7 @@ impl Flattener<'_> {
         box_path: &BezPath,
         r: &RoundedRectRadii,
         color: Color,
+        time: Option<strand_scene::TimeContext>,
         sig: &mut DefaultHasher,
         ink: &mut Rect,
     ) {
@@ -35,14 +36,33 @@ impl Flattener<'_> {
             Some(PropValue::Keyword(k)) => crate::image::Fit::from_name(k).unwrap_or_default(),
             _ => crate::image::Fit::default(),
         };
-        let key = crate::image::ImageKey {
+        let mut key = crate::image::ImageKey {
             source,
             icon,
             w: phys.w.min(4096),
             h: phys.h.min(4096),
             fit,
             scale: self.scale.as_f32().ceil().clamp(1.0, 8.0) as u16,
+            frame: 0,
         };
+        // (M4) An animated image draws the frame its time shows, and asks
+        // for the next one ahead of its tick.
+        if !icon && let Some(tl) = self.extras.images.timeline(&key.source) {
+            // A finite loop count played out leaves no clock: the node's
+            // own time still says it is over.
+            let t = match time {
+                Some(cx) => cx.t,
+                None => self.anim.time_of(node.id, crate::clock::Rate::Refresh).0.t,
+            };
+            key.frame = tl.frame_at(t);
+            let n = tl.delays.len() as u32;
+            if n > 1 && !tl.done(t) {
+                self.out.images.push(crate::image::ImageKey {
+                    frame: (key.frame + 1) % n,
+                    ..key.clone()
+                });
+            }
+        }
         let decoded = match self.extras.images.get(&key) {
             Some(Ok(d)) => Some(d.clone()),
             Some(Err(_)) => None,

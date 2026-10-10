@@ -80,7 +80,15 @@ impl<'a> Flattener<'a> {
         let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
         let timed = timed_scope || crate::time::reads_time(node, global);
         // Its clock: the rate its time props and its own animation run at.
-        let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
+        // (M4) An animated image's frames run on a clock of their own.
+        let anim = &mut *self.anim;
+        let images = &self.extras.images;
+        let raster = self.extras.rasters.rate(node.id).or_else(|| {
+            images.frame_rate(node, || {
+                anim.time_of(node.id, crate::clock::Rate::Refresh).0.t
+            })
+        });
+        let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
                 let (cx, next) = self.anim.time_of(node.id, rate);
@@ -566,7 +574,7 @@ impl<'a> Flattener<'a> {
         // An `icon` or `image`: decoded at the box's size.
         if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
             self.image(
-                node, &get, frame, phys, &box_path, &r, text_color, &mut sig, &mut ink,
+                node, &get, frame, phys, &box_path, &r, text_color, time, &mut sig, &mut ink,
             );
         }
         // Text.

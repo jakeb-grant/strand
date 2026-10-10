@@ -25,6 +25,7 @@ pub mod input;
 mod layers;
 mod layout;
 mod markup;
+mod media;
 mod offscreen;
 mod raster;
 mod renderer;
