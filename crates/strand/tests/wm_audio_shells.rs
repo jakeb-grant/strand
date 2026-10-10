@@ -186,6 +186,17 @@ impl Shell {
     }
 
     fn wait(&mut self, what: &str, done: impl Fn(&Shell) -> bool) {
+        self.wait_or(what, done, String::new);
+    }
+
+    /// [`Shell::wait`], its failure also saying `detail()` (what the test
+    /// last saw), so a CI failure names its cause.
+    fn wait_or(
+        &mut self,
+        what: &str,
+        done: impl Fn(&Shell) -> bool,
+        mut detail: impl FnMut() -> String,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(30);
         while !done(self) {
             let exited = self
@@ -195,7 +206,8 @@ impl Shell {
             assert!(!exited, "strand exited: {}", self.log_text());
             assert!(
                 Instant::now() < deadline,
-                "never: {what}\n{}",
+                "never: {what}\n{}\n{}",
+                detail(),
                 self.log_text()
             );
             std::thread::sleep(Duration::from_millis(50));
@@ -721,6 +733,10 @@ fn a_test_tone_lifts_a_spectrum_bar() {
             .env("HOME", &home)
             .env("XDG_CACHE_HOME", dir.join("cache"))
             .env("XDG_STATE_HOME", dir.join("state"))
+            // The audio thread's info lines (a meter failing and its
+            // retry, PipeWire lost, the default sink read) say why a
+            // spectrum never lifted (GitHub run 38065740030; m4-audit).
+            .env("STRAND_LOG", "info")
             .envs(bus.env())
             .env_remove("STRAND_MOCK")
             .stdin(Stdio::null())
@@ -789,8 +805,11 @@ fn a_test_tone_lifts_a_spectrum_bar() {
     let tone_bar = strand_services::audio::spectrum::band_of(1000.0) * 16
         / strand_services::audio::spectrum::BANDS;
     assert_eq!(tone_bar, 8);
-    sh.wait("the tone's bar lifted, the far bars low", |s| {
+    // The last bars seen, for the failure message.
+    let seen = std::cell::RefCell::new(Vec::new());
+    let check = |s: &Shell| {
         let b = bars(&s.shot());
+        *seen.borrow_mut() = b.clone();
         if b.len() != 16 {
             return false;
         }
@@ -799,7 +818,20 @@ fn a_test_tone_lifts_a_spectrum_bar() {
             .filter(|&i| i <= tone_bar - 4 || i >= tone_bar + 4)
             .all(|i| b[i] < 20);
         peak.abs_diff(tone_bar) <= 1 && b[peak] > 20 && far_low
-    });
+    };
+    let detail = || {
+        let player_state = match player.try_wait() {
+            Ok(None) => "running".to_string(),
+            Ok(Some(st)) => format!("exited: {st}"),
+            Err(e) => format!("unknown: {e}"),
+        };
+        format!(
+            "last bars: {:?}\npw-play {player_state}, linked to {:?} (sink {sink})",
+            seen.borrow(),
+            pw.linked_to("pw-play"),
+        )
+    };
+    sh.wait_or("the tone's bar lifted, the far bars low", check, detail);
     sh.keep("spectrum-tone");
     let _ = player.kill();
     let _ = player.wait();
