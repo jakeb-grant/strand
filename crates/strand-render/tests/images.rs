@@ -253,6 +253,7 @@ fn icons_are_decoded_for_the_scale() {
         h: w,
         fit: Fit::Contain,
         scale: (w / 16) as u16,
+        frame: 0,
     };
     let one = load(&key(16), &theme).unwrap();
     let two = load(&key(32), &theme).unwrap();
@@ -472,6 +473,7 @@ fn icon_lookup_falls_back_to_symbolic_and_generic_names() {
         h: 16,
         fit: Fit::Contain,
         scale: 1,
+        frame: 0,
     };
     for name in [
         "window-close",

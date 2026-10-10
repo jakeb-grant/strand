@@ -38,6 +38,7 @@ fn key(name: &str, w: u32) -> ImageKey {
         h: w,
         fit: Fit::Contain,
         scale: 1,
+        frame: 0,
     }
 }
 

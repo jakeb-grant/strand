@@ -34,6 +34,10 @@ pub struct Host {
     /// (M4) Handed-off surfaces the manager had to destroy: the GPU host
     /// sends `Release` for each (`run/gpu.rs`).
     pub gpu_released: Vec<SurfaceId>,
+
+    /// (M4) `strand run`: the producers of the visible fed nodes (a
+    /// `spectrum`'s audio tap), changed after a paint changes them.
+    pub(crate) feeds: Option<crate::run::feeds::Feeds>,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -306,6 +310,8 @@ impl Host {
                 ..BlurFallback::default()
             },
             gpu_released: Vec::new(),
+
+            feeds: None,
             #[cfg(test)]
             probe: None,
         }
@@ -420,6 +426,10 @@ impl Painter for Host {
         // Virtualised lists scrolled past their mounted rows ask logic
         // for the rows they show.
         self.forward_list_windows();
+        // Fed nodes shown or hidden: their producers start or stop.
+        if let Some(feeds) = &mut self.feeds {
+            crate::run::feeds::sync(&mut self.renderer, feeds);
+        }
         self.wake_if_changed();
         #[cfg(test)]
         if let Some(p) = &self.probe {
@@ -518,6 +528,10 @@ impl SurfaceHost for Host {
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.renderer.detach_surface(surface);
+        // Its fed nodes are hidden now, whether or not a paint follows.
+        if let Some(feeds) = &mut self.feeds {
+            crate::run::feeds::sync(&mut self.renderer, feeds);
+        }
         self.roots.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);

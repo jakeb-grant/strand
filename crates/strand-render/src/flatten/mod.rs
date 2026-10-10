@@ -315,6 +315,9 @@ pub struct Extras {
     pub pointers: HashMap<NodeId, strand_scene::LogicalPoint>,
     /// (M4) The CPU fallbacks drawn in place of GPU effects, said once.
     pub fallbacks: crate::effects::raster::Fallbacks,
+
+    /// (M4) Media nodes' sources (graphs, spectra), by node.
+    pub media: crate::media::Media,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.

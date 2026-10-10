@@ -71,6 +71,7 @@ pub mod model;
 pub mod pod;
 mod schema;
 mod service;
+pub mod spectrum;
 mod thread;
 
 use std::collections::BTreeSet;

@@ -4073,3 +4073,36 @@ fn letters_index_and_count_stay_time_leaves() {
     assert!((y(5) - 1.0).abs() < 1e-5, "{}", y(5));
     assert!((y(2) - y(0)).abs() > 0.5, "{} vs {}", y(2), y(0));
 }
+
+/// (M4) Bindable SVG: `svg "gauge.svg" { #needle { rotate: … } }` mounts
+/// a `svg_part` child of the `svg` carrying the id as `name` and its
+/// props, which follow state like any prop.
+#[test]
+fn svg_selectors_mount_svg_parts() {
+    let src = "state level = 0.5\nbar B {\n  svg \"/tmp/gauge.svg\" {\n    size: 48\n    #needle { rotate: level * 270deg; opacity: 0.8 }\n    #face { fill: #ff0000 }\n  }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let svg = shell.scene.of_kind(NodeKind::Svg);
+    assert_eq!(svg.len(), 1, "{}", shell.scene.render());
+    let parts = shell.scene.children(svg[0]).to_vec();
+    assert_eq!(parts.len(), 2, "{}", shell.scene.render());
+    assert_eq!(shell.scene.of_kind(NodeKind::SvgPart), parts);
+    let prop = |i: usize, p: Prop| shell.scene.prop(parts[i], p).cloned();
+    assert_eq!(prop(0, Prop::Name), Some(PropValue::Text("needle".into())));
+    assert_eq!(prop(0, Prop::Rotate), Some(PropValue::Angle(135.0)));
+    assert_eq!(prop(0, Prop::Opacity), Some(PropValue::Number(0.8)));
+    assert_eq!(prop(1, Prop::Name), Some(PropValue::Text("face".into())));
+    assert!(prop(1, Prop::Fill).is_some());
+    let mut shell = shell;
+    shell
+        .inst
+        .set_value("t", "level", Value::float(1.0))
+        .unwrap();
+    shell.at(0.1);
+    let needle = shell.scene.of_kind(NodeKind::SvgPart)[0];
+    assert_eq!(
+        shell.scene.prop(needle, Prop::Rotate),
+        Some(&PropValue::Angle(270.0))
+    );
+}

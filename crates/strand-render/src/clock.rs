@@ -42,7 +42,9 @@ pub enum Rate {
 }
 
 /// The clock of `node`, if it has one: a CPU raster node's at its
-/// source's `raster` rate, a node whose props read time (`timed`) at
+/// source's `raster` rate (an animated image's frames come the same way,
+/// at its timeline's tick: `ImageStore::frame_rate`), a node whose props
+/// read time (`timed`) at
 /// refresh, either capped by its kind (`effect shimmer` at 30 fps; the
 /// faster of the two for a raster node). A node's clock is one clock:
 /// its time-bound props follow its cap. A built-in `effect`, `particles`

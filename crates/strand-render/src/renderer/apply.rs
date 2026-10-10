@@ -80,7 +80,10 @@ impl Renderer {
                 } | SceneOp::SetTokens { .. }
             )
         });
+        // (M4) Media nodes this diff creates get their sources.
+        let media = crate::media::created(&diff);
         let errors = self.apply_ops(diff);
+        self.attach_media(&media);
         // Widget state of nodes logic removed goes with them, and a
         // tooltip with its node.
         let tree = &self.tree;

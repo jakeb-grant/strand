@@ -29,6 +29,14 @@ taffy = { version = "0.14", default-features = false, features = ["std", "taffy_
 png = "0.18"
 jpeg-decoder = { version = "0.3", default-features = false }
 resvg = { version = "0.48", default-features = false }
+# (M4) Animated images, streamed frame by frame: GIF (its own decoder)
+# and WebP (pure Rust, animation composed in the decoder); APNG through
+# `png` above.
+gif = "0.14.2"
+image-webp = "0.2.4"
+# (M4) Lottie: velato's model and renderer without vello (its GPU crate),
+# drawn through our vello_cpu (the same kurbo 0.13 and peniko 0.6).
+velato = { version = "0.12.0", default-features = false }
 # The icon theme lookup, shared with the apps service and invalidated
 # live (decisions.md, wave4-a3: not freedesktop-icons, whose caches never
 # refresh).

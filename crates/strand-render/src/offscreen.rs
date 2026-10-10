@@ -467,6 +467,41 @@ pub trait RasterSource: std::fmt::Debug + Send + Sync {
 
     /// How often it changes: its clock's rate.
     fn rate(&self) -> Rate;
+
+    /// (M4, S-effects) Its clock, if it has one: `rate()` by default. A
+    /// source whose pixels change only when fed (a spectrum) has none,
+    /// so it costs no frame between feeds.
+    fn clock(&self) -> Option<Rate> {
+        Some(self.rate())
+    }
+
+    /// (M4, S-effects) Reads the node's resolved props for the frame
+    /// being drawn and returns a hash of everything besides size, scale
+    /// and time that its pixels depend on (its props, what it was fed):
+    /// the pixmap is drawn again when it changes. Called on every
+    /// flatten that draws the node, so it must not count calls.
+    fn state(&self, _props: &RasterProps<'_>) -> u64 {
+        0
+    }
+}
+
+/// (M4) What a [`RasterSource`] reads of its node: its props as resolved
+/// for this frame (tokens and springs applied) and the colour it
+/// inherits.
+pub struct RasterProps<'a> {
+    pub get: &'a dyn Fn(strand_scene::Prop) -> Option<&'a strand_scene::PropValue>,
+    pub color: strand_scene::Color,
+    /// (M4) An `svg`'s `#id { … }` parts: each id and its props as
+    /// resolved for this frame (empty for every other node).
+    pub parts: &'a [(String, Vec<(strand_scene::Prop, strand_scene::PropValue)>)],
+}
+
+impl std::fmt::Debug for RasterProps<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RasterProps")
+            .field("color", &self.color)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Raster sources by node, and each node's last pixmap.
@@ -482,7 +517,6 @@ impl RasterNodes {
     /// of its own, fed from outside the props (the media stream's
     /// graphs, spectrum and animated frames); sources built from props go
     /// through [`RasterNodes::pixmap_from`].
-    #[allow(dead_code)]
     pub fn set(&mut self, node: NodeId, source: Option<Arc<dyn RasterSource>>) {
         match source {
             Some(s) => {
@@ -509,9 +543,9 @@ impl RasterNodes {
         }
     }
 
-    /// `node`'s clock rate, if it is a raster node.
+    /// `node`'s clock rate, if it is a raster node with a clock.
     pub fn rate(&self, node: NodeId) -> Option<Rate> {
-        self.sources.get(&node).map(|s| s.rate())
+        self.sources.get(&node).and_then(|s| s.clock())
     }
 
     /// Pixmaps drawn so far (tests).
@@ -529,7 +563,7 @@ impl RasterNodes {
     }
 
     /// `node`'s pixels at `w × h` and `time`: the last pixmap if its key
-    /// (size, scale, time) is unchanged, else drawn anew. Its key too,
+    /// (state, size, scale, time) is unchanged, else drawn anew. Its key too,
     /// for the node's damage signature.
     pub fn pixmap(
         &self,
@@ -538,9 +572,12 @@ impl RasterNodes {
         h: u32,
         scale: f32,
         time: TimeContext,
+        props: &RasterProps<'_>,
     ) -> Option<(u64, Arc<Pixmap>)> {
         let source = self.sources.get(&node)?;
-        self.pixmap_from(node, source.as_ref(), 0, w, h, scale, time)
+        // Its state (props, what it was fed) is its config.
+        let state = source.state(props);
+        self.pixmap_from(node, source.as_ref(), state, w, h, scale, time)
     }
 
     /// `node`'s pixels drawn by `source`, built from its props (`config`

@@ -90,7 +90,8 @@ impl<'a> Flattener<'a> {
         let letters = crate::effects::letters::child(self.tree, node);
         let timed = timed_scope
             || crate::time::reads_time(node, global)
-            || letters.is_some_and(|l| crate::time::reads_time(l, global));
+            || letters.is_some_and(|l| crate::time::reads_time(l, global))
+            || node.kind == NodeKind::Svg && self.svg_parts_read_time(node);
         // Its clock: the rate its time props and its own animation run at.
         // (M4) A `shader` node whose code reads `strand.time` has a clock.
         #[cfg(feature = "gpu")]
@@ -98,17 +99,30 @@ impl<'a> Flattener<'a> {
             || (node.kind == NodeKind::Shader
                 && matches!(node.get(Prop::Shader),
                     Some(PropValue::Shader(c)) if crate::renderer::backend::reads_time(c)));
+        // (M4) An animated image's frames run on a clock of their own.
         // (A source built from props follows a clock that time-bound
         // props run at refresh: `crate::effects::raster`.)
-        let raster = self
-            .extras
-            .rasters
-            .rate(node.id)
+        let anim = &mut *self.anim;
+        let images = &self.extras.images;
+        let own = self.extras.rasters.rate(node.id);
+        let frames = own.is_none().then(|| {
+            images.frame_rate(node, || {
+                anim.time_of(node.id, crate::clock::Rate::Refresh).0.t
+            })
+        });
+        let raster = own
+            .or(frames.flatten())
             .or_else(|| crate::effects::raster::rate(node).filter(|_| !timed));
         let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
-                let (cx, next) = self.anim.time_of(node.id, rate);
+                let (cx, mut next) = self.anim.time_of(node.id, rate);
+                // Its frames' clock wakes at frame changes only.
+                if let (Some(Some(crate::clock::Rate::Every(tick))), false, Some(n)) =
+                    (frames, timed, next)
+                {
+                    next = Some(images.frame_wake(node, cx.t, tick, n));
+                }
                 (Some(cx), next)
             }
             None => (None, None),
@@ -196,7 +210,7 @@ impl<'a> Flattener<'a> {
         // (text, the widgets that draw labels, tracks and fills, and a
         // symbolic icon, which an `image` of an icon name can resolve to
         // too: freedesktop symbolic icons are always drawn in the
-        // foreground colour).
+        // foreground colour; a `graph`'s line and a `spectrum`'s bars too).
         let is_text = matches!(
             node.kind,
             NodeKind::Text | NodeKind::Button | NodeKind::Input
@@ -212,6 +226,8 @@ impl<'a> Flattener<'a> {
                     | NodeKind::Slider
                     | NodeKind::Icon
                     | NodeKind::Image
+                    | NodeKind::Graph
+                    | NodeKind::Spectrum
             );
         let color = if themed {
             own_color.unwrap_or_else(|| default_color(&scope))
@@ -640,6 +656,12 @@ impl<'a> Flattener<'a> {
                 &mut ink,
             );
         }
+        // (M4) An `svg`'s `#id { … }` parts, resolved for this frame.
+        let parts = if has_area && node.kind == NodeKind::Svg {
+            self.svg_parts(node, &tokens, time, inherited, laid)
+        } else {
+            Vec::new()
+        };
         // (M4) A CPU raster node's pixels at its clock's tick, over its
         // background: a source of its own, or one its props build
         // (`grain:`), clipped to its shape.
@@ -671,9 +693,18 @@ impl<'a> Flattener<'a> {
             }
             None => {
                 self.extras.rasters.unused(node.id);
-                self.extras
-                    .rasters
-                    .pixmap(node.id, pw, ph, self.scale.as_f32(), time_now)
+                self.extras.rasters.pixmap(
+                    node.id,
+                    pw,
+                    ph,
+                    self.scale.as_f32(),
+                    time_now,
+                    &crate::offscreen::RasterProps {
+                        get: &get,
+                        color: text_color,
+                        parts: &parts,
+                    },
+                )
             }
         };
         if let Some((key, pixmap)) = raster {
@@ -852,7 +883,7 @@ impl<'a> Flattener<'a> {
         // An `icon` or `image`: decoded at the box's size.
         if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
             self.image(
-                node, &get, frame, phys, &box_path, &r, text_color, &scope, &mut sig, &mut ink,
+                node, &get, frame, phys, &box_path, &r, text_color, &scope, time, &mut sig, &mut ink,
             );
         }
         // Text. (M4) `fill:` paints its glyphs, `text_stroke:` outlines
@@ -1394,5 +1425,58 @@ impl<'a> Flattener<'a> {
             sig,
             ink,
         );
+    }
+}
+
+/// (M4) An `svg`'s `#id { … }` parts (`svg_part` children): what its
+/// raster source applies to each layer.
+type SvgParts = Vec<(String, Vec<(Prop, PropValue)>)>;
+
+impl<'a> Flattener<'a> {
+    /// True if a part of `svg` reads time: the `svg` then has a clock.
+    fn svg_parts_read_time(&self, svg: &Node) -> bool {
+        svg.children.iter().any(|c| {
+            self.tree.get(*c).is_some_and(|n| {
+                n.kind == NodeKind::SvgPart && crate::time::reads_time(n, &self.tree.tokens)
+            })
+        })
+    }
+
+    /// The parts of `svg` with their props resolved at the `svg`'s time,
+    /// springs included.
+    fn svg_parts(
+        &mut self,
+        svg: &Node,
+        tokens: &[&strand_scene::TokenTable],
+        time: Option<strand_scene::TimeContext>,
+        inherited: Color,
+        laid: LogicalRect,
+    ) -> SvgParts {
+        let scope = TokenScope::new(tokens).with_time(time);
+        let mut parts = Vec::new();
+        for c in &svg.children {
+            let Some(part) = self.tree.get(*c).filter(|n| n.kind == NodeKind::SvgPart) else {
+                continue;
+            };
+            let Some(PropValue::Text(name)) = part.get(Prop::Name) else {
+                continue;
+            };
+            let mut props: Vec<(Prop, Cow<'_, PropValue>)> = part
+                .props
+                .iter()
+                .filter(|e| !matches!(e.prop, Prop::Tokens | Prop::Name))
+                .filter_map(|e| scope.resolve(&e.value).map(|v| (e.prop, v)))
+                .collect();
+            self.anim
+                .paint(part, &mut props, &scope, inherited, None, laid);
+            parts.push((
+                name.clone(),
+                props
+                    .into_iter()
+                    .map(|(p, v)| (p, v.into_owned()))
+                    .collect(),
+            ));
+        }
+        parts
     }
 }

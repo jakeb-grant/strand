@@ -1245,6 +1245,133 @@ fn window_state_actions_follow_the_compositor() {
     s.shutdown();
 }
 
+/// (M4) `thumbnail w`'s capture, live: a tap on a real window through
+/// `wm::capture` gets frames of it over the compositor's
+/// ext-image-copy-capture, scaled down to cover the size asked for, in
+/// the window's own colour (a capture of the wrong buffer, read before
+/// `ready`, or all zeros fails it).
+/// Skipped (with a message) on a
+/// compositor that offers no ext-image-copy-capture.
+#[test]
+fn a_window_is_captured_for_its_thumbnail() {
+    use strand_services::wm::capture::{CaptureFrame, capture_window};
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the thumbnail capture test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let globals = {
+        use wayland_client::Connection;
+        use wayland_client::globals::registry_queue_init;
+        let conn =
+            Connection::from_socket(std::os::unix::net::UnixStream::connect(&socket).unwrap())
+                .unwrap();
+        let (globals, _queue) = registry_queue_init::<support::pointer::Client>(&conn).unwrap();
+        globals
+            .contents()
+            .with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>())
+    };
+    let has = |i: &str| globals.iter().any(|g| g == i);
+    if !(has("ext_image_copy_capture_manager_v1")
+        && has("ext_foreign_toplevel_image_capture_source_manager_v1"))
+    {
+        eprintln!(
+            "\n*** {kind} offers no ext-image-copy-capture of toplevels: thumbnails skipped ***\n"
+        );
+        return;
+    }
+    const APP: &str = "strand-thumb";
+    // An opaque colour no compositor background or border shares.
+    const RGBA: [u8; 4] = [0x2a, 0x9d, 0x5c, 0xff];
+    let _win = TestWindow::open_filled(&socket, APP, "thumbnail", RGBA);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mirror = Arc::new(std::sync::Mutex::new(wm::Mirror::default()));
+        let m = mirror.clone();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = tokio::spawn(wm::run(
+            WmConfig::from_env(None),
+            move |batch: Vec<wm::WmChange>| {
+                let mut m = m.lock().unwrap();
+                for c in &batch {
+                    m.apply(c).unwrap();
+                }
+            },
+            rx,
+        ));
+        let deadline = Instant::now() + PATIENCE;
+        let id = loop {
+            let found = mirror
+                .lock()
+                .unwrap()
+                .window_by_app(APP)
+                .map(|w| w.id.clone());
+            if let Some(id) = found {
+                break id;
+            }
+            assert!(Instant::now() < deadline, "{APP} never showed in wm::run");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let (tx, frames) = std::sync::mpsc::channel::<CaptureFrame>();
+        let tap = capture_window(&id, (16, 16), move |f| {
+            if let Some(f) = f {
+                let _ = tx.send(f.clone());
+            }
+        });
+        // The frame at the frame's centre, as straight RGBA (frames are
+        // premultiplied BGRA; the window is opaque).
+        let centre = |f: &CaptureFrame| -> [u8; 4] {
+            let i = (((f.height / 2) * f.width + f.width / 2) * 4) as usize;
+            let p = &f.pixels[i..i + 4];
+            [p[2], p[1], p[0], p[3]]
+        };
+        let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+        // The first frame may come before the window's buffer is shown
+        // (a compositor may capture the toplevel before its first
+        // commit lands): the colour must arrive within the patience.
+        let deadline = Instant::now() + PATIENCE;
+        let mut last = None;
+        let frame = loop {
+            while let Ok(f) = frames.try_recv() {
+                last = Some(f);
+            }
+            if let Some(f) = last
+                .as_ref()
+                .filter(|f| f.width > 0 && near(centre(f), RGBA))
+            {
+                break f.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no frame of {APP} in its colour from {kind}: last {:?}",
+                last.as_ref().map(|f| (f.width, f.height, centre(f)))
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        eprintln!(
+            "matrix: {kind} captured {APP} at {}x{}",
+            frame.width, frame.height
+        );
+        assert!(frame.width >= 1 && frame.height >= 1);
+        assert!(
+            frame.width.min(frame.height) <= 16,
+            "scaled down to cover 16 x 16: {}x{}",
+            frame.width,
+            frame.height
+        );
+        assert_eq!(
+            frame.pixels.len(),
+            (frame.width * frame.height * 4) as usize
+        );
+        drop(tap);
+        service.abort();
+    });
+}
+
 // ---- the bar ---------------------------------------------------------------
 
 struct Proc(Child);

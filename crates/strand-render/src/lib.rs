@@ -28,6 +28,7 @@ pub mod input;
 mod layers;
 mod layout;
 mod markup;
+mod media;
 mod offscreen;
 #[cfg(feature = "gpu")]
 pub mod promote;
@@ -47,12 +48,13 @@ pub use layout::{
     Boxes, CH_EM, FLING_DECAY, LAYOUT_OVERSCAN, LIST_ROW_ESTIMATE, ListBox, ListWindow,
     MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
 };
-pub use offscreen::{OFFSCREEN_BYTES, RasterSource};
+pub use media::thumbnail::Frame as ThumbnailFrame;
+pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
 #[cfg(feature = "gpu")]
 pub use renderer::GPU_WAIT;
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT, QUERY_WAIT,
     RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,
 };
-pub use renderer::{ListFrames, ScrollInput, ScrollKind};
+pub use renderer::{FeedDemand, FeedKind, ListFrames, ScrollInput, ScrollKind, THUMBNAIL_STEP};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

@@ -246,7 +246,16 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   through the binary (`Renderer::feed(node, bins)`,
   `Renderer::feed_frame(node, frame)`). Render tells the binary which of
   those nodes are visible (`Renderer::take_feed_demand()`), and producers
-  run only for them.
+  run only for them. Built for spectra (m4-effects-media): `feed(node,
+  bands)` takes `Levels::bins` (empty: rest);
+  `take_feed_demand() -> Option<Vec<FeedDemand>>` answers after a paint
+  when the set of fed nodes a painted surface drew with pixels changed
+  (`FeedDemand { node, kind: FeedKind::Spectrum { device } }`, the
+  device's id as logic sends it; none under `reduced_motion`). The host
+  asks after each paint and `run/feeds.rs` keeps one
+  `audio::tap_levels(LevelTarget::Device(id), …)` per visible spectrum,
+  its readings crossing to the main thread on a calloop channel; a node
+  that loses its tap is fed silence.
 
 ## Crate graph
 
@@ -398,8 +407,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   and the motions they start), `specs.rs` (surface specs, content
   sizing, size holds), `surfaces.rs` (attach, configure, detach, hit),
   `pose.rs` (exit poses and closing surfaces), `lists.rs` (scrolling),
-  `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`. The M4 plan's
-  `feed.rs` (effects) and `backend.rs` (lowering to `strand-gpu`'s
+  `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`, `feed.rs` (media
+  sources for the nodes a diff creates, feeds and feed demand; built by
+  m4-effects-media, with `media/` beside `renderer/`: `graph.rs`,
+  `spectrum.rs`, `animated.rs`, `svg.rs`, `lottie.rs` (velato with
+  `default-features = false`, drawn through a vello_cpu `RenderSink`)). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
   frames, readback delivery) have no code yet: their streams create
   them, with `promote.rs` (the promotion state machine) and `canvas.rs`
   beside `renderer/`.
@@ -979,20 +991,35 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
       (`OFFSCREEN_BYTES`, LRU; a group over the budget is drawn uncached;
       freed with the paint cache's idle rules).
     - The raster node is `Item::Raster { node, key, pixmap, rect }`
-      (`key` hashes the source's config, size, scale and `TimeContext`;
-      `rect` is its box in physical pixels). A `RasterSource`
-      (`draw(pixels, w, h, scale, TimeContext)`, `rate()`) is built from
-      the node's props each frame (`crate::effects::raster`: `grain:`,
-      particles, the built-in effects) and drawn through
+      (`key` hashes the source's config, its `state`, size, scale and
+      `TimeContext`; `rect` is its box in physical pixels). A
+      `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
+      is built from the node's props each frame (`crate::effects::raster`:
+      `grain:`, particles, the built-in effects) and drawn through
       `RasterNodes::pixmap_from`; a source with state of its own (graphs,
-      spectrum, animated frames) is set with `RasterNodes::set`. Its
-      pixmap is redrawn only when its config, tick or size changes. The props keep
+      spectrum, animated frames, the media nodes) is set with
+      `RasterNodes::set`. Its pixmap is redrawn only when its config,
+      state, tick or size changes. (M4, m4-effects-media) Two provided
+      methods follow: `clock() -> Option<Rate>` (default `Some(rate())`;
+      `None` for a source that changes only when fed or when its props
+      change: a spectrum, an `svg`, a `lottie` with no file), and
+      `state(&RasterProps) -> u64` (default 0), called on every flatten
+      that draws the node with its resolved props (`RasterProps { get,
+      color, parts }`, exported from `lib.rs`): the pixmap is drawn again
+      when that hash changes. Media nodes (`graph`, `spectrum`, `svg`,
+      `lottie`, `thumbnail`) get their sources from render itself when
+      logic creates them. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the
     one kind with no schema element) carrying the id it
     selects as `Prop::Name` (`Text`, without the `#`) and ordinary props,
     which render applies to that layer (decisions.md, 2026-10-05 render).
+    Built (m4-effects-media): the compiler lowers `hir::Selector` (which
+    carries its own `NodeIdx`) to a `svg_part` element whose positional
+    is `name`; render's `media/svg.rs` draws the `svg` as a raster node,
+    its parts' props resolved in flattening and handed over in
+    `RasterProps::parts`.
   - **Keyframes.** `Prop::Play` holds `PropValue::Keyframes(Arc<Keyframes>)`
     in place of `[name, seq]`: `Keyframes { name, seq: u32, stops:
     Vec<(f32, Vec<(Prop, PropValue)>)>, duration, delay, repeat:
@@ -3234,7 +3261,7 @@ transparent huge pages for life.
   fields plus `Workspace::active` and `Window::urgent`, and
   `Window::toplevel: Option<String>`, the window's
   `ext-foreign-toplevel-list-v1` identifier, which is not a schema field:
-  M4's thumbnails will capture by it through a new `ProtoCmd` on the
+  thumbnails capture by it through `ProtoCmd::Capture` on the
   `strand-toplevel` thread, the connection that owns the handle) in a `WmState`,
   and `wm::run(WmConfig { backend, wayland, events, desktop }, sink,
   requests) -> impl Future + Send`: the service on the shared runtime,
@@ -3535,13 +3562,48 @@ transparent huge pages for life.
     that could not be made is a warning diagnostic, as is the `login`
     fallback (once per process).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
-    (realfft) runs on the audio thread only while a reader is visible,
-    and stops while the source is silent.
-  - wm: `ProtoCmd::Capture` on the `strand-toplevel` thread captures a
-    window by its `Window::toplevel` identifier through
-    ext-image-copy-capture, for `thumbnail`; frames reach render through
-    the binary (`Renderer::feed_frame`), only while the thumbnail is
-    visible.
+    (`audio::spectrum::Fft`, an in-place radix-2 transform; realfft
+    until decisions.md m4-effects-media-w2) runs on the audio thread only while a reader is visible,
+    and stops while the source is silent. Built (m4-effects-media):
+    each meter's data thread keeps its last 4,096 samples mixed to mono
+    in a ring of atomics (`audio::spectrum::Ring`); a reading with sound
+    (at most one a frame) carries `Levels::bins`, a Hann-windowed
+    2,048-point FFT folded into `spectrum::BANDS` (64) bands evenly
+    spaced in pitch from 40 Hz to 16 kHz, each the loudest bin in it in
+    dB from −72 dBFS (0) to 0 dBFS (1); a quiet reading carries none, and
+    a meter sends nothing on silence, so no FFT runs then
+    (`crates/strand-services/tests/audio.rs::a_test_tone_lights_its_spectrum_band`).
+  - wm: `ProtoCmd::Capture(Vec<capture::Want>)` on the `strand-toplevel`
+    thread captures windows by their `Window::toplevel` identifiers
+    through ext-image-copy-capture, for `thumbnail`. The entry point is
+    process-wide like the audio taps: `wm::capture::capture_window(window
+    id, max: (u32, u32), on_frame: Fn(Option<&CaptureFrame>) + Send +
+    Sync) -> CaptureTap`, the session living while any tap of that window
+    does (dropping the tap ends it); `on_frame(None)` comes once when the
+    window the tap was capturing is no longer listed (it closed), so the
+    thumbnail stops showing its last frame. The running `wm` service
+    maps window ids to identifiers and sends the wants whenever the taps
+    or windows change. One session per window, one frame in flight, frames only when
+    the compositor reports the window changed and at most
+    `capture::MAX_FPS` (15) a second, into a memfd `wl_shm` buffer
+    following the session's buffer constraints; a failed session retries
+    after a second, a stopped one ends and is replaced after that second
+    while its window is still wanted and listed (a closed window leaves
+    the list). A
+    `CaptureFrame { width, height, pixels: Arc<[u8]> }` is premultiplied
+    BGRA, scaled down (box filter) to cover `max` (0 for no limit). The
+    callback runs on the protocol thread. Frames reach render through the
+    binary (`Renderer::feed_frame(node, Option<ThumbnailFrame>)`, the same
+    fields as `CaptureFrame`), only while the thumbnail is visible:
+    `take_feed_demand` lists it as `FeedKind::Thumbnail { window, max }`
+    (its source's window id, its drawn physical size rounded up to
+    `THUMBNAIL_STEP` = 64), and `run/feeds.rs` holds one `CaptureTap` per
+    such node, dropping what a tap sent once it is no longer its node's.
+    A thumbnail whose source names another window drops its frame at
+    once, rather than showing the old window until the new one's first
+    frame (`crates/strand-services/tests/capture.rs`, against
+    strand-fake-wayland's ext-image-copy-capture;
+    `crates/strand-render/tests/thumbnail.rs`).
   - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the
     anchor's output-logical position for `x`/`y` instead of 0, 0. How it
     reaches the action (an optional argument, or filled in by the host

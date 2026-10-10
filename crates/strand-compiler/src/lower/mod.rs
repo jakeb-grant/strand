@@ -849,8 +849,8 @@ impl Lowerer<'_> {
             },
             hir::Node::Slot(_) => Node::Slot,
             hir::Node::Set(defs, _) => Node::Set(defs.iter().map(|d| self.token_def(d)).collect()),
-            // `#needle { … }` inside an `svg` lands with bindable SVG (M4).
-            hir::Node::Selector(_) => return None,
+            // (M4) `#needle { … }` inside an `svg`: an `svg_part` child.
+            hir::Node::Selector(sel) => Node::Element(self.svg_part(sel)),
             hir::Node::Play(e) => Node::Play(self.expr_chunk(e)),
             hir::Node::State(s) => Node::State(self.state(s)),
             hir::Node::Let(l) => self.let_node(l),
@@ -995,6 +995,42 @@ impl Lowerer<'_> {
             span: e.span,
             file: self.file,
             services,
+        }
+    }
+
+    /// (M4) An `svg`'s `#id { … }` block: a `svg_part` child carrying
+    /// the id it selects as `name` and its props (checked against the
+    /// `svg`'s), which render applies to that layer.
+    fn svg_part(&mut self, sel: &hir::Selector) -> Element {
+        if let Some(top) = self.owned.last_mut() {
+            top.insert(sel.node);
+        }
+        let name = hir::Expr {
+            kind: hir::ExprKind::Text(sel.name.clone()),
+            ty: Ty::TEXT,
+            span: sel.span,
+        };
+        let arg = Prop {
+            name: "name".into(),
+            prop: Some(SceneProp::Name),
+            ty: Ty::TEXT,
+            value: self.expr_chunk(&name),
+            two_way: None,
+            transition: None,
+            sub: Vec::new(),
+        };
+        let props = self.props(&sel.props, self.elem);
+        Element {
+            node: sel.node,
+            kind: ElementKind::Builtin(NodeKind::SvgPart),
+            arg: Some(arg),
+            props,
+            children: Arc::new(Vec::new()),
+            id: None,
+            scope: Vec::new(),
+            span: sel.span,
+            file: self.file,
+            services: None,
         }
     }
 

@@ -42,6 +42,10 @@ pub(crate) struct PropRef<'a> {
     pub block: Option<&'a ast::Block<ast::Item>>,
 }
 
+/// (M4) The props an `svg`'s `#id { … }` block takes: what render
+/// applies to a layer (`media/svg.rs`).
+const SVG_PART_PROPS: &[&str] = &["rotate", "scale", "x", "y", "opacity", "fill"];
+
 impl<'a> PropRef<'a> {
     pub fn of(p: &'a ast::Prop) -> Self {
         Self {
@@ -477,7 +481,29 @@ impl<'a> Checker<'a> {
             return None;
         }
         let (props, _) = self.tree_items(&s.body.items, Place::Props);
+        // A layer takes only what render applies to it (builtin.schema's
+        // `svg`); the rest of the `svg`'s props would do nothing there.
+        for p in props
+            .iter()
+            .filter(|p| !SVG_PART_PROPS.contains(&p.name.as_str()))
+        {
+            self.error(
+                "check::svg_part_prop",
+                format!("`#{}` cannot take `{}`", s.name.name, p.name),
+                p.span,
+                "not a prop of an svg layer",
+            )
+            .help = Some(format!(
+                "an svg layer takes {}",
+                SVG_PART_PROPS
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         Some(Node::Selector(hir::Selector {
+            node: self.new_node(),
             name: s.name.name.clone(),
             props,
             span,
@@ -2776,4 +2802,44 @@ fn keyframe_settings(schema: &crate::schema::Schema) -> Vec<PropSchema> {
         sub: Vec::new(),
     })
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::SourceMap;
+
+    fn codes(src: &str) -> Vec<(String, String)> {
+        let mut map = SourceMap::new();
+        map.add("tree.strand", src.to_string());
+        let c = crate::compile_with(&map, crate::schema::Schema::builtin());
+        c.diagnostics
+            .iter()
+            .map(|d| (d.code.to_string(), d.message.clone()))
+            .collect()
+    }
+
+    /// (M4) An svg layer's `#id { … }` block takes the six props render
+    /// applies to a layer; any other prop of the `svg` is an error there.
+    #[test]
+    fn svg_layers_take_only_their_props() {
+        let ok = "state level = 0.5\nbar B { edge: top; height: 30\n  svg \"/tmp/g.svg\" {\n    \
+                  #needle { rotate: level * 270deg; scale: 1.2; x: 2; y: -1; opacity: 0.8 }\n    \
+                  #face { fill: #ff0000 }\n  }\n}\n";
+        let got = codes(ok);
+        assert!(got.iter().all(|(c, _)| c == "check::raw_color"), "{got:?}");
+        let bad = "bar B { edge: top; height: 30\n  svg \"/tmp/g.svg\" {\n    \
+                   #needle { width: 10; pad: 4; rotate: 90deg }\n  }\n}\n";
+        let ours: Vec<String> = codes(bad)
+            .into_iter()
+            .filter(|(c, _)| c == "check::svg_part_prop")
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(
+            ours,
+            [
+                "`#needle` cannot take `width`",
+                "`#needle` cannot take `pad`"
+            ]
+        );
+    }
 }

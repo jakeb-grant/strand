@@ -477,11 +477,31 @@ fn wait_for(path: &Path, what: &str) {
 
 /// A 16-bit stereo WAV of a ±`amplitude` square wave at 48 kHz.
 pub fn square_wav(path: &Path, secs: f32, amplitude: f32) {
-    let frames = (48_000.0 * secs) as u32;
     let level = (amplitude * 32768.0).round().clamp(0.0, 32767.0) as i16;
+    wav(
+        path,
+        secs,
+        |i| if (i / 48) % 2 == 0 { level } else { -level },
+    );
+}
+
+/// Writes a stereo 48 kHz WAV of a sine at `hz` and `amplitude` (a test
+/// tone for the spectrum).
+#[allow(dead_code)]
+pub fn sine_wav(path: &Path, secs: f32, hz: f32, amplitude: f32) {
+    wav(path, secs, |i| {
+        let v = amplitude * (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin();
+        (v * 32767.0).round() as i16
+    });
+}
+
+/// Writes a stereo 48 kHz 16-bit WAV of `secs` whose frame `i` holds
+/// `sample(i)` on both channels.
+fn wav(path: &Path, secs: f32, sample: impl Fn(u32) -> i16) {
+    let frames = (48_000.0 * secs) as u32;
     let mut data = Vec::with_capacity(frames as usize * 4);
     for i in 0..frames {
-        let s = if (i / 48) % 2 == 0 { level } else { -level };
+        let s = sample(i);
         data.extend_from_slice(&s.to_le_bytes());
         data.extend_from_slice(&s.to_le_bytes());
     }

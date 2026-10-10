@@ -3,7 +3,8 @@
 //! default arrive from `wpctl`; the service's writes land where `wpctl`
 //! reads them; a daemon restart reconnects; peak meters run only while
 //! asked for, never leave a stale level and send at most 60 readings a
-//! second.
+//! second; a test tone's spectrum peaks in its band, and silence runs no
+//! FFT.
 
 #![cfg(feature = "pipewire")]
 
@@ -15,10 +16,10 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use meta::MetaClient;
-use pipewire::{PipeWire, square_wav};
+use pipewire::{PipeWire, sine_wav, square_wav};
 use strand_services::audio::{
     Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
-    LevelTarget, Levels, Mirror, REREAD, SETTLE, UNANSWERED,
+    LevelTarget, Levels, Mirror, REREAD, SETTLE, UNANSWERED, spectrum,
 };
 
 /// The service and a mirror of what it sent.
@@ -1236,4 +1237,69 @@ fn peak_readings_are_capped_at_the_frame_rate() {
         "{at_peak} of {} readings at the peak",
         read.len()
     );
+}
+
+/// (M4) A 1 kHz test tone played to a sink: its meter's readings carry
+/// the spectrum, loudest in the tone's band and quiet an octave and more
+/// away; once the tone stops the meter says so once, with no spectrum,
+/// and sends nothing more (no FFT runs on silence).
+#[test]
+fn a_test_tone_lights_its_spectrum_band() {
+    let Some(pw) = PipeWire::start("a_test_tone_lights_its_spectrum_band") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    let a = w.sink("strand-sink-a");
+    let wav = pw.dir.path().join("tone.wav");
+    sine_wav(&wav, 30.0, 1000.0, 0.5);
+    w.audio.set_levels([LevelTarget::Device(a.id)]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pw.has_node("strand-levels") {
+        assert!(Instant::now() < deadline, "the meter stream never appeared");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let mut player = pw.play(&wav, "strand-sink-a");
+    let band = spectrum::band_of(1000.0);
+    w.until(10, "a spectrum peaking at 1 kHz", |m| {
+        m.levels(LevelTarget::Device(a.id)).is_some_and(|l| {
+            l.bins.len() == spectrum::BANDS
+                && l.bins
+                    .iter()
+                    .enumerate()
+                    .max_by(|x, y| x.1.total_cmp(y.1))
+                    .is_some_and(|(i, _)| i.abs_diff(band) <= 1)
+        })
+    });
+    let l = w.mirror.levels(LevelTarget::Device(a.id)).cloned().unwrap();
+    assert!(l.bins[band].max(l.bins[band + 1]) > 0.8, "{:?}", l.bins);
+    for far in [spectrum::band_of(200.0), spectrum::band_of(6000.0)] {
+        assert!(
+            l.bins[far] < 0.5,
+            "band {far} at {}: {:?}",
+            l.bins[far],
+            l.bins
+        );
+    }
+    // At most one spectrum a frame, like the peaks.
+    let from = w.levels.len();
+    std::thread::sleep(Duration::from_millis(500));
+    w.poll();
+    let n = readings(&w, from, LevelTarget::Device(a.id)).len();
+    assert!(n <= 34, "{n} spectra in 0.5 s");
+
+    let _ = player.kill();
+    let _ = player.wait();
+    w.until(10, "the tone stopping", |m| {
+        m.levels(LevelTarget::Device(a.id))
+            .is_some_and(|l| l.peak() == 0.0)
+    });
+    let quiet = w.mirror.levels(LevelTarget::Device(a.id)).cloned().unwrap();
+    assert!(quiet.bins.is_empty(), "a quiet reading has no spectrum");
+    std::thread::sleep(Duration::from_millis(300));
+    w.poll();
+    let after = w.levels.len();
+    std::thread::sleep(Duration::from_millis(700));
+    w.poll();
+    assert_eq!(w.levels.len(), after, "readings, and FFTs, while silent");
 }

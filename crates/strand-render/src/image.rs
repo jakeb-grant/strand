@@ -4,11 +4,19 @@
 //!
 //! An `icon` names an icon of the freedesktop icon theme
 //! (`window-close-symbolic`); a symbolic icon draws as a mask in the
-//! node's `color`. An `image` takes a file path (PNG, JPEG or SVG; `~/`
-//! and `file://` work) or, when its source has no path, an icon name as
-//! well (`image h.app.icon`, `image item.icon`). Every decode is at the
-//! box's physical size, so the cache holds what is drawn, never a
-//! full-resolution original.
+//! node's `color`. An `image` takes a file path (PNG, JPEG, SVG, GIF or
+//! WebP; `~/` and `file://` work) or, when its source has no path, an
+//! icon name as well (`image h.app.icon`, `image item.icon`). Every
+//! decode is at the box's physical size, so the cache holds what is
+//! drawn, never a full-resolution original.
+//!
+//! (M4) An animated GIF, APNG or WebP plays (design.md: "frames
+//! streamed, not cached whole"): each decode carries the file's
+//! [`Timeline`], render asks for the frame the node's time shows
+//! ([`ImageKey::frame`]) on a clock at the timeline's tick
+//! ([`ImageStore::frame_rate`]), and a [`Players`] entry per image
+//! decodes frames one after another from the compressed file. At most
+//! two frames per image and size are kept (the one drawn and the next).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -19,6 +27,8 @@ use std::time::Instant;
 
 use strand_scene::SurfaceId;
 use strand_text::HookGate;
+
+pub use crate::media::animated::{Players, Timeline};
 use vello_cpu::Pixmap;
 use vello_cpu::color::PremulRgba8;
 
@@ -92,6 +102,19 @@ pub struct ImageKey {
     pub fit: Fit,
     /// The integer scale icon lookup asks the theme for (`@2x` dirs).
     pub scale: u16,
+    /// (M4) Which frame of an animated image (0 for a still one, and an
+    /// animation's first).
+    pub frame: u32,
+}
+
+impl ImageKey {
+    /// The key of the same image's first frame: what its frames share.
+    pub fn first(&self) -> ImageKey {
+        ImageKey {
+            frame: 0,
+            ..self.clone()
+        }
+    }
 }
 
 /// A decoded image at its drawn size: premultiplied, red and blue swapped
@@ -106,6 +129,8 @@ pub struct Decoded {
     /// fit rather than stretched (see [`Decoded::placed_in`]).
     pub source: (f64, f64),
     pub fit: Fit,
+    /// (M4) An animated image's frames in time (`None`: a still image).
+    pub anim: Option<Arc<Timeline>>,
 }
 
 impl Decoded {
@@ -200,7 +225,7 @@ pub fn is_icon(key: &ImageKey) -> bool {
             || Path::new(src).extension().is_some_and(|e| {
                 matches!(
                     e.to_ascii_lowercase().to_str(),
-                    Some("png" | "jpg" | "jpeg" | "svg")
+                    Some("png" | "jpg" | "jpeg" | "svg" | "gif" | "webp" | "apng")
                 )
             }))
 }
@@ -232,6 +257,30 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
     let theme = theme.name();
     strand_icons::resolve(src, size.max(1), key.scale.max(1), Some(&theme))
         .ok_or_else(|| ImageError::NotFound(src.into()))
+}
+
+/// (M4) A local file's bytes, for an `svg`'s or `lottie`'s source: a
+/// path, a `file://` URL or a `~/` path, at most `max` bytes.
+pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
+    let src = src.trim();
+    let path = if let Some(rest) = src.strip_prefix("file://") {
+        PathBuf::from(percent_decode(rest))
+    } else if let Some(rest) = src.strip_prefix("~/") {
+        match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h).join(rest),
+            None => PathBuf::from(src),
+        }
+    } else {
+        PathBuf::from(src)
+    };
+    let meta = std::fs::metadata(&path).map_err(|_| ImageError::NotFound(src.into()))?;
+    if !meta.is_file() {
+        return Err(ImageError::NotFound(src.into()));
+    }
+    if meta.len() > max {
+        return Err(ImageError::TooLarge);
+    }
+    std::fs::read(&path).map_err(|e| ImageError::Io(e.to_string()))
 }
 
 /// The names an icon lookup tries ([`strand_icons::candidates`]: the
@@ -266,8 +315,19 @@ struct Raster {
 }
 
 /// Loads `key`: finds the file, decodes it and fits it into its drawn
-/// size.
+/// size. An animated image's frame is decoded from its start (see
+/// [`load_with`], which keeps the decoder between frames).
 pub fn load(key: &ImageKey, theme: &IconTheme) -> Result<Decoded, ImageError> {
+    load_with(key, theme, &mut Players::default())
+}
+
+/// [`load`], an animated image's frames streamed by `players`: a frame
+/// after the last one asked for decodes only the frames in between.
+pub fn load_with(
+    key: &ImageKey,
+    theme: &IconTheme,
+    players: &mut Players,
+) -> Result<Decoded, ImageError> {
     let (w, h) = (key.w.clamp(1, MAX_SIDE), key.h.clamp(1, MAX_SIDE));
     let path = resolve(key, theme)?;
     let symbolic = key.source.ends_with("-symbolic")
@@ -275,11 +335,49 @@ pub fn load(key: &ImageKey, theme: &IconTheme) -> Result<Decoded, ImageError> {
             .file_stem()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.ends_with("-symbolic"));
-    let meta = std::fs::metadata(&path).map_err(|e| ImageError::Io(e.to_string()))?;
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(ImageError::TooLarge);
+    let read = || -> Result<Vec<u8>, ImageError> {
+        let meta = std::fs::metadata(&path).map_err(|e| ImageError::Io(e.to_string()))?;
+        if meta.len() > MAX_FILE_BYTES {
+            return Err(ImageError::TooLarge);
+        }
+        std::fs::read(&path).map_err(|e| ImageError::Io(e.to_string()))
+    };
+    // A file already playing is not read again.
+    let mut data = None;
+    let player = match players.get(key, || {
+        let d = read()?;
+        let f = crate::media::animated::format(&d);
+        let out = f.map(|f| (Arc::<[u8]>::from(&d[..]), f));
+        data = Some(d);
+        out.ok_or_else(|| ImageError::Decode("not animated".into()))
+    }) {
+        Ok(p) => Some(p),
+        Err(e) if data.is_none() => return Err(e),
+        Err(_) => None,
+    };
+    if let Some(p) = player {
+        let anim = p.timeline.clone();
+        let (sw, sh) = p.size();
+        let frame = p.frame(key.frame)?;
+        let mut rgba = Vec::with_capacity(frame.len());
+        for px in frame.chunks_exact(4) {
+            let a = px[3] as u32;
+            let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            rgba.extend_from_slice(&[pm(px[0]), pm(px[1]), pm(px[2]), px[3]]);
+        }
+        let src = Raster { w: sw, h: sh, rgba };
+        return Ok(Decoded {
+            pixmap: Arc::new(to_pixmap(&fit_raster(&src, w, h, key.fit))),
+            symbolic,
+            source: (sw as f64, sh as f64),
+            fit: key.fit,
+            anim,
+        });
     }
-    let data = std::fs::read(&path).map_err(|e| ImageError::Io(e.to_string()))?;
+    let data = match data {
+        Some(d) => d,
+        None => read()?,
+    };
     let svg = path
         .extension()
         .and_then(|e| e.to_str())
@@ -293,7 +391,9 @@ pub fn load(key: &ImageKey, theme: &IconTheme) -> Result<Decoded, ImageError> {
         } else if data.starts_with(&[0xff, 0xd8]) {
             decode_jpeg(&data, (w, h), key.fit)?
         } else {
-            return Err(ImageError::Decode("not a PNG, JPEG or SVG".into()));
+            return Err(ImageError::Decode(
+                "not a PNG, JPEG, SVG, GIF or WebP".into(),
+            ));
         };
         (
             fit_raster(&src, w, h, key.fit),
@@ -305,6 +405,7 @@ pub fn load(key: &ImageKey, theme: &IconTheme) -> Result<Decoded, ImageError> {
         symbolic,
         source,
         fit: key.fit,
+        anim: None,
     })
 }
 
@@ -480,7 +581,7 @@ fn decode_jpeg_inner(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, 
 
 /// Where a `sw × sh` source goes in a `w × h` box: its scaled size and
 /// offset (logical to the box, may be negative when cropped).
-fn placement(sw: f64, sh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64, f64, f64) {
+pub(crate) fn placement(sw: f64, sh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64, f64, f64) {
     let (dw, dh) = match fit {
         Fit::Fill => (w, h),
         Fit::None => (sw, sh),
@@ -669,11 +770,30 @@ impl ImageWorker {
             .name("strand-image".into())
             .spawn(move || {
                 let mut gate = HookGate::default();
+                // A player some live frame draws is never dropped for the
+                // budget (two animations drawn together would otherwise
+                // rebuild each other at every frame change).
+                let live = still.clone();
+                let players_live = move || {
+                    let live = live.clone();
+                    Players::with_live(move |k| {
+                        live.lock()
+                            .map(|w| w.iter().any(|x| x.first() == *k))
+                            .unwrap_or(true)
+                    })
+                };
+                let mut players = players_live();
                 loop {
                     let key = match req_rx.try_recv() {
                         Ok(key) => key,
                         Err(TryRecvError::Disconnected) => return,
                         Err(TryRecvError::Empty) => {
+                            // Images no frame draws any more stop playing.
+                            if !players.is_empty()
+                                && let Ok(w) = still.lock()
+                            {
+                                players.retain(|k| w.iter().any(|x| x.first() == *k));
+                            }
                             // Drained: the decodes' garbage goes back
                             // before the worker blocks (rate-limited as
                             // the text worker's, `HookGate`).
@@ -704,7 +824,13 @@ impl ImageWorker {
                     let r = if want {
                         gate.worked();
                         Some(
-                            std::panic::catch_unwind(|| load(&key, &theme)).unwrap_or_else(|_| {
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                load_with(&key, &theme, &mut players)
+                            }))
+                            .unwrap_or_else(|_| {
+                                // A decoder that panicked may be left
+                                // half-way: start every image again.
+                                players = players_live();
                                 Err(ImageError::Decode("decoder panicked".into()))
                             }),
                         )
@@ -776,6 +902,11 @@ pub struct ImageStore {
     /// Icon decodes in flight when the icon theme changed: their results
     /// are dropped (and asked for again) when they arrive.
     stale: HashSet<ImageKey>,
+    /// (M4) Animated images decoded inline: their decoders between
+    /// frames.
+    players: Players,
+    /// (M4) The timelines of the animated sources decoded, by source.
+    timelines: HashMap<String, Arc<Timeline>>,
 }
 
 impl Default for ImageStore {
@@ -795,7 +926,78 @@ impl ImageStore {
             frames: HashMap::new(),
             latest: HashMap::new(),
             stale: HashSet::new(),
+            // Inline, the players are those of the frames (`want` drops
+            // the others at each change): all live.
+            players: Players::with_live(|_| true),
+            timelines: HashMap::new(),
         }
+    }
+
+    /// (M4) The clock of an animated `image` node: its timeline's tick,
+    /// once its first decode showed it animated, until a finite loop
+    /// count has played out at the node's time (`t()`, read only then).
+    /// `None` for anything else.
+    pub(crate) fn frame_rate(
+        &self,
+        node: &crate::tree::Node,
+        t: impl FnOnce() -> f32,
+    ) -> Option<crate::clock::Rate> {
+        if node.kind != strand_scene::NodeKind::Image || self.timelines.is_empty() {
+            return None;
+        }
+        let source = match node.get(strand_scene::Prop::Source) {
+            Some(strand_scene::PropValue::Text(s) | strand_scene::PropValue::Keyword(s)) => s,
+            _ => return None,
+        };
+        let tl = self.timelines.get(source)?;
+        if tl.loops.is_some() && tl.done(t()) {
+            return None;
+        }
+        Some(crate::clock::Rate::Every(tl.tick))
+    }
+
+    /// (M4) When an animated `image` node's clock next ticks: at its next
+    /// frame change, not at every [`Timeline::tick`] between. `t` is the
+    /// node's time and `next` the tick after it on its `tick` clock (what
+    /// [`crate::time::NodeTimes::context`] gave), so `next - tick` is the
+    /// instant of `t`. `next` unchanged for anything else.
+    pub(crate) fn frame_wake(
+        &self,
+        node: &crate::tree::Node,
+        t: f32,
+        tick: std::time::Duration,
+        next: std::time::Duration,
+    ) -> std::time::Duration {
+        let source = match node.get(strand_scene::Prop::Source) {
+            Some(strand_scene::PropValue::Text(s) | strand_scene::PropValue::Keyword(s)) => s,
+            _ => return next,
+        };
+        match self.timelines.get(source) {
+            Some(tl) if tl.tick == tick => match tl.until_change(t) {
+                Some(d) => next.saturating_sub(tick) + d.max(tick),
+                None => next,
+            },
+            _ => next,
+        }
+    }
+
+    /// (M4) The timeline of `source`, if a decode showed it animated.
+    pub fn timeline(&self, source: &str) -> Option<&Arc<Timeline>> {
+        self.timelines.get(source)
+    }
+
+    /// (M4) Animated images playing inline (offline renders and tests).
+    pub fn players(&self) -> usize {
+        self.players.len()
+    }
+
+    /// (M4) Frames of `key`'s image at its size held decoded.
+    pub fn frames_held(&self, key: &ImageKey) -> usize {
+        let first = key.first();
+        self.entries
+            .iter()
+            .filter(|(k, e)| e.bytes > 0 && k.first() == first)
+            .count()
     }
 
     /// The icon theme changed (a theme installed or switched, an icon
@@ -879,6 +1081,12 @@ impl ImageStore {
             self.frames.insert(surface, keys.iter().cloned().collect());
             self.publish_wanted();
         }
+        // Images no frame draws any more stop playing.
+        if !same && !self.players.is_empty() {
+            let frames = &self.frames;
+            self.players
+                .retain(|p| frames.values().flatten().any(|k| k.first() == *p));
+        }
         let mut decoded = false;
         for k in keys {
             self.tick += 1;
@@ -891,7 +1099,7 @@ impl ImageStore {
             }
             match &mut self.backend {
                 ImageBackend::Inline(theme) => {
-                    let r = load(k, theme);
+                    let r = load_with(k, theme, &mut self.players);
                     self.insert(k.clone(), r);
                     decoded = true;
                 }
@@ -965,8 +1173,37 @@ impl ImageStore {
             Err(_) => 0,
         };
         self.tick += 1;
-        if result.is_ok() {
+        if let Ok(d) = &result {
             self.latest.insert(source_key(&key), key.clone());
+            if let Some(tl) = &d.anim
+                && !self.timelines.contains_key(&key.source)
+            {
+                self.timelines.insert(key.source.clone(), tl.clone());
+            }
+        }
+        // (M4) An animated image keeps two frames per size: the newest
+        // two, or the ones live frames draw.
+        if result.as_ref().is_ok_and(|d| d.anim.is_some()) {
+            let first = key.first();
+            let mut held: Vec<(u64, ImageKey)> = self
+                .entries
+                .iter()
+                .filter(|(k, e)| e.bytes > 0 && k.first() == first && **k != key)
+                .map(|(k, e)| (e.used, k.clone()))
+                .collect();
+            held.sort_by_key(|(u, _)| std::cmp::Reverse(*u));
+            let drawn = |k: &ImageKey| self.frames.values().any(|f| f.contains(k));
+            let gone: Vec<ImageKey> = held
+                .into_iter()
+                .skip(1)
+                .map(|(_, k)| k)
+                .filter(|k| !drawn(k))
+                .collect();
+            for k in gone {
+                if let Some(e) = self.entries.remove(&k) {
+                    self.bytes -= e.bytes;
+                }
+            }
         }
         if let Some(old) = self.entries.insert(
             key,
@@ -995,6 +1232,9 @@ impl ImageStore {
             let sk = source_key(&v);
             if self.latest.get(&sk) == Some(&v) {
                 self.latest.remove(&sk);
+            }
+            if !self.entries.keys().any(|k| k.source == v.source) {
+                self.timelines.remove(&v.source);
             }
         }
         let failed = self.entries.values().filter(|e| e.result.is_err()).count();
@@ -1067,6 +1307,7 @@ mod tests {
                 h: side,
                 fit: Fit::Contain,
                 scale: 1,
+                frame: 0,
             };
             s.insert(
                 k,
@@ -1075,6 +1316,7 @@ mod tests {
                     symbolic: false,
                     source: (side as f64, side as f64),
                     fit: Fit::Contain,
+                    anim: None,
                 }),
             );
         }
@@ -1096,6 +1338,7 @@ mod tests {
             h: 8,
             fit: Fit::Contain,
             scale: 1,
+            frame: 0,
         };
         let (a, b) = (k("/nonexistent/a.png"), k("/nonexistent/b.png"));
         s.want(SurfaceId(1), &[a.clone(), b.clone()], false);
@@ -1221,6 +1464,7 @@ mod tests {
             symbolic: false,
             source: (400.0, 200.0),
             fit,
+            anim: None,
         };
         // Contain: content rows 25..75 of the pixmap fill 0..100.
         let (x, y, w, h) = d(Fit::Contain).placed_in(10.0, 20.0, 200.0, 100.0);
@@ -1251,6 +1495,7 @@ mod tests {
             h: 16,
             fit: Fit::Contain,
             scale: 1,
+            frame: 0,
         };
         assert!(matches!(
             load(&k("/nonexistent/a.png", false), &theme),

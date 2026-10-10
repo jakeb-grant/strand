@@ -34,9 +34,10 @@
 //! read them before it closes the connection.
 //!
 //! M4's window thumbnails (`ext-image-copy-capture-v1`) need the
-//! toplevel's handle on this connection: they will add a `ProtoCmd` that
-//! captures by [`Toplevel::identifier`] (the model keeps it as
-//! [`Window::toplevel`](super::Window::toplevel)).
+//! toplevel's handle on this connection: [`ProtoCmd::Capture`] names the
+//! toplevels to capture by [`Toplevel::identifier`] (the model keeps it
+//! as [`Window::toplevel`](super::Window::toplevel)), and
+//! [`super::capture`] runs their sessions in this loop.
 
 use std::collections::HashMap;
 use std::io;
@@ -202,6 +203,9 @@ pub(crate) enum ProtoCmd {
     /// Run a window action on the wlr toplevel with this key; the reply
     /// says whether it was sent.
     Window(u64, WindowOp, Reply),
+    /// (M4) The thumbnails' taps by toplevel identifier: every capture
+    /// session runs exactly for these ([`super::capture`]).
+    Capture(Vec<super::capture::Want>),
     Stop,
 }
 
@@ -368,10 +372,10 @@ fn display_socket(
 }
 
 #[derive(Debug)]
-struct ToplevelEntry {
-    handle: ExtForeignToplevelHandleV1,
+pub(crate) struct ToplevelEntry {
+    pub(crate) handle: ExtForeignToplevelHandleV1,
     pending: Toplevel,
-    current: Option<Toplevel>,
+    pub(crate) current: Option<Toplevel>,
 }
 
 /// A group's membership: `pending` takes the events, `current` (what
@@ -424,7 +428,7 @@ struct ManagedEntry {
 }
 
 #[derive(Debug, Default)]
-struct Client {
+pub(crate) struct Client {
     toplevel_list: Option<ExtForeignToplevelListV1>,
     toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     workspace_manager: Option<ExtWorkspaceManagerV1>,
@@ -434,7 +438,7 @@ struct Client {
     seats: Vec<(u32, wl_seat::WlSeat)>,
     /// wl_output proxies by object, with their global name and `name`.
     outputs: HashMap<ObjectId, (u32, wl_output::WlOutput, String)>,
-    toplevels: Vec<(ObjectId, ToplevelEntry)>,
+    pub(crate) toplevels: Vec<(ObjectId, ToplevelEntry)>,
     managed: Vec<(ObjectId, ManagedEntry)>,
     next_managed_key: u64,
     groups: Vec<(ObjectId, GroupEntry)>,
@@ -443,6 +447,8 @@ struct Client {
     dirty: bool,
     /// The highest startup sync answered.
     synced: u32,
+    /// (M4) The thumbnails' capture sessions.
+    pub(crate) captures: super::capture::Captures,
 }
 
 impl Client {
@@ -555,6 +561,7 @@ fn thread_main(
         queue
             .dispatch_pending(&mut client)
             .map_err(io::Error::other)?;
+        client.captures_step(&qh, Instant::now());
         if !started {
             if client.synced >= STARTUP_SYNCS {
                 // The first state goes out even when nothing was found.
@@ -597,7 +604,12 @@ fn thread_main(
                 PollFd::new(&conn_fd, wayland_flags),
                 PollFd::new(wake, PollFlags::IN),
             ];
-            match rustix::event::poll(&mut fds, None) {
+            // A thumbnail's next frame is due then.
+            let timeout = client
+                .captures
+                .due()
+                .map(|t| timespec(t.saturating_duration_since(Instant::now())));
+            match rustix::event::poll(&mut fds, timeout.as_ref()) {
                 Ok(_) => (
                     fds[0]
                         .revents()
@@ -633,6 +645,7 @@ fn thread_main(
                     ProtoCmd::Window(key, op, reply) => {
                         replies.push((reply, window_action(&client, key, op)));
                     }
+                    ProtoCmd::Capture(wants) => client.captures.wants = wants,
                 }
             }
             // The requests are written (or, behind a full socket, queued for
@@ -868,6 +881,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 {
                     state.workspace_manager = Some(registry.bind(name, version.min(1), qh, ()));
                     state.dirty = true;
+                } else {
+                    state.bind_capture_global(registry, name, &interface, version, qh);
                 }
             }
             wl_registry::Event::GlobalRemove { name } => {

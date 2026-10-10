@@ -675,3 +675,133 @@ fn window_buttons_maximize_and_fullscreen_on_sway() {
     sh.keep("winstate-fullscreen");
     drop(win);
 }
+
+/// (M4) `spectrum audio.sink { … }` in `strand run` on the real audio
+/// service, end to end: at rest its bars are dots; a 1 kHz test tone
+/// played to the default sink lifts its own bar, not the far ones (the FFT on the audio
+/// thread, the bands fed to render through `run/feeds.rs` only while the
+/// spectrum is visible), and when the tone stops the bars rest again.
+#[test]
+fn a_test_tone_lifts_a_spectrum_bar() {
+    if !tools() {
+        return;
+    }
+    let Some(pw) = PipeWire::start("a_test_tone_lifts_a_spectrum_bar") else {
+        return;
+    };
+    pw.wait_for_defaults();
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("strand-spectrum-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (sway, display, ipc) = sway(&dir);
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("spectrum.strand"),
+        "bar Top {\n  edge: top; height: 48\n  row {\n    \
+         spectrum audio.sink { bars: 16; width: 320; height: 40; smooth: 0; color: #ff0000 }\n  \
+         }\n}\n",
+    )
+    .unwrap();
+    let log = dir.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("SWAYSOCK", &ipc)
+            .env("PIPEWIRE_RUNTIME_DIR", pw.dir.path())
+            .env_remove("PIPEWIRE_REMOTE")
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut sh = Shell {
+        dir: dir.clone(),
+        display,
+        ipc,
+        log,
+        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+        n: std::cell::Cell::new(0),
+        strand: Some(strand),
+        _sway: sway,
+    };
+    // Each bar's height in red pixels, left to right: runs of columns
+    // with red in them (a bar at rest is a dot, so all 16 show).
+    let bars = |img: &Img| {
+        let mut out: Vec<usize> = Vec::new();
+        let mut run = false;
+        for x in 0..400.min(img.w) {
+            let n = (0..48)
+                .filter(|&y| {
+                    let p = img.px(x, y);
+                    p[0] > 160 && p[1] < 90 && p[2] < 90
+                })
+                .count();
+            match (n > 0, run) {
+                (true, false) => out.push(n),
+                (true, true) => {
+                    if let Some(h) = out.last_mut() {
+                        *h = (*h).max(n);
+                    }
+                }
+                _ => {}
+            }
+            run = n > 0;
+        }
+        out
+    };
+    let tallest = |img: &Img| bars(img).into_iter().max().unwrap_or(0);
+    sh.wait("the spectrum at rest: dots", |s| {
+        let b = bars(&s.shot());
+        b.len() == 16 && b.iter().all(|h| (1..=4).contains(h))
+    });
+    sh.keep("spectrum-at-rest");
+    // The default sink's name, from the `default` metadata.
+    let meta = pw.metadata();
+    let sink = meta
+        .split("default.audio.sink")
+        .nth(1)
+        .and_then(|r| r.split("\"name\":\"").nth(1))
+        .and_then(|r| r.split('"').next())
+        .expect("a default sink")
+        .to_string();
+    let wav = dir.join("tone.wav");
+    pipewire::sine_wav(&wav, 30.0, 1000.0, 0.5);
+    let mut player = pw.play(&wav, &sink);
+    // 1 kHz falls in band 34 of 64, so in bar 8 of 16 (the bands are
+    // spaced evenly in pitch): that bar (or a neighbour, as the tone may
+    // spill over a band edge) lifts, and bars about two octaves and more
+    // away (bars 4 and under, up to 260 Hz; 12 and over, from 3.6 kHz)
+    // stay under half height.
+    let tone_bar = strand_services::audio::spectrum::band_of(1000.0) * 16
+        / strand_services::audio::spectrum::BANDS;
+    assert_eq!(tone_bar, 8);
+    sh.wait("the tone's bar lifted, the far bars low", |s| {
+        let b = bars(&s.shot());
+        if b.len() != 16 {
+            return false;
+        }
+        let peak = (0..16).max_by_key(|&i| b[i]).unwrap_or(0);
+        let far_low = (0..16)
+            .filter(|&i| i <= tone_bar - 4 || i >= tone_bar + 4)
+            .all(|i| b[i] < 20);
+        peak.abs_diff(tone_bar) <= 1 && b[peak] > 20 && far_low
+    });
+    sh.keep("spectrum-tone");
+    let _ = player.kill();
+    let _ = player.wait();
+    sh.wait("the bars at rest again", |s| tallest(&s.shot()) <= 4);
+}

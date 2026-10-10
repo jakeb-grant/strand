@@ -73,6 +73,7 @@ use crate::overlay::{self, Click, Overlay};
 use crate::system;
 use strand_watch::{CacheKind, Role};
 
+pub(crate) mod feeds;
 mod gpu;
 mod lists;
 mod lock;
@@ -437,9 +438,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     #[cfg(feature = "gpu")]
     let mut gpu = gpu::GpuHost::new(gpu_ping);
     let mut gpu_status = gpu::StatusForward::default();
-    let host = Host::new(renderer, log.damage)
+    let mut host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
         .waking(wake);
+    // (M4) Spectrum bands from the audio thread and window frames from
+    // the compositor thread, for the visible spectra and thumbnails.
+    let (feeds_tx, feeds_rx) = calloop::channel::channel::<feeds::Fed>();
+    host.feeds = Some(feeds::Feeds::new(feeds_tx));
     let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
     handle
@@ -453,6 +458,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .insert_source(caches_rx, |event, _, state| {
             if let Event::Msg(kind) = event {
                 caches_changed(state, kind);
+            }
+        })
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(feeds_rx, |event, _, state| {
+            if let Event::Msg(fed) = event {
+                feeds::fed(state, fed);
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;

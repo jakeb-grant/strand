@@ -20,6 +20,8 @@ use crate::tree::SceneTree;
 mod apply;
 #[cfg(feature = "gpu")]
 pub(crate) mod backend;
+
+mod feed;
 mod frame;
 mod layout_pass;
 mod lists;
@@ -33,6 +35,8 @@ mod wake;
 
 #[cfg(feature = "gpu")]
 pub use backend::GPU_WAIT;
+
+pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use text::TextBackend;
 use text::{TextSlot, TextState};

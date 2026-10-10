@@ -700,11 +700,13 @@ mod tests {
             target: LevelTarget::Device(4243),
             device: 1,
             peaks: vec![0.5],
+            bins: Vec::new(),
         });
         deliver(&Levels {
             target: LevelTarget::Device(4242),
             device: 1,
             peaks: vec![0.5],
+            bins: Vec::new(),
         });
         assert_eq!(*seen.lock().unwrap(), 1);
         drop(tap);
