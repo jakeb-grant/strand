@@ -74,6 +74,9 @@ const FIELD_REFUSED: [u8; 3] = [0x3b, 0x20, 0x2c];
 /// Another locker's colour.
 const OTHER: [u8; 3] = [0x00, 0xff, 0x00];
 
+/// strand's log line when a lock missed its first-frame deadline.
+const FIRST_FRAME_MISSED: &str = "drew no first frame within";
+
 /// How long anything shown is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -844,11 +847,30 @@ impl Vm {
         self.until("HEADLESS-1", "locked", |s| !s.desktop());
     }
 
-    /// The config's lock shows.
+    /// The config's lock shows. Should it have missed its 1 s first-frame
+    /// deadline (the fallback took over), that is a wall-clock gate
+    /// miss, not a functional failure: the test stops with `GATE_MISS`.
     fn content(&self) {
         self.until_locked("HEADLESS-1", "the config's lock", true, |s| {
+            let log = self.strand.log_text();
+            if log.contains(FIRST_FRAME_MISSED) {
+                panic!(
+                    "GATE_MISS lock first frame: the config's lock drew no first frame \
+                     within 1 s and the fallback took over\n{log}"
+                );
+            }
             near(s.corner(), LOCK_BG)
         });
+    }
+
+    /// The first frame's time strand logged for each lock, in ms.
+    fn first_frames(&self) -> Vec<u64> {
+        self.strand
+            .log_text()
+            .lines()
+            .filter_map(|l| l.split("lock: first frame after ").nth(1))
+            .filter_map(|r| r.split(' ').next()?.parse().ok())
+            .collect()
     }
 
     /// The built-in password field shows, the session locked meanwhile,
@@ -1070,6 +1092,43 @@ fn lock_without_a_first_frame_shows_the_fallback() {
     };
     vm.log_has("no first frame");
     vm.fallback_passwords();
+}
+
+/// A healthy config's lock draws its first frame within 1 s, so the
+/// first-frame deadline does not show the fallback (a wall-clock gate,
+/// `GATE_MISS`, checked after the functional part: whichever field shows
+/// takes the right password only). Three lock sessions.
+#[test]
+fn a_healthy_lock_draws_its_first_frame_in_time() {
+    let test = "first_frame";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    for round in 0..3 {
+        if round > 0 {
+            vm.strand.cli(&["set", "lock.locked", "false"]);
+        }
+        vm.lock();
+        let shot = vm.until_locked("HEADLESS-1", "a password field", true, |s| {
+            near(s.corner(), LOCK_BG) || s.fallback()
+        });
+        if shot.fallback() {
+            vm.fallback_passwords();
+        } else {
+            vm.lock_passwords();
+        }
+    }
+    let frames = vm.first_frames();
+    let log = vm.strand.log_text();
+    let missed = log.contains(FIRST_FRAME_MISSED);
+    if missed || frames.len() < 3 || frames.iter().any(|ms| *ms >= 1000) {
+        panic!(
+            "GATE_MISS lock first frame: first frames {frames:?} ms (deadline 1000 ms), \
+             fallback shown for it: {missed}\n{log}"
+        );
+    }
+    eprintln!("lock first frames: {frames:?} ms");
 }
 
 /// SIGTERM while locked: logic is told to stop, the fallback shows, and

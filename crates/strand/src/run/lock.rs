@@ -216,6 +216,9 @@ pub(crate) struct LockScreen {
     /// (a content surface moved to another output does not start the
     /// first-frame deadline again).
     drew: bool,
+    /// When the main loop first saw this lock asked for or held (the
+    /// first-frame deadline's start): the first frame's time is logged.
+    asked: Option<Instant>,
     fallback: Option<Shown>,
     /// Why the fallback must show, from an event: `auth` failing, the
     /// compositor ending a held lock.
@@ -307,6 +310,12 @@ impl LockScreen {
     /// The renderer painted `surface` with `damage`.
     pub(crate) fn painted(&mut self, surface: SurfaceId, damage: &Damage) {
         if self.on_content(surface) && !damage.is_empty() {
+            if !self.drew
+                && let Some(at) = self.asked
+            {
+                // The VM's first-frame gate reads this.
+                log::info!("lock: first frame after {} ms", at.elapsed().as_millis());
+            }
             self.drew = true;
         }
     }
@@ -432,6 +441,7 @@ impl LockScreen {
         self.fallback = None;
         self.pending = None;
         self.drew = false;
+        self.asked = None;
         self.node = None;
         // The helper goes with the lock session.
         self.checker = None;
@@ -584,6 +594,7 @@ impl Guard {
             return;
         }
         let since = *self.since.get_or_insert(now);
+        state.host_mut().lock.asked.get_or_insert(since);
         if signalled && !self.stopping {
             self.stopping = true;
             log::info!("asked to stop while locked: the run ends after the unlock");
