@@ -296,6 +296,9 @@ struct BlurFallback {
     /// The compositor's capabilities (`None`: not reported yet; on
     /// Hyprland the reason names `strand compositor-rules`).
     caps: Option<CompositorCaps>,
+    /// (M4) How many blur regions each surface's last frame had: its
+    /// `blur` boxes are told to logic when that changes.
+    regions: HashMap<SurfaceId, usize>,
     said: bool,
 }
 
@@ -304,6 +307,7 @@ impl BlurFallback {
     /// and the compositor is known not to blur. Checked before anything
     /// is asked of the renderer, so a compositor that blurs (or one not
     /// reported yet) costs a paint nothing.
+    #[cfg(test)]
     fn pending(&self) -> bool {
         !self.said
             && self
@@ -323,6 +327,38 @@ impl BlurFallback {
         self.said = true;
         Some(format!("no blur behind {ns}: {reason}"))
     }
+}
+
+/// The nodes of `root`'s surface (nested surfaces left out) that ask for
+/// blur: each with its kind and whether it draws the tint fallback.
+fn blur_nodes(
+    tree: &strand_render::SceneTree,
+    root: NodeId,
+) -> Vec<(NodeId, strand_scene::NodeKind, bool)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Some(n) = tree.get(id) else {
+            continue;
+        };
+        if id != root && n.kind.is_surface() {
+            continue;
+        }
+        let blur = match n.get(Prop::Blur) {
+            Some(strand_scene::PropValue::Number(b)) => *b > 0.0,
+            Some(_) => true,
+            None => false,
+        };
+        if blur {
+            let none = matches!(
+                n.get(Prop::BlurFallback),
+                Some(strand_scene::PropValue::Keyword(k)) if k == "none"
+            );
+            out.push((id, n.kind, !none));
+        }
+        stack.extend(n.children.iter().rev());
+    }
+    out
 }
 
 impl Host {
@@ -349,20 +385,45 @@ impl Host {
 
     /// Says once, as a warning and a `strand watch` notice, why `blur`
     /// falls back to its tint, the first time a frame of `surface` asks
-    /// the compositor to blur and it cannot.
+    /// the compositor to blur and it cannot; and (M4, the inspector's
+    /// half) tells logic the surface's `blur` boxes whenever their count
+    /// changes, for a notice per box naming its place in the source.
     fn note_blur_fallback(&mut self, surface: SurfaceId) {
-        if !self.blur_fallback.pending() || self.renderer.blur_region(surface).is_empty() {
+        if !self
+            .blur_fallback
+            .caps
+            .is_some_and(|c| !c.background_effect)
+        {
             return;
         }
-        let ns = self
-            .roots
-            .get(&surface)
-            .and_then(|n| self.renderer.surface_spec(*n))
+        let regions = self.renderer.blur_region(surface).len();
+        let before = self.blur_fallback.regions.insert(surface, regions);
+        if regions == 0 || before == Some(regions) {
+            return;
+        }
+        let root = self.roots.get(&surface).copied();
+        let ns = root
+            .and_then(|n| self.renderer.surface_spec(n))
             .map_or_else(|| format!("surface {}", surface.0), |s| s.namespace());
         if let Some(text) = self.blur_fallback.frame(&ns) {
             log::warn!("{text}");
             if let Some(f) = &self.logic {
                 f.send(ToLogic::Notice(text));
+            }
+        }
+        let why = self
+            .blur_fallback
+            .caps
+            .as_ref()
+            .and_then(strand_surface::caps::blur_missing);
+        if let (Some(root), Some(why), Some(f)) = (root, why, &self.logic) {
+            let nodes = blur_nodes(self.renderer.tree(), root);
+            if !nodes.is_empty() {
+                f.send(ToLogic::BlurFallback {
+                    surface: ns,
+                    nodes,
+                    why,
+                });
             }
         }
     }
@@ -649,6 +710,7 @@ impl SurfaceHost for Host {
         }
         self.roots.remove(&surface);
         self.origins.remove(&surface);
+        self.blur_fallback.regions.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -844,6 +906,105 @@ mod tests {
                 .unwrap()
                 .contains("strand compositor-rules")
         );
+    }
+
+    /// (M4) The blur ladder's inspector half, on the host's side: a
+    /// surface's `blur` boxes (not a nested popup's), each saying whether
+    /// it draws the tint, are told to logic with why, when the frame's
+    /// blur regions first appear and again when their count changes;
+    /// not while the capabilities are unknown or the compositor blurs.
+    #[test]
+    fn a_surfaces_blur_boxes_are_told_to_logic() {
+        use std::time::Duration;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, rx) = calloop::channel::channel();
+        let mut host = Host::new(renderer, false).forwarding(tx);
+        let num = strand_scene::PropValue::Number;
+        let (panel, tinted, plain, bare, popup, inner) = (
+            NodeId::new(0, 0),
+            NodeId::new(1, 0),
+            NodeId::new(2, 0),
+            NodeId::new(3, 0),
+            NodeId::new(4, 0),
+            NodeId::new(5, 0),
+        );
+        let mut d = SceneDiff::new();
+        d.create(panel, strand_scene::NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, num(100.0))
+            .set(panel, Prop::Height, num(100.0))
+            .create(tinted, strand_scene::NodeKind::Box, Some(panel), 0)
+            .set(tinted, Prop::Width, num(40.0))
+            .set(tinted, Prop::Height, num(40.0))
+            .set(tinted, Prop::Blur, num(24.0))
+            .create(plain, strand_scene::NodeKind::Box, Some(panel), 1)
+            .set(plain, Prop::Width, num(40.0))
+            .set(plain, Prop::Height, num(40.0))
+            .set(plain, Prop::Blur, num(8.0))
+            .set(
+                plain,
+                Prop::BlurFallback,
+                strand_scene::PropValue::Keyword("none".into()),
+            )
+            .create(bare, strand_scene::NodeKind::Box, Some(panel), 2)
+            .set(bare, Prop::Width, num(10.0))
+            .set(bare, Prop::Height, num(10.0))
+            .create(popup, strand_scene::NodeKind::Popup, Some(panel), 3)
+            .create(inner, strand_scene::NodeKind::Box, Some(popup), 0)
+            .set(inner, Prop::Blur, num(8.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let paint = |host: &mut Host| {
+            let mut px = vec![0u8; 100 * 100 * 4];
+            let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+            let mut t = t.at(Duration::from_secs(1));
+            let damage = host.paint(s, &mut t);
+            host.painted(s, &damage);
+        };
+        let told = |rx: &calloop::channel::Channel<ToLogic>| {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|m| match m {
+                    ToLogic::BlurFallback {
+                        surface,
+                        nodes,
+                        why,
+                    } => Some((surface, nodes, why)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        paint(&mut host);
+        assert!(told(&rx).is_empty(), "capabilities unknown");
+        host.compositor_caps(&CompositorCaps {
+            background_effect: true,
+            ..CompositorCaps::default()
+        });
+        host.renderer.invalidate(s);
+        paint(&mut host);
+        assert!(told(&rx).is_empty(), "the compositor blurs");
+        host.compositor_caps(&CompositorCaps::default());
+        host.renderer.invalidate(s);
+        paint(&mut host);
+        let got = told(&rx);
+        assert_eq!(got.len(), 1, "{got:?}");
+        let (surface, nodes, why) = &got[0];
+        assert_eq!(surface, "strand-panel");
+        assert_eq!(
+            nodes,
+            &[
+                (tinted, strand_scene::NodeKind::Box, true),
+                (plain, strand_scene::NodeKind::Box, false)
+            ]
+        );
+        assert!(why.contains("ext-background-effect-v1"), "{why}");
+        host.renderer.invalidate(s);
+        paint(&mut host);
+        assert!(told(&rx).is_empty(), "the same boxes: told once");
     }
 
     /// Compositor-animated poses follow the capabilities: with the alpha

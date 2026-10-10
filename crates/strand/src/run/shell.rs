@@ -151,11 +151,55 @@ impl Shell {
                 self.host_notices.push(text);
             }
             ToLogic::Notice(_) => {}
+            ToLogic::BlurFallback {
+                surface,
+                nodes,
+                why,
+            } => {
+                for text in self.blur_notices(&surface, &nodes, &why) {
+                    log::info!("{text}");
+                    self.handle(ToLogic::Notice(text));
+                }
+            }
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => self.lock_state(state),
             ToLogic::Beat(seq) => super::lock::beat(seq),
             ToLogic::Shutdown => {}
         }
+    }
+
+    /// (M4) The blur ladder's inspector half: for each `blur` box the
+    /// compositor does not blur behind, where it is in the source, what
+    /// it draws instead and why.
+    fn blur_notices(
+        &self,
+        surface: &str,
+        nodes: &[(NodeId, strand_scene::NodeKind, bool)],
+        why: &str,
+    ) -> Vec<String> {
+        nodes
+            .iter()
+            .map(|&(node, kind, tint)| {
+                let at = self
+                    .inst
+                    .origin(node)
+                    .and_then(|(f, _, sp)| {
+                        let file = self.build.sources.get(f)?;
+                        let (l, c) = overlay::line_col(&file.text, sp.start);
+                        Some(format!("{}:{l}:{c}", file.name))
+                    })
+                    .unwrap_or_else(|| surface.to_string());
+                let draws = if tint {
+                    "draws its tint fallback (alpha + 0.15; `blur_fallback: none` turns it off)"
+                } else {
+                    "draws no blur and no tint (`blur_fallback: none`)"
+                };
+                format!(
+                    "{at}: `{}` in {surface} asks for blur and {draws}: {why}",
+                    kind.name()
+                )
+            })
+            .collect()
     }
 
     /// (M4) The GPU status render reported: kept (for `strand report`),

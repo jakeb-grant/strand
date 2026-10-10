@@ -2556,6 +2556,12 @@ and the connection):
     `background_effect` is true only once that event names blur.
     `State::compositor_caps()` reads them. The binary's host hands
     `set_compositor_blur` to render and forwards `Painter::blur_region`.
+    (M4 interaction-finish) While the compositor does not blur, the
+    host sends logic `ToLogic::BlurFallback { surface, nodes, why }`
+    (each `blur` node of a surface, its kind and whether it draws the
+    tint; `caps::blur_missing`) when a surface's blur-region count
+    changes, and logic makes a `strand watch` notice per box with its
+    `file:line:col` (`Instance::origin`).
   - Poses (`manager/pose.rs`, wave 2): each frame, right after
     `paint`, it reads `Painter::surface_pose` and sets what changed as
     pending state (a `wp_alpha_modifier_surface_v1` multiplier, made with

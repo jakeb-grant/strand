@@ -77,16 +77,30 @@ impl Offered {
 }
 
 /// Why `blur` falls back to its tint on this compositor (`None`: the
-/// compositor blurs, through `ext-background-effect-v1`). On Hyprland
-/// (`caps.hyprland`, from its globals) layer surfaces blur through its
-/// own layer rules, which `strand compositor-rules` prints, so the reason
-/// names that command.
+/// compositor blurs, through `ext-background-effect-v1`): [`blur_missing`]
+/// with what `blur` draws instead.
 pub fn blur_fallback_reason(caps: &CompositorCaps) -> Option<String> {
+    let why = blur_missing(caps)?;
+    let (head, hint) = why
+        .split_once("; ")
+        .map_or((why.as_str(), None), |(h, t)| (h, Some(t)));
+    let tint =
+        "so `blur` draws its tint fallback (alpha + 0.15; `blur_fallback: none` turns it off)";
+    Some(match hint {
+        Some(hint) => format!("{head}, {tint}; {hint}"),
+        None => format!("{head}, {tint}"),
+    })
+}
+
+/// Why no compositor blur is behind a `blur` box (`None`: the compositor
+/// blurs). On Hyprland (`caps.hyprland`, from its globals) layer
+/// surfaces blur through its own layer rules, which `strand
+/// compositor-rules` prints, so the reason names that command.
+pub fn blur_missing(caps: &CompositorCaps) -> Option<String> {
     if caps.background_effect {
         return None;
     }
-    let why = "the compositor does not offer ext-background-effect-v1 with blur, so `blur` \
-               draws its tint fallback (alpha + 0.15; `blur_fallback: none` turns it off)";
+    let why = "the compositor does not offer ext-background-effect-v1 with blur";
     Some(if caps.hyprland {
         format!(
             "{why}; on Hyprland, paste the layer rules `strand compositor-rules` prints \
@@ -150,11 +164,21 @@ mod tests {
         let plain = blur_fallback_reason(&none).unwrap();
         assert!(plain.contains("ext-background-effect-v1") && plain.contains("tint"));
         assert!(!plain.contains("compositor-rules"));
+        assert_eq!(
+            plain,
+            "the compositor does not offer ext-background-effect-v1 with blur, so `blur` draws \
+             its tint fallback (alpha + 0.15; `blur_fallback: none` turns it off)"
+        );
+        assert_eq!(
+            blur_missing(&none).unwrap(),
+            "the compositor does not offer ext-background-effect-v1 with blur"
+        );
         let hypr = blur_fallback_reason(&CompositorCaps {
             hyprland: true,
             ..none
         })
         .unwrap();
         assert!(hypr.contains("strand compositor-rules"));
+        assert!(hypr.contains("tint fallback (alpha + 0.15"), "{hypr}");
     }
 }

@@ -2,7 +2,7 @@ use super::sleep::{Inbox, Sleeper};
 use super::*;
 use strand_compiler::instantiate::SceneMirror;
 use strand_compiler::reconcile::loader::Loader;
-use strand_scene::{Prop, PropValue};
+use strand_scene::{NodeKind, Prop, PropValue};
 
 pub(crate) fn screen(id: &str, name: &str) -> ScreenInfo {
     ScreenInfo {
@@ -1963,6 +1963,79 @@ fn main_thread_notices_reach_watchers_that_come_later() {
     let mut second = watch();
     let ev = next(&mut second);
     assert_eq!(ev["notices"], json!([said, "another"]), "{ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (M4) The blur ladder's inspector half: the main thread tells logic a
+/// surface's `blur` boxes the compositor does not blur behind
+/// (`ToLogic::BlurFallback`), and each becomes a `strand watch` notice
+/// naming its place in the source, what it draws instead and why; kept
+/// for watchers that come later, and not repeated.
+#[test]
+fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
+    let dir = temp_dir("blur-notices");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  box { blur: 24; width: 10; height: 10 }\n  \
+         box { blur: 8; blur_fallback: none; width: 10; height: 10 }\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    assert!(boot.build.is_some() && boot.diagnostics.is_empty());
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the boxes", |s| s.of_kind(NodeKind::Box).len() == 2);
+    let boxes = m.scene.of_kind(NodeKind::Box);
+    let why = "the compositor does not offer ext-background-effect-v1 with blur";
+    let tell = || ToLogic::BlurFallback {
+        surface: "strand-Top".into(),
+        nodes: vec![
+            (boxes[0], NodeKind::Box, true),
+            (boxes[1], NodeKind::Box, false),
+        ],
+        why: why.into(),
+    };
+    to_logic.send(tell()).unwrap();
+    to_logic.send(tell()).unwrap();
+    let mut events =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+    assert_eq!(ok["ok"], true);
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+    let ev: Json = serde_json::from_str(&line).unwrap();
+    assert_eq!(ev["event"], "notices", "{ev}");
+    let file = dir.join("bar.strand").display().to_string();
+    assert_eq!(
+        ev["notices"],
+        json!([
+            format!(
+                "{file}:2:3: `box` in strand-Top asks for blur and draws its tint fallback \
+                 (alpha + 0.15; `blur_fallback: none` turns it off): {why}"
+            ),
+            format!(
+                "{file}:3:3: `box` in strand-Top asks for blur and draws no blur and no tint \
+                 (`blur_fallback: none`): {why}"
+            ),
+        ]),
+        "once each, at once: {ev}"
+    );
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(&dir);
