@@ -314,7 +314,7 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   StartLimitIntervalSec=0
 
   [Service]
-  ExecStart=strand run
+  ExecStart=%h/.cargo/bin/strand run
   Restart=on-failure
   RestartSec=100ms
   RestartSteps=5
@@ -323,6 +323,13 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   [Install]
   WantedBy=graphical-session.target
   ```
+
+  `ExecStart` names the binary by an absolute path: systemd looks a bare
+  name up on its own fixed path (`/usr/local/bin`, `/usr/bin`, ...), never
+  the user's `$PATH`, so a bare `strand` would not find the
+  `~/.cargo/bin` install README describes and the unit would never start
+  it. `%h` is the user's home; a package that installs to `/usr/bin`
+  writes `ExecStart=/usr/bin/strand run`.
 
   `StartLimitIntervalSec=0` is what keeps a crash loop from ending the
   lock's way out. Without it systemd's default start limit (5 starts in

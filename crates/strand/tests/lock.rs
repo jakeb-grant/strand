@@ -1069,6 +1069,27 @@ impl Vm {
         self.until_locked(output, what, false, ok)
     }
 
+    /// Every shot of `output` for `span` passes `ok` (`what` it must
+    /// show). Taken only after a positive sign that strand handled what
+    /// the absence check is about (m4-audit): the span then covers the
+    /// compositor drawing the result, not strand's startup.
+    fn stays(&self, output: &str, what: &str, span: Duration, ok: impl Fn(&Shot) -> bool) {
+        let end = Instant::now() + span;
+        loop {
+            let shot = self.sway.shot(output);
+            assert!(
+                ok(&shot),
+                "{output}: not {what}: {}\n{}",
+                shot.describe(),
+                self.strand.log_text()
+            );
+            if Instant::now() >= end {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// [`Vm::until`]; with `locked`, every shot on the way must hide the
     /// desktop (the session stayed locked throughout).
     fn until_locked(
@@ -1749,13 +1770,35 @@ fn a_refused_restart_lock_removes_the_marker() {
     assert!(vm.strand.running(), "strand runs on after a refusal");
     other.unlock(&vm.sway.dir);
     vm.until("HEADLESS-1", "the desktop back", Shot::desktop);
-    // Started again, it does not lock.
+    // Started again, it does not lock. The CLI answering is the sign
+    // the new strand is up: its logic thread (which serves the CLI)
+    // starts after the lock is wired and the marker read, so a lock that
+    // start asked for is asked for by then.
     vm.strand.signal(libc::SIGTERM);
     vm.strand.wait_exit("SIGTERM, unlocked");
+    let before = vm.strand.log_text().len();
     vm.strand.run();
-    std::thread::sleep(Duration::from_millis(1000));
-    let shot = vm.sway.shot("HEADLESS-1");
-    assert!(shot.desktop(), "a later start locked: {}", shot.describe());
+    let deadline = Instant::now() + WAIT;
+    while !vm.strand.try_cli(&["set", "lock.locked", "false"]) {
+        assert!(
+            Instant::now() < deadline,
+            "the restarted strand never answered:\n{}",
+            vm.strand.log_text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    vm.stays(
+        "HEADLESS-1",
+        "the desktop",
+        Duration::from_millis(1000),
+        Shot::desktop,
+    );
+    let log = vm.strand.log_text();
+    let start = &log[before.min(log.len())..];
+    assert!(
+        !start.contains("locking again") && !start.contains("lock: first frame"),
+        "a later start locked:\n{start}"
+    );
     assert!(!marker.exists());
 }
 
@@ -1831,9 +1874,15 @@ fn a_mocked_run_never_locks_the_session() {
         .until_log("STRAND_MOCK has no `auth` service, so this run never locks the session");
     let marker = vm.strand.marker(&display);
     vm.strand.cli(&["set", "lock.locked", "true"]);
-    std::thread::sleep(Duration::from_millis(1000));
-    let shot = vm.sway.shot("HEADLESS-1");
-    assert!(shot.desktop(), "a mocked run locked: {}", shot.describe());
+    // The surface manager's answer to the open `lock`: not locking.
+    vm.strand
+        .until_log("the session lock is not enabled in this build");
+    vm.stays(
+        "HEADLESS-1",
+        "the desktop (a mocked run locked)",
+        Duration::from_millis(1000),
+        Shot::desktop,
+    );
     assert!(!marker.exists(), "a mocked run wrote the marker");
     assert!(vm.strand.running(), "the mocked run goes on");
 }
@@ -1843,7 +1892,8 @@ fn a_mocked_run_never_locks_the_session() {
 /// a strand that dies at once is started five times and then given up
 /// on, which would leave a locked session with no password field. The
 /// documented unit lifts the limit (`StartLimitIntervalSec=0`) and backs
-/// off to a bounded delay instead. Runs anywhere (no lock taken).
+/// off to a bounded delay instead, and names strand by an absolute
+/// path. Runs anywhere (no lock taken).
 #[test]
 fn the_supervisor_gives_up_as_systemd_does_unless_the_unit_lifts_the_limit() {
     let default = Supervisor::of_unit("[Service]\nRestart=on-failure\nRestartSec=0\n");
@@ -1871,6 +1921,17 @@ fn the_supervisor_gives_up_as_systemd_does_unless_the_unit_lifts_the_limit() {
     assert!(
         documented.delays.len() > 1 && longest <= Duration::from_secs(5),
         "it backs off, to a bounded delay: {documented:?}"
+    );
+    // (m4-audit) systemd looks a bare ExecStart name up on its own fixed
+    // path, never ~/.cargo/bin where README's `cargo install` puts strand:
+    // the unit names the binary by an absolute path (`%h` is the home).
+    let exec = documented_unit()
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ExecStart="))
+        .expect("the unit has an ExecStart");
+    assert!(
+        exec.starts_with('/') || exec.starts_with("%h/"),
+        "ExecStart names strand by an absolute path: {exec}"
     );
 }
 
@@ -2034,11 +2095,16 @@ fn a_refused_lock_is_not_a_fault() {
     vm.strand.cli(&["set", "lock.locked", "false"]);
     vm.lock();
     vm.content();
-    // Only a password unlocks: a config write of `false` is ignored.
+    // Only a password unlocks: a config write of `false` is ignored. No
+    // log line follows a closed spec while locked, so every shot for a
+    // second hides the desktop (an unlock honouring it would be quick).
     vm.strand.cli(&["set", "lock.locked", "false"]);
-    std::thread::sleep(Duration::from_millis(1000));
-    let shot = vm.sway.shot("HEADLESS-1");
-    assert!(near(shot.corner(), LOCK_BG), "{}", shot.describe());
+    vm.stays(
+        "HEADLESS-1",
+        "the lock",
+        Duration::from_millis(1000),
+        |shot| near(shot.corner(), LOCK_BG),
+    );
     vm.lock_passwords();
     assert!(vm.strand.running());
 }

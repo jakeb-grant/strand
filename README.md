@@ -189,6 +189,8 @@ one, write the `strand` file with `pam_unix` alone
 If strand dies while the session is locked, the compositor keeps it
 locked and a restarted strand shows the password field again, so run
 it under a supervisor that restarts it. docs/architecture.md
+`ExecStart` is `%h/.cargo/bin/strand run`, for the install above;
+change it to where strand is if it is installed elsewhere. Its
 ("Threads", the lock's entry) has the systemd user unit. Its
 `StartLimitIntervalSec=0` matters: systemd's default start limit
 would otherwise stop restarting a strand that keeps dying and leave
