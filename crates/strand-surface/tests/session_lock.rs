@@ -234,6 +234,15 @@ fn locks_every_output_including_hotplug() {
         lock.state().lock_solid_outputs(),
         std::slice::from_ref(&second)
     );
+    // The solid is one single-pixel buffer the viewporter stretches
+    // (design.md: "Scrims and lock backgrounds use single-pixel
+    // buffers"); sway 1.9 offers both protocols.
+    assert!(lock.state().compositor_caps().single_pixel_buffer);
+    assert_eq!(
+        lock.state().lock_solid_is_single_pixel(&second),
+        Some(true),
+        "the solid on {second} is a single pixel"
+    );
 
     // An output plugged in while locked gets a solid too.
     let third = sway.create_output();
@@ -243,6 +252,7 @@ fn locks_every_output_including_hotplug() {
     assert!(ok, "the hotplugged output gets a lock surface");
     settle(&mut lock, &mut desk, Duration::from_millis(500));
     assert_eq!(shot(&sway, &third), [GREEN, GREEN], "{third}");
+    assert_eq!(lock.state().lock_solid_is_single_pixel(&third), Some(true));
 
     // Only a token unlocks; then the desktop shows again.
     assert!(lock.state_mut().unlock(token()));
