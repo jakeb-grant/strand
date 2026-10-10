@@ -425,7 +425,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `letters.rs` (a text's `letters`, one letter at a time), `roll.rs`
   (`roll: true` texts rolling their changed letters), `lean.rs`
   (`parallax:` and the CPU's 2D `tilt:` following the pointer),
-  `transition.rs` (transition masks: clip paths, pixelate's blur).
+  `transition.rs` (transition masks: clip paths, pixelate's blur),
+  `goo.rs` (`merge d`'s goo field, a CPU raster under the children).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and

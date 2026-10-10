@@ -648,6 +648,8 @@ impl<'a> Flattener<'a> {
         let time_now = time.unwrap_or_default();
         let raster = match &built {
             _ if !has_area => None,
+            // (M4) A merge's goo is drawn after its children.
+            None if node.kind == NodeKind::Merge => None,
             Some(b) => self.extras.rasters.pixmap_from(
                 node.id,
                 b,
@@ -1091,6 +1093,28 @@ impl<'a> Flattener<'a> {
                 .unwrap_or_default();
             clip_group = Some(self.marker(Item::PushClip(box_path)));
         }
+        // (M4) A merge's goo goes under its children, once they are
+        // drawn (`crate::effects::goo`): its distance and their colours.
+        let goo_at = (node.kind == NodeKind::Merge && has_area).then(|| {
+            let distance = node
+                .get(Prop::Value)
+                .and_then(|v| scope.resolve(v))
+                .and_then(|v| number(Some(&v)))
+                .unwrap_or(0.0);
+            let colors: Vec<(strand_scene::NodeId, Color)> = node
+                .children
+                .iter()
+                .filter_map(|c| {
+                    let bg = self.tree.get(*c)?.get(Prop::Bg)?;
+                    match scope.resolve(bg).as_deref() {
+                        Some(PropValue::Color(col)) => Some((*c, *col)),
+                        Some(PropValue::Paint(strand_scene::Paint::Solid(col))) => Some((*c, *col)),
+                        _ => None,
+                    }
+                })
+                .collect();
+            (self.out.items.len(), distance, colors)
+        });
         let child_inh = Inherited {
             color: own_color,
             font: own_font,
@@ -1115,6 +1139,9 @@ impl<'a> Flattener<'a> {
                     children = children.union(self.node(child, rect, &child_inh, false));
                 }
             }
+        }
+        if let Some((at, distance, colors)) = goo_at {
+            self.goo(node, at, distance, &colors, (frame, phys), inh.clip);
         }
         if let Some(i) = clip_group {
             self.out.items[i].bounds = children;
@@ -1150,6 +1177,82 @@ impl<'a> Flattener<'a> {
             self.xform = saved;
         }
         subtree
+    }
+
+    /// (M4) Inserts `merge` node `node`'s goo at item `at` (under its
+    /// children, drawn by now): the smooth union of their drawn boxes,
+    /// within the merge distance (`crate::effects::goo`). `frame` is its
+    /// box (physical, and as a pixel rect), `clip` its ancestors' clip.
+    fn goo(
+        &mut self,
+        node: &Node,
+        at: usize,
+        distance: f32,
+        colors: &[(strand_scene::NodeId, Color)],
+        (frame, phys): (kurbo::Rect, Rect),
+        clip: Rect,
+    ) {
+        use crate::effects::goo::{Blob, Goo, MAX_DISTANCE};
+        let distance = distance.clamp(0.0, MAX_DISTANCE) as f64 * self.scale.as_f64();
+        let origin = kurbo::Vec2::new(frame.x0.round(), frame.y0.round());
+        let mut blobs = Vec::new();
+        for &(c, color) in colors {
+            let c = &c;
+            let Some(hit) = self.out.hits.iter().rev().find(|h| h.node == *c) else {
+                continue;
+            };
+            // Its box as drawn (through its transform, if any).
+            let rect = match hit.inverse {
+                Some(inv) if inv.determinant().abs() > 1e-12 => {
+                    inv.inverse().transform_rect_bbox(hit.rect)
+                }
+                Some(_) => continue,
+                None => hit.rect,
+            };
+            blobs.push(Blob {
+                rect: rect - origin,
+                radius: hit.radii.top_left,
+                color,
+            });
+        }
+        let goo = Goo { blobs, distance };
+        let (pw, ph) = (phys.w, phys.h);
+        let Some((key, pixmap)) = self.extras.rasters.pixmap_from(
+            node.id,
+            &goo,
+            goo.config(),
+            pw,
+            ph,
+            self.scale.as_f32(),
+            strand_scene::TimeContext::at(0.0),
+        ) else {
+            return;
+        };
+        let rect = kurbo::Rect::new(
+            origin.x,
+            origin.y,
+            origin.x + pixmap.width() as f64,
+            origin.y + pixmap.height() as f64,
+        );
+        let bounds = map_rect(self.xform, phys);
+        self.out.items.insert(
+            at,
+            DisplayItem {
+                item: Item::Raster {
+                    node: node.id,
+                    key,
+                    pixmap,
+                    rect,
+                },
+                bounds,
+            },
+        );
+        if let Some(rec) = self.out.records.get_mut(&node.id) {
+            let mut h = DefaultHasher::new();
+            (rec.sig, key).hash(&mut h);
+            rec.sig = h.finish();
+            rec.bounds = rec.bounds.union(bounds.intersect(clip).unwrap_or_default());
+        }
     }
 
     /// (M4) The outline `node` draws its box as, when it has a `shape:`

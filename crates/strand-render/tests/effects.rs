@@ -1740,3 +1740,55 @@ fn a_shared_morph_starts_from_the_named_box() {
     assert_eq!(buf.px(150, 30), orange);
     assert_eq!(buf.px(20, 30), bg);
 }
+
+/// `merge 10` (200 × 60) on a bar holding three 20 px discs: two 6 px
+/// apart at x 20 and 46, one far off at x 120 (`#89b4fa`, `#cba6f7`,
+/// `#a6e3a1`).
+fn gooey() -> (Renderer, Buffer, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(0.0, 0.0, 200.0, 60.0);
+    p.extend([(Prop::Place, kw("absolute")), (Prop::Value, num(10.0))]);
+    let merge = b.node(NodeKind::Merge, Some(root), p);
+    let discs = [(20.0, "#89b4fa"), (46.0, "#cba6f7"), (120.0, "#a6e3a1")]
+        .into_iter()
+        .map(|(x, c)| {
+            let mut p = at_xy(x, 20.0, 20.0, 20.0);
+            p.extend([
+                (Prop::Place, kw("absolute")),
+                (Prop::Bg, color(c)),
+                (Prop::Radius, kw("full")),
+            ]);
+            b.node(NodeKind::Box, Some(merge), p)
+        })
+        .collect();
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(200, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    (r, buf, discs)
+}
+
+/// design.md "Shape and geometry": `merge 10 { … }` melts children
+/// together: two discs 6 px apart grow a bridge in their colours, a far
+/// one stays alone, and moving it near (by spring) bridges it too (ref
+/// `effects_goo.png`).
+#[test]
+fn goo_merges_near_children() {
+    let (mut r, mut buf, discs) = gooey();
+    assert_matches_ref("effects_goo", &buf, 2);
+    let bg = buf.px(100, 5);
+    // The gap between the near pair (x 40..46) is bridged at its middle.
+    assert_ne!(buf.px(43, 30), bg, "bridged");
+    // Off the bridge, above it, still the bar.
+    assert_eq!(buf.px(43, 18), bg);
+    // The far disc's gap is not.
+    assert_eq!(buf.px(90, 30), bg, "far: no bridge");
+    // Moving the far disc next to the pair bridges it.
+    let mut d = SceneDiff::new();
+    d.set(discs[2], Prop::X, num(72.0));
+    assert!(r.apply(d).is_empty());
+    settle(&mut r, &mut buf, 1000);
+    assert_ne!(buf.px(69, 30), bg, "bridged once near");
+}
