@@ -20,13 +20,14 @@
 //! Faults: the logic thread panics, or stops (the watchdog); the text
 //! worker dies; the PAM helper crashes, hangs, answers garbage or is
 //! missing; a runtime fault freezes the lock's component; the lock never
-//! draws a first frame; SIGTERM while locked; strand killed (SIGKILL) or
+//! draws a first frame; a session locked with no `lock` compiled; SIGTERM while locked; strand killed (SIGKILL) or
 //! aborted (SIGABRT, what an allocation failure does) while locked and
 //! started again; the compositor ends a lock it granted (`finished` after
 //! `locked`, played by a Wayland proxy, tests/lock/proxy.rs: sway 1.9
 //! never sends it); the compositor refusing the lock (another locker
 //! holds it: not a fault, nothing shows, the run goes on); an output
-//! plugged in while locked.
+//! plugged in while locked; a config write of `false` while locked
+//! (only a password unlocks).
 //!
 //! No assertion depends on how long anything took: each wait is for
 //! what grim shows, bounded only to fail instead of hanging.
@@ -600,13 +601,14 @@ struct Strand {
 }
 
 impl Strand {
-    /// `strand run` of [`CONFIG`] on `display` (sway's, or a proxy's in
-    /// sway's directory), with `STRAND_FAULT=faults`.
-    fn start(sway: &Sway, display: &str, faults: &str) -> Strand {
+    /// `strand run` of `source` (as `lock.strand`, exporting `zero`) on
+    /// `display` (sway's, or a proxy's in sway's directory), with
+    /// `STRAND_FAULT=faults`.
+    fn start(sway: &Sway, display: &str, faults: &str, source: &str) -> Strand {
         let home = sway.dir.join("home");
         let config = home.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(config.join("lock.strand"), CONFIG).unwrap();
+        std::fs::write(config.join("lock.strand"), source).unwrap();
         let env: Vec<(String, std::ffi::OsString)> = vec![
             ("HOME".into(), home.clone().into()),
             ("XDG_RUNTIME_DIR".into(), sway.dir.clone().into()),
@@ -752,16 +754,21 @@ struct Vm {
 
 impl Vm {
     fn start(tag: &str, faults: &str) -> Vm {
+        Vm::with(tag, faults, CONFIG)
+    }
+
+    /// [`Vm::start`] with another config.
+    fn with(tag: &str, faults: &str, source: &str) -> Vm {
         let sway = Sway::start(tag);
         let display = sway.display.clone();
-        Vm::on(sway, &display, faults)
+        Vm::on(sway, &display, faults, source)
     }
 
     /// Strand on `display` of `sway`'s directory.
-    fn on(sway: Sway, display: &str, faults: &str) -> Vm {
+    fn on(sway: Sway, display: &str, faults: &str, source: &str) -> Vm {
         let desktop = Desktop::start(&sway);
         let keys = Keyboard::new(&sway);
-        let strand = Strand::start(&sway, display, faults);
+        let strand = Strand::start(&sway, display, faults, source);
         let vm = Vm {
             sway,
             _desktop: desktop,
@@ -1045,6 +1052,27 @@ fn restart_after(test: &str, sig: i32) {
     vm.until("HEADLESS-1", "the marker removed", |_| !marker.exists());
 }
 
+/// A session locked with no `lock` compiled (a strand killed while
+/// locked comes back with a config that has none): the fallback shows.
+#[test]
+fn no_lock_compiled_shows_the_fallback() {
+    let test = "no_lock";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", "export state zero = 1\n");
+    let marker = vm.strand.marker(&vm.sway.display.clone());
+    vm.strand.signal(libc::SIGKILL);
+    vm.strand.wait_exit("killed");
+    // As a strand killed while locked leaves it.
+    std::fs::write(&marker, b"locked\n").unwrap();
+    vm.strand.run();
+    vm.fallback();
+    vm.log_has("with no `lock` open");
+    vm.fallback_passwords();
+    vm.until("HEADLESS-1", "the marker removed", |_| !marker.exists());
+}
+
 #[test]
 fn killed_while_locked_locks_again_on_restart() {
     restart_after("sigkill", libc::SIGKILL);
@@ -1067,7 +1095,7 @@ fn finished_after_locked_locks_again_with_the_fallback() {
     }
     let sway = Sway::start("finished");
     let proxy = proxy::Proxy::start(&sway.dir, "wayland-proxy", sway.socket());
-    let mut vm = Vm::on(sway, &proxy.name(), "");
+    let mut vm = Vm::on(sway, &proxy.name(), "", CONFIG);
     vm.lock();
     vm.content();
     proxy.end();
@@ -1126,6 +1154,11 @@ fn a_refused_lock_is_not_a_fault() {
     vm.strand.cli(&["set", "lock.locked", "false"]);
     vm.lock();
     vm.content();
+    // Only a password unlocks: a config write of `false` is ignored.
+    vm.strand.cli(&["set", "lock.locked", "false"]);
+    std::thread::sleep(Duration::from_millis(1000));
+    let shot = vm.sway.shot("HEADLESS-1");
+    assert!(near(shot.corner(), LOCK_BG), "{}", shot.describe());
     vm.lock_passwords();
     assert!(vm.strand.running());
 }
