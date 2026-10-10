@@ -905,7 +905,8 @@ group node {
   on drop(value: any, at: int)
   /// A key press while it has focus.
   on key(key: Key)
-  /// It was chosen: clicked, or Enter while selected in a `list`.
+  /// It was chosen: clicked, Enter while selected in a `list`, or Enter
+  /// in an `input` with no `nav:` list.
   on activate
 }
 

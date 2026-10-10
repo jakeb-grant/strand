@@ -1008,6 +1008,15 @@ impl Animator {
         let (at, commit, last) = (self.time, self.commit, self.prev);
         let na = self.nodes.entry(id).or_default();
         let touched = std::mem::take(&mut na.touched);
+        // A node drawn for the first time has no value on screen to spring
+        // from: logic's writes since it was created (the props of the diff
+        // that created it, recorded as replacing "unset") start at their
+        // values, and only its enter pose moves.
+        let touched = if entering && exiting.is_none() {
+            Vec::new()
+        } else {
+            touched
+        };
         let respring = std::mem::take(&mut na.respring);
         let mut moving = false;
         let mut exit_done = true;

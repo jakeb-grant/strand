@@ -1507,6 +1507,13 @@ impl Router {
             }
         }
         if kind == Some(NodeKind::Input) {
+            // Return in an input with no `nav:` list activates the input
+            // itself, as it activates a list's selected row: `on activate`
+            // means the same on both (the lock's password field submits).
+            if matches!(key.name.as_str(), "Return" | "KP_Enter") {
+                self.event(focus, NodeEvent::Activate);
+                return;
+            }
             // Keys typed faster than logic answers build on the last
             // write; once the scene shows it, or a text of logic's own,
             // they build on the scene.

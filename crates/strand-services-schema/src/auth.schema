@@ -9,8 +9,8 @@ service auth {
   /// The last password was refused, or could not be checked.
   failed: bool
   /// Checks `password`: `input { type: password; text: <-> secret;
-  /// focus: true; on key(k) { if k.name == "Return" {
-  /// auth.submit(secret); secret = "" } } }`. Ignored while one is
-  /// being checked.
+  /// focus: true; on activate { auth.submit(secret); secret = "" } }`
+  /// (Return in the field activates it). Ignored while one is being
+  /// checked.
   action submit(password: text)
 }
