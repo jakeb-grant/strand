@@ -90,11 +90,7 @@ pub(super) const GLYPH_CELLS_COMPARED: usize = 64;
 /// at the end of a long body), so the cost is linear in the glyphs; a
 /// middle longer than [`GLYPH_CELLS_COMPARED`] is damaged as one box per
 /// side.
-pub(super) fn glyph_damage(
-    a: &[(strand_scene::Rect, u64)],
-    b: &[(strand_scene::Rect, u64)],
-    d: &mut Damage,
-) {
+pub(super) fn glyph_damage<C: GlyphCell>(a: &[C], b: &[C], d: &mut Damage) {
     let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
     let (a, b) = (&a[prefix..], &b[prefix..]);
     let suffix = a
@@ -108,7 +104,7 @@ pub(super) fn glyph_damage(
         for side in [a, b] {
             if let Some(u) = side
                 .iter()
-                .map(|c| c.0)
+                .map(GlyphCell::rect)
                 .filter(|r| !r.is_empty())
                 .reduce(|u, r| u.union(r))
             {
@@ -119,13 +115,25 @@ pub(super) fn glyph_damage(
     }
     for c in a {
         if !b.contains(c) {
-            d.add(c.0);
+            d.add(c.rect());
         }
     }
     for c in b {
         if !a.contains(c) {
-            d.add(c.0);
+            d.add(c.rect());
         }
+    }
+}
+
+/// A glyph cell [`glyph_damage`] compares: a text's cells are
+/// `(where, glyph)`; the tests count its comparisons through their own.
+pub(super) trait GlyphCell: PartialEq {
+    fn rect(&self) -> strand_scene::Rect;
+}
+
+impl GlyphCell for (strand_scene::Rect, u64) {
+    fn rect(&self) -> strand_scene::Rect {
+        self.0
     }
 }
 

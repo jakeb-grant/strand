@@ -1,41 +1,79 @@
 /// The glyph diff is linear: 50,000 cells (a quadratic diff is
 /// 2.5 × 10^9 comparisons) with one changed at the end, in the
-/// middle, and all changed, each in well under a frame even in a
-/// debug build; the damage is the changed cells, or their box.
+/// middle, and all changed, each compared a few times per cell at most
+/// (counted, not timed: a debug build on a shared runner has no clock
+/// to trust; m4-audit); the damage is the changed cells, or their box.
 #[test]
 fn glyph_damage_is_linear_in_the_glyphs() {
+    use std::cell::Cell;
     use strand_scene::Rect;
-    let cells: Vec<(Rect, u64)> = (0..50_000)
-        .map(|i| (Rect::new((i % 200) * 10, (i / 200) * 16, 10, 16), i as u64))
+    thread_local! {
+        static COMPARED: Cell<usize> = const { Cell::new(0) };
+    }
+    /// A cell that counts how often it is compared.
+    #[derive(Clone, Copy)]
+    struct Counted(Rect, u64);
+    impl PartialEq for Counted {
+        fn eq(&self, o: &Self) -> bool {
+            COMPARED.with(|c| c.set(c.get() + 1));
+            self.0 == o.0 && self.1 == o.1
+        }
+    }
+    impl super::frame::GlyphCell for Counted {
+        fn rect(&self) -> Rect {
+            self.0
+        }
+    }
+    const N: usize = 50_000;
+    // Linear: the prefix and the suffix each compare a cell once, and a
+    // middle of at most GLYPH_CELLS_COMPARED cells per side is compared
+    // pairwise both ways.
+    let small = super::frame::GLYPH_CELLS_COMPARED;
+    let bound = 2 * (N + 1) + 2 * small * small;
+    let diff = |a: &[Counted], b: &[Counted]| {
+        COMPARED.with(|c| c.set(0));
+        let mut d = Damage::default();
+        glyph_damage(a, b, &mut d);
+        let n = COMPARED.with(Cell::get);
+        assert!(n <= bound, "{n} comparisons for {N} cells (bound {bound})");
+        d
+    };
+    let cells: Vec<Counted> = (0..N)
+        .map(|i| {
+            Counted(
+                Rect::new((i % 200) as i32 * 10, (i / 200) as i32 * 16, 10, 16),
+                i as u64,
+            )
+        })
         .collect();
-    let start = Instant::now();
     // The last glyph.
     let mut b = cells.clone();
-    b[49_999].1 = 7;
-    let mut d = Damage::default();
-    glyph_damage(&cells, &b, &mut d);
+    b[N - 1].1 = 7;
+    let d = diff(&cells, &b);
     assert_eq!(d.area(), 160, "{d:?}");
     // One in the middle.
     let mut b = cells.clone();
     b[25_000].1 = 7;
-    let mut d = Damage::default();
-    glyph_damage(&cells, &b, &mut d);
+    let d = diff(&cells, &b);
     assert_eq!(d.bounds(), Some(cells[25_000].0));
     // A glyph inserted near the start: everything after it moved.
     let mut b = cells.clone();
-    b.insert(10, (Rect::new(1, 1, 10, 16), 9));
+    b.insert(10, Counted(Rect::new(1, 1, 10, 16), 9));
     for c in &mut b[11..] {
         c.0.x += 10;
     }
-    let mut d = Damage::default();
-    glyph_damage(&cells, &b, &mut d);
+    let d = diff(&cells, &b);
     assert!(d.bounds().is_some_and(|r| r.contains_rect(cells[30_000].0)));
     // Nothing changed.
-    let mut d = Damage::default();
-    glyph_damage(&cells, &cells, &mut d);
+    let d = diff(&cells, &cells);
     assert!(d.is_empty());
-    let took = start.elapsed();
-    assert!(took < Duration::from_millis(250), "{took:?}");
+    // The real cells take the same path.
+    let real: Vec<(Rect, u64)> = cells.iter().map(|c| (c.0, c.1)).collect();
+    let mut b = real.clone();
+    b[N - 1].1 = 7;
+    let mut d = Damage::default();
+    glyph_damage(&real, &b, &mut d);
+    assert_eq!(d.area(), 160, "{d:?}");
 }
 use super::frame::glyph_damage;
 use super::*;
