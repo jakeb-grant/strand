@@ -251,15 +251,24 @@ fn to_logic(intent: Intent) -> Option<ToLogic> {
 /// pressed node's box `rect` (in the surface), where an app placing a
 /// menu of its own puts its top-left corner (and flips it up from a
 /// bottom bar), in the output's logical pixels; the press itself when no
-/// node was hit.
+/// node was hit. `scale` is the surface's delegated pose scale: the
+/// compositor draws the content at rest that much smaller from the
+/// surface's top-left corner (`strand_render::pose`).
 fn click_point(
     origin: (i32, i32),
     rect: Option<strand_scene::LogicalRect>,
     position: strand_scene::LogicalPoint,
+    scale: f32,
 ) -> (i32, i32) {
     let (x, y) = rect.map_or((position.x, position.y), |r| (r.x, r.y + r.h));
+    let scale = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
     let at = |o: i32, v: f32| {
-        (f64::from(o) + f64::from(v).round()).clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+        (f64::from(o) + (f64::from(v) * scale).round())
+            .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
     };
     (at(origin.0, x), at(origin.1, y))
 }
@@ -429,25 +438,38 @@ impl Host {
 }
 
 impl Host {
-    /// The tray's click point for `event` when it is a press on a placed
-    /// surface ([`click_point`] of the innermost node hit).
+    /// The tray's click point `event` sets, if any: on a press on a
+    /// placed surface, [`click_point`] of the innermost node hit; on a
+    /// press on a surface not placed yet (a popup before its configure,
+    /// a monitor with no logical size) or a key press (an action the
+    /// keyboard triggers), (0, 0), the point when none is known, so an
+    /// action never sends an earlier press's point from another surface.
     fn press_point(&self, event: &InputEvent) -> Option<(i32, i32)> {
-        let InputEvent::PointerButton {
-            surface,
-            position,
-            state: strand_scene::ButtonState::Pressed,
-            ..
-        } = event
-        else {
-            return None;
+        let (surface, position) = match event {
+            InputEvent::PointerButton {
+                surface,
+                position,
+                state: strand_scene::ButtonState::Pressed,
+                ..
+            } => (surface, position),
+            InputEvent::Key { key, .. } if key.state == strand_scene::ButtonState::Pressed => {
+                return Some((0, 0));
+            }
+            _ => return None,
         };
-        let origin = *self.origins.get(surface)?;
+        let Some(&origin) = self.origins.get(surface) else {
+            return Some((0, 0));
+        };
         let rect = self
             .renderer
             .hit(*surface, *position)
             .first()
             .and_then(|n| self.renderer.node_rect(*surface, *n));
-        Some(click_point(origin, rect, *position))
+        let scale = self
+            .renderer
+            .delegated_pose(*surface)
+            .map_or(1.0, |p| p.scale);
+        Some(click_point(origin, rect, *position, scale))
     }
 }
 
@@ -827,8 +849,9 @@ mod tests {
             state: strand_scene::ButtonState::Pressed,
             time: 0,
         };
-        // Not placed yet: no point.
-        assert_eq!(host.press_point(&press(5.0, 5.0)), None);
+        // Not placed yet: the point when none is known, not the last
+        // press's.
+        assert_eq!(host.press_point(&press(5.0, 5.0)), Some((0, 0)));
         host.surface_placed(s, (1800, 40));
         assert_eq!(host.press_point(&press(5.0, 5.0)), Some((1800, 60)));
         assert_eq!(host.press_point(&press(50.0, 80.0)), Some((1800, 140)));
@@ -840,11 +863,47 @@ mod tests {
             time: 0,
         };
         assert_eq!(host.press_point(&release), None);
-        host.surface_detached(s);
-        assert_eq!(host.press_point(&press(5.0, 5.0)), None);
+        // A key press (keyboard activation) has no point either.
+        let key = |state| InputEvent::Key {
+            surface: s,
+            key: strand_scene::KeyInput {
+                name: "Return".into(),
+                text: String::new(),
+                state,
+                repeat: false,
+                modifiers: strand_scene::Modifiers::default(),
+                time: 0,
+            },
+        };
         assert_eq!(
-            click_point((10, 20), None, strand_scene::LogicalPoint::new(3.4, 7.6)),
+            host.press_point(&key(strand_scene::ButtonState::Pressed)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            host.press_point(&key(strand_scene::ButtonState::Released)),
+            None
+        );
+        host.surface_detached(s);
+        assert_eq!(host.press_point(&press(5.0, 5.0)), Some((0, 0)));
+        assert_eq!(
+            click_point(
+                (10, 20),
+                None,
+                strand_scene::LogicalPoint::new(3.4, 7.6),
+                1.0
+            ),
             (13, 28)
+        );
+        // Under a delegated scale the corner is drawn that much nearer
+        // the surface's top-left corner: (40, 100) at 0.8 is (32, 80).
+        assert_eq!(
+            click_point(
+                (1800, 40),
+                Some(strand_scene::LogicalRect::new(40.0, 80.0, 20.0, 20.0)),
+                strand_scene::LogicalPoint::new(45.0, 85.0),
+                0.8
+            ),
+            (1832, 120)
         );
     }
 
