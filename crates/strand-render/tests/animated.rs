@@ -153,13 +153,22 @@ fn write_webp(path: &Path) {
     std::fs::write(path, out).unwrap();
 }
 
+#[derive(Clone)]
 struct Files {
     gif: String,
     apng: String,
     webp: String,
 }
 
+/// The three animations, written once per process: the tests run on
+/// parallel threads, and a test rewriting a file (truncate, then write)
+/// while another decodes it would hand that one half a file.
 fn files() -> Files {
+    static FILES: std::sync::OnceLock<Files> = std::sync::OnceLock::new();
+    FILES.get_or_init(write_files).clone()
+}
+
+fn write_files() -> Files {
     let d = dir();
     let (gif, apng, webp) = (d.join("spin.gif"), d.join("spin.png"), d.join("spin.webp"));
     write_gif(&gif, true);
@@ -344,15 +353,18 @@ fn the_clock_wakes_only_at_frame_changes() {
     let gif = dir().join("uneven.gif");
     write_gif_delays(&gif, [7, 8, 9]);
     let (mut r, mut buf, _) = setup(&[&gif.to_string_lossy()]);
+    // The wake is a real `Instant`, set from the real clock while the
+    // paint ran: measured from just before the paint, so a test thread
+    // held up after it never moves the wake earlier than asked (which
+    // drew extra frames under load).
+    let mut before = std::time::Instant::now();
     buf.paint_at(&mut r, S, 0, T0);
     let mut last = T0;
-    let wake = |r: &Renderer, painted: Duration| {
-        r.next_wake().map(|w| {
-            let now = std::time::Instant::now();
-            painted + w.saturating_duration_since(now)
-        })
+    let wake = |r: &Renderer, painted: Duration, before: std::time::Instant| {
+        r.next_wake()
+            .map(|w| painted + w.saturating_duration_since(before))
     };
-    let mut due = wake(&r, T0);
+    let mut due = wake(&r, T0, before);
     let (mut painted, mut changed) = (0, 0);
     for k in 1..=60u64 {
         let at = T0 + Duration::from_nanos(1_000_000_000 * k / 60);
@@ -360,11 +372,12 @@ fn the_clock_wakes_only_at_frame_changes() {
             continue;
         }
         painted += 1;
+        before = std::time::Instant::now();
         if !buf.paint_at(&mut r, S, 1, at).is_empty() {
             changed += 1;
         }
         last = at;
-        due = wake(&r, at);
+        due = wake(&r, at, before);
     }
     // Changes at 70, 150, 240, 310, 390, 480, 550, 630, 720, 790, 870
     // and 960 ms.

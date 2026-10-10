@@ -456,13 +456,29 @@ mod tests {
     #[test]
     fn cached_answers_are_reused_and_asked_off_the_caller() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Condvar, Mutex};
         let asked = Arc::new(AtomicUsize::new(0));
         let a = asked.clone();
+        // `c.D`'s answer waits until the test opens the gate, which it
+        // does only after `properties_or_ask` returned: a caller held up
+        // by the answer would find the gate shut for good (`timed_out`).
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (g, late) = (gate.clone(), timed_out.clone());
         let cache = Arc::new(Cache::with_fetch(
             Duration::from_millis(200),
-            move |_, _, _| {
+            move |_, name, _| {
                 a.fetch_add(1, Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(50));
+                if name == "c.D" {
+                    let (open, cv) = &*g;
+                    let shut = open.lock().unwrap();
+                    let (_open, wait) = cv
+                        .wait_timeout_while(shut, Duration::from_secs(5), |o| !*o)
+                        .unwrap();
+                    if wait.timed_out() {
+                        late.store(true, Ordering::SeqCst);
+                    }
+                }
                 Err("down".to_string())
             },
         ));
@@ -471,9 +487,8 @@ mod tests {
         assert_eq!(cache.properties(&bus, "a.B", "/a"), Err("down".into()));
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         // Another object, not blocking: nothing known yet, asked on a
-        // thread; the caller is not held up by the 50 ms answer.
+        // thread; the caller is not held up by the answer.
         let (tx, rx) = std::sync::mpsc::channel();
-        let t = Instant::now();
         let tx1 = tx.clone();
         assert_eq!(
             cache.properties_or_ask(&bus, "c.D", "/c", move || {
@@ -481,11 +496,13 @@ mod tests {
             }),
             None
         );
-        assert!(t.elapsed() < Duration::from_millis(40));
         // Asked once while the first question is out.
         assert_eq!(cache.properties_or_ask(&bus, "c.D", "/c", || {}), None);
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
         rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert!(!timed_out.load(Ordering::SeqCst), "the caller waited");
         assert_eq!(
             cache.properties_or_ask(&bus, "c.D", "/c", || {}),
             Some(Err("down".into()))

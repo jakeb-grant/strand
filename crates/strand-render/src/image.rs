@@ -1698,11 +1698,21 @@ mod tests {
             let name = std::thread::current().name().map(str::to_string);
             Ok(Arc::new(name))
         };
-        assert!(store.load_file("a", job).is_none(), "sent");
+        // The first job holds the worker until the in-flight case is
+        // checked: a job the worker had already finished would be taken.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let first = move || -> Loaded {
+            let _ = held.recv();
+            job()
+        };
+        assert!(store.load_file("a", first).is_none(), "sent");
         assert!(
-            store.load_file("a", job).is_none(),
+            store
+                .load_file("a", || -> Loaded { panic!("sent twice") })
+                .is_none(),
             "in flight, not sent again"
         );
+        release.send(()).unwrap();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         while !store.files_arrived() {
             assert!(Instant::now() < deadline, "the worker answers");

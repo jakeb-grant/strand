@@ -17,11 +17,12 @@ use strand_render::image::{
 use strand_scene::SurfaceId;
 
 static RAN: AtomicUsize = AtomicUsize::new(0);
-static ON: Mutex<Vec<ThreadId>> = Mutex::new(Vec::new());
+/// Each run's thread and when it ran.
+static ON: Mutex<Vec<(ThreadId, Instant)>> = Mutex::new(Vec::new());
 
 fn hook() {
     if let Ok(mut on) = ON.lock() {
-        on.push(std::thread::current().id());
+        on.push((std::thread::current().id(), Instant::now()));
     }
     RAN.fetch_add(1, Ordering::SeqCst);
 }
@@ -79,22 +80,20 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_image_worker() {
     assert_eq!(RAN.load(Ordering::SeqCst), first, "ran again while idle");
     // A decode past the burst's tail, within five seconds of the hook:
     // the drain skips it (a scroll through icons pays one, not one per
-    // drain) ...
+    // drain) and owes it: it runs once the worker has been quiet for
+    // 500 ms, with no further request. The hook's own clock says which:
+    // the drain comes after the request is sent, so a hook run at the
+    // drain is the decode's few milliseconds after `sent`, an owed one
+    // at least 500 ms. A test thread held up by a loaded machine only
+    // moves `sent` earlier, never later.
+    let sent = Instant::now();
     cache.want(surface, &[key("halves.jpg", 24)], false);
-    arrive(&mut cache, 1, first);
-    let decoded = Instant::now();
-    assert_eq!(RAN.load(Ordering::SeqCst), first, "ran within five seconds");
-    // ... and owes it: it runs once the worker has been quiet for
-    // 500 ms, with no further request.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while RAN.load(Ordering::SeqCst) == first {
-        assert!(Instant::now() < deadline, "the owed hook never ran");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    arrive(&mut cache, 1, first + 1);
+    let at = ON.lock().unwrap().last().map(|(_, at)| *at).unwrap();
     assert!(
-        decoded.elapsed() >= Duration::from_millis(400),
-        "the owed hook ran early: {:?}",
-        decoded.elapsed()
+        at.duration_since(sent) >= Duration::from_millis(450),
+        "ran within five seconds of the last: {:?} after the request",
+        at.duration_since(sent)
     );
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
@@ -104,7 +103,7 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_image_worker() {
     );
     let on = ON.lock().unwrap().clone();
     assert!(
-        on.iter().all(|t| *t != std::thread::current().id()),
+        on.iter().all(|(t, _)| *t != std::thread::current().id()),
         "the hook ran on the caller's thread"
     );
     drop(cache);
