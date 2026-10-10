@@ -436,11 +436,19 @@ records each in decisions.md when it builds it.
 - `strand-render/tests/list_scroll_bench.rs` (timing job, advisory locally).
 - `strand/tests/demo.rs::the_design_launcher_scrolls_2000_apps` (headless
   sway, virtual-pointer wheel, 2,000 mock apps): the per-frame no-gap
-  check, and grim refs once settled.
+  check, and grim refs once settled. As built (m4 audit): render never
+  shows past the mounted rows, so logic lag shows as `stalls=`, not
+  `gaps=`; the e2e test reports stalls and the bench asserts
+  `stalls == 0` against a logic answering 50 ms late (decisions.md
+  m4-audit).
 
 ### GPU released when idle (S-gpu)
 
-- `strand-gpu/tests/lifecycle.rs::the_device_is_created_on_first_visible_effect_and_dropped_after_idle`.
+- `strand-gpu/tests/lifecycle.rs::the_thread_and_driver_start_at_spawn_and_end_at_shutdown`
+  (renamed by the m4 audit: it proves no thread or libvulkan before the
+  start and none after the shutdown; the first-visible-effect start and
+  the idle drop are proved in strand-render below and by
+  `strand-render/tests/gpu_effects.rs::bundled_effects_start_the_gpu_only_while_visible`).
 - `strand-render/src/promote.rs` unit tests: `::promotes_after_500ms_of_large_damage`,
   `::switches_only_when_settled`, `::drops_after_30s_with_one_wake`.
 - `strand/tests/gpu_idle.rs::gpu_is_released_when_idle` (headless sway,
@@ -466,21 +474,35 @@ records each in decisions.md when it builds it.
   round trips and garbage replies, zeroized buffers.
 - `strand-render/tests/lock_fallback.rs`: the fallback field (empty, 4
   dots, failure tint) at 1× and 1.25×, with no text worker.
-- `strand/tests/lock.rs` (tier B, headless sway, `faults`):
-  `::locks_every_output_including_hotplug`, `::finished_is_reported_and_not_shown`,
-  `::only_auth_unlocks`, and `::<fault>_keeps_the_session_locked_and_shows_the_fallback`
-  for logic panic and hang, a lock runtime error, no lock compiled, text
-  worker panic, helper missing, crashed, hung or answering garbage, and
-  SIGTERM while locked. Each checks that no grim pixel shows the desktop,
-  that the fallback is there, and that the right password typed through a
-  virtual keyboard unlocks and a wrong one does not.
-- `lockvm.sh` (tier C, the design's required tier): real `pam_unix` with
-  right, wrong and empty passwords; `pam_faillock`; a missing
-  `/etc/pam.d/strand` (falls back to `login`); `kill -9 strand` (the
-  compositor stays locked and a restarted strand re-locks); the helper
-  OOM-killed or deleted; hotplug; every tier B fault under real PAM. It
-  runs on the laptop, and in CI's `lock-vm` job if KVM is there; the
-  features.md tick cites the run.
+- As built, tier B (headless sway, `faults`) is the session-lock and
+  fake-compositor tests that need no PAM, and every test that drives the
+  `strand` binary's lock runs in the lock VM (decisions.md m4-lock-w1;
+  `in_lock_vm` returns early elsewhere):
+  `strand-surface/tests/session_lock.rs::locks_every_output_including_hotplug`,
+  `::finished_is_reported_and_not_shown` and its token-only unlock
+  (`strand-surface/tests/session_lock.rs`, `session_lock_finished.rs`).
+  The planned `::only_auth_unlocks` became the token checks there and the
+  right/wrong password step of every scenario below.
+- `lockvm.sh` (tier C, the design's required tier; `scripts/lockvm/scenarios/all.sh`):
+  real `pam_unix` with right, wrong and empty passwords and the `login`
+  fallback (`strand-auth/tests/vm_pam.rs`), `pam_faillock`, and
+  `strand/tests/lock.rs` with `--features faults`: logic panic and hang,
+  text worker death, the helper crashing (an abort, what an OOM kill
+  looks like to the client: end of file), hanging, answering garbage,
+  missing, SIGKILLed mid-check from outside
+  (`pam_helper_killed_mid_check_shows_the_fallback`) and deleted then
+  killed mid-session
+  (`pam_helper_deleted_and_killed_keeps_the_session_locked_until_it_is_back`),
+  a lock runtime fault, no first frame, no lock compiled, SIGTERM (with
+  the content's output unplugged), SIGKILL and SIGABRT with a restart,
+  a supervisor's restart loop, `finished` after `locked`, a refused lock
+  and hotplug. The fault tests are named `<fault>_shows_the_fallback` and
+  the like, not `<fault>_keeps_the_session_locked_and_shows_the_fallback`.
+  Each checks that no pixel of any grim shot shows the desktop's colour,
+  that the fallback is there, and that the right password typed through
+  a virtual keyboard unlocks and a wrong one does not. It runs on the
+  laptop, and in CI's `lock-vm` job if KVM is there; the features.md
+  tick cites the run.
 
 Closing M4 (integrator, wave 3): tick each box with its test, write
 `docs/m4-report.md`, update `handoff.md`, delete worktree `target/`
