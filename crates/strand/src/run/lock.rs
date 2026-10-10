@@ -504,10 +504,14 @@ pub(crate) struct LockScreen {
     last: Option<LockState>,
     reply: Option<Sender<LockMsg>>,
     checker: Option<Checker>,
-    /// The lock session's generation, bumped when a lock ends: the tag
+    /// The lock session's generation, bumped when a lock is first seen
+    /// asked for and when one ends: the tag
     /// of every check begun in it (shared with `auth`'s
     /// `AuthConfig::session`, read on the services thread).
     session: Arc<std::sync::atomic::AtomicU64>,
+    /// This lock session has begun ([`LockScreen::see`]): the generation
+    /// was bumped when a lock was first seen asked for.
+    begun: bool,
 }
 
 impl std::fmt::Debug for LockScreen {
@@ -686,6 +690,24 @@ impl LockScreen {
         current
     }
 
+    /// A message from `auth` or the fallback's checker, `active` being
+    /// whether a lock is asked for or held now. The lock session begins
+    /// here first if it has not yet ([`LockScreen::see`]): the lock can be
+    /// asked for in the same dispatch as this message, before the main
+    /// loop's next turn, and a check begun before it must not carry its
+    /// tag (m4-audit).
+    pub(crate) fn answer(&mut self, msg: LockMsg, active: bool) -> Option<UnlockToken> {
+        self.see(active);
+        match msg {
+            LockMsg::Token(t, tag) => self.token(t, tag),
+            LockMsg::AuthFailed(why, tag) => {
+                self.auth_failed(why, tag);
+                None
+            }
+            LockMsg::Checked(tag, v) => self.checked(tag, v),
+        }
+    }
+
     /// `auth` accepted a password in lock session `tag`: the token, if
     /// that session is still this one.
     pub(crate) fn token(&mut self, token: UnlockToken, tag: u64) -> Option<UnlockToken> {
@@ -773,6 +795,17 @@ impl LockScreen {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Whether a lock is asked for or held (`State::lock_active`), seen by
+    /// [`Guard::check`] each turn and by [`LockScreen::answer`] before any
+    /// verdict: the first sight of a lock begins its session, once; no
+    /// lock lets the next one begin its own.
+    fn see(&mut self, active: bool) {
+        if active && !self.begun {
+            self.begin();
+        }
+        self.begun = active;
+    }
+
     /// No lock any more: the fallback and its reasons go.
     fn reset(&mut self) {
         self.fallback = None;
@@ -782,6 +815,7 @@ impl LockScreen {
         // The helper goes with the lock session, and its checks still in
         // flight answer for a session that has ended.
         self.checker = None;
+        self.begun = false;
         self.session
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
@@ -842,15 +876,8 @@ impl Guard {
                 let Event::Msg(msg) = event else {
                     return;
                 };
-                let lock = &mut state.host_mut().lock;
-                let token = match msg {
-                    LockMsg::Token(t, tag) => lock.token(t, tag),
-                    LockMsg::AuthFailed(why, tag) => {
-                        lock.auth_failed(why, tag);
-                        None
-                    }
-                    LockMsg::Checked(tag, v) => lock.checked(tag, v),
-                };
+                let active = state.lock_active();
+                let token = state.host_mut().lock.answer(msg, active);
                 if let Some(t) = token
                     && !state.unlock(t)
                 {
@@ -945,6 +972,7 @@ impl Guard {
                 state.host_mut().lock.reset();
             }
             state.host_mut().lock.idle();
+            state.host_mut().lock.see(false);
             self.waiting = None;
             self.next_beat = None;
             if let Ok(mut f) = FAULTS.lock() {
@@ -952,11 +980,8 @@ impl Guard {
             }
             return;
         }
-        let began = self.since.is_none();
         let since = *self.since.get_or_insert(now);
-        if began {
-            state.host_mut().lock.begin();
-        }
+        state.host_mut().lock.see(true);
         state.host_mut().lock.asked.get_or_insert(since);
         if signalled && !self.stopping {
             self.stopping = true;
@@ -1535,29 +1560,67 @@ mod tests {
     }
 
     /// (m4-audit) A check begun while no lock was active (an
-    /// `auth.submit` from a popup) answers after a lock began: its tag is
-    /// not the new lock's, so its token releases nothing.
-    /// [`Guard::check`] calls `begin` when it first sees the lock asked
-    /// for, before any of the lock's own input can reach it.
+    /// `auth.submit` from a popup) answers after a lock was asked for: its
+    /// tag is not the new lock's, so its token releases nothing. The
+    /// session begins on the first sight of the lock, whichever comes
+    /// first: [`Guard::check`]'s turn (`see`), or the verdict itself
+    /// arriving in the same dispatch that asked for the lock, before that
+    /// turn ([`LockScreen::answer`] is the `LockMsg` handler's only path,
+    /// and `Token` goes through the same `current` gate as `Checked`).
     #[test]
     fn a_verdict_from_before_a_lock_began_is_dropped() {
+        // The verdict lands in the dispatch that asked for the lock: no
+        // main-loop turn has seen the lock yet.
         let mut s = LockScreen::default();
+        s.see(false);
         let unlocked = s.generation();
-        s.begin();
-        assert!(!s.current(unlocked, "test"), "a check from before the lock");
-        let locked = s.generation();
-        assert!(s.current(locked, "test"), "the lock's own check");
         s.changed(LockState::Locked);
         s.show("test");
         assert!(
-            s.checked(unlocked, Verdict::Denied { message: None })
-                .is_none()
+            s.answer(
+                LockMsg::Checked(unlocked, Verdict::Denied { message: None }),
+                true
+            )
+            .is_none()
         );
         assert_ne!(
             s.fallback.as_ref().map(|f| f.field.state()),
             Some(FieldState::Failed),
             "the stale refusal leaves the field alone"
         );
+        assert!(!s.current(unlocked, "test"), "a check from before the lock");
+        let locked = s.generation();
+        // The main loop's turn after it sees the lock: no second begin,
+        // so the lock's own checks still count.
+        s.see(true);
+        assert_eq!(s.generation(), locked, "one session per lock");
+        assert!(
+            s.answer(
+                LockMsg::Checked(locked, Verdict::Denied { message: None }),
+                true
+            )
+            .is_none()
+        );
+        assert_eq!(
+            s.fallback.as_ref().map(|f| f.field.state()),
+            Some(FieldState::Failed),
+            "the lock's own refusal counts"
+        );
+        // The turn sees the lock first: the same.
+        let mut s = LockScreen::default();
+        let unlocked = s.generation();
+        s.see(true);
+        assert!(!s.current(unlocked, "test"));
+        let locked = s.generation();
+        s.auth_failed("x".into(), locked);
+        assert!(s.pending.is_some(), "the lock's own failure counts");
+        // A lock refused (never `locked`, so no `reset`): the next lock
+        // still begins its own session.
+        s.see(false);
+        let between = s.generation();
+        assert_eq!(between, locked);
+        s.see(true);
+        assert!(!s.current(between, "test"), "the next lock is a new one");
     }
 
     /// The other outputs take the `lock`'s `bg`: a colour, a token, a
