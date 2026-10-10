@@ -26,6 +26,9 @@
 //! (the window closed) ends; another failure retries after
 //! [`RETRY`]. The capture's `transform` is ignored (windows are not
 //! rotated) and the cursor is not painted.
+//!
+//! A tap whose window is no longer listed (it closed) is called once
+//! with `None`, so its thumbnail stops showing the window's last frame.
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
@@ -65,7 +68,7 @@ pub struct CaptureFrame {
     pub pixels: Arc<[u8]>,
 }
 
-type TapFn = Arc<dyn Fn(&CaptureFrame) + Send + Sync>;
+type TapFn = Arc<dyn Fn(Option<&CaptureFrame>) + Send + Sync>;
 
 #[derive(Default)]
 struct Taps {
@@ -93,7 +96,8 @@ fn poke() {
 /// A subscription to a window's frames: while it lives (and the
 /// compositor service runs), the window is captured and the tap's
 /// function called with each frame, on the `strand-toplevel` thread (it
-/// must not block). Dropping it stops the capture when no other tap
+/// must not block), and with `None` once the window it was capturing is
+/// no longer listed. Dropping it stops the capture when no other tap
 /// wants that window.
 pub struct CaptureTap {
     id: u64,
@@ -113,11 +117,12 @@ impl Drop for CaptureTap {
 }
 
 /// Captures the window with id `window` (`windows.all[i].id`), its frames
-/// scaled down to cover `max` (physical pixels; 0 is no limit).
+/// scaled down to cover `max` (physical pixels; 0 is no limit); `f` gets
+/// `None` when the window it was captured from is gone.
 pub fn capture_window(
     window: &str,
     max: (u32, u32),
-    f: impl Fn(&CaptureFrame) + Send + Sync + 'static,
+    f: impl Fn(Option<&CaptureFrame>) + Send + Sync + 'static,
 ) -> CaptureTap {
     let id = with_taps(|t| {
         t.next += 1;
@@ -181,7 +186,7 @@ pub(crate) fn wants<'a>(
 }
 
 /// Calls tap `tap`'s function, if it still lives.
-fn deliver(tap: u64, frame: &CaptureFrame) {
+fn deliver(tap: u64, frame: Option<&CaptureFrame>) {
     let f = with_taps(|t| {
         t.taps
             .iter()
@@ -306,6 +311,9 @@ pub(crate) struct Captures {
     /// What the service asked for ([`super::protocol::ProtoCmd::Capture`]).
     pub(crate) wants: Vec<Want>,
     sessions: Vec<Session>,
+    /// The taps the last step served: one missing from the wants since,
+    /// and still alive, lost its window (it gets `None`).
+    served: Vec<u64>,
     next_key: u64,
     /// Frames delivered so far (tests).
     pub(crate) delivered: u64,
@@ -355,6 +363,12 @@ impl Client {
     /// the ones no tap wants, and asks for the frames that are due.
     pub(crate) fn captures_step(&mut self, qh: &QueueHandle<Self>, now: Instant) {
         let caps = &mut self.captures;
+        let served: Vec<u64> = caps.wants.iter().map(|w| w.tap).collect();
+        for gone in caps.served.iter().filter(|t| !served.contains(t)) {
+            // A dropped tap is not called: only one whose window went.
+            deliver(*gone, None);
+        }
+        caps.served = served;
         caps.sessions.retain_mut(|s| {
             let keep = caps.wants.iter().any(|w| w.identifier == s.identifier);
             if !keep {
@@ -489,7 +503,7 @@ impl Client {
         let opaque = shm.format == wl_shm::Format::Xrgb8888;
         let frame = downscale(&data, shm.width, shm.height, stride, opaque, max);
         for w in taps {
-            deliver(w.tap, &frame);
+            deliver(w.tap, Some(&frame));
         }
         self.captures.delivered += 1;
     }

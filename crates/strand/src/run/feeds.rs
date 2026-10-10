@@ -143,7 +143,7 @@ impl Feeds {
                 Want::Thumbnail(window, max) => {
                     log::debug!("thumbnail {node:?}: capturing window {window} at {max:?}");
                     Tap::Capture(capture_window(window, *max, move |f| {
-                        let frame = Some(ThumbnailFrame {
+                        let frame = f.map(|f| ThumbnailFrame {
                             width: f.width,
                             height: f.height,
                             pixels: f.pixels.clone(),

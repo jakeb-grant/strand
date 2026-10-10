@@ -5,7 +5,8 @@
 //! the protocol thread, frames come only when the window changes and at
 //! most `MAX_FPS` a second, new buffer constraints are followed (in any
 //! order before their `done`), and the
-//! session ends with the last tap or the window.
+//! session ends with the last tap or the window; a tap whose window
+//! closed is told so (`None`) once.
 
 mod common;
 
@@ -66,7 +67,9 @@ async fn a_tap_captures_its_window_as_it_changes() {
     // cover 32 × 24 (the window is 64 × 48).
     let (tx, rx) = mpsc::channel();
     let tap = capture_window("cap-1", (32, 24), move |f| {
-        let _ = tx.send(f.clone());
+        if let Some(f) = f {
+            let _ = tx.send(f.clone());
+        }
     });
     let first = next(&rx, "the first frame");
     assert_eq!((first.width, first.height), (32, 24));
@@ -116,12 +119,16 @@ async fn a_tap_captures_its_window_as_it_changes() {
     drop(tap);
     wait("the session ended", || count(&fake, "end cap-1") == 1);
 
-    // A window that closes stops its session; its tap gets nothing more.
-    let (tx2, rx2) = mpsc::channel();
+    // A window that closes stops its session; its tap is told the window
+    // is gone, once, and gets nothing more.
+    let (tx2, rx2) = mpsc::channel::<Option<CaptureFrame>>();
     let _tap2 = capture_window("cap-2", (0, 0), move |f| {
-        let _ = tx2.send(f.clone());
+        let _ = tx2.send(f.cloned());
     });
-    let full = next(&rx2, "cap-2's first frame");
+    let full = rx2
+        .recv_timeout(Duration::from_secs(5))
+        .expect("cap-2's first frame")
+        .expect("a frame, not gone");
     assert_eq!(
         (full.width, full.height),
         CAPTURE_SIZE,
@@ -129,7 +136,11 @@ async fn a_tap_captures_its_window_as_it_changes() {
     );
     fake.cmd(Cmd::CloseToplevel("cap-2"));
     wait("stopped", || count(&fake, "stopped cap-2") == 1);
+    let gone = rx2
+        .recv_timeout(Duration::from_secs(5))
+        .expect("told the window is gone");
+    assert_eq!(gone, None);
     std::thread::sleep(Duration::from_millis(200));
-    assert!(rx2.try_recv().is_err());
+    assert!(rx2.try_recv().is_err(), "told once, then nothing");
     service.abort();
 }

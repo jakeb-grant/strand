@@ -1314,7 +1314,9 @@ fn a_window_is_captured_for_its_thumbnail() {
         };
         let (tx, frames) = std::sync::mpsc::channel::<CaptureFrame>();
         let tap = capture_window(&id, (16, 16), move |f| {
-            let _ = tx.send(f.clone());
+            if let Some(f) = f {
+                let _ = tx.send(f.clone());
+            }
         });
         let deadline = Instant::now() + PATIENCE;
         let frame = loop {

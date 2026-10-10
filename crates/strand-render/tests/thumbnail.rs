@@ -121,8 +121,26 @@ fn a_thumbnail_draws_the_frames_it_is_fed_by_its_fit() {
 
     // The window is gone: it draws nothing.
     r.feed_frame(ids[0], None);
-    settle(&mut r, &mut buf, at);
+    let at = settle(&mut r, &mut buf, at);
     assert_eq!(buf.px(50, 50), buf.px(5, 5));
+
+    // The other's source names another window: the old window's frame
+    // goes at once, before (or without) the new one's first frame.
+    let cover = (140, 50);
+    assert_ne!(buf.px(cover.0, cover.1), buf.px(5, 5), "drawn");
+    let mut d = SceneDiff::default();
+    d.set(ids[1], Prop::Source, text("0x77bb"));
+    assert!(r.apply(d).is_empty());
+    let at = settle(&mut r, &mut buf, at);
+    assert_eq!(buf.px(cover.0, cover.1), buf.px(5, 5), "not the old window");
+    assert!(matches!(
+        &r.take_feed_demand().expect("re-asked")[1].kind,
+        FeedKind::Thumbnail { window, .. } if window == "0x77bb"
+    ));
+    // The new window's frame draws.
+    r.feed_frame(ids[1], Some(window_frame()));
+    settle(&mut r, &mut buf, at);
+    assert_ne!(buf.px(cover.0, cover.1), buf.px(5, 5));
 }
 
 #[test]

@@ -3484,11 +3484,13 @@ transparent huge pages for life.
     thread captures windows by their `Window::toplevel` identifiers
     through ext-image-copy-capture, for `thumbnail`. The entry point is
     process-wide like the audio taps: `wm::capture::capture_window(window
-    id, max: (u32, u32), on_frame: FnMut(&CaptureFrame) + Send) ->
-    CaptureTap`, the session living while any tap of that window does
-    (dropping the tap ends it). The running `wm` service maps window ids
-    to identifiers and sends the wants whenever the taps or windows
-    change. One session per window, one frame in flight, frames only when
+    id, max: (u32, u32), on_frame: Fn(Option<&CaptureFrame>) + Send +
+    Sync) -> CaptureTap`, the session living while any tap of that window
+    does (dropping the tap ends it); `on_frame(None)` comes once when the
+    window the tap was capturing is no longer listed (it closed), so the
+    thumbnail stops showing its last frame. The running `wm` service
+    maps window ids to identifiers and sends the wants whenever the taps
+    or windows change. One session per window, one frame in flight, frames only when
     the compositor reports the window changed and at most
     `capture::MAX_FPS` (15) a second, into a memfd `wl_shm` buffer
     following the session's buffer constraints; a failed session retries
@@ -3501,7 +3503,10 @@ transparent huge pages for life.
     `take_feed_demand` lists it as `FeedKind::Thumbnail { window, max }`
     (its source's window id, its drawn physical size rounded up to
     `THUMBNAIL_STEP` = 64), and `run/feeds.rs` holds one `CaptureTap` per
-    such node (`crates/strand-services/tests/capture.rs`, against
+    such node, dropping what a tap sent once it is no longer its node's.
+    A thumbnail whose source names another window drops its frame at
+    once, rather than showing the old window until the new one's first
+    frame (`crates/strand-services/tests/capture.rs`, against
     strand-fake-wayland's ext-image-copy-capture;
     `crates/strand-render/tests/thumbnail.rs`).
   - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the

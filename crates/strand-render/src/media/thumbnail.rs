@@ -8,7 +8,11 @@
 //! demand). Each frame repaints it once; a still window costs nothing.
 //! The frame is drawn by its `fit` (`contain` by default, `cover` cropped
 //! to the box), sampled bilinearly. Before its first frame, and after its
-//! window is gone, it draws nothing.
+//! window is gone (fed `None`), it draws nothing. Its frame is of the
+//! window its source named when it came: once the source names another
+//! window, the frame is dropped, so it never shows one window's pixels
+//! for another while the new window's first frame is on its way (or
+//! never comes).
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -33,6 +37,9 @@ pub struct Frame {
 #[derive(Debug, Default)]
 struct Thumb {
     frame: Option<Frame>,
+    /// The window its source named at the last paint: the window the
+    /// frame is of.
+    window: String,
     /// Frames fed so far: the state hash, so each frame draws once.
     fed: u64,
     fit: Fit,
@@ -149,6 +156,16 @@ impl RasterSource for ThumbnailSource {
             Some(PropValue::Keyword(k)) => Fit::from_name(k).unwrap_or_default(),
             _ => Fit::default(),
         };
+        let window = match (props.get)(Prop::Source) {
+            Some(PropValue::Text(t) | PropValue::Keyword(t)) => t.as_str(),
+            _ => "",
+        };
+        if s.window != window {
+            s.window = window.to_string();
+            if s.frame.take().is_some() {
+                s.fed += 1;
+            }
+        }
         let mut h = DefaultHasher::new();
         s.fed.hash(&mut h);
         s.fit.hash(&mut h);
