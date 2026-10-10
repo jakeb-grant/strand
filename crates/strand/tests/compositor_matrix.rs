@@ -2099,7 +2099,12 @@ struct BlueHost {
 /// How [`BlueHost`] paints a surface other than blue.
 #[derive(Copy, Clone, PartialEq)]
 enum Fill {
-    /// Black and white columns two pixels wide: sharp unless blurred.
+    /// Black and white columns three pixels wide: sharp unless blurred.
+    /// Not two: Hyprland's dual Kawase blur (size 8, one pass) samples
+    /// 8 px apart going down and 2 and 4 half-resolution px apart going
+    /// up, all whole periods of 2 px columns, so it leaves them at half
+    /// their contrast (decisions.md, m4-surface-w2). A 6 px period is
+    /// not a divisor of those offsets and blurs to under 4 %.
     Stripes,
     /// White at 60 % (above Hyprland's `ignore_alpha 0.5`).
     Glass,
@@ -2119,7 +2124,7 @@ impl strand_scene::Painter for BlueHost {
                 px.copy_from_slice(&match fill {
                     // The blue of the surface tests.
                     None => [0xe0, 0x60, 0x20, 0xff],
-                    Some(Fill::Stripes) if (x / 2) % 2 == 0 => [0, 0, 0, 0xff],
+                    Some(Fill::Stripes) if (x / 3) % 2 == 0 => [0, 0, 0, 0xff],
                     Some(Fill::Stripes) => [0xff; 4],
                     Some(Fill::Glass) => [0x99; 4],
                 });
@@ -2658,12 +2663,13 @@ fn surfaces_meet_the_live_compositor() {
                 contrast(&img, ow / 4, oh / 2),
             );
             // Unblurred, the glass (white at 60 %) leaves 40 % of the
-            // stripes' 765: 306. Hyprland 0.56 under the rule draws the
-            // glass over an even mix of the blurred and the sharp
-            // stripes (GitHub run 38000763592: 178/229 under it against
-            // 153/255 unblurred, contrast 153), so the proof is the
-            // contrast falling well below 306, not to nothing.
-            if beside > 600 && inside < 230 {
+            // stripes' 765: 306. Blurred by Hyprland's default kawase
+            // (size 8, one pass), 3 px stripes keep under 4 % of their
+            // contrast, about 12 here with its contrast and noise; the
+            // 2 px stripes this test used first kept half (178/229
+            // against 153/255 unblurred in GitHub run 38000763592), an
+            // alias of the kernel's sample spacing, not a partial blur.
+            if beside > 600 && inside < 60 {
                 eprintln!(
                     "matrix: hyprland blurs strand-Dash by its layer rule: contrast {inside} \
                      under it, {beside} beside it"
@@ -2682,7 +2688,7 @@ fn surfaces_meet_the_live_compositor() {
                 }
                 panic!(
                     "hyprland: the layer rule did not blur strand-Dash: contrast {inside} under \
-                     it (want < 230; 306 unblurred), {beside} beside it (want > 600)\n{lua}"
+                     it (want < 60; 306 unblurred), {beside} beside it (want > 600)\n{lua}"
                 );
             }
         }
