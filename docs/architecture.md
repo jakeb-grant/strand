@@ -965,7 +965,16 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
       physical pixels). A
       `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
       is attached through the hidden `Renderer::set_raster_source` seam.
-      Its pixmap is redrawn only when its tick or size changes. The props keep
+      Its pixmap is redrawn only when its tick or size changes. (M4,
+      m4-effects-media) Two provided methods follow: `clock() ->
+      Option<Rate>` (default `Some(rate())`; `None` for a source that
+      changes only when fed or when its props change: a spectrum, an
+      `svg`, a `lottie` with no file), and `state(&RasterProps) -> u64`
+      (default 0), called on every flatten that draws the node with its
+      resolved props (`RasterProps { get, color, parts }`, exported from
+      `lib.rs`): the pixmap is drawn again when that hash changes. Media nodes
+      (`graph`, `spectrum`, `svg`, `lottie`, `thumbnail`) get their
+      sources from render itself when logic creates them. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the
