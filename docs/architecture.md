@@ -256,11 +256,21 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   carry values with `<redacted>` (keeping what failed and where) in the
   messages it logs and streams to `strand watch`; otherwise it replaces
   the known values, and redacts a message whole when any 4-byte run of
-  one (ASCII case ignored; a shorter password whole) is still in it.
-  The known values are the inputs' current ones and the newest four
-  replaced by a value they do not start (submitted, edited, their input
-  removed), zeroized when dropped (`lock::Secrets`, M4
-  interaction-finish). The `faults` feature
+  one is still in it, compared lower-cased (Unicode) and with the
+  message's Debug and JSON escapes undone. The known values are the
+  inputs' current ones and the newest four replaced by a value they do
+  not start (submitted, edited, their input removed), zeroized when
+  dropped (`lock::Secrets`, M4 interaction-finish). Values under 4
+  bytes are never matched or remembered (any message would match
+  them): a password that short is covered only while its input is
+  mounted. Residual risk: the remembered values outlive the lock, so
+  until four newer values replace them the process's memory holds up
+  to four recent passwords after an unlock (freed copies of the field's
+  text may linger too, since only `Password` zeroizes); a core dump of
+  strand (systemd-coredump after an abort under the unit below) writes
+  them to disk. A session that wants no password in a core sets
+  `LimitCORE=0` in the unit (or `Storage=none` in coredump.conf).
+  The `faults` feature
   (`STRAND_FAULT`) injects each fault for `tests/lock.rs`, which runs
   only in the lock VM.
   Residual risk: rendering runs on the main thread, and the main thread
