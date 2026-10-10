@@ -718,18 +718,16 @@ impl Vm {
     }
 }
 
-/// The element events render's input delivers (`Instance::event`): a
-/// handler of one runs because the user did something.
-pub const INPUT_EVENTS: &[&str] = &[
-    "click",
-    "secondary",
-    "middle",
-    "scroll",
-    "activate",
-    "key",
-    "dismiss",
-    "drop",
-];
+/// The element events render's input delivers (`Instance::event`) right
+/// after the press that caused them, which set the tray's click point:
+/// a button press on the node (`click`, `secondary`, `middle`, and
+/// `activate` on a clicked row) or a key press, which sets (0, 0)
+/// (`key`, and `activate` from Return). The others come with no press
+/// of their own and must not take the last one's point: `scroll` (a
+/// wheel), `dismiss` (a click away the compositor saw, or focus loss)
+/// and `drop` (a press that started the drag elsewhere, or in another
+/// program); a tray action they call sends (0, 0).
+pub const INPUT_EVENTS: &[&str] = &["click", "secondary", "middle", "activate", "key"];
 
 thread_local! {
     static INPUT_HANDLERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };

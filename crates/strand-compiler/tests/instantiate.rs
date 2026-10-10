@@ -1510,6 +1510,42 @@ fn actions_know_whether_input_called_them() {
     assert!(!strand_compiler::vm::in_input_handler());
 }
 
+/// (M4) Only the events a press just set the tray's click point for run
+/// as input: a click, a secondary or middle click and an activate (a
+/// clicked row, or Return, whose key press set (0, 0)). A wheel, a drop
+/// and a dismiss come with no press of their own, so a tray action they
+/// call must not send the last press's point.
+#[test]
+fn only_press_caused_handlers_run_as_input() {
+    let src = "state n = 0\n\
+               bar B {\n  row {\n    \
+                 box { width: 10; height: 10; on click { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on secondary { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on middle { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on activate { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on scroll(dy) { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on drop(x: int, at: int) { notifications.clear() } }\n  \
+               }\n}\n";
+    let mut shell = boot(&[("b.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let events: [(&str, Vec<Value>, bool); 6] = [
+        ("click", vec![], true),
+        ("secondary", vec![], true),
+        ("middle", vec![], true),
+        ("activate", vec![], true),
+        ("scroll", vec![Value::float(1.0), Value::float(0.0)], false),
+        ("drop", vec![Value::int(1), Value::int(0)], false),
+    ];
+    for (target, (event, args, input)) in boxes.iter().zip(events) {
+        assert!(shell.inst.event(*target, event, args), "{event} delivered");
+        shell.flush();
+        let calls: Vec<bool> = shell.host.take_actions().iter().map(|a| a.input).collect();
+        assert_eq!(calls, [input], "on {event}");
+    }
+}
+
 /// Every snippet of design.md (and grammar.md's examples, and the rice)
 /// mounted at once: no binding fails, every diff is consistent.
 #[test]

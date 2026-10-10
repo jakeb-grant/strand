@@ -2636,9 +2636,12 @@ and the connection):
     only when called by a handler of an input event
     (`tray::TrayCall`, the service's action type, reads it in
     `from_call`; `tray::set_input_probe(strand_compiler::vm::in_input_handler)`
-    at startup, `strand_compiler::vm::INPUT_EVENTS` naming the events;
-    `ActionCall::input` records it); a timer's or an IPC write's sends
-    (0, 0), never the last press's point. A popup nested in a popup opens
+    at startup, `strand_compiler::vm::INPUT_EVENTS` naming the events a
+    press just set the point for: `click`, `secondary`, `middle`,
+    `activate` and `key`, a key press setting (0, 0);
+    `ActionCall::input` records it); a timer's, an IPC write's, and a
+    `scroll`, `dismiss` or `drop` handler's send (0, 0), never the last
+    press's point. A popup nested in a popup opens
     beside its anchor (`PopupConfig::aligned`: level with the row's top,
     flipped in x), right unless its `anchor:` names left, top or bottom.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
