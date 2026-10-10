@@ -972,9 +972,9 @@ impl Router {
                         Some(d) if d.source == *n => Some((d.kind.clone(), *n)),
                         // Ours, but routing lost it (its surface went):
                         // the source's own type.
-                        _ => scene.tree().and_then(|t| match t.get(*n)?.get(Prop::Drag) {
-                            Some(PropValue::Keyword(k)) => Some((k.to_string(), *n)),
-                            _ => None,
+                        _ => scene.tree().and_then(|t| {
+                            let k = strand_scene::drag_type(t.get(*n)?.get(Prop::Drag)?)?;
+                            Some((k.to_string(), *n))
                         }),
                     },
                     strand_scene::DropPayload::External { .. } => None,
@@ -1196,8 +1196,9 @@ impl Router {
                         None
                     } else {
                         scene.tree().and_then(|t| {
-                            under.iter().find_map(|n| match t.get(*n)?.get(Prop::Drag) {
-                                Some(PropValue::Keyword(k)) => Some(Drag {
+                            under.iter().find_map(|n| {
+                                let k = strand_scene::drag_type(t.get(*n)?.get(Prop::Drag)?)?;
+                                Some(Drag {
                                     source: *n,
                                     kind: k.to_string(),
                                     origin: surface,
@@ -1209,8 +1210,7 @@ impl Router {
                                     active: false,
                                     handed: false,
                                     target: None,
-                                }),
-                                _ => None,
+                                })
                             })
                         })
                     };
@@ -1840,12 +1840,15 @@ fn drop_index(
             _ => false,
         }
     };
-    // A target holds rows when it is a `list` or its children are drag
-    // sources (a `for` of `drag:` items, the dragged one among them);
+    // A target holds rows when it is a `list`, when the compiler says its
+    // direct child is a `for` (`Prop::DropRows`), or when its children
+    // are drag sources (a `for` of `drag:` items, the dragged one among
+    // them);
     // otherwise its children are its own content (an icon and a label in
     // a per-item `on drop`) and it is itself a row of its parent.
     let holds_rows = tree.get(target).is_some_and(|x| {
         x.kind == NodeKind::List
+            || matches!(x.get(Prop::DropRows), Some(PropValue::Bool(true)))
             || x.children.iter().any(|c| {
                 tree.contains_live(*c) && tree.get(*c).is_some_and(|n| n.get(Prop::Drag).is_some())
             })

@@ -546,7 +546,11 @@ impl Vm {
     }
 
     /// A handler body as a coroutine for `rt.spawn*`: it runs until it
-    /// returns, suspending at each `await`. Dropping it cancels it.
+    /// returns, suspending at each `await`. Dropping it cancels it. While
+    /// a handler of an input event ([`INPUT_EVENTS`]) runs up to its
+    /// first `await`, [`in_input_handler`] is true on this thread; the
+    /// stretches after an `await` resume outside the input (the press is
+    /// long gone, so its point must not be read).
     pub fn handler(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -557,6 +561,9 @@ impl Vm {
     ) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
         let vm = self.clone();
         let weak = rt.downgrade();
+        let mut input = ctx
+            .as_ref()
+            .is_some_and(|c| INPUT_EVENTS.contains(&c.event.as_str()));
         async move {
             let mut m = exec::Machine::new(chunk, env, frame, None, ctx);
             loop {
@@ -564,6 +571,8 @@ impl Vm {
                     let Some(rt) = weak.upgrade() else {
                         return Ok(());
                     };
+                    // Only the first stretch is the input's.
+                    let _input = std::mem::take(&mut input).then(InputHandler::enter);
                     m.run(&vm, &rt)?
                 };
                 match step {
@@ -706,5 +715,42 @@ impl Vm {
             .enumerate()
             .map(|(i, l)| (l.name.clone(), LocalId(i as u32)))
             .collect()
+    }
+}
+
+/// The element events render's input delivers (`Instance::event`) right
+/// after the press that caused them, which set the tray's click point:
+/// a button press on the node (`click`, `secondary`, `middle`, and
+/// `activate` on a clicked row) or a key press, which sets (0, 0)
+/// (`key`, and `activate` from Return). The others come with no press
+/// of their own and must not take the last one's point: `scroll` (a
+/// wheel), `dismiss` (a click away the compositor saw, or focus loss)
+/// and `drop` (a press that started the drag elsewhere, or in another
+/// program); a tray action they call sends (0, 0).
+pub const INPUT_EVENTS: &[&str] = &["click", "secondary", "middle", "activate", "key"];
+
+thread_local! {
+    static INPUT_HANDLERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// True while a handler of an input event runs on this thread (see
+/// [`Vm::handler`]): the tray takes the press's point only then.
+pub fn in_input_handler() -> bool {
+    INPUT_HANDLERS.with(|c| c.get() > 0)
+}
+
+/// Marks a handler of an input event running until dropped.
+struct InputHandler;
+
+impl InputHandler {
+    fn enter() -> Self {
+        INPUT_HANDLERS.with(|c| c.set(c.get().saturating_add(1)));
+        InputHandler
+    }
+}
+
+impl Drop for InputHandler {
+    fn drop(&mut self) {
+        INPUT_HANDLERS.with(|c| c.set(c.get().saturating_sub(1)));
     }
 }

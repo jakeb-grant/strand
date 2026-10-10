@@ -23,10 +23,22 @@
 //!   read). Dropped elsewhere or cancelled, the origin gets a made-up
 //!   left-button release far outside it, which ends the Router's drag
 //!   with nothing dropped (the real release went to the compositor).
+//! - **Drags out to other programs** (M4 interaction-finish). A source
+//!   whose value has a form outside Strand ([`SurfaceHost::drag_data`]:
+//!   text, files, an app) offers it too: `text/uri-list` for files (an
+//!   app: its `.desktop` file when one is found) and the text types for
+//!   text (files: their paths, one a line; an app: its desktop id),
+//!   written on request without blocking the loop. Another Strand
+//!   process's drag is known by its private type's prefix and read like
+//!   any other program's, through those types: across processes there is
+//!   no node to deliver, so it arrives as a `Drop`; with nothing else
+//!   offered it is refused like any offer of nothing readable.
 //!
-//! No drag icon follows the pointer while the compositor carries a drag:
-//! the source springs back to its box as the pointer leaves its surface
-//! (recorded in docs/decisions.md).
+//! While the compositor carries a drag, its icon follows the pointer
+//! (M4 interaction-finish): the source drawn alone at rest
+//! ([`SurfaceHost::drag_image`]) in an shm buffer at the surface's
+//! scale, held where it was grabbed, while the source itself springs
+//! back to its box in its surface.
 //!
 //! This file is part of the manager (`manager/mod.rs` includes it as
 //! `manager::dnd`), so it reaches `State`'s fields like the manager's
@@ -77,6 +89,10 @@ const TEXT: [&str; 4] = [
     "TEXT",
 ];
 
+/// The private MIME type's prefix every Strand process's drags offer
+/// (then `pid=…;manager=…`).
+pub const STRAND_MIME: &str = "application/x-strand-node;";
+
 static NEXT_MANAGER: AtomicU32 = AtomicU32::new(1);
 
 /// The manager's drag-and-drop state.
@@ -91,6 +107,9 @@ pub(super) struct Dnd {
     over: Option<Over>,
     /// Our own drag, while the compositor carries it.
     ours: Option<Ours>,
+    /// Where the pointer was last pressed on one of our surfaces: where
+    /// a drag icon is held.
+    grab: LogicalPoint,
 }
 
 struct Over {
@@ -111,6 +130,32 @@ struct Ours {
     source: DragSource,
     origin: SurfaceId,
     node: NodeId,
+    /// What it gives other programs: MIME type, bytes.
+    exports: Vec<(String, Vec<u8>)>,
+    /// Its icon under the pointer.
+    icon: Option<Icon>,
+}
+
+/// A drag icon's surface and what it shows.
+struct Icon {
+    surface: wl_surface::WlSurface,
+    buffer: wl_buffer::WlBuffer,
+    viewport: Option<WpViewport>,
+    _pool: RawPool,
+    /// Its corner relative to the pointer.
+    hot: (i32, i32),
+    /// Buffer pixels.
+    size: (i32, i32),
+}
+
+impl Drop for Icon {
+    fn drop(&mut self) {
+        if let Some(v) = self.viewport.take() {
+            v.destroy();
+        }
+        self.surface.destroy();
+        self.buffer.destroy();
+    }
 }
 
 impl Dnd {
@@ -122,13 +167,11 @@ impl Dnd {
         let n = NEXT_MANAGER.fetch_add(1, Ordering::Relaxed);
         Self {
             manager: DataDeviceManagerState::bind(globals, qh).ok(),
-            mime: format!(
-                "application/x-strand-node;pid={};manager={n}",
-                std::process::id()
-            ),
+            mime: format!("{STRAND_MIME}pid={};manager={n}", std::process::id()),
             devices: Vec::new(),
             over: None,
             ours: None,
+            grab: LogicalPoint::new(0.0, 0.0),
         }
     }
 }
@@ -162,6 +205,14 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// After the host saw `event`: a held pointer that leaves the surface
     /// its `drag:` source is on hands the drag to the compositor.
     pub(super) fn dnd_input(&mut self, event: &InputEvent) {
+        if let InputEvent::PointerButton {
+            position,
+            state: ButtonState::Pressed,
+            ..
+        } = event
+        {
+            self.dnd.grab = *position;
+        }
         let InputEvent::PointerMotion {
             surface, position, ..
         } = event
@@ -184,10 +235,67 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
-    fn start_drag(&mut self, origin: SurfaceId, node: NodeId) {
-        let Some(m) = &self.dnd.manager else {
-            return;
+    /// The icon of `node` dragged out of `origin`, the source grabbed at
+    /// `at` there: committed once, placed so the pointer holds it where
+    /// it grabbed the source (as the source followed it in its surface).
+    fn drag_icon(&mut self, origin: SurfaceId, node: NodeId, at: LogicalPoint) -> Option<Icon> {
+        let img = self.host.drag_image(origin, node)?;
+        let (w, h) = (
+            i32::try_from(img.size.w).ok()?,
+            i32::try_from(img.size.h).ok()?,
+        );
+        let len = img.pixels.len();
+        if w == 0 || h == 0 || len != w as usize * h as usize * 4 {
+            return None;
+        }
+        let mut pool = match RawPool::new(len, &self.shm) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("no drag icon: {e}");
+                return None;
+            }
         };
+        pool.mmap()[..len].copy_from_slice(&img.pixels);
+        let buffer = pool.create_buffer(
+            0,
+            w,
+            h,
+            w * 4,
+            wl_shm::Format::Argb8888,
+            scrim::ScrimObject,
+            &self.qh,
+        );
+        let surface = self.compositor.create_surface(&self.qh);
+        let scale = img.scale.as_f64();
+        let logical = |px: i32| (px as f64 / scale).round() as i32;
+        // An integer scale is the buffer's; a fractional one is drawn to
+        // its logical size by the viewporter (without one, at 1:1).
+        let viewport = if img.scale.is_integer() {
+            surface.set_buffer_scale(scale as i32);
+            None
+        } else {
+            self.viewporter.as_ref().map(|vp| {
+                let v = vp.get_viewport(&surface, &self.qh, SurfaceTag(origin));
+                v.set_destination(logical(w).max(1), logical(h).max(1));
+                v
+            })
+        };
+        // The icon's corner relative to the pointer: where it was grabbed.
+        let hot = (
+            -((at.x - img.origin.x).round() as i32),
+            -((at.y - img.origin.y).round() as i32),
+        );
+        Some(Icon {
+            surface,
+            buffer,
+            viewport,
+            _pool: pool,
+            hot,
+            size: (w, h),
+        })
+    }
+
+    fn start_drag(&mut self, origin: SurfaceId, node: NodeId) {
         let Some((seat, serial)) = self
             .pointers
             .iter()
@@ -195,20 +303,52 @@ impl<H: SurfaceHost + 'static> State<H> {
         else {
             return;
         };
-        let Some((_, device)) = self.dnd.devices.iter().find(|(s, _)| *s == seat) else {
+        if self.dnd.manager.is_none() || !self.dnd.devices.iter().any(|(s, _)| *s == seat) {
             return;
-        };
+        }
         let Some(wl) = self.surfaces.get(&origin).map(|s| s.wl().clone()) else {
             return;
         };
-        let source =
-            m.create_drag_and_drop_source(&self.qh, [self.dnd.mime.as_str()], DndAction::Copy);
-        source.start_drag(device, &wl, None, serial);
-        log::debug!("drag of {node:?} leaves {origin:?}: the compositor carries it");
+        let icon = self.drag_icon(origin, node, self.dnd.grab);
+        let Some(m) = &self.dnd.manager else {
+            return;
+        };
+        let Some((_, device)) = self.dnd.devices.iter().find(|(s, _)| *s == seat) else {
+            return;
+        };
+        let exports = self
+            .host
+            .drag_data(node)
+            .map(|p| exports_of(&p, desktop_file))
+            .unwrap_or_default();
+        let mimes =
+            std::iter::once(self.dnd.mime.as_str()).chain(exports.iter().map(|(m, _)| m.as_str()));
+        let source = m.create_drag_and_drop_source(&self.qh, mimes, DndAction::Copy);
+        source.start_drag(device, &wl, icon.as_ref().map(|i| &i.surface), serial);
+        // Shown once it is the drag's icon: its first commit places its
+        // corner at the pointer, moved by the offset (a commit before
+        // `start_drag` would leave it there, as sway 1.9 does).
+        if let Some(i) = &icon {
+            if i.surface.version() >= 5 {
+                i.surface.offset(i.hot.0, i.hot.1);
+                i.surface.attach(Some(&i.buffer), 0, 0);
+            } else {
+                i.surface.attach(Some(&i.buffer), i.hot.0, i.hot.1);
+            }
+            i.surface.damage_buffer(0, 0, i.size.0, i.size.1);
+            i.surface.commit();
+        }
+        log::debug!(
+            "drag of {node:?} leaves {origin:?}: the compositor carries it ({} types for other \
+             programs)",
+            exports.len()
+        );
         self.dnd.ours = Some(Ours {
             source,
             origin,
             node,
+            exports,
+            icon,
         });
     }
 
@@ -235,6 +375,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                 time: 0,
             });
         }
+        // Its icon goes with it.
+        drop(ours.icon);
     }
 
     /// Tells the offer whether a drop now would land: copy, the MIME type
@@ -394,6 +536,9 @@ impl<H: SurfaceHost + 'static> DataDeviceHandler for State<H> {
         let (what, kinds) = if self.dnd.ours.is_some() && mimes.contains(&self.dnd.mime) {
             (Carried::Ours, Vec::new())
         } else {
+            if mimes.iter().any(|m| m.starts_with(STRAND_MIME)) {
+                log::debug!("a drag from another Strand process: read through what it offers");
+            }
             match classify(&mimes) {
                 Some((mime, kind)) => (Carried::Outside { mime }, vec![kind]),
                 None => {
@@ -505,17 +650,55 @@ impl<H: SurfaceHost + 'static> DataSourceHandler for State<H> {
     ) {
     }
 
-    /// Our drags carry their node by identity, not as data: a reader
-    /// (another program) gets nothing.
+    /// Our drags carry their node by identity: the private type is
+    /// never written (a reader gets nothing). A type the drag exports is
+    /// written a pipe-buffer's worth per wakeup, so the loop never blocks
+    /// on a slow reader; a reader that closes early ends it.
     fn send_request(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlDataSource,
-        _: String,
+        source: &WlDataSource,
+        mime: String,
         fd: WritePipe,
     ) {
-        drop(fd);
+        let bytes = self
+            .dnd
+            .ours
+            .as_ref()
+            .filter(|o| o.source.inner() == source)
+            .and_then(|o| o.exports.iter().find(|(m, _)| *m == mime))
+            .map(|(_, b)| b.clone());
+        let Some(bytes) = bytes else {
+            drop(fd);
+            return;
+        };
+        let mut done = 0;
+        let written = self.handle.insert_source(fd, move |_, file, _| {
+            // POLLOUT on a pipe: at least PIPE_BUF (4096) bytes fit.
+            let end = (done + 4096).min(bytes.len());
+            let mut f: &File = file;
+            match std::io::Write::write(&mut f, &bytes[done..end]) {
+                Ok(n) => {
+                    done += n;
+                    if done >= bytes.len() {
+                        PostAction::Remove
+                    } else {
+                        PostAction::Continue
+                    }
+                }
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                    PostAction::Continue
+                }
+                Err(e) => {
+                    log::debug!("a drag's {mime} was not all read: {e}");
+                    PostAction::Remove
+                }
+            }
+        });
+        if let Err(e) = written {
+            log::warn!("cannot give a drag's data: {}", e.error);
+        }
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
@@ -529,6 +712,89 @@ impl<H: SurfaceHost + 'static> DataSourceHandler for State<H> {
     }
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+}
+
+/// What a drag carrying `payload` offers other programs, MIME type and
+/// bytes: files as a `text/uri-list` (percent-encoded `file://` URIs)
+/// and as text, their paths one a line; an app as its `.desktop` file's
+/// URI when `desktop` finds it (by desktop id) and as text, its desktop
+/// id; text as each text type. Nothing for a node of ours.
+pub fn exports_of(
+    payload: &DropPayload,
+    desktop: impl Fn(&str) -> Option<PathBuf>,
+) -> Vec<(String, Vec<u8>)> {
+    let DropPayload::External {
+        kind,
+        files,
+        text,
+        app_id,
+    } = payload
+    else {
+        return Vec::new();
+    };
+    let (uris, plain): (Vec<PathBuf>, Vec<u8>) = match kind {
+        DropKind::Files => {
+            let mut plain = Vec::new();
+            for (i, f) in files.iter().enumerate() {
+                if i > 0 {
+                    plain.push(b'\n');
+                }
+                plain.extend_from_slice(f.as_os_str().as_bytes());
+            }
+            (files.clone(), plain)
+        }
+        DropKind::App => {
+            let id = app_id.clone().unwrap_or_default();
+            (desktop(&id).into_iter().collect(), id.into_bytes())
+        }
+        DropKind::Text => (Vec::new(), text.clone().into_bytes()),
+    };
+    let mut out = Vec::new();
+    if !uris.is_empty() {
+        let mut list = Vec::new();
+        for f in &uris {
+            list.extend_from_slice(b"file://");
+            percent_encode(f.as_os_str().as_bytes(), &mut list);
+            list.extend_from_slice(b"\r\n");
+        }
+        out.push((URI_LIST.to_string(), list));
+    }
+    if !plain.is_empty() {
+        out.extend(TEXT.iter().map(|t| ((*t).to_string(), plain.clone())));
+    }
+    out
+}
+
+/// The `.desktop` file of desktop id `id` in the XDG data directories
+/// (`$XDG_DATA_HOME`, then `$XDG_DATA_DIRS`), if there is one.
+pub fn desktop_file(id: &str) -> Option<PathBuf> {
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    let home = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+    let dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    home.into_iter()
+        .chain(dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from))
+        .map(|d| d.join("applications").join(id))
+        .find(|p| p.is_file())
+}
+
+/// `path` percent-encoded into `out` (RFC 3986: unreserved bytes and `/`
+/// kept).
+fn percent_encode(path: &[u8], out: &mut Vec<u8>) {
+    for &b in path {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b);
+        } else {
+            out.extend_from_slice(format!("%{b:02X}").as_bytes());
+        }
+    }
 }
 
 /// What an offer of `mimes` is read as, and what kind it is: files (or
@@ -638,6 +904,64 @@ mod tests {
         );
         assert_eq!(classify(&mimes(&["image/png"])), None);
         assert_eq!(classify(&[]), None);
+    }
+
+    /// What a drag of ours gives other programs, read back the way a
+    /// drop of theirs is: files round-trip through the URI list (spaces
+    /// and non-ASCII encoded), an app through its `.desktop` file, text
+    /// through each text type; a node gives nothing.
+    #[test]
+    fn exports_read_back_as_what_was_dragged() {
+        let files = DropPayload::External {
+            kind: DropKind::Files,
+            files: vec!["/tmp/a b.png".into(), "/home/u/n\u{e4}me.txt".into()],
+            text: String::new(),
+            app_id: None,
+        };
+        let none = |_: &str| None;
+        let out = exports_of(&files, none);
+        let types: Vec<&str> = out.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(types, [URI_LIST, TEXT[0], TEXT[1], TEXT[2], TEXT[3]]);
+        assert_eq!(
+            out[0].1,
+            b"file:///tmp/a%20b.png\r\nfile:///home/u/n%C3%A4me.txt\r\n"
+        );
+        assert_eq!(payload_of(URI_LIST, &out[0].1), files);
+        assert_eq!(out[1].1, "/tmp/a b.png\n/home/u/n\u{e4}me.txt".as_bytes());
+        let app = DropPayload::External {
+            kind: DropKind::App,
+            files: vec![],
+            text: String::new(),
+            app_id: Some("org.x.Y.desktop".into()),
+        };
+        let found = |id: &str| Some(PathBuf::from(format!("/usr/share/applications/{id}")));
+        let out = exports_of(&app, found);
+        assert_eq!(payload_of(URI_LIST, &out[0].1), app);
+        assert_eq!(out[1].1, b"org.x.Y.desktop");
+        let out = exports_of(&app, none);
+        assert_eq!(out.len(), TEXT.len(), "no file found: the id as text only");
+        let text = DropPayload::External {
+            kind: DropKind::Text,
+            files: vec![],
+            text: "hi \u{2014}".into(),
+            app_id: None,
+        };
+        let out = exports_of(&text, none);
+        assert_eq!(out.len(), TEXT.len());
+        assert_eq!(payload_of(&out[0].0, &out[0].1), text);
+        assert!(exports_of(&DropPayload::Node(NodeId::new(1, 0)), none).is_empty());
+        // Another Strand's private type is not read: its other types are.
+        assert_eq!(
+            classify(&mimes(&[
+                "application/x-strand-node;pid=9;manager=1",
+                "text/plain"
+            ])),
+            Some(("text/plain".into(), DropKind::Text))
+        );
+        assert_eq!(
+            classify(&mimes(&["application/x-strand-node;pid=9;manager=1"])),
+            None
+        );
     }
 
     #[test]

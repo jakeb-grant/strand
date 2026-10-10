@@ -61,8 +61,8 @@ use wayland_protocols::wp::viewporter::client::{
 use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_wm_base::XdgWmBase};
 
 use strand_scene::{
-    CompositorCaps, Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget,
-    Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
+    CompositorCaps, DropPayload, Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind,
+    PaintTarget, Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
 use crate::caps::Offered;
@@ -176,12 +176,13 @@ pub trait SurfaceHost: Painter {
         let _ = event;
     }
     /// (M4) Where `surface`'s buffer (its top-left corner, shadow
-    /// overhang included) now lies on its output, in the output's
-    /// logical pixels: a layer surface as the compositor arranges one of
-    /// its size and anchors on the whole output, a popup where the
-    /// compositor's configure put it relative to its parent. Called when
-    /// it changes. The host turns a press into an output position with
-    /// it (the tray's click point).
+    /// overhang included) now lies in the compositor's logical layout
+    /// (global logical pixels: its output's position added): a layer
+    /// surface as the compositor arranges one of its size and anchors in
+    /// its output's usable area (our own surfaces' exclusive zones taken
+    /// out), a popup where the compositor's configure put it relative to
+    /// its parent. Called when it changes. The host turns a press into a
+    /// screen position with it (the tray's click point).
     fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
         let _ = (surface, origin);
     }
@@ -218,6 +219,23 @@ pub trait SurfaceHost: Painter {
     /// (`wl_data_device.start_drag`), so it can drop on another surface.
     fn drag_source(&self, surface: SurfaceId) -> Option<NodeId> {
         let _ = surface;
+        None
+    }
+    /// (M4 interaction-finish) What the `drag:` node `node` gives other
+    /// programs when the compositor carries it out
+    /// (`strand_scene::drag_export` of its `Prop::Drag`): the drag then
+    /// offers it as `text/uri-list` and text besides its private type.
+    /// `None`: nothing, the drag is Strand's alone.
+    fn drag_data(&self, node: NodeId) -> Option<DropPayload> {
+        let _ = node;
+        None
+    }
+    /// (M4 interaction-finish) The icon of the `drag:` node `node` on
+    /// `surface` (render's `Renderer::drag_image`): the manager shows it
+    /// under the pointer, where it was held, while the compositor
+    /// carries the drag. `None`: no icon.
+    fn drag_image(&mut self, surface: SurfaceId, node: NodeId) -> Option<strand_scene::DragImage> {
+        let _ = (surface, node);
         None
     }
 }
@@ -423,8 +441,8 @@ pub struct SurfaceInfo {
     pub under_layer: Option<Layer>,
     /// (M4) The compositor pose last set on it (identity at rest).
     pub pose: strand_scene::SurfacePose,
-    /// (M4) Where its buffer's top-left corner is on its output, logical
-    /// pixels, as last told to [`SurfaceHost::surface_placed`].
+    /// (M4) Where its buffer's top-left corner is in the compositor's
+    /// logical layout, as last told to [`SurfaceHost::surface_placed`].
     pub origin: Option<(i32, i32)>,
     pub stats: Stats,
 }
@@ -492,6 +510,10 @@ struct Surface {
     alpha: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1>,
     /// (M4) Its buffer's top-left corner on its output (`origin.rs`).
     origin: Option<(i32, i32)>,
+    /// (M4) The monitor whose usable area its exclusive zone was last
+    /// taken from when it was placed (`origin.rs`): a zone that drops to
+    /// none, or a surface that moves, places the others there again.
+    zone_on: Option<MonitorId>,
     last_damage: Vec<Rect>,
     click_through: bool,
     /// The input region last sent: `None` the whole surface, `Some(None)`

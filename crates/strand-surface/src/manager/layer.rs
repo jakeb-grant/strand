@@ -94,6 +94,12 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.stats.bare_commits += 1;
             }
             self.update_catcher(id);
+            // (M4) Placed for its new anchors, margins and zone at once
+            // (a zone that drops to none gets the others no configure);
+            // one not configured yet is placed by its first configure.
+            if self.surfaces.get(&id).is_some_and(|s| s.configured) {
+                self.place_layer(id);
+            }
         }
     }
 
@@ -236,6 +242,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             pose: strand_scene::SurfacePose::IDENTITY,
             alpha: None,
             origin: None,
+            zone_on: None,
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -266,6 +273,13 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         self.by_wl.remove(&s.wl().id());
+        // (M4) An exclusive zone gone: the others on its output are
+        // arranged without it (where it was counted when placed, or,
+        // not placed yet, where its config puts it).
+        let zone_gone = s.zone_on.clone().or(match s.role {
+            Role::Layer(_) if s.config.exclusive_zone > 0 => s.monitor.clone(),
+            _ => None,
+        });
         self.dirty.remove(&id);
         self.releasing.remove(&id);
         if self.held_leave == Some(id) {
@@ -299,6 +313,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         self.clock.forget(id);
         self.host.surface_detached(id);
+        if let Some(m) = zone_gone {
+            self.place_layers_on(&m);
+        }
         // `grab_focus` may name it still: the sync moves it on and tells
         // the new target (not the gone one).
         self.sync_popup_keyboard();

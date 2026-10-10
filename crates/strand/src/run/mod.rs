@@ -240,6 +240,17 @@ pub enum ToLogic {
     /// A notice from the main thread for `strand watch` (the blur
     /// fallback's reason, decisions.md m4-surface-w1).
     Notice(String),
+    /// (M4) The `blur` boxes of a surface the compositor does not blur
+    /// behind, as its frame first asks for them (and again when they
+    /// change): each node, its kind and whether it draws the tint
+    /// fallback (`blur_fallback: none`: nothing); the surface's
+    /// namespace; why (`caps::blur_missing`). Logic names each node's
+    /// place in the source in a `strand watch` notice.
+    BlurFallback {
+        surface: String,
+        nodes: Vec<(NodeId, strand_scene::NodeKind, bool)>,
+        why: String,
+    },
     /// (M4) Why the GPU is or is not drawing, when it changes while a
     /// frame shows a `shader` node (`Renderer::gpu_status`): logged once
     /// per reason, a `strand watch` notice, kept for `strand report`.
@@ -407,6 +418,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     }
     // Before any thread starts, so every thread has the signals blocked.
     let signals = signal_fd()?;
+    // (M4) A tray action sends the press's point only when an input
+    // event's handler calls it; a timer's or IPC's sends (0,0).
+    strand_services::tray::set_input_probe(strand_compiler::vm::in_input_handler);
     // The watcher, then the first load (a config broken at boot runs its
     // last good version), then the compiler worker for every later save.
     let (worker_tx, worker_rx) = calloop::channel::channel::<FromWorker>();

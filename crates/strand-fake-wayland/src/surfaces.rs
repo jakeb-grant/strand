@@ -1,6 +1,7 @@
 //! The surface side of the fake: `wl_compositor`, `wl_region`, `wl_shm`,
 //! `wl_subcompositor`, `zwlr_layer_shell_v1`, `wp_viewporter`, `wp_single_pixel_buffer_v1`,
-//! `wp_alpha_modifier_v1` and `ext_background_effect_v1` (and, in
+//! `wp_alpha_modifier_v1`, `ext_background_effect_v1` and, when asked
+//! for, `zxdg_output_manager_v1` (and, in
 //! `xdg.rs`, `xdg_wm_base` for popups), enough for the surface manager
 //! (`strand-surface`) to map layer surfaces and popups, and recording
 //! what each surface committed so tests can check the protocol state the
@@ -24,6 +25,10 @@ use wayland_protocols::wp::single_pixel_buffer::v1::server::wp_single_pixel_buff
 use wayland_protocols::wp::viewporter::server::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
+};
+use wayland_protocols::xdg::xdg_output::zv1::server::{
+    zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
+    zxdg_output_v1::{self, ZxdgOutputV1},
 };
 use wayland_protocols_wlr::layer_shell::v1::server::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
@@ -53,6 +58,11 @@ pub struct SurfaceGlobals {
     pub background_effect: Option<u32>,
     /// Each output's size in pixels (scale 1), by the order of `outputs`.
     pub output_size: (u32, u32),
+    /// (M4) `zxdg_output_manager_v1` (v3), giving each output its logical
+    /// size (`output_size`) at (0, 0), so the manager can place layer
+    /// surfaces (`origin.rs`). Off by default: a fake without it keeps
+    /// the outputs' logical size unknown, as the other tests expect.
+    pub xdg_output: bool,
 }
 
 impl Default for SurfaceGlobals {
@@ -64,6 +74,7 @@ impl Default for SurfaceGlobals {
             alpha_modifier: true,
             background_effect: Some(1),
             output_size: (1920, 1080),
+            xdg_output: false,
         }
     }
 }
@@ -1019,5 +1030,60 @@ pub(crate) fn create_globals(dh: &DisplayHandle, g: &SurfaceGlobals) {
     }
     if g.background_effect.is_some() {
         dh.create_global::<Server, ExtBackgroundEffectManagerV1, ()>(1, ());
+    }
+    if g.xdg_output {
+        dh.create_global::<Server, ZxdgOutputManagerV1, ()>(3, ());
+    }
+}
+
+impl GlobalDispatch<ZxdgOutputManagerV1, ()> for Server {
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<ZxdgOutputManagerV1>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        init.init(resource, ());
+    }
+}
+
+impl Dispatch<ZxdgOutputManagerV1, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &ZxdgOutputManagerV1,
+        request: zxdg_output_manager_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let zxdg_output_manager_v1::Request::GetXdgOutput { id, output } = request {
+            let x = init.init(id, ());
+            let (w, h) = state
+                .surf
+                .globals
+                .as_ref()
+                .map_or((1920, 1080), |g| g.output_size);
+            // Every output at (0, 0), its logical size its pixel size.
+            x.logical_position(0, 0);
+            x.logical_size(w as i32, h as i32);
+            // v3: the output's `done` ends the batch.
+            output.done();
+        }
+    }
+}
+
+impl Dispatch<ZxdgOutputV1, ()> for Server {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &ZxdgOutputV1,
+        _: zxdg_output_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
     }
 }

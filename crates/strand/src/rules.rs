@@ -324,7 +324,11 @@ pub fn run(args: &[String]) -> Result<String, String> {
     let comment = if classic { "#" } else { "--" };
     let mut out = format!(
         "{comment} Strand: blur behind the surfaces of {} that ask for `blur`\n\
-         {comment} (strand compositor-rules{}). Paste into your Hyprland config.\n",
+         {comment} (strand compositor-rules{}). Paste into your Hyprland config.\n\
+         {comment} Only for a Hyprland without ext-background-effect-v1 (Strand's log says\n\
+         {comment} when it is missing): where it is offered, Strand already blurs behind\n\
+         {comment} each `blur` box, and these rules would blur all of the surface above\n\
+         {comment} alpha {IGNORE_ALPHA} besides.\n",
         dir.display(),
         if classic { " --classic" } else { "" }
     );
@@ -462,6 +466,9 @@ lock Gate { box { blur: 4 } }
         let arg = dir.display().to_string();
         let out = run(std::slice::from_ref(&arg)).unwrap();
         assert!(out.starts_with("-- Strand: blur behind"), "{out}");
+        // Hyprland with the protocol needs no rules (decisions.md,
+        // m4-interaction-finish): the header says so.
+        assert!(out.contains("-- Only for a Hyprland without ext-background-effect-v1"));
         assert_eq!(out.matches("hl.layer_rule(").count(), 3, "{out}");
         let out = run(&[arg.clone(), "--classic".into()]).unwrap();
         assert!(out.starts_with("# Strand"), "{out}");

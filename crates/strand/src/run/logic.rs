@@ -181,6 +181,8 @@ pub fn logic(
         unheard: Vec::new(),
         warnings: Vec::new(),
         host_notices,
+        blur_reports: Default::default(),
+        blur_notices: Vec::new(),
         settings_reread: Vec::new(),
         layout_seen: None,
         gpu: strand_scene::GpuStatus::default(),

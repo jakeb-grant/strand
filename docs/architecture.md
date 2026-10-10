@@ -255,7 +255,22 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   is mounted, logic replaces the error of every runtime fault that can
   carry values with `<redacted>` (keeping what failed and where) in the
   messages it logs and streams to `strand watch`; otherwise it replaces
-  the inputs' current values (`lock::Secrets`). The `faults` feature
+  the known values, and redacts a message whole when any 4-byte run of
+  one is still in it, compared lower-cased (Unicode) and with the
+  message's Debug and JSON escapes undone. The known values are the
+  inputs' current ones and the newest four replaced by a value they do
+  not start (submitted, edited, their input removed), zeroized when
+  dropped (`lock::Secrets`, M4 interaction-finish). Values under 4
+  bytes are never matched or remembered (any message would match
+  them): a password that short is covered only while its input is
+  mounted. Residual risk: the remembered values outlive the lock, so
+  until four newer values replace them the process's memory holds up
+  to four recent passwords after an unlock (freed copies of the field's
+  text may linger too, since only `Password` zeroizes); a core dump of
+  strand (systemd-coredump after an abort under the unit below) writes
+  them to disk. A session that wants no password in a core sets
+  `LimitCORE=0` in the unit (or `Storage=none` in coredump.conf).
+  The `faults` feature
   (`STRAND_FAULT`) injects each fault for `tests/lock.rs`, which runs
   only in the lock VM.
   Residual risk: rendering runs on the main thread, and the main thread
@@ -267,9 +282,48 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   started again, and strand ships no supervisor: a session that uses
   the lock must run strand under one that restarts it when it exits
   abnormally (a systemd user unit with `Restart=on-failure`, or a
-  restart loop in the compositor's autostart). Without one, a main
+  restart loop with a short sleep in the compositor's autostart). Without one, a main
   thread fault while locked needs another way into the session (a VT,
-  ssh) to start strand again.
+  ssh) to start strand again. With one, the session stays locked
+  throughout and the field is back as soon as the new strand runs:
+  `tests/lock.rs::a_supervised_strand_dying_while_locked_keeps_the_session_locked`
+  (lock VM) runs strand under a restart loop with the policy of the unit
+  below, read from this file, kills it twice while locked (SIGKILL, then
+  SIGABRT once it is back) and then six more times in a crash loop, each
+  as soon as the new strand runs, and finds the desktop hidden in every
+  shot until the restarted strand's field shows, with no test step
+  starting strand. A user unit for it:
+
+  ```ini
+  [Unit]
+  Description=Strand shell
+  PartOf=graphical-session.target
+  After=graphical-session.target
+  StartLimitIntervalSec=0
+
+  [Service]
+  ExecStart=strand run
+  Restart=on-failure
+  RestartSec=100ms
+  RestartSteps=5
+  RestartMaxDelaySec=2s
+
+  [Install]
+  WantedBy=graphical-session.target
+  ```
+
+  `StartLimitIntervalSec=0` is what keeps a crash loop from ending the
+  lock's way out. Without it systemd's default start limit (5 starts in
+  10 s) marks the unit failed after the fifth quick death and starts
+  strand no more, and the compositor holds the abandoned lock with no
+  password field: exactly the state the supervisor is there to end
+  (`tests/lock.rs::the_supervisor_gives_up_as_systemd_does_unless_the_unit_lifts_the_limit`
+  plays both). With no limit, the restart delay is the brake instead:
+  100 ms at first, growing over five restarts to 2 s (`RestartSteps`,
+  systemd 254; older systemd ignores the two keys and waits 100 ms each
+  time), so a strand that cannot start costs a restart every 2 s, not
+  a busy loop, and strand is started again at most 2 s after any
+  death. The compositor keeps the session locked meanwhile.
 - The PAM helper is a process, not a thread: the `strand-auth` binary,
   fork+exec'd over a socketpair by `strand_auth::Client`, one per lock
   session, respawned when it dies. The `Client`'s owner hands it
@@ -1145,6 +1199,19 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `InputEvent::DragDrop`; Escape cancels. The binary forwards it as
     `run::NodeEvent::Drop { payload, at }`, and `run/lists.rs` makes the
     handler's arguments on the logic thread.
+    As built (m4-interaction-finish): a source whose value has a form
+    outside Strand sends `Prop::Drag` as `List [Keyword(type),
+    Keyword(kind), Text…]` instead of the bare `Keyword` (kind `text`,
+    `files` or `app`, then the text, the paths or the app id);
+    `strand_scene::drag_type` and `strand_scene::drag_export` read either
+    form, and nothing else may look inside the prop. `Prop::DropRows`
+    (`Bool`, compiler-set) marks an `on drop` target whose direct children
+    come from a `for`, so render places drops among those items even when
+    they are not `drag:` sources. `Renderer::drag_image(surface, node) ->
+    Option<DragImage>` draws a node alone at rest (lift and glide held,
+    no animation stepped) for the drag icon; `strand_scene::DragImage {
+    size, scale, origin, pixels }` is premultiplied ARGB at the surface's
+    scale with `origin` its corner in surface coordinates.
   - **Surface poses** (design.md, "Compositor-animated poses").
     `SurfacePose { opacity: f32, scale: f32, offset: LogicalPoint }`. When
     the compositor allows it (`Renderer::set_compositor_poses`) and a
@@ -1158,10 +1225,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     popup's x/y always repaints. Without the protocols, render repaints.
   - **Compositor capabilities.** `CompositorCaps { alpha_modifier,
     viewporter, single_pixel_buffer, background_effect, session_lock,
-    data_device }` (all `bool`; `delegates_poses()` needs the first
-    two), reported once the globals are bound
+    data_device, hyprland }` (all `bool`; `delegates_poses()` needs the
+    first two; `hyprland` (M4 interaction-finish): a `hyprland_*` global
+    is in the registry), reported once the globals are bound
     (`SurfaceHost::compositor_caps`); the host hands render what it uses
-    (`set_compositor_blur`, `set_compositor_poses`).
+    (`set_compositor_blur`, `set_compositor_poses`,
+    `set_compositor_pose_scale(!hyprland)`; the blur fallback's reason
+    names `strand compositor-rules` when `hyprland`).
   - **Backends** (`strand_scene::backend`): `Backend` (`Cpu`,
     `GpuPresent`, `GpuReadback`), `BackendChange` (`Promote(surface)`,
     `Demote(surface)`, `Drop`), `GpuStatus` (`Unused`, `Starting`,
@@ -2287,7 +2357,9 @@ Public interfaces other crates and later stages build on:
     to a mounted row is its ops; a change outside the window sends no row
     op. `nav` selects by index, and a selection lands when its row mounts.
   - Drag and drop: the instance sets `Prop::Drag` (the dragged value's
-    type) and `Prop::Accepts` (from each `on drop` parameter's type); a
+    type, with its text, files or app id when it has them) and
+    `Prop::Accepts` (from each `on drop` parameter's type), plus
+    `Prop::DropRows` on a target with a direct `for` child; a
     `NodeEvent::Drop` with `DropPayload::Node` is delivered with that
     source node's `drag:` value, an `External` one as a `Drop` record.
   - The lock: only an `auth` success unlocks; the runtime then writes the
@@ -2534,8 +2606,9 @@ and the connection):
     "`strand-gpu`", "Surface hand-off".
   - Capabilities (`caps.rs`): the manager binds `wp_alpha_modifier_v1`,
     `wp_single_pixel_buffer_v1` and `ext_background_effect_manager_v1`
-    when offered, looks up `ext_session_lock_manager_v1` and
-    `wl_data_device_manager` in the registry, and calls the new hook
+    when offered, looks up `ext_session_lock_manager_v1`,
+    `wl_data_device_manager` and any `hyprland_*` global in the
+    registry, and calls the new hook
     `SurfaceHost::compositor_caps(&CompositorCaps)` at the end of its
     first wakeup (after the binds' replies, before any surface is
     configured), and again whenever they change (the background
@@ -2543,6 +2616,12 @@ and the connection):
     `background_effect` is true only once that event names blur.
     `State::compositor_caps()` reads them. The binary's host hands
     `set_compositor_blur` to render and forwards `Painter::blur_region`.
+    (M4 interaction-finish) While the compositor does not blur, the
+    host sends logic `ToLogic::BlurFallback { surface, nodes, why }`
+    (each `blur` node of a surface, its kind and whether it draws the
+    tint; `caps::blur_missing`) when a surface's blur-region count
+    changes, and logic makes a `strand watch` notice per box with its
+    `file:line:col` (`Instance::origin`).
   - Poses (`manager/pose.rs`, wave 2): each frame, right after
     `paint`, it reads `Painter::surface_pose` and sets what changed as
     pending state (a `wp_alpha_modifier_surface_v1` multiplier, made with
@@ -2563,14 +2642,27 @@ and the connection):
     plays to its end.
   - Origins and submenus (`manager/origin.rs`, wave 2): the no-op-default
     hook `SurfaceHost::surface_placed(surface, (x, y))` says where a
-    surface's buffer lies on its output, logical pixels, when that
-    changes: a layer surface as `LayerConfig::position_in` arranges its
-    configured size over the whole output (other surfaces' exclusive
-    zones are not known), a popup from its configure's position under its
-    parent's window geometry. `SurfaceInfo::origin` reads it. The
-    binary's host turns a press into the tray's click point with it
-    (`strand_services::tray::set_click_point`: the pressed node's
-    bottom-left corner on the output). A popup nested in a popup opens
+    surface's buffer lies in the global layout, logical pixels (its
+    output's position added), when that changes: a layer surface as
+    `placement::arranged_area` arranges it (M4 interaction-finish: the
+    wlroots order, our own exclusive surfaces on that output taken out
+    layer by layer from `overlay` down; other programs' zones are not
+    known), a popup from its configure's position under its parent's
+    window geometry. `SurfaceInfo::origin` reads it; adding, resizing or
+    destroying an exclusive layer surface, or one whose zone drops to
+    none or that moves to another output, places the others on each
+    output it took from or takes from again (`Surface::zone_on`). The binary's host turns a press into the tray's click point
+    with it (`strand_services::tray::set_click_point`: the pressed node's
+    bottom-left corner in the layout). A tray action takes that point
+    only when called by a handler of an input event
+    (`tray::TrayCall`, the service's action type, reads it in
+    `from_call`; `tray::set_input_probe(strand_compiler::vm::in_input_handler)`
+    at startup, `strand_compiler::vm::INPUT_EVENTS` naming the events a
+    press just set the point for: `click`, `secondary`, `middle`,
+    `activate` and `key`, a key press setting (0, 0);
+    `ActionCall::input` records it); a timer's, an IPC write's, and a
+    `scroll`, `dismiss` or `drop` handler's send (0, 0), never the last
+    press's point. A popup nested in a popup opens
     beside its anchor (`PopupConfig::aligned`: level with the row's top,
     flipped in x), right unless its `anchor:` names left, top or bottom.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
@@ -2662,7 +2754,17 @@ and the connection):
     this process, which enters our surfaces with no kinds and drops as
     `DropPayload::Node`; dropped elsewhere or cancelled, the origin gets a
     left release far outside it. `State::carrying_drag()` says one is in
-    flight. Drags out to other programs carry no data.
+    flight. As built (m4-interaction-finish), two more hooks with `None`
+    defaults: `drag_data(node) -> Option<DropPayload>` (what the source
+    gives other programs: the drag offers `text/uri-list` for files or an
+    app's `.desktop` file, and `text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain`,
+    `TEXT` for text, paths or an app id, written through calloop in
+    4 KiB steps; `dnd::exports_of` builds them) and `drag_image(surface,
+    node) -> Option<DragImage>` (the drag icon, committed on a
+    `wl_surface` of its own after `start_drag`, held where the source was
+    grabbed). The private MIME type starts with `dnd::STRAND_MIME`, so
+    another Strand process's drag is recognised and read through its
+    exports as a `DropPayload::External`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 

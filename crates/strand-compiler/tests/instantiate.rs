@@ -1462,6 +1462,90 @@ fn selected_rows_and_activate() {
     assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
 }
 
+/// (M4) A handler of an input event runs as one: its actions are marked
+/// input-driven (the tray then sends the press's point), while the same
+/// action from an `on change` or a timer is not.
+#[test]
+fn actions_know_whether_input_called_them() {
+    let src = "export state n = 0\n\
+               bar B {\n  \
+                 on change n { notifications.clear() }\n  \
+                 box { width: 10; height: 10; on click { notifications.clear(); n = n + 1; await sleep(1s); notifications.clear() } }\n\
+               }\n";
+    let mut shell = boot(&[("b.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(shell.host.take_actions().is_empty());
+    let target = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(target, "click", Vec::new());
+    shell.flush();
+    shell.flush();
+    let calls: Vec<(String, bool)> = shell
+        .host
+        .take_actions()
+        .iter()
+        .map(|a| (a.to_string(), a.input))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("notifications.clear(0)".to_string(), true),
+            ("notifications.clear(0)".to_string(), false)
+        ],
+        "the click's own call, then `on change n`'s"
+    );
+    // After its `await` the click handler runs outside the input.
+    shell.at(2.0);
+    let calls: Vec<(String, bool)> = shell
+        .host
+        .take_actions()
+        .iter()
+        .map(|a| (a.to_string(), a.input))
+        .collect();
+    assert_eq!(
+        calls,
+        [("notifications.clear(0)".to_string(), false)],
+        "the call after the await"
+    );
+    assert!(!strand_compiler::vm::in_input_handler());
+}
+
+/// (M4) Only the events a press just set the tray's click point for run
+/// as input: a click, a secondary or middle click and an activate (a
+/// clicked row, or Return, whose key press set (0, 0)). A wheel, a drop
+/// and a dismiss come with no press of their own, so a tray action they
+/// call must not send the last press's point.
+#[test]
+fn only_press_caused_handlers_run_as_input() {
+    let src = "state n = 0\n\
+               bar B {\n  row {\n    \
+                 box { width: 10; height: 10; on click { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on secondary { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on middle { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on activate { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on scroll(dy) { notifications.clear() } }\n    \
+                 box { width: 10; height: 10; on drop(x: int, at: int) { notifications.clear() } }\n  \
+               }\n}\n";
+    let mut shell = boot(&[("b.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let events: [(&str, Vec<Value>, bool); 6] = [
+        ("click", vec![], true),
+        ("secondary", vec![], true),
+        ("middle", vec![], true),
+        ("activate", vec![], true),
+        ("scroll", vec![Value::float(1.0), Value::float(0.0)], false),
+        ("drop", vec![Value::int(1), Value::int(0)], false),
+    ];
+    for (target, (event, args, input)) in boxes.iter().zip(events) {
+        assert!(shell.inst.event(*target, event, args), "{event} delivered");
+        shell.flush();
+        let calls: Vec<bool> = shell.host.take_actions().iter().map(|a| a.input).collect();
+        assert_eq!(calls, [input], "on {event}");
+    }
+}
+
 /// Every snippet of design.md (and grammar.md's examples, and the rice)
 /// mounted at once: no binding fails, every diff is consistent.
 #[test]
@@ -4156,6 +4240,90 @@ bar B {
         matches!(&nums, Value::Num(n, _) if (*n - 3.0).abs() < 1e-9),
         "{nums:?}"
     );
+}
+
+/// (M4) What a drag gives other programs: a `drag:` source whose value
+/// has a form outside Strand (text, a `Drop`, an `App`) reaches render
+/// as its type name followed by that form (`strand_scene::drag_export`
+/// reads it); other values as the name alone. An `on drop` target whose
+/// direct child is a `for` holds rows (`Prop::DropRows`), whether or not
+/// they are draggable; one without a `for` does not.
+#[test]
+fn drag_sources_say_what_other_programs_get() {
+    let src = r#"type Pin { app: text; label: text }
+state words = ["alpha", "beta"]
+state got = ""
+bar B {
+  row {
+    box { drag: "hello" }
+    box { drag: Drop(kind: DropKind.files, files: ["/tmp/a b.png", "/tmp/c"], app: null, text: "") }
+    box { drag: App(id: "org.x.Y.desktop", name: "Y", comment: null, icon: "y", categories: []) }
+    box { drag: Pin(app: "a", label: "A") }
+  }
+  col {
+    on drop(t: text, at: int) { got = t }
+    for w in words key w { text w }
+  }
+  stack { on drop(t: text, at: int) { got = t }; text "x" }
+}
+"#;
+    let shell = boot(&[("dock.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let boxes = shell.scene.children(row).to_vec();
+    let exports: Vec<_> = boxes
+        .iter()
+        .map(|b| {
+            let p = shell.scene.prop(*b, Prop::Drag).expect("a drag prop");
+            (
+                strand_scene::drag_type(p).map(str::to_string),
+                strand_scene::drag_export(p),
+            )
+        })
+        .collect();
+    use strand_scene::{DropKind, DropPayload};
+    assert_eq!(
+        exports,
+        [
+            (
+                Some("text".to_string()),
+                Some(DropPayload::External {
+                    kind: DropKind::Text,
+                    files: vec![],
+                    text: "hello".into(),
+                    app_id: None
+                })
+            ),
+            (
+                Some("Drop".to_string()),
+                Some(DropPayload::External {
+                    kind: DropKind::Files,
+                    files: vec!["/tmp/a b.png".into(), "/tmp/c".into()],
+                    text: String::new(),
+                    app_id: None
+                })
+            ),
+            (
+                Some("App".to_string()),
+                Some(DropPayload::External {
+                    kind: DropKind::App,
+                    files: vec![],
+                    text: String::new(),
+                    app_id: Some("org.x.Y.desktop".into())
+                })
+            ),
+            (Some("Pin".to_string()), None),
+        ]
+    );
+    let col = shell.scene.of_kind(NodeKind::Col)[0];
+    let stack = shell.scene.of_kind(NodeKind::Stack)[0];
+    assert_eq!(
+        shell.scene.prop(col, Prop::DropRows),
+        Some(&PropValue::Bool(true))
+    );
+    assert_eq!(shell.scene.prop(stack, Prop::DropRows), None);
+    assert_eq!(shell.scene.prop(row, Prop::DropRows), None, "no `on drop`");
 }
 
 /// (M4) Drag and drop's logic side: a `drag:` source reaches render as

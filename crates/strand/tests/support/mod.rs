@@ -76,6 +76,28 @@ pub mod pointer {
             self.click_button(0x111, x, y, w, h);
         }
 
+        /// The left button pressed at (`x`, `y`) and held: [`Pointer::motion`]
+        /// then drags until [`Pointer::release`].
+        pub fn press(&mut self, x: u32, y: u32, w: u32, h: u32) {
+            self.time += 10;
+            self.pointer.motion_absolute(self.time, x, y, w, h);
+            self.pointer.frame();
+            self.time += 10;
+            self.pointer
+                .button(self.time, 0x110, wl_pointer::ButtonState::Pressed);
+            self.pointer.frame();
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+
+        /// The left button released where the pointer is.
+        pub fn release(&mut self) {
+            self.time += 10;
+            self.pointer
+                .button(self.time, 0x110, wl_pointer::ButtonState::Released);
+            self.pointer.frame();
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+
         fn click_button(&mut self, button: u32, x: u32, y: u32, w: u32, h: u32) {
             self.time += 10;
             self.pointer.motion_absolute(self.time, x, y, w, h);

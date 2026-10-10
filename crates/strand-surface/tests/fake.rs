@@ -72,6 +72,7 @@ fn capabilities_are_reported_once_the_globals_are_bound() {
         background_effect: true,
         session_lock: false,
         data_device: false,
+        hyprland: false,
     };
     assert_eq!(mgr.state().host().caps.last(), Some(&want));
     assert_eq!(mgr.state().compositor_caps(), want);
@@ -925,4 +926,65 @@ fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
         mgr.state().host().input
     );
     assert_eq!(mgr.state().keyboard_focus(), None);
+}
+
+/// (M4) The fake configures a surface only when its own request changes
+/// (as a compositor that does not configure siblings again may): a
+/// panel beside our bar is placed again when the live bar's exclusive
+/// zone drops to none (`height: 0`) and when it comes back, though the
+/// panel gets no configure of its own (`origin.rs`, `Surface::zone_on`).
+#[test]
+fn a_zone_that_drops_to_none_places_the_others_again() {
+    let fake = Fake::compositor(SurfaceGlobals {
+        xdg_output: true,
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    mgr.state_mut().apply_surface_change(
+        common::BAR,
+        SurfaceChange::Created(common::bar_spec("Top", 36.0)),
+    );
+    // On every screen: the fake sends no `wl_surface.enter`, so a
+    // focused panel would never learn its output.
+    let mut spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    spec.screens = strand_scene::Screens::All;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let origin = |s: &strand_surface::State<TestHost>| {
+        s.surfaces_of(PANEL)
+            .first()
+            .and_then(|id| s.surface(*id))
+            .and_then(|i| i.origin)
+    };
+    let wait = |mgr: &mut SurfaceManager<TestHost>, want: (i32, i32)| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| origin(s) == Some(want))
+            .unwrap();
+        assert!(
+            ok,
+            "the panel placed at {want:?}: {:?}, told {:?}",
+            origin(mgr.state()),
+            mgr.state().host().placed
+        );
+    };
+    wait(&mut mgr, (1520, 36));
+    let configures = |mgr: &SurfaceManager<TestHost>| {
+        let s = mgr.state();
+        s.surfaces_of(PANEL)
+            .first()
+            .and_then(|id| s.surface(*id))
+            .map(|i| i.stats.configures)
+    };
+    let before = configures(&mgr);
+    for (height, y) in [(0.0, 0), (36.0, 36)] {
+        mgr.state_mut().apply_surface_change(
+            common::BAR,
+            SurfaceChange::Updated {
+                spec: common::bar_spec("Top", height),
+                recreate: false,
+            },
+        );
+        wait(&mut mgr, (1520, y));
+    }
+    assert_eq!(configures(&mgr), before, "the panel got no configure");
 }

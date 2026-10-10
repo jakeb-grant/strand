@@ -72,6 +72,13 @@ pub(super) struct Shell {
     /// fallback's reason), said once per run: usually sent at boot, before
     /// anyone watched, so each watcher that subscribes hears them too.
     pub(super) host_notices: Vec<String>,
+    /// (M4) The last `ToLogic::BlurFallback` of each surface (its `blur`
+    /// nodes and the reason), so a reload can say them again from the
+    /// new source.
+    pub(super) blur_reports: std::collections::HashMap<String, (BlurNodes, String)>,
+    /// The notices made from [`Shell::blur_reports`]: each logged once,
+    /// kept for later watchers, replaced on a reload.
+    pub(super) blur_notices: Vec<String>,
     /// Settings files (and their runtime overlays) read again since the
     /// last step, as notices name them.
     pub(super) settings_reread: Vec<String>,
@@ -83,6 +90,9 @@ pub(super) struct Shell {
     /// (`lock.rs`).
     pub(super) secrets: super::lock::Secrets,
 }
+
+/// A surface's `blur` nodes as `ToLogic::BlurFallback` carries them.
+pub(super) type BlurNodes = Vec<(NodeId, strand_scene::NodeKind, bool)>;
 
 impl Shell {
     /// Apply one message from the main thread.
@@ -151,11 +161,97 @@ impl Shell {
                 self.host_notices.push(text);
             }
             ToLogic::Notice(_) => {}
+            ToLogic::BlurFallback {
+                surface,
+                nodes,
+                why,
+            } => {
+                let mut all = std::mem::take(&mut self.blur_notices);
+                for text in self.blur_texts(&surface, &nodes, &why, false) {
+                    if !all.contains(&text) {
+                        all.push(text);
+                    }
+                }
+                self.blur_reports.insert(surface, (nodes, why));
+                self.set_blur_notices(all);
+            }
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => self.lock_state(state),
             ToLogic::Beat(seq) => super::lock::beat(seq),
             ToLogic::Shutdown => {}
         }
+    }
+
+    /// (M4) The blur ladder's inspector half: for each `blur` box the
+    /// compositor does not blur behind, where it is in the source, what
+    /// it draws instead and why.
+    /// `live`: only the nodes still mounted (a reload's retelling; a
+    /// fresh report's node without a source place names its surface).
+    fn blur_texts(&self, surface: &str, nodes: &BlurNodes, why: &str, live: bool) -> Vec<String> {
+        nodes
+            .iter()
+            .filter_map(|&(node, kind, tint)| {
+                let origin = self.inst.origin(node);
+                if live && origin.is_none() {
+                    return None;
+                }
+                let at = origin
+                    .and_then(|(f, _, sp)| {
+                        let file = self.build.sources.get(f)?;
+                        let (l, c) = overlay::line_col(&file.text, sp.start);
+                        Some(format!("{}:{l}:{c}", file.name))
+                    })
+                    .unwrap_or_else(|| surface.to_string());
+                let draws = if tint {
+                    "draws its tint fallback (alpha + 0.15; `blur_fallback: none` turns it off)"
+                } else {
+                    "draws no blur and no tint (`blur_fallback: none`)"
+                };
+                Some(format!(
+                    "{at}: `{}` in {surface} asks for blur and {draws}: {why}",
+                    kind.name()
+                ))
+            })
+            .collect()
+    }
+
+    /// Makes `all` the blur notices: the ones not said before are logged
+    /// and sent to the watchers, once.
+    fn set_blur_notices(&mut self, all: Vec<String>) {
+        let fresh: Vec<&String> = all
+            .iter()
+            .filter(|t| !self.blur_notices.contains(t))
+            .collect();
+        for text in &fresh {
+            log::info!("{text}");
+        }
+        if !fresh.is_empty()
+            && let Some(s) = &mut self.server
+        {
+            s.broadcast(&json!({
+                "event": "notices",
+                "kept_over_default": [],
+                "notices": fresh,
+            }));
+        }
+        self.blur_notices = all;
+    }
+
+    /// After a committed reload: the blur notices again from the kept
+    /// reports, for the nodes still mounted, at their new places (a
+    /// moved box's old place, or a removed box, is no longer told).
+    fn retell_blur(&mut self) {
+        let mut all = Vec::new();
+        for (surface, (nodes, why)) in &self.blur_reports {
+            for text in self.blur_texts(surface, nodes, why, true) {
+                if !all.contains(&text) {
+                    all.push(text);
+                }
+            }
+        }
+        all.sort();
+        self.blur_notices.retain(|t| all.contains(t));
+        self.set_blur_notices(all);
     }
 
     /// (M4) The GPU status render reported: kept (for `strand report`),
@@ -318,6 +414,7 @@ impl Shell {
                 self.build = b;
                 self.overlay.set_running(true);
             }
+            self.retell_blur();
         }
         let commit = began.elapsed();
         if overlay {
@@ -480,15 +577,19 @@ impl Shell {
             // warnings and the main thread's notices follow (the boot's
             // were made before anyone watched).
             ipc::Request::Watch => {
-                if !(self.warnings.is_empty() && self.host_notices.is_empty())
+                if !(self.warnings.is_empty()
+                    && self.host_notices.is_empty()
+                    && self.blur_notices.is_empty())
                     && let Some(s) = &mut self.server
                 {
+                    let notices: Vec<&String> =
+                        self.host_notices.iter().chain(&self.blur_notices).collect();
                     s.send(
                         id,
                         &json!({
                             "event": "notices",
                             "kept_over_default": [],
-                            "notices": self.host_notices,
+                            "notices": notices,
                             "diagnostics": self.warnings,
                         }),
                     );

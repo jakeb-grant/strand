@@ -303,6 +303,10 @@ props! {
     /// On a `list` whose direct child is a `for`: the global index of the
     /// first mounted row (`Number`).
     RowFirst = "row_first": Snap,
+    /// (M4) On an `on drop` target whose direct child is a `for`: its
+    /// children are rows, each with its index among them, whether or not
+    /// they are `drag:` sources (`Bool`).
+    DropRows = "drop_rows": Snap,
     // Tokens.
     /// Token overrides for this node and its subtree, as a
     /// [`PropValue::Tokens`] table: `set { $surface: $surface.alpha(0.5) }`
@@ -1140,6 +1144,7 @@ mod tests {
             (Prop::Accepts, "accepts"),
             (Prop::RowCount, "row_count"),
             (Prop::RowFirst, "row_first"),
+            (Prop::DropRows, "drop_rows"),
         ] {
             assert_eq!(p.name(), name);
         }

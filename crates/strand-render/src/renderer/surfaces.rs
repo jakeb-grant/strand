@@ -25,6 +25,76 @@ impl Renderer {
             .copied()
     }
 
+    /// (M4) `node` on `surface` drawn alone, at rest (not lifted, no
+    /// glide), at the surface's scale and with what it inherits there:
+    /// the icon that follows the pointer while the compositor carries a
+    /// drag out of the surface. `None` when it is not laid out there or
+    /// has no area on it.
+    pub fn drag_image(
+        &mut self,
+        surface: SurfaceId,
+        node: NodeId,
+    ) -> Option<strand_scene::DragImage> {
+        let rect = self.node_rect(surface, node)?;
+        let s = self.surfaces.get(&surface)?;
+        let (size, scale) = (s.size, s.scale);
+        let time = s.painted_time.unwrap_or_default();
+        let x0 = scale.round(rect.x).clamp(0, size.w as i64);
+        let y0 = scale.round(rect.y).clamp(0, size.h as i64);
+        let x1 = scale.round(rect.x + rect.w).clamp(0, size.w as i64);
+        let y1 = scale.round(rect.y + rect.h).clamp(0, size.h as i64);
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        let box_ = strand_scene::Rect::from_edges(x0, y0, x1, y1);
+        let layouts = self.shaped();
+        let still = self.anim.hold_still(node);
+        // A frame that commits nothing: no clock, play or glide moves.
+        self.anim.begin(time, None, false);
+        let f = match self.surfaces.get(&surface).and_then(|s| s.boxes.as_ref()) {
+            Some(boxes) => crate::flatten::flatten(
+                &self.tree,
+                node,
+                size,
+                scale,
+                &layouts,
+                boxes,
+                &mut self.anim,
+                &self.extras,
+            ),
+            None => crate::flatten::Flattened::default(),
+        };
+        self.anim.release(node, still);
+        // Drawn into a buffer of the box's size, the surface's pixels
+        // from its corner on.
+        let (w, h) = (box_.w as usize, box_.h as usize);
+        let mut pixels = vec![0u8; w * h * 4];
+        let target = strand_scene::PaintTarget::new(
+            &mut pixels,
+            Size::new(box_.w, box_.h),
+            box_.w * 4,
+            scale,
+            0,
+        )
+        .ok()?;
+        let mut target = target.at(time);
+        self.raster.paint_window(
+            &f.items,
+            &Damage::from_rect(box_),
+            &self.atlas,
+            scale,
+            &mut target,
+            strand_scene::Rect::from_size(size),
+            (x0, y0),
+        );
+        Some(strand_scene::DragImage {
+            size: Size::new(box_.w, box_.h),
+            scale,
+            origin: LogicalPoint::new(scale.to_logical(x0 as f64), scale.to_logical(y0 as f64)),
+            pixels,
+        })
+    }
+
     /// Paints the subtree under `root` (a surface node) into `surface`.
     pub fn attach_surface(&mut self, surface: SurfaceId, root: NodeId) {
         self.surfaces.insert(

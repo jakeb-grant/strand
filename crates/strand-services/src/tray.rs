@@ -120,8 +120,43 @@ pub enum TrayAction {
     OpenEntry { item: TrayMenuItem },
 }
 
+/// A tray action with the point it is sent at (`Activate`,
+/// `SecondaryActivate` and `ContextMenu` take one): the click point the
+/// shell's host set ([`set_click_point`]) when the action is called from
+/// a handler of an input event, else `(0, 0)`, the point when none is
+/// known. Taken when the call is made, on the logic thread, so a timer,
+/// an `on change` or an IPC write that calls `item.activate()` never
+/// sends an earlier press's point.
+#[derive(Debug)]
+pub struct TrayCall {
+    pub action: TrayAction,
+    pub at: (i32, i32),
+}
+
+impl crate::FromCall for TrayCall {
+    const NAMES: &'static [&'static str] = TrayAction::NAMES;
+
+    fn signatures() -> Vec<crate::CallSig> {
+        TrayAction::signatures()
+    }
+
+    fn from_call(
+        name: &str,
+        item: Option<&crate::Data>,
+        args: &[crate::Data],
+    ) -> Result<Self, crate::DataError> {
+        let action = TrayAction::from_call(name, item, args)?;
+        let at = if in_input() { click_point() } else { (0, 0) };
+        Ok(TrayCall { action, at })
+    }
+
+    fn item_records() -> Vec<String> {
+        TrayAction::item_records()
+    }
+}
+
 /// See the module docs.
-#[service(name = "tray", action = TrayAction)]
+#[service(name = "tray", action = TrayCall)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Tray {
     /// The tray's items, keyed by `id`: `for item in tray.items`.
@@ -160,8 +195,9 @@ static CLICK_POINT: AtomicU64 = AtomicU64::new(0);
 /// `SecondaryActivate`, `ContextMenu`): the shell's host calls it on
 /// every press, with the bottom-left corner of the node pressed in its
 /// output's logical coordinates (where an app placing a menu of its own
-/// should put it). The actions read it when they run, after the press
-/// that caused them; `(0, 0)` until the first press.
+/// should put it). An action takes it when a handler of an input event
+/// calls it ([`TrayCall`]); `(0, 0)` until the first press, and for
+/// every action no input caused.
 pub fn set_click_point(x: i32, y: i32) {
     let packed = (u64::from(x as u32) << 32) | u64::from(y as u32);
     CLICK_POINT.store(packed, Ordering::Relaxed);
@@ -171,6 +207,37 @@ pub fn set_click_point(x: i32, y: i32) {
 pub fn click_point() -> (i32, i32) {
     let packed = CLICK_POINT.load(Ordering::Relaxed);
     ((packed >> 32) as u32 as i32, packed as u32 as i32)
+}
+
+/// Says whether the calling thread runs a handler of an input event now
+/// (the binary hands it the instance's own probe): only then does an
+/// action take the click point ([`TrayCall`]).
+static INPUT_PROBE: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+thread_local! {
+    /// Set by [`input_scope`].
+    static IN_INPUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets how the tray tells that the calling thread runs a handler of an
+/// input event (`strand_compiler::vm::in_input_handler`). Only the first
+/// call counts.
+pub fn set_input_probe(probe: fn() -> bool) {
+    let _ = INPUT_PROBE.set(probe);
+}
+
+/// Runs `f` as the handler of an input event: actions called in it take
+/// the click point.
+pub fn input_scope<R>(f: impl FnOnce() -> R) -> R {
+    let was = IN_INPUT.with(|c| c.replace(true));
+    let r = f();
+    IN_INPUT.with(|c| c.set(was));
+    r
+}
+
+/// True while the calling thread runs a handler of an input event.
+fn in_input() -> bool {
+    IN_INPUT.with(std::cell::Cell::get) || INPUT_PROBE.get().is_some_and(|p| p())
 }
 
 /// An item's bus name and object path from what it registered: a bus
@@ -892,8 +959,6 @@ impl Host {
         let conn = self.conn.clone();
         let t = t.clone();
         let path = path.to_string();
-        // The point of the press that asked for this, for a fallback.
-        let at = click_point();
         self.tasks.spawn(async move {
             let r = timed(conn.call_method(
                 Some(t.bus.as_str()),
@@ -913,11 +978,13 @@ impl Host {
                 // DBusMenu opens in the shell's popup, as for
                 // `item.menu.open()`. An app that did not answer in time
                 // (frozen) is asked nothing more.
-                (Err(zbus::Error::MethodError(..)), Then::MenuOnError) if t.menu_path.is_some() => {
+                (Err(zbus::Error::MethodError(..)), Then::MenuOnError(_))
+                    if t.menu_path.is_some() =>
+                {
                     return Done::OpenMenu(t.id, t.generation);
                 }
                 // Without one the app shows its own.
-                (Err(zbus::Error::MethodError(..)), Then::MenuOnError) => {
+                (Err(zbus::Error::MethodError(..)), Then::MenuOnError(at)) => {
                     let _ = timed(conn.call_method(
                         Some(t.bus.as_str()),
                         t.path.as_str(),
@@ -936,9 +1003,10 @@ impl Host {
 
     /// Run an action (each call a task of its own); whether the state
     /// changed (a menu opened or closed).
-    fn act(&mut self, a: TrayAction) -> bool {
+    fn act(&mut self, call: TrayCall) -> bool {
         let target = |id: &str| self.entries.get(id).map(Entry::target);
-        match a {
+        let TrayCall { action, at } = call;
+        match action {
             TrayAction::Activate { item } => {
                 let Some(t) = target(&item.id) else {
                     return false;
@@ -950,31 +1018,17 @@ impl Host {
                     // opens, as `item.menu.open()` does.
                     (true, Some(_)) => return self.open_menu(&item.id),
                     (true, None) => {
-                        self.send(&t, &path, ITEM, "ContextMenu", click_point(), Then::Nothing);
+                        self.send(&t, &path, ITEM, "ContextMenu", at, Then::Nothing);
                     }
                     (false, _) => {
-                        self.send(
-                            &t,
-                            &path,
-                            ITEM,
-                            "Activate",
-                            click_point(),
-                            Then::MenuOnError,
-                        );
+                        self.send(&t, &path, ITEM, "Activate", at, Then::MenuOnError(at));
                     }
                 }
             }
             TrayAction::Secondary { item } => {
                 if let Some(t) = target(&item.id) {
                     let path = t.path.clone();
-                    self.send(
-                        &t,
-                        &path,
-                        ITEM,
-                        "SecondaryActivate",
-                        click_point(),
-                        Then::Nothing,
-                    );
+                    self.send(&t, &path, ITEM, "SecondaryActivate", at, Then::Nothing);
                 }
             }
             TrayAction::Scroll { item, dy } => {
@@ -1001,7 +1055,7 @@ impl Host {
                     // No DBusMenu: the app shows its own.
                     None => {
                         let path = t.path.clone();
-                        self.send(&t, &path, ITEM, "ContextMenu", click_point(), Then::Nothing);
+                        self.send(&t, &path, ITEM, "ContextMenu", at, Then::Nothing);
                     }
                     Some(_) => return self.open_menu(&item.item),
                 }
@@ -1083,8 +1137,9 @@ enum Then {
     Nothing,
     /// `AboutToShow`: read the menu again when it answers true.
     RelayoutIfTrue,
-    /// `Activate`: open the DBusMenu when refused, else `ContextMenu`.
-    MenuOnError,
+    /// `Activate`: open the DBusMenu when refused, else `ContextMenu` at
+    /// the activate's point.
+    MenuOnError((i32, i32)),
 }
 
 /// A registered item, read: its owner followed, its properties and menu

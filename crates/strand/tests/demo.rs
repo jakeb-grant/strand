@@ -2423,3 +2423,107 @@ fn strand_run_reloads_live_with_state_kept() {
         .collect();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// (M4) Drag and drop end to end on headless sway with a virtual
+/// pointer: a `drag:` box in one bar, held and carried out of it, shows
+/// its icon under the pointer across the screen, and dropped on another
+/// bar (another layer surface) reaches that bar's `on drop` as the text
+/// it dragged.
+#[test]
+fn strand_run_drags_from_one_surface_to_another() {
+    let Some(sway) = Sway::start_as("drag") else {
+        return;
+    };
+    let config = sway.dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("bars.strand"),
+        "bar Src {\n\
+         \x20 edge: top; height: 32; bg: #204080\n\
+         \x20 box { drag: \"hello\"; width: 100; height: 32; bg: #ff0000 }\n\
+         }\n\
+         bar Dst {\n\
+         \x20 state got = \"\"\n\
+         \x20 edge: bottom; height: 32\n\
+         \x20 bg: got == \"hello\" ? #208040 : #204080\n\
+         \x20 on drop(t: text, at: int) { got = t }\n\
+         }\n",
+    )
+    .unwrap();
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_LOG", "damage,info")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let (w, h) = (2560, 1440);
+    let px = |x: usize, y: usize| Shot::take(&sway, "HEADLESS-1").px(x, y);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while px(50, 10) != [0xff, 0, 0] || px(1200, 1424) != [0x20, 0x40, 0x80] {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            text()
+        );
+        assert!(Instant::now() < deadline, "no bars: {}", text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let desk = px(1200, 700);
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    std::thread::sleep(Duration::from_millis(300));
+    // Held on the box, then carried down out of the bar in steps.
+    pointer.press(50, 16, w, h);
+    std::thread::sleep(Duration::from_millis(100));
+    for y in [20u32, 26, 40, 80, 300, 700] {
+        pointer.motion(50 + y * 2, y, w, h);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    pointer.motion(1200, 700, w, h);
+    // The icon is the box, held where it was grabbed (50, 16 in it):
+    // red from 1150, 684 to 1250, 716, across the screen from both bars.
+    // Sampled left of the pointer, clear of the cursor it draws.
+    let red = [0xff, 0, 0];
+    let inside = [
+        (1151, 685),
+        (1151, 715),
+        (1190, 685),
+        (1190, 715),
+        (1170, 700),
+    ];
+    let shot = poll::until(
+        || Shot::take(&sway, "HEADLESS-1"),
+        |s| inside.iter().all(|&(x, y)| s.px(x, y) == red),
+    );
+    for (x, y) in inside {
+        assert_eq!(shot.px(x, y), red, "no drag icon at {x},{y}: {}", text());
+    }
+    for (x, y) in [(1148, 700), (1170, 682), (1170, 718)] {
+        assert_eq!(shot.px(x, y), desk, "the icon reaches {x},{y}");
+    }
+    // Dropped on the other bar: its `on drop` took the text.
+    pointer.motion(1200, 1424, w, h);
+    std::thread::sleep(Duration::from_millis(100));
+    pointer.release();
+    let got = poll::until(|| px(600, 1424), |c| *c == [0x20, 0x80, 0x40]);
+    assert_eq!(
+        got,
+        [0x20, 0x80, 0x40],
+        "the drop did not arrive: {}",
+        text()
+    );
+    // The drag is over: the source box is back in its bar.
+    pointer.motion(300, 300, w, h);
+    let gone = poll::until(|| px(1170, 700), |c| *c == desk);
+    assert_eq!(gone, desk, "the icon outlived the drop");
+    assert_eq!(px(50, 10), red, "the source left its bar");
+    drop(strand);
+}

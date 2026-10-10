@@ -647,6 +647,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             pose: strand_scene::SurfacePose::IDENTITY,
             alpha: None,
             origin: None,
+            zone_on: None,
             last_damage: Vec::new(),
             click_through: false,
             input_region: None,

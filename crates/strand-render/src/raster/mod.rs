@@ -169,11 +169,41 @@ impl Raster {
         scale: Scale,
         target: &mut PaintTarget<'_>,
     ) {
+        let surface = target.bounds();
+        self.paint_window(items, damage, atlas, scale, target, surface, (0, 0));
+    }
+
+    /// [`Raster::paint`] into a buffer that holds only a window of the
+    /// surface: `target`'s pixel (0, 0) is the surface's `origin`, and
+    /// `surface` is the whole surface (offscreen groups are drawn over
+    /// it as in a full paint). The same cells rasterise each pixel, so
+    /// the window is bit-identical to that part of a full paint (the
+    /// drag icon, [`crate::Renderer::drag_image`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_window(
+        &mut self,
+        items: &[DisplayItem],
+        damage: &Damage,
+        atlas: &AtlasMirror,
+        scale: Scale,
+        target: &mut PaintTarget<'_>,
+        surface: Rect,
+        origin: (i64, i64),
+    ) {
         self.rasterised = 0;
         if target.size.is_empty() || target.validate().is_err() {
             return;
         }
-        let damage = damage.clipped(target.bounds());
+        let window = Rect::from_edges(
+            origin.0,
+            origin.1,
+            origin.0 + target.size.w as i64,
+            origin.1 + target.size.h as i64,
+        );
+        let Some(window) = window.intersect(surface) else {
+            return;
+        };
+        let damage = damage.clipped(window);
         let Some(bbox) = damage.bounds() else {
             return;
         };
@@ -181,7 +211,7 @@ impl Raster {
         let now = std::time::Instant::now();
         self.cache.trim_idle(now);
         self.offscreen
-            .prepare(items, &damage, target.bounds(), atlas, &self.cache, scale);
+            .prepare(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen.trim_idle(now);
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
@@ -198,7 +228,7 @@ impl Raster {
         for cy in bbox.top().div_euclid(ch)..(bbox.bottom() + ch - 1).div_euclid(ch) {
             for cx in bbox.left().div_euclid(cw)..(bbox.right() + cw - 1).div_euclid(cw) {
                 let Some(cell) = Rect::from_edges(cx * cw, cy * ch, (cx + 1) * cw, (cy + 1) * ch)
-                    .intersect(target.bounds())
+                    .intersect(surface)
                 else {
                     continue;
                 };
@@ -245,10 +275,11 @@ impl Raster {
                 for c in &clips {
                     let lx0 = (c.left() - cell.left()) as usize * 4;
                     let lx1 = (c.right() - cell.left()) as usize * 4;
-                    let (x0, x1) = (c.left() as usize * 4, c.right() as usize * 4);
+                    let x0 = (c.left() - origin.0) as usize * 4;
+                    let x1 = (c.right() - origin.0) as usize * 4;
                     for y in c.top()..c.bottom() {
                         let ly = (y - cell.top()) as usize;
-                        let y = y as usize;
+                        let y = (y - origin.1) as usize;
                         target.pixels[y * stride + x0..y * stride + x1]
                             .copy_from_slice(&self.scratch[ly * row + lx0..ly * row + lx1]);
                     }
