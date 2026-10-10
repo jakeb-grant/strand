@@ -400,7 +400,9 @@ impl Renderer {
                 let page = self.is_page(node);
                 if !node.kind.is_surface()
                     && !reduced
-                    && (is_pose(exit_pose(node)) || page)
+                    && (is_pose(exit_pose(node))
+                        || page
+                        || crate::effects::transition::leaves_masked(node))
                     && laid
                     && self.shown(root)
                     && self.tree.ghost(*id).is_ok()

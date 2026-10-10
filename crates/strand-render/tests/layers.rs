@@ -1,6 +1,8 @@
 //! (M4) Effect layers: group opacity, blend modes and masks drawn through
 //! vello_cpu layers, partial repaints under them equal to full ones, and
-//! damage grown by each effect's reach (`crate::layers`).
+//! damage grown by each effect's reach (`crate::layers`). The effects
+//! come from each node's props (`filter:`, `mask:`, `blend:`), built by
+//! render (`crate::effects`).
 
 mod common;
 
@@ -10,11 +12,53 @@ use strand_scene::*;
 
 const S: SurfaceId = SurfaceId(1);
 
+/// Props that give a node effects.
+type Fx = Vec<(Prop, PropValue)>;
+
+fn call(name: &str, args: Vec<PropValue>) -> PropValue {
+    PropValue::Call {
+        name: name.into(),
+        args,
+    }
+}
+
+/// `filter:` with these functions of one number each.
+fn filter(fns: &[(&str, f32)]) -> (Prop, PropValue) {
+    let calls: Vec<PropValue> = fns.iter().map(|(n, v)| call(n, vec![num(*v)])).collect();
+    let v = if calls.len() == 1 {
+        calls.into_iter().next().unwrap()
+    } else {
+        PropValue::List(calls)
+    };
+    (Prop::Filter, v)
+}
+
+/// `filter: blur(r)`.
+fn blur(r: f32) -> (Prop, PropValue) {
+    filter(&[("blur", r)])
+}
+
+/// `filter: grayscale(1)` (a Rec. 709 luma colour matrix).
+fn grayscale() -> (Prop, PropValue) {
+    filter(&[("grayscale", 1.0)])
+}
+
+/// Sets each node's effect props.
+fn with_fx(r: &mut Renderer, fx: &[(NodeId, Fx)]) {
+    let mut d = SceneDiff::new();
+    for (id, props) in fx {
+        for (p, v) in props {
+            d.set(*id, *p, v.clone());
+        }
+    }
+    assert!(r.apply(d).is_empty());
+}
+
 /// Four 40 px boxes in a 240×60 bar: two overlapping squares under one
 /// group opacity, a square multiplied onto a yellow box, a green box
 /// fading out toward its bottom and a mauve box revealed in a circle.
 /// Returns the scene, the effects per node and the faded box.
-fn scene(fade_bg: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+fn scene(fade_bg: &str) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let place = |x: f32, more: Vec<(Prop, PropValue)>| {
@@ -53,33 +97,26 @@ fn scene(fade_bg: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
         Some(root),
         place(190.0, vec![(Prop::Bg, color("#cba6f7"))]),
     );
+    let kw = |k: &str| PropValue::Keyword(k.into());
     let effects = vec![
-        (group, vec![Effect::Opacity(0.5)]),
-        (multiplied, vec![Effect::Blend(BlendMode::Multiply)]),
+        (group, vec![(Prop::Opacity, num(0.5))]),
+        (multiplied, vec![(Prop::Blend, kw("multiply"))]),
         (
             faded,
-            vec![Effect::Mask(strand_scene::Mask::Fade {
-                edge: Edge::Bottom,
-                len: 20.0,
-            })],
+            vec![(Prop::Mask, call("fade", vec![kw("bottom"), num(20.0)]))],
         ),
         (
             revealed,
-            vec![Effect::Mask(strand_scene::Mask::Radial {
-                at: Anchor::Center,
-                size: 16.0,
-            })],
+            vec![(Prop::Mask, call("radial", vec![kw("center"), num(16.0)]))],
         ),
     ];
     (b.diff, effects, faded)
 }
 
-fn drawn(diff: SceneDiff, effects: &[(NodeId, Vec<Effect>)], scale: Scale) -> (Renderer, Buffer) {
+fn drawn(diff: SceneDiff, effects: &[(NodeId, Fx)], scale: Scale) -> (Renderer, Buffer) {
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
-    for (id, e) in effects {
-        r.set_layer_effects(*id, e.clone());
-    }
+    with_fx(&mut r, effects);
     r.attach_surface(S, r.tree().roots()[0]);
     let (w, h) = (
         (240.0 * scale.as_f32()).round() as u32,
@@ -136,8 +173,8 @@ fn partial_repaints_under_layers_match_full() {
 fn damage_grows_by_each_effects_reach() {
     for (effects, grow) in [
         (vec![], 0),
-        (vec![Effect::Blur { radius: 2.0 }], 6),
-        (vec![Effect::Blur { radius: 2.0 }, Effect::Opacity(0.5)], 6),
+        (vec![blur(2.0)], 6),
+        (vec![blur(2.0), (Prop::Opacity, num(0.5))], 6),
     ] {
         let mut b = Builder::default();
         let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
@@ -188,21 +225,10 @@ fn damage_grows_by_each_effects_reach() {
 
 // ---- (M4) Offscreen groups and raster nodes ---------------------------
 
-/// `grayscale(1)` as a colour matrix (Rec. 709 luma).
-fn grayscale() -> Effect {
-    let (r, g, b) = (0.2126, 0.7152, 0.0722);
-    Effect::ColorMatrix([
-        r, g, b, 0.0, 0.0, //
-        r, g, b, 0.0, 0.0, //
-        r, g, b, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0,
-    ])
-}
-
 /// Three 60 px groups of two squares in a 240×80 bar: blurred (σ 3),
 /// grayscale, and blurred at half opacity. Returns the scene, the
 /// effects and the blurred group's first square (in `first`).
-fn filtered(first: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+fn filtered(first: &str) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let mut groups = Vec::new();
@@ -232,26 +258,17 @@ fn filtered(first: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
         groups.push(g);
     }
     let effects = vec![
-        (groups[0], vec![Effect::Blur { radius: 3.0 }]),
+        (groups[0], vec![blur(3.0)]),
         (groups[1], vec![grayscale()]),
-        (
-            groups[2],
-            vec![Effect::Blur { radius: 3.0 }, Effect::Opacity(0.5)],
-        ),
+        (groups[2], vec![blur(3.0), (Prop::Opacity, num(0.5))]),
     ];
     (b.diff, effects, first_sq.unwrap())
 }
 
-fn drawn_80(
-    diff: SceneDiff,
-    effects: &[(NodeId, Vec<Effect>)],
-    scale: Scale,
-) -> (Renderer, Buffer) {
+fn drawn_80(diff: SceneDiff, effects: &[(NodeId, Fx)], scale: Scale) -> (Renderer, Buffer) {
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
-    for (id, e) in effects {
-        r.set_layer_effects(*id, e.clone());
-    }
+    with_fx(&mut r, effects);
     r.attach_surface(S, r.tree().roots()[0]);
     let k = scale.as_f32();
     let mut buf = Buffer::new((240.0 * k).round() as u32, (80.0 * k).round() as u32, scale);
@@ -302,7 +319,7 @@ fn blur_and_color_matrix_draw_through_offscreen_groups() {
 /// blurred (σ 2, reach 6) group of one red square, and a square 45 px to
 /// its right (`right`'s colour). Returns the scene, the effects and that
 /// square.
-fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
+fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let outer = b.node(
@@ -345,8 +362,8 @@ fn nested(right: &str) -> (SceneDiff, Vec<(NodeId, Vec<Effect>)>, NodeId) {
         ],
     );
     let effects = vec![
-        (outer, vec![Effect::Blur { radius: 4.0 }, grayscale()]),
-        (inner, vec![Effect::Blur { radius: 2.0 }]),
+        (outer, vec![filter(&[("blur", 4.0), ("grayscale", 1.0)])]),
+        (inner, vec![blur(2.0)]),
     ];
     (b.diff, effects, sq)
 }
@@ -435,9 +452,7 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     }
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    for (id, e) in &big {
-        r.set_layer_effects(*id, e.clone());
-    }
+    with_fx(&mut r, &big);
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(2280, 560, Scale::ONE);
     buf.paint(&mut r, S, 0);
@@ -457,38 +472,10 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     assert_eq!(r.offscreen_cache().0, 0, "freed when idle");
 }
 
-/// A raster node source: a solid red whose level steps with `t`.
-#[derive(Debug)]
-struct Steps(std::time::Duration);
-
-impl strand_render::RasterSource for Steps {
-    fn draw(
-        &self,
-        px: &mut [vello_cpu::color::PremulRgba8],
-        _: u32,
-        _: u32,
-        _: f32,
-        time: TimeContext,
-    ) {
-        let level = (40.0 + time.t * 400.0).min(255.0) as u8;
-        for p in px {
-            *p = vello_cpu::color::PremulRgba8 {
-                r: level,
-                g: 0,
-                b: 0,
-                a: 255,
-            };
-        }
-    }
-
-    fn rate(&self) -> strand_render::Rate {
-        strand_render::Rate::Every(self.0)
-    }
-}
-
 /// design.md: CPU raster nodes draw into a cached pixmap at their
-/// clock's rate. A 10 fps node painted at 60 Hz draws its pixmap once
-/// per tick, repaints only on ticks, and shows the tick's `t`.
+/// clock's rate, grain at 12 fps. A grain node painted at 60 Hz draws its
+/// pixmap once per tick, repaints only on ticks, and shows new grain on
+/// each.
 #[test]
 fn raster_nodes_draw_at_their_clock_rate() {
     use std::time::Duration;
@@ -501,32 +488,37 @@ fn raster_nodes_draw_at_their_clock_rate() {
             (Prop::X, num(20.0)),
             (Prop::Y, num(10.0)),
             (Prop::Size, num(20.0)),
+            (Prop::Grain, num(0.5)),
         ],
     );
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    r.set_raster_source(
-        node,
-        Some(std::sync::Arc::new(Steps(Duration::from_millis(100)))),
-    );
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(240, 60, Scale::ONE);
     let t0 = Duration::from_secs(1);
     let at = |k: u64| t0 + Duration::from_nanos(1_000_000_000 * k / 60);
     buf.paint_at(&mut r, S, 0, t0);
     assert_eq!(r.raster_nodes().0, 1);
+    let rect = r.boxes(S).unwrap().rects[&node];
+    let grain = |buf: &Buffer| -> Vec<[u8; 4]> {
+        (0..20)
+            .map(|i| buf.px(rect.x as u32 + 20 + i, rect.y as u32 + 20))
+            .collect()
+    };
+    let first = grain(&buf);
     let mut damaged = 0;
+    let mut last = first.clone();
     for k in 1..=30 {
         if !buf.paint_at(&mut r, S, 1, at(k)).is_empty() {
             damaged += 1;
+            let now = grain(&buf);
+            assert_ne!(now, last, "frame {k}: a tick shows new grain");
+            last = now;
         }
     }
-    // Half a second: ticks at 0.1 … 0.5 s.
-    assert_eq!(r.raster_nodes().0, 6, "one pixmap per tick");
-    assert_eq!(damaged, 5, "repainted only on ticks");
-    let rect = r.boxes(S).unwrap().rects[&node];
-    let [blue, _, red, _] = buf.px((rect.x + 30.0) as u32, (rect.y + 20.0) as u32);
-    assert_eq!((red, blue), (240, 0), "t = 0.5 s: 40 + 200");
+    // Half a second: ticks at 1/12 … 6/12 s.
+    assert_eq!(r.raster_nodes().0, 7, "one pixmap per tick");
+    assert_eq!(damaged, 6, "repainted only on ticks");
     assert!(r.raster_nodes().1 >= 20 * 20 * 4);
 }
 
@@ -569,10 +561,12 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
     );
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    r.set_layer_effects(group, vec![Effect::Blur { radius: 3.0 }]);
-    r.set_raster_source(
-        raster,
-        Some(std::sync::Arc::new(Steps(Duration::from_millis(100)))),
+    with_fx(
+        &mut r,
+        &[
+            (group, vec![blur(3.0)]),
+            (raster, vec![(Prop::Grain, num(0.5))]),
+        ],
     );
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(240, 60, Scale::ONE);
@@ -588,7 +582,7 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
         blurred.h as u32 + 24,
     );
     for tick in 1..=4 {
-        let d = buf.paint_at(&mut r, S, 1, at(6 * tick));
+        let d = buf.paint_at(&mut r, S, 1, at(5 * tick));
         assert!(!d.is_empty(), "tick {tick} repaints the raster node");
         for rect in d.rects() {
             assert!(
@@ -608,7 +602,7 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
 
     // The clock goes and the loop stops. The burst's first frame used the
     // group, so it is kept until it has been idle for the idle time.
-    r.set_raster_source(raster, None);
+    with_fx(&mut r, &[(raster, vec![(Prop::Grain, num(0.0))])]);
     let mut k = 30;
     while r.wants_frame(S) {
         buf.paint_at(&mut r, S, 1, at(k));

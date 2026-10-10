@@ -339,7 +339,11 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
                 .collect(),
         ),
         Value::Node(n) => PropValue::Node(n.scene.get()?),
-        Value::Fn(_) | Value::Palette(_) | Value::TokenSet(_) | Value::Service(_) => return None,
+        Value::Fn(_)
+        | Value::Palette(_)
+        | Value::TokenSet(_)
+        | Value::Keyframes(_)
+        | Value::Service(_) => return None,
     })
 }
 
@@ -410,6 +414,19 @@ fn transition_of_call(types: &TypeTable, c: &CallValue) -> Option<Transition> {
                 y2: n(3)?,
             },
         }),
+        _ => None,
+    }
+}
+
+/// (M4) A keyframes block's `easing:`: a named curve (`out_back`) or
+/// `bezier(…)`.
+pub fn easing(types: &TypeTable, v: &Value) -> Option<Easing> {
+    match v {
+        Value::Enum(e, i) => Easing::named(&variant(types, *e, *i)?),
+        Value::Call(c) => match transition_of_call(types, c)? {
+            Transition::Duration { easing, .. } => Some(easing),
+            _ => None,
+        },
         _ => None,
     }
 }

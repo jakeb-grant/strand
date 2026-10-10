@@ -421,20 +421,11 @@ impl Renderer {
         (o.bytes(), o.builds(), o.len())
     }
 
-    /// (M4) Makes `node` a CPU raster node drawn by `source` at its rate
-    /// (`None` makes it an ordinary node again). The seam S-effects'
-    /// particles, grain, graphs and spectrum draw through; tests use it
-    /// directly.
-    #[doc(hidden)]
-    pub fn set_raster_source(
-        &mut self,
-        node: NodeId,
-        source: Option<std::sync::Arc<dyn crate::offscreen::RasterSource>>,
-    ) {
-        self.extras.rasters.set(node, source);
-        for s in self.surfaces.values_mut() {
-            s.mark_dirty();
-        }
+    /// (M4) Notices for CPU fallbacks drawn in place of GPU effects (a
+    /// still aurora, particles capped at 1,000), each once a run: the host
+    /// logs them and sends them to `strand watch`.
+    pub fn take_effect_notices(&mut self) -> Vec<String> {
+        self.extras.fallbacks.take()
     }
 
     /// (M4) Pixmaps the raster nodes drew so far, and their bytes kept.
@@ -502,20 +493,22 @@ impl Renderer {
         }
     }
 
-    /// (M4) Draws `node`'s subtree through `effects` (an empty list
-    /// removes them): a group layer whose damage grows by their reach
-    /// (`crate::layers`). The seam S-effects' prop parsing (`filter:`,
-    /// `blend:`, `mask:`) replaces; tests use it directly.
-    #[doc(hidden)]
-    pub fn set_layer_effects(&mut self, node: NodeId, effects: Vec<strand_scene::Effect>) {
+    /// (M4) The pointer on `surface` (`Router::pointer`; `None` once it
+    /// left): `parallax` and `tilt` follow it, so a surface drawing them
+    /// repaints when it moves.
+    pub fn set_pointer(&mut self, surface: SurfaceId, at: Option<strand_scene::LogicalPoint>) {
+        let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
+            return;
+        };
+        let changed = match at {
+            Some(p) => self.extras.pointers.insert(root, p) != Some(p),
+            None => self.extras.pointers.remove(&root).is_some(),
+        };
         let tree = &self.tree;
-        self.extras.effects.retain(|id, _| tree.get(*id).is_some());
-        if effects.is_empty() {
-            self.extras.effects.remove(&node);
-        } else {
-            self.extras.effects.insert(node, effects.into());
-        }
-        for s in self.surfaces.values_mut() {
+        if changed
+            && self.anim.leans(|id| tree.root_of(id) == Some(root))
+            && let Some(s) = self.surfaces.get_mut(&surface)
+        {
             s.mark_dirty();
         }
     }

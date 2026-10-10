@@ -16,9 +16,11 @@
 //! it by the buffer's age and rasterises only inside it.
 
 mod anim;
+mod backdrop;
 mod cache;
 mod canvas;
 mod clock;
+mod effects;
 mod fillet;
 mod flatten;
 pub mod image;
@@ -31,6 +33,7 @@ mod offscreen;
 pub mod promote;
 mod raster;
 mod renderer;
+mod shapes;
 mod time;
 mod tree;
 pub mod widgets;

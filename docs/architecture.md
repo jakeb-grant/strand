@@ -411,8 +411,28 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   disjoint damage), `tests.rs`.
 - `anim/`: `mod.rs` (`Animator` and its per-frame `paint`), `motion.rs`
   (channel encoding, `PropMotion`), `pose.rs` (enter/exit poses),
-  `sizes.rs` (size springs), `tests.rs`. Keyframes, morph, stagger and
-  page slides get modules of their own here when they land.
+  `sizes.rs` (size springs), `keyframes.rs` (M4, S-effects: `play`
+  playback composed over the springs), `stagger.rs` (M4, S-effects:
+  children entering one `stagger:` step apart), `morph.rs` (M4,
+  S-effects: shared-element `morph:` from the box its name was last
+  drawn at, same surface only), `pages.rs` (page slides), `tests.rs`.
+- `effects/` (S-effects): `mod.rs` (group effects from props),
+  `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
+  (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
+  (raster sources built from props: `grain:`, particles, the built-in
+  effects), `builtin.rs` (lightning, sparks, shimmer, ripple, aurora's CPU
+  fallback; the canvas and sprites), `particles.rs` (CPU sprite blits),
+  `letters.rs` (a text's `letters`, one letter at a time), `roll.rs`
+  (`roll: true` texts rolling their changed letters), `lean.rs`
+  (`parallax:` and the CPU's 2D `tilt:` following the pointer),
+  `transition.rs` (transition masks: clip paths, pixelate's blur),
+  `goo.rs` (`merge d`'s goo field, a CPU raster under the children).
+- `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
+  fallback, an offscreen group of what is drawn behind the node.
+- `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
+  paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
+  morphs, held by the `Animator`), `stroke.rs` (stroke styles: trim,
+  wave, dash, caps; arc centre lines).
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).
@@ -939,9 +959,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     lowered by each backend its own way (vello_cpu: one cell's
     `push_layer` with the opacities multiplied, the last blend and a
     cell-sized mask of `fade`/`radial`; masks always on the CPU;
-    `strand-render`'s `layers.rs`). Until S-effects builds `Effect`s
-    from props, `Renderer::set_layer_effects(node, effects)` (hidden)
-    attaches them. The display list also gains `Item::Raster`, a CPU
+    `strand-render`'s `layers.rs`). Render builds a node's `Effect`s
+    from its resolved props each frame (`strand-render`'s `effects/`:
+    `filter:` colour functions composed into one matrix per run, `blur`,
+    the bundled filters as shader passes, then `mask:`, then `blend:`);
+    on the CPU a `bloom` pass is an offscreen group drawn as a glow of
+    its own pixels and the other shader passes draw unfiltered. The
+    display list also gains `Item::Raster`, a CPU
     raster node (particles, grain, graphs, spectrum, animated image
     frames) drawn into a cached pixmap at its clock's rate (its fields
     below). Cached offscreen groups (glows,
@@ -955,11 +979,14 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
       (`OFFSCREEN_BYTES`, LRU; a group over the budget is drawn uncached;
       freed with the paint cache's idle rules).
     - The raster node is `Item::Raster { node, key, pixmap, rect }`
-      (`key` hashes size, scale and `TimeContext`; `rect` is its box in
-      physical pixels). A
-      `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
-      is attached through the hidden `Renderer::set_raster_source` seam.
-      Its pixmap is redrawn only when its tick or size changes. The props keep
+      (`key` hashes the source's config, size, scale and `TimeContext`;
+      `rect` is its box in physical pixels). A `RasterSource`
+      (`draw(pixels, w, h, scale, TimeContext)`, `rate()`) is built from
+      the node's props each frame (`crate::effects::raster`: `grain:`,
+      particles, the built-in effects) and drawn through
+      `RasterNodes::pixmap_from`; a source with state of its own (graphs,
+      spectrum, animated frames) is set with `RasterNodes::set`. Its
+      pixmap is redrawn only when its config, tick or size changes. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the
@@ -1076,7 +1103,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   defaults, so existing implementations keep compiling.
   - `Router::pointer(surface) -> Option<LogicalPoint>`: the last pointer
     position, read at flatten time by `parallax` and `tilt` (set by
-    enter, motion, buttons and axis frames; `None` after a leave).
+    enter, motion, buttons and axis frames; `None` after a leave). The
+    host hands it to render after each routed event with
+    `Renderer::set_pointer(surface, Option<LogicalPoint>)`
+    (m4-effects-paint-w2), which keeps it in `flatten::Extras::pointers`
+    by surface root and repaints the surface only if a node on it leans.
   - `Router::drag() -> Option<DragView>`: the drag in flight, read by the
     drag ghost, `jelly` and list reordering. `DragView { source: NodeId,
     surface: SurfaceId, pointer: LogicalPoint, velocity: LogicalPoint

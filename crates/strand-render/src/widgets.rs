@@ -298,6 +298,44 @@ pub fn edit(text: &str, caret: Caret, name: &str, typed: &str, m: strand_scene::
     }
 }
 
+/// (M4) An `arc`'s line width when it gives none, logical pixels.
+pub const ARC_WIDTH: f32 = 4.0;
+
+/// (M4) An `arc`'s sweep when it gives none, degrees.
+pub const ARC_SWEEP: f32 = 270.0;
+
+/// (M4) A wavy `meter`'s wavelength, logical pixels (Material 3's wavy
+/// linear progress indicator).
+pub const METER_WAVELENGTH: f32 = 40.0;
+
+/// (M4) An `arc` gauge's centre lines in `frame` (physical pixels) for a
+/// line `width` pixels wide: the track (the whole sweep, its gap centred
+/// at the bottom; a full ring starts at 12 o'clock) and the value (the
+/// fraction `value` of it from its start, clockwise). `None` when the box
+/// cannot hold the line.
+pub(crate) fn arc_lines(
+    frame: vello_cpu::kurbo::Rect,
+    value: f64,
+    sweep: f64,
+    width: f64,
+) -> Option<(vello_cpu::kurbo::BezPath, Option<vello_cpu::kurbo::BezPath>)> {
+    let r = (frame.width().min(frame.height()) - width) / 2.0;
+    if !(r > 0.0 && sweep > 0.0) {
+        return None;
+    }
+    let sweep = sweep.min(360.0);
+    let start = if sweep >= 360.0 {
+        -90.0
+    } else {
+        90.0 + (360.0 - sweep) / 2.0
+    };
+    let c = frame.center();
+    let track = crate::shapes::stroke::arc(c, r, start, sweep);
+    let v = value.clamp(0.0, 1.0);
+    let fill = (v > 0.0).then(|| crate::shapes::stroke::arc(c, r, start, sweep * v));
+    Some((track, fill))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

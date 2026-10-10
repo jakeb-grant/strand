@@ -51,7 +51,7 @@ pub const MAX_CALL_DEPTH: u32 = 200;
 /// keyframes on an element and passing an event on with `propagate()`.
 pub trait VmHooks {
     /// `play name` on the element instance `node`.
-    fn play(&self, node: &Rc<NodeState>, keyframes: &str);
+    fn play(&self, rt: &Runtime, node: &Rc<NodeState>, keyframes: DefId);
     /// `propagate()` in a handler of `ctx`: deliver the event to the next
     /// ancestor that handles it.
     fn propagate(&self, rt: &Runtime, ctx: &EventCtx);
@@ -658,7 +658,7 @@ impl Vm {
             },
             DefKind::Tokens => Ok(Value::TokenSet(d)),
             DefKind::Service(_) => Ok(Value::Service(info.name.as_str().into())),
-            DefKind::Keyframes => Ok(Value::text(info.name.as_str())),
+            DefKind::Keyframes => Ok(Value::Keyframes(d)),
             // `options: Look`: the enum itself.
             DefKind::Enum(e) => Ok(Value::EnumType(*e)),
             _ => Ok(Value::Null),

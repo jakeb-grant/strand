@@ -43,10 +43,18 @@ impl<'a> Flattener<'a> {
 
     /// (M4) `id` is drawn, or hidden only by something that follows
     /// time: its clock (if it has one) runs from this frame, and the
-    /// surface keeps it.
-    fn run_clock(&mut self, id: strand_scene::NodeId, clock: Option<crate::clock::Clock>) {
+    /// surface keeps it; so does its `play` while `playing`.
+    fn run_clock(
+        &mut self,
+        id: strand_scene::NodeId,
+        clock: Option<crate::clock::Clock>,
+        playing: bool,
+    ) {
         if clock.is_some() {
             self.anim.start_clock(id);
+        }
+        if playing {
+            self.anim.play_drawn(id);
         }
         self.out.clocks.extend(clock);
     }
@@ -78,7 +86,11 @@ impl<'a> Flattener<'a> {
         // Time-bound props (M4) are evaluated at this node's own time.
         let global = &self.tree.tokens;
         let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
-        let timed = timed_scope || crate::time::reads_time(node, global);
+        // (M4) A `text`'s `letters` child is drawn by the text, at its time.
+        let letters = crate::effects::letters::child(self.tree, node);
+        let timed = timed_scope
+            || crate::time::reads_time(node, global)
+            || letters.is_some_and(|l| crate::time::reads_time(l, global));
         // Its clock: the rate its time props and its own animation run at.
         // (M4) A `shader` node whose code reads `strand.time` has a clock.
         #[cfg(feature = "gpu")]
@@ -86,7 +98,14 @@ impl<'a> Flattener<'a> {
             || (node.kind == NodeKind::Shader
                 && matches!(node.get(Prop::Shader),
                     Some(PropValue::Shader(c)) if crate::renderer::backend::reads_time(c)));
-        let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
+        // (A source built from props follows a clock that time-bound
+        // props run at refresh: `crate::effects::raster`.)
+        let raster = self
+            .extras
+            .rasters
+            .rate(node.id)
+            .or_else(|| crate::effects::raster::rate(node).filter(|_| !timed));
+        let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
                 let (cx, next) = self.anim.time_of(node.id, rate);
@@ -114,8 +133,50 @@ impl<'a> Flattener<'a> {
         };
         // Springs: this frame's values of the props in flight.
         let inherited = inh.color.unwrap_or_else(|| default_color(&scope));
+        // (M4) A shared-element morph: drawn from where its name was
+        // last drawn, moved and scaled (`crate::anim::morph`); decided
+        // before the springs, as it replaces the enter pose. Its box is
+        // the laid-out one with the paint offsets logic set.
+        let shared = self.tree.root_of(node.id).and_then(|root| {
+            let raw = |p: Prop, of: f32| {
+                length(
+                    props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref()),
+                    of,
+                )
+                .unwrap_or(0.0)
+            };
+            let at = LogicalRect::new(
+                laid.x + inh.offset.0 + raw(Prop::X, parent.w),
+                laid.y + inh.offset.1 + raw(Prop::Y, parent.h),
+                laid.w.max(0.0),
+                laid.h.max(0.0),
+            );
+            self.anim.shared_morph(node, &scope, root, at)
+        });
+        // (M4) A transition mask, decided before the springs so a ghost
+        // it needs is kept (`crate::effects::transition`).
+        let transition_mask = self.anim.reveal(self.tree, node, &scope);
+        self.anim.stagger(self.tree, node, &scope);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
+        let play = self
+            .anim
+            .keyframes(node, &mut props, inherited, Some(laid), parent);
+        // A prop its `play` sets follows time while it plays.
+        let playing = play.as_ref().is_some_and(|(_, moving)| *moving);
+        let plays = |p: Prop| {
+            play.as_ref()
+                .is_some_and(|(k, moving)| *moving && crate::anim::keyframes::sets(k, p))
+        };
+        self.anim.lean(
+            node,
+            &mut props,
+            &scope,
+            inherited,
+            self.pointer,
+            laid,
+            self.logical,
+        );
         let inert = inh.inert || self.tree.is_ghost(node.id);
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 
@@ -145,6 +206,9 @@ impl<'a> Flattener<'a> {
                 node.kind,
                 NodeKind::Segmented
                     | NodeKind::Meter
+                    | NodeKind::Arc
+                    | NodeKind::Effect
+                    | NodeKind::Particles
                     | NodeKind::Slider
                     | NodeKind::Icon
                     | NodeKind::Image
@@ -167,10 +231,14 @@ impl<'a> Flattener<'a> {
         // `y`, and a FLIP glide) of this node and its ancestors. A
         // percentage is of the parent's box, as CSS insets are.
         let glide = self.anim.offset(node.id);
-        let own = (
+        let mut own = (
             length(get(Prop::X), parent.w).unwrap_or(0.0) + glide.0,
             length(get(Prop::Y), parent.h).unwrap_or(0.0) + glide.1,
         );
+        if let Some(m) = shared {
+            own = (own.0 + m[0], own.1 + m[1]);
+        }
+        let (morph_sx, morph_sy) = shared.map_or((1.0, 1.0), |m| (m[2] as f64, m[3] as f64));
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
         let rect = LogicalRect::new(
             laid.x + offset.0,
@@ -321,14 +389,15 @@ impl<'a> Flattener<'a> {
         // A hidden node's clock stops (its subtree is not visited, so
         // theirs do too), unless what hides it follows time.
         let follows = |p: Prop| {
-            node.get(p).is_some_and(|v| {
-                v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
-            })
+            plays(p)
+                || node.get(p).is_some_and(|v| {
+                    v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
+                })
         };
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
             if follows(Prop::Opacity) {
-                self.run_clock(node.id, clock);
+                self.run_clock(node.id, clock, playing);
             }
             return Rect::default();
         }
@@ -338,17 +407,19 @@ impl<'a> Flattener<'a> {
         let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
         if zoom <= 0.0 {
             if follows(Prop::Scale) {
-                self.run_clock(node.id, clock);
+                self.run_clock(node.id, clock, playing);
             }
             return Rect::default();
         }
         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
         let saved = self.xform;
-        let transform_group = (zoom != 1.0 || turn != 0.0).then(|| {
+        let morphs = morph_sx != 1.0 || morph_sy != 1.0;
+        let transform_group = (zoom != 1.0 || turn != 0.0 || morphs).then(|| {
             let c = frame.center();
             let local = kurbo::Affine::translate(c.to_vec2())
                 * kurbo::Affine::rotate((turn as f64).to_radians())
                 * kurbo::Affine::scale(zoom as f64)
+                * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
                 * kurbo::Affine::translate(-c.to_vec2());
             self.xform = saved * local;
             self.marker(Item::PushTransform(self.xform))
@@ -365,7 +436,7 @@ impl<'a> Flattener<'a> {
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
         // (M4) Group effects: a layer around the node and its subtree,
         // whose damage grows by their reach.
-        let effects = self.extras.effects.get(&node.id).cloned();
+        let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32());
         let own_reach = effects
             .as_deref()
             .map_or(0, |e| crate::layers::reach_px(e, self.scale.as_f32()));
@@ -381,6 +452,15 @@ impl<'a> Flattener<'a> {
                 xform: self.xform,
             })))
         });
+        // (M4) The transition mask over the node and its subtree.
+        let mask_group = transition_mask.map(|m| {
+            let mut h = DefaultHasher::new();
+            format!("{m:?}").hash(&mut h);
+            h.finish().hash(&mut sig);
+            let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
+            (self.marker(push), pop)
+        });
+        let mask_hash = transition_mask.map(|m| format!("{m:?}"));
         // Widgets' default radius: `$radius.md` for buttons and segmented
         // controls, a pill for meters.
         let default_radius = match node.kind {
@@ -404,7 +484,20 @@ impl<'a> Flattener<'a> {
             s,
         );
         let squircle = matches!(get(Prop::Corners), Some(PropValue::Keyword(k)) if k == "squircle");
-        let box_path = shape_path(frame, r, squircle);
+        // (M4) `shape:` draws the box as a shape of the library, morphing
+        // by spring when it changes; hit testing and shadows round the
+        // box by the shape's corner (`crate::shapes`).
+        let outline = self.shape_outline(node, &get, &scope, frame);
+        let r = match &outline {
+            Some(o) => {
+                RoundedRectRadii::from_single_radius(o.corner(frame.width(), frame.height()))
+            }
+            None => r,
+        };
+        let box_path = match &outline {
+            Some(o) => crate::shapes::path(o, frame),
+            None => shape_path(frame, r, squircle),
+        };
         let has_area = !phys.is_empty();
 
         // Shadows, under the box.
@@ -413,6 +506,57 @@ impl<'a> Flattener<'a> {
                 self.shadow(sh, frame, &r, &box_path, &mut sig, &mut ink);
             }
         }
+        // (M4) `glow:`: a box glows as a shadow under it; text, icons and
+        // images glow their own pixels (`crate::effects::light`).
+        // A lone radius glows in the node's colour (its own, else the
+        // inherited one), on a box too, as its springs do.
+        let glow_color = own_color.unwrap_or_else(|| default_color(&scope));
+        let glow = crate::effects::light::Glow::of(get(Prop::Glow), glow_color);
+        let glows_content = matches!(node.kind, NodeKind::Text | NodeKind::Icon | NodeKind::Image);
+        // (`particles` glow their sprites: `crate::effects::particles`.)
+        let glows_box = !glows_content && node.kind != NodeKind::Particles;
+        if has_area
+            && glows_box
+            && let Some(g) = glow
+        {
+            self.shadow(&g.shadow(), frame, &r, &box_path, &mut sig, &mut ink);
+        }
+        // (M4) `backdrop:`: what is drawn behind the box, filtered, in its
+        // outline under its background (`crate::backdrop`); its damage
+        // follows what is behind it.
+        if has_area
+            && !inert
+            && let Some(e) =
+                get(Prop::Backdrop).and_then(|v| crate::backdrop::effect(v, self.scale.as_f32()))
+        {
+            let read = map_rect(self.xform, phys)
+                .inflate(crate::backdrop::reach_of(&e, self.scale))
+                .intersect(self.surface)
+                .unwrap_or_default();
+            let end = self.out.items.len();
+            crate::backdrop::hash_behind(&self.out.items, end, read, &mut sig);
+            crate::layers::hash_effects(&mut sig, std::slice::from_ref(&e));
+            self.push(Item::PushClip(box_path.clone()), phys, &mut sig, &mut ink);
+            self.push(
+                Item::PushLayer(Arc::new(crate::layers::Layer {
+                    effects: Arc::from([e]),
+                    frame,
+                    scale: self.scale.as_f32(),
+                    xform: self.xform,
+                })),
+                phys,
+                &mut sig,
+                &mut ink,
+            );
+            self.push(Item::PopLayer, phys, &mut sig, &mut ink);
+            self.push(Item::PopClip, phys, &mut sig, &mut ink);
+        }
+        let light = crate::effects::light::BoxLight {
+            frame,
+            path: &box_path,
+            scale: s,
+            xform: self.xform,
+        };
         // `blur: N` asks the compositor to blur behind the box. Until a
         // compositor does (M4), the tint fallback raises the background's
         // alpha by 0.15 so text over it stays readable (`blur_fallback:
@@ -497,16 +641,46 @@ impl<'a> Flattener<'a> {
             );
         }
         // (M4) A CPU raster node's pixels at its clock's tick, over its
-        // background.
-        if has_area
-            && let Some((key, pixmap)) = self.extras.rasters.pixmap(
-                node.id,
-                frame.width().round() as u32,
-                frame.height().round() as u32,
-                self.scale.as_f32(),
-                time.unwrap_or_default(),
-            )
-        {
+        // background: a source of its own, or one its props build
+        // (`grain:`), clipped to its shape.
+        let source_color = match get(Prop::Color) {
+            Some(PropValue::Color(c)) => *c,
+            _ => match scope.lookup("accent") {
+                Some(PropValue::Color(c)) => c,
+                _ => text_color,
+            },
+        };
+        let built = crate::effects::raster::built(node.kind, get, source_color);
+        let (pw, ph) = (frame.width().round() as u32, frame.height().round() as u32);
+        let time_now = time.unwrap_or_default();
+        let raster = match &built {
+            _ if !has_area => None,
+            // (M4) A merge's goo is drawn after its children.
+            None if node.kind == NodeKind::Merge => None,
+            Some(b) => {
+                self.extras.fallbacks.note(b);
+                self.extras.rasters.pixmap_from(
+                    node.id,
+                    b,
+                    b.config(),
+                    pw,
+                    ph,
+                    self.scale.as_f32(),
+                    b.time(time_now),
+                )
+            }
+            None => {
+                self.extras.rasters.unused(node.id);
+                self.extras
+                    .rasters
+                    .pixmap(node.id, pw, ph, self.scale.as_f32(), time_now)
+            }
+        };
+        if let Some((key, pixmap)) = raster {
+            let clipped = !radii_zero(&r) || outline.is_some();
+            if clipped {
+                self.push(Item::PushClip(box_path.clone()), phys, &mut sig, &mut ink);
+            }
             let rect = kurbo::Rect::new(
                 frame.x0.round(),
                 frame.y0.round(),
@@ -524,6 +698,15 @@ impl<'a> Flattener<'a> {
                 &mut sig,
                 &mut ink,
             );
+            if clipped {
+                self.push(Item::PopClip, phys, &mut sig, &mut ink);
+            }
+        }
+        // (M4) Inner shadows, over the background.
+        if has_area && let Some(PropValue::Shadow(list)) = get(Prop::InnerShadow) {
+            for (item, bounds) in crate::effects::light::inner_shadows(list, light) {
+                self.push(item, bounds, &mut sig, &mut ink);
+            }
         }
         // (M4) A `shader` node: its pass's last pixels (a transparent
         // pixel until it has some, and with no device), and the pass this
@@ -589,7 +772,10 @@ impl<'a> Flattener<'a> {
                     (r.bottom_right - bw).max(0.0),
                     (r.bottom_left - bw).max(0.0),
                 );
-                path.extend(shape_path(inner, ir, squircle));
+                match &outline {
+                    Some(o) => path.extend(crate::shapes::path(o, inner)),
+                    None => path.extend(shape_path(inner, ir, squircle)),
+                }
             }
             self.push(
                 Item::Border {
@@ -601,6 +787,50 @@ impl<'a> Flattener<'a> {
                 &mut sig,
                 &mut ink,
             );
+        }
+        // (M4) `stroke:` with its styles (`crate::shapes::stroke`), along
+        // the outline inset by half its width, so it is drawn inside the
+        // box as a border is.
+        if has_area
+            && node.kind != NodeKind::Arc
+            && let Some(PropValue::Border(Border { width, paint })) = get(Prop::Stroke)
+            && let Some(width) = finite(*width)
+            && width > 0.0
+        {
+            let sw = (width as f64 * s).min(frame.width().min(frame.height()));
+            let half = sw / 2.0;
+            let mid = frame.inflate(-half, -half);
+            let mr = RoundedRectRadii::new(
+                (r.top_left - half).max(0.0),
+                (r.top_right - half).max(0.0),
+                (r.bottom_right - half).max(0.0),
+                (r.bottom_left - half).max(0.0),
+            );
+            let center = match &outline {
+                Some(o) => crate::shapes::path(o, mid),
+                None => shape_path(mid, mr, squircle),
+            };
+            let style =
+                crate::shapes::stroke::style_of(get, sw, s, crate::shapes::stroke::Cap::Butt);
+            if let Some(path) = crate::shapes::stroke::outline(&center, &style) {
+                let b = cover(path.bounding_box());
+                self.push(
+                    Item::Fill {
+                        shape: FillShape::Path(path),
+                        paint: paint.clone(),
+                        frame,
+                    },
+                    b,
+                    &mut sig,
+                    &mut ink,
+                );
+            }
+        }
+        // (M4) A rim light, over the border.
+        if has_area {
+            for (item, bounds) in crate::effects::light::rim(get(Prop::Rim), light) {
+                self.push(item, bounds, &mut sig, &mut ink);
+            }
         }
         // Widgets: a button's hover and press state layer, a meter's fill,
         // a slider's track and knob, a segmented control's options, an
@@ -617,14 +847,28 @@ impl<'a> Flattener<'a> {
             };
             self.widget(&wctx, &get, caret, &caret_at, &mask_map, &mut sig, &mut ink);
         }
+        // What text, an icon or an image draws from here glows.
+        let content_start = self.out.items.len();
         // An `icon` or `image`: decoded at the box's size.
         if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
             self.image(
-                node, &get, frame, phys, &box_path, &r, text_color, &mut sig, &mut ink,
+                node, &get, frame, phys, &box_path, &r, text_color, &scope, &mut sig, &mut ink,
             );
         }
-        // Text.
+        // Text. (M4) `fill:` paints its glyphs, `text_stroke:` outlines
+        // them (an offscreen group under them), and a `letters` child
+        // draws each letter on its own (`crate::effects::letters`).
         let mut glyph_cells: Option<(DefaultHasher, Vec<(Rect, u64)>)> = None;
+        let text_fill = if is_text {
+            paint_of(get(Prop::Fill))
+        } else {
+            None
+        };
+        let text_stroke = if is_text {
+            crate::effects::light::text_stroke(get(Prop::TextStroke))
+        } else {
+            None
+        };
         if let Some((l, dx, dy)) = layout {
             // A layout from another scale is drawn resampled (see raster).
             let x = phys.x + (dx as f64 * s).round().clamp(-1e7, 1e7) as i32;
@@ -652,6 +896,22 @@ impl<'a> Flattener<'a> {
                 self.out.items[i].bounds = bounds;
             }
             if !bounds.is_empty() {
+                // (M4) `roll: true`: changed letters roll
+                // (`crate::effects::roll`).
+                let roll = if letters.is_none()
+                    && matches!(get(Prop::Roll), Some(PropValue::Bool(true)))
+                {
+                    let transition = node
+                        .props
+                        .iter()
+                        .find(|e| e.prop == Prop::Roll)
+                        .map_or(strand_scene::Transition::Default, |e| e.transition.clone());
+                    let curve = strand_scene::Curve::of(&scope.transition(&transition, Prop::Y));
+                    self.anim.roll(node.id, &l, curve)
+                } else {
+                    self.anim.forget_roll(node.id);
+                    None
+                };
                 let lines: Vec<(Rect, Color)> = l
                     .runs
                     .iter()
@@ -663,6 +923,10 @@ impl<'a> Flattener<'a> {
                     && caret.is_none()
                     && k == 1.0
                     && self.xform == kurbo::Affine::IDENTITY
+                    && text_fill.is_none()
+                    && text_stroke.is_none()
+                    && letters.is_none()
+                    && roll.is_none()
                 {
                     let mut rest = sig.clone();
                     (x, y).hash(&mut rest);
@@ -688,18 +952,57 @@ impl<'a> Flattener<'a> {
                         .collect();
                     glyph_cells = Some((rest, cells));
                 }
-                self.push(
-                    Item::Glyphs {
-                        x,
-                        y,
-                        layout: l,
-                        color,
-                        spans: span_colors,
-                    },
-                    bounds,
-                    &mut sig,
-                    &mut ink,
-                );
+                let fill = text_fill.clone().map(|paint| {
+                    Arc::new(super::GlyphFill {
+                        paint,
+                        frame,
+                        area: kurbo_rect(bounds).union(frame),
+                    })
+                });
+                if let Some((old, new, p)) = &roll {
+                    let clip = kurbo_rect(phys).to_path(TOLERANCE);
+                    self.push(Item::PushClip(clip), phys, &mut sig, &mut ink);
+                    let h = (new.size.h as f64 * s).max(1.0);
+                    let each =
+                        crate::effects::roll::items(old, new, *p, (x, y), h, color, &span_colors);
+                    for (item, b) in each {
+                        let b = b.intersect(phys).unwrap_or_default();
+                        self.push(item, b, &mut sig, &mut ink);
+                    }
+                    self.push(Item::PopClip, phys, &mut sig, &mut ink);
+                }
+                match letters {
+                    _ if roll.is_some() => {}
+                    None => self.push(
+                        Item::Glyphs {
+                            x,
+                            y,
+                            layout: l,
+                            color,
+                            spans: span_colors,
+                            fill,
+                        },
+                        bounds,
+                        &mut sig,
+                        &mut ink,
+                    ),
+                    Some(lt) => {
+                        let each = crate::effects::letters::items(
+                            lt,
+                            &scope,
+                            &l,
+                            (x, y),
+                            color,
+                            &span_colors,
+                            fill,
+                            s,
+                            self.xform,
+                        );
+                        for (item, b) in each {
+                            self.push(item, b, &mut sig, &mut ink);
+                        }
+                    }
+                }
                 for (u, c) in lines {
                     let r = kurbo::Rect::new(
                         x as f64 + u.left() as f64 * k,
@@ -722,6 +1025,33 @@ impl<'a> Flattener<'a> {
             if clip.is_some() {
                 self.marker(Item::PopClip);
             }
+        }
+        if let Some(effects) = text_stroke
+            && let Some((bounds, effects)) = crate::effects::light::under_content(
+                &mut self.out.items,
+                content_start,
+                effects,
+                (frame, self.scale.as_f32(), self.xform),
+                self.surface,
+            )
+        {
+            crate::layers::hash_effects(&mut sig, &effects);
+            ink = ink.union(bounds);
+        }
+        if glows_content
+            && let Some(g) = glow
+            && let Some((bounds, effects)) = crate::effects::light::under_content(
+                &mut self.out.items,
+                content_start,
+                g.effects(),
+                (frame, self.scale.as_f32(), self.xform),
+                self.surface,
+            )
+        {
+            // The glyphs are no longer the last thing drawn.
+            glyph_cells = None;
+            crate::layers::hash_effects(&mut sig, &effects);
+            ink = ink.union(bounds);
         }
         // An input's caret, over its text.
         if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {
@@ -811,6 +1141,7 @@ impl<'a> Flattener<'a> {
         {
             crate::layers::hash_effects(&mut ctx, &l.effects);
         }
+        mask_hash.hash(&mut ctx);
         let mut child_clip = inh.clip;
         let mut clip_group = None;
         if clips {
@@ -820,6 +1151,28 @@ impl<'a> Flattener<'a> {
                 .unwrap_or_default();
             clip_group = Some(self.marker(Item::PushClip(box_path)));
         }
+        // (M4) A merge's goo goes under its children, once they are
+        // drawn (`crate::effects::goo`): its distance and their colours.
+        let goo_at = (node.kind == NodeKind::Merge && has_area).then(|| {
+            let distance = node
+                .get(Prop::Value)
+                .and_then(|v| scope.resolve(v))
+                .and_then(|v| number(Some(&v)))
+                .unwrap_or(0.0);
+            let colors: Vec<(strand_scene::NodeId, Color)> = node
+                .children
+                .iter()
+                .filter_map(|c| {
+                    let bg = self.tree.get(*c)?.get(Prop::Bg)?;
+                    match scope.resolve(bg).as_deref() {
+                        Some(PropValue::Color(col)) => Some((*c, *col)),
+                        Some(PropValue::Paint(strand_scene::Paint::Solid(col))) => Some((*c, *col)),
+                        _ => None,
+                    }
+                })
+                .collect();
+            (self.out.items.len(), distance, colors)
+        });
         let child_inh = Inherited {
             color: own_color,
             font: own_font,
@@ -845,6 +1198,9 @@ impl<'a> Flattener<'a> {
                 }
             }
         }
+        if let Some((at, distance, colors)) = goo_at {
+            self.goo(node, at, distance, &colors, (frame, phys), inh.clip);
+        }
         if let Some(i) = clip_group {
             self.out.items[i].bounds = children;
             self.marker(Item::PopClip);
@@ -854,19 +1210,20 @@ impl<'a> Flattener<'a> {
             self.out.items[i].bounds = subtree;
             self.marker(Item::PopLayer);
         }
+        if let Some((i, pop)) = mask_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(pop);
+        }
         // Drawn: its clock runs, unless all it draws is outside the clip
         // and nothing that places it follows time (it stays out). A
-        // built-in `effect` draws in its box (it has a clock only when it
-        // reads time or has a raster source: `clock::rate`).
+        // built-in `effect` or `particles` draws its raster in its box
+        // (`crate::effects::raster`), so it counts as drawn only when that
+        // is inside the clip.
         let moves = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotate, Prop::Shadow]
             .into_iter()
             .any(follows);
-        let effect = node.kind == NodeKind::Effect
-            && map_rect(self.xform, phys)
-                .intersect(inh.clip)
-                .is_some_and(|r| !r.is_empty());
-        if !subtree.is_empty() || moves || effect {
-            self.run_clock(node.id, clock);
+        if !subtree.is_empty() || moves {
+            self.run_clock(node.id, clock, playing);
         }
         if let Some(i) = opacity_group {
             self.out.items[i].bounds = subtree;
@@ -878,6 +1235,111 @@ impl<'a> Flattener<'a> {
             self.xform = saved;
         }
         subtree
+    }
+
+    /// (M4) Inserts `merge` node `node`'s goo at item `at` (under its
+    /// children, drawn by now): the smooth union of their drawn boxes,
+    /// within the merge distance (`crate::effects::goo`). `frame` is its
+    /// box (physical, and as a pixel rect), `clip` its ancestors' clip.
+    fn goo(
+        &mut self,
+        node: &Node,
+        at: usize,
+        distance: f32,
+        colors: &[(strand_scene::NodeId, Color)],
+        (frame, phys): (kurbo::Rect, Rect),
+        clip: Rect,
+    ) {
+        use crate::effects::goo::{Blob, Goo, MAX_DISTANCE};
+        let distance = distance.clamp(0.0, MAX_DISTANCE) as f64 * self.scale.as_f64();
+        let origin = kurbo::Vec2::new(frame.x0.round(), frame.y0.round());
+        let mut blobs = Vec::new();
+        for &(c, color) in colors {
+            let c = &c;
+            let Some(hit) = self.out.hits.iter().rev().find(|h| h.node == *c) else {
+                continue;
+            };
+            // Its box as drawn (through its transform, if any).
+            let rect = match hit.inverse {
+                Some(inv) if inv.determinant().abs() > 1e-12 => {
+                    inv.inverse().transform_rect_bbox(hit.rect)
+                }
+                Some(_) => continue,
+                None => hit.rect,
+            };
+            blobs.push(Blob {
+                rect: rect - origin,
+                radius: hit.radii.top_left,
+                color,
+            });
+        }
+        let goo = Goo { blobs, distance };
+        let (pw, ph) = (phys.w, phys.h);
+        let Some((key, pixmap)) = self.extras.rasters.pixmap_from(
+            node.id,
+            &goo,
+            goo.config(),
+            pw,
+            ph,
+            self.scale.as_f32(),
+            strand_scene::TimeContext::at(0.0),
+        ) else {
+            return;
+        };
+        let rect = kurbo::Rect::new(
+            origin.x,
+            origin.y,
+            origin.x + pixmap.width() as f64,
+            origin.y + pixmap.height() as f64,
+        );
+        let bounds = map_rect(self.xform, phys);
+        self.out.items.insert(
+            at,
+            DisplayItem {
+                item: Item::Raster {
+                    node: node.id,
+                    key,
+                    pixmap,
+                    rect,
+                },
+                bounds,
+            },
+        );
+        if let Some(rec) = self.out.records.get_mut(&node.id) {
+            let mut h = DefaultHasher::new();
+            (rec.sig, key).hash(&mut h);
+            rec.sig = h.finish();
+            rec.bounds = rec.bounds.union(bounds.intersect(clip).unwrap_or_default());
+        }
+    }
+
+    /// (M4) The outline `node` draws its box as, when it has a `shape:`
+    /// (`crate::shapes`); a node without one forgets any it had.
+    fn shape_outline<'v>(
+        &mut self,
+        node: &Node,
+        get: &impl Fn(Prop) -> Option<&'v PropValue>,
+        scope: &TokenScope,
+        frame: kurbo::Rect,
+    ) -> Option<crate::shapes::Outline> {
+        let shape = match get(Prop::Shape) {
+            Some(PropValue::Keyword(k) | PropValue::Text(k)) => crate::shapes::Shape::from_name(k),
+            _ => None,
+        };
+        let Some(shape) = shape else {
+            self.anim.forget_shape(node.id);
+            return None;
+        };
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Shape)
+            .map_or(strand_scene::Transition::Default, |e| e.transition.clone());
+        let curve = strand_scene::Curve::of(&scope.transition(&transition, Prop::Shape));
+        Some(
+            self.anim
+                .shape_outline(node.id, shape, crate::shapes::aspect(frame), curve),
+        )
     }
 
     pub(super) fn shadow(

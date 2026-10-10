@@ -1366,7 +1366,7 @@ fn play_poses_and_lock() {
     shell.flush();
     assert_eq!(
         shell.scene.prop(boxes[0], Prop::Play).map(show).as_deref(),
-        Some("[shake, 1]")
+        Some("keyframes shake #1")
     );
     shell.inst.event(boxes[0], "click", Vec::new());
     let u = shell.flush();
@@ -1376,6 +1376,58 @@ fn play_poses_and_lock() {
         shell.scene.prop(lock, Prop::Name),
         Some(&PropValue::Text("Lock".into()))
     );
+}
+
+/// (M4) `play` sends the compiled keyframes block inline: stops as
+/// fractions in order (shared stops copied), settings applied, a new
+/// `seq` per `play`, and a tree-level `play` on mount with `seq` 0.
+#[test]
+fn play_lowers_to_the_compiled_keyframes() {
+    let src = "keyframes shake { 0%, 100% { x: 0 }; 25% { x: -4 }; 75% { x: 4; opacity: 0.5 }; duration: 400ms; delay: 50ms; repeat: 3; alternate: true; easing: out_back }\nkeyframes pulse { 0% { scale: 1 }; 50% { scale: 1.1 }; 100% { scale: 1 }; repeat: 0 }\nbar B {\n  box { on click { play shake } }\n  box { play pulse }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let Some(PropValue::Keyframes(pulse)) = shell.scene.prop(boxes[1], Prop::Play) else {
+        panic!("a tree play sends keyframes on mount");
+    };
+    assert_eq!((pulse.name.as_str(), pulse.seq), ("pulse", 0));
+    assert_eq!(pulse.repeat, None, "repeat: 0 repeats forever");
+    assert_eq!(
+        pulse.duration,
+        Duration::from_millis(300),
+        "the default duration"
+    );
+    assert_eq!(pulse.easing, strand_scene::Easing::Linear);
+    assert!(shell.scene.prop(boxes[0], Prop::Play).is_none());
+    shell.inst.event(boxes[0], "click", Vec::new());
+    shell.flush();
+    let Some(PropValue::Keyframes(k)) = shell.scene.prop(boxes[0], Prop::Play).cloned() else {
+        panic!("play sends keyframes");
+    };
+    assert_eq!(k.name, "shake");
+    assert_eq!(k.duration, Duration::from_millis(400));
+    assert_eq!(k.delay, Duration::from_millis(50));
+    assert_eq!(k.repeat, Some(3));
+    assert!(k.alternate);
+    assert_eq!(k.easing, strand_scene::Easing::named("out_back").unwrap());
+    let at: Vec<f32> = k.stops.iter().map(|s| s.0).collect();
+    assert_eq!(at, [0.0, 0.25, 0.75, 1.0]);
+    assert_eq!(k.stops[1].1, [(Prop::X, PropValue::Number(-4.0))]);
+    assert_eq!(
+        k.stops[2].1,
+        [
+            (Prop::X, PropValue::Number(4.0)),
+            (Prop::Opacity, PropValue::Number(0.5))
+        ]
+    );
+    assert_eq!(k.stops[3].1, [(Prop::X, PropValue::Number(0.0))]);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    shell.flush();
+    let Some(PropValue::Keyframes(again)) = shell.scene.prop(boxes[0], Prop::Play) else {
+        panic!("play again");
+    };
+    assert!(again.seq != k.seq, "a new seq restarts it");
 }
 
 /// The launcher's rows follow `selected` (list navigation) and `hover`.
@@ -3949,6 +4001,22 @@ fn time_values_convert_to_token_time_leaves() {
 /// `TokenExpr::Count`) render evaluates per letter, not values logic
 /// fixes for the whole node: arithmetic on them stays symbolic, and the
 /// same prop resolves differently for each letter.
+/// decisions.md m4-owner: `letters` animates the text of its enclosing
+/// `text` node, mounted as its child.
+#[test]
+fn letters_go_inside_the_text_they_animate() {
+    let src = "bar B {\n  text \"hello\" { letters { y: 2 * wave(1s, phase: index * 0.1) } }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let letters = shell.scene.of_kind(NodeKind::Letters);
+    assert_eq!(letters.len(), 1, "{}", shell.scene.render());
+    let parent = shell.scene.parent(letters[0]).unwrap();
+    assert_eq!(shell.scene.of_kind(NodeKind::Text), vec![parent]);
+}
+
 #[test]
 fn letters_index_and_count_stay_time_leaves() {
     use strand_scene::{TimeContext, TokenExpr, TokenScope, TokenTable};

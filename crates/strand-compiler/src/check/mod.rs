@@ -24,6 +24,7 @@
 mod collect;
 mod cycles;
 pub mod dbus;
+mod effects;
 mod expr;
 mod lock;
 pub mod paths;

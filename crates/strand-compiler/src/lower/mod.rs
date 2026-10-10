@@ -47,7 +47,7 @@ pub struct Program {
     /// Custom services (`service ppd from dbus …`), by declaration.
     pub services: BTreeMap<DefId, CustomService>,
     /// Keyframes by declaration.
-    pub keyframes: BTreeMap<DefId, String>,
+    pub keyframes: BTreeMap<DefId, KeyframesProgram>,
     /// The `key` of keyed `state` collections (`state pins: [Pin] key
     /// app`), by declaration.
     pub state_keys: BTreeMap<DefId, Vec<String>>,
@@ -148,6 +148,17 @@ pub struct Component {
 pub struct FnProgram {
     pub params: Vec<LocalId>,
     pub body: ChunkId,
+}
+
+/// (M4) A `keyframes` block: its stops (percentages as written, each
+/// with the props it sets, typed by the `node` group) and its settings
+/// (`duration`, `delay`, `repeat`, `alternate`, `easing`). `play` sends
+/// it, evaluated, as a `PropValue::Keyframes`.
+#[derive(Clone, Debug)]
+pub struct KeyframesProgram {
+    pub name: String,
+    pub stops: Vec<(Vec<f64>, Vec<Prop>)>,
+    pub settings: Vec<Prop>,
 }
 
 /// A `tokens` set, groups flattened.
@@ -672,9 +683,21 @@ impl Lowerer<'_> {
                 }
             }
             hir::Item::Keyframes(k) => {
-                self.out
-                    .keyframes
-                    .insert(k.def, self.hir.def(k.def).name.clone());
+                let node = self.schema.groups.get("node");
+                let stops = k
+                    .stops
+                    .iter()
+                    .map(|s| (s.at.clone(), self.props(&s.props, node)))
+                    .collect();
+                let settings = self.props(&k.props, None);
+                self.out.keyframes.insert(
+                    k.def,
+                    KeyframesProgram {
+                        name: self.hir.def(k.def).name.clone(),
+                        stops,
+                        settings,
+                    },
+                );
             }
             hir::Item::Handler(h) => out.push(Node::Handler(self.handler(h))),
             hir::Item::Timer(t) => out.push(Node::Timer(self.timer(t))),

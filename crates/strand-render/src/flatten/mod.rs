@@ -105,6 +105,8 @@ pub enum Item {
         /// The colours of the layout's span slots ([`span_slots`]): a
         /// run whose colour is slot `i` paints in `spans[i]`.
         spans: Vec<Color>,
+        /// (M4) `fill:` on text: the glyphs painted with a paint instead.
+        fill: Option<Arc<GlyphFill>>,
     },
     /// A decoded `image` or `icon` filling `rect` (it was decoded at that
     /// size); a symbolic icon is a mask painted in `tint`. The pixmap
@@ -117,6 +119,16 @@ pub enum Item {
         dest: kurbo::Rect,
         tint: Option<Color>,
     },
+}
+
+/// (M4) `fill: linear(…)` on text (S-effects): the glyphs' coverage
+/// painted with `paint`, whose gradient spans `frame` (the text's box),
+/// over `area` (where the glyphs can be), physical pixels.
+#[derive(Clone, Debug)]
+pub struct GlyphFill {
+    pub paint: Paint,
+    pub frame: kurbo::Rect,
+    pub area: kurbo::Rect,
 }
 
 #[derive(Clone, Debug)]
@@ -292,14 +304,17 @@ pub struct Extras {
     pub widgets: crate::widgets::Widgets,
     /// Decoded `image` and `icon` pixels.
     pub images: crate::image::ImageStore,
-    /// (M4) Group effects per node ([`crate::layers`]), until S-effects
-    /// builds them from props.
-    pub effects: crate::layers::NodeEffects,
     /// (M4) CPU raster nodes' sources and pixmaps.
     pub rasters: crate::offscreen::RasterNodes,
     /// (M4) `shader` nodes' last pass pixels.
     #[cfg(feature = "gpu")]
     pub shaders: crate::renderer::backend::ShaderResults,
+    /// (M4) The pointer on each surface it is over, by the surface's
+    /// root node, logical pixels (`Router::pointer`, handed over by the
+    /// host): `parallax` and `tilt` follow it.
+    pub pointers: HashMap<NodeId, strand_scene::LogicalPoint>,
+    /// (M4) The CPU fallbacks drawn in place of GPU effects, said once.
+    pub fallbacks: crate::effects::raster::Fallbacks,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -332,6 +347,8 @@ pub fn flatten(
         xform: kurbo::Affine::IDENTITY,
         out: &mut out,
         fillet: crate::fillet::find(tree, boxes, root),
+        pointer: extras.pointers.get(&root).copied(),
+        logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
     };
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
@@ -381,6 +398,9 @@ struct Flattener<'a> {
     out: &'a mut Flattened,
     /// The surface's `attach:` fillet (`crate::fillet`).
     fillet: Option<crate::fillet::Fillet>,
+    /// (M4) The pointer on the surface, and the surface's logical box.
+    pointer: Option<strand_scene::LogicalPoint>,
+    logical: LogicalRect,
 }
 
 /// The pixels `r` covers once drawn under `a`.

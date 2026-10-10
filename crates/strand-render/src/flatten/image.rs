@@ -22,6 +22,7 @@ impl Flattener<'_> {
         box_path: &BezPath,
         r: &RoundedRectRadii,
         color: Color,
+        scope: &strand_scene::TokenScope,
         sig: &mut DefaultHasher,
         ink: &mut Rect,
     ) {
@@ -35,7 +36,7 @@ impl Flattener<'_> {
             Some(PropValue::Keyword(k)) => crate::image::Fit::from_name(k).unwrap_or_default(),
             _ => crate::image::Fit::default(),
         };
-        let key = crate::image::ImageKey {
+        let key_of = |source: String| crate::image::ImageKey {
             source,
             icon,
             w: phys.w.min(4096),
@@ -43,6 +44,8 @@ impl Flattener<'_> {
             fit,
             scale: self.scale.as_f32().ceil().clamp(1.0, 8.0) as u16,
         };
+        let key = key_of(source.clone());
+        let failed = matches!(self.extras.images.get(&key), Some(Err(_)));
         let decoded = match self.extras.images.get(&key) {
             Some(Ok(d)) => Some(d.clone()),
             Some(Err(_)) => None,
@@ -56,9 +59,32 @@ impl Flattener<'_> {
             }),
         };
         self.out.images.push(key);
-        let Some(d) = decoded else {
-            return;
+        // (M4) An image swap under `transition:`: the old source under
+        // the new one, which comes in through the mask once decoded
+        // (`crate::effects::transition`).
+        let decode = {
+            use crate::effects::transition::Decode;
+            match (decoded.is_some(), failed) {
+                (true, _) => Decode::Ready,
+                (false, true) => Decode::Failed,
+                (false, false) => Decode::Waiting,
+            }
         };
+        let swap = (node.kind == NodeKind::Image)
+            .then(|| self.anim.image_swap(node, &source, decode, scope))
+            .flatten();
+        let old = swap.as_ref().and_then(|(from, _)| {
+            let k = key_of(from.clone());
+            let d = match self.extras.images.get(&k) {
+                Some(Ok(d)) => Some(d.clone()),
+                _ => None,
+            };
+            self.out.images.push(k);
+            d
+        });
+        if decoded.is_none() && old.is_none() {
+            return;
+        }
         let clip = (!radii_zero(r)).then(|| self.marker(Item::PushClip(box_path.clone())));
         if let Some(i) = clip {
             self.out.items[i].bounds = phys;
@@ -69,18 +95,36 @@ impl Flattener<'_> {
             frame.x0 + phys.w as f64,
             frame.y0 + phys.h as f64,
         );
-        let (dx, dy, dw, dh) = d.placed_in(rect.x0, rect.y0, rect.width(), rect.height());
-        self.push(
-            Item::Image {
-                pixmap: d.pixmap,
-                rect,
-                dest: kurbo::Rect::new(dx, dy, dx + dw, dy + dh),
-                tint: d.symbolic.then_some(color),
-            },
-            phys,
-            sig,
-            ink,
-        );
+        let mut draw = |this: &mut Self, d: crate::image::Decoded, sig: &mut DefaultHasher| {
+            let (dx, dy, dw, dh) = d.placed_in(rect.x0, rect.y0, rect.width(), rect.height());
+            this.push(
+                Item::Image {
+                    pixmap: d.pixmap,
+                    rect,
+                    dest: kurbo::Rect::new(dx, dy, dx + dw, dy + dh),
+                    tint: d.symbolic.then_some(color),
+                },
+                phys,
+                sig,
+                ink,
+            );
+        };
+        if let Some(o) = old {
+            draw(self, o, sig);
+        }
+        if let Some(d) = decoded {
+            let mask = swap.map(|(_, m)| {
+                use std::hash::Hash;
+                format!("{m:?}").hash(sig);
+                let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
+                (self.marker(push), pop)
+            });
+            draw(self, d, sig);
+            if let Some((i, pop)) = mask {
+                self.out.items[i].bounds = phys;
+                self.marker(pop);
+            }
+        }
         if clip.is_some() {
             self.marker(Item::PopClip);
         }

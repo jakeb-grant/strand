@@ -29,19 +29,22 @@ use strand_scene::{
 
 use crate::tree::{Node, SceneTree};
 
+pub(crate) mod keyframes;
+mod morph;
 mod motion;
 mod pages;
 mod pose;
 mod sizes;
+mod stagger;
 
 pub(crate) use motion::Extents;
-use motion::{PropMotion, decode, encode};
+use motion::{PropMotion, decode, encode, glow_color};
 pub use pages::PageSwap;
 pub(crate) use pages::slide as page_slide;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
-pub(crate) const ANIMATED: [Prop; 12] = [
+pub(crate) const ANIMATED: [Prop; 17] = [
     Prop::X,
     Prop::Y,
     Prop::Opacity,
@@ -55,6 +58,15 @@ pub(crate) const ANIMATED: [Prop; 12] = [
     // Widgets: a meter's or slider's fill and its track's colour.
     Prop::Value,
     Prop::Track,
+    // (M4) Effects: a stroke (width and solid paint), its trim, a wave's
+    // amplitude (a wavy meter flattens when paused), a glow and a text's
+    // solid `fill` (gradients still snap; `blur:` is the compositor's,
+    // decisions.md m4-effects-paint-w2).
+    Prop::Stroke,
+    Prop::Trim,
+    Prop::Wave,
+    Prop::Glow,
+    Prop::Fill,
 ];
 
 /// Props whose change springs the laid-out size.
@@ -68,7 +80,7 @@ fn eps(p: Prop) -> f32 {
         Prop::Opacity => 0.002,
         Prop::Scale => 0.0005,
         Prop::Rotate => 0.05,
-        Prop::Bg | Prop::Color | Prop::Track => 0.002,
+        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill => 0.002,
         Prop::Value => 0.0005,
         _ => 0.05,
     }
@@ -168,6 +180,22 @@ pub(crate) struct Animator {
     poses: HashMap<NodeId, PropValue>,
     /// `pages` swaps (directional page transitions).
     pub pages: pages::PageSwaps,
+    /// (M4) Shaped nodes' shapes and morphs (`crate::shapes`).
+    shapes: crate::shapes::morph::Morphs,
+    /// (M4) Rolling texts' layouts and rolls (`crate::effects::roll`).
+    rolls: crate::effects::roll::Rolls,
+    /// (M4) Nodes' `play`s ([`keyframes`]).
+    plays: keyframes::Plays,
+    /// (M4) Children waiting for their turn to enter ([`stagger`]).
+    staggers: stagger::Staggers,
+    /// (M4) Pointer parallax and tilt (`crate::effects::lean`).
+    leans: crate::effects::lean::Leans,
+    /// (M4) Transition masks in flight (`crate::effects::transition`).
+    reveals: crate::effects::transition::Reveals,
+    /// (M4) Shared-element morphs ([`morph`]).
+    shared: morph::SharedMorphs,
+    /// (M4) Image swaps under a transition mask.
+    image_swaps: crate::effects::transition::ImageSwaps,
 }
 
 impl Animator {
@@ -186,6 +214,9 @@ impl Animator {
         self.commit = commit;
         self.active = false;
         self.drawn.clear();
+        if commit {
+            self.plays.begin(time);
+        }
     }
 
     /// Something drawn since [`Animator::begin`] is still moving.
@@ -233,6 +264,405 @@ impl Animator {
     /// clock).
     fn snapping(&self) -> bool {
         self.reduced || self.time.is_zero()
+    }
+
+    /// (M4) The outline `id` draws for `shape` in a box of `aspect`: the
+    /// shape, or while a change of it morphs (along `curve`), the points
+    /// between (`crate::shapes::morph`).
+    pub fn shape_outline(
+        &mut self,
+        id: NodeId,
+        shape: crate::shapes::Shape,
+        aspect: f64,
+        curve: Curve,
+    ) -> crate::shapes::Outline {
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (outline, moving) = self.shapes.outline(id, shape, aspect, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        outline
+    }
+
+    /// (M4) What a `roll: true` text `id`, laid out as `layout`, draws:
+    /// `None` for `layout` as it is, or the roll from its last text
+    /// (along `curve`): the old layout, the new one and the progress
+    /// (`crate::effects::roll`).
+    pub fn roll(
+        &mut self,
+        id: NodeId,
+        layout: &std::sync::Arc<strand_text::TextLayout>,
+        curve: Curve,
+    ) -> Option<(
+        std::sync::Arc<strand_text::TextLayout>,
+        std::sync::Arc<strand_text::TextLayout>,
+        f32,
+    )> {
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (roll, moving) = self.rolls.roll(id, layout, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        roll
+    }
+
+    /// (M4) The transition mask `node` draws under this frame, if any
+    /// (`crate::effects::transition`): its own `transition:` as it enters
+    /// or leaves, or its `pages` parent's as the pages swap. Called
+    /// before [`Animator::paint`], which keeps a ghost the mask still
+    /// needs.
+    pub fn reveal(
+        &mut self,
+        tree: &SceneTree,
+        node: &Node,
+        scope: &TokenScope<'_>,
+    ) -> Option<crate::effects::transition::Masked> {
+        use crate::effects::transition::{Kind, Masked};
+        let id = node.id;
+        let kind_of = |n: &Node| {
+            n.get(Prop::Transition)
+                .and_then(|v| scope.resolve(v))
+                .and_then(|v| Kind::of(&v))
+        };
+        let pages = node
+            .parent
+            .and_then(|p| tree.get(p))
+            .filter(|p| p.kind == strand_scene::NodeKind::Pages)
+            .and_then(|p| Some((p, kind_of(p)?)));
+        let (holder, kind) = match pages {
+            Some((p, k)) => (p, k),
+            None if node.kind != strand_scene::NodeKind::Pages => match kind_of(node) {
+                Some(k) => (node, k),
+                None => {
+                    self.reveals.forget(id);
+                    return None;
+                }
+            },
+            None => return None,
+        };
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        if frame.snap {
+            self.reveals.forget(id);
+            return None;
+        }
+        let transition = holder
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Transition)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        // The prop is a snap: its default curve is `x`'s.
+        let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        let entering = self.enter.contains(&id) || self.staggers.planned(id);
+        let exiting = self.exits.contains_key(&id);
+        let masked = |p: f32, invert: bool| Masked { kind, p, invert };
+        if let Some((pages, _)) = pages {
+            let swap = self.pages.last(pages.id);
+            let index = |n: NodeId| pages.children.iter().position(|c| *c == n);
+            let over = |a: NodeId, b: NodeId| index(a) > index(b);
+            if exiting {
+                let incoming = swap.and_then(|s| s.entering).filter(|e| *e != id);
+                if let Some(e) = incoming {
+                    // The old page plays out until the new one is in.
+                    if self.enter.contains(&e) || self.staggers.planned(e) {
+                        self.reveals.aim(e, 0.0, 1.0, curve, frame);
+                    }
+                    let p = self.reveals.peek(e, self.time);
+                    let waits = self.reveals.moving(e, self.time);
+                    self.reveals.hold(id, waits);
+                    if waits {
+                        self.active = true;
+                    }
+                    return over(id, e).then(|| masked(p.unwrap_or(1.0), true));
+                }
+            } else {
+                if entering {
+                    self.reveals.aim(id, 0.0, 1.0, curve, frame);
+                }
+                let (p, moving) = self.reveals.progress(id, frame)?;
+                if moving {
+                    self.active = true;
+                }
+                // Under the old page, the old page carries the mask.
+                let ghost = swap
+                    .and_then(|s| s.leaving)
+                    .filter(|g| *g != id && tree.is_ghost(*g));
+                return match ghost {
+                    Some(g) if over(g, id) => None,
+                    _ => Some(masked(p, false)),
+                };
+            }
+        }
+        if entering && !exiting {
+            self.reveals.aim(id, 0.0, 1.0, curve, frame);
+        }
+        if exiting {
+            self.reveals.aim(id, 1.0, 0.0, curve, frame);
+        }
+        let Some((p, moving)) = self.reveals.progress(id, frame) else {
+            self.reveals.hold(id, false);
+            return None;
+        };
+        if moving {
+            self.active = true;
+        }
+        self.reveals.hold(id, exiting && moving);
+        Some(masked(p, false))
+    }
+
+    /// (M4) An `image` with `transition:` showing `source` (`decode`:
+    /// how far its decode is): the source it swaps from and the mask the new one comes
+    /// in through, while it swaps (`crate::effects::transition`).
+    pub fn image_swap(
+        &mut self,
+        node: &Node,
+        source: &str,
+        decode: crate::effects::transition::Decode,
+        scope: &TokenScope<'_>,
+    ) -> Option<(String, crate::effects::transition::Masked)> {
+        use crate::effects::transition::{Kind, Masked};
+        let kind = node
+            .get(Prop::Transition)
+            .and_then(|v| scope.resolve(v))
+            .and_then(|v| Kind::of(&v));
+        let Some(kind) = kind else {
+            self.image_swaps.forget(node.id);
+            return None;
+        };
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Transition)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        if self.commit {
+            // Drawn: a swap in flight survives `drop_undrawn_enters`.
+            self.drawn.insert(node.id);
+        }
+        let (swap, moving) = self.image_swaps.swap(node.id, source, decode, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        swap.map(|(old, p)| {
+            (
+                old,
+                Masked {
+                    kind,
+                    p,
+                    invert: false,
+                },
+            )
+        })
+    }
+
+    /// (M4) `node`'s shared-element morph ([`morph`]): laid out at `rect`
+    /// (paint offsets included) on the surface of `root`, how far it is
+    /// drawn from there (`[dx, dy, sx, sy]`), if it morphs. A node that
+    /// starts a morph plays it in place of its enter pose. Called before
+    /// [`Animator::paint`].
+    pub fn shared_morph(
+        &mut self,
+        node: &Node,
+        scope: &TokenScope<'_>,
+        root: NodeId,
+        rect: LogicalRect,
+    ) -> Option<[f32; 4]> {
+        let key = match node
+            .get(Prop::Morph)
+            .and_then(|v| scope.resolve(v))
+            .as_deref()
+        {
+            Some(PropValue::Text(k) | PropValue::Keyword(k)) if !k.is_empty() => k.clone(),
+            _ => {
+                self.shared.forget(node.id);
+                return None;
+            }
+        };
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Morph)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let entering = self.enter.contains(&node.id);
+        let (v, moving, started) = self
+            .shared
+            .morph(node.id, &key, root, rect, entering, curve, frame);
+        if started {
+            // In place of its enter pose.
+            self.enter.remove(&node.id);
+            self.staggers.forget(node.id);
+        }
+        if moving {
+            self.active = true;
+        }
+        v
+    }
+
+    /// (M4) Leans `node` with the pointer (`pointer`, `None` off its
+    /// surface) by its `parallax` and `tilt` in `props`, laid out at
+    /// `rect` on a surface `surface` (`crate::effects::lean`): adds the
+    /// springing offset and turn to its `x`, `y` and `rotate`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn lean(
+        &mut self,
+        node: &Node,
+        props: &mut Vec<(Prop, Cow<'_, PropValue>)>,
+        scope: &TokenScope<'_>,
+        inh: Color,
+        pointer: Option<strand_scene::LogicalPoint>,
+        rect: LogicalRect,
+        surface: LogicalRect,
+    ) {
+        let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
+        let Some(lean) = crate::effects::lean::Lean::of(get) else {
+            self.leans.forget(node.id);
+            return;
+        };
+        let target = lean.target(pointer, rect, surface);
+        let transition = node
+            .props
+            .iter()
+            .find(|e| matches!(e.prop, Prop::Parallax | Prop::Tilt))
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = Curve::of(&scope.transition(&transition, Prop::Parallax));
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (v, moving) = self.leans.sample(node.id, target, curve, frame);
+        if moving {
+            self.active = true;
+        }
+        let boxes = Extents {
+            own: (rect.w, rect.h),
+            parent: (surface.w, surface.h),
+        };
+        keyframes::offset(props, Prop::X, v[0], inh, boxes);
+        keyframes::offset(props, Prop::Y, v[1], inh, boxes);
+        keyframes::offset(props, Prop::Rotate, v[2], inh, boxes);
+    }
+
+    /// (M4) True if a node `under` a surface leans with the pointer: a
+    /// pointer motion there repaints it.
+    pub fn leans(&self, under: impl FnMut(NodeId) -> bool) -> bool {
+        self.leans.used(under)
+    }
+
+    /// (M4) If `node` is about to enter under a parent with `stagger:`,
+    /// numbers it and the siblings entering with it ([`stagger`]).
+    /// Called before [`Animator::paint`].
+    pub fn stagger(&mut self, tree: &SceneTree, node: &Node, scope: &TokenScope<'_>) {
+        if self.snapping() || !self.enter.contains(&node.id) || self.staggers.planned(node.id) {
+            return;
+        }
+        let Some(parent) = node.parent.and_then(|p| tree.get(p)) else {
+            return;
+        };
+        let step = match parent
+            .get(Prop::Stagger)
+            .and_then(|v| scope.resolve(v))
+            .as_deref()
+        {
+            Some(PropValue::Duration(d)) if !d.is_zero() => *d,
+            _ => return,
+        };
+        let enter = &self.enter;
+        let entering = parent
+            .children
+            .iter()
+            .copied()
+            .filter(|c| enter.contains(c));
+        let entering: Vec<NodeId> = entering.collect();
+        self.staggers.plan(entering.into_iter(), step, self.time);
+    }
+
+    /// (M4) Draws node `node`'s `play` (`Prop::Play` in `props`, which
+    /// already hold this frame's springs) over `props`
+    /// ([`keyframes`]). `inh`, `rect` and `parent` as for
+    /// [`Animator::paint`]. Returns the block and whether it is still
+    /// playing; it wants frames only once the flattener finds the node
+    /// drawn ([`Animator::play_drawn`]).
+    pub fn keyframes(
+        &mut self,
+        node: &Node,
+        props: &mut Vec<(Prop, Cow<'_, PropValue>)>,
+        inh: Color,
+        rect: Option<LogicalRect>,
+        parent: LogicalRect,
+    ) -> Option<(std::sync::Arc<strand_scene::Keyframes>, bool)> {
+        let Some(PropValue::Keyframes(k)) = props
+            .iter()
+            .find(|(q, _)| *q == Prop::Play)
+            .map(|(_, v)| v.as_ref())
+        else {
+            self.plays.forget(node.id);
+            return None;
+        };
+        let k = k.clone();
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let (p, moving) = self.plays.progress(node.id, &k, frame);
+        if let Some(p) = p {
+            let boxes = Extents {
+                own: rect.map_or((0.0, 0.0), |r| (r.w, r.h)),
+                parent: (parent.w, parent.h),
+            };
+            keyframes::apply(&k, p, props, inh, boxes);
+        }
+        Some((k, moving))
+    }
+
+    /// (M4) Node `id`, whose `play` is still playing, is drawn (or hidden
+    /// only by something that follows time or the play itself): frames
+    /// are wanted, and its surface is busy until the play ends.
+    pub fn play_drawn(&mut self, id: NodeId) {
+        self.active = true;
+        if self.commit {
+            self.plays.drawn(id, self.time);
+        }
+    }
+
+    /// (M4) `id` does not roll (any more).
+    pub fn forget_roll(&mut self, id: NodeId) {
+        self.rolls.forget(id);
+    }
+
+    /// (M4) `id` draws no shape (any more).
+    pub fn forget_shape(&mut self, id: NodeId) {
+        self.shapes.forget(id);
     }
 
     /// Logic set `prop` of `id`, which had the value `old`.
@@ -317,6 +747,14 @@ impl Animator {
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
         self.times.forget(id);
+        self.shapes.forget(id);
+        self.rolls.forget(id);
+        self.plays.forget(id);
+        self.staggers.forget(id);
+        self.leans.forget(id);
+        self.reveals.forget(id);
+        self.shared.forget(id);
+        self.image_swaps.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -328,9 +766,15 @@ impl Animator {
     /// Drops the enter poses of nodes `under` the surface just painted
     /// that it did not draw (a row out of view, a subtree under a
     /// transparent parent): they show at rest when they come into view,
-    /// and a pose never drawn keeps no frames coming.
+    /// and a pose never drawn keeps no frames coming. So do staggered
+    /// children waiting for their turn (a list's rows past its viewport,
+    /// numbered with the rows in view) and image swaps mid-wipe.
     pub fn drop_undrawn_enters(&mut self, mut under: impl FnMut(NodeId) -> bool) {
         self.enter.retain(|id| !under(*id));
+        let drawn = &self.drawn;
+        self.staggers.retain(|id| drawn.contains(&id) || !under(id));
+        self.image_swaps
+            .end_undrawn(|id| !drawn.contains(&id) && under(id));
     }
 
     /// Exits that finished in the frames painted since the last call.
@@ -383,6 +827,14 @@ impl Animator {
     /// Drops the state of nodes `keep` rejects (gone from the tree).
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.times.retain(&mut keep);
+        self.shapes.retain(&mut keep);
+        self.rolls.retain(&mut keep);
+        self.plays.retain(&mut keep);
+        self.staggers.retain(&mut keep);
+        self.leans.retain(&mut keep);
+        self.reveals.retain(&mut keep);
+        self.shared.retain(&mut keep);
+        self.image_swaps.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -453,7 +905,9 @@ impl Animator {
         let exiting = self.exits.get(&id).copied();
         // Drawn this frame: its motions (an enter pose that starts now
         // included) survive `finish_undrawn`.
-        if exiting.is_some() || self.nodes.contains_key(&id) || self.enter.contains(&id) {
+        let waiting = self.staggers.planned(id);
+        if exiting.is_some() || self.nodes.contains_key(&id) || self.enter.contains(&id) || waiting
+        {
             self.drawn.insert(id);
         }
         if self.snapping() {
@@ -464,13 +918,16 @@ impl Animator {
                     na.respring = false;
                 }
                 self.enter.remove(&id);
+                self.staggers.forget(id);
                 if let Some(k) = self.exits.remove(&id) {
                     self.finished.push((id, k));
                 }
             }
             return;
         }
-        let entering = self.enter.remove(&id);
+        // A staggered child stays entering (in `staggers`, not `enter`,
+        // which frames clear) until its turn.
+        let entering = self.enter.remove(&id) || waiting;
         if !entering && exiting.is_none() && !self.nodes.contains_key(&id) {
             return;
         }
@@ -485,6 +942,21 @@ impl Animator {
                 .collect()
         };
         let chosen = self.poses.get(&id);
+        // A staggered child waiting for its turn holds at its pose.
+        if entering && exiting.is_none() && self.staggers.held(id, self.time) {
+            for (p, v) in chosen
+                .or(node.get(Prop::Enter))
+                .map(resolve)
+                .unwrap_or_default()
+            {
+                match props.iter().position(|(q, _)| *q == p) {
+                    Some(i) => props[i].1 = Cow::Owned(v),
+                    None => props.push((p, Cow::Owned(v))),
+                }
+            }
+            self.active = true;
+            return;
+        }
         let enter_pose = entering
             .then(|| chosen.or(node.get(Prop::Enter)).map(resolve))
             .flatten()
@@ -501,7 +973,11 @@ impl Animator {
         let respring = std::mem::take(&mut na.respring);
         let mut moving = false;
         let mut exit_done = true;
+        // A lone-radius glow springs in the colour flatten draws it in at
+        // rest: the node's own (target) colour, else the inherited one.
+        let glow_inh = glow_color(props, inh);
         for p in ANIMATED {
+            let inh = if p == Prop::Glow { glow_inh } else { inh };
             let own = props.iter().position(|(q, _)| *q == p);
             let own_v = own.map(|i| props[i].1.as_ref().clone());
             let in_exit = exit_pose.iter().find(|(q, _)| *q == p).map(|(_, v)| v);
@@ -584,6 +1060,10 @@ impl Animator {
         if exiting.is_some() && na.size.iter().any(Option::is_some) {
             exit_done = false;
         }
+        // (M4) A ghost playing out under a transition mask.
+        if self.reveals.holds(id) {
+            exit_done = false;
+        }
         if moving {
             self.active = true;
         }
@@ -604,7 +1084,16 @@ impl Animator {
     /// Anything under `root` moving or about to: frames are wanted.
     pub fn busy(&self, tree: &SceneTree, root: NodeId) -> bool {
         let under = |id: &NodeId| tree.root_of(*id) == Some(root);
-        self.nodes.keys().any(under) || self.enter.iter().any(under) || self.exits.keys().any(under)
+        self.nodes.keys().any(under)
+            || self.enter.iter().any(under)
+            || self.exits.keys().any(under)
+            || self.shapes.pending(|id| under(&id))
+            || self.rolls.pending(|id| under(&id))
+            || self.plays.busy(|id| under(&id))
+            || self.staggers.busy(|id| under(&id))
+            || self.reveals.busy(self.time, |id| under(&id))
+            || self.shared.busy(|id| under(&id))
+            || self.image_swaps.busy(|id| under(&id))
     }
 }
 

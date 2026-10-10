@@ -149,11 +149,23 @@ impl Offscreen {
                 i += 1;
             }
         }
-        // Inner groups (later in the list) first.
+        // Inner groups (later in the list) first; backdrops last, in
+        // order, as they show the groups behind them.
+        let backdrops: Vec<usize> = groups
+            .iter()
+            .copied()
+            .filter(|&i| {
+                matches!(&items[i].item, Item::PushLayer(l)
+                    if crate::backdrop::pass(l, scale).is_some())
+            })
+            .collect();
         for &i in groups.iter().rev() {
             let Item::PushLayer(layer) = &items[i].item else {
                 continue;
             };
+            if backdrops.contains(&i) {
+                continue;
+            }
             let Some(region) = items[i].bounds.intersect(surface).filter(|r| !r.is_empty()) else {
                 continue;
             };
@@ -188,6 +200,39 @@ impl Offscreen {
                     let Some(drawn) =
                         render_group(inner, layer, region, atlas, cache, scale, &self.current)
                     else {
+                        continue;
+                    };
+                    self.builds += 1;
+                    self.insert(key, drawn)
+                }
+            };
+            self.current.insert(layer_key(layer), drawn);
+        }
+        for i in backdrops {
+            let Item::PushLayer(layer) = &items[i].item else {
+                continue;
+            };
+            let (Some(pass), Some(region)) = (
+                crate::backdrop::pass(layer, scale),
+                items[i].bounds.intersect(surface).filter(|r| !r.is_empty()),
+            ) else {
+                continue;
+            };
+            let key = crate::backdrop::key(items, i, pass, region, scale, &self.current);
+            let drawn = match self.get(key) {
+                Some(d) => d,
+                None => {
+                    let Some(drawn) = crate::backdrop::render(
+                        items,
+                        i,
+                        pass,
+                        region,
+                        surface,
+                        atlas,
+                        cache,
+                        scale,
+                        &self.current,
+                    ) else {
                         continue;
                     };
                     self.builds += 1;
@@ -301,6 +346,12 @@ fn render_group(
         match e {
             Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
             Effect::ColorMatrix(m) => color_matrix(bytes, m),
+            // `bloom(r)` without a GPU: a glow of the group's own pixels,
+            // reaching its radius (3σ; the uniform is in buffer pixels).
+            Effect::Shader(pass) if crate::layers::cpu_glow(e) => {
+                let r = pass.uniforms.first().copied().unwrap_or(0.0);
+                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0, None);
+            }
             _ => {}
         }
     }
@@ -427,7 +478,11 @@ pub struct RasterNodes {
 }
 
 impl RasterNodes {
-    /// Sets (or with `None` removes) `node`'s source.
+    /// Sets (or with `None` removes) `node`'s source: a source with state
+    /// of its own, fed from outside the props (the media stream's
+    /// graphs, spectrum and animated frames); sources built from props go
+    /// through [`RasterNodes::pixmap_from`].
+    #[allow(dead_code)]
     pub fn set(&mut self, node: NodeId, source: Option<Arc<dyn RasterSource>>) {
         match source {
             Some(s) => {
@@ -443,10 +498,15 @@ impl RasterNodes {
     /// Drops nodes `keep` rejects.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.sources.retain(|id, _| keep(*id));
-        let sources = &self.sources;
-        self.drawn
-            .get_mut()
-            .retain(|id, _| sources.contains_key(id));
+        self.drawn.get_mut().retain(|id, _| keep(*id));
+    }
+
+    /// Drops `node`'s last pixmap when it has no source of its own (it
+    /// builds none from its props any more).
+    pub fn unused(&self, node: NodeId) {
+        if !self.sources.contains_key(&node) {
+            self.drawn.borrow_mut().remove(&node);
+        }
     }
 
     /// `node`'s clock rate, if it is a raster node.
@@ -480,12 +540,29 @@ impl RasterNodes {
         time: TimeContext,
     ) -> Option<(u64, Arc<Pixmap>)> {
         let source = self.sources.get(&node)?;
+        self.pixmap_from(node, source.as_ref(), 0, w, h, scale, time)
+    }
+
+    /// `node`'s pixels drawn by `source`, built from its props (`config`
+    /// says from what: a change draws anew), as [`RasterNodes::pixmap`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn pixmap_from(
+        &self,
+        node: NodeId,
+        source: &dyn RasterSource,
+        config: u64,
+        w: u32,
+        h: u32,
+        scale: f32,
+        time: TimeContext,
+    ) -> Option<(u64, Arc<Pixmap>)> {
         let (w16, h16) = (u16::try_from(w).ok()?, u16::try_from(h).ok()?);
         if w16 == 0 || h16 == 0 {
             return None;
         }
         let mut k = DefaultHasher::new();
         (
+            config,
             w,
             h,
             scale.to_bits(),

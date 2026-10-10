@@ -231,6 +231,8 @@ pub enum Value {
     Palette(Rc<Palette>),
     /// A `tokens` set (`use tokens compact`).
     TokenSet(DefId),
+    /// (M4) A `keyframes` block named as a value (`play shake`).
+    Keyframes(DefId),
     /// A service used as a value (`audio`, the receiver of
     /// `notifications.clear()`).
     Service(Rc<str>),
@@ -509,6 +511,7 @@ impl Value {
             Value::Pose(_) => "pose".into(),
             Value::Palette(_) => "palette".into(),
             Value::TokenSet(_) => "tokens".into(),
+            Value::Keyframes(_) => "keyframes".into(),
             Value::Service(s) => s.to_string(),
         }
     }
@@ -689,7 +692,7 @@ fn key_hash<H: Hasher>(v: &Value, state: &mut H) {
             }
         }
         Value::Service(s) => s.hash(state),
-        Value::TokenSet(d) => d.hash(state),
+        Value::TokenSet(d) | Value::Keyframes(d) => d.hash(state),
         _ => {}
     }
 }
@@ -837,7 +840,12 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             }
             (Value::Pose(Rc::new(out)), changed)
         }
-        Value::Call(_) | Value::Async(_) | Value::Fn(_) | Value::Node(_) | Value::TokenSet(_) => {
+        Value::Call(_)
+        | Value::Async(_)
+        | Value::Fn(_)
+        | Value::Node(_)
+        | Value::TokenSet(_)
+        | Value::Keyframes(_) => {
             return None;
         }
     })

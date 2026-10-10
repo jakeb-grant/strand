@@ -271,7 +271,13 @@ pub(crate) fn draw(
                 layout,
                 color,
                 spans,
+                fill,
             } => {
+                // (M4) `fill:`: the glyphs drawn in an isolated layer, then
+                // the paint composited onto their coverage (source-in).
+                if fill.is_some() {
+                    ctx.push_layer(None, None, None, None, None);
+                }
                 // A layout shaped for another scale (the surface moved
                 // to a different output) is drawn resampled until the
                 // re-shaped one arrives.
@@ -332,6 +338,25 @@ pub(crate) fn draw(
                 ctx.reset_tint();
                 ctx.reset_paint_transform();
                 ctx.set_transform(cur);
+                if let Some(f) = fill {
+                    ctx.push_layer(
+                        None,
+                        Some(vello_cpu::peniko::BlendMode::new(
+                            vello_cpu::peniko::Mix::Normal,
+                            vello_cpu::peniko::Compose::SrcIn,
+                        )),
+                        None,
+                        None,
+                        None,
+                    );
+                    let (p, t) = paint_for(&f.paint, f.frame, cache, region(cur), cur != base);
+                    ctx.set_paint(p);
+                    ctx.set_paint_transform(t);
+                    ctx.fill_rect(&f.area);
+                    ctx.reset_paint_transform();
+                    ctx.pop_layer();
+                    ctx.pop_layer();
+                }
             }
         }
     }

@@ -1177,3 +1177,28 @@ fn a_bad_service_source_is_one_diagnostic() {
         assert_eq!(codes, [code], "{src}");
     }
 }
+
+/// decisions.md m4-owner: `letters` animates the text of its enclosing
+/// `text` node, so a leaf `text` holds a `letters` child; any other child
+/// is still an error.
+#[test]
+fn a_text_holds_letters_and_nothing_else() {
+    one("bar B {\n  text \"x\" { letters { y: 2 * wave(1s, phase: index * 0.1) } }\n}\n");
+    // Any other child of a `text`, and `letters` in any other leaf, are
+    // still refused.
+    for src in [
+        "text \"x\" { box {} }",
+        "icon \"x\" { letters { y: 2 } }",
+        "meter { letters { y: 2 } }",
+        "image { letters { y: 2 } }",
+        "input { letters { y: 2 } }",
+    ] {
+        let (out, map) = compile_files(&[("a.strand", format!("bar B {{\n  {src}\n}}\n"))]);
+        let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            codes.contains(&"check::children_not_allowed"),
+            "{src}: {}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
+}

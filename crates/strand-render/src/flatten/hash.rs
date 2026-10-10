@@ -158,12 +158,25 @@ pub(crate) fn hash_item(h: &mut impl Hasher, item: &Item) {
             layout,
             color,
             spans,
+            fill,
         } => {
             7u8.hash(h);
             (x, y, layout.key, layout.scale).hash(h);
             hash_color(h, color);
             for c in spans {
                 hash_color(h, c);
+            }
+            // (M4) A letter's layout is one glyph of its text's (with
+            // the text's key): its glyph tells letters apart.
+            if let [run] = layout.runs.as_slice()
+                && let [g] = run.glyphs.as_slice()
+            {
+                (g.x, g.y, g.slot.page, g.slot.x, g.slot.y).hash(h);
+            }
+            if let Some(f) = fill {
+                hash_paint(h, &f.paint);
+                hash_rect(h, f.frame);
+                hash_rect(h, f.area);
             }
         }
         Item::Image {

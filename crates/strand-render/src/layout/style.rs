@@ -34,7 +34,13 @@ impl<'a> Build<'a> {
 
         // Box sizes.
         let size = dim(get(Prop::Size).as_deref(), font);
-        if let Some(w) = dim(get(Prop::Width).as_deref(), font).or(size) {
+        // (M4) An `arc`'s `width` is its line's (design.md: `arc { …;
+        // width: 4 }`); its box is square (`Ctx::Square`).
+        let width = match kind {
+            NodeKind::Arc => None,
+            _ => dim(get(Prop::Width).as_deref(), font),
+        };
+        if let Some(w) = width.or(size) {
             style.size.width = w.dim();
         }
         if let Some(h) = dim(get(Prop::Height).as_deref(), font).or(size) {
@@ -214,6 +220,7 @@ impl<'a> Build<'a> {
                     crate::widgets::SLIDER_KNOB + 4.0,
                 )),
                 NodeKind::Meter => Some(Ctx::Fixed(0.0, 4.0)),
+                NodeKind::Arc => Some(Ctx::Square(24.0)),
                 NodeKind::Input => Some(Ctx::Fixed(0.0, (font * 1.25).ceil())),
                 NodeKind::Segmented => Some(Ctx::Segmented {
                     node: node.id,
