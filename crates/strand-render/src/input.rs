@@ -1790,7 +1790,10 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// its rows (its live children; a windowed list's `row_first` added) of
 /// the first row whose middle is past the pointer, counted without the
 /// dragged `source` (a row moved within its own list lands where it is
-/// let go, `pins.move(p.app, at)`). A target without rows is placed in its
+/// let go, `pins.move(p.app, at)`). Rows mounted but not laid out (out
+/// of view) count by their place; past the last laid-out row lands after
+/// it, and a target none of whose rows is laid out lands at its end. A
+/// target without rows is placed in its
 /// parent's rows: its own index, plus one past its middle. Rows run
 /// along x in a `row` (or when they are spread wider than tall), else y.
 fn drop_index(
@@ -1829,20 +1832,31 @@ fn drop_index(
         }
     };
     let rows = rows_of(target);
-    let rs = rects(&rows);
-    if !rows.is_empty() && rs.len() == rows.len() {
-        let x = along_x(target, &rs);
-        let past = rs
+    if !rows.is_empty() {
+        // Only the rows in view (and a little overscan) are laid out; a
+        // windowed list mounts more on either side. The laid-out ones
+        // keep their places among all of them.
+        let laid: Vec<(usize, LogicalRect)> = rows
             .iter()
-            .take_while(|r| {
+            .enumerate()
+            .filter_map(|(i, r)| scene.node_rect(surface, *r).map(|b| (i, b)))
+            .collect();
+        let rs: Vec<LogicalRect> = laid.iter().map(|(_, b)| *b).collect();
+        let x = along_x(target, &rs);
+        let i = laid
+            .iter()
+            .find(|(_, r)| {
                 if x {
-                    at.x > r.x + r.w / 2.0
+                    at.x <= r.x + r.w / 2.0
                 } else {
-                    at.y > r.y + r.h / 2.0
+                    at.y <= r.y + r.h / 2.0
                 }
             })
-            .count();
-        return first(target) + past as u32;
+            .map_or_else(
+                || laid.last().map_or(rows.len(), |(i, _)| i + 1),
+                |(i, _)| *i,
+            );
+        return first(target) + i as u32;
     }
     // A leaf target: its place among its parent's rows.
     let Some(parent) = tree.get(target).and_then(|x| x.parent) else {

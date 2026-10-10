@@ -850,6 +850,114 @@ fn a_drag_past_six_pixels_drops_at_a_global_index() {
     );
 }
 
+/// (M4) A windowed list mounts rows beyond its view (logic's window
+/// overscans), and only the ones in view are laid out: twenty 40 px
+/// `drag: Pin` rows from global row 100 in a 160 px list, scrolled so
+/// rows 8..11 are shown. Painted again after the scroll.
+fn long_dnd_scene() -> (Renderer, NodeId, NodeId, Vec<NodeId>) {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, list) = (id(0), id(1), id(2));
+    let rows: Vec<NodeId> = (0..20).map(|i| id(10 + i)).collect();
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(240.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(list, NodeKind::List, Some(col), 0)
+        .set(list, Prop::Height, PropValue::Number(160.0))
+        .set(list, Prop::RowFirst, PropValue::Number(100.0))
+        .set(list, Prop::RowCount, PropValue::Number(2000.0))
+        .set(list, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+    for (i, row) in rows.iter().enumerate() {
+        d.create(*row, NodeKind::Row, Some(list), i as u32)
+            .set(*row, Prop::Height, PropValue::Number(40.0))
+            .set(*row, Prop::Drag, kw("Pin"));
+    }
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 240 * 4];
+    let mut paint = |r: &mut Renderer, secs| {
+        let t = PaintTarget::new(&mut px, Size::new(200, 240), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(secs)));
+    };
+    paint(&mut r, 1);
+    // Global row 100 starts at 4,000 px; row 8 of the window at 4,320.
+    assert_eq!(
+        r.scroll(s, LogicalPoint::new(50.0, 80.0), 4320.0),
+        Some(list)
+    );
+    paint(&mut r, 2);
+    (r, panel, list, rows)
+}
+
+/// (M4) A drop on a windowed list whose mounted rows run past its view
+/// above and below (so most of them have no box) still lands at the
+/// global index among all of them: rows 0..6 and 13..19 are mounted but
+/// not laid out, and a drop counts them by their place.
+#[test]
+fn a_drop_counts_mounted_rows_out_of_view() {
+    let (mut r, panel, list, rows) = long_dnd_scene();
+    let s = SurfaceId(1);
+    assert_eq!(r.scroll_offset(list), Some(4320.0));
+    let laid: Vec<usize> = (0..rows.len())
+        .filter(|i| r.node_rect(s, rows[*i]).is_some())
+        .collect();
+    assert_eq!(laid, (7..=12).collect::<Vec<_>>(), "rows in view, overscan");
+    let mut f = R::default();
+    f.attached(s, panel);
+    // Row 10 is shown from y 80 to 120; drag it.
+    f.input(&motion(s, 50.0, 100.0, 0), &mut r);
+    f.input(&left(s, 50.0, 100.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 110.0, 10), &mut r);
+    let d = f.router.drag().expect("a drag");
+    assert_eq!((d.source, d.target), (rows[10], Some(list)));
+    // At y 30: past row 8's middle (y 20), before row 9's (y 60).
+    f.input(&motion(s, 50.0, 30.0, 20), &mut r);
+    assert_eq!(f.router.drag().unwrap().index, Some(109));
+    // At y 150: past row 11's middle (y 140, without row 10 at its old
+    // place), before row 12's: lands at 11 without the source.
+    f.input(&motion(s, 50.0, 150.0, 30), &mut r);
+    assert_eq!(f.router.drag().unwrap().index, Some(111));
+    f.input(&left(s, 50.0, 150.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(rows[10]),
+                at: 111
+            }
+        )]
+    );
+    // At the very top, before row 8's middle: lands at 8, above which
+    // eight mounted rows are counted though only row 7 has a box.
+    f.input(&left(s, 50.0, 60.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 2.0, 40), &mut r);
+    let d = f.router.drag().unwrap();
+    assert_eq!((d.source, d.index), (rows[9], Some(108)));
+    f.input(&left(s, 50.0, 2.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(rows[9]),
+                at: 108
+            }
+        )]
+    );
+}
+
 /// (M4) Escape cancels a drag in flight: the source springs back, no
 /// drop, no click on the release, and the key does nothing else (it is
 /// not delivered, and an open surface stays open).
