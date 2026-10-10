@@ -351,6 +351,69 @@ fn even_odd_clips_cut_holes_and_retired_uploads_go() {
     assert_eq!(pixel(&px, 1, 1), [0, 0, 0, 0], "retired");
 }
 
+/// A frame that retires one upload and uploads another of the same size
+/// (render re-rasterises an island every lowering: the old pixmap goes,
+/// the new one takes its atlas slot) draws the new one. vello_gpu clears
+/// a destroyed image's slot in the frame's encoder, after the queue's
+/// write of the new pixels: freed first, the new image came out blank.
+/// A new generation of the same upload id is the same case.
+#[test]
+fn an_upload_in_a_retired_uploads_slot_is_drawn() {
+    let Some(mut h) = start() else { return };
+    let size = Size::new(16, 16);
+    attach(&mut h, size);
+    let solid = |r: u8, g: u8, b: u8| {
+        let mut pm = Pixmap::new(8, 8);
+        for p in pm.data_mut() {
+            // Stored red and blue swapped, as the CPU raster keeps them.
+            *p = strand_gpu::peniko::color::PremulRgba8 {
+                r: b,
+                g,
+                b: r,
+                a: 255,
+            };
+        }
+        Arc::new(pm)
+    };
+    let image = |id| Op::Image {
+        rect: Rect::new(0.0, 0.0, 8.0, 8.0),
+        image: id,
+        image_transform: Affine::IDENTITY,
+        tint: None,
+        smooth: false,
+    };
+    let f = |id, ops, uploads, retire| Frame {
+        surface: S,
+        id,
+        size,
+        scale: Scale::ONE,
+        ops,
+        uploads,
+        retire,
+        clear: AlphaColor::TRANSPARENT,
+    };
+    let up = |id, generation, pixmap| Upload {
+        id,
+        generation,
+        pixmap,
+    };
+    let px = frame(
+        &mut h,
+        f(1, vec![image(1)], vec![up(1, 0, solid(255, 0, 0))], vec![]),
+    );
+    assert_eq!(pixel(&px, 4, 4), [0, 0, 255, 255], "red");
+    let px = frame(
+        &mut h,
+        f(2, vec![image(2)], vec![up(2, 0, solid(0, 255, 0))], vec![1]),
+    );
+    assert_eq!(pixel(&px, 4, 4), [0, 255, 0, 255], "green, in red's slot");
+    let px = frame(
+        &mut h,
+        f(3, vec![image(2)], vec![up(2, 1, solid(0, 0, 255))], vec![]),
+    );
+    assert_eq!(pixel(&px, 4, 4), [255, 0, 0, 255], "blue, a new generation");
+}
+
 /// Every frame and pass is answered, also those that cannot be drawn
 /// (a surface not attached, a zero or over-large size, a pass that
 /// draws nothing): the host sends a surface's next frame only after the

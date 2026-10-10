@@ -212,16 +212,28 @@ impl State {
         }
     }
 
-    /// Uploads the frame's new pixmaps.
-    fn upload(&mut self, dev: &Device, encoder: &mut wgpu::CommandEncoder, uploads: &[Upload]) {
+    /// Uploads the frame's new pixmaps, then frees the retired ones and
+    /// those replaced.
+    ///
+    /// In that order: vello_gpu writes an image through the queue, which
+    /// runs before this frame's encoder, while it clears a destroyed
+    /// image's atlas slot in the encoder. A slot freed first and handed
+    /// to a new image in the same frame would be cleared after the new
+    /// pixels were written (a re-rasterised island drawn as nothing).
+    fn upload(
+        &mut self,
+        dev: &Device,
+        encoder: &mut wgpu::CommandEncoder,
+        uploads: &[Upload],
+        retire: &[u64],
+    ) {
+        let mut freed = Vec::new();
         for u in uploads {
             if let Some(h) = self.images.get(&u.id) {
                 if h.generation == u.generation {
                     continue;
                 }
-                let old = h.id;
-                self.renderer
-                    .destroy_image(&mut self.resources, encoder, old);
+                freed.push(h.id);
                 self.images.remove(&u.id);
             }
             if u.pixmap.width() == 0 || u.pixmap.height() == 0 {
@@ -242,6 +254,15 @@ impl State {
                     id,
                 },
             );
+        }
+        for id in retire {
+            if let Some(h) = self.images.remove(id) {
+                freed.push(h.id);
+            }
+        }
+        for old in freed {
+            self.renderer
+                .destroy_image(&mut self.resources, encoder, old);
         }
     }
 
@@ -335,13 +356,7 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("strand frame"),
             });
-        for id in &frame.retire {
-            if let Some(h) = self.images.remove(id) {
-                self.renderer
-                    .destroy_image(&mut self.resources, &mut encoder, h.id);
-            }
-        }
-        self.upload(dev, &mut encoder, &frame.uploads);
+        self.upload(dev, &mut encoder, &frame.uploads, &frame.retire);
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();
         let (passes, pass_error) =
