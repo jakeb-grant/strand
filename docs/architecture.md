@@ -3492,7 +3492,9 @@ transparent huge pages for life.
   (`image-data`, `IconPixmap`, a menu entry's `icon-data`) are checked
   against the bytes sent before allocating, sampled down to 512 px a
   side and become content-addressed PNG files under
-  `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (`strand_services::pixmap`)
+  `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (`strand_services::pixmap`;
+  without `XDG_RUNTIME_DIR`, a `strand-<uid>` directory in the
+  temporary directory, used only when it is this user's and mode 0700)
   that `image` shows by path; each file lives while a `Pinned` handle
   to it does (the notification or tray item showing it).
   `testing::PrivateBus::start_activating` gives a private bus a service

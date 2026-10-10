@@ -10,8 +10,12 @@
 //! PNG encoding of one picture.
 //!
 //! Files are content-addressed (`<hash>.png`) under
-//! `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (the temporary directory
-//! without one): the same pixels are one file, written once. A file lives
+//! `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (without one, under
+//! `strand-<uid>` in the temporary directory, used only when it is a real
+//! directory of this user's that nobody else may enter: the temporary
+//! directory is world-writable, so a directory another user made first
+//! is refused): the same pixels are one file, written once. Temporary
+//! files are created new (`O_EXCL`), never through a link. A file lives
 //! as long as a [`Pinned`] handle to it does (a notification kept, a tray
 //! item's current icon): the last handle dropped removes it, so nothing
 //! still shown is ever removed and nothing unshown stays. Directories of
@@ -93,26 +97,65 @@ pub fn pins(path: &Path) -> usize {
         .unwrap_or(0)
 }
 
-/// The directory every strand process writes pixmaps under.
-pub fn root() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
+/// The directory every strand process writes pixmaps under, or why
+/// there is none.
+pub fn root() -> Result<PathBuf, String> {
+    match std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(std::env::temp_dir)
-        .join("strand")
-        .join("pixmaps")
+    {
+        Some(run) => Ok(run.join("strand").join("pixmaps")),
+        None => private_dir(&std::env::temp_dir().join(format!("strand-{}", euid())))
+            .map(|d| d.join("pixmaps")),
+    }
 }
 
-/// Where this process's pixmaps go.
-pub fn dir() -> PathBuf {
-    root().join(std::process::id().to_string())
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+/// `path` as a directory only this user may enter: made 0700 when
+/// missing, refused when it is a link, not a directory, another user's,
+/// or open to others (someone else made it first in a shared directory).
+fn private_dir(path: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.file_type().is_dir() || meta.uid() != euid() || meta.mode() & 0o077 != 0 {
+        return Err(format!(
+            "{}: not a private directory of this user's; set XDG_RUNTIME_DIR",
+            path.display()
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Where this process's pixmaps go, or why nowhere.
+pub fn dir() -> Result<PathBuf, String> {
+    root().map(|r| r.join(std::process::id().to_string()))
+}
+
+/// `path` created new for writing: never an existing file or a link.
+fn create_new(path: &Path) -> Result<std::fs::File, String> {
+    // A temporary file a crashed process of the same pid left is ours.
+    let _ = std::fs::remove_file(path);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Remove the directories of processes that are gone (once a process).
 fn sweep() {
     static SWEPT: std::sync::Once = std::sync::Once::new();
     SWEPT.call_once(|| {
-        let Ok(dirs) = std::fs::read_dir(root()) else {
+        let Ok(dirs) = root().and_then(|r| std::fs::read_dir(r).map_err(|e| e.to_string())) else {
             return;
         };
         for d in dirs.filter_map(Result::ok) {
@@ -144,7 +187,7 @@ pub fn write_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Pinned, String
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (width, height).hash(&mut h);
     rgba.hash(&mut h);
-    let dir = dir();
+    let dir = dir()?;
     let path = dir.join(format!("{:016x}.png", h.finish()));
     // Pinned before the check: a handle dropping meanwhile cannot remove
     // a file about to be handed out.
@@ -201,7 +244,7 @@ pub fn write_png(bytes: &[u8]) -> Result<Pinned, String> {
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
-    let dir = dir();
+    let dir = dir()?;
     let path = dir.join(format!("{:016x}.png", h.finish()));
     let pinned = Pinned::pin(path.clone());
     if path.exists() {
@@ -210,13 +253,16 @@ pub fn write_png(bytes: &[u8]) -> Result<Pinned, String> {
     sweep();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     publish(&dir, &path, |tmp| {
-        std::fs::write(tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))
+        use std::io::Write;
+        create_new(tmp)?
+            .write_all(bytes)
+            .map_err(|e| format!("{}: {e}", tmp.display()))
     })?;
     Ok(pinned)
 }
 
 fn encode(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = create_new(path)?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
@@ -398,7 +444,7 @@ mod tests {
                 .iter()
                 .filter_map(|p| p.file_stem()?.to_str().map(|s| format!(".{s}.")))
                 .collect();
-            let tmps = std::fs::read_dir(dir())
+            let tmps = std::fs::read_dir(dir().unwrap())
                 .unwrap()
                 .filter_map(Result::ok)
                 .filter(|e| {
@@ -408,6 +454,44 @@ mod tests {
                 .count();
             assert_eq!(tmps, 0, "no temporary file left behind");
         }
+    }
+
+    /// (m4-audit) Without `XDG_RUNTIME_DIR` pixmaps go under the shared
+    /// temporary directory, so the directory is used only when it is this
+    /// user's and closed to others, and temporary files are never opened
+    /// through a link someone planted.
+    #[test]
+    fn the_temporary_directory_fallback_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let fresh = base.path().join("fresh");
+        assert_eq!(private_dir(&fresh).unwrap(), fresh);
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "made closed to others");
+        assert_eq!(private_dir(&fresh).unwrap(), fresh, "kept when private");
+        let open = base.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(private_dir(&open).is_err(), "a directory others may write");
+        let link = base.path().join("link");
+        std::os::unix::fs::symlink(&fresh, &link).unwrap();
+        assert!(private_dir(&link).is_err(), "a link, even to a private one");
+        let file = base.path().join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(private_dir(&file).is_err(), "not a directory");
+        // A planted link at a temporary name is replaced, never followed.
+        let victim = base.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let tmp = fresh.join(".x.0.tmp");
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        encode(&tmp, 1, 1, &[1, 2, 3, 4]).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(
+            !std::fs::symlink_metadata(&tmp)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
