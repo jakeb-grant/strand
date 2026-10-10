@@ -219,3 +219,124 @@ fn a_reorder_by_key_springs_from_the_drop_point() {
     let p = d.buf.px(10, 5);
     assert!(p[1] > 200 && p[2] < 40, "green on top: {p:?}");
 }
+
+/// (M4) The drag icon (`Renderer::drag_image`): a `drag:` source drawn
+/// alone and at rest while the Router holds it lifted at the pointer, at
+/// the surface's scale. On a clear panel it is exactly the source's box
+/// cropped from the frame drawn before the drag (rounded corners, its
+/// label and the gradient it inherits nothing for), its origin is its
+/// box's corner, and it matches `drag_image_pin.png` (`_2x` at scale 2).
+/// A node not laid out on the surface has none.
+#[test]
+fn the_drag_icon_is_the_source_drawn_alone_at_rest() {
+    for (scale, name) in [(1, "drag_image_pin"), (2, "drag_image_pin_2x")] {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Panel,
+            None,
+            vec![(Prop::Width, num(120.0)), (Prop::Height, num(80.0))],
+        );
+        let pin = || PropValue::Keyword("Pin".into());
+        let col = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![
+                (Prop::Pad, num(10.0)),
+                (Prop::Gap, num(4.0)),
+                (Prop::Accepts, PropValue::List(vec![pin()])),
+            ],
+        );
+        let card = b.node(
+            NodeKind::Row,
+            Some(col),
+            vec![
+                (Prop::Width, num(70.0)),
+                (Prop::Height, num(28.0)),
+                (Prop::Radius, num(8.0)),
+                (Prop::Pad, num(6.0)),
+                (Prop::Bg, color("#7aa2f7")),
+                (Prop::Drag, pin()),
+            ],
+        );
+        b.node(
+            NodeKind::Text,
+            Some(card),
+            vec![
+                (Prop::Text, text("Pin")),
+                (Prop::Color, color("#1a1b26")),
+                (Prop::Font, PropValue::Font(font(13.0))),
+            ],
+        );
+        let other = b.node(
+            NodeKind::Box,
+            Some(col),
+            vec![
+                (Prop::Width, num(70.0)),
+                (Prop::Height, num(28.0)),
+                (Prop::Bg, color("#f7768e")),
+                (Prop::Drag, pin()),
+            ],
+        );
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, root);
+        let sc = Scale::from_integer(scale).unwrap();
+        let mut buf = Buffer::new(120 * scale, 80 * scale, sc);
+        r.configure_surface(S, buf.size, sc);
+        buf.paint_at(&mut r, S, 0, T0);
+        let rest = buf.pixels.clone();
+        // Lifted: pressed and dragged 30 px right and 20 px down.
+        let mut router = Router::default();
+        router.attached(S, root);
+        let at = |x, y| LogicalPoint::new(x, y);
+        for e in [
+            InputEvent::PointerMotion {
+                surface: S,
+                position: at(20.0, 20.0),
+                time: 0,
+            },
+            InputEvent::PointerButton {
+                surface: S,
+                position: at(20.0, 20.0),
+                button: button::LEFT,
+                state: ButtonState::Pressed,
+                time: 0,
+            },
+            InputEvent::PointerMotion {
+                surface: S,
+                position: at(50.0, 40.0),
+                time: 10,
+            },
+        ] {
+            router.handle(&e, &mut r);
+        }
+        assert_eq!(router.drag().map(|d| d.source), Some(card));
+        buf.paint_at(&mut r, S, 1, frame(2));
+        assert_ne!(buf.pixels, rest, "drawn lifted");
+        let img = r.drag_image(S, card).expect("a drag image");
+        assert_eq!(img.scale, sc);
+        assert_eq!(img.origin, LogicalPoint::new(10.0, 10.0));
+        assert_eq!(img.size, Size::new(70 * scale, 28 * scale));
+        let (w, x0, y0) = (
+            img.size.w as usize,
+            10 * scale as usize,
+            10 * scale as usize,
+        );
+        let stride = 120 * scale as usize * 4;
+        for y in 0..img.size.h as usize {
+            let want = &rest[(y0 + y) * stride + x0 * 4..][..w * 4];
+            let got = &img.pixels[y * w * 4..][..w * 4];
+            assert_eq!(got, want, "{name}: row {y}");
+        }
+        let icon = Buffer {
+            size: img.size,
+            scale: sc,
+            pixels: img.pixels.clone(),
+        };
+        assert_matches_ref(name, &icon, 2);
+        // Still lifted after: the icon took nothing from the drag.
+        assert_eq!(router.drag().map(|d| d.source), Some(card));
+        assert!(r.drag_image(S, NodeId::new(999, 0)).is_none());
+        let _ = other;
+    }
+}

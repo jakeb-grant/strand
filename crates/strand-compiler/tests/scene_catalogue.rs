@@ -41,6 +41,7 @@ const COMPILER_SET: &[Prop] = &[
     Prop::Accepts,
     Prop::RowCount,
     Prop::RowFirst,
+    Prop::DropRows,
 ];
 
 /// Scene kinds the compiler makes from something other than an element:

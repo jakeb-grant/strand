@@ -759,6 +759,14 @@ impl SurfaceHost for Host {
         (d.surface == surface).then_some(d.source)
     }
 
+    fn drag_image(&mut self, surface: SurfaceId, node: NodeId) -> Option<strand_scene::DragImage> {
+        self.renderer.drag_image(surface, node)
+    }
+
+    fn drag_data(&self, node: NodeId) -> Option<strand_scene::DropPayload> {
+        strand_scene::drag_export(self.renderer.tree().get(node)?.get(Prop::Drag)?)
+    }
+
     fn input(&mut self, event: &InputEvent) {
         // The fallback lock takes its surface's input (`run/lock.rs`).
         if self.lock.input(event) {

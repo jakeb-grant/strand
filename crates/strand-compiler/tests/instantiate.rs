@@ -4193,6 +4193,90 @@ bar B {
     );
 }
 
+/// (M4) What a drag gives other programs: a `drag:` source whose value
+/// has a form outside Strand (text, a `Drop`, an `App`) reaches render
+/// as its type name followed by that form (`strand_scene::drag_export`
+/// reads it); other values as the name alone. An `on drop` target whose
+/// direct child is a `for` holds rows (`Prop::DropRows`), whether or not
+/// they are draggable; one without a `for` does not.
+#[test]
+fn drag_sources_say_what_other_programs_get() {
+    let src = r#"type Pin { app: text; label: text }
+state words = ["alpha", "beta"]
+state got = ""
+bar B {
+  row {
+    box { drag: "hello" }
+    box { drag: Drop(kind: DropKind.files, files: ["/tmp/a b.png", "/tmp/c"], app: null, text: "") }
+    box { drag: App(id: "org.x.Y.desktop", name: "Y", comment: null, icon: "y", categories: []) }
+    box { drag: Pin(app: "a", label: "A") }
+  }
+  col {
+    on drop(t: text, at: int) { got = t }
+    for w in words key w { text w }
+  }
+  stack { on drop(t: text, at: int) { got = t }; text "x" }
+}
+"#;
+    let shell = boot(&[("dock.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let boxes = shell.scene.children(row).to_vec();
+    let exports: Vec<_> = boxes
+        .iter()
+        .map(|b| {
+            let p = shell.scene.prop(*b, Prop::Drag).expect("a drag prop");
+            (
+                strand_scene::drag_type(p).map(str::to_string),
+                strand_scene::drag_export(p),
+            )
+        })
+        .collect();
+    use strand_scene::{DropKind, DropPayload};
+    assert_eq!(
+        exports,
+        [
+            (
+                Some("text".to_string()),
+                Some(DropPayload::External {
+                    kind: DropKind::Text,
+                    files: vec![],
+                    text: "hello".into(),
+                    app_id: None
+                })
+            ),
+            (
+                Some("Drop".to_string()),
+                Some(DropPayload::External {
+                    kind: DropKind::Files,
+                    files: vec!["/tmp/a b.png".into(), "/tmp/c".into()],
+                    text: String::new(),
+                    app_id: None
+                })
+            ),
+            (
+                Some("App".to_string()),
+                Some(DropPayload::External {
+                    kind: DropKind::App,
+                    files: vec![],
+                    text: String::new(),
+                    app_id: Some("org.x.Y.desktop".into())
+                })
+            ),
+            (Some("Pin".to_string()), None),
+        ]
+    );
+    let col = shell.scene.of_kind(NodeKind::Col)[0];
+    let stack = shell.scene.of_kind(NodeKind::Stack)[0];
+    assert_eq!(
+        shell.scene.prop(col, Prop::DropRows),
+        Some(&PropValue::Bool(true))
+    );
+    assert_eq!(shell.scene.prop(stack, Prop::DropRows), None);
+    assert_eq!(shell.scene.prop(row, Prop::DropRows), None, "no `on drop`");
+}
+
 /// (M4) Drag and drop's logic side: a `drag:` source reaches render as
 /// its value's type name and an `on drop` target as the types its
 /// handlers take (`Prop::Accepts`: `Drop` for other programs' drops,

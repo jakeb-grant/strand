@@ -2,7 +2,9 @@
 //! "Drag and drop"): another program's text and files dropped on a
 //! Strand surface, refused while nothing takes them, and a Strand drag
 //! carried by the compositor from one Strand surface to another, or let
-//! go where nothing takes it.
+//! go where nothing takes it; (M4 interaction-finish) a Strand drag out
+//! to another program carrying its text or files, and a drag from
+//! another Strand process recognised and read.
 
 mod common;
 
@@ -23,9 +25,9 @@ use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_data_device, wl_data_device::WlDataDevice,
-    wl_data_offer::WlDataOffer, wl_data_source, wl_data_source::WlDataSource, wl_pointer,
-    wl_pointer::WlPointer, wl_registry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+    wl_data_offer, wl_data_offer::WlDataOffer, wl_data_source, wl_data_source::WlDataSource,
+    wl_pointer, wl_pointer::WlPointer, wl_registry, wl_seat, wl_seat::WlSeat, wl_shm,
+    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop, event_created_child,
@@ -50,6 +52,10 @@ struct DndHost {
     input: Vec<InputEvent>,
     accept: HashSet<SurfaceId>,
     source: Option<(SurfaceId, NodeId)>,
+    /// What the source gives other programs.
+    export: Option<DropPayload>,
+    /// Its icon.
+    icon: Option<strand_scene::DragImage>,
 }
 
 impl Painter for DndHost {
@@ -79,6 +85,18 @@ impl SurfaceHost for DndHost {
 
     fn drag_source(&self, surface: SurfaceId) -> Option<NodeId> {
         self.source.filter(|s| s.0 == surface).map(|s| s.1)
+    }
+
+    fn drag_image(&mut self, _: SurfaceId, node: NodeId) -> Option<strand_scene::DragImage> {
+        self.source
+            .filter(|s| s.1 == node)
+            .and_then(|_| self.icon.clone())
+    }
+
+    fn drag_data(&self, node: NodeId) -> Option<DropPayload> {
+        self.source
+            .filter(|s| s.1 == node)
+            .and_then(|_| self.export.clone())
     }
 }
 
@@ -211,6 +229,8 @@ struct Log {
     cancelled: u32,
     finished: u32,
     ended: HashSet<wayland_client::backend::ObjectId>,
+    /// Drops it took: the MIME type read and its bytes.
+    received: Vec<(String, Vec<u8>)>,
 }
 
 /// Another program: a 300 px layer surface along the bottom edge whose
@@ -230,11 +250,18 @@ struct Program {
     source: Option<WlDataSource>,
     file: PathBuf,
     buffer: Option<WlBuffer>,
+    /// The MIME type it takes from drags entering it (`None`: none).
+    want: Arc<Mutex<Option<String>>>,
+    /// The offer over it now.
+    over: Option<WlDataOffer>,
+    /// The MIME types the newest offer named.
+    offered: Vec<String>,
 }
 
 struct ProgramHandle {
     log: Arc<Mutex<Log>>,
     offers: Offers,
+    want: Arc<Mutex<Option<String>>>,
     /// While set, a drop's pipe is held open and never written.
     hang: Arc<AtomicBool>,
 }
@@ -258,9 +285,11 @@ impl Program {
         let log = Arc::new(Mutex::new(Log::default()));
         let offers = Arc::new(Mutex::new(Vec::new()));
         let hang = Arc::new(AtomicBool::new(false));
+        let want = Arc::new(Mutex::new(None));
         let handle = ProgramHandle {
             log: log.clone(),
             offers: offers.clone(),
+            want: want.clone(),
             hang: hang.clone(),
         };
         std::thread::spawn(move || {
@@ -302,6 +331,9 @@ impl Program {
                 source: None,
                 file,
                 buffer: None,
+                want,
+                over: None,
+                offered: Vec::new(),
             };
             while queue.blocking_dispatch(&mut p).is_ok() {}
         });
@@ -453,14 +485,50 @@ impl Dispatch<WlDataSource, ()> for Program {
 }
 
 impl Dispatch<WlDataDevice, ()> for Program {
+    /// A drag entering it is accepted (copy) as the type it wants; one
+    /// dropped on it is read whole, then finished.
     fn event(
-        _: &mut Self,
+        p: &mut Self,
         _: &WlDataDevice,
-        _: wl_data_device::Event,
+        event: wl_data_device::Event,
         _: &(),
-        _: &Connection,
+        conn: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let want = p
+            .want
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|w| p.offered.contains(w));
+        match event {
+            wl_data_device::Event::DataOffer { .. } => p.offered.clear(),
+            wl_data_device::Event::Enter {
+                serial,
+                id: Some(offer),
+                ..
+            } => {
+                offer.accept(serial, want);
+                offer.set_actions(DndAction::Copy, DndAction::Copy);
+                p.over = Some(offer);
+            }
+            wl_data_device::Event::Leave => p.over = None,
+            wl_data_device::Event::Drop => {
+                let (Some(offer), Some(mime)) = (p.over.take(), want) else {
+                    return;
+                };
+                let (mut read, write) = std::io::pipe().unwrap();
+                offer.receive(mime.clone(), write.as_fd());
+                drop(write);
+                conn.flush().unwrap();
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut read, &mut bytes).unwrap();
+                offer.finish();
+                offer.destroy();
+                p.log.lock().unwrap().received.push((mime, bytes));
+            }
+            _ => {}
+        }
     }
 
     event_created_child!(Program, WlDataDevice, [
@@ -475,7 +543,20 @@ delegate_noop!(Program: WlShmPool);
 delegate_noop!(Program: ignore WlBuffer);
 delegate_noop!(Program: ZwlrLayerShellV1);
 delegate_noop!(Program: WlDataDeviceManager);
-delegate_noop!(Program: ignore WlDataOffer);
+impl Dispatch<WlDataOffer, ()> for Program {
+    fn event(
+        p: &mut Self,
+        _: &WlDataOffer,
+        event: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            p.offered.push(mime_type);
+        }
+    }
+}
 
 /// Starts sway, a manager showing the bar (36 px along the top) and the
 /// other program along the bottom, and a seat pointer.
@@ -792,4 +873,261 @@ fn a_strand_drag_moves_between_strand_surfaces() {
         mgr.state().host().input
     );
     assert!(!mgr.state().carrying_drag());
+}
+
+/// Presses on the bar at x 100 with a drag of `node` in flight there (the
+/// Router's), and moves below it, so the compositor carries the drag.
+fn drag_out_of_bar(mgr: &mut Mgr, p: &mut Pointer, bar: SurfaceId, node: NodeId) {
+    p.to(100, 18);
+    pump_mgr(mgr, Duration::from_millis(50));
+    p.button(wl_pointer::ButtonState::Pressed);
+    pump_mgr(mgr, Duration::from_millis(50));
+    mgr.state_mut().host_mut().source = Some((bar, node));
+    p.to(100, 60);
+    wait(mgr, "the drag is handed over", |m| {
+        m.state().carrying_drag()
+    });
+}
+
+/// (M4) A Strand drag out to another program carries its data: text
+/// dropped on the other program is read there as UTF-8 text, files as a
+/// `text/uri-list` of percent-encoded URIs (what our own drop reading
+/// takes back as the same paths); each drop is finished, so the origin's
+/// drag ends with the far release. A drag whose value has no form
+/// outside Strand offers nothing the program can read: the compositor
+/// cancels it.
+#[test]
+fn a_strand_drag_carries_its_data_to_another_program() {
+    let Some((_sway, mut mgr, bar, mut p, program)) =
+        desk("a_strand_drag_carries_its_data_to_another_program")
+    else {
+        return;
+    };
+    const PIN: NodeId = NodeId::new(42, 7);
+    let far = |m: &Mgr| {
+        m.state().host().input.iter().any(|e| {
+            matches!(
+                e,
+                InputEvent::PointerButton { surface, position, state: ButtonState::Released, .. }
+                    if *surface == bar && position.x < -1000.0
+            )
+        })
+    };
+    let cases: [(DropPayload, &str, &[u8]); 2] = [
+        (
+            DropPayload::External {
+                kind: DropKind::Text,
+                files: vec![],
+                text: "pinned \u{2014} note".into(),
+                app_id: None,
+            },
+            "text/plain;charset=utf-8",
+            "pinned \u{2014} note".as_bytes(),
+        ),
+        (
+            DropPayload::External {
+                kind: DropKind::Files,
+                files: vec!["/tmp/a photo.png".into(), "/tmp/b".into()],
+                text: String::new(),
+                app_id: None,
+            },
+            "text/uri-list",
+            b"file:///tmp/a%20photo.png\r\nfile:///tmp/b\r\n",
+        ),
+    ];
+    for (i, (export, mime, bytes)) in cases.into_iter().enumerate() {
+        mgr.state_mut().host_mut().input.clear();
+        mgr.state_mut().host_mut().export = Some(export);
+        *program.want.lock().unwrap() = Some(mime.to_string());
+        drag_out_of_bar(&mut mgr, &mut p, bar, PIN);
+        glide(&mut mgr, &mut p, (100, 60), (960, 950));
+        p.button(wl_pointer::ButtonState::Released);
+        wait(&mut mgr, "the other program reads the drop", |_| {
+            program.log(|l| l.received.len() == i + 1)
+        });
+        wait(&mut mgr, "the origin's drag ends", far);
+        let got = program.log(|l| l.received[i].clone());
+        assert_eq!(got, (mime.to_string(), bytes.to_vec()));
+        assert!(!mgr.state().carrying_drag());
+        assert!(drops(mgr.state().host()).is_empty(), "not a drop of ours");
+        mgr.state_mut().host_mut().source = None;
+    }
+    // Nothing to give: the program finds nothing it reads (only our
+    // private type is offered), so it never accepts and the compositor
+    // cancels the drag.
+    mgr.state_mut().host_mut().input.clear();
+    mgr.state_mut().host_mut().export = None;
+    drag_out_of_bar(&mut mgr, &mut p, bar, PIN);
+    glide(&mut mgr, &mut p, (100, 60), (960, 950));
+    p.button(wl_pointer::ButtonState::Released);
+    wait(&mut mgr, "the origin's drag ends", far);
+    pump_mgr(&mut mgr, Duration::from_millis(200));
+    assert_eq!(program.log(|l| l.received.len()), 2, "nothing read");
+}
+
+/// (M4) A drag from another Strand process (another manager, on its own
+/// connection, offering its own private type and what its value gives
+/// other programs) is recognised and read like another program's: it
+/// enters this one's panel as text and drops as a `Drop` with the text,
+/// never as a node of ours. Both managers run on this thread, each
+/// dispatched in turn.
+#[test]
+fn a_drag_from_another_strand_process_is_read_as_its_data() {
+    let Some((sway, mut mgr, bar, mut p, _program)) =
+        desk("a_drag_from_another_strand_process_is_read_as_its_data")
+    else {
+        return;
+    };
+    let mut other =
+        SurfaceManager::with_connection(sway.connect(), DndHost::default(), Config::default())
+            .expect("the other manager starts");
+    const PANEL: NodeId = NodeId::new(5, 0);
+    const PIN: NodeId = NodeId::new(42, 7);
+    other.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Created(layer_spec(NodeKind::Panel, "Dock", "center", 400.0, 300.0)),
+    );
+    let panel = shown(&mut other, PANEL);
+    other.state_mut().host_mut().accept.insert(panel);
+    let both = |mgr: &mut Mgr, other: &mut Mgr, d: Duration| {
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
+            other.dispatch(Some(Duration::from_millis(5))).unwrap();
+        }
+    };
+    both(&mut mgr, &mut other, Duration::from_millis(200));
+    mgr.state_mut().host_mut().export = Some(DropPayload::External {
+        kind: DropKind::Text,
+        files: vec![],
+        text: "from the other shell".into(),
+        app_id: None,
+    });
+    p.to(100, 18);
+    both(&mut mgr, &mut other, Duration::from_millis(50));
+    p.button(wl_pointer::ButtonState::Pressed);
+    both(&mut mgr, &mut other, Duration::from_millis(50));
+    mgr.state_mut().host_mut().source = Some((bar, PIN));
+    p.to(100, 60);
+    both(&mut mgr, &mut other, Duration::from_millis(100));
+    assert!(mgr.state().carrying_drag());
+    for i in 1..=12u32 {
+        let lerp = |a: u32, b: u32| a + (b - a) * i / 12;
+        p.to(lerp(100, 960), lerp(60, 540));
+        both(&mut mgr, &mut other, Duration::from_millis(25));
+    }
+    p.button(wl_pointer::ButtonState::Released);
+    let deadline = Instant::now() + WAIT;
+    while drops(other.state().host()).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "never dropped: {:#?}",
+            other.state().host().input
+        );
+        both(&mut mgr, &mut other, Duration::from_millis(20));
+    }
+    let host = other.state().host();
+    assert!(
+        host.input.iter().any(|e| matches!(
+            e,
+            InputEvent::DragEnter { surface, kinds, .. }
+                if *surface == panel && kinds == &[DropKind::Text]
+        )),
+        "{:#?}",
+        host.input
+    );
+    assert_eq!(
+        drops(host),
+        [(
+            panel,
+            DropPayload::External {
+                kind: DropKind::Text,
+                files: vec![],
+                text: "from the other shell".into(),
+                app_id: None,
+            }
+        )]
+    );
+    let deadline = Instant::now() + WAIT;
+    while mgr.state().carrying_drag() {
+        assert!(Instant::now() < deadline, "the origin's drag never ended");
+        both(&mut mgr, &mut other, Duration::from_millis(20));
+    }
+    assert!(drops(mgr.state().host()).is_empty());
+}
+
+/// (M4) While the compositor carries a Strand drag, its icon (the
+/// host's `drag_image`: here a 40×20 red box whose corner was at (90, 8)
+/// on the bar, grabbed at (100, 18)) follows the pointer, held where it
+/// was grabbed: with the pointer at (600, 500) the screen is red at
+/// (620, 500), 10 px left of the pointer at (591, 491) and to (629, 509),
+/// and not beyond; once let go (cancelled over the desktop) and the
+/// pointer moves on, it is gone (headless sway 1.9 repaints the spot only
+/// when something there changes).
+#[test]
+fn a_carried_strand_drag_shows_its_icon_under_the_pointer() {
+    let Some((sway, mut mgr, bar, mut p, _program)) =
+        desk("a_carried_strand_drag_shows_its_icon_under_the_pointer")
+    else {
+        return;
+    };
+    const PIN: NodeId = NodeId::new(42, 7);
+    let (w, h) = (40u32, 20u32);
+    let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..w * h {
+        pixels.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
+    }
+    mgr.state_mut().host_mut().icon = Some(strand_scene::DragImage {
+        size: strand_scene::Size::new(w, h),
+        scale: strand_scene::Scale::ONE,
+        origin: strand_scene::LogicalPoint::new(90.0, 8.0),
+        pixels,
+    });
+    drag_out_of_bar(&mut mgr, &mut p, bar, PIN);
+    glide(&mut mgr, &mut p, (100, 60), (600, 500));
+    pump_mgr(&mut mgr, Duration::from_millis(200));
+    let output = sway.output_names()[0].clone();
+    let red = |c: [u8; 3]| c[0] > 200 && c[1] < 60 && c[2] < 60;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let shot = sway.grim(&output);
+        let inside = [(620, 500), (591, 491), (628, 508)].map(|(x, y)| shot.rgb(x, y));
+        let outside = [(588, 500), (632, 500), (610, 488), (610, 512)].map(|(x, y)| shot.rgb(x, y));
+        if inside.iter().all(|c| red(*c)) && !outside.iter().any(|c| red(*c)) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let mut bbox = (u32::MAX, u32::MAX, 0, 0);
+            for y in 400..600 {
+                for x in 500..700 {
+                    if red(shot.rgb(x, y)) {
+                        bbox = (bbox.0.min(x), bbox.1.min(y), bbox.2.max(x), bbox.3.max(y));
+                    }
+                }
+            }
+            panic!(
+                "the icon under the pointer: inside {inside:?}, outside {outside:?}; red in {bbox:?}"
+            );
+        }
+        pump_mgr(&mut mgr, Duration::from_millis(50));
+    }
+    p.button(wl_pointer::ButtonState::Released);
+    wait(&mut mgr, "the drag ends", |m| !m.state().carrying_drag());
+    p.to(300, 300);
+    let deadline = Instant::now() + WAIT;
+    while red(sway.grim(&output).rgb(620, 500)) {
+        if Instant::now() >= deadline {
+            let shot = sway.grim(&output);
+            let mut bbox = (u32::MAX, u32::MAX, 0, 0);
+            for y in 0..1080 {
+                for x in 0..1920 {
+                    if red(shot.rgb(x, y)) {
+                        bbox = (bbox.0.min(x), bbox.1.min(y), bbox.2.max(x), bbox.3.max(y));
+                    }
+                }
+            }
+            panic!("the icon stays after the drag: red in {bbox:?}");
+        }
+        pump_mgr(&mut mgr, Duration::from_millis(50));
+    }
 }

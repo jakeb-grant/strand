@@ -120,6 +120,20 @@ pub struct BlurRegion {
     pub radius: f32,
 }
 
+/// (M4) A `drag:` source drawn alone, at rest: the icon that follows the
+/// pointer while the compositor carries a drag out of its surface.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DragImage {
+    /// In buffer pixels, at `scale`.
+    pub size: Size,
+    pub scale: Scale,
+    /// Its top-left corner on its surface, logical pixels (the pointer's
+    /// place in it is the pointer's position less this).
+    pub origin: LogicalPoint,
+    /// ARGB8888 premultiplied, rows of `size.w × 4` bytes.
+    pub pixels: Vec<u8>,
+}
+
 /// (M4) The pose the compositor applies to a whole surface when render
 /// delegates its root's pose (design.md, "Compositor-animated poses"):
 /// opacity through `wp_alpha_modifier_v1`, scale through the

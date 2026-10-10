@@ -61,8 +61,8 @@ use wayland_protocols::wp::viewporter::client::{
 use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_wm_base::XdgWmBase};
 
 use strand_scene::{
-    CompositorCaps, Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget,
-    Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
+    CompositorCaps, DropPayload, Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind,
+    PaintTarget, Painter, Rect, Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
 use crate::caps::Offered;
@@ -219,6 +219,23 @@ pub trait SurfaceHost: Painter {
     /// (`wl_data_device.start_drag`), so it can drop on another surface.
     fn drag_source(&self, surface: SurfaceId) -> Option<NodeId> {
         let _ = surface;
+        None
+    }
+    /// (M4 interaction-finish) What the `drag:` node `node` gives other
+    /// programs when the compositor carries it out
+    /// (`strand_scene::drag_export` of its `Prop::Drag`): the drag then
+    /// offers it as `text/uri-list` and text besides its private type.
+    /// `None`: nothing, the drag is Strand's alone.
+    fn drag_data(&self, node: NodeId) -> Option<DropPayload> {
+        let _ = node;
+        None
+    }
+    /// (M4 interaction-finish) The icon of the `drag:` node `node` on
+    /// `surface` (render's `Renderer::drag_image`): the manager shows it
+    /// under the pointer, where it was held, while the compositor
+    /// carries the drag. `None`: no icon.
+    fn drag_image(&mut self, surface: SurfaceId, node: NodeId) -> Option<strand_scene::DragImage> {
+        let _ = (surface, node);
         None
     }
 }

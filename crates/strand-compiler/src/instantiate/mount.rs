@@ -1488,6 +1488,16 @@ impl Ctx {
             }
         }
         if !accepts.is_empty() {
+            // (M4) A target whose direct child is a `for`: its children
+            // are rows with an index among them, draggable or not.
+            if e.children.iter().any(|n| matches!(n, Node::For(_))) {
+                self.em.borrow_mut().set(
+                    id,
+                    SceneProp::DropRows,
+                    PropValue::Bool(true),
+                    Transition::Instant,
+                );
+            }
             self.em.borrow_mut().set(
                 id,
                 SceneProp::Accepts,
@@ -1969,12 +1979,19 @@ impl Ctx {
                 // here for the drop to deliver.
                 if let (true, SourceValue::Chunk(c, _)) = (drag, &s.value) {
                     let v = ctx.eval(rt, *c, &e)?;
-                    let name = drag_type(&ctx.vm.prog.types, &v);
+                    let types = &ctx.vm.prog.types;
+                    let name = PropValue::Keyword(drag_type(types, &v));
+                    // (M4) With what other programs get when the
+                    // compositor carries it out (`strand_scene::drag_export`).
+                    let value = match drag_export(types, &v) {
+                        Some(mut items) => {
+                            items.insert(0, name);
+                            PropValue::List(items)
+                        }
+                        None => name,
+                    };
                     ctx.drags.borrow_mut().insert(id, v);
-                    return Ok(PropOut {
-                        value: PropValue::Keyword(name),
-                        source: i,
-                    });
+                    return Ok(PropOut { value, source: i });
                 }
                 return Ok(PropOut {
                     value: ctx.source_value(rt, prop, &s.value, &e)?,
@@ -3731,6 +3748,36 @@ fn type_key(types: &crate::ty::TypeTable, ty: &Ty) -> String {
 /// [`type_key`] names an `on drop` parameter's type.
 pub(crate) fn drag_type(types: &crate::ty::TypeTable, v: &Value) -> String {
     type_key(types, &value_ty(v))
+}
+
+/// (M4) What a dragged value gives other programs, after its type name
+/// in `Prop::Drag` (`strand_scene::drag_export` reads it): `[kind,
+/// items…]` for text, a `Drop` and an `App`; `None` for values with no
+/// form outside Strand.
+fn drag_export(types: &crate::ty::TypeTable, v: &Value) -> Option<Vec<PropValue>> {
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let text = |v: &Value| v.as_text().map(|t| PropValue::Text(t.to_string()));
+    match v {
+        Value::Text(t) => Some(vec![kw("text"), PropValue::Text(t.to_string())]),
+        Value::Record(_) => match drag_type(types, v).as_str() {
+            "App" => Some(vec![kw("app"), text(v.field(types, "id")?)?]),
+            "Drop" => {
+                let kind = v.field(types, "kind")?.show(types);
+                let mut out = vec![kw(&kind)];
+                match kind.as_str() {
+                    "files" => {
+                        out.extend(v.field(types, "files")?.as_list()?.iter().filter_map(text))
+                    }
+                    "text" => out.push(text(v.field(types, "text")?)?),
+                    "app" => out.push(text(v.field(types, "app")?.field(types, "id")?)?),
+                    _ => return None,
+                }
+                Some(out)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The type of a value, as far as drag and drop tells types apart.

@@ -202,6 +202,12 @@ pub(crate) struct Animator {
     lifted: HashMap<NodeId, Option<[f32; 2]>>,
 }
 
+/// (M4) A node's lift and glide, held aside by [`Animator::hold_still`].
+pub(crate) struct Still {
+    lift: Option<Option<[f32; 2]>>,
+    glide: Option<Motion<2>>,
+}
+
 impl Animator {
     pub fn set_reduced(&mut self, reduced: bool) {
         self.reduced = reduced;
@@ -878,6 +884,26 @@ impl Animator {
                     self.glide(id, v, curve);
                 }
             }
+        }
+    }
+
+    /// (M4) Takes `id`'s lift and glide away, so it is drawn in its box
+    /// ([`crate::Renderer::drag_image`]); [`Animator::release`] gives
+    /// them back.
+    pub(crate) fn hold_still(&mut self, id: NodeId) -> Still {
+        Still {
+            lift: self.lifted.remove(&id),
+            glide: self.nodes.get_mut(&id).and_then(|n| n.glide.take()),
+        }
+    }
+
+    /// (M4) Gives back what [`Animator::hold_still`] took.
+    pub(crate) fn release(&mut self, id: NodeId, still: Still) {
+        if let Some(l) = still.lift {
+            self.lifted.insert(id, l);
+        }
+        if let (Some(g), Some(n)) = (still.glide, self.nodes.get_mut(&id)) {
+            n.glide = Some(g);
         }
     }
 

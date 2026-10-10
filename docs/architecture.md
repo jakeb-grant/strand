@@ -1154,6 +1154,19 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `InputEvent::DragDrop`; Escape cancels. The binary forwards it as
     `run::NodeEvent::Drop { payload, at }`, and `run/lists.rs` makes the
     handler's arguments on the logic thread.
+    As built (m4-interaction-finish): a source whose value has a form
+    outside Strand sends `Prop::Drag` as `List [Keyword(type),
+    Keyword(kind), Text…]` instead of the bare `Keyword` (kind `text`,
+    `files` or `app`, then the text, the paths or the app id);
+    `strand_scene::drag_type` and `strand_scene::drag_export` read either
+    form, and nothing else may look inside the prop. `Prop::DropRows`
+    (`Bool`, compiler-set) marks an `on drop` target whose direct children
+    come from a `for`, so render places drops among those items even when
+    they are not `drag:` sources. `Renderer::drag_image(surface, node) ->
+    Option<DragImage>` draws a node alone at rest (lift and glide held,
+    no animation stepped) for the drag icon; `strand_scene::DragImage {
+    size, scale, origin, pixels }` is premultiplied ARGB at the surface's
+    scale with `origin` its corner in surface coordinates.
   - **Surface poses** (design.md, "Compositor-animated poses").
     `SurfacePose { opacity: f32, scale: f32, offset: LogicalPoint }`. When
     the compositor allows it (`Renderer::set_compositor_poses`) and a
@@ -2299,7 +2312,9 @@ Public interfaces other crates and later stages build on:
     to a mounted row is its ops; a change outside the window sends no row
     op. `nav` selects by index, and a selection lands when its row mounts.
   - Drag and drop: the instance sets `Prop::Drag` (the dragged value's
-    type) and `Prop::Accepts` (from each `on drop` parameter's type); a
+    type, with its text, files or app id when it has them) and
+    `Prop::Accepts` (from each `on drop` parameter's type), plus
+    `Prop::DropRows` on a target with a direct `for` child; a
     `NodeEvent::Drop` with `DropPayload::Node` is delivered with that
     source node's `drag:` value, an `External` one as a `Drop` record.
   - The lock: only an `auth` success unlocks; the runtime then writes the
@@ -2690,7 +2705,17 @@ and the connection):
     this process, which enters our surfaces with no kinds and drops as
     `DropPayload::Node`; dropped elsewhere or cancelled, the origin gets a
     left release far outside it. `State::carrying_drag()` says one is in
-    flight. Drags out to other programs carry no data.
+    flight. As built (m4-interaction-finish), two more hooks with `None`
+    defaults: `drag_data(node) -> Option<DropPayload>` (what the source
+    gives other programs: the drag offers `text/uri-list` for files or an
+    app's `.desktop` file, and `text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain`,
+    `TEXT` for text, paths or an app id, written through calloop in
+    4 KiB steps; `dnd::exports_of` builds them) and `drag_image(surface,
+    node) -> Option<DragImage>` (the drag icon, committed on a
+    `wl_surface` of its own after `start_drag`, held where the source was
+    grabbed). The private MIME type starts with `dnd::STRAND_MIME`, so
+    another Strand process's drag is recognised and read through its
+    exports as a `DropPayload::External`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 

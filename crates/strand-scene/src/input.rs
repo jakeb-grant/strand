@@ -106,6 +106,67 @@ pub enum DropPayload {
     },
 }
 
+/// (M4) The dragged value's type name in a `drag:` source's
+/// [`Prop::Drag`](crate::Prop::Drag): a `Keyword`, or the first item of
+/// the `List` that also carries its [`drag_export`].
+pub fn drag_type(value: &crate::PropValue) -> Option<&str> {
+    use crate::PropValue as V;
+    match value {
+        V::Keyword(k) => Some(k),
+        V::List(items) => match items.first()? {
+            V::Keyword(k) => Some(k),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// (M4) What a `drag:` source gives other programs when the compositor
+/// carries it out (`None`: nothing, the drag is Strand's alone). The
+/// compiler sets [`Prop::Drag`](crate::Prop::Drag) to `[type, kind,
+/// items…]` for a value that has a form outside Strand: `text`
+/// (`[type, text, Text]`), a `Drop` (its kind; `files`: a `Text` per
+/// path, `text`: one `Text`, `app`: the app's desktop id), an `App`
+/// (`[type, app, id]`).
+pub fn drag_export(value: &crate::PropValue) -> Option<DropPayload> {
+    use crate::PropValue as V;
+    let V::List(items) = value else {
+        return None;
+    };
+    let kind = match items.get(1)? {
+        V::Keyword(k) => DropKind::from_name(k)?,
+        _ => return None,
+    };
+    let texts: Vec<&str> = items[2..]
+        .iter()
+        .filter_map(|v| match v {
+            V::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    let first = texts.first().map(|t| (*t).to_string());
+    Some(match kind {
+        DropKind::Files => DropPayload::External {
+            kind,
+            files: texts.iter().map(PathBuf::from).collect(),
+            text: String::new(),
+            app_id: None,
+        },
+        DropKind::Text => DropPayload::External {
+            kind,
+            files: Vec::new(),
+            text: first?,
+            app_id: None,
+        },
+        DropKind::App => DropPayload::External {
+            kind,
+            files: Vec::new(),
+            text: String::new(),
+            app_id: Some(first?),
+        },
+    })
+}
+
 /// An input event on one of our surfaces.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEvent {
@@ -202,6 +263,51 @@ mod tests {
             assert_eq!(DropKind::from_name(k.name()), Some(*k));
         }
         assert_eq!(DropKind::from_name("uri"), None);
+    }
+
+    /// A `drag:` source's prop: its type name, alone or before what it
+    /// gives other programs.
+    #[test]
+    fn a_drag_prop_names_its_type_and_what_it_exports() {
+        use crate::PropValue as V;
+        let kw = |k: &str| V::Keyword(k.into());
+        let t = |k: &str| V::Text(k.into());
+        assert_eq!(drag_type(&kw("Pin")), Some("Pin"));
+        assert_eq!(drag_export(&kw("Pin")), None);
+        let text = V::List(vec![kw("text"), kw("text"), t("hello")]);
+        assert_eq!(drag_type(&text), Some("text"));
+        assert_eq!(
+            drag_export(&text),
+            Some(DropPayload::External {
+                kind: DropKind::Text,
+                files: vec![],
+                text: "hello".into(),
+                app_id: None,
+            })
+        );
+        let files = V::List(vec![kw("Drop"), kw("files"), t("/a b"), t("/c")]);
+        assert_eq!(
+            drag_export(&files),
+            Some(DropPayload::External {
+                kind: DropKind::Files,
+                files: vec!["/a b".into(), "/c".into()],
+                text: String::new(),
+                app_id: None,
+            })
+        );
+        let app = V::List(vec![kw("App"), kw("app"), t("org.x.Y.desktop")]);
+        assert_eq!(
+            drag_export(&app),
+            Some(DropPayload::External {
+                kind: DropKind::App,
+                files: vec![],
+                text: String::new(),
+                app_id: Some("org.x.Y.desktop".into()),
+            })
+        );
+        assert_eq!(drag_export(&V::List(vec![kw("App"), kw("app")])), None);
+        assert_eq!(drag_export(&V::List(vec![kw("x"), kw("uri")])), None);
+        assert_eq!(drag_type(&V::Number(1.0)), None);
     }
 
     #[test]

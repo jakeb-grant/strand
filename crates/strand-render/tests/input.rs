@@ -1192,6 +1192,88 @@ fn a_per_item_drop_target_with_content_is_placed_among_its_siblings() {
     );
 }
 
+/// (M4) A plain container of items that are not `drag:` sources (a
+/// `for` of labels under an `on drop`) holds rows once the compiler says
+/// its direct child is a `for` (`Prop::DropRows`): text dropped at x 100
+/// lands at 2 among its four 60 px items, before item 1 at 1. Without
+/// the prop the row is itself a row of its panel (index 0 or 1 there).
+#[test]
+fn a_container_of_plain_for_items_places_drops_among_them() {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let place = |drop_rows: bool| {
+        let data = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(data),
+        ]));
+        let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+        let id = |i| NodeId::new(i, 0);
+        let (panel, row) = (id(0), id(1));
+        let mut d = SceneDiff::new();
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(240.0))
+            .set(panel, Prop::Height, PropValue::Number(60.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(row, NodeKind::Row, Some(panel), 0)
+            .set(
+                row,
+                Prop::Accepts,
+                PropValue::List(vec![PropValue::Keyword("Drop".into())]),
+            );
+        if drop_rows {
+            d.set(row, Prop::DropRows, PropValue::Bool(true));
+        }
+        for i in 0..4 {
+            let c = id(10 + i);
+            d.create(c, NodeKind::Box, Some(row), i)
+                .set(c, Prop::Width, PropValue::Number(60.0))
+                .set(c, Prop::Height, PropValue::Number(60.0));
+        }
+        assert!(r.apply(d).is_empty());
+        let s = SurfaceId(1);
+        r.attach_surface(s, panel);
+        let mut px = vec![0u8; 240 * 60 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(240, 60), 960, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+        let mut f = R::default();
+        f.attached(s, panel);
+        [100.0, 70.0]
+            .into_iter()
+            .map(|x| {
+                let p = LogicalPoint::new(x, 30.0);
+                f.input(
+                    &InputEvent::DragEnter {
+                        surface: s,
+                        at: p,
+                        kinds: vec![DropKind::Text],
+                    },
+                    &mut r,
+                );
+                assert_eq!(f.router.drop_target(s), Some(row));
+                f.input(
+                    &InputEvent::DragDrop {
+                        surface: s,
+                        at: p,
+                        payload: DropPayload::External {
+                            kind: DropKind::Text,
+                            files: vec![],
+                            text: "hi".into(),
+                            app_id: None,
+                        },
+                    },
+                    &mut r,
+                );
+                match events(f.drain()).as_slice() {
+                    [(n, NodeEvent::Drop { at, .. })] if *n == row => *at,
+                    other => panic!("{other:?}"),
+                }
+            })
+            .collect::<Vec<u32>>()
+    };
+    assert_eq!(place(true), [2, 1]);
+    assert!(place(false).iter().all(|at| *at <= 1), "a row of its panel");
+}
+
 /// (M4) A drag that leaves its surface with the button held is carried
 /// by the compositor (`wl_data_device`): the Router keeps it (its source
 /// back in its box meanwhile) and it continues as `Drag*` events with no
