@@ -72,6 +72,9 @@ const LAYOUT: (u32, u32) = (2560 + 1536, 1440);
 /// A headless sway with two outputs and `strand run` on the five files.
 struct Desk {
     strand: Option<Proc>,
+    /// A virtual keyboard on the seat from before strand starts (see
+    /// [`Desk::keys`]).
+    keys: Option<keyboard::Keyboard>,
     _sway: Proc,
     dir: PathBuf,
     display: String,
@@ -161,6 +164,7 @@ impl Desk {
             .unwrap();
         let mut desk = Desk {
             strand: None,
+            keys: None,
             _sway: Proc(child),
             dir: dir.clone(),
             display: String::new(),
@@ -204,6 +208,14 @@ impl Desk {
         ])
         .unwrap();
         desk.msg(&["focus", "output", "HEADLESS-1"]).unwrap();
+        // The keyboard joins the seat before strand connects, so strand's
+        // `wl_seat` bind already says the seat has one and strand asks for
+        // its `wl_keyboard` before it creates any surface: once a bar is
+        // painted (waited for below), sway delivers keys to strand. A
+        // keyboard made later is bound only when strand next reads its
+        // socket, and keys sent before that reach no client (CI run
+        // 37983590317: "Escape did not close the calendar").
+        desk.keys = Some(keyboard::Keyboard::new(&dir.join(&desk.display), &dir));
         // The files, byte for byte.
         let home = dir.join("home");
         let config = home.join(".config/strand");
@@ -234,6 +246,11 @@ impl Desk {
             s.iter().any(|b| bar(b)) && s.iter().any(|b| b.contains("scale=1.25"))
         });
         Some(desk)
+    }
+
+    /// The seat's virtual keyboard, there since before strand started.
+    fn keys(&mut self) -> &mut keyboard::Keyboard {
+        self.keys.as_mut().expect("made in Desk::start_with")
     }
 
     fn env(&self) -> Vec<(&'static str, PathBuf)> {
@@ -822,10 +839,9 @@ fn the_bar_and_its_calendar_on_two_outputs() {
         std::thread::sleep(Duration::from_millis(50));
     }
     desk.settled_ref("HEADLESS-1", card, "calendar_september");
-    // Escape closes it (the popup has the keyboard grab).
-    let mut keys = keyboard::Keyboard::new(&desk.dir.join(&desk.display), &desk.dir);
-    std::thread::sleep(Duration::from_millis(200));
-    keys.press("Escape");
+    // Escape closes it (the popup has the keyboard grab), from the
+    // keyboard strand has had since it started.
+    desk.keys().press("Escape");
     let deadline = Instant::now() + Duration::from_secs(10);
     while sum(desk.shot("HEADLESS-1").px(1280, 44 + top + 60)) > 450 {
         assert!(
@@ -834,7 +850,6 @@ fn the_bar_and_its_calendar_on_two_outputs() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    drop(keys);
 
     // Volume's `if hover { slider … }`: hovering the row reveals the
     // slider (90 wide, its `$accent` fill at the mock's 0.6), springing
@@ -932,8 +947,9 @@ fn the_launcher_filters_selects_and_closes() {
     let Some(mut desk) = Desk::start("launcher") else {
         return;
     };
-    // A keyboard on the seat before it opens (`keyboard: exclusive`).
-    let mut keys = keyboard::Keyboard::new(&desk.dir.join(&desk.display), &desk.dir);
+    // The seat's keyboard, there before strand started (`keyboard:
+    // exclusive` takes it when the launcher opens).
+    let mut keys = desk.keys.take().expect("made in Desk::start_with");
     let surfaces = desk.surface_count();
     desk.cli(&["set", "launcher.open", "true"]);
     desk.wait("the launcher", 10, |d| d.surface_count() > surfaces);

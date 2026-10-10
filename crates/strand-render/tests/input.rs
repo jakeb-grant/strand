@@ -701,26 +701,372 @@ fn an_empty_axis_frame_is_no_scroll() {
     );
 }
 
-/// (M4) `wl_data_device` drags reach the Router, which emits nothing for
-/// them until S-lists builds drag and drop.
-#[test]
-fn drag_events_are_not_routed_yet() {
-    let mut f = R::default();
+/// (M4) A scene for drag and drop on surface 1: a 200×240 panel holding
+/// a `list` of four 40 px `drag: Pin` rows (logic's window from global
+/// row 100) whose `on drop` takes `Pin`, and below it a 40 px box whose
+/// `on drop` takes only other programs' `Drop`s. Painted once with a
+/// clock, so hits and boxes are known.
+fn dnd_scene() -> (Renderer, [NodeId; 7]) {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, list, bin) = (id(0), id(1), id(2), id(3));
+    let rows = [id(10), id(11), id(12), id(13)];
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(240.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(list, NodeKind::List, Some(col), 0)
+        .set(list, Prop::Height, PropValue::Number(160.0))
+        .set(list, Prop::RowFirst, PropValue::Number(100.0))
+        .set(list, Prop::RowCount, PropValue::Number(2000.0))
+        .set(list, Prop::Accepts, PropValue::List(vec![kw("Pin")]))
+        .create(bin, NodeKind::Box, Some(col), 1)
+        .set(bin, Prop::Height, PropValue::Number(40.0))
+        .set(bin, Prop::Width, PropValue::Number(200.0))
+        .set(bin, Prop::Accepts, PropValue::List(vec![kw("Drop")]));
+    for (i, row) in rows.iter().enumerate() {
+        d.create(*row, NodeKind::Row, Some(list), i as u32)
+            .set(*row, Prop::Height, PropValue::Number(40.0))
+            .set(*row, Prop::Drag, kw("Pin"));
+    }
+    assert!(r.apply(d).is_empty());
     let s = SurfaceId(1);
-    let root = NodeId::new(1, 0);
-    f.attached(s, root);
-    let hit = |_: SurfaceId, _: LogicalPoint| vec![NodeId::new(1, 0)];
-    let at = LogicalPoint::new(4.0, 4.0);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 240 * 4];
+    let t = PaintTarget::new(&mut px, Size::new(200, 240), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    (r, [panel, col, list, bin, rows[0], rows[1], rows[2]])
+}
+
+fn motion(s: SurfaceId, x: f32, y: f32, time: u32) -> InputEvent {
+    InputEvent::PointerMotion {
+        surface: s,
+        position: LogicalPoint::new(x, y),
+        time,
+    }
+}
+
+fn left(s: SurfaceId, x: f32, y: f32, state: ButtonState) -> InputEvent {
+    InputEvent::PointerButton {
+        surface: s,
+        position: LogicalPoint::new(x, y),
+        button: button::LEFT,
+        state,
+        time: 0,
+    }
+}
+
+fn events(out: Vec<Intent>) -> Vec<(NodeId, NodeEvent)> {
+    out.into_iter()
+        .filter_map(|i| match i {
+            Intent::Event { node, event } => Some((node, event)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// (M4) A press on a `drag:` source is a press until the pointer has
+/// moved 6 px (a 5 px wobble still clicks); then it is a drag: the
+/// source follows the pointer, `Router::drag` says where it would land
+/// (the `list` whose `on drop` takes `Pin`, at a global row index: past
+/// two of the other rows' middles, so row 100 + 2), and the release
+/// drops it there (`on drop(p, at)` on the list) and clicks nothing. A
+/// type the target does not take, or no target at all, springs back
+/// with no drop.
+#[test]
+fn a_drag_past_six_pixels_drops_at_a_global_index() {
+    let (mut r, [panel, _, list, _, row0, row1, _]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&motion(s, 50.0, 20.0, 0), &mut r);
+    // A 5 px wobble is still a click.
+    f.input(&left(s, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 53.0, 24.0, 10), &mut r);
+    assert_eq!(f.router.drag(), None);
+    f.input(&left(s, 53.0, 24.0, ButtonState::Released), &mut r);
+    assert!(
+        events(f.drain()).contains(&(row0, NodeEvent::Click)),
+        "a press that moved under 6 px clicks"
+    );
+    // Past 6 px: a drag of row 0 (global 100).
+    f.input(&left(s, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 27.0, 20), &mut r);
+    let d = f.router.drag().expect("a drag");
+    assert_eq!((d.source, d.surface, d.target), (row0, s, Some(list)));
+    // Rows 1..3 have their middles at 60, 100 and 140: at y 105 it
+    // lands after two of them.
+    f.input(&motion(s, 50.0, 105.0, 40), &mut r);
+    let d = f.router.drag().unwrap();
+    assert_eq!((d.target, d.index), (Some(list), Some(102)));
+    assert!(d.velocity.y > 0.0, "moving down: {:?}", d.velocity);
+    assert_eq!(f.router.drop_target(s), Some(list));
+    f.input(&left(s, 50.0, 105.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(row0),
+                at: 102
+            }
+        )],
+        "dropped, and no click"
+    );
+    assert_eq!(f.router.drag(), None);
+    // Over the box that takes only `Drop`s: no target, no drop.
+    f.input(&left(s, 50.0, 60.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 200.0, 50), &mut r);
+    let d = f.router.drag().unwrap();
+    assert_eq!((d.source, d.target, d.index), (row1, None, None));
+    assert_eq!(f.router.drop_target(s), None);
+    f.input(&left(s, 50.0, 200.0, ButtonState::Released), &mut r);
+    assert!(
+        events(f.drain()).is_empty(),
+        "sprang back, no drop, no click"
+    );
+    // A row dropped back on its own place lands at its own index.
+    f.input(&left(s, 50.0, 60.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 70.0, 60), &mut r);
+    f.input(&left(s, 50.0, 70.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(row1),
+                at: 101
+            }
+        )]
+    );
+}
+
+/// (M4) A windowed list mounts rows beyond its view (logic's window
+/// overscans), and only the ones in view are laid out: twenty 40 px
+/// `drag: Pin` rows from global row 100 in a 160 px list, scrolled so
+/// rows 8..11 are shown. Painted again after the scroll.
+fn long_dnd_scene() -> (Renderer, NodeId, NodeId, Vec<NodeId>) {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, list) = (id(0), id(1), id(2));
+    let rows: Vec<NodeId> = (0..20).map(|i| id(10 + i)).collect();
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(240.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(list, NodeKind::List, Some(col), 0)
+        .set(list, Prop::Height, PropValue::Number(160.0))
+        .set(list, Prop::RowFirst, PropValue::Number(100.0))
+        .set(list, Prop::RowCount, PropValue::Number(2000.0))
+        .set(list, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+    for (i, row) in rows.iter().enumerate() {
+        d.create(*row, NodeKind::Row, Some(list), i as u32)
+            .set(*row, Prop::Height, PropValue::Number(40.0))
+            .set(*row, Prop::Drag, kw("Pin"));
+    }
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 240 * 4];
+    let mut paint = |r: &mut Renderer, secs| {
+        let t = PaintTarget::new(&mut px, Size::new(200, 240), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(secs)));
+    };
+    paint(&mut r, 1);
+    // Global row 100 starts at 4,000 px; row 8 of the window at 4,320.
+    assert_eq!(
+        r.scroll(s, LogicalPoint::new(50.0, 80.0), 4320.0),
+        Some(list)
+    );
+    paint(&mut r, 2);
+    (r, panel, list, rows)
+}
+
+/// (M4) A drop on a windowed list whose mounted rows run past its view
+/// above and below (so most of them have no box) still lands at the
+/// global index among all of them: rows 0..6 and 13..19 are mounted but
+/// not laid out, and a drop counts them by their place.
+#[test]
+fn a_drop_counts_mounted_rows_out_of_view() {
+    let (mut r, panel, list, rows) = long_dnd_scene();
+    let s = SurfaceId(1);
+    assert_eq!(r.scroll_offset(list), Some(4320.0));
+    let laid: Vec<usize> = (0..rows.len())
+        .filter(|i| r.node_rect(s, rows[*i]).is_some())
+        .collect();
+    assert_eq!(laid, (7..=12).collect::<Vec<_>>(), "rows in view, overscan");
+    let mut f = R::default();
+    f.attached(s, panel);
+    // Row 10 is shown from y 80 to 120; drag it.
+    f.input(&motion(s, 50.0, 100.0, 0), &mut r);
+    f.input(&left(s, 50.0, 100.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 110.0, 10), &mut r);
+    let d = f.router.drag().expect("a drag");
+    assert_eq!((d.source, d.target), (rows[10], Some(list)));
+    // At y 30: past row 8's middle (y 20), before row 9's (y 60).
+    f.input(&motion(s, 50.0, 30.0, 20), &mut r);
+    assert_eq!(f.router.drag().unwrap().index, Some(109));
+    // At y 150: past row 11's middle (y 140, without row 10 at its old
+    // place), before row 12's: lands at 11 without the source.
+    f.input(&motion(s, 50.0, 150.0, 30), &mut r);
+    assert_eq!(f.router.drag().unwrap().index, Some(111));
+    f.input(&left(s, 50.0, 150.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(rows[10]),
+                at: 111
+            }
+        )]
+    );
+    // At the very top, before row 8's middle: lands at 8, above which
+    // eight mounted rows are counted though only row 7 has a box.
+    f.input(&left(s, 50.0, 60.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 2.0, 40), &mut r);
+    let d = f.router.drag().unwrap();
+    assert_eq!((d.source, d.index), (rows[9], Some(108)));
+    f.input(&left(s, 50.0, 2.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(rows[9]),
+                at: 108
+            }
+        )]
+    );
+}
+
+/// (M4) Escape cancels a drag in flight: the source springs back, no
+/// drop, no click on the release, and the key does nothing else (it is
+/// not delivered, and an open surface stays open).
+#[test]
+fn escape_cancels_a_drag() {
+    use strand_scene::Modifiers;
+    let (mut r, [panel, _, _, _, row0, _, _]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.input(&motion(s, 50.0, 20.0, 0), &mut r);
+    f.input(&left(s, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 90.0, 10), &mut r);
+    assert_eq!(f.router.drag().map(|d| d.source), Some(row0));
+    f.drain();
+    let escape = InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: "Escape".into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+        },
+    };
+    f.input(&escape, &mut r);
+    assert_eq!(f.router.drag(), None);
+    assert!(f.drain().is_empty(), "Escape only cancelled the drag");
+    f.input(&left(s, 50.0, 90.0, ButtonState::Released), &mut r);
+    assert!(events(f.drain()).is_empty(), "no drop and no click");
+}
+
+/// (M4) Other programs' drags (`wl_data_device`): files over the box
+/// whose `on drop` takes `Drop` have a target there (the surface manager
+/// accepts the offer then) and none over the `Pin` list; dropped on the
+/// box they are its `on drop`, at the box's place among its parent's
+/// rows. Leaving forgets the offer. A scene with no tree (nothing takes
+/// anything) gets no drop.
+#[test]
+fn other_programs_drops_reach_the_target_that_takes_drop() {
+    let (mut r, [panel, _, _, bin, ..]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    let at = |y| LogicalPoint::new(50.0, y);
+    f.input(
+        &InputEvent::DragEnter {
+            surface: s,
+            at: at(60.0),
+            kinds: vec![DropKind::Files],
+        },
+        &mut r,
+    );
+    assert_eq!(f.router.drop_target(s), None, "the list takes only Pins");
+    assert_eq!(f.router.drag(), None, "not a drag of ours");
+    f.input(
+        &InputEvent::DragMotion {
+            surface: s,
+            at: at(190.0),
+        },
+        &mut r,
+    );
+    assert_eq!(f.router.drop_target(s), Some(bin));
+    let payload = DropPayload::External {
+        kind: DropKind::Files,
+        files: vec!["/tmp/a.png".into()],
+        text: String::new(),
+        app_id: None,
+    };
+    f.input(
+        &InputEvent::DragDrop {
+            surface: s,
+            at: at(190.0),
+            payload: payload.clone(),
+        },
+        &mut r,
+    );
+    // The box is its column's second row; past its middle (180): 2.
+    assert_eq!(
+        events(f.drain()),
+        [(bin, NodeEvent::Drop { payload, at: 2 })]
+    );
+    assert_eq!(f.router.drop_target(s), None);
+    f.input(
+        &InputEvent::DragEnter {
+            surface: s,
+            at: at(190.0),
+            kinds: vec![DropKind::Text],
+        },
+        &mut r,
+    );
+    assert_eq!(f.router.drop_target(s), Some(bin));
+    f.input(&InputEvent::DragLeave { surface: s }, &mut r);
+    assert_eq!(f.router.drop_target(s), None);
+    // No tree: nothing to take it.
+    let mut g = R::default();
+    g.attached(s, panel);
+    let hit = |_: SurfaceId, _: LogicalPoint| vec![NodeId::new(0, 0)];
     for e in [
         InputEvent::DragEnter {
             surface: s,
-            at,
+            at: at(4.0),
             kinds: vec![DropKind::Text],
         },
-        InputEvent::DragMotion { surface: s, at },
         InputEvent::DragDrop {
             surface: s,
-            at,
+            at: at(4.0),
             payload: DropPayload::External {
                 kind: DropKind::Text,
                 files: vec![],
@@ -728,11 +1074,190 @@ fn drag_events_are_not_routed_yet() {
                 app_id: None,
             },
         },
-        InputEvent::DragLeave { surface: s },
     ] {
-        f.input(&e, &mut HitOnly(hit));
+        g.input(&e, &mut HitOnly(hit));
     }
-    assert!(f.drain().is_empty());
+    assert!(g.drain().is_empty());
+}
+
+/// (M4) A dock: a 240×60 panel holding a `row` whose `on drop` takes
+/// `Pin`, of four 60 px `drag: Pin` items whose own `on drop` takes
+/// other programs' `Drop`s, each a `col` holding an icon (20 px) and a
+/// label (20 px). Painted once, so hits and boxes are known.
+fn dock_scene() -> (Renderer, NodeId, NodeId, Vec<NodeId>) {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, dock) = (id(0), id(1));
+    let items: Vec<NodeId> = (0..4).map(|i| id(10 + i)).collect();
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(240.0))
+        .set(panel, Prop::Height, PropValue::Number(60.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(dock, NodeKind::Row, Some(panel), 0)
+        .set(dock, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+    for (i, item) in items.iter().enumerate() {
+        d.create(*item, NodeKind::Col, Some(dock), i as u32)
+            .set(*item, Prop::Width, PropValue::Number(60.0))
+            .set(*item, Prop::Height, PropValue::Number(60.0))
+            .set(*item, Prop::Drag, kw("Pin"))
+            .set(*item, Prop::Accepts, PropValue::List(vec![kw("Drop")]));
+        for (j, h) in [20.0, 20.0].into_iter().enumerate() {
+            let c = id(100 + 2 * i as u32 + j as u32);
+            d.create(c, NodeKind::Box, Some(*item), j as u32)
+                .set(c, Prop::Width, PropValue::Number(40.0))
+                .set(c, Prop::Height, PropValue::Number(h));
+        }
+    }
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 240 * 60 * 4];
+    let t = PaintTarget::new(&mut px, Size::new(240, 60), 960, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    (r, panel, dock, items)
+}
+
+/// (M4) A per-item `on drop` on a dock item that holds an icon and a
+/// label is placed among the dock's items, not among its own content:
+/// files dropped on item 1 (x 60..120) past its middle land at 2, before
+/// it at 1, though the pointer is over its label (its own second child).
+/// The dock itself, whose children are `drag:` items, holds rows: item
+/// 0 dragged to x 200 lands before item 3 (index 2 without the source).
+#[test]
+fn a_per_item_drop_target_with_content_is_placed_among_its_siblings() {
+    let (mut r, panel, dock, items) = dock_scene();
+    let s = SurfaceId(1);
+    assert_eq!(
+        r.node_rect(s, items[1]).map(|b| (b.x, b.w)),
+        Some((60.0, 60.0))
+    );
+    let mut f = R::default();
+    f.attached(s, panel);
+    for (x, at) in [(100.0, 2), (70.0, 1)] {
+        let p = LogicalPoint::new(x, 30.0);
+        f.input(
+            &InputEvent::DragEnter {
+                surface: s,
+                at: p,
+                kinds: vec![DropKind::Files],
+            },
+            &mut r,
+        );
+        assert_eq!(f.router.drop_target(s), Some(items[1]));
+        let payload = DropPayload::External {
+            kind: DropKind::Files,
+            files: vec!["/tmp/a.png".into()],
+            text: String::new(),
+            app_id: None,
+        };
+        f.input(
+            &InputEvent::DragDrop {
+                surface: s,
+                at: p,
+                payload: payload.clone(),
+            },
+            &mut r,
+        );
+        assert_eq!(
+            events(f.drain()),
+            [(items[1], NodeEvent::Drop { payload, at })]
+        );
+    }
+    f.input(&motion(s, 30.0, 30.0, 0), &mut r);
+    f.input(&left(s, 30.0, 30.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 200.0, 30.0, 10), &mut r);
+    let d = f.router.drag().expect("a drag");
+    assert_eq!(
+        (d.source, d.target, d.index),
+        (items[0], Some(dock), Some(2))
+    );
+    f.input(&left(s, 200.0, 30.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            dock,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(items[0]),
+                at: 2
+            }
+        )]
+    );
+}
+
+/// (M4) A drag that leaves its surface with the button held is carried
+/// by the compositor (`wl_data_device`): the Router keeps it (its source
+/// back in its box meanwhile) and it continues as `Drag*` events with no
+/// kinds (our own) on another Strand surface, where it drops as the
+/// source's node; a cancelled one (the surface manager's synthetic
+/// release on the origin) drops nothing.
+#[test]
+fn a_drag_carried_to_another_surface_drops_there() {
+    let (mut r, [panel, _, list, _, row0, row1, _]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&motion(s, 50.0, 20.0, 0), &mut r);
+    f.input(&left(s, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 40.0, 10), &mut r);
+    f.input(&InputEvent::PointerLeave { surface: s }, &mut r);
+    let d = f.router.drag().expect("still a drag");
+    assert_eq!((d.source, d.target), (row0, None));
+    f.drain();
+    // Back over the panel through the data device (standing in for a
+    // second surface: the same tree), dropped after row 1's middle.
+    f.input(
+        &InputEvent::DragEnter {
+            surface: s,
+            at: LogicalPoint::new(50.0, 30.0),
+            kinds: vec![],
+        },
+        &mut r,
+    );
+    f.input(
+        &InputEvent::DragMotion {
+            surface: s,
+            at: LogicalPoint::new(50.0, 75.0),
+        },
+        &mut r,
+    );
+    assert_eq!(f.router.drop_target(s), Some(list));
+    f.input(
+        &InputEvent::DragDrop {
+            surface: s,
+            at: LogicalPoint::new(50.0, 75.0),
+            payload: DropPayload::Node(row0),
+        },
+        &mut r,
+    );
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(row0),
+                at: 101
+            }
+        )]
+    );
+    assert_eq!(f.router.drag(), None);
+    // Carried off and cancelled: the release the surface manager makes
+    // up on the origin drops nothing.
+    f.input(&motion(s, 50.0, 60.0, 20), &mut r);
+    f.input(&left(s, 50.0, 60.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 80.0, 30), &mut r);
+    assert_eq!(f.router.drag().map(|d| d.source), Some(row1));
+    f.input(&InputEvent::PointerLeave { surface: s }, &mut r);
+    f.input(&left(s, -1e4, -1e4, ButtonState::Released), &mut r);
+    assert_eq!(f.router.drag(), None);
+    assert!(events(f.drain()).is_empty());
 }
 
 /// A focused `input` that logic removes loses focus at once, although

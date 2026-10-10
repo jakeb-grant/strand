@@ -93,6 +93,7 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     pub(super) fn send_input(&mut self, event: InputEvent) {
         self.host.input(&event);
+        self.dnd_input(&event);
         if let Some(tx) = &self.input
             && tx.send(event).is_err()
         {
@@ -132,6 +133,9 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Pointer {
+            self.dnd_seat(&seat);
+        }
         if capability == Capability::Pointer && !self.pointers.iter().any(|p| p.seat == seat) {
             // A themed pointer sets the cursor through wp_cursor_shape_v1
             // when the compositor has it, else from the cursor theme.
@@ -199,7 +203,9 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.dnd_seat_gone(&seat);
+    }
 }
 
 pub(super) fn axis_delta(a: &smithay_client_toolkit::seat::pointer::AxisScroll) -> AxisDelta {

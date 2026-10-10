@@ -111,6 +111,12 @@ impl Shell {
                     }
                     return;
                 }
+                if let NodeEvent::Drop { payload, at } = &event {
+                    if let Some(args) = super::lists::drop_args(inst, &self.host, payload, *at) {
+                        inst.event(node, "drop", args);
+                    }
+                    return;
+                }
                 inst.event(node, event.name(), event.args_with(&self.host));
             }
             ToLogic::Layout { seq, sizes } => {

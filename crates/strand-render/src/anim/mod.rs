@@ -196,6 +196,10 @@ pub(crate) struct Animator {
     shared: morph::SharedMorphs,
     /// (M4) Image swaps under a transition mask.
     image_swaps: crate::effects::transition::ImageSwaps,
+    /// (M4) Drag and drop: nodes lifted off their box (a `drag:` source
+    /// following the pointer, `Some` with its offset) or springing back
+    /// to it (`None`); both paint above their siblings.
+    lifted: HashMap<NodeId, Option<[f32; 2]>>,
 }
 
 impl Animator {
@@ -826,6 +830,7 @@ impl Animator {
 
     /// Drops the state of nodes `keep` rejects (gone from the tree).
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        self.lifted.retain(|id, _| keep(*id));
         self.times.retain(&mut keep);
         self.shapes.retain(&mut keep);
         self.rolls.retain(&mut keep);
@@ -858,8 +863,41 @@ impl Animator {
             .shift(delta, curve);
     }
 
-    /// The glide offset of `id` in this frame.
+    /// (M4) Lifts `id` off its box to `to` (a drag in flight: drawn
+    /// there, above its siblings), or lets it go (`None`): it springs
+    /// from where it was held back to its box along `curve`, or to the
+    /// box it has by then (a drop that moved it).
+    pub fn lift(&mut self, id: NodeId, to: Option<[f32; 2]>, curve: Curve) {
+        match to {
+            Some(v) => {
+                self.lifted.insert(id, Some(v));
+            }
+            None => {
+                if let Some(Some(v)) = self.lifted.get(&id).copied() {
+                    self.lifted.insert(id, None);
+                    self.glide(id, v, curve);
+                }
+            }
+        }
+    }
+
+    /// (M4) `id` is lifted or springing back from a lift (it paints
+    /// above its siblings).
+    pub fn lifted(&self, id: NodeId) -> bool {
+        self.lifted.contains_key(&id)
+    }
+
+    /// The glide offset of `id` in this frame (and a lift's).
     pub fn offset(&mut self, id: NodeId) -> (f32, f32) {
+        if let Some(l) = self.lifted.get(&id).copied() {
+            if let Some(v) = l {
+                return (v[0], v[1]);
+            }
+            // Back in its box: no longer above its siblings.
+            if self.nodes.get(&id).is_none_or(|n| n.glide.is_none()) {
+                self.lifted.remove(&id);
+            }
+        }
         let (at, commit, snap) = (self.time, self.commit, self.snapping());
         let Some(na) = self.nodes.get_mut(&id) else {
             return (0.0, 0.0);

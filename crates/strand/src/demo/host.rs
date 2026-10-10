@@ -238,10 +238,7 @@ fn to_logic(intent: Intent) -> Option<ToLogic> {
                     modifiers,
                 },
                 RouteEvent::Dismiss => NodeEvent::Dismiss,
-                RouteEvent::Drop { .. } => {
-                    log::debug!("a drop on {node:?} is not delivered yet (M4 drag and drop)");
-                    return None;
-                }
+                RouteEvent::Drop { payload, at } => NodeEvent::Drop { payload, at },
             },
         },
         Intent::Write { node, prop, value } => ToLogic::Write { node, prop, value },
@@ -589,6 +586,17 @@ impl SurfaceHost for Host {
         }
     }
 
+    fn drop_accepted(&self, surface: SurfaceId) -> bool {
+        self.logic
+            .as_ref()
+            .is_some_and(|f| f.router.drop_target(surface).is_some())
+    }
+
+    fn drag_source(&self, surface: SurfaceId) -> Option<NodeId> {
+        let d = self.logic.as_ref()?.router.drag()?;
+        (d.surface == surface).then_some(d.source)
+    }
+
     fn input(&mut self, event: &InputEvent) {
         // The fallback lock takes its surface's input (`run/lock.rs`).
         if self.lock.input(event) {
@@ -720,27 +728,26 @@ mod tests {
         );
     }
 
+    /// (M4) A drop the Router found a target for reaches logic as
+    /// `on drop`, payload and index unchanged.
     #[test]
-    fn drops_are_not_forwarded_until_logic_takes_them() {
+    fn drops_are_forwarded_to_logic() {
         let node = strand_scene::NodeId::new(1, 0);
+        let payload = strand_scene::DropPayload::Node(strand_scene::NodeId::new(2, 0));
         let drop = Intent::Event {
             node,
             event: RouteEvent::Drop {
-                payload: strand_scene::DropPayload::Node(node),
-                at: 0,
+                payload: payload.clone(),
+                at: 3,
             },
         };
-        assert_eq!(to_logic(drop), None);
-        assert!(matches!(
-            to_logic(Intent::Event {
-                node,
-                event: RouteEvent::Click
-            }),
+        assert_eq!(
+            to_logic(drop),
             Some(ToLogic::Event {
-                event: NodeEvent::Click,
-                ..
+                node,
+                event: NodeEvent::Drop { payload, at: 3 },
             })
-        ));
+        );
     }
 
     /// Read what the forwarder sent, through a calloop loop.
@@ -1103,5 +1110,102 @@ mod tests {
             height: 16.0,
         };
         assert!(sent.contains(&size), "{sent:?}");
+    }
+
+    /// (M4) What the surface manager asks while a drag is in flight: the
+    /// `drag:` node dragged on a surface (so it can hand the drag to the
+    /// compositor when the pointer leaves), and whether a drop there now
+    /// would land (so it accepts the compositor's offer only then: a
+    /// `Pin` over the list that takes `Pin`s, but not text from another
+    /// program); the drop itself goes to logic.
+    #[test]
+    fn the_surface_manager_sees_the_routers_drag() {
+        use strand_scene::{DropKind, DropPayload, NodeKind, PaintTarget, PropValue};
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, mut el) = setup_channel();
+        let mut host = Host::new(renderer, false).forwarding(tx);
+        let (panel, col) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let rows = [NodeId::new(2, 0), NodeId::new(3, 0)];
+        let pin = || PropValue::Keyword("Pin".into());
+        let mut d = SceneDiff::new();
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(100.0))
+            .set(panel, Prop::Height, PropValue::Number(100.0))
+            .create(col, NodeKind::Col, Some(panel), 0)
+            .set(col, Prop::Accepts, PropValue::List(vec![pin()]));
+        for (i, r) in rows.iter().enumerate() {
+            d.create(*r, NodeKind::Box, Some(col), i as u32)
+                .set(*r, Prop::Height, PropValue::Number(40.0))
+                .set(*r, Prop::Drag, pin());
+        }
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let mut px = vec![0u8; 100 * 100 * 4];
+        let mut t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+        host.paint(s, &mut t);
+        assert_eq!(host.drag_source(s), None);
+        let at = |y| LogicalPoint::new(20.0, y);
+        let button = |y, state| InputEvent::PointerButton {
+            surface: s,
+            position: at(y),
+            button: button::LEFT,
+            state,
+            time: 0,
+        };
+        let motion = |y| InputEvent::PointerMotion {
+            surface: s,
+            position: at(y),
+            time: 0,
+        };
+        host.input(&motion(10.0));
+        host.input(&button(10.0, ButtonState::Pressed));
+        assert_eq!(host.drag_source(s), None, "a press is not a drag yet");
+        host.input(&motion(70.0));
+        assert_eq!(host.drag_source(s), Some(rows[0]));
+        assert_eq!(host.drag_source(SurfaceId(2)), None);
+        assert!(host.drop_accepted(s));
+        drain(&mut el);
+        host.input(&button(70.0, ButtonState::Released));
+        let sent = drain(&mut el);
+        assert!(
+            sent.contains(&ToLogic::Event {
+                node: col,
+                event: NodeEvent::Drop {
+                    payload: DropPayload::Node(rows[0]),
+                    at: 1
+                }
+            }),
+            "{sent:?}"
+        );
+        assert_eq!(host.drag_source(s), None);
+        // Text from another program: nothing here takes it.
+        host.input(&InputEvent::DragEnter {
+            surface: s,
+            at: at(50.0),
+            kinds: vec![DropKind::Text],
+        });
+        assert!(!host.drop_accepted(s));
+    }
+
+    fn setup_channel() -> (
+        calloop::channel::Sender<ToLogic>,
+        calloop::EventLoop<'static, Vec<ToLogic>>,
+    ) {
+        let (tx, rx) = calloop::channel::channel();
+        let el = calloop::EventLoop::<Vec<ToLogic>>::try_new().unwrap();
+        el.handle()
+            .insert_source(rx, |e, _, out: &mut Vec<ToLogic>| {
+                if let calloop::channel::Event::Msg(m) = e {
+                    out.push(m);
+                }
+            })
+            .unwrap();
+        (tx, el)
     }
 }

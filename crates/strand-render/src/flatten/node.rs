@@ -1218,11 +1218,14 @@ impl<'a> Flattener<'a> {
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
-            for c in &node.children {
+            // (M4) A child lifted by a drag paints above its siblings.
+            let lifted = node.children.iter().copied().find(|c| self.anim.lifted(*c));
+            let order = node.children.iter().copied().filter(|c| Some(*c) != lifted);
+            for c in order.chain(lifted) {
                 // A nested surface (a popup) paints on its own surface.
                 if let Some(child) = self
                     .tree
-                    .get(*c)
+                    .get(c)
                     .filter(|n| !crate::layout::out_of_flow(n.kind))
                 {
                     children = children.union(self.node(child, rect, &child_inh, false));

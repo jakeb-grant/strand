@@ -92,6 +92,61 @@ fn row_first(node: &crate::tree::Node) -> u32 {
 }
 
 impl Renderer {
+    /// (M4) [`Renderer::hit`] as if `skip` and its subtree were not
+    /// there: what a dragged source, drawn at the pointer, is over.
+    pub fn hit_under(&self, surface: SurfaceId, point: LogicalPoint, skip: NodeId) -> Vec<NodeId> {
+        let Some(s) = self.surfaces.get(&surface) else {
+            return Vec::new();
+        };
+        let inside = |n: NodeId| {
+            let mut cur = Some(n);
+            while let Some(c) = cur {
+                if c == skip {
+                    return true;
+                }
+                cur = self.tree.get(c).and_then(|x| x.parent);
+            }
+            false
+        };
+        let k = s.scale.as_f64();
+        let (x, y) = (point.x as f64 * k, point.y as f64 * k);
+        let best = s
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.contains(x, y) && !inside(h.node))
+            .map(|h| h.node);
+        let mut chain = Vec::new();
+        let mut cur = best.unwrap_or(s.root);
+        loop {
+            chain.push(cur);
+            if cur == s.root {
+                break;
+            }
+            match self.tree.get(cur).and_then(|n| n.parent) {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        chain
+    }
+
+    /// (M4) Drag and drop: draws `node` (a `drag:` source) `offset` away
+    /// from its box, above its siblings, as the pointer drags it; `None`
+    /// lets it go, and it springs (`$motion.spatial`, as a FLIP) from
+    /// where it was held to its box, or to the box a drop moved it to.
+    /// Under `reduced_motion` it is back at once.
+    pub fn lift(&mut self, node: NodeId, offset: Option<LogicalPoint>) {
+        let curve = if self.anim.reduced() {
+            Curve::Instant
+        } else {
+            let tables = [&self.tree.tokens];
+            Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::X))
+        };
+        self.anim.lift(node, offset.map(|p| [p.x, p.y]), curve);
+        self.mark_node_dirty(node);
+    }
+
     /// Scrolls the innermost `scroll` or `list` under `point` of
     /// `surface` (in its last frame) that can move by `dy` logical
     /// pixels, at once: one already at its end passes the scroll outward.
