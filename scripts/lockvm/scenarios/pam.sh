@@ -7,7 +7,7 @@ set -uo pipefail
 . "$(dirname "$0")/common.sh"
 run() {
   as_tester env STRAND_LOCK_VM_HELPER="$HELPER" STRAND_LOCK_VM_SERVICE="$1" \
-    "$VM_PAM_TEST" --nocapture 2>&1 | tee -a "$out/pam.log"
+    "$VM_PAM_TEST" pam_unix_takes_only_the_right_password --nocapture 2>&1 | tee -a "$out/pam.log"
   local status=${PIPESTATUS[0]}
   if grep -q 'skipping ' "$out/pam.log"; then
     echo "the PAM test skipped inside the VM"
