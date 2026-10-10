@@ -587,15 +587,41 @@ fn tray_menus_nest_walk_and_choose() {
     assert_eq!(count(&calls, "Event 3 clicked"), 0, "{:?}", calls);
     assert_eq!(count(&calls, "Event 1 clicked"), 0, "{:?}", calls);
 
-    // Opened again, Escape closes it, and the app is told.
+    // Opened again right after a choice, it stays and holds the keys.
+    // Sway sends the leave for the bar's released grab with the new
+    // grab's enter, before any key that follows; it used to close the
+    // reopened menu. So a key after the menu shows must move its
+    // selection, with the menu still open and the app told of no close.
     pointer.right_click(cx, cy, w, h);
-    sh.wait("the menu again", |img| img.region(MENU, 2000));
+    let again = sh.wait("the menu again", |img| img.region(MENU, 2000));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while count(&calls, "Event 0 opened") < 2 {
+        assert!(Instant::now() < deadline, "{:?}", calls);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The shell's calls come in order on its one connection: every
+    // close of the first menu is in by now.
+    let closed = count(&calls, "Event 0 closed");
+    let selected = |img: &Img| img.region_in(SELECTED, again.x0..again.x1, 500);
+    let before = selected(&sh.shot());
+    keys.press("Down");
+    sh.wait("the reopened menu's selection moved", |img| {
+        img.region(MENU, 2000)?;
+        let now = selected(img)?;
+        (Some(now) != before).then_some(())
+    });
+    assert_eq!(
+        count(&calls, "Event 0 closed"),
+        closed,
+        "the reopened menu was closed: {calls:?}"
+    );
+    // Escape closes it, and the app is told once more.
     keys.press("Escape");
     sh.wait("the menu closed by Escape", |img| {
         img.region(MENU, 1).is_none().then_some(())
     });
     let deadline = Instant::now() + Duration::from_secs(10);
-    while count(&calls, "Event 0 closed") < 2 {
+    while count(&calls, "Event 0 closed") == closed {
         assert!(Instant::now() < deadline, "{:?}", calls);
         std::thread::sleep(Duration::from_millis(20));
     }
