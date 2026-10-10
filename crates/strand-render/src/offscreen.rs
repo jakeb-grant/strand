@@ -433,7 +433,11 @@ pub struct RasterNodes {
 }
 
 impl RasterNodes {
-    /// Sets (or with `None` removes) `node`'s source.
+    /// Sets (or with `None` removes) `node`'s source: a source with state
+    /// of its own, fed from outside the props (the media stream's
+    /// graphs, spectrum and animated frames); sources built from props go
+    /// through [`RasterNodes::pixmap_from`].
+    #[allow(dead_code)]
     pub fn set(&mut self, node: NodeId, source: Option<Arc<dyn RasterSource>>) {
         match source {
             Some(s) => {
@@ -449,10 +453,15 @@ impl RasterNodes {
     /// Drops nodes `keep` rejects.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.sources.retain(|id, _| keep(*id));
-        let sources = &self.sources;
-        self.drawn
-            .get_mut()
-            .retain(|id, _| sources.contains_key(id));
+        self.drawn.get_mut().retain(|id, _| keep(*id));
+    }
+
+    /// Drops `node`'s last pixmap when it has no source of its own (it
+    /// builds none from its props any more).
+    pub fn unused(&self, node: NodeId) {
+        if !self.sources.contains_key(&node) {
+            self.drawn.borrow_mut().remove(&node);
+        }
     }
 
     /// `node`'s clock rate, if it is a raster node.
@@ -486,12 +495,29 @@ impl RasterNodes {
         time: TimeContext,
     ) -> Option<(u64, Arc<Pixmap>)> {
         let source = self.sources.get(&node)?;
+        self.pixmap_from(node, source.as_ref(), 0, w, h, scale, time)
+    }
+
+    /// `node`'s pixels drawn by `source`, built from its props (`config`
+    /// says from what: a change draws anew), as [`RasterNodes::pixmap`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn pixmap_from(
+        &self,
+        node: NodeId,
+        source: &dyn RasterSource,
+        config: u64,
+        w: u32,
+        h: u32,
+        scale: f32,
+        time: TimeContext,
+    ) -> Option<(u64, Arc<Pixmap>)> {
         let (w16, h16) = (u16::try_from(w).ok()?, u16::try_from(h).ok()?);
         if w16 == 0 || h16 == 0 {
             return None;
         }
         let mut k = DefaultHasher::new();
         (
+            config,
             w,
             h,
             scale.to_bits(),

@@ -80,7 +80,14 @@ impl<'a> Flattener<'a> {
         let timed_scope = inh.timed || crate::time::overrides_read_time(node, global);
         let timed = timed_scope || crate::time::reads_time(node, global);
         // Its clock: the rate its time props and its own animation run at.
-        let rate = crate::clock::rate(node, timed, self.extras.rasters.rate(node.id));
+        // (A source built from props follows a clock that time-bound
+        // props run at refresh: `crate::effects::raster`.)
+        let raster = self
+            .extras
+            .rasters
+            .rate(node.id)
+            .or_else(|| crate::effects::raster::rate(node).filter(|_| !timed));
+        let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
                 let (cx, next) = self.anim.time_of(node.id, rate);
@@ -420,6 +427,22 @@ impl<'a> Flattener<'a> {
                 self.shadow(sh, frame, &r, &box_path, &mut sig, &mut ink);
             }
         }
+        // (M4) `glow:`: a box glows as a shadow under it; text, icons and
+        // images glow their own pixels (`crate::effects::light`).
+        let glow = crate::effects::light::Glow::of(get(Prop::Glow), color);
+        let glows_content = matches!(node.kind, NodeKind::Text | NodeKind::Icon | NodeKind::Image);
+        if has_area
+            && !glows_content
+            && let Some(g) = glow
+        {
+            self.shadow(&g.shadow(), frame, &r, &box_path, &mut sig, &mut ink);
+        }
+        let light = crate::effects::light::BoxLight {
+            frame,
+            path: &box_path,
+            scale: s,
+            xform: self.xform,
+        };
         // `blur: N` asks the compositor to blur behind the box. Until a
         // compositor does (M4), the tint fallback raises the background's
         // alpha by 0.15 so text over it stays readable (`blur_fallback:
@@ -504,16 +527,34 @@ impl<'a> Flattener<'a> {
             );
         }
         // (M4) A CPU raster node's pixels at its clock's tick, over its
-        // background.
-        if has_area
-            && let Some((key, pixmap)) = self.extras.rasters.pixmap(
+        // background: a source of its own, or one its props build
+        // (`grain:`), clipped to its shape.
+        let built = crate::effects::raster::built(node.kind, get);
+        let (pw, ph) = (frame.width().round() as u32, frame.height().round() as u32);
+        let time_now = time.unwrap_or_default();
+        let raster = match &built {
+            _ if !has_area => None,
+            Some(b) => self.extras.rasters.pixmap_from(
                 node.id,
-                frame.width().round() as u32,
-                frame.height().round() as u32,
+                b,
+                b.config(),
+                pw,
+                ph,
                 self.scale.as_f32(),
-                time.unwrap_or_default(),
-            )
-        {
+                b.time(time_now),
+            ),
+            None => {
+                self.extras.rasters.unused(node.id);
+                self.extras
+                    .rasters
+                    .pixmap(node.id, pw, ph, self.scale.as_f32(), time_now)
+            }
+        };
+        if let Some((key, pixmap)) = raster {
+            let clipped = !radii_zero(&r) || outline.is_some();
+            if clipped {
+                self.push(Item::PushClip(box_path.clone()), phys, &mut sig, &mut ink);
+            }
             let rect = kurbo::Rect::new(
                 frame.x0.round(),
                 frame.y0.round(),
@@ -531,6 +572,15 @@ impl<'a> Flattener<'a> {
                 &mut sig,
                 &mut ink,
             );
+            if clipped {
+                self.push(Item::PopClip, phys, &mut sig, &mut ink);
+            }
+        }
+        // (M4) Inner shadows, over the background.
+        if has_area && let Some(PropValue::Shadow(list)) = get(Prop::InnerShadow) {
+            for (item, bounds) in crate::effects::light::inner_shadows(list, light) {
+                self.push(item, bounds, &mut sig, &mut ink);
+            }
         }
         // Border, drawn inside the box.
         if has_area
@@ -564,6 +614,12 @@ impl<'a> Flattener<'a> {
                 &mut ink,
             );
         }
+        // (M4) A rim light, over the border.
+        if has_area {
+            for (item, bounds) in crate::effects::light::rim(get(Prop::Rim), light) {
+                self.push(item, bounds, &mut sig, &mut ink);
+            }
+        }
         // Widgets: a button's hover and press state layer, a meter's fill,
         // a slider's track and knob, a segmented control's options, an
         // input's selection.
@@ -579,6 +635,8 @@ impl<'a> Flattener<'a> {
             };
             self.widget(&wctx, &get, caret, &caret_at, &mask_map, &mut sig, &mut ink);
         }
+        // What text, an icon or an image draws from here glows.
+        let content_start = self.out.items.len();
         // An `icon` or `image`: decoded at the box's size.
         if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
             self.image(
@@ -684,6 +742,21 @@ impl<'a> Flattener<'a> {
             if clip.is_some() {
                 self.marker(Item::PopClip);
             }
+        }
+        if glows_content
+            && let Some(g) = glow
+            && let Some((bounds, effects)) = crate::effects::light::glow_content(
+                &mut self.out.items,
+                content_start,
+                g,
+                (frame, self.scale.as_f32(), self.xform),
+                self.surface,
+            )
+        {
+            // The glyphs are no longer the last thing drawn.
+            glyph_cells = None;
+            crate::layers::hash_effects(&mut sig, &effects);
+            ink = ink.union(bounds);
         }
         // An input's caret, over its text.
         if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {

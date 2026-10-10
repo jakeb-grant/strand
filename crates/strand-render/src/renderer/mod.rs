@@ -412,22 +412,6 @@ impl Renderer {
         (o.bytes(), o.builds(), o.len())
     }
 
-    /// (M4) Makes `node` a CPU raster node drawn by `source` at its rate
-    /// (`None` makes it an ordinary node again). The seam S-effects'
-    /// particles, grain, graphs and spectrum draw through; tests use it
-    /// directly.
-    #[doc(hidden)]
-    pub fn set_raster_source(
-        &mut self,
-        node: NodeId,
-        source: Option<std::sync::Arc<dyn crate::offscreen::RasterSource>>,
-    ) {
-        self.extras.rasters.set(node, source);
-        for s in self.surfaces.values_mut() {
-            s.mark_dirty();
-        }
-    }
-
     /// (M4) Pixmaps the raster nodes drew so far, and their bytes kept.
     pub fn raster_nodes(&self) -> (u64, usize) {
         (self.extras.rasters.builds(), self.extras.rasters.bytes())

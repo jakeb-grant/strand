@@ -11,6 +11,8 @@
 
 pub(crate) mod filter;
 pub(crate) mod glow;
+pub(crate) mod light;
+pub(crate) mod raster;
 
 use std::sync::Arc;
 

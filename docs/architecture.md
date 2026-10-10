@@ -414,7 +414,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `sizes.rs` (size springs), `tests.rs`. Keyframes, morph, stagger and
   page slides get modules of their own here when they land.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
-  `filter.rs` (colour matrices), `glow.rs` (CPU glows).
+  `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
+  (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`
+  (raster sources built from props: `grain:`).
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
   paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
   morphs, held by the `Animator`).
@@ -958,11 +960,14 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
       (`OFFSCREEN_BYTES`, LRU; a group over the budget is drawn uncached;
       freed with the paint cache's idle rules).
     - The raster node is `Item::Raster { node, key, pixmap, rect }`
-      (`key` hashes size, scale and `TimeContext`; `rect` is its box in
-      physical pixels). A
-      `RasterSource` (`draw(pixels, w, h, scale, TimeContext)`, `rate()`)
-      is attached through the hidden `Renderer::set_raster_source` seam.
-      Its pixmap is redrawn only when its tick or size changes. The props keep
+      (`key` hashes the source's config, size, scale and `TimeContext`;
+      `rect` is its box in physical pixels). A `RasterSource`
+      (`draw(pixels, w, h, scale, TimeContext)`, `rate()`) is built from
+      the node's props each frame (`crate::effects::raster`: `grain:`,
+      particles, the built-in effects) and drawn through
+      `RasterNodes::pixmap_from`; a source with state of its own (graphs,
+      spectrum, animated frames) is set with `RasterNodes::set`. Its
+      pixmap is redrawn only when its config, tick or size changes. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the

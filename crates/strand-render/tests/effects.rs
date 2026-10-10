@@ -381,3 +381,138 @@ fn shape_masks_cut_a_subtree_to_its_outline() {
     }
     assert_matches_ref("effects_mask_shapes", &buf, 1);
 }
+
+fn shadow(x: f32, y: f32, blur: f32, c: &str) -> PropValue {
+    PropValue::Shadow(vec![Shadow {
+        x,
+        y,
+        blur,
+        spread: 0.0,
+        color: hex(c),
+    }])
+}
+
+fn pair(a: PropValue, b: PropValue) -> PropValue {
+    PropValue::List(vec![a, b])
+}
+
+/// The light scene: a glowing box, a box with an inner shadow and a rim,
+/// glowing text and a grained pill, on a dark bar 360×80 logical pixels.
+fn light(scale: Scale, time: u64, reduced: bool) -> (Renderer, Buffer, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let place = |x: f32, w: f32, h: f32| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num((80.0 - h) / 2.0)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Place, kw("absolute")),
+        ]
+    };
+    let mut glow = place(20.0, 50.0, 40.0);
+    glow.extend([
+        (Prop::Bg, color("#313244")),
+        (Prop::Radius, num(10.0)),
+        (
+            Prop::Glow,
+            pair(num(12.0), PropValue::Color(hex("#89b4fa").alpha(0.8))),
+        ),
+    ]);
+    let mut inset = place(100.0, 60.0, 44.0);
+    inset.extend([
+        (Prop::Bg, color("#cba6f7")),
+        (Prop::Radius, num(12.0)),
+        (Prop::InnerShadow, shadow(0.0, 4.0, 8.0, "#11111b")),
+        (
+            Prop::Rim,
+            pair(kw("top"), PropValue::Color(hex("#ffffff").alpha(0.7))),
+        ),
+    ]);
+    let mut words = place(180.0, 80.0, 30.0);
+    words.extend([
+        (Prop::Text, text("Glow")),
+        (Prop::Font, PropValue::Font(font(24.0))),
+        (Prop::Color, color("#f5e0dc")),
+        (Prop::Glow, pair(num(8.0), PropValue::Color(hex("#f38ba8")))),
+    ]);
+    let mut grain = place(270.0, 80.0, 36.0);
+    grain.extend([
+        (Prop::Bg, color("#a6e3a1")),
+        (Prop::Radius, kw("full")),
+        (Prop::Grain, num(0.35)),
+    ]);
+    let ids = vec![
+        b.node(NodeKind::Box, Some(root), glow),
+        b.node(NodeKind::Box, Some(root), inset),
+        b.node(NodeKind::Text, Some(root), words),
+        b.node(NodeKind::Box, Some(root), grain),
+    ];
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let k = scale.as_f32();
+    let mut buf = Buffer::new((360.0 * k).round() as u32, (80.0 * k).round() as u32, scale);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(time));
+    (r, buf, ids)
+}
+
+/// design.md "Paint and light": `glow:` on a box (a shadow-like halo)
+/// and on text (its letters' own halo), `inner_shadow:` with `rim: top`,
+/// and `grain:` (refs `effects_light.png` at 1× and 2×).
+#[test]
+fn glow_inner_shadow_rim_and_grain_draw() {
+    let (_, buf, _) = light(Scale::ONE, 1000, false);
+    assert_matches_ref("effects_light", &buf, 2);
+    let px = |x: u32, y: u32| buf.px(x, y);
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    // The box (20, 20, 50×40) glows blue beside it, and not 12 px out.
+    let beside = px(17, 40);
+    assert!(beside[0] > beside[2] + 0x20, "blue halo {beside:?}");
+    assert_eq!(px(7, 40), bg);
+    // Inside the inset box (100, 18, 60×44): darker under its top edge
+    // than in its middle, and the rim lights its top row.
+    let (mid, under) = (px(130, 46), px(130, 22));
+    assert!(under[1] + 20 < mid[1], "shadowed {under:?} {mid:?}");
+    assert!(px(130, 18)[1] > under[1] + 20, "rim {:?}", px(130, 18));
+    // The text (180, 25) glows red around its letters (which are
+    // #f5e0dc: never 40 redder than green).
+    let reddish = (175..265)
+        .flat_map(|x| (20..60).map(move |y| (x, y)))
+        .map(|(x, y)| buf.px(x, y))
+        .filter(|p| p[2] as u32 > p[1] as u32 + 40)
+        .count();
+    assert!(reddish > 100, "a red halo around the letters: {reddish}");
+    // The grain varies within the pill (270, 22, 80×36), and stays inside
+    // its round ends.
+    let row: Vec<[u8; 4]> = (290..330).map(|x| buf.px(x, 40)).collect();
+    assert!(row.windows(2).any(|w| w[0] != w[1]), "grain varies");
+    assert_eq!(px(271, 23), bg);
+
+    let (_, buf, _) = light(Scale::new(240).unwrap(), 1000, false);
+    assert_matches_ref("effects_light_2x", &buf, 2);
+}
+
+/// Grain is new on every 12 fps tick, and `reduced_motion` freezes it
+/// (design.md: "reduced_motion turns off loops, time signals and
+/// effects").
+#[test]
+fn grain_moves_at_12_fps_and_reduced_motion_freezes_it() {
+    use std::time::Duration;
+    let pill = |buf: &Buffer| -> Vec<[u8; 4]> { (290..330).map(|x| buf.px(x, 40)).collect() };
+    let (mut r, mut buf, _) = light(Scale::ONE, 1000, false);
+    let first = pill(&buf);
+    assert!(
+        r.wants_frame(S) || r.next_wake().is_some(),
+        "its clock runs"
+    );
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1000 + 84));
+    assert_ne!(pill(&buf), first, "the next tick");
+
+    let (mut r, mut buf, _) = light(Scale::ONE, 1000, true);
+    let frozen = pill(&buf);
+    assert!(!r.wants_frame(S) && r.next_wake().is_none(), "no clock");
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1500));
+    assert_eq!(pill(&buf), frozen, "static grain");
+}

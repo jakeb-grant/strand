@@ -472,38 +472,10 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     assert_eq!(r.offscreen_cache().0, 0, "freed when idle");
 }
 
-/// A raster node source: a solid red whose level steps with `t`.
-#[derive(Debug)]
-struct Steps(std::time::Duration);
-
-impl strand_render::RasterSource for Steps {
-    fn draw(
-        &self,
-        px: &mut [vello_cpu::color::PremulRgba8],
-        _: u32,
-        _: u32,
-        _: f32,
-        time: TimeContext,
-    ) {
-        let level = (40.0 + time.t * 400.0).min(255.0) as u8;
-        for p in px {
-            *p = vello_cpu::color::PremulRgba8 {
-                r: level,
-                g: 0,
-                b: 0,
-                a: 255,
-            };
-        }
-    }
-
-    fn rate(&self) -> strand_render::Rate {
-        strand_render::Rate::Every(self.0)
-    }
-}
-
 /// design.md: CPU raster nodes draw into a cached pixmap at their
-/// clock's rate. A 10 fps node painted at 60 Hz draws its pixmap once
-/// per tick, repaints only on ticks, and shows the tick's `t`.
+/// clock's rate, grain at 12 fps. A grain node painted at 60 Hz draws its
+/// pixmap once per tick, repaints only on ticks, and shows new grain on
+/// each.
 #[test]
 fn raster_nodes_draw_at_their_clock_rate() {
     use std::time::Duration;
@@ -516,32 +488,37 @@ fn raster_nodes_draw_at_their_clock_rate() {
             (Prop::X, num(20.0)),
             (Prop::Y, num(10.0)),
             (Prop::Size, num(20.0)),
+            (Prop::Grain, num(0.5)),
         ],
     );
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    r.set_raster_source(
-        node,
-        Some(std::sync::Arc::new(Steps(Duration::from_millis(100)))),
-    );
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(240, 60, Scale::ONE);
     let t0 = Duration::from_secs(1);
     let at = |k: u64| t0 + Duration::from_nanos(1_000_000_000 * k / 60);
     buf.paint_at(&mut r, S, 0, t0);
     assert_eq!(r.raster_nodes().0, 1);
+    let rect = r.boxes(S).unwrap().rects[&node];
+    let grain = |buf: &Buffer| -> Vec<[u8; 4]> {
+        (0..20)
+            .map(|i| buf.px(rect.x as u32 + 20 + i, rect.y as u32 + 20))
+            .collect()
+    };
+    let first = grain(&buf);
     let mut damaged = 0;
+    let mut last = first.clone();
     for k in 1..=30 {
         if !buf.paint_at(&mut r, S, 1, at(k)).is_empty() {
             damaged += 1;
+            let now = grain(&buf);
+            assert_ne!(now, last, "frame {k}: a tick shows new grain");
+            last = now;
         }
     }
-    // Half a second: ticks at 0.1 … 0.5 s.
-    assert_eq!(r.raster_nodes().0, 6, "one pixmap per tick");
-    assert_eq!(damaged, 5, "repainted only on ticks");
-    let rect = r.boxes(S).unwrap().rects[&node];
-    let [blue, _, red, _] = buf.px((rect.x + 30.0) as u32, (rect.y + 20.0) as u32);
-    assert_eq!((red, blue), (240, 0), "t = 0.5 s: 40 + 200");
+    // Half a second: ticks at 1/12 … 6/12 s.
+    assert_eq!(r.raster_nodes().0, 7, "one pixmap per tick");
+    assert_eq!(damaged, 6, "repainted only on ticks");
     assert!(r.raster_nodes().1 >= 20 * 20 * 4);
 }
 
@@ -584,10 +561,12 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
     );
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
-    with_fx(&mut r, &[(group, vec![blur(3.0)])]);
-    r.set_raster_source(
-        raster,
-        Some(std::sync::Arc::new(Steps(Duration::from_millis(100)))),
+    with_fx(
+        &mut r,
+        &[
+            (group, vec![blur(3.0)]),
+            (raster, vec![(Prop::Grain, num(0.5))]),
+        ],
     );
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(240, 60, Scale::ONE);
@@ -603,7 +582,7 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
         blurred.h as u32 + 24,
     );
     for tick in 1..=4 {
-        let d = buf.paint_at(&mut r, S, 1, at(6 * tick));
+        let d = buf.paint_at(&mut r, S, 1, at(5 * tick));
         assert!(!d.is_empty(), "tick {tick} repaints the raster node");
         for rect in d.rects() {
             assert!(
@@ -623,7 +602,7 @@ fn capped_ticks_keep_untouched_offscreen_groups() {
 
     // The clock goes and the loop stops. The burst's first frame used the
     // group, so it is kept until it has been idle for the idle time.
-    r.set_raster_source(raster, None);
+    with_fx(&mut r, &[(raster, vec![(Prop::Grain, num(0.0))])]);
     let mut k = 30;
     while r.wants_frame(S) {
         buf.paint_at(&mut r, S, 1, at(k));

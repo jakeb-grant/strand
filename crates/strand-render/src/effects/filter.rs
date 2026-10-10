@@ -116,6 +116,18 @@ pub fn tint(c: Color) -> [f32; 20] {
     m
 }
 
+/// Every pixel in `c`, its coverage times `c`'s alpha (a content glow's
+/// colour).
+pub fn solid(c: Color) -> [f32; 20] {
+    let c = c.clamped();
+    let mut m = [0.0; 20];
+    m[4] = c.r;
+    m[9] = c.g;
+    m[14] = c.b;
+    m[18] = c.a;
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +190,13 @@ mod tests {
                 0.5 + accent.b / 2.0,
                 1.0
             ]
+        ));
+        // Solid: any colour becomes the glow colour, coverage scaled by
+        // its alpha.
+        let glow = accent.with_alpha(0.5);
+        assert!(near(
+            apply(&solid(glow), half),
+            [accent.r, accent.g, accent.b, 0.25]
         ));
     }
 }
