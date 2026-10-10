@@ -119,6 +119,26 @@ impl<'a> Flattener<'a> {
         };
         // Springs: this frame's values of the props in flight.
         let inherited = inh.color.unwrap_or_else(|| default_color(&scope));
+        // (M4) A shared-element morph: drawn from where its name was
+        // last drawn, moved and scaled (`crate::anim::morph`); decided
+        // before the springs, as it replaces the enter pose. Its box is
+        // the laid-out one with the paint offsets logic set.
+        let shared = self.tree.root_of(node.id).and_then(|root| {
+            let raw = |p: Prop, of: f32| {
+                length(
+                    props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref()),
+                    of,
+                )
+                .unwrap_or(0.0)
+            };
+            let at = LogicalRect::new(
+                laid.x + inh.offset.0 + raw(Prop::X, parent.w),
+                laid.y + inh.offset.1 + raw(Prop::Y, parent.h),
+                laid.w.max(0.0),
+                laid.h.max(0.0),
+            );
+            self.anim.shared_morph(node, &scope, root, at)
+        });
         // (M4) A transition mask, decided before the springs so a ghost
         // it needs is kept (`crate::effects::transition`).
         let transition_mask = self.anim.reveal(self.tree, node, &scope);
@@ -190,10 +210,14 @@ impl<'a> Flattener<'a> {
         // `y`, and a FLIP glide) of this node and its ancestors. A
         // percentage is of the parent's box, as CSS insets are.
         let glide = self.anim.offset(node.id);
-        let own = (
+        let mut own = (
             length(get(Prop::X), parent.w).unwrap_or(0.0) + glide.0,
             length(get(Prop::Y), parent.h).unwrap_or(0.0) + glide.1,
         );
+        if let Some(m) = shared {
+            own = (own.0 + m[0], own.1 + m[1]);
+        }
+        let (morph_sx, morph_sy) = shared.map_or((1.0, 1.0), |m| (m[2] as f64, m[3] as f64));
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
         let rect = LogicalRect::new(
             laid.x + offset.0,
@@ -367,11 +391,13 @@ impl<'a> Flattener<'a> {
         }
         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
         let saved = self.xform;
-        let transform_group = (zoom != 1.0 || turn != 0.0).then(|| {
+        let morphs = morph_sx != 1.0 || morph_sy != 1.0;
+        let transform_group = (zoom != 1.0 || turn != 0.0 || morphs).then(|| {
             let c = frame.center();
             let local = kurbo::Affine::translate(c.to_vec2())
                 * kurbo::Affine::rotate((turn as f64).to_radians())
                 * kurbo::Affine::scale(zoom as f64)
+                * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
                 * kurbo::Affine::translate(-c.to_vec2());
             self.xform = saved * local;
             self.marker(Item::PushTransform(self.xform))

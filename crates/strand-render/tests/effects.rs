@@ -1623,3 +1623,120 @@ fn a_pages_transition_wipes_one_page_over_the_other() {
         assert!(r.tree().get(old).is_none(), "then goes");
     }
 }
+
+const S2: SurfaceId = SurfaceId(2);
+
+/// A 200 × 60 bar holding a 20 px box `morph: "m"` at (10, 20) and an
+/// empty 100 × 60 panel, painted at 1 s. Returns the box and both roots.
+fn morphing(reduced: bool) -> (Renderer, Buffer, Buffer, [NodeId; 3]) {
+    let mut b = Builder::default();
+    let bar = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let panel = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(60.0)),
+        ],
+    );
+    let mut p = at_xy(10.0, 20.0, 20.0, 20.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#fab387")),
+        (Prop::Morph, text("m")),
+    ]);
+    let pill = b.node(NodeKind::Box, Some(bar), p);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, bar);
+    r.attach_surface(S2, panel);
+    let mut buf = Buffer::new(200, 60, Scale::ONE);
+    let mut buf2 = Buffer::new(100, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    buf2.paint_at(&mut r, S2, 0, std::time::Duration::from_millis(1000));
+    (r, buf, buf2, [pill, bar, panel])
+}
+
+/// Creates a `morph: "m"` box `id` under `parent` at `(x, y)`, `w × h`,
+/// with `enter { opacity: 0 }`.
+fn morph_box(d: &mut SceneDiff, id: NodeId, parent: NodeId, (x, y, w, h): (f32, f32, f32, f32)) {
+    d.create(id, NodeKind::Box, Some(parent), 0);
+    for (p, v) in at_xy(x, y, w, h) {
+        set_now(d, id, p, v);
+    }
+    set_now(d, id, Prop::Place, kw("absolute"));
+    set_now(d, id, Prop::Bg, color("#fab387"));
+    // (Its own `~` is the morph's: the default here.)
+    d.set(id, Prop::Morph, text("m"));
+    set_now(
+        d,
+        id,
+        Prop::Enter,
+        PropValue::Pose(vec![(Prop::Opacity, num(0.0))]),
+    );
+}
+
+/// design.md "Motion and time": `morph: "media"` on both nodes. A node
+/// that enters with the name of one drawn on its surface starts from
+/// that box and springs to its own, moved and scaled, in place of its
+/// enter pose (ref `effects_morph_shared.png` on its way); another
+/// surface's box is unknown (render has no surface origins), so there
+/// it plays its enter pose; `reduced_motion` shows it in place.
+#[test]
+fn a_shared_morph_starts_from_the_named_box() {
+    use std::time::Duration;
+    let (mut r, mut buf, _, [pill, bar, _]) = morphing(false);
+    let orange = buf.px(20, 30);
+    let bg = buf.px(100, 5);
+    let big = NodeId::new(400, 0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: pill,
+        window: false,
+    });
+    morph_box(&mut d, big, bar, (120.0, 5.0, 60.0, 50.0));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    // Over the old box, at full opacity (no fade: the morph replaces it),
+    // not yet at its own.
+    assert_eq!(buf.px(20, 30), orange, "starts at the pill");
+    assert_eq!(buf.px(175, 30), bg, "not yet at its box");
+    let mut t = 1016;
+    while t < 1064 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert_matches_ref("effects_morph_shared", &buf, 2);
+    settle(&mut r, &mut buf, t);
+    assert_eq!(buf.px(150, 30), orange);
+    assert_eq!(buf.px(122, 7), orange);
+    assert_eq!(buf.px(20, 30), bg);
+
+    // On another surface: its enter pose, in place.
+    let (mut r, _, mut buf2, [_, _, panel]) = morphing(false);
+    let other = NodeId::new(401, 0);
+    let mut d = SceneDiff::new();
+    morph_box(&mut d, other, panel, (40.0, 20.0, 20.0, 20.0));
+    assert!(r.apply(d).is_empty());
+    buf2.paint_at(&mut r, S2, 1, Duration::from_millis(1016));
+    let p = buf2.px(50, 30);
+    assert!(
+        p != orange && p != buf2.px(5, 5),
+        "fading in in place: {p:?}"
+    );
+
+    // Reduced motion: in place at once.
+    let (mut r, mut buf, _, [pill, bar, _]) = morphing(true);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: pill,
+        window: false,
+    });
+    morph_box(&mut d, big, bar, (120.0, 5.0, 60.0, 50.0));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    assert_eq!(buf.px(150, 30), orange);
+    assert_eq!(buf.px(20, 30), bg);
+}

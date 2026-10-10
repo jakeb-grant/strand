@@ -413,8 +413,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   (channel encoding, `PropMotion`), `pose.rs` (enter/exit poses),
   `sizes.rs` (size springs), `keyframes.rs` (M4, S-effects: `play`
   playback composed over the springs), `stagger.rs` (M4, S-effects:
-  children entering one `stagger:` step apart), `tests.rs`. Morph and
-  page slides get modules of their own here when they land.
+  children entering one `stagger:` step apart), `morph.rs` (M4,
+  S-effects: shared-element `morph:` from the box its name was last
+  drawn at, same surface only), `pages.rs` (page slides), `tests.rs`.
 - `effects/` (S-effects): `mod.rs` (group effects from props),
   `filter.rs` (colour matrices), `glow.rs` (CPU glows), `light.rs`
   (`glow:`, `inner_shadow:`, `rim:` as display items), `raster.rs`

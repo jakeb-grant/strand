@@ -30,6 +30,7 @@ use strand_scene::{
 use crate::tree::{Node, SceneTree};
 
 mod keyframes;
+mod morph;
 mod motion;
 mod pages;
 mod pose;
@@ -188,6 +189,8 @@ pub(crate) struct Animator {
     leans: crate::effects::lean::Leans,
     /// (M4) Transition masks in flight (`crate::effects::transition`).
     reveals: crate::effects::transition::Reveals,
+    /// (M4) Shared-element morphs ([`morph`]).
+    shared: morph::SharedMorphs,
 }
 
 impl Animator {
@@ -413,6 +416,56 @@ impl Animator {
         Some(masked(p, false))
     }
 
+    /// (M4) `node`'s shared-element morph ([`morph`]): laid out at `rect`
+    /// (paint offsets included) on the surface of `root`, how far it is
+    /// drawn from there (`[dx, dy, sx, sy]`), if it morphs. A node that
+    /// starts a morph plays it in place of its enter pose. Called before
+    /// [`Animator::paint`].
+    pub fn shared_morph(
+        &mut self,
+        node: &Node,
+        scope: &TokenScope<'_>,
+        root: NodeId,
+        rect: LogicalRect,
+    ) -> Option<[f32; 4]> {
+        let key = match node
+            .get(Prop::Morph)
+            .and_then(|v| scope.resolve(v))
+            .as_deref()
+        {
+            Some(PropValue::Text(k) | PropValue::Keyword(k)) if !k.is_empty() => k.clone(),
+            _ => {
+                self.shared.forget(node.id);
+                return None;
+            }
+        };
+        let transition = node
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Morph)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        let entering = self.enter.contains(&node.id);
+        let (v, moving, started) = self
+            .shared
+            .morph(node.id, &key, root, rect, entering, curve, frame);
+        if started {
+            // In place of its enter pose.
+            self.enter.remove(&node.id);
+            self.staggers.forget(node.id);
+        }
+        if moving {
+            self.active = true;
+        }
+        v
+    }
+
     /// (M4) Leans `node` with the pointer (`pointer`, `None` off its
     /// surface) by its `parallax` and `tilt` in `props`, laid out at
     /// `rect` on a surface `surface` (`crate::effects::lean`): adds the
@@ -631,6 +684,7 @@ impl Animator {
         self.staggers.forget(id);
         self.leans.forget(id);
         self.reveals.forget(id);
+        self.shared.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -703,6 +757,7 @@ impl Animator {
         self.staggers.retain(&mut keep);
         self.leans.retain(&mut keep);
         self.reveals.retain(&mut keep);
+        self.shared.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -956,6 +1011,7 @@ impl Animator {
             || self.plays.busy(|id| under(&id))
             || self.staggers.busy(|id| under(&id))
             || self.reveals.busy(self.time, |id| under(&id))
+            || self.shared.busy(|id| under(&id))
     }
 }
 
