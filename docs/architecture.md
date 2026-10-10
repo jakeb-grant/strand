@@ -240,7 +240,10 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   `strand_auth::Client` (looking the helper up again at each check until
   one is found), blocks in PAM for up to the client's timeout, and
   answers on the main loop's channel (`LockMsg::Checked`), so the main
-  thread never waits on PAM. SIGINT and SIGTERM end `strand run` only
+  thread never waits on PAM. Every `LockMsg` carries the lock session its
+  check began in (`LockScreen::session`, bumped when a lock ends; `auth`
+  reads it through `AuthConfig::session` when a check begins), and a
+  verdict for a session that has ended is dropped (m4-audit). SIGINT and SIGTERM end `strand run` only
   while no lock is shown.
   As built (m4-lock wave 2, `run/lock.rs`; decisions.md m4-lock-w2):
   `lock::Guard::wire` connects `auth`'s tokens (`AuthConfig::sink`) and
@@ -3848,10 +3851,15 @@ transparent huge pages for life.
     `strand_auth::Password` from the moment it arrives, wiped once
     sent. A success hands the `strand_auth::UnlockToken` to the
     `auth::UnlockSink` the binary sets with `auth::configure`
-    (`AuthConfig { helper, timeout, sink }`), which passes it to the
-    surface manager's unlock; anything else sets `failed`, and a check
-    that could not be made is a warning diagnostic, as is the `login`
-    fallback (once per process).
+    (`AuthConfig { helper, timeout, sink, failed, session, client_hook }`),
+    which passes it to the surface manager's unlock; anything else sets
+    `failed`, and a check that could not be made goes to the
+    `auth::FailureSink` and is a warning diagnostic, as is the `login`
+    fallback (once per process). The blocking task hands the verdict to
+    the sinks itself, with the `auth::SessionTag` value read when the
+    check began (`Fn(UnlockToken, u64)`, `Fn(&str, u64)`), so a check
+    outlives a store that stops mid-check (a lock that reads no `auth`
+    field holds no reader; m4-audit).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT
     (`audio::spectrum::Fft`, an in-place radix-2 transform; realfft
     until decisions.md m4-effects-media-w2) runs on the audio thread only while a reader is visible,

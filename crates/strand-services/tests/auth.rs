@@ -2,7 +2,10 @@
 //! protocol; the real helper and PAM are strand-auth's tests and the
 //! lock VM's): `busy` while a password is checked, `failed` after a
 //! refusal or a failure, an [`UnlockToken`] to the sink only on success,
-//! one check at a time, and the `login` fallback's single warning.
+//! one check at a time, the `login` fallback's single warning, and a
+//! check that outlives its store still delivering, with its session tag.
+//!
+//! [`UnlockToken`]: strand_auth::UnlockToken
 //!
 //! One test: `auth::configure` is process-wide.
 
@@ -41,6 +44,10 @@ fn fake(dir: &Path, name: &str, service: u8, verdict: u8, delay: &str) -> PathBu
     path
 }
 
+/// The session tag checks read when they begin.
+static SESSION: std::sync::LazyLock<Arc<AtomicUsize>> =
+    std::sync::LazyLock::new(|| Arc::new(AtomicUsize::new(1)));
+
 fn asked(dir: &Path, name: &str) -> usize {
     std::fs::read_to_string(dir.join(format!("{name}.asked")))
         .map(|s| s.lines().count())
@@ -52,6 +59,8 @@ struct Harness {
     services: strand_services::Services,
     builtin: strand_services::Builtin,
     unlocks: Arc<AtomicUsize>,
+    /// The session tags the sinks were given.
+    tags: Arc<Mutex<Vec<u64>>>,
     /// What the failure sink was told.
     failures: Arc<Mutex<Vec<String>>>,
     diagnostics: Mutex<Vec<ServiceDiagnostic>>,
@@ -61,18 +70,28 @@ impl Harness {
     /// Starts `auth` with `helper`.
     fn start(helper: PathBuf) -> Harness {
         let unlocks = Arc::new(AtomicUsize::new(0));
+        let tags = Arc::new(Mutex::new(Vec::new()));
         let u = unlocks.clone();
-        let sink: UnlockSink = Arc::new(move |_token| {
+        let t = tags.clone();
+        let sink: UnlockSink = Arc::new(move |_token, tag| {
+            t.lock().unwrap().push(tag);
             u.fetch_add(1, Ordering::SeqCst);
         });
         let failures = Arc::new(Mutex::new(Vec::new()));
         let f = failures.clone();
-        let failed: FailureSink = Arc::new(move |why| f.lock().unwrap().push(why.to_string()));
+        let t = tags.clone();
+        let failed: FailureSink = Arc::new(move |why, tag| {
+            t.lock().unwrap().push(tag);
+            f.lock().unwrap().push(why.to_string());
+        });
+        // The binary's lock session generation, as it reads at a submit.
+        let session = SESSION.clone();
         auth::configure(Some(AuthConfig {
             helper: Some(helper),
             timeout: Duration::from_secs(5),
             sink: Some(sink),
             failed: Some(failed),
+            session: Some(Arc::new(move || session.load(Ordering::SeqCst) as u64)),
             client_hook: None,
         }));
         let rt = Runtime::new();
@@ -85,6 +104,7 @@ impl Harness {
             services,
             builtin,
             unlocks,
+            tags,
             failures,
             diagnostics: Mutex::new(Vec::new()),
         }
@@ -215,6 +235,33 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
         .filter(|w| w.contains("/etc/pam.d/strand"))
         .collect();
     assert_eq!(fallback.len(), 1, "{fallback:?}");
+    h.stop();
+
+    // (m4-audit) A check outlives its store: a lock that reads no `auth`
+    // field holds no reader, so the store stops 5 s after a submit, here
+    // mid-check. The token still reaches the sink, with the session tag
+    // read when the check began, not the one current when it ends.
+    let h = Harness::start(fake(dir.path(), "slow", 0, 0, "1"));
+    SESSION.store(4, Ordering::SeqCst);
+    h.submit("right");
+    h.until("busy", Harness::busy);
+    SESSION.store(5, Ordering::SeqCst);
+    h.builtin.auth.stop_now(&h.rt);
+    h.until("accepted after the stop", |h| {
+        h.unlocks.load(Ordering::SeqCst) == 1
+    });
+    assert_eq!(*h.tags.lock().unwrap(), [4]);
+    h.stop();
+    // So does a failure to check: the binary shows its fallback.
+    let h = Harness::start(fake(dir.path(), "slow-error", 0, 2, "1"));
+    h.submit("x");
+    h.until("busy", Harness::busy);
+    h.builtin.auth.stop_now(&h.rt);
+    h.until("the failure after the stop", |h| {
+        !h.failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(*h.tags.lock().unwrap(), [5]);
+    assert_eq!(h.unlocks.load(Ordering::SeqCst), 0);
     h.stop();
     auth::configure(None);
 }

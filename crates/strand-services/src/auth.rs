@@ -21,6 +21,14 @@
 //! then shows its built-in password field, whose own client may still
 //! work: decisions.md, m4-lock-w2), and the helper's `login` fallback
 //! warns once per process (decisions.md, m4-owner).
+//!
+//! The blocking task that checks a password hands its verdict to the
+//! sinks itself, so a check outlives the store: a lock that never reads
+//! `auth.busy` or `auth.failed` holds no reader, and the store stops
+//! [`STOP_GRACE`](crate::STOP_GRACE) after a submit, mid-check if PAM is
+//! slow; its token or its failure still arrives (m4-audit). Each check
+//! carries the [`SessionTag`] read when it began, so that the binary can
+//! drop a verdict for a lock session that has ended.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -33,15 +41,20 @@ use crate::{Call, Cx, Msg, ServiceError, Store, service};
 /// The schema the `auth` service serves.
 pub const SCHEMA: &str = strand_services_schema::AUTH;
 
-/// Where an accepted password's [`UnlockToken`] goes: the binary's main
-/// loop, which hands it to `strand_surface::State::unlock`. Called on a
-/// blocking task's thread.
-pub type UnlockSink = Arc<dyn Fn(UnlockToken) + Send + Sync>;
+/// Where an accepted password's [`UnlockToken`] goes, with the check's
+/// session tag: the binary's main loop, which hands it to
+/// `strand_surface::State::unlock`. Called on a blocking task's thread.
+pub type UnlockSink = Arc<dyn Fn(UnlockToken, u64) + Send + Sync>;
 
 /// Told why a password could not be checked (no helper, a crash, a
-/// timeout, a PAM error; never a refusal): the binary's main loop, which
-/// shows the built-in password field. Called on the services thread.
-pub type FailureSink = Arc<dyn Fn(&str) + Send + Sync>;
+/// timeout, a PAM error; never a refusal), with the check's session tag:
+/// the binary's main loop, which shows the built-in password field.
+/// Called on a blocking task's thread or the services thread.
+pub type FailureSink = Arc<dyn Fn(&str, u64) + Send + Sync>;
+
+/// Read when a check begins; the sinks get its value back (the binary:
+/// its lock session's generation). Without one every check's tag is 0.
+pub type SessionTag = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Applied to every [`Client`] the store makes, before its first
 /// password (the binary's `faults` build passes `STRAND_FAULT` through
@@ -60,6 +73,8 @@ pub struct AuthConfig {
     pub sink: Option<UnlockSink>,
     /// Where failures to check go.
     pub failed: Option<FailureSink>,
+    /// Tags each check (see [`SessionTag`]).
+    pub session: Option<SessionTag>,
     /// Applied to each client made.
     pub client_hook: Option<ClientHook>,
 }
@@ -71,6 +86,7 @@ impl Default for AuthConfig {
             timeout: strand_auth::DEFAULT_TIMEOUT,
             sink: None,
             failed: None,
+            session: None,
             client_hook: None,
         }
     }
@@ -83,6 +99,7 @@ impl std::fmt::Debug for AuthConfig {
             .field("timeout", &self.timeout)
             .field("sink", &self.sink.is_some())
             .field("failed", &self.failed.is_some())
+            .field("session", &self.session.is_some())
             .field("client_hook", &self.client_hook.is_some())
             .finish()
     }
@@ -124,11 +141,43 @@ pub struct Auth {
     pub failed: bool,
 }
 
-type Check = tokio::task::JoinHandle<(Client, Verdict)>;
+/// What a check came to, once its verdict went to the sinks: the client
+/// back, and [`deliver`]'s answer.
+type Check = tokio::task::JoinHandle<(Client, Delivered)>;
+
+/// Whether `failed` is set, and the warning a failure to check is.
+type Delivered = (bool, Option<String>);
+
+/// Hands `verdict` to the sinks (on the checking task's thread, so that a
+/// stopped store still delivers it).
+fn deliver(config: &AuthConfig, verdict: Verdict, session: u64) -> Delivered {
+    match verdict {
+        Verdict::Unlocked(token) => {
+            match &config.sink {
+                Some(sink) => sink(token, session),
+                None => log::warn!("auth: a password was accepted, but nothing takes the unlock"),
+            }
+            (false, None)
+        }
+        Verdict::Denied { message } => {
+            if let Some(m) = message {
+                log::info!("auth: refused: {m}");
+            }
+            (true, None)
+        }
+        Verdict::Failed(e) => {
+            let why = format!("the password could not be checked: {e}");
+            if let Some(f) = &config.failed {
+                f(&why, session);
+            }
+            (true, Some(why))
+        }
+    }
+}
 
 impl Auth {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
-        let config = config();
+        let config = Arc::new(config());
         let helper = config.helper.clone().or_else(strand_auth::default_helper);
         let start = |path: &PathBuf| {
             let c = Client::new(path.clone(), crate::child::restore_in_child)
@@ -138,12 +187,7 @@ impl Auth {
                 None => c,
             }
         };
-        let fail = |cx: &mut Cx<Self>, why: String| {
-            if let Some(f) = &config.failed {
-                f(&why);
-            }
-            cx.warn(why);
-        };
+        let session = || config.session.as_ref().map_or(0, |s| s());
         let mut client = helper.as_ref().map(start);
         if helper.is_none() {
             cx.warn("no `strand-auth` helper is installed: the lock screen cannot check passwords");
@@ -152,54 +196,37 @@ impl Auth {
             return Ok(());
         }
         cx.ready();
-        let mut check: Option<Check> = None;
+        let mut check: Option<(Check, u64)> = None;
         loop {
             tokio::select! {
                 done = async {
                     match check.as_mut() {
-                        Some(c) => c.await,
+                        Some((c, _)) => c.await,
                         None => std::future::pending().await,
                     }
                 } => {
-                    check = None;
-                    let verdict = match done {
-                        Ok((c, v)) => {
+                    let tag = check.take().map_or(0, |(_, t)| t);
+                    let (failed, warning) = match done {
+                        Ok((c, d)) => {
                             client = Some(c);
-                            v
+                            d
                         }
                         // The blocking task panicked: its client (and
                         // helper) went with it; a new one takes over.
                         Err(e) => {
                             client = helper.as_ref().map(start);
-                            Verdict::Failed(strand_auth::AuthError::Io(std::io::Error::other(
-                                e.to_string(),
-                            )))
+                            let v = Verdict::Failed(strand_auth::AuthError::Io(
+                                std::io::Error::other(e.to_string()),
+                            ));
+                            deliver(&config, v, tag)
                         }
                     };
                     if let Some(w) = strand_auth::take_service_warning() {
                         cx.warn(w);
                     }
-                    let failed = match verdict {
-                        Verdict::Unlocked(token) => {
-                            match &config.sink {
-                                Some(sink) => sink(token),
-                                None => log::warn!(
-                                    "auth: a password was accepted, but nothing takes the unlock"
-                                ),
-                            }
-                            false
-                        }
-                        Verdict::Denied { message } => {
-                            if let Some(m) = message {
-                                log::info!("auth: refused: {m}");
-                            }
-                            true
-                        }
-                        Verdict::Failed(e) => {
-                            fail(&mut cx, format!("the password could not be checked: {e}"));
-                            true
-                        }
-                    };
+                    if let Some(w) = warning {
+                        cx.warn(w);
+                    }
                     if !cx.update(|s| {
                         s.busy = false;
                         s.failed = failed;
@@ -216,12 +243,13 @@ impl Auth {
                             // (and wiped).
                             continue;
                         }
+                        let tag = session();
                         let Some(mut c) = client.take() else {
-                            fail(
-                                &mut cx,
-                                "no `strand-auth` helper is installed: the password could not be checked"
-                                    .to_string(),
-                            );
+                            let why = "no `strand-auth` helper is installed: the password could not be checked";
+                            if let Some(f) = &config.failed {
+                                f(why, tag);
+                            }
+                            cx.warn(why);
                             if !cx.update(|s| s.failed = true) {
                                 return Ok(());
                             }
@@ -233,10 +261,15 @@ impl Auth {
                         }) {
                             return Ok(());
                         }
-                        check = Some(tokio::task::spawn_blocking(move || {
-                            let v = c.submit(password);
-                            (c, v)
-                        }));
+                        let config = config.clone();
+                        check = Some((
+                            tokio::task::spawn_blocking(move || {
+                                let v = c.submit(password);
+                                let d = deliver(&config, v, tag);
+                                (c, d)
+                            }),
+                            tag,
+                        ));
                     }
                     Some(_) => {}
                 },

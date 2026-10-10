@@ -415,14 +415,18 @@ impl Secrets {
 
 // ---- the main thread: the surface host's part --------------------------------
 
-/// What reaches the main loop about the lock from other threads.
+/// What reaches the main loop about the lock from other threads. Each
+/// carries the lock session (`LockScreen::session`) its check began in: a
+/// verdict for a session that has ended is dropped, so a check still in
+/// flight when one lock ended never unlocks, or marks failed, the next
+/// (m4-audit).
 pub(crate) enum LockMsg {
     /// `auth` accepted a password.
-    Token(UnlockToken),
+    Token(UnlockToken, u64),
     /// `auth` could not check a password (never a refusal).
-    AuthFailed(String),
+    AuthFailed(String, u64),
     /// The fallback's own check answered.
-    Checked(Verdict),
+    Checked(u64, Verdict),
 }
 
 /// The fallback while it is shown.
@@ -442,7 +446,8 @@ struct Checker {
 }
 
 impl Checker {
-    fn spawn(reply: Sender<LockMsg>) -> io::Result<Checker> {
+    /// A checker for lock session `session`, whose verdicts say so.
+    fn spawn(reply: Sender<LockMsg>, session: u64) -> io::Result<Checker> {
         let (tx, rx) = std::sync::mpsc::channel::<Password>();
         std::thread::Builder::new()
             .name("strand-lock-auth".into())
@@ -460,7 +465,7 @@ impl Checker {
                             "no `strand-auth` helper is installed",
                         ))),
                     };
-                    if reply.send(LockMsg::Checked(verdict)).is_err() {
+                    if reply.send(LockMsg::Checked(session, verdict)).is_err() {
                         return;
                     }
                 }
@@ -499,6 +504,10 @@ pub(crate) struct LockScreen {
     last: Option<LockState>,
     reply: Option<Sender<LockMsg>>,
     checker: Option<Checker>,
+    /// The lock session's generation, bumped when a lock ends: the tag
+    /// of every check begun in it (shared with `auth`'s
+    /// `AuthConfig::session`, read on the services thread).
+    session: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl std::fmt::Debug for LockScreen {
@@ -644,7 +653,8 @@ impl LockScreen {
                 if self.checker.is_none()
                     && let Some(reply) = self.reply.clone()
                 {
-                    match Checker::spawn(reply) {
+                    let session = self.session.load(std::sync::atomic::Ordering::SeqCst);
+                    match Checker::spawn(reply, session) {
                         Ok(c) => self.checker = Some(c),
                         Err(e) => log::error!("lock: the password check could not start: {e}"),
                     }
@@ -662,9 +672,33 @@ impl LockScreen {
         true
     }
 
-    /// The fallback's check answered: a token to unlock with, or the
-    /// field shows the refusal.
-    pub(crate) fn checked(&mut self, verdict: Verdict) -> Option<UnlockToken> {
+    /// The current lock session's generation.
+    fn generation(&self) -> u64 {
+        self.session.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A check begun in lock session `tag` still belongs to this one.
+    fn current(&self, tag: u64, what: &str) -> bool {
+        let current = tag == self.generation();
+        if !current {
+            log::info!("lock: {what} from a lock that has ended is dropped");
+        }
+        current
+    }
+
+    /// `auth` accepted a password in lock session `tag`: the token, if
+    /// that session is still this one.
+    pub(crate) fn token(&mut self, token: UnlockToken, tag: u64) -> Option<UnlockToken> {
+        self.current(tag, "a password accepted").then_some(token)
+    }
+
+    /// The fallback's check, begun in lock session `tag`, answered: a
+    /// token to unlock with, or the field shows the refusal. A verdict
+    /// for an earlier session is dropped.
+    pub(crate) fn checked(&mut self, tag: u64, verdict: Verdict) -> Option<UnlockToken> {
+        if !self.current(tag, "a verdict") {
+            return None;
+        }
         let f = self.fallback.as_mut()?;
         f.dirty = true;
         match verdict {
@@ -691,7 +725,10 @@ impl LockScreen {
     /// asked for or held: [`Guard::check`] drops it otherwise
     /// ([`LockScreen::idle`]), so a check that failed while unlocked
     /// never shows the fallback on the next, healthy lock.
-    pub(crate) fn auth_failed(&mut self, why: String) {
+    pub(crate) fn auth_failed(&mut self, why: String, tag: u64) {
+        if !self.current(tag, "a failure to check") {
+            return;
+        }
         if self.fallback.is_none() && self.pending.is_none() {
             self.pending = Some(format!("`auth` failed ({why})"));
         }
@@ -733,8 +770,11 @@ impl LockScreen {
         self.pending = None;
         self.drew = false;
         self.asked = None;
-        // The helper goes with the lock session.
+        // The helper goes with the lock session, and its checks still in
+        // flight answer for a session that has ended.
         self.checker = None;
+        self.session
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -793,13 +833,14 @@ impl Guard {
                 let Event::Msg(msg) = event else {
                     return;
                 };
+                let lock = &mut state.host_mut().lock;
                 let token = match msg {
-                    LockMsg::Token(t) => Some(t),
-                    LockMsg::AuthFailed(why) => {
-                        state.host_mut().lock.auth_failed(why);
+                    LockMsg::Token(t, tag) => lock.token(t, tag),
+                    LockMsg::AuthFailed(why, tag) => {
+                        lock.auth_failed(why, tag);
                         None
                     }
-                    LockMsg::Checked(v) => state.host_mut().lock.checked(v),
+                    LockMsg::Checked(tag, v) => lock.checked(tag, v),
                 };
                 if let Some(t) = token
                     && !state.unlock(t)
@@ -812,16 +853,20 @@ impl Guard {
         state.host_mut().lock.reply = Some(tx.clone());
         let tokens = Mutex::new(tx.clone());
         let failures = Mutex::new(tx);
+        let session = state.host_mut().lock.session.clone();
         let mut config = strand_services::auth::AuthConfig {
-            sink: Some(Arc::new(move |token| {
+            sink: Some(Arc::new(move |token, tag| {
                 if let Ok(t) = tokens.lock() {
-                    let _ = t.send(LockMsg::Token(token));
+                    let _ = t.send(LockMsg::Token(token, tag));
                 }
             })),
-            failed: Some(Arc::new(move |why: &str| {
+            failed: Some(Arc::new(move |why: &str, tag| {
                 if let Ok(t) = failures.lock() {
-                    let _ = t.send(LockMsg::AuthFailed(why.to_string()));
+                    let _ = t.send(LockMsg::AuthFailed(why.to_string(), tag));
                 }
+            })),
+            session: Some(Arc::new(move || {
+                session.load(std::sync::atomic::Ordering::SeqCst)
             })),
             ..Default::default()
         };
@@ -1401,7 +1446,7 @@ mod tests {
         s.changed(LockState::Locked);
         s.changed(LockState::Finished);
         assert_eq!(s.pending.as_deref(), Some("the compositor ended the lock"));
-        s.auth_failed("x".into());
+        s.auth_failed("x".into(), 0);
         assert_eq!(
             s.pending.as_deref(),
             Some("the compositor ended the lock"),
@@ -1411,7 +1456,7 @@ mod tests {
         assert_eq!(s.pending, None);
         // `auth` failing with no lock: the main loop's next turn with no
         // lock drops it, so the next lock shows the config's content.
-        s.auth_failed("the helper stopped".into());
+        s.auth_failed("the helper stopped".into(), 1);
         s.idle();
         assert_eq!(s.pending, None, "no fallback on the next, healthy lock");
     }
@@ -1420,14 +1465,60 @@ mod tests {
     #[test]
     fn only_a_success_yields_a_token() {
         let mut s = LockScreen::default();
-        assert!(s.checked(Verdict::Denied { message: None }).is_none());
+        assert!(s.checked(0, Verdict::Denied { message: None }).is_none());
         s.show("test");
-        assert!(s.checked(Verdict::Denied { message: None }).is_none());
+        assert!(s.checked(0, Verdict::Denied { message: None }).is_none());
         assert_eq!(
             s.fallback.as_ref().map(|f| f.field.state()),
             Some(FieldState::Failed)
         );
-        assert!(s.checked(Verdict::Failed(AuthError::Timeout)).is_none());
+        assert!(s.checked(0, Verdict::Failed(AuthError::Timeout)).is_none());
+    }
+
+    /// (m4-audit) A verdict is tied to the lock session its check began
+    /// in. A check still in flight when a lock ended (the fallback's or
+    /// `auth`'s) answers into the next lock: its token unlocks nothing
+    /// (`token` and `checked` take a token only from a current session),
+    /// and its refusal or failure neither marks the new field failed
+    /// (which would let a second password in while the new check runs)
+    /// nor shows the fallback. The new session's own verdicts count.
+    /// (A token cannot be made outside strand-auth's client, so the
+    /// unlock path is checked through `current`, which both gate on.)
+    #[test]
+    fn a_verdict_from_an_ended_lock_is_dropped() {
+        let mut s = LockScreen::default();
+        s.changed(LockState::Locked);
+        s.show("test");
+        let first = s.generation();
+        assert!(s.current(first, "test"));
+        // The lock ends with that check in flight; a new one shows the
+        // fallback at once, its own check running.
+        s.changed(LockState::Unlocked);
+        s.changed(LockState::Locked);
+        s.show("test again");
+        let field = |s: &LockScreen| s.fallback.as_ref().map(|f| f.field.state());
+        let before = field(&s);
+        assert!(!s.current(first, "test"), "the ended session's tag");
+        assert!(
+            s.checked(first, Verdict::Denied { message: None })
+                .is_none()
+        );
+        assert!(
+            s.checked(first, Verdict::Failed(AuthError::Timeout))
+                .is_none()
+        );
+        assert_eq!(field(&s), before, "the new field is untouched");
+        s.fallback = None;
+        s.auth_failed("stale".into(), first);
+        assert_eq!(s.pending, None, "auth's stale failure");
+        // This session's own verdicts.
+        let now = s.generation();
+        assert!(s.current(now, "test"));
+        s.auth_failed("now".into(), now);
+        assert!(s.pending.is_some(), "auth's failure in this session");
+        s.show("test again");
+        assert!(s.checked(now, Verdict::Denied { message: None }).is_none());
+        assert_eq!(field(&s), Some(FieldState::Failed));
     }
 
     /// The other outputs take the `lock`'s `bg`: a colour, a token, a
