@@ -20,8 +20,11 @@
 //! Faults: the logic thread panics, or stops (the watchdog); the text
 //! worker dies; the PAM helper crashes, hangs, answers garbage or is
 //! missing; a runtime fault freezes the lock's component; the lock never
-//! draws a first frame; a session locked with no `lock` compiled; SIGTERM while locked; strand killed (SIGKILL) or
-//! aborted (SIGABRT, what an allocation failure does) while locked and
+//! draws a first frame; a session locked with no `lock` compiled;
+//! SIGTERM while locked, and then the content's output unplugged (the
+//! lock's node kept), or the lock unmounted and then the content's
+//! output unplugged; strand killed (SIGKILL) or aborted (SIGABRT, what
+//! an allocation failure does) while locked and
 //! started again; the compositor ends a lock it granted (`finished` after
 //! `locked`, played by a Wayland proxy, tests/lock/proxy.rs: sway 1.9
 //! never sends it); the compositor refusing the lock (another locker
@@ -231,6 +234,12 @@ impl Sway {
         ])
         .expect("place the new output");
         name
+    }
+
+    /// Unplugs output `name` (a headless output's `unplug`).
+    fn unplug(&self, name: &str) {
+        self.msg(&["output", name, "unplug"])
+            .unwrap_or_else(|| panic!("unplug {name}"));
     }
 
     fn connect(&self) -> wayland_client::Connection {
@@ -720,6 +729,18 @@ impl Strand {
         }
     }
 
+    /// A thread of the running process is named `name`.
+    fn has_thread(&self, name: &str) -> bool {
+        let pid = self.child.as_ref().expect("running").id();
+        std::fs::read_dir(format!("/proc/{pid}/task"))
+            .map(|tasks| {
+                tasks.filter_map(|t| t.ok()).any(|t| {
+                    std::fs::read_to_string(t.path().join("comm")).is_ok_and(|c| c.trim() == name)
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// The restart marker (run/lock.rs).
     fn marker(&self, display: &str) -> PathBuf {
         let dir = self
@@ -853,16 +874,17 @@ impl Vm {
     /// In the fallback: a wrong password is refused and the session
     /// stays locked; the right one unlocks it.
     fn fallback_passwords(&mut self) {
+        self.fallback_passwords_on("HEADLESS-1");
+    }
+
+    /// [`Vm::fallback_passwords`] with the fallback on `output`.
+    fn fallback_passwords_on(&mut self, output: &str) {
         self.keys.enter(WRONG);
-        self.until_locked("HEADLESS-1", "the wrong password refused", true, |s| {
+        self.until_locked(output, "the wrong password refused", true, |s| {
             near(s.corner(), FALLBACK_BG) && near(s.field(), FIELD_REFUSED)
         });
         self.keys.enter(PASSWORD);
-        self.until(
-            "HEADLESS-1",
-            "unlocked by the right password",
-            Shot::desktop,
-        );
+        self.until(output, "unlocked by the right password", Shot::desktop);
     }
 
     /// Types `password` into the config's lock (seen in its colour) and
@@ -1019,6 +1041,81 @@ fn sigterm_while_locked_waits_for_the_unlock() {
     vm.fallback_passwords();
     let status = vm.strand.wait_exit("SIGTERM, unlocked");
     assert!(status.success(), "{status:?}");
+}
+
+/// SIGTERM while locked, logic ended, then the content's output
+/// unplugged: the content is made again on the other output and the
+/// fallback follows it there and takes the passwords. (Logic's unmount at its end sends render no diff, so the
+/// lock's node stays in render's tree here; `lock_unmount` below plays
+/// the node gone.)
+#[test]
+fn sigterm_then_the_contents_output_unplugged_keeps_the_fallback() {
+    let test = "sigterm_unplug";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.strand.signal(libc::SIGTERM);
+    vm.fallback();
+    // Logic has unmounted the lock and ended.
+    let deadline = Instant::now() + WAIT;
+    while vm.strand.has_thread("strand-logic") {
+        assert!(
+            Instant::now() < deadline,
+            "logic never ended after SIGTERM:\n{}",
+            vm.strand.log_text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(vm.strand.running(), "strand outlives SIGTERM while locked");
+    vm.sway.unplug("HEADLESS-1");
+    vm.until_locked(
+        &second,
+        "the built-in password field on the remaining output",
+        true,
+        Shot::fallback,
+    );
+    vm.fallback_passwords_on(&second);
+    let status = vm.strand.wait_exit("SIGTERM, unlocked");
+    assert!(status.success(), "{status:?}");
+}
+
+/// The lock leaves render's tree while locked (`lock_unmount`: "the
+/// lock is no longer mounted"), then the content's output is unplugged:
+/// strand-surface makes the content again on the other output with the
+/// node render no longer knows, and the fallback follows it there (not
+/// a blank surface whose keys reach nothing).
+#[test]
+fn lock_unmounted_then_the_contents_output_unplugged_keeps_the_fallback() {
+    let test = "unmount_unplug";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "lock_unmount");
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.fallback();
+    vm.log_has("the lock is no longer mounted");
+    vm.until_locked(
+        &second,
+        "the fallback's colour on the other output",
+        true,
+        |s| near(s.corner(), FALLBACK_BG),
+    );
+    vm.sway.unplug("HEADLESS-1");
+    vm.until_locked(
+        &second,
+        "the built-in password field on the remaining output",
+        true,
+        Shot::fallback,
+    );
+    vm.fallback_passwords_on(&second);
+    assert!(vm.strand.running(), "logic is alive: the run goes on");
 }
 
 /// Killed by `sig` while locked: sway keeps the session locked; strand
