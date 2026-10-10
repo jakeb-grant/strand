@@ -12,6 +12,12 @@
 //!   than [`RUN_GAP`] between two frames, since large frames apart (a
 //!   panel's opening, then its closing seconds later) are not an
 //!   animation (m4-audit: the design launcher's close was promoted).
+//!   The frame on which a surface's last spring comes to rest is not that
+//!   first settled frame either: it still diffs large against the frame
+//!   before (a spring's tail moves its node by less than the settle
+//!   tolerance, and the whole node is damaged), but nothing follows it;
+//!   the next large frame with no spring in flight switches (m4-audit: a
+//!   spring longer than 500 ms was promoted on its last frame).
 //! - Demotion is the rule reversed: more than [`PROMOTE_AFTER`] of small
 //!   frames, then the next settled frame; a promoted surface that paints
 //!   nothing for [`PROMOTE_AFTER`] is settled and goes back at once (its
@@ -60,6 +66,8 @@ pub struct Promotion {
     due: bool,
     /// When the surface last painted.
     last: Option<Instant>,
+    /// The last frame had springs in flight.
+    sprung: bool,
 }
 
 impl Promotion {
@@ -77,6 +85,10 @@ impl Promotion {
         if damage == 0 {
             return None;
         }
+        // The frame where the springs came to rest: a large animation
+        // driven by springs alone ends here, with nothing left to speed
+        // up, though its damage still counts as large.
+        let settling = std::mem::replace(&mut self.sprung, springs) && !springs;
         // A pause on the CPU ends the run: large frames that are not one
         // animation do not add up. (On the GPU a pause is `idle`'s.)
         if !self.gpu
@@ -105,7 +117,9 @@ impl Promotion {
             self.due = false;
             return None;
         }
-        if self.due && !springs && other {
+        // Demotion may happen as the springs settle; promotion waits for
+        // a frame that proves something still animates.
+        if self.due && !springs && other && !(settling && !self.gpu) {
             return Some(self.switch());
         }
         None
@@ -404,6 +418,37 @@ mod tests {
         assert!(p.on_gpu(), "springs in flight: no switch");
         assert_eq!(p.frame(t + FRAME, 1000, false), Some(Switch::ToCpu));
         assert!(!p.on_gpu());
+    }
+
+    /// (m4-audit) A spring-driven large animation longer than 500 ms
+    /// ends on a frame that is still large (its node moved by less than
+    /// the settle tolerance, and the whole node is damaged) and has no
+    /// spring in flight: that frame does not promote, since nothing
+    /// follows it. A clock-driven animation that goes on after its
+    /// springs settle promotes on its next large frame.
+    #[test]
+    fn a_spring_that_settles_on_a_large_frame_is_not_promoted() {
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        assert!(run(&mut p, &mut t, Duration::from_millis(600), 1_000_000, true).is_empty());
+        t += FRAME;
+        assert_eq!(p.frame(t, 1_000_000, false), None, "the settling frame");
+        assert!(!p.on_gpu());
+        // Nothing follows: the next paint comes after a pause, and the run
+        // starts over.
+        t += Duration::from_secs(2);
+        assert!(run(&mut p, &mut t, Duration::from_millis(200), 1_000_000, false).is_empty());
+        assert!(!p.on_gpu());
+
+        // Springs and a shader clock together: the springs settle on a
+        // large frame, and the clock's next frame promotes.
+        let mut q = Promotion::default();
+        let mut t = Instant::now();
+        assert!(run(&mut q, &mut t, Duration::from_millis(600), 1_000_000, true).is_empty());
+        t += FRAME;
+        assert_eq!(q.frame(t, 1_000_000, false), None);
+        t += FRAME;
+        assert_eq!(q.frame(t, 1_000_000, false), Some(Switch::ToGpu));
     }
 
     #[test]
