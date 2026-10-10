@@ -19,11 +19,20 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status: v0.1, M3 complete; M4 is next.** Where the project stands,
-the deferred items and what M4 needs first are in
-[`docs/handoff.md`](docs/handoff.md). M3's exit gates are met (see
-[`docs/m3-report.md`](docs/m3-report.md)): every builtin service but
-`auth` (M4, the lock screen) is real. The portal, cpu, memory, battery
+**Status: v0.1, M3 complete; M4 (power features) being closed.** Where
+the project stands and what is still open are in
+[`docs/handoff.md`](docs/handoff.md); M4's boxes and the tests behind
+them are in [`docs/features.md`](docs/features.md). M4 has landed GPU
+promotion (vello_gpu on wgpu, its device dropped after 30 s idle),
+shaders, canvas and the bundled GPU effects, the effects catalogue,
+lists that mount only their window (2,000 rows scroll without a gap),
+drag and drop, directional `pages` transitions, compositor-animated
+poses, tray menus, and the lock screen on `ext-session-lock` with a
+forked PAM helper (`strand-auth`) that fails closed, tested in a local
+QEMU VM with injected faults. Open: the bundled noise field (waiting on
+the owner) and the items handoff.md lists. M3's exit gates are met (see
+[`docs/m3-report.md`](docs/m3-report.md)): every builtin service is
+real (`auth` since M4). The portal, cpu, memory, battery
 (UPower), brightness (logind), network (NetworkManager), Bluetooth
 (BlueZ), the tray (SNI + DBusMenu), media (MPRIS) and the shell's own
 notification server run on D-Bus and procfs, audio on PipeWire,
@@ -63,7 +72,8 @@ the design (a bar with a calendar popup, a fuzzy launcher, a
 notification stack and a volume/brightness OSD) and its `theme.strand`
 run unchanged in `strand run`, laid out (taffy: flex, `split` with a
 truly centred middle, grids, lists laid out and painted only where
-visible (logic still mounts every row until M4), container queries),
+visible (since M4 logic mounts only a window of rows too), container
+queries),
 themed (Material 3 palettes from a seed, a wallpaper or Catppuccin and
 base16 imports, derived tokens, `set { }` overrides, the portal's dark
 mode, accent, contrast and reduced motion) and animated (springs on
@@ -73,12 +83,12 @@ about 2 ms of work with declared text/background pairs kept above 3:1,
 while muted and faint text is not guarded mid-swap). They are tested
 on a headless sway with two outputs, driven by clicks, the wheel and
 keys against mock services, with screenshots compared to references.
-Left for later milestones: the
+Left for later milestones then: the
 rich `tooltip { … }` element (the checker warns), clipboard in `input`,
-the directional `pages` transitions, mounting only visible list rows and
-the `auth` service for the lock screen (M4), real background blur (a
-tint until the compositor blurs), and `strand toggle` (M5; `strand set
-launcher.open true` is the same write).
+real background blur (a tint until the compositor blurs), and `strand
+toggle` (M5; `strand set launcher.open true` is the same write); the
+directional `pages` transitions, mounting only visible list rows and the
+`auth` service landed in M4.
 
 `strand run [dir]` compiles your `.strand` files (type checker, bytecode
 VM, reactive core), puts the surfaces on every monitor and reloads live
@@ -90,8 +100,9 @@ formats, `strand set` writes an exported state or a settings field,
 `strand watch` / `strand reload` talk to a running shell, and
 `strand-dev lsp` serves diagnostics, completion, hover,
 go-to-definition, rename and quick fixes. Still open from M1: the
-tree-sitter grammar, the render side of `keyframes`, `shader` and
-`canvas`, and the loader's `.wgsl` and wallpaper module paths. Progress is
+tree-sitter grammar (M5); M4 closed the render side of `keyframes`,
+`shader` and `canvas` and the loader's `.wgsl` and wallpaper paths.
+Progress is
 tracked in [`docs/features.md`](docs/features.md);
 [`docs/design.md`](docs/design.md) has the full design.
 
@@ -112,8 +123,13 @@ Each crate is one box in the runtime architecture:
 | `strand-icons` | freedesktop icon theme lookup shared by the renderer and the apps service | M3 |
 | `strand-introspect` | D-Bus introspection that checks no-code `from dbus` services | M3 |
 | `strand-text` | parley shaping and per-scale glyph atlases on a worker thread | M0 |
-| `strand-render` | Springs, tokens, layout, damage, vello_cpu or GPU | M0, M2 |
-| `strand-surface` | Layer-shell, poses, blur, input, frame timing | M0 |
+| `strand-scene` | Shared vocabulary: ids, geometry, colour, damage, the scene protocol and `Painter` | M0 |
+| `strand-theme` | Palettes: Material 3 roles, `material(seed:/image:)`, importers, the contrast guard | M2 |
+| `strand-render` | Springs, tokens, layout, damage, vello_cpu; lowering to the GPU, effects, promotion | M0, M2, M4 |
+| `strand-gpu` | The GPU thread: one wgpu device, vello_gpu frames, shader passes, readback and WSI presents | M4 |
+| `strand-surface` | Layer-shell, poses, blur, input, frame timing, session lock | M0, M4 |
+| `strand-auth` | The lock screen's PAM helper and the client that spawns it: the lock's security boundary | M4 |
+| `strand-fake-wayland` | A fake Wayland compositor for tests (toplevels, workspaces, layer surfaces) | M4 |
 | `strand` | The runtime binary and CLI | all |
 | `strand-dev` | LSP and inspector, kept out of the runtime binary | M1, M5 |
 
@@ -205,7 +221,11 @@ shell on the real services). The `compositors` job runs
 labwc in an Arch Linux container (`scripts/compositor-matrix-ci.sh`), on
 every push and nightly against `archlinux:latest`;
 `scripts/container/matrix.sh` runs it locally (Hyprland only where it
-gets a KMS card).
+gets a KMS card). The lock screen's fault matrix runs only in a QEMU
+guest with real PAM: `scripts/container/lockvm.sh bash
+scripts/lockvm/scenarios/all.sh` after `scripts/container/run.sh bash
+scripts/lockvm/scenarios/build.sh` (CI's `lock-vm` job where KVM is
+available).
 
 `scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
 and damage gates over whole minutes on a release build (the M0 demo and

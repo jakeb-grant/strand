@@ -14,6 +14,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
 | Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check blocks here in PAM, up to the client's timeout, and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
 | GPU (M4; started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait: every reply is a message and a ping |
 
 Channels are the only coupling between threads. Logic → render is one
@@ -232,9 +233,15 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
 - While a lock is shown, the main thread outlives the logic thread: logic
   ending, panicking or hanging (a watchdog), SIGTERM, and a lock with no
   first frame within 1 s leave the session locked and show render's
-  built-in fallback lock. The main thread then owns the unlock gate and a
-  `strand_auth::Client` of its own. SIGINT and SIGTERM end `strand run`
-  only while no lock is shown.
+  built-in fallback lock. The main thread then owns the unlock gate, and
+  the fallback's password checks run on a thread of their own,
+  `strand-lock-auth` (`run/lock.rs`'s `Checker`, started at the
+  fallback's first submit), which holds the fallback's
+  `strand_auth::Client` (looking the helper up again at each check until
+  one is found), blocks in PAM for up to the client's timeout, and
+  answers on the main loop's channel (`LockMsg::Checked`), so the main
+  thread never waits on PAM. SIGINT and SIGTERM end `strand run` only
+  while no lock is shown.
   As built (m4-lock wave 2, `run/lock.rs`; decisions.md m4-lock-w2):
   `lock::Guard::wire` connects `auth`'s tokens (`AuthConfig::sink`) and
   failures (`AuthConfig::failed`) to the main loop and only then calls
@@ -504,13 +511,18 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   its image assets decoded with the file); the `svg` and `lottie` files
   are read and parsed on the image decode worker as file jobs
   (`ImageStore::load_file`, reached from `RasterProps::files`), whose
-  arrival marks every surface dirty). The M4 plan's `backend.rs` (lowering to `strand-gpu`'s
-  frames, readback delivery) have no code yet: their streams create
-  them, with `promote.rs` (the promotion state machine) and `canvas.rs`
-  beside `renderer/`.
+  arrival marks every surface dirty; `thumbnail.rs`, `thumbnail w`'s
+  CPU raster node fed by the windows service's captures),
+  `backend.rs` (M4: the GPU backend as render drives it, promotion and
+  the device's lifecycle, lowering a display list to `strand-gpu`'s
+  frames, `shader` passes and the replies), with `promote.rs` (the
+  promotion state machines) and `canvas.rs` (a `canvas`'s draw list as
+  display items) beside `renderer/`.
 - `flatten/`: `mod.rs` (display list types, `flatten`, `Flattener`),
   `node.rs` (one node: box, paint, shadows, text, clips, children),
-  `text.rs`, `paint.rs`, `hash.rs`, `widget.rs`, `image.rs`, `tests.rs`.
+  `text.rs`, `paint.rs`, `hash.rs`, `widget.rs`, `image.rs`, `gpu.rs`
+  (M4, `gpu` builds: the pass wants a node adds while drawn and the
+  GPU's pixels drawn in place of the CPU's), `tests.rs`.
 - `raster/`: `mod.rs` (`Raster`), `atlas.rs` (`AtlasMirror`), `paint.rs`
   (scene paints as vello paints), `draw.rs` (drawing a display list,
   disjoint damage), `tests.rs`.
@@ -540,9 +552,17 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   drawn offset),
   `transition.rs` (transition masks: clip paths, pixelate's mosaic),
   `goo.rs` (`merge d`'s goo field contoured by marching squares, a CPU
-  raster under the children).
+  raster under the children), `gpu.rs` (M4, `gpu` builds: the bundled
+  GPU effects as pass wants, decisions.md m4-gpu-effects).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
+- Top-level files beside the directories, among them: `cache.rs`
+  (dithered gradients and blurred shadows drawn once into pixmaps),
+  `layers.rs` (M4: effect layers as `PushLayer`/`PopLayer`),
+  `offscreen.rs` (M4: cached offscreen groups and CPU raster nodes),
+  `clock.rs` (M4: per-node clocks with frame caps), `time.rs` (M4: `t`,
+  `wave`, `noise` evaluated per node), `lock_fallback.rs` (the built-in
+  fallback lock, drawn with no text worker).
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
   paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
   morphs, held by the `Animator`), `stroke.rs` (stroke styles: trim,
@@ -2825,7 +2845,14 @@ Wayland crate. Its interface:
   pixels: Readback }`, `PassPixels { key, frame, pixels }`, `Failed {
   surface, key, error }` (a frame or pass that could not be drawn, such
   as a shader that fails to compile on the device; the device stays
-  up), `Lost(GpuError)`, `Exited`.
+  up), `Lost(GpuError)`, `Exited`. A readback waits at most
+  `HUNG_AFTER` (10 s) for its submission (m4 audit): past it the pass or
+  frame answers `Failed`, then `Lost` ("stopped answering") and
+  `Exited`, and the thread leaks the hung device instead of dropping it
+  (a drop would wait for the queue), so a validated shader that never
+  ends cannot leave render waiting on a reply. The thread keeps at most
+  64 compiled pipelines and 16 pass readback buffers (by size), least
+  recently used first out.
 - `Frame { surface, id: u64, size, scale, ops: Vec<Op>, uploads:
   Vec<Upload>, retire: Vec<u64>, clear: AlphaColor<Srgb> }` (`clear`: the
   background the frame is cleared to; no `readback` field, since an

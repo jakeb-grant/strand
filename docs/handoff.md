@@ -1,48 +1,58 @@
-# Handoff: state after M3 (updated 2026-10-09)
+# Handoff: state during M4's close (updated 2026-10-10)
 
 Where the project stands, what the owner still has to decide, and what was
 deliberately left for later. Read this first when picking the repo up again,
-then `docs/m3-report.md` for the measured numbers and `docs/decisions.md`
-for the reasoning behind each item below.
+then `docs/m3-report.md` for M3's measured numbers, `docs/m4-plan.md` and
+`docs/features.md` for M4, and `docs/decisions.md` for the reasoning behind
+each item below.
 
 ## State
 
-- `main` is at `f56aade` ("Merge laptop/labwc into laptop/integration2"),
-  fast-forwarded from `laptop/integration2`: M0, M1, M2 and M3 are
-  complete. GitHub CI run 37921942812 passed all six jobs on it (`lint`,
-  `test`, `budgets`, `acceptance`, `timing`, `compositors`; the
-  compositors on sway 1.12, niri 26.04, Hyprland 0.56.2 and labwc
-  0.20.2). The previous reference was run 37887410210 on `b87865a`.
-- `docs/features.md`: M0 21/21, M1 56/59, M2 30/30, M3 14/14 (exit line
-  included), M4 0/17, M5 0/9. The three open M1 boxes are owned by later
-  milestones (below).
+- `main` is at `f4899c0` (M4 waves 0–2 merged, "render: promotion's idle
+  rule waits for the attach and a presented frame"); its nightly run
+  38042666058 passed (`lock-vm`, the `archlinux:latest` compositors,
+  `nightly`). M0–M3 are complete. M4's wave 3 (effects-finish,
+  gpu-effects, interaction-finish) is merged on
+  `laptop/integration-m4-w3` (CI run 38041985436 at 22b8688 passed all
+  seven jobs, `lock-vm` included), with the m4 audit's fixes on top
+  (decisions.md m4-audit); it has not reached `main` yet.
+- `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 17/18,
+  M5 0/9 (boxes and exit criteria, counted 2026-10-10; the earlier
+  M0 21/21 counted differently). M4's exits: smooth 2,000-row scrolling,
+  GPU released when idle, and lock fails closed under faults are all
+  ticked (the lock exit on a lock VM run of the integration tree,
+  2026-10-10). The open M1 box is the tree-sitter grammar (M5).
+- M4 still open:
+  - The bundled noise field, waiting on the owner: design.md counts
+    "aurora and noise fields" among the eight bundled GPU effects but
+    names no spelling for a noise field (decisions.md m4-gpu-effects).
+  - The promoted GPU cost against design.md's +20–40 MB is not measured
+    on hardware: ANV cannot present on the advisory leg's sway, so the
+    laptop run measured readback mode only (PSS 4,636 kB over the
+    pre-GPU baseline after the drop; decisions.md m4-gpu-effects).
+  - From the audit, for the owner (decisions.md m4-audit): a hung frame
+    on a promoted (`GpuPresent`) surface is bounded only by the WSI's
+    acquire timeout, nothing keeps a lock's surfaces off the GPU, and a
+    GPU stall while locked is not a lock fault, so a lock with a
+    fullscreen clocked shader that hangs after its first frame could
+    freeze without the fallback. Readbacks now give up after 10 s and
+    lose the device.
+  - Two functional tests still bound wall-clock time with wide margins
+    (`strand-scene/src/tokens.rs::huge_fan_out_fails_fast`,
+    `strand-dev/tests/lsp.rs`'s hung-bus case), left to their owners.
+  - The closing steps: `docs/m4-report.md`, merging the integration
+    branch to `main`, and deleting the merged wave branches.
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
-  is the latency reference (decisions.md laptop-open).
-- Remote branches: `origin/main`, and `origin/laptop/cleanup` (this
-  update) until it merges, when it is deleted too. The other `wave4/*`
-  and `laptop/*` branches were all deleted on 2026-10-09.
-- Merged since `b87865a` (decisions.md laptop-open, laptop-resilience,
-  laptop-media, laptop-labwc):
-  - `win.maximize()` and `win.fullscreen()`, toggles beside
-    `win.maximized` and `win.fullscreen`, on every adapter and the wlr
-    fallback, checked live on all four compositors of the matrix.
-  - The compositor adapters degrade to the standard protocols when
-    connected to a compositor they cannot understand (a reply of another
-    shape, a stream of no events, focus and close refused in every
-    dialect). They raise one `ServiceDiagnostic` naming the compositor,
-    its version and what was not understood (log and `strand watch`, not
-    the overlay), and recover on their own. A later action an older
-    compositor cannot parse is only rejected. Hyprland dispatches go out
-    in Lua first and fall back to classic on `Invalid dispatcher`.
-  - The `compositors` job runs nightly against `archlinux:latest` too;
-    its summary tables each compositor's version and result.
-  - `media`: a new track's time starts at 0 in the same update as its
-    title (the `media_follows_the_active_player_without_polling` flake).
-  - The wlr protocol thread waits (500 ms at most) for the compositor to
-    read the requests it sent before it stops (the labwc fullscreen
-    flake in CI run 37913227852's `compositors` job).
+  is the latency reference (decisions.md laptop-open). The GPU tier runs
+  on lavapipe (`run.sh`, CI) and advisorily on the laptop's GPU
+  (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
+  (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
+- Remote branches: `origin/main`, `origin/laptop/integration-m4-w3`, and
+  the wave-3 branches it merged (`laptop/m4-effects-finish`,
+  `laptop/m4-gpu-effects`, `laptop/m4-interaction-finish`), to be
+  deleted once the integration branch reaches `main`.
 
 ## Owner decisions (answered 2026-10-08)
 
@@ -188,39 +198,29 @@ planned. Strand still runs there; with only `ext-foreign-toplevel-list`,
 
 ### Open M1 boxes owned by later milestones
 
-- `keyframes` playback, `shader` and `canvas` drawing (render work, M4).
-- tree-sitter grammar for `.strand` (M5).
-- The watcher's `.wgsl`, wallpaper and link-target watching beyond what the
-  binary already does (needed once M4 shaders exist).
+- tree-sitter grammar for `.strand` (M5). M4 closed the other two:
+  `keyframes` playback, `shader` and `canvas` drawing, and the watcher's
+  `.wgsl` and wallpaper paths.
 
-## Before starting M4
+## M4 infrastructure
 
-- GPU promotion and the 8 bundled GPU effects need a GPU to test against.
-  GitHub's runners have none. The proposal is a software Vulkan driver
-  (lavapipe) in the container image and CI, plus advisory real-hardware
-  checks through `/dev/dri/renderD128` on the owner's laptop. Decided
-  2026-10-09 (decisions.md, m4-owner), as is the GPU backend being in
-  every build with the `.text` gate raised to the measured size.
-- The lock screen must be tested in a local QEMU VM with injected faults,
-  never on a real session (design.md). The laptop can do it: `/dev/kvm`
-  there is `crw-rw-rw-` (0666, checked 2026-10-09), so a container given
-  `--device /dev/kvm` runs a KVM-accelerated VM as the owner's user with
-  no host config change; the owner allowed `/dev/kvm` for that container
-  only (m4-owner). `scripts/container/lockvm.sh` runs it in its own
-  image (`Dockerfile.lockvm`), and CI's `lock-vm` job runs the same
-  harness under the runner's KVM (first green in run 37955474449).
-- Harnesses (m4-infra): `scripts/container/lockvm.sh [CMD]` runs CMD as
-  root in a KVM guest with real PAM, sway and user `tester` (no CMD: the
-  smoke); `scripts/container/gpu.sh [CMD]` runs CMD on the laptop's GPU
-  (renderD128 only, advisory); `run.sh` and CI run the GPU tier on lavapipe.
-- The rest of M4 (blur protocols, drag and drop, tray menus, page
-  transitions, the effects catalogue, 2,000-row scrolling) can run
-  headless as M2 did.
+- GPU: lavapipe in the container image and CI, advisory hardware checks
+  through `/dev/dri/renderD128` (`scripts/container/gpu.sh`); the GPU
+  backend is in every build with the `.text` gate at the measured size
+  (decisions.md m4-owner).
+- Lock: `scripts/container/lockvm.sh [CMD]` runs CMD as root in a KVM
+  guest with real PAM, sway and user `tester` (no CMD: the smoke); the
+  owner allowed `/dev/kvm` for that container only (m4-owner). Build
+  with `scripts/container/run.sh bash scripts/lockvm/scenarios/build.sh`,
+  run `scripts/container/lockvm.sh bash scripts/lockvm/scenarios/all.sh`.
+  CI's `lock-vm` job runs the same harness under the runner's KVM.
 - The execution plan (streams, waves, owners, tests) is
-  `docs/m4-plan.md`; its interface text is in `docs/architecture.md`
-  (the GPU parts after the spike, wave 0c).
+  `docs/m4-plan.md`; its interface text is in `docs/architecture.md`.
 
 ## Handoff checklist
+
+M3's checklist, kept as it was closed; M4's closing steps are
+m4-plan.md's "Closing M4" and the open items under State.
 
 - [x] CI green on `main`'s head (`gh run list --repo jakeb-grant/strand -L 3`):
   run 37921942812 on `f56aade`, all six jobs.
