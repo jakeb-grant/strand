@@ -119,6 +119,9 @@ impl<'a> Flattener<'a> {
         };
         // Springs: this frame's values of the props in flight.
         let inherited = inh.color.unwrap_or_else(|| default_color(&scope));
+        // (M4) A transition mask, decided before the springs so a ghost
+        // it needs is kept (`crate::effects::transition`).
+        let transition_mask = self.anim.reveal(self.tree, node, &scope);
         self.anim.stagger(self.tree, node, &scope);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
@@ -401,6 +404,33 @@ impl<'a> Flattener<'a> {
                 xform: self.xform,
             })))
         });
+        // (M4) The transition mask over the node and its subtree.
+        let mask_group = transition_mask.map(|m| {
+            let mut h = DefaultHasher::new();
+            format!("{m:?}").hash(&mut h);
+            h.finish().hash(&mut sig);
+            match m.drawn(frame, s) {
+                crate::effects::transition::Drawn::Clip(path) => {
+                    (self.marker(Item::PushClip(path)), Item::PopClip)
+                }
+                crate::effects::transition::Drawn::Blur { radius, opacity } => {
+                    let mut effects = vec![strand_scene::Effect::Opacity(opacity)];
+                    if radius > 0.0 {
+                        effects.push(strand_scene::Effect::Blur { radius });
+                    }
+                    (
+                        self.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
+                            effects: effects.into(),
+                            frame,
+                            scale: self.scale.as_f32(),
+                            xform: self.xform,
+                        }))),
+                        Item::PopLayer,
+                    )
+                }
+            }
+        });
+        let mask_hash = transition_mask.map(|m| format!("{m:?}"));
         // Widgets' default radius: `$radius.md` for buttons and segmented
         // controls, a pill for meters.
         let default_radius = match node.kind {
@@ -1025,6 +1055,7 @@ impl<'a> Flattener<'a> {
         {
             crate::layers::hash_effects(&mut ctx, &l.effects);
         }
+        mask_hash.hash(&mut ctx);
         let mut child_clip = inh.clip;
         let mut clip_group = None;
         if clips {
@@ -1067,6 +1098,10 @@ impl<'a> Flattener<'a> {
         if let Some(i) = layer_group {
             self.out.items[i].bounds = subtree;
             self.marker(Item::PopLayer);
+        }
+        if let Some((i, pop)) = mask_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(pop);
         }
         // Drawn: its clock runs, unless all it draws is outside the clip
         // and nothing that places it follows time (it stays out). A

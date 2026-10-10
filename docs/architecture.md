@@ -423,7 +423,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   fallback; the canvas and sprites), `particles.rs` (CPU sprite blits),
   `letters.rs` (a text's `letters`, one letter at a time), `roll.rs`
   (`roll: true` texts rolling their changed letters), `lean.rs`
-  (`parallax:` and the CPU's 2D `tilt:` following the pointer).
+  (`parallax:` and the CPU's 2D `tilt:` following the pointer),
+  `transition.rs` (transition masks: clip paths, pixelate's blur).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and

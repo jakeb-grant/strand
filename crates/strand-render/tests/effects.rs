@@ -1434,3 +1434,192 @@ fn parallax_and_tilt_follow_the_pointer() {
     buf.paint_at(&mut r, S, 1, std::time::Duration::from_millis(1100));
     assert!(buf.pixels == rest.pixels);
 }
+
+const TRANSITIONS: [(&str, &str); 4] = [
+    ("wipe", "left"),
+    ("disc", ""),
+    ("dissolve", ""),
+    ("pixelate", ""),
+];
+
+/// Sets `prop` with `~ instant` (a node created on a shown surface
+/// would spring its props in from their defaults).
+fn set_now(d: &mut SceneDiff, id: NodeId, prop: Prop, value: PropValue) {
+    d.push(SceneOp::SetProp {
+        id,
+        prop,
+        value,
+        transition: Transition::Instant,
+    });
+}
+
+/// The value of `transition:` for an entry of [`TRANSITIONS`].
+fn transition_of((name, arg): (&str, &str)) -> PropValue {
+    if arg.is_empty() {
+        kw(name)
+    } else {
+        call(name, vec![kw(arg)])
+    }
+}
+
+/// An empty 200 × 60 bar painted at 1 s, then (with `masks`) a 40 px
+/// box per transition mask created on it and painted at 1.016 s. Returns
+/// the boxes.
+fn masked(masks: bool, reduced: bool) -> (Renderer, Buffer, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut r = renderer();
+    r.set_reduced_motion(reduced);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(200, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    let mut d = SceneDiff::new();
+    let mut ids = Vec::new();
+    for (i, t) in TRANSITIONS.into_iter().enumerate() {
+        let n = NodeId::new(200 + i as u32, 0);
+        d.create(n, NodeKind::Box, Some(root), i as u32);
+        for (p, v) in at_xy(8.0 + 48.0 * i as f32, 10.0, 40.0, 40.0) {
+            set_now(&mut d, n, p, v);
+        }
+        set_now(&mut d, n, Prop::Place, kw("absolute"));
+        set_now(&mut d, n, Prop::Bg, color("#f9e2af"));
+        if masks {
+            d.set(n, Prop::Transition, transition_of(t));
+        }
+        ids.push(n);
+    }
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, std::time::Duration::from_millis(1016));
+    (r, buf, ids)
+}
+
+/// How many pixels of box `i` (of [`masked`]) are drawn at all.
+fn shown(buf: &Buffer, i: u32) -> usize {
+    let bg = buf.px(199, 59);
+    let x0 = 8 + 48 * i;
+    (x0..x0 + 40)
+        .flat_map(|x| (10..50).map(move |y| (x, y)))
+        .filter(|&(x, y)| buf.px(x, y) != bg)
+        .count()
+}
+
+/// design.md "Motion and time": `transition: wipe(left) | disc |
+/// dissolve | pixelate`. A node with one is revealed through its mask as
+/// it enters (ref `effects_transitions.png` partway) and hidden by it as
+/// it leaves, its ghost kept until the mask is done; `reduced_motion`
+/// swaps at once.
+#[test]
+fn transition_masks_reveal_and_hide() {
+    use std::time::Duration;
+    let (mut r, mut buf, ids) = masked(true, false);
+    let (_, plain, _) = masked(false, false);
+    let full = shown(&plain, 0);
+    assert_eq!(full, 1600);
+    let mut t = 1016;
+    while t < 1080 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    }
+    assert_matches_ref("effects_transitions", &buf, 2);
+    for i in 0..4 {
+        let n = shown(&buf, i);
+        assert!(n > 0 && (i == 3 || n < full), "mask {i} partway: {n}");
+    }
+    // pixelate: fading in, so not yet the box's colour.
+    assert_ne!(buf.px(8 + 48 * 3 + 20, 30), plain.px(8 + 48 * 3 + 20, 30));
+    // The wipe grows from the left: its left column is in, its right not.
+    assert_eq!(buf.px(9, 30), plain.px(9, 30));
+    assert_ne!(buf.px(46, 30), plain.px(46, 30));
+    t = settle(&mut r, &mut buf, t);
+    assert!(buf.pixels == plain.pixels, "revealed");
+
+    // Removed: each hides behind its mask, then goes.
+    let mut d = SceneDiff::new();
+    for id in &ids {
+        d.push(SceneOp::Remove {
+            id: *id,
+            window: false,
+        });
+    }
+    assert!(r.apply(d).is_empty());
+    t += 16;
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    t += 48;
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    for i in 0..4 {
+        let n = shown(&buf, i);
+        // (pixelate fades and blurs: every pixel is touched.)
+        assert!(n > 0 && (i == 3 || n < full), "mask {i} closing: {n}");
+    }
+    settle(&mut r, &mut buf, t);
+    assert!((0..4).all(|i| shown(&buf, i) == 0), "hidden");
+    assert!(
+        ids.iter().all(|id| r.tree().get(*id).is_none()),
+        "the ghosts are gone"
+    );
+
+    // Reduced motion: at once.
+    let (r, buf, _) = masked(true, true);
+    assert!(buf.pixels == plain.pixels);
+    assert!(!r.wants_frame(S));
+}
+
+/// A `pages` swap under `transition: wipe(left)`: the new page is
+/// revealed from the left over the old (created after it) or, created
+/// before it, the old page is hidden by the rest of the wipe over the new
+/// one; the old page plays out until the new one is in.
+#[test]
+fn a_pages_transition_wipes_one_page_over_the_other() {
+    use std::time::Duration;
+    for first in [false, true] {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = at_xy(0.0, 0.0, 120.0, 40.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::RowFirst, num(0.0)),
+            (Prop::Transition, call("wipe", vec![kw("left")])),
+        ]);
+        let pages = b.node(NodeKind::Pages, Some(root), p);
+        let old = b.node(
+            NodeKind::Page,
+            Some(pages),
+            vec![(Prop::Bg, color("#f38ba8"))],
+        );
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(120, 40, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let new = NodeId::new(300, 0);
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: old,
+            window: false,
+        });
+        d.create(new, NodeKind::Page, Some(pages), if first { 0 } else { 1 });
+        set_now(&mut d, new, Prop::Bg, color("#a6e3a1"));
+        d.set(pages, Prop::RowFirst, num(1.0));
+        assert!(r.apply(d).is_empty());
+        let mut t = 1000;
+        while t < 1064 {
+            t += 16;
+            buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        }
+        let (red, green) = (hex("#f38ba8"), hex("#a6e3a1"));
+        let is = |px: [u8; 4], c: Color| {
+            let [b, g, r, _] = px;
+            let c = c.to_rgba8();
+            (r as i32 - c[0] as i32).abs() < 3
+                && (g as i32 - c[1] as i32).abs() < 3
+                && (b as i32 - c[2] as i32).abs() < 3
+        };
+        assert!(is(buf.px(2, 20), green), "first {first}: new at the left");
+        assert!(is(buf.px(117, 20), red), "first {first}: old at the right");
+        assert!(r.tree().get(old).is_some(), "the old page plays out");
+        settle(&mut r, &mut buf, t);
+        assert!(is(buf.px(117, 20), green) && is(buf.px(2, 20), green));
+        assert!(r.tree().get(old).is_none(), "then goes");
+    }
+}

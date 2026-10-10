@@ -186,6 +186,8 @@ pub(crate) struct Animator {
     staggers: stagger::Staggers,
     /// (M4) Pointer parallax and tilt (`crate::effects::lean`).
     leans: crate::effects::lean::Leans,
+    /// (M4) Transition masks in flight (`crate::effects::transition`).
+    reveals: crate::effects::transition::Reveals,
 }
 
 impl Animator {
@@ -301,6 +303,114 @@ impl Animator {
             self.active = true;
         }
         roll
+    }
+
+    /// (M4) The transition mask `node` draws under this frame, if any
+    /// (`crate::effects::transition`): its own `transition:` as it enters
+    /// or leaves, or its `pages` parent's as the pages swap. Called
+    /// before [`Animator::paint`], which keeps a ghost the mask still
+    /// needs.
+    pub fn reveal(
+        &mut self,
+        tree: &SceneTree,
+        node: &Node,
+        scope: &TokenScope<'_>,
+    ) -> Option<crate::effects::transition::Masked> {
+        use crate::effects::transition::{Kind, Masked};
+        let id = node.id;
+        let kind_of = |n: &Node| {
+            n.get(Prop::Transition)
+                .and_then(|v| scope.resolve(v))
+                .and_then(|v| Kind::of(&v))
+        };
+        let pages = node
+            .parent
+            .and_then(|p| tree.get(p))
+            .filter(|p| p.kind == strand_scene::NodeKind::Pages)
+            .and_then(|p| Some((p, kind_of(p)?)));
+        let (holder, kind) = match pages {
+            Some((p, k)) => (p, k),
+            None if node.kind != strand_scene::NodeKind::Pages => match kind_of(node) {
+                Some(k) => (node, k),
+                None => {
+                    self.reveals.forget(id);
+                    return None;
+                }
+            },
+            None => return None,
+        };
+        let frame = crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            snap: self.snapping(),
+        };
+        if frame.snap {
+            self.reveals.forget(id);
+            return None;
+        }
+        let transition = holder
+            .props
+            .iter()
+            .find(|e| e.prop == Prop::Transition)
+            .map_or(Transition::Default, |e| e.transition.clone());
+        // The prop is a snap: its default curve is `x`'s.
+        let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        let entering = self.enter.contains(&id) || self.staggers.planned(id);
+        let exiting = self.exits.contains_key(&id);
+        let masked = |p: f32, invert: bool| Masked { kind, p, invert };
+        if let Some((pages, _)) = pages {
+            let swap = self.pages.last(pages.id);
+            let index = |n: NodeId| pages.children.iter().position(|c| *c == n);
+            let over = |a: NodeId, b: NodeId| index(a) > index(b);
+            if exiting {
+                let incoming = swap.and_then(|s| s.entering).filter(|e| *e != id);
+                if let Some(e) = incoming {
+                    // The old page plays out until the new one is in.
+                    if self.enter.contains(&e) || self.staggers.planned(e) {
+                        self.reveals.aim(e, 0.0, 1.0, curve, frame);
+                    }
+                    let p = self.reveals.peek(e, self.time);
+                    let waits = self.reveals.moving(e, self.time);
+                    self.reveals.hold(id, waits);
+                    if waits {
+                        self.active = true;
+                    }
+                    return over(id, e).then(|| masked(p.unwrap_or(1.0), true));
+                }
+            } else {
+                if entering {
+                    self.reveals.aim(id, 0.0, 1.0, curve, frame);
+                }
+                let (p, moving) = self.reveals.progress(id, frame)?;
+                if moving {
+                    self.active = true;
+                }
+                // Under the old page, the old page carries the mask.
+                let ghost = swap
+                    .and_then(|s| s.leaving)
+                    .filter(|g| *g != id && tree.is_ghost(*g));
+                return match ghost {
+                    Some(g) if over(g, id) => None,
+                    _ => Some(masked(p, false)),
+                };
+            }
+        }
+        if entering && !exiting {
+            self.reveals.aim(id, 0.0, 1.0, curve, frame);
+        }
+        if exiting {
+            self.reveals.aim(id, 1.0, 0.0, curve, frame);
+        }
+        let Some((p, moving)) = self.reveals.progress(id, frame) else {
+            self.reveals.hold(id, false);
+            return None;
+        };
+        if moving {
+            self.active = true;
+        }
+        self.reveals.hold(id, exiting && moving);
+        Some(masked(p, false))
     }
 
     /// (M4) Leans `node` with the pointer (`pointer`, `None` off its
@@ -520,6 +630,7 @@ impl Animator {
         self.plays.forget(id);
         self.staggers.forget(id);
         self.leans.forget(id);
+        self.reveals.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
         self.enter.remove(&id);
@@ -591,6 +702,7 @@ impl Animator {
         self.plays.retain(&mut keep);
         self.staggers.retain(&mut keep);
         self.leans.retain(&mut keep);
+        self.reveals.retain(&mut keep);
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
@@ -812,6 +924,10 @@ impl Animator {
         if exiting.is_some() && na.size.iter().any(Option::is_some) {
             exit_done = false;
         }
+        // (M4) A ghost playing out under a transition mask.
+        if self.reveals.holds(id) {
+            exit_done = false;
+        }
         if moving {
             self.active = true;
         }
@@ -839,6 +955,7 @@ impl Animator {
             || self.rolls.pending(|id| under(&id))
             || self.plays.busy(|id| under(&id))
             || self.staggers.busy(|id| under(&id))
+            || self.reveals.busy(self.time, |id| under(&id))
     }
 }
 

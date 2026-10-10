@@ -18,6 +18,7 @@ pub(crate) mod light;
 pub(crate) mod particles;
 pub(crate) mod raster;
 pub(crate) mod roll;
+pub(crate) mod transition;
 
 use std::sync::Arc;
 
