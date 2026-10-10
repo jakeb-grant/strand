@@ -521,3 +521,230 @@ fn marks_of(query: &str, name: &str) -> Vec<strand_scene::PropValue> {
         .filter_map(|n| r.tree().get(*n)?.get(strand_scene::Prop::Marks).cloned())
         .collect()
 }
+
+/// Reads `refs/<name>.png` (RGBA) and compares it with `pixels`
+/// (premultiplied BGRA) within `tolerance` per channel; `STRAND_BLESS=1`
+/// writes it instead. On a mismatch the frame is written beside it as
+/// `<name>.actual.png`.
+fn assert_matches_ref(name: &str, size: Size, pixels: &[u8], tolerance: u8) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/refs");
+    let path = dir.join(format!("{name}.png"));
+    let rgba: Vec<u8> = pixels
+        .chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3] as u32;
+            let un = |c: u8| {
+                if a == 0 {
+                    0
+                } else {
+                    ((c as u32 * 255 + a / 2) / a).min(255) as u8
+                }
+            };
+            [un(p[2]), un(p[1]), un(p[0]), p[3]]
+        })
+        .collect();
+    let save = |path: &std::path::Path| {
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::from_raw(size.w, size.h, rgba.clone())
+            .unwrap()
+            .save(path)
+            .unwrap();
+    };
+    if std::env::var_os("STRAND_BLESS").is_some() {
+        save(&path);
+        return;
+    }
+    let want = image::open(&path)
+        .unwrap_or_else(|e| panic!("{path:?}: {e}; run with STRAND_BLESS=1"))
+        .to_rgba8();
+    assert_eq!(want.dimensions(), (size.w, size.h), "{name}: size differs");
+    let bad = want
+        .as_raw()
+        .chunks_exact(4)
+        .zip(pixels.chunks_exact(4))
+        .filter(|(w, got)| {
+            let a = w[3] as u32;
+            let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            let exp = [pm(w[2]), pm(w[1]), pm(w[0]), w[3]];
+            got.iter().zip(exp).any(|(g, e)| g.abs_diff(e) > tolerance)
+        })
+        .count();
+    if bad > 0 {
+        save(&dir.join(format!("{name}.actual.png")));
+        panic!("{name}: {bad} pixels differ by more than {tolerance}");
+    }
+}
+
+/// design.md's rice ("What a rice looks like", `rice_now.strand`) on a
+/// bar, compiled with the design theme and painted offline at fixed
+/// times while music plays: a squircle pill with a rotating conic border,
+/// a cookie-shaped album cover turning at 20°/s, a mirrored spectrum fed
+/// by the audio tap and a breathing glow (refs `rice_now_0ms`,
+/// `rice_now_500ms`, `rice_now_1000ms`). Only the pill's own pixels
+/// repaint. Paused, the cover stops turning, the glow goes and the
+/// spectrum rests; the border, whose `conic(from: t * 40deg, …)` reads
+/// `t` whether or not music plays, keeps turning (decisions.md,
+/// m4-effects-finish).
+#[test]
+fn rice_now_renders_at_fixed_times() {
+    use std::time::Duration;
+    // The album art: four 32 px quadrants.
+    let dir = std::env::temp_dir().join(format!("strand-rice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let art = dir.join("art.png");
+    image::RgbaImage::from_fn(64, 64, |x, y| match (x < 32, y < 32) {
+        (true, true) => image::Rgba([0xf3, 0x8b, 0xa8, 0xff]),
+        (false, true) => image::Rgba([0xa6, 0xe3, 0xa1, 0xff]),
+        (true, false) => image::Rgba([0x89, 0xb4, 0xfa, 0xff]),
+        (false, false) => image::Rgba([0xf9, 0xe2, 0xaf, 0xff]),
+    })
+    .save(&art)
+    .unwrap();
+
+    let mut map = SourceMap::new();
+    for f in ["theme.strand", "rice_now.strand"] {
+        let (n, t) = fixture(f);
+        map.add(n, t);
+    }
+    map.add(
+        "rice_bar.strand".to_string(),
+        "bar Rice { edge: top; height: 48\n  row { pad: 8; Now }\n}\n".to_string(),
+    );
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let sink = host.record("AudioDevice", &[("id", Value::int(42))]);
+    host.set(&rt, "audio.sink", sink).unwrap();
+    host.set(&rt, "media.playing", Value::Bool(true)).unwrap();
+    host.set(
+        &rt,
+        "media.art",
+        Value::text(art.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bar = r
+        .take_surface_changes()
+        .into_iter()
+        .find_map(|(id, c)| match c {
+            SurfaceChange::Created(s) if s.kind == strand_scene::NodeKind::Bar => Some(id),
+            _ => None,
+        })
+        .unwrap();
+    let surface = SurfaceId(1);
+    let size = Size::new(220, 48);
+    r.attach_surface(surface, bar);
+    r.configure_surface(surface, size, Scale::ONE);
+    let mut pixels = vec![0u8; (size.w * size.h * 4) as usize];
+    let t0 = Duration::from_secs(1);
+    let paint = |r: &mut Renderer, pixels: &mut Vec<u8>, at: Duration| {
+        let t = PaintTarget::new(pixels, size, size.w * 4, Scale::ONE, 1).unwrap();
+        r.paint(surface, &mut t.at(at))
+    };
+    paint(&mut r, &mut pixels, t0);
+    // The spectrum is visible: the binary would tap the sink. A tone and
+    // its overtones, the same every frame.
+    let demand = r.take_feed_demand().expect("a spectrum to feed");
+    assert_eq!(demand.len(), 1);
+    assert_eq!(
+        demand[0].kind,
+        strand_render::FeedKind::Spectrum {
+            device: "42".into()
+        }
+    );
+    let spectrum = demand[0].node;
+    let bands: Vec<f32> = (0..64)
+        .map(|i| {
+            let x = i as f32 / 63.0;
+            (0.9 - x * 0.7) * (0.6 + 0.4 * (x * 19.0).sin().abs())
+        })
+        .collect();
+    // The pill: the row holding the spectrum, which is 72 px wide as
+    // written and 24 px tall by default.
+    let pill = r.tree().get(spectrum).unwrap().parent.unwrap();
+    let sb = r.boxes(surface).unwrap().rects[&spectrum];
+    assert_eq!((sb.w, sb.h), (72.0, 24.0));
+    let mut frames = 0u32;
+    let mut at = t0;
+    for (k, ms) in [(0u64, 0u64), (1, 500), (2, 1000)] {
+        // Frames 16 ms apart up to the shot, fed each one.
+        while at < t0 + Duration::from_millis(ms) {
+            at = (at + Duration::from_millis(16)).min(t0 + Duration::from_millis(ms));
+            r.feed(spectrum, &bands);
+            let damage = paint(&mut r, &mut pixels, at);
+            frames += 1;
+            // Only the pill (and its glow's reach) repaints.
+            let b = r.boxes(surface).unwrap().rects[&pill];
+            let reach = 14.0;
+            for d in damage.rects() {
+                let (x, y) = (d.x as f32, d.y as f32);
+                let (w, h) = (d.w as f32, d.h as f32);
+                assert!(
+                    x >= b.x - reach
+                        && y >= b.y - reach
+                        && x + w <= b.x + b.w + reach
+                        && y + h <= b.y + b.h + reach,
+                    "frame {frames}: damage {d:?} outside the pill {b:?}"
+                );
+            }
+        }
+        if k == 0 {
+            r.feed(spectrum, &bands);
+            paint(&mut r, &mut pixels, at);
+        }
+        assert!(r.wants_frame(surface), "playing: it animates");
+        assert_matches_ref(&format!("rice_now_{ms}ms"), size, &pixels, 2);
+    }
+
+    // Paused: the cover and glow stop following time; the spectrum is
+    // fed silence by the binary and rests.
+    host.set(&rt, "media.playing", Value::Bool(false)).unwrap();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    r.feed(spectrum, &[]);
+    for _ in 0..120 {
+        at += Duration::from_millis(16);
+        paint(&mut r, &mut pixels, at);
+    }
+    let cover = |r: &Renderer| {
+        r.tree()
+            .get(pill)
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|c| r.tree().get(*c).unwrap().kind == strand_scene::NodeKind::Image)
+            .unwrap()
+    };
+    let c = r.boxes(surface).unwrap().rects[&cover(&r)];
+    // The cover's middle 12 px, clear of the pill's border (which goes
+    // on turning, and curves into the cover's box at the pill's end).
+    let (cx, cy) = ((c.x + c.w / 2.0) as usize, (c.y + c.h / 2.0) as usize);
+    let shot = |pixels: &[u8]| -> Vec<u8> {
+        let mut out = Vec::new();
+        for y in cy - 6..cy + 6 {
+            let row = y * size.w as usize * 4;
+            out.extend_from_slice(&pixels[row + (cx - 6) * 4..row + (cx + 6) * 4]);
+        }
+        out
+    };
+    let before = shot(&pixels);
+    at += Duration::from_millis(500);
+    paint(&mut r, &mut pixels, at);
+    assert!(before == shot(&pixels), "paused: the cover holds still");
+    assert!(r.wants_frame(surface), "the border's `t` keeps turning");
+}
