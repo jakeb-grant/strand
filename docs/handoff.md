@@ -182,6 +182,18 @@ and the full shell warns above 64 MB and fails above 70 MB
   `35cf98b`), so it was recurring, not once. Its no-overlay check rested
   on the live pipeline beating the real 250 ms quiet period on a starved
   runner; its logic thread now waits 2 s (decisions.md m4-audit round 8).
+- Recurring and unexplained: `strand/tests/wm_audio_shells.rs::a_test_tone_lifts_a_spectrum_bar`
+  (the tone's bar never lifted) failed twice on GitHub, in run
+  38065740030 (`d56d053`) and run 38076927579 (`29bde5d`, `test` job;
+  all 16 bars at rest, pw-play running and linked to the default sink).
+  Neither commit touched audio or render code. Round 6's diagnostics
+  could not name the cause: the meter's start, failure and retry lines
+  were debug, below the test's `STRAND_LOG=info`, and the detail showed
+  only pw-play's side. Round 9 made those lines info and adds what
+  strand's capture stream (`strand-levels`) exists as and hears, so the
+  next failure says whether the meter started, failed or was never
+  linked (decisions.md m4-audit rounds 6 and 9). It passes in the
+  container.
 - `crates/strand/tests/reloads.rs` still allows a bus connection that
   only introspects, though `strand-introspect` now keeps one connection
   per bus; tightening it is left to that file's owner (decisions.md

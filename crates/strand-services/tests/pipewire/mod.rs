@@ -432,21 +432,34 @@ impl PipeWire {
 
     /// The node names `node`'s output ports are linked to (`pw-link -l`).
     pub fn linked_to(&self, node: &str) -> Vec<String> {
+        self.peers(node, "|-> ")
+    }
+
+    /// The node names linked into `node`'s input ports (`pw-link -l`):
+    /// what a capture stream such as strand's meter (`strand-levels`)
+    /// hears.
+    pub fn linked_from(&self, node: &str) -> Vec<String> {
+        self.peers(node, "|<- ")
+    }
+
+    /// The peers `pw-link -l` lists under `node`'s ports with `arrow`.
+    fn peers(&self, node: &str, arrow: &str) -> Vec<String> {
         let out = self.run("pw-link", &["-l"]);
-        let mut to = Vec::new();
-        let mut from_node = false;
+        let mut peers = Vec::new();
+        let mut at_node = false;
         for line in out.lines() {
-            if let Some(peer) = line.trim_start().strip_prefix("|-> ") {
-                if from_node && let Some((n, _)) = peer.split_once(':') {
-                    to.push(n.to_owned());
+            let line = line.trim_start();
+            if let Some(peer) = line.strip_prefix(arrow) {
+                if at_node && let Some((n, _)) = peer.split_once(':') {
+                    peers.push(n.to_owned());
                 }
-            } else if !line.trim_start().starts_with("|<-") {
-                from_node = line.split_once(':').is_some_and(|(n, _)| n == node);
+            } else if !line.starts_with("|<-") && !line.starts_with("|->") {
+                at_node = line.split_once(':').is_some_and(|(n, _)| n == node);
             }
         }
-        to.sort();
-        to.dedup();
-        to
+        peers.sort();
+        peers.dedup();
+        peers
     }
 }
 

@@ -733,9 +733,10 @@ fn a_test_tone_lifts_a_spectrum_bar() {
             .env("HOME", &home)
             .env("XDG_CACHE_HOME", dir.join("cache"))
             .env("XDG_STATE_HOME", dir.join("state"))
-            // The audio thread's info lines (a meter failing and its
-            // retry, PipeWire lost, the default sink read) say why a
-            // spectrum never lifted (GitHub run 38065740030; m4-audit).
+            // The audio thread's info lines (a meter starting, failing
+            // and its retry, PipeWire lost, the default metadata read
+            // again) say why a spectrum never lifted (GitHub runs
+            // 38065740030 and 38076927579; m4-audit).
             .env("STRAND_LOG", "info")
             .envs(bus.env())
             .env_remove("STRAND_MOCK")
@@ -826,13 +827,27 @@ fn a_test_tone_lifts_a_spectrum_bar() {
             Err(e) => format!("unknown: {e}"),
         };
         format!(
-            "last bars: {:?}\npw-play {player_state}, linked to {:?} (sink {sink})",
+            "last bars: {:?}\npw-play {player_state}, linked to {:?} (sink {sink})\n\
+             strand-levels {}, hearing {:?}",
             seen.borrow(),
             pw.linked_to("pw-play"),
+            if pw.has_node("strand-levels") {
+                "exists"
+            } else {
+                "missing"
+            },
+            pw.linked_from("strand-levels"),
         )
     };
     sh.wait_or("the tone's bar lifted, the far bars low", check, detail);
     sh.keep("spectrum-tone");
+    // The failure detail's capture side reads what it should: the meter
+    // hears the sink it lifted from.
+    assert!(
+        pw.linked_from("strand-levels").contains(&sink),
+        "{:?}",
+        pw.linked_from("strand-levels")
+    );
     let _ = player.kill();
     let _ = player.wait();
     sh.wait("the bars at rest again", |s| tallest(&s.shot()) <= 4);

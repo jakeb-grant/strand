@@ -1573,7 +1573,16 @@ impl Driver<'_> {
                 direction: node.direction,
             };
             match Meter::start(&s.core, self.meters, target, &t, &self.q, wake, failures) {
-                Ok(m) => keep.push(m),
+                Ok(m) => {
+                    // Info: a spectrum that never lifts says whether its
+                    // meter started, and on what (m4-audit).
+                    log::info!(
+                        "audio: a meter reads device {} ({})",
+                        device.id,
+                        device.name
+                    );
+                    keep.push(m);
+                }
                 Err(e) => log::warn!("audio: {e}"),
             }
         }
@@ -1640,7 +1649,7 @@ impl Driver<'_> {
                     m.failures = m.failures.saturating_add(1);
                     let wait = retry_delay(m.failures);
                     m.retry_at = Some(Instant::now() + wait);
-                    log::debug!(
+                    log::info!(
                         "audio: the meter on device {} stopped; again in {wait:?}",
                         m.device
                     );
@@ -1721,7 +1730,7 @@ impl Driver<'_> {
         match &mut self.session {
             Some(s) => {
                 if !s.published && !s.settled && s.settle_by <= now {
-                    log::debug!("audio: no session manager yet; showing what PipeWire has");
+                    log::info!("audio: no session manager yet; showing what PipeWire has");
                     s.settled = true;
                     self.dirty = true;
                 }
@@ -1864,7 +1873,7 @@ fn reread_metadata(s: &mut Session, q: Queue) {
             return;
         }
     };
-    log::debug!("audio: reading the default metadata again");
+    log::info!("audio: reading the default metadata again");
     s.replay = Some((seq, Defaults::default()));
     s.metadata = Some(MetaEntry {
         global: old.global,
