@@ -147,6 +147,84 @@ impl Shell {
     }
 }
 
+// ---- the logic thread: password values kept out of logs and `strand watch` ---
+
+/// What a redacted password value reads as.
+pub(super) const REDACTED: &str = "<redacted>";
+
+/// The values of the config's `type: password` inputs, as logic sees
+/// them (its diffs, and the `Router`'s edits written back), so the
+/// binary can redact them from the runtime fault messages it logs and
+/// streams to `strand watch` (architecture.md, "The lock": "its value
+/// is redacted by the binary in `strand watch`, logs"). An expression
+/// that fails on a value read from the password's `state`
+/// (`clock.format(secret)`) would otherwise print the password. Each
+/// value is a [`Password`], zeroized when replaced or dropped.
+#[derive(Default)]
+pub(super) struct Secrets {
+    inputs: std::collections::HashMap<NodeId, Option<Password>>,
+}
+
+impl Secrets {
+    /// A diff logic sends: inputs that became (or stopped being)
+    /// `type: password`, removed nodes, and the password inputs' text.
+    pub(super) fn see_diff(&mut self, diff: &SceneDiff) {
+        for op in &diff.ops {
+            match op {
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::InputType,
+                    value,
+                    ..
+                } => {
+                    if matches!(value, PropValue::Keyword(k) if k == "password") {
+                        self.inputs.entry(*id).or_default();
+                    } else {
+                        self.inputs.remove(id);
+                    }
+                }
+                SceneOp::Remove { id, .. } => {
+                    self.inputs.remove(id);
+                }
+                _ => {}
+            }
+        }
+        for op in &diff.ops {
+            if let SceneOp::SetProp {
+                id, prop, value, ..
+            } = op
+            {
+                self.see_write(*id, *prop, value);
+            }
+        }
+    }
+
+    /// A write to `node`'s `prop` (the `Router` editing an input).
+    pub(super) fn see_write(&mut self, node: NodeId, prop: Prop, value: &PropValue) {
+        if prop != Prop::Text {
+            return;
+        }
+        if let (Some(slot), PropValue::Text(t)) = (self.inputs.get_mut(&node), value) {
+            *slot = (!t.is_empty()).then(|| Password::from(t.clone()));
+        }
+    }
+
+    /// `text` with every password input's current value replaced by
+    /// [`REDACTED`].
+    pub(super) fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        let mut out = std::borrow::Cow::Borrowed(text);
+        for p in self.inputs.values().flatten() {
+            if let Ok(v) = std::str::from_utf8(p.as_bytes())
+                && !v.is_empty()
+                && out.contains(v)
+            {
+                out = std::borrow::Cow::Owned(out.replace(v, REDACTED));
+            }
+        }
+        out
+    }
+}
+
 // ---- the main thread: the surface host's part --------------------------------
 
 /// What reaches the main loop about the lock from other threads.
@@ -1126,6 +1204,43 @@ mod tests {
         assert!(inside(&tree, lock, lock));
         assert!(!inside(&tree, bar, lock));
         assert!(!inside(&tree, NodeId::new(9, 0), lock));
+    }
+
+    /// A password input's value, from logic's diff or the `Router`'s
+    /// write, is redacted; another input's is not; a removed input's
+    /// value is forgotten.
+    #[test]
+    fn password_values_are_redacted() {
+        let (pw, plain) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let mut secrets = Secrets::default();
+        let mut d = SceneDiff::new();
+        d.create(pw, NodeKind::Input, None, 0)
+            .create(plain, NodeKind::Input, None, 1)
+            .set(pw, Prop::Text, PropValue::Text("hunter-two".into()))
+            .set(pw, Prop::InputType, PropValue::Keyword("password".into()))
+            .set(plain, Prop::Text, PropValue::Text("visible".into()));
+        secrets.see_diff(&d);
+        assert_eq!(
+            secrets.redact("`hunter-two` is not a valid time pattern; visible"),
+            "`<redacted>` is not a valid time pattern; visible"
+        );
+        secrets.see_write(pw, Prop::Text, &PropValue::Text("s3cret".into()));
+        assert_eq!(
+            secrets.redact("a s3cret, hunter-two"),
+            "a <redacted>, hunter-two"
+        );
+        // Emptied (submitted): nothing to redact, nothing matches "".
+        secrets.see_write(pw, Prop::Text, &PropValue::Text(String::new()));
+        assert_eq!(secrets.redact("s3cret"), "s3cret");
+        secrets.see_write(pw, Prop::Text, &PropValue::Text("again".into()));
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: pw,
+            window: false,
+        });
+        secrets.see_diff(&d);
+        assert_eq!(secrets.redact("again"), "again", "removed");
+        assert!(matches!(secrets.redact("x"), std::borrow::Cow::Borrowed(_)));
     }
 
     /// The host passes the compositor's reports to logic as the

@@ -180,6 +180,7 @@ pub fn logic(
         host_notices,
         settings_reread: Vec::new(),
         layout_seen: None,
+        secrets: Default::default(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -212,6 +213,7 @@ pub fn logic(
         let wall = frozen.unwrap_or_else(SystemTime::now);
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
         let mut diff = std::mem::take(&mut update.diff);
+        shell.secrets.see_diff(&diff);
         diff.layout_seen = shell.layout_seen.take();
         // `system.reduced_motion` (the portal's, or its last value) goes
         // to render, which snaps every spring while it is on.

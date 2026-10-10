@@ -725,6 +725,51 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A runtime fault whose message holds a password input's value (an
+/// expression reading the password's `state`) reaches `strand watch`
+/// with the value redacted (architecture.md, "The lock"; `lock::Secrets`).
+#[test]
+fn a_password_value_is_redacted_from_fault_messages() {
+    let dir = temp_dir("redact");
+    std::fs::write(
+        dir.join("shell.strand"),
+        "bar Top {\n  state secret = \"\"\n  input { type: password; text: <-> secret }\n  \
+         text clock.format(secret)\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (_compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("the input", |s| {
+        !s.of_kind(strand_scene::NodeKind::Input).is_empty()
+    });
+    let input = m.scene.of_kind(strand_scene::NodeKind::Input)[0];
+    let mut next = watch(&socket);
+    // `%Q` is no time pattern: `clock.format` fails, quoting it.
+    let password = "pa%Qss";
+    to_logic
+        .send(ToLogic::Write {
+            node: input,
+            prop: Prop::Text,
+            value: PropValue::Text(password.into()),
+        })
+        .unwrap();
+    let ev = loop {
+        let ev = next();
+        if ev["event"] == "fault" {
+            break ev;
+        }
+    };
+    let message = ev["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("<redacted>") && !message.contains(password),
+        "{ev}"
+    );
+    assert!(message.contains("not a valid time pattern"), "{ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A watcher on `socket`: the next event it hears.
 fn watch(socket: &Path) -> impl FnMut() -> Json {
     let mut events =
