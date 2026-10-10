@@ -127,17 +127,22 @@ pub fn default_helper() -> Option<PathBuf> {
 static WARNING: AtomicBool = AtomicBool::new(false);
 static WARNED: AtomicBool = AtomicBool::new(false);
 
-/// The one-time warning that `/etc/pam.d/strand` is missing and the
-/// `login` service stands in (decisions.md, m4-owner): `Some` once per
-/// process, after a helper reported the fallback.
+/// The one-time warning that the `login` service stands in for a
+/// `strand` service libpam would not read (decisions.md, m4-owner; the
+/// helper's rule, m4-audit: `/etc/pam.d/strand` missing or unreadable,
+/// or only in a `/usr/lib/pam.d` this libpam ignores): `Some` once per
+/// process, after a helper reported the fallback. The hello says only
+/// that it fell back, so the text names every case.
 pub fn take_service_warning() -> Option<String> {
     if !WARNING.load(Ordering::SeqCst) || WARNED.swap(true, Ordering::SeqCst) {
         return None;
     }
     Some(
-        "/etc/pam.d/strand is missing, so the lock screen checks passwords with the `login` \
-         PAM service; install a `strand` PAM service (`auth include login`, or your \
-         distribution's equivalent) to configure it separately"
+        "no `strand` PAM service libpam reads (/etc/pam.d/strand is missing or unreadable, \
+         or only in /usr/lib/pam.d, which this libpam does not read), so the lock screen \
+         checks passwords with the `login` PAM service; install a readable \
+         /etc/pam.d/strand with your system's stack (`auth include system-auth` on Arch and \
+         Fedora, `@include common-auth` on Debian and Ubuntu) to configure it separately"
             .to_string(),
     )
 }

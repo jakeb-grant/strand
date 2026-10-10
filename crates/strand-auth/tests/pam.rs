@@ -217,6 +217,20 @@ fn a_missing_strand_service_falls_back_to_login_with_one_warning() {
     let warning = take_service_warning().expect("the fallback warns");
     assert!(warning.contains("/etc/pam.d/strand"), "{warning}");
     assert!(warning.contains("login"), "{warning}");
+    // (m4-audit) The helper also falls back for a file that exists but
+    // cannot be read or is in a vendor directory libpam ignores, and the
+    // hello does not say which: the text names every case, and the stack
+    // README recommends.
+    assert!(!warning.contains("is missing,"), "{warning}");
+    for case in [
+        "missing",
+        "unreadable",
+        "/usr/lib/pam.d",
+        "system-auth",
+        "common-auth",
+    ] {
+        assert!(warning.contains(case), "no {case:?} in {warning}");
+    }
     // Once per process, however many helpers say it.
     let mut again = client(dir.path());
     assert!(submit(&mut again, "x").is_unlocked());

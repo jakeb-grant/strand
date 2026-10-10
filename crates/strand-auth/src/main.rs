@@ -6,9 +6,11 @@
 //! each password with one verdict, until the client closes the socket.
 //! It authenticates the user it runs as; the client never names one.
 //!
-//! The service is `strand`, or `login` when no `strand` service file
-//! exists (decisions.md, m4-owner); the client turns the `login` hello
-//! into a one-time warning. Every PAM error fails closed (`pam.rs`).
+//! The service is `strand`, or `login` when libpam would not read a
+//! `strand` service file: missing, unreadable, or only in a vendor
+//! directory this libpam ignores (decisions.md, m4-owner and m4-audit;
+//! `choose_service`); the client turns the `login` hello into a
+//! one-time warning. Every PAM error fails closed (`pam.rs`).
 
 mod pam;
 
