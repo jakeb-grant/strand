@@ -719,9 +719,14 @@ fn the_design_bar_keeps_the_m0_budget() {
     assert_thp_off(pid);
     let pss = pss_kb(pid);
     // A debug build of the whole language path carries about 25 MB more
-    // than release (49 against 14–27 MB here): its own ceiling.
+    // than release (49 against 14–27 MB here): its own ceiling. With M4
+    // wave 2 merged (the GPU backend, media decoders, the lock) the debug
+    // binary's code is 63 MB, of which a large-folio page cache keeps
+    // about 41 MB resident at idle, so the design bar measures 68–70 MB
+    // in debug: the ceiling is 80 MiB (decisions.md, m4-integration-w2).
+    // The release gate below is the design's budget.
     let (limit, what) = if cfg!(debug_assertions) {
-        (64 * 1024, "debug ceiling")
+        (80 * 1024, "debug ceiling")
     } else {
         pss_limit()
     };
