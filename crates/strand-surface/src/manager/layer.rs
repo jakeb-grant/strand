@@ -78,6 +78,11 @@ impl<H: SurfaceHost + 'static> State<H> {
                 continue;
             };
             apply_layer_config(layer, &config);
+            // A pose in flight keeps its offset (M4, `pose.rs`).
+            if s.pose.offset != LogicalPoint::new(0.0, 0.0) {
+                let [t, r, b, l] = crate::placement::posed_margin(&config, s.pose.offset);
+                layer.set_margin(t, r, b, l);
+            }
             if self.grab_keyboard.contains(&id) {
                 layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
             }
@@ -176,12 +181,16 @@ impl<H: SurfaceHost + 'static> State<H> {
             output.as_ref(),
         );
         apply_layer_config(&layer, &config);
-        let (viewport, fractional) = match (&self.viewporter, &self.fractional_manager) {
-            (Some(vp), Some(fm)) => (
-                Some(vp.get_viewport(&wl, &self.qh, SurfaceTag(id))),
-                Some(fm.get_fractional_scale(&wl, &self.qh, SurfaceTag(id))),
-            ),
-            _ => (None, None),
+        // A viewport whenever the viewporter is there: the fractional
+        // path sizes the surface with it, and a pose's scale (M4) sets
+        // its destination on either path.
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(&wl, &self.qh, SurfaceTag(id)));
+        let fractional = match (&viewport, &self.fractional_manager) {
+            (Some(_), Some(fm)) => Some(fm.get_fractional_scale(&wl, &self.qh, SurfaceTag(id))),
+            _ => None,
         };
         let (scale, integer_scale) = self.initial_scale(global, fractional.is_some());
         // An OSD is click-through (design example d): an empty input region
@@ -224,6 +233,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             opaque: Vec::new(),
             blur: None,
             blur_sent: Some(Vec::new()),
+            pose: strand_scene::SurfacePose::IDENTITY,
+            alpha: None,
+            origin: None,
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -255,6 +267,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.by_wl.remove(&s.wl().id());
         self.dirty.remove(&id);
+        self.releasing.remove(&id);
+        if self.held_leave == Some(id) {
+            self.held_leave = None;
+        }
         if self.keyboard_focus == Some(id) {
             self.keyboard_focus = None;
             // A compositor may skip the leave for a destroyed surface:
@@ -271,6 +287,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         if let Some(b) = s.blur.take() {
             b.destroy();
+        }
+        if let Some(a) = s.alpha.take() {
+            a.destroy();
         }
         // Dropping the layer surface destroys it and its wl_surface; (M4)
         // a handed-off one is kept until the GPU thread let go of it.
@@ -372,33 +391,54 @@ impl<H: SurfaceHost + 'static> State<H> {
             s.geometry_dirty = true;
         }
         s.logical = (w, h);
-        let region = s.config.input_region((w, h));
-        if region != s.input_region {
-            s.input_region = region;
-            let wl = s.wl().clone();
-            let ns = s.config.namespace.clone();
-            match region {
-                None => wl.set_input_region(None),
-                Some(rect) => match Region::new(&self.compositor) {
-                    Ok(r) => {
-                        if let Some((x, y, w, h)) = rect {
-                            r.add(x, y, w, h);
-                        }
-                        wl.set_input_region(Some(r.wl_region()));
-                    }
-                    Err(e) => log::warn!("{ns}: no input region: {e}"),
-                },
-            }
-        }
         let first = !s.configured;
         s.configured = true;
         s.ack_pending = true;
         if first {
             s.repaint = true;
         }
+        self.sync_input_region(id);
         // The size it got may not be the one it asked for.
         self.update_catcher(id);
+        self.place_layer(id);
         // Size and scale are resolved once, right before the next paint.
         self.mark(id);
+    }
+
+    /// Sends `id`'s input region when it changed: the box inside the
+    /// shadow overhang for its configured size, in the coordinates of its
+    /// pose's scale ([`Surface::pose_factor`]), or empty (click-through).
+    /// Pending state, committed with the surface's next commit.
+    pub(super) fn sync_input_region(&mut self, id: SurfaceId) {
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let factor = s.pose_factor();
+        let region = s.config.input_region(s.logical).map(|rect| {
+            rect.and_then(|(x, y, w, h)| {
+                pose::posed_rect(
+                    (i64::from(x), i64::from(y), i64::from(w), i64::from(h)),
+                    factor,
+                    false,
+                )
+            })
+        });
+        if region == s.input_region {
+            return;
+        }
+        s.input_region = region;
+        let wl = s.wl().clone();
+        match region {
+            None => wl.set_input_region(None),
+            Some(rect) => match Region::new(&self.compositor) {
+                Ok(r) => {
+                    if let Some((x, y, w, h)) = rect {
+                        r.add(x, y, w, h);
+                    }
+                    wl.set_input_region(Some(r.wl_region()));
+                }
+                Err(e) => log::warn!("{}: no input region: {e}", s.config.namespace),
+            },
+        }
     }
 }

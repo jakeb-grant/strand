@@ -158,12 +158,14 @@ pub mod keyboard {
     }
 
     /// The named keys the keymap has, with their evdev codes.
-    const NAMED: [(&str, u32); 7] = [
+    const NAMED: [(&str, u32); 9] = [
         ("Escape", 1),
         ("BackSpace", 14),
         ("Return", 28),
         ("Home", 102),
         ("Up", 103),
+        ("Left", 105),
+        ("Right", 106),
         ("End", 107),
         ("Down", 108),
     ];
@@ -220,7 +222,7 @@ pub mod keyboard {
         }
 
         /// Presses and releases a named key (`Return`, `Escape`, `Up`,
-        /// `Down`, `Home`, `End`, `BackSpace`).
+        /// `Down`, `Left`, `Right`, `Home`, `End`, `BackSpace`).
         pub fn press(&mut self, name: &str) {
             let k = NAMED
                 .iter()

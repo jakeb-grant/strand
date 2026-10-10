@@ -198,6 +198,36 @@ fn size(v: f32) -> u32 {
     px(v).max(1) as u32
 }
 
+/// (M4) The margins that move a layer surface of `config` by `offset`
+/// logical pixels (a compositor-animated pose): a margin moves a surface
+/// only from the edge it is anchored to, so an axis anchored on one side
+/// takes the offset there (subtracted on a right or bottom anchor); an
+/// axis centred or stretched keeps its margins (render delegates no
+/// offset on one). Rounded to whole pixels, as margins are.
+pub fn posed_margin(config: &LayerConfig, offset: strand_scene::LogicalPoint) -> [i32; 4] {
+    let [mut t, mut r, mut b, mut l] = config.margin;
+    let a = config.anchors;
+    let px = |v: f32| -> i32 {
+        if v.is_finite() {
+            v.round().clamp(-1e6, 1e6) as i32
+        } else {
+            0
+        }
+    };
+    let (dx, dy) = (px(offset.x), px(offset.y));
+    match (a.left, a.right) {
+        (true, false) => l = l.saturating_add(dx),
+        (false, true) => r = r.saturating_sub(dx),
+        _ => {}
+    }
+    match (a.top, a.bottom) {
+        (true, false) => t = t.saturating_add(dy),
+        (false, true) => b = b.saturating_sub(dy),
+        _ => {}
+    }
+    [t, r, b, l]
+}
+
 /// The layer under `layer` (the background has none: itself).
 pub fn layer_below(layer: Layer) -> Layer {
     match layer {
@@ -373,6 +403,10 @@ pub struct PopupConfig {
     /// pixels: `x, y, w, h` (at least 1 × 1).
     pub anchor_rect: (i32, i32, i32, i32),
     pub side: PopupSide,
+    /// (M4) Opens along its anchor's start instead of centred on it: a
+    /// submenu beside its row, its box's top level with the row's top
+    /// (flipped as the side is).
+    pub aligned: bool,
     /// The gap between the anchor and the popup's box.
     pub gap: i32,
     /// Takes an `xdg_popup.grab` (a menu, the calendar); a tooltip does
@@ -439,11 +473,26 @@ pub fn popup_config(
     // `attach: <edge>` names the popup's side that touches its anchor,
     // so it opens away from it, at gap 0.
     let side = match spec.attach.or(bar_edge) {
-        Some(Edge::Top) | None => PopupSide::Below,
+        Some(Edge::Top) => PopupSide::Below,
         Some(Edge::Bottom) => PopupSide::Above,
         Some(Edge::Left) => PopupSide::Right,
         Some(Edge::Right) => PopupSide::Left,
+        // A popup in a popup is a submenu: beside its anchor, on the side
+        // its `anchor:` names (right unless it says left, top or
+        // bottom; the compositor flips it when it does not fit).
+        None if parent_popup => match spec.anchor {
+            Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => PopupSide::Left,
+            Anchor::Top => PopupSide::Above,
+            Anchor::Bottom => PopupSide::Below,
+            Anchor::Center | Anchor::Right | Anchor::TopRight | Anchor::BottomRight => {
+                PopupSide::Right
+            }
+        },
+        None => PopupSide::Below,
     };
+    // A submenu beside its row starts level with it.
+    let aligned =
+        parent_popup && spec.attach.is_none() && matches!(side, PopupSide::Right | PopupSide::Left);
     if let Some(edge) = bar_edge {
         // Across the whole bar: from its box's edge to its other edge.
         let thick = parent.exclusive_zone().map_or(0, |t| px(t).max(0));
@@ -485,6 +534,7 @@ pub fn popup_config(
         overhang,
         anchor_rect: (x, y, aw.max(1), ah.max(1)),
         side: if spec.tooltip { PopupSide::Below } else { side },
+        aligned: aligned && !spec.tooltip,
         gap: if spec.tooltip { 4 } else { gap },
         grab: !spec.tooltip,
     })
@@ -503,6 +553,43 @@ mod tests {
 
     fn kw(k: &str) -> PropValue {
         PropValue::Keyword(k.into())
+    }
+
+    #[test]
+    fn poses_move_a_surface_from_its_anchored_edges() {
+        use strand_scene::LogicalPoint;
+        // panel { anchor: top_right; margin: 8 } and one centred.
+        let corner = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("top_right")),
+                (Prop::Width, PropValue::Number(100.0)),
+                (Prop::Height, PropValue::Number(50.0)),
+                (
+                    Prop::Margin,
+                    PropValue::Insets(Insets::from_values(&[8.0]).unwrap()),
+                ),
+            ],
+        );
+        let c = layer_config(&corner).unwrap();
+        assert_eq!(c.margin, [8, 8, 8, 8]);
+        // 40 px right and 10 down: the right margin shrinks, the top grows.
+        assert_eq!(
+            posed_margin(&c, LogicalPoint::new(40.4, 10.0)),
+            [18, -32, 8, 8]
+        );
+        assert_eq!(posed_margin(&c, LogicalPoint::new(0.0, 0.0)), c.margin);
+        let mut centred = corner.clone();
+        centred.anchor = Anchor::Center;
+        let c = layer_config(&centred).unwrap();
+        assert_eq!(posed_margin(&c, LogicalPoint::new(40.0, 10.0)), c.margin);
+        let mut bottom_left = corner;
+        bottom_left.anchor = Anchor::BottomLeft;
+        let c = layer_config(&bottom_left).unwrap();
+        assert_eq!(
+            posed_margin(&c, LogicalPoint::new(-5.0, 20.0)),
+            [8, 8, -12, 3]
+        );
     }
 
     #[test]
@@ -786,7 +873,7 @@ mod tests {
 
     /// A popup in a top bar opens below the bar (its anchor spans the
     /// bar's thickness under the clock), 6 px away; in a bottom bar,
-    /// above; nested in another popup, below its anchor in that popup's
+    /// above; nested in another popup, beside its anchor in that popup's
     /// box (its overhang taken off); a tooltip below what it describes,
     /// with no grab and no input.
     #[test]
@@ -822,7 +909,7 @@ mod tests {
         child.margin = Insets::all(2.0);
         let c = popup_config(&child, &p).unwrap();
         assert_eq!(c.anchor_rect, (20, 30, 50, 20));
-        assert_eq!((c.side, c.gap), (PopupSide::Below, 2));
+        assert_eq!((c.side, c.gap, c.aligned), (PopupSide::Right, 2, true));
         // A tooltip: under its node, no grab, click-through.
         let mut tip = p.clone();
         tip.tooltip = true;
@@ -830,6 +917,82 @@ mod tests {
         let c = popup_config(&tip, &bar).unwrap();
         assert_eq!(c.anchor_rect, (100, 12, 60, 20));
         assert!(!c.grab && c.as_layer().click_through);
+    }
+
+    /// (M4) A popup in a popup is a submenu: it opens to the side of its
+    /// row, right unless `anchor:` names left (a left corner too), top or
+    /// bottom, level with the row's top when beside it (`aligned`), at
+    /// the usual 6 px gap. `attach:` still names its touching side,
+    /// centred; a popup in a bar or panel keeps opening below, centred,
+    /// whatever its `anchor:`.
+    #[test]
+    fn submenus_open_to_the_side_their_anchor_names() {
+        use strand_scene::{LogicalRect, NodeId};
+        let mut menu = spec(NodeKind::Popup, &[]);
+        menu.parent = Some(NodeId::new(1, 0));
+        menu.width = Some(160.0);
+        menu.height = Some(200.0);
+        menu.anchor_rect = Some(LogicalRect::new(40.0, 8.0, 20.0, 20.0));
+        menu.overhang = Insets::all(8.0);
+        let mut sub = spec(NodeKind::Popup, &[]);
+        sub.parent = Some(NodeId::new(2, 0));
+        sub.width = Some(120.0);
+        sub.height = Some(80.0);
+        // The third row, 8 px inside the menu's overhang.
+        sub.anchor_rect = Some(LogicalRect::new(12.0, 72.0, 144.0, 28.0));
+        let c = popup_config(&sub, &menu).unwrap();
+        assert_eq!(
+            (c.side, c.aligned, c.gap, c.anchor_rect),
+            (PopupSide::Right, true, 6, (4, 64, 144, 28))
+        );
+        for (anchor, side, aligned) in [
+            ("right", PopupSide::Right, true),
+            ("top_right", PopupSide::Right, true),
+            ("bottom_right", PopupSide::Right, true),
+            ("left", PopupSide::Left, true),
+            ("top_left", PopupSide::Left, true),
+            ("bottom_left", PopupSide::Left, true),
+            ("top", PopupSide::Above, false),
+            ("bottom", PopupSide::Below, false),
+            ("center", PopupSide::Right, true),
+        ] {
+            let mut s = sub.clone();
+            s.anchor = Anchor::from_name(anchor).unwrap();
+            let c = popup_config(&s, &menu).unwrap();
+            assert_eq!((c.side, c.aligned), (side, aligned), "{anchor}");
+        }
+        let mut s = sub.clone();
+        s.margin = Insets {
+            left: 0.0,
+            right: 3.0,
+            top: 0.0,
+            bottom: 0.0,
+        };
+        s.anchor = Anchor::Left;
+        assert_eq!(popup_config(&s, &menu).unwrap().gap, 3, "its margin");
+        s.attach = Some(Edge::Top);
+        let c = popup_config(&s, &menu).unwrap();
+        assert_eq!((c.side, c.aligned, c.gap), (PopupSide::Below, false, 0));
+        // In a bar (or a panel) `anchor:` does not turn a popup.
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
+        let mut m = menu.clone();
+        m.anchor = Anchor::Left;
+        let c = popup_config(&m, &bar).unwrap();
+        assert_eq!((c.side, c.aligned), (PopupSide::Below, false));
+        let panel = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Width, PropValue::Number(300.0)),
+                (Prop::Height, PropValue::Number(300.0)),
+            ],
+        );
+        let c = popup_config(&m, &panel).unwrap();
+        assert_eq!((c.side, c.aligned), (PopupSide::Below, false));
+        // A tooltip in a menu still sits under its row.
+        let mut tip = sub.clone();
+        tip.tooltip = true;
+        let c = popup_config(&tip, &menu).unwrap();
+        assert_eq!((c.side, c.aligned), (PopupSide::Below, false));
     }
 
     /// `attach: top` on a panel: anchored to the top edge whatever its

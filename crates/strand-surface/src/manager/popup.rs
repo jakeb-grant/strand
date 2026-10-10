@@ -84,7 +84,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.destroy_surface(id);
                 continue;
             };
-            let Some(positioner) = self.positioner(&new) else {
+            let factor = self.parent_factor(id);
+            let Some(positioner) = self.positioner(&new, factor) else {
                 continue;
             };
             let Some(s) = self.surfaces.get_mut(&id) else {
@@ -120,18 +121,58 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.reconcile(node);
     }
 
-    pub(super) fn positioner(&self, c: &PopupConfig) -> Option<XdgPositioner> {
+    /// The pose factor ([`Surface::pose_factor`]) of popup `id`'s
+    /// parent: its anchor rect is in the parent's surface-local
+    /// coordinates, which a delegated scale shrinks.
+    fn parent_factor(&self, id: SurfaceId) -> (f64, f64) {
+        match self.surfaces.get(&id).map(|s| &s.role) {
+            Some(Role::Popup { parent, .. }) => self
+                .surfaces
+                .get(parent)
+                .map_or((1.0, 1.0), |p| p.pose_factor()),
+            _ => (1.0, 1.0),
+        }
+    }
+
+    /// A positioner for `c` in a parent whose coordinates its pose scales
+    /// by `factor`: the anchor rect is where the parent's content at rest
+    /// is drawn now (a popup opened from a panel held at a static
+    /// `scale`).
+    pub(super) fn positioner(&self, c: &PopupConfig, factor: (f64, f64)) -> Option<XdgPositioner> {
         let shell = self.xdg_shell.as_ref()?;
         let p = XdgPositioner::new(shell).ok()?;
         p.set_size(c.width.max(1) as i32, c.height.max(1) as i32);
         let (x, y, w, h) = c.anchor_rect;
+        let (x, y, w, h) = super::pose::posed_rect(
+            (i64::from(x), i64::from(y), i64::from(w), i64::from(h)),
+            factor,
+            false,
+        )
+        .unwrap_or_else(|| {
+            // Shrunk to nothing: a pixel where it went.
+            let at = |v: i32, f: f64| (f64::from(v) * f).round() as i32;
+            (at(x, factor.0), at(y, factor.1), 1, 1)
+        });
         p.set_anchor_rect(x, y, w.max(1), h.max(1));
         use xdg_positioner::{Anchor, ConstraintAdjustment as Adj, Gravity};
-        let (anchor, gravity, offset, flip) = match c.side {
-            PopupSide::Below => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
-            PopupSide::Above => (Anchor::Top, Gravity::Top, (0, -c.gap), Adj::FlipY),
-            PopupSide::Right => (Anchor::Right, Gravity::Right, (c.gap, 0), Adj::FlipX),
-            PopupSide::Left => (Anchor::Left, Gravity::Left, (-c.gap, 0), Adj::FlipX),
+        let (anchor, gravity, offset, flip) = match (c.side, c.aligned) {
+            (PopupSide::Below, _) => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
+            (PopupSide::Above, _) => (Anchor::Top, Gravity::Top, (0, -c.gap), Adj::FlipY),
+            (PopupSide::Right, false) => (Anchor::Right, Gravity::Right, (c.gap, 0), Adj::FlipX),
+            (PopupSide::Left, false) => (Anchor::Left, Gravity::Left, (-c.gap, 0), Adj::FlipX),
+            // A submenu: level with its row's top, growing down.
+            (PopupSide::Right, true) => (
+                Anchor::TopRight,
+                Gravity::BottomRight,
+                (c.gap, 0),
+                Adj::FlipX,
+            ),
+            (PopupSide::Left, true) => (
+                Anchor::TopLeft,
+                Gravity::BottomLeft,
+                (-c.gap, 0),
+                Adj::FlipX,
+            ),
         };
         p.set_anchor(anchor);
         p.set_gravity(gravity);
@@ -154,7 +195,11 @@ impl<H: SurfaceHost + 'static> State<H> {
             log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());
             return;
         }
-        let Some(positioner) = self.positioner(&config) else {
+        let factor = self
+            .surfaces
+            .get(&parent)
+            .map_or((1.0, 1.0), |p| p.pose_factor());
+        let Some(positioner) = self.positioner(&config, factor) else {
             return;
         };
         // It grabs only with the serial of a press just made: a popup
@@ -226,12 +271,16 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let generation = self.next_generation;
         self.next_generation += 1;
-        let (viewport, fractional) = match (&self.viewporter, &self.fractional_manager) {
-            (Some(vp), Some(fm)) => (
-                Some(vp.get_viewport(&wl, &self.qh, SurfaceTag(id))),
-                Some(fm.get_fractional_scale(&wl, &self.qh, SurfaceTag(id))),
-            ),
-            _ => (None, None),
+        // A viewport whenever the viewporter is there: the fractional
+        // path sizes the surface with it, and a pose's scale (M4) sets
+        // its destination on either path.
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(&wl, &self.qh, SurfaceTag(id)));
+        let fractional = match (&viewport, &self.fractional_manager) {
+            (Some(_), Some(fm)) => Some(fm.get_fractional_scale(&wl, &self.qh, SurfaceTag(id))),
+            _ => None,
         };
         let (scale, integer_scale) = self.initial_scale(scale_src, fractional.is_some());
         let layer_like = config.as_layer();
@@ -277,6 +326,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             opaque: Vec::new(),
             blur: None,
             blur_sent: Some(Vec::new()),
+            pose: strand_scene::SurfacePose::IDENTITY,
+            alpha: None,
+            origin: None,
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
@@ -358,11 +410,15 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Role::Layer(layer) = &s.role else {
             return;
         };
+        log::trace!("{id:?}: grab keyboard {on}");
         let k = if on {
             self.grab_keyboard.insert(id);
             Keyboard::Exclusive
         } else {
             self.grab_keyboard.remove(&id);
+            if s.config.keyboard == Keyboard::None && self.keyboard_focus == Some(id) {
+                self.releasing.insert(id);
+            }
             s.config.keyboard
         };
         layer.set_keyboard_interactivity(match k {
@@ -485,6 +541,7 @@ impl<H: SurfaceHost + 'static> PopupHandler for State<H> {
         let w = w.saturating_add((l + r).max(0) as u32);
         let h = h.saturating_add((t + b).max(0) as u32);
         self.configured(id, (w, h));
+        self.place_popup(id, config.position);
         // sctk acked it already; the next commit makes it take effect.
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.geometry_dirty = true;

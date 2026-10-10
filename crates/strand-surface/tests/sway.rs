@@ -1059,6 +1059,183 @@ fn shadow_overhang_grows_the_surface_but_not_its_input() {
     drop(pointer);
 }
 
+/// (M4) A panel the compositor holds at half size (a delegated scale
+/// pose): its input region shrinks with it, and a click arrives in the
+/// coordinates of the content at rest, not the destination's, so the
+/// node under the pointer is the one hit.
+#[test]
+fn a_posed_scale_maps_input_back_to_the_content() {
+    use strand_scene::SurfacePose;
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_posed_scale_maps_input_back_to_the_content") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let half = SurfacePose {
+        scale: 0.5,
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [half].into_iter().collect();
+    let mut spec = layer_spec(NodeKind::Panel, "Card", "top_left", 200.0, 100.0);
+    spec.margin = Insets::all(40.0);
+    spec.overhang = Insets::all(20.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+    pump(&mut mgr, Duration::from_millis(200));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.logical_size, (240, 140));
+    assert_eq!(info.pose, half);
+    // The box (20, 20, 200, 100) at half size.
+    assert_eq!(info.input_region, Some(Some((10, 10, 100, 50))));
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // The surface lies at 20 (the box's margin 40 less its overhang),
+    // drawn 120 × 70: the half-size box covers 30..130 × 30..80 on
+    // screen. A click at 35 is 15 into the surface, outside the box at
+    // rest but inside the half-size one; at 135 it is 115 in, inside
+    // the box at rest and the drawn surface but past the half-size box;
+    // then 100, 70.
+    click(1, 35, 35);
+    click(10, 135, 50);
+    click(20, 100, 70);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+            .count()
+            < 4
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    pump(&mut mgr, Duration::from_millis(100));
+    events.extend(input.try_iter());
+    let presses: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton {
+                position,
+                state: ButtonState::Pressed,
+                ..
+            } => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(presses.len(), 2, "the half-size box takes two: {events:?}");
+    // In the content at rest: 15 and 80, 50 into the surface, doubled.
+    let near = |p: strand_scene::LogicalPoint, x: f32, y: f32| {
+        (p.x - x).abs() < 2.5 && (p.y - y).abs() < 2.5
+    };
+    assert!(near(presses[0], 30.0, 30.0), "{presses:?}");
+    assert!(near(presses[1], 160.0, 100.0), "{presses:?}");
+    drop(pointer);
+}
+
+/// (M4) A popup opened from a panel the compositor holds at half size
+/// is anchored where the panel's content is drawn: its anchor rect is
+/// scaled with the parent's surface-local coordinates.
+#[test]
+fn a_popup_of_a_posed_panel_opens_at_its_drawn_anchor() {
+    use strand_scene::SurfacePose;
+    let Some(sway) = Sway::start("a_popup_of_a_posed_panel_opens_at_its_drawn_anchor") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    const POPUP: NodeId = NodeId::new(8, 0);
+    let half = SurfacePose {
+        scale: 0.5,
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [half].into_iter().collect();
+    let spec = layer_spec(NodeKind::Panel, "Card", "top_left", 400.0, 300.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    wait_for_bars(&mut mgr, 1);
+    pump(&mut mgr, Duration::from_millis(200));
+    let panel = mgr.state().surfaces_of(PANEL)[0];
+    assert_eq!(mgr.state().surface(panel).unwrap().pose, half);
+    // A 100 × 50 popup under a 60 × 20 button at (200, 100) in the
+    // panel, drawn at (100, 50, 30, 10).
+    let mut popup =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    popup.name = Some("Menu".into());
+    popup.parent = Some(PANEL);
+    popup.anchor_rect = Some(LogicalRect::new(200.0, 100.0, 60.0, 20.0));
+    popup.width = Some(100.0);
+    popup.height = Some(50.0);
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(POPUP)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.origin.is_some())
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let id = mgr.state().surfaces_of(POPUP)[0];
+    let (x, y) = mgr.state().surface(id).unwrap().origin.unwrap();
+    // Centred under the drawn button (115) and below it (60 plus the
+    // gap), not under the button at rest (230, 120).
+    assert_eq!(x, 65, "origin ({x}, {y})");
+    assert!((60..=72).contains(&y), "origin ({x}, {y})");
+}
+
 /// An open `keyboard: exclusive` panel whose `open` is two-way (the
 /// design's launcher) gets a transparent catcher under it: a click
 /// outside it is `ClickAway` on the panel, a click inside is the panel's
@@ -1414,6 +1591,16 @@ fn popups_nest_under_their_anchors_and_close_on_click_away() {
     assert_eq!(shot.rgb(25, 100), BLUE, "its overhang");
     assert_ne!(shot.rgb(130, 175), BLUE, "nothing past the overhang");
     assert_ne!(shot.rgb(10, 100), BLUE);
+    // (M4) Where each lies on the output, as the host is told: the bar
+    // at the top-left corner, the popup's buffer 10 px outside its box.
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert_eq!(mgr.state().surface(bar).unwrap().origin, Some((0, 0)));
+    assert_eq!(info.origin, Some((20, 32)));
+    assert!(
+        mgr.state().host().placed.contains(&(popup, (20, 32))),
+        "{:?}",
+        mgr.state().host().placed
+    );
 
     // A menu nested in it, anchored to (20, 30, 40, 20) in its buffer.
     let mut menu = spec.clone();
@@ -1434,6 +1621,39 @@ fn popups_nest_under_their_anchors_and_close_on_click_away() {
         })
         .unwrap();
     assert!(ok, "the nested popup maps: {:?}", mgr.state().surfaces());
+    // (M4) A submenu: to the right of its anchor, 6 px away, level with
+    // its top. The anchor is (10, 20, 40, 20) in the calendar's box at
+    // (30, 42), so the menu's box starts at (30 + 50 + 6, 42 + 20), as
+    // sway's configure placed it.
+    let nested = mgr.state().surfaces_of(MENU)[0];
+    assert_eq!(
+        mgr.state().surface(nested).unwrap().origin,
+        Some((86, 62)),
+        "{:?}",
+        mgr.state().host().placed
+    );
+    // `anchor: left` opens it to the left instead, repositioned in
+    // place: from a row at (140, 20) in the calendar's box, it ends 6 px
+    // before the row (30 + 140 - 6 - 80).
+    let mut left = menu.clone();
+    left.anchor = strand_scene::Anchor::Left;
+    left.anchor_rect = Some(LogicalRect::new(150.0, 30.0, 40.0, 20.0));
+    mgr.state_mut().apply_surface_change(
+        MENU,
+        SurfaceChange::Updated {
+            spec: left,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(MENU)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.origin == Some((84, 62)))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().host().placed);
 
     // A click on the desktop ends the grab: both are dismissed.
     let before = mgr.state().host().input.len();
@@ -2262,4 +2482,67 @@ fn scrims_dim_beneath_panels_and_popups() {
     assert_eq!(shot.rgb(1000, 10), BLUE, "the bar is not dimmed");
     assert_eq!(shot.rgb(1000, 41), BLUE, "nor is its shadow");
     assert_eq!(shot.rgb(130, 100), BLUE, "the popup is above its scrim");
+}
+
+/// (M4) A corner panel's place (what `surface_placed` says, the tray's
+/// click point) includes the offset its compositor pose moved its
+/// margins by (a root's static `x`/`y` is delegated for good), and
+/// follows its output's logical size.
+#[test]
+fn a_posed_panel_is_placed_where_its_margins_put_it() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let Some(sway) = Sway::start("a_posed_panel_is_placed_where_its_margins_put_it") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let held = SurfacePose {
+        offset: LogicalPoint::new(30.0, 12.0),
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [held].into_iter().collect();
+    let spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let placed = |mgr: &mut strand_surface::SurfaceManager<TestHost>, want: (i32, i32)| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces_of(PANEL)
+                    .first()
+                    .and_then(|id| s.surface(*id))
+                    .is_some_and(|i| i.origin == Some(want))
+            })
+            .unwrap();
+        assert!(ok, "placed at {want:?}: {:?}", mgr.state().host().placed);
+        let id = mgr.state().surfaces_of(PANEL)[0];
+        assert_eq!(
+            mgr.state()
+                .host()
+                .placed
+                .iter()
+                .rev()
+                .find(|(s, _)| *s == id)
+                .map(|(_, o)| *o),
+            Some(want),
+            "told to the host"
+        );
+    };
+    // Top right of 1920 × 1080: x 1520, moved 30 right (the right margin
+    // shrunk by 30) and 12 down.
+    placed(&mut mgr, (1550, 12));
+    // Scale 2: 960 × 540 logical, the panel keeps its size.
+    sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+    placed(&mut mgr, (590, 12));
+    // The pose dropped (a GPU hand-off): back at its configured margins
+    // at once, and the host is told.
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    mgr.state_mut().clear_pose(id);
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.origin, Some((560, 0)));
+    assert_eq!(mgr.state().host().placed.last(), Some(&(id, (560, 0))));
 }

@@ -33,6 +33,7 @@ mod media;
 mod offscreen;
 #[cfg(feature = "gpu")]
 pub mod promote;
+mod pose;
 mod raster;
 mod renderer;
 mod shapes;

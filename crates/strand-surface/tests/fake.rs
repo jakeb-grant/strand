@@ -547,3 +547,382 @@ fn a_scrim_toggled_on_an_overlay_panel_moves_its_catcher() {
         "the panel was never made again"
     );
 }
+
+/// The pose `k` of `n` on its way from `from` to rest.
+fn pose_at(from: strand_scene::SurfacePose, k: u32, n: u32) -> strand_scene::SurfacePose {
+    let f = 1.0 - k as f32 / n as f32;
+    strand_scene::SurfacePose {
+        opacity: 1.0 + (from.opacity - 1.0) * f,
+        scale: 1.0 + (from.scale - 1.0) * f,
+        offset: strand_scene::LogicalPoint::new(from.offset.x * f, from.offset.y * f),
+    }
+}
+
+/// Compositor-animated poses (M4): a pose the painter reports goes to
+/// the compositor as surface state, the alpha multiplier, the viewport's
+/// destination and the layer surface's margins, frame by frame; frames
+/// that drew nothing commit it with no buffer; it ends at rest (full
+/// opacity, the logical size, the placed margins).
+#[test]
+fn poses_go_to_the_compositor_without_buffers() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let from = SurfacePose {
+        opacity: 0.0,
+        scale: 0.5,
+        offset: LogicalPoint::new(100.0, 20.0),
+    };
+    let n = 8;
+    mgr.state_mut().host_mut().poses = (0..=n).map(|k| pose_at(from, k, n)).collect();
+    show_panel(&fake, &mut mgr);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().poses.is_empty()
+                && fake
+                    .layer("strand-Dash")
+                    .first()
+                    .is_some_and(|r| r.alpha == Some(u32::MAX))
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the pose never settled: {:?}",
+        fake.layer("strand-Dash")
+    );
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let rec = fake.layer("strand-Dash")[0].clone();
+    // One buffer (the content at rest): every later pose was a bare
+    // commit.
+    assert_eq!(rec.buffer_commits, 1, "{rec:?}");
+    assert!(rec.commits > n as usize, "{rec:?}");
+    // The first frame went out with the start pose, opacity rising after.
+    assert_eq!(rec.alpha_sets.first(), Some(&0), "{rec:?}");
+    assert!(
+        rec.alpha_sets.windows(2).all(|w| w[1] > w[0]),
+        "{:?}",
+        rec.alpha_sets
+    );
+    assert_eq!(rec.alpha, Some(u32::MAX));
+    // Half size first; at rest the logical size on the fractional path,
+    // unset (the buffer scale sizes it) on the integer one.
+    assert_eq!(
+        rec.viewport_sets.first(),
+        Some(&Some((200, 150))),
+        "{rec:?}"
+    );
+    let fractional = mgr.state().surface(id).unwrap().fractional;
+    let rest = fractional.then_some((400, 300));
+    assert_eq!(rec.viewport, rest, "fractional: {fractional}");
+    // `top_right`: x moves by the right margin, y by the top one; back
+    // at the placed margins (0) at rest.
+    assert_eq!(rec.margin, Some([0, 0, 0, 0]), "{rec:?}");
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.pose, SurfacePose::IDENTITY);
+    assert_eq!(info.stats.poses, n as u64 + 1, "{:?}", info.stats);
+    assert_eq!(info.stats.commits, 1);
+}
+
+/// A pose's offset reaches the margins: mid-way through a slide the
+/// compositor has the right margin shrunk by the offset and the top one
+/// grown, and a spec change meanwhile (a new size) keeps them.
+#[test]
+fn a_pose_offset_moves_the_margins_and_survives_a_reconfigure() {
+    use strand_scene::{LogicalPoint, SurfacePose};
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let held = SurfacePose {
+        offset: LogicalPoint::new(30.0, 12.0),
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [held].into_iter().collect();
+    show_panel(&fake, &mut mgr);
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.layer("strand-Dash")
+                .first()
+                .is_some_and(|r| r.margin == Some([12, -30, 0, 0]))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", fake.layer("strand-Dash"));
+    let spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 300.0, 200.0);
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.layer("strand-Dash")
+                .first()
+                .is_some_and(|r| r.configured == Some((300, 200)))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", fake.layer("strand-Dash"));
+    common::pump(&mut mgr, Duration::from_millis(100));
+    assert_eq!(
+        fake.layer("strand-Dash")[0].margin,
+        Some([12, -30, 0, 0]),
+        "the reconfigure kept the pose's margins"
+    );
+}
+
+/// Without the alpha modifier no multiplier is ever set, though the
+/// rest of a pose still goes out (render delegates nothing there, as
+/// `CompositorCaps::delegates_poses` is false; this is the manager's
+/// side only).
+#[test]
+fn no_alpha_modifier_no_multiplier() {
+    use strand_scene::SurfacePose;
+    let fake = Fake::compositor(SurfaceGlobals {
+        alpha_modifier: false,
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    let half = SurfacePose {
+        opacity: 0.5,
+        ..SurfacePose::IDENTITY
+    };
+    mgr.state_mut().host_mut().poses = [half].into_iter().collect();
+    show_panel(&fake, &mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.alpha, None, "{rec:?}");
+    assert!(rec.alpha_sets.is_empty());
+}
+
+/// An opaque region that changes on a frame that drew nothing (a
+/// delegated fade settling: render claims the box only at full opacity)
+/// goes out with that frame's bare commit, not only with a buffer.
+#[test]
+fn an_opaque_region_rides_a_bare_commit() {
+    use strand_scene::SurfacePose;
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    show_panel(&fake, &mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert!(info.opaque_region.is_empty());
+    assert_eq!(info.stats.commits, 1);
+    let bare = fake.layer("strand-Dash")[0].commits;
+    // The fade ends: no new content, but the box is opaque now.
+    let host = mgr.state_mut().host_mut();
+    host.opaque = true;
+    host.poses = [SurfacePose::IDENTITY].into_iter().collect();
+    mgr.state_mut().poll();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| !i.opaque_region.is_empty())
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surface(id));
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.stats.commits, 1, "no buffer: {:?}", info.stats);
+    assert_eq!(info.stats.opaque_updates, 1, "{:?}", info.stats);
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.buffer_commits, 1, "{rec:?}");
+    assert!(rec.commits > bare, "a bare commit carried it: {rec:?}");
+}
+
+/// While the compositor scales a surface, its surface-local coordinates
+/// are the destination's: the opaque and blur regions go out scaled
+/// with the pose (a 400 × 300 panel at half size claims and blurs only
+/// its 200 × 150), and back at full size at rest.
+#[test]
+fn regions_follow_a_delegated_scale() {
+    use strand_scene::SurfacePose;
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let half = SurfacePose {
+        scale: 0.5,
+        ..SurfacePose::IDENTITY
+    };
+    {
+        let host = mgr.state_mut().host_mut();
+        host.opaque = true;
+        host.blur = vec![rounded(400, 300, 16.0)];
+        host.poses = [half].into_iter().collect();
+    }
+    show_panel(&fake, &mut mgr);
+    wait_blur_sets(&fake, &mut mgr, 1);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.pose, half);
+    assert_eq!(
+        info.opaque_region,
+        vec![strand_scene::Rect::new(0, 0, 200, 150)],
+        "{info:?}"
+    );
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.viewport, Some((200, 150)), "{rec:?}");
+    let blur = rec.blur.clone().expect("a blur region");
+    assert!(blur.contains(100, 75) && blur.contains(100, 0) && blur.contains(0, 75));
+    assert!(!blur.contains(0, 0) && !blur.contains(201, 75) && !blur.contains(100, 151));
+    let corners = 4.0 * (8.0f64 * 8.0) * (1.0 - std::f64::consts::PI / 4.0);
+    let missing = (200 * 150) as f64 - blur.area() as f64;
+    assert!(
+        (missing - corners).abs() < 4.0 * 8.0,
+        "the half-size corners are left out: {missing} px (about {corners})"
+    );
+    // At rest: the whole box again.
+    mgr.state_mut().host_mut().poses = [SurfacePose::IDENTITY].into_iter().collect();
+    mgr.state_mut().poll();
+    wait_blur_sets(&fake, &mut mgr, 2);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(
+        info.opaque_region,
+        vec![strand_scene::Rect::new(0, 0, 400, 300)]
+    );
+    let blur = fake.layer("strand-Dash")[0].blur.clone().unwrap();
+    assert!(blur.contains(399, 150) && blur.contains(200, 299));
+}
+
+/// A popup grab's keyboard over a `keyboard: none` bar on a compositor
+/// that keeps the bar focused when it gives `exclusive` back, as the
+/// fake does (sway does too, but sends the leave it owes with the next
+/// grab's enter). A real focus loss after the next grab (a lock,
+/// another exclusive surface) still reaches the grabbing popup; a
+/// leave and enter for the bar arriving together (sway's late leave)
+/// does not.
+#[test]
+fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
+    use strand_scene::{InputEvent, LogicalRect, SurfaceSpec};
+    const BAR: NodeId = NodeId::new(1, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .surfaces(SurfaceGlobals::default())
+        .seats(1)
+        .start();
+    let mut mgr = manager(&fake);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(common::bar_spec("Top", 36.0)));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(BAR)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the bar maps");
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.keyboard_focus() == Some(bar))
+        .unwrap();
+    assert!(ok, "the bar has keyboard focus");
+
+    let popup = |open: bool| {
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+        spec.name = Some("Calendar".into());
+        spec.parent = Some(BAR);
+        spec.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+        spec.width = Some(200.0);
+        spec.height = Some(120.0);
+        spec.open_two_way = true;
+        spec.open = open;
+        spec
+    };
+    // A key press, then a grabbing popup: it has the keys.
+    let open = |mgr: &mut SurfaceManager<TestHost>, first: bool| {
+        fake.cmd(Cmd::Key(1, true));
+        fake.cmd(Cmd::Key(1, false));
+        let n = mgr.state().host().input.len();
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.host().input[n..]
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Key { .. }))
+            })
+            .unwrap();
+        assert!(ok, "the press reached the bar");
+        let change = if first {
+            SurfaceChange::Created(popup(true))
+        } else {
+            SurfaceChange::Updated {
+                spec: popup(true),
+                recreate: false,
+            }
+        };
+        mgr.state_mut().apply_surface_change(POPUP, change);
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces_of(POPUP).first().is_some_and(|p| {
+                    s.host()
+                        .input
+                        .contains(&InputEvent::KeyboardEnter { surface: *p })
+                        && s.host()
+                            .input
+                            .iter()
+                            .rposition(|e| *e == InputEvent::KeyboardEnter { surface: *p })
+                            >= Some(n)
+                })
+            })
+            .unwrap();
+        assert!(ok, "the popup has the keys: {:?}", mgr.state().host().input);
+        assert!(mgr.state().holds_keyboard_for_popup(bar));
+        mgr.state().surfaces_of(POPUP)[0]
+    };
+    let close = |mgr: &mut SurfaceManager<TestHost>| {
+        mgr.state_mut().apply_surface_change(
+            POPUP,
+            SurfaceChange::Updated {
+                spec: popup(false),
+                recreate: false,
+            },
+        );
+        let ok = mgr
+            .dispatch_until(WAIT, |s| s.surfaces_of(POPUP).is_empty())
+            .unwrap();
+        assert!(ok, "closed");
+        assert!(!mgr.state().holds_keyboard_for_popup(bar));
+    };
+    fn leaves_in(host: &TestHost, p: strand_scene::SurfaceId) -> usize {
+        host.input
+            .iter()
+            .filter(|e| **e == InputEvent::KeyboardLeave { surface: p })
+            .count()
+    }
+    let leaves = |mgr: &SurfaceManager<TestHost>, p| leaves_in(mgr.state().host(), p);
+
+    // Opened and closed: the bar gives `exclusive` back while focused,
+    // and the fake sends no leave for it.
+    let _ = open(&mut mgr, true);
+    close(&mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    assert_eq!(mgr.state().keyboard_focus(), Some(bar));
+
+    // Sway's late leave: a leave and an enter for the bar together,
+    // right after the next grab. The popup keeps the keys.
+    let p = open(&mut mgr, false);
+    let before = leaves(&mgr, p);
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    common::pump(&mut mgr, Duration::from_millis(100));
+    assert_eq!(mgr.state().keyboard_focus(), Some(bar));
+    assert_eq!(leaves(&mgr, p), before, "{:?}", mgr.state().host().input);
+    close(&mut mgr);
+
+    // No leave owed: the next grab comes with no leave or enter, and a
+    // real focus loss later reaches the grabbing popup.
+    let p = open(&mut mgr, false);
+    common::pump(&mut mgr, Duration::from_millis(50));
+    let before = leaves(&mgr, p);
+    fake.cmd(Cmd::KeyboardLeave);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| leaves_in(s.host(), p) > before)
+        .unwrap();
+    assert!(
+        ok,
+        "the grabbing popup lost the keyboard: {:?}",
+        mgr.state().host().input
+    );
+    assert_eq!(mgr.state().keyboard_focus(), None);
+}

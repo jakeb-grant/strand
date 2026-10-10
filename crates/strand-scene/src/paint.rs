@@ -129,9 +129,13 @@ pub struct BlurRegion {
 pub struct SurfacePose {
     /// `0..=1`, multiplied into the surface's alpha.
     pub opacity: f32,
-    /// About the surface's anchored side; 1 is the laid-out size.
+    /// The surface's size over its laid-out size, with its top-left
+    /// corner kept (as compositors draw a layer surface smaller than its
+    /// arranged box); render folds the move that keeps the root's centre
+    /// in place into `offset`.
     pub scale: f32,
-    /// Logical pixels added to the surface's placement.
+    /// Logical pixels the surface's top-left corner moves from where it
+    /// is placed (layer-shell margins).
     pub offset: LogicalPoint,
 }
 

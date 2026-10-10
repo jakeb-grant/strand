@@ -91,7 +91,17 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.grab_keyboard.contains(&id)
     }
 
-    pub(super) fn send_input(&mut self, event: InputEvent) {
+    /// Hands `event` to the host and the input channel, its position
+    /// mapped back from the coordinates of its surface's pose scale to
+    /// the content at rest (`pose.rs`).
+    pub(super) fn send_input(&mut self, mut event: InputEvent) {
+        let factor = self
+            .surfaces
+            .get(&event.surface())
+            .map_or((1.0, 1.0), |s| s.pose_factor());
+        if factor != (1.0, 1.0) {
+            unpose(&mut event, factor);
+        }
         self.host.input(&event);
         self.dnd_input(&event);
         if let Some(tx) = &self.input
@@ -101,6 +111,28 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.input = None;
         }
     }
+}
+
+/// Maps `event`'s position from a posed surface's coordinates (scaled
+/// by `(fx, fy)`, [`Surface::pose_factor`]) back to its content's.
+fn unpose(event: &mut InputEvent, (fx, fy): (f64, f64)) {
+    let p = match event {
+        InputEvent::PointerEnter { position, .. }
+        | InputEvent::PointerMotion { position, .. }
+        | InputEvent::PointerButton { position, .. }
+        | InputEvent::PointerAxis { position, .. } => position,
+        InputEvent::DragEnter { at, .. }
+        | InputEvent::DragMotion { at, .. }
+        | InputEvent::DragDrop { at, .. } => at,
+        InputEvent::PointerLeave { .. }
+        | InputEvent::KeyboardEnter { .. }
+        | InputEvent::KeyboardLeave { .. }
+        | InputEvent::Key { .. }
+        | InputEvent::ClickAway { .. }
+        | InputEvent::DragLeave { .. } => return,
+    };
+    p.x = (f64::from(p.x) / fx) as f32;
+    p.y = (f64::from(p.y) / fy) as f32;
 }
 
 /// A keysym's xkb name without its `XK_` prefix (`Escape`, `Return`,
@@ -336,6 +368,26 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
     }
 }
 
+impl<H: SurfaceHost + 'static> State<H> {
+    /// Ends a held leave ([`State::held_leave`]) once the dispatch that
+    /// brought it is over: no enter for its layer surface followed, so
+    /// the keyboard really left, and the grabbing popup loses it too.
+    pub(super) fn resolve_held_leave(&mut self) {
+        let Some(layer) = self.held_leave.take() else {
+            return;
+        };
+        if self.keyboard_focus == Some(layer) {
+            return;
+        }
+        log::trace!("keyboard leave {layer:?} held, not stale");
+        if let Some(p) = self.grab_focus.take()
+            && self.surfaces.contains_key(&p)
+        {
+            self.send_input(InputEvent::KeyboardLeave { surface: p });
+        }
+    }
+}
+
 impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
     fn enter(
         &mut self,
@@ -348,6 +400,13 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: &[Keysym],
     ) {
         if let Some(id) = self.keyboard_target(surface) {
+            log::trace!("keyboard enter {id:?} (grab focus {:?})", self.grab_focus);
+            self.releasing.remove(&id);
+            if self.held_leave == Some(id) {
+                // The held leave was stale: the grabbing popup keeps
+                // the keys.
+                self.held_leave = None;
+            }
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
@@ -364,12 +423,27 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
     ) {
         self.stop_repeat();
         let id = self.keyboard_target(surface).or(self.keyboard_focus);
+        log::trace!("keyboard leave {id:?} (grab focus {:?})", self.grab_focus);
         if self.keyboard_focus == id {
             self.keyboard_focus = None;
         }
+        // Maybe the leave for a grab given back, arriving after a new
+        // grab took the keyboard again (sway sends it with the new grab's
+        // enter, which gives the keys back): held until this dispatch
+        // ends, when an enter for the same surface has made it stale or
+        // its absence makes it a real focus loss. A compositor that kept
+        // focus through the release sends no such leave, and a real one
+        // later is told then all the same.
+        let suspect = id.filter(|id| self.releasing.remove(id) && self.grab_keyboard.contains(id));
+        if let Some(l) = suspect {
+            self.held_leave = Some(l);
+            self.handle
+                .insert_idle(|state: &mut State<H>| state.resolve_held_leave());
+        }
         // The keyboard left the layer surface: its grabbing popup loses it
         // too.
-        if let Some(p) = self.grab_focus.take()
+        if suspect.is_none()
+            && let Some(p) = self.grab_focus.take()
             && self.surfaces.contains_key(&p)
         {
             self.send_input(InputEvent::KeyboardLeave { surface: p });
@@ -476,5 +550,26 @@ mod tests {
         assert_eq!(repeat_interval(2_000_000), Duration::from_millis(1));
         assert_eq!(repeat_interval(u32::MAX), Duration::from_millis(1));
         assert_eq!(repeat_interval(0), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_posed_surface_hands_back_content_positions() {
+        let surface = SurfaceId(3);
+        let mut press = InputEvent::PointerButton {
+            surface,
+            position: LogicalPoint::new(80.0, 40.0),
+            button: 0x110,
+            state: ButtonState::Pressed,
+            time: 0,
+        };
+        // At 0.8 the content under destination (80, 40) is at (100, 50).
+        unpose(&mut press, (0.8, 0.8));
+        let InputEvent::PointerButton { position, .. } = press else {
+            unreachable!()
+        };
+        assert!((position.x - 100.0).abs() < 1e-3 && (position.y - 50.0).abs() < 1e-3);
+        let mut key = InputEvent::KeyboardLeave { surface };
+        unpose(&mut key, (0.5, 0.5));
+        assert_eq!(key, InputEvent::KeyboardLeave { surface });
     }
 }

@@ -29,6 +29,13 @@ pub struct Host {
     wake: Option<calloop::ping::Ping>,
     /// The node each surface shows (for the blur fallback's diagnostic).
     roots: HashMap<SurfaceId, NodeId>,
+    /// (M4) Where each surface's buffer lies on its output
+    /// (`SurfaceHost::surface_placed`): a press becomes the tray's click
+    /// point with it.
+    origins: HashMap<SurfaceId, (i32, i32)>,
+    /// The surfaces idle before an input event, kept between events so
+    /// pointer motion allocates nothing.
+    idle: Vec<SurfaceId>,
     /// The blur ladder's last rung: says once why `blur` draws its tint.
     blur_fallback: BlurFallback,
     /// (M4) Handed-off surfaces the manager had to destroy: the GPU host
@@ -245,6 +252,33 @@ fn to_logic(intent: Intent) -> Option<ToLogic> {
     })
 }
 
+/// The tray's click point for a press at `position` on a surface whose
+/// buffer lies at `origin` on its output: the bottom-left corner of the
+/// pressed node's box `rect` (in the surface), where an app placing a
+/// menu of its own puts its top-left corner (and flips it up from a
+/// bottom bar), in the output's logical pixels; the press itself when no
+/// node was hit. `scale` is the surface's delegated pose scale: the
+/// compositor draws the content at rest that much smaller from the
+/// surface's top-left corner (`strand_render::pose`).
+fn click_point(
+    origin: (i32, i32),
+    rect: Option<strand_scene::LogicalRect>,
+    position: strand_scene::LogicalPoint,
+    scale: f32,
+) -> (i32, i32) {
+    let (x, y) = rect.map_or((position.x, position.y), |r| (r.x, r.y + r.h));
+    let scale = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
+    let at = |o: i32, v: f32| {
+        (f64::from(o) + (f64::from(v) * scale).round())
+            .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    };
+    (at(origin.0, x), at(origin.1, y))
+}
+
 /// A monitor's logical size: no content-sized surface on it is larger.
 fn monitor_bounds(m: &Monitor) -> Option<strand_scene::LogicalSize> {
     m.logical_size
@@ -304,6 +338,8 @@ impl Host {
             logic: None,
             wake: None,
             roots: HashMap::new(),
+            origins: HashMap::new(),
+            idle: Vec::new(),
             blur_fallback: BlurFallback {
                 hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
                 ..BlurFallback::default()
@@ -410,6 +446,42 @@ impl Host {
     }
 }
 
+impl Host {
+    /// The tray's click point `event` sets, if any: on a press on a
+    /// placed surface, [`click_point`] of the innermost node hit; on a
+    /// press on a surface not placed yet (a popup before its configure,
+    /// a monitor with no logical size) or a key press (an action the
+    /// keyboard triggers), (0, 0), the point when none is known, so an
+    /// action never sends an earlier press's point from another surface.
+    fn press_point(&self, event: &InputEvent) -> Option<(i32, i32)> {
+        let (surface, position) = match event {
+            InputEvent::PointerButton {
+                surface,
+                position,
+                state: strand_scene::ButtonState::Pressed,
+                ..
+            } => (surface, position),
+            InputEvent::Key { key, .. } if key.state == strand_scene::ButtonState::Pressed => {
+                return Some((0, 0));
+            }
+            _ => return None,
+        };
+        let Some(&origin) = self.origins.get(surface) else {
+            return Some((0, 0));
+        };
+        let rect = self
+            .renderer
+            .hit(*surface, *position)
+            .first()
+            .and_then(|n| self.renderer.node_rect(*surface, *n));
+        let scale = self
+            .renderer
+            .delegated_pose(*surface)
+            .map_or(1.0, |p| p.scale);
+        Some(click_point(origin, rect, *position, scale))
+    }
+}
+
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         // The lock's built-in fallback, when it shows (`run/lock.rs`).
@@ -492,6 +564,10 @@ impl Painter for Host {
         }
         self.renderer.blur_region(surface)
     }
+
+    fn surface_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        self.renderer.surface_pose(surface)
+    }
 }
 
 impl SurfaceHost for Host {
@@ -540,6 +616,10 @@ impl SurfaceHost for Host {
         self.wake_if_changed();
     }
 
+    fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
+        self.origins.insert(surface, origin);
+    }
+
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.lock.detached(surface);
@@ -549,6 +629,7 @@ impl SurfaceHost for Host {
             crate::run::feeds::sync(&mut self.renderer, feeds);
         }
         self.roots.remove(&surface);
+        self.origins.remove(&surface);
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -605,14 +686,21 @@ impl SurfaceHost for Host {
             }
             return;
         }
+        // A press sets the point tray actions it causes send the app.
+        if let Some((x, y)) = self.press_point(event) {
+            strand_services::tray::set_click_point(x, y);
+        }
         // Surfaces already wanting a frame (animating) get it anyway.
-        let idle: Vec<SurfaceId> = self.logic.as_ref().map_or_else(Vec::new, |f| {
-            f.surfaces
-                .keys()
-                .copied()
-                .filter(|s| !self.renderer.wants_frame(*s))
-                .collect()
-        });
+        let mut idle = std::mem::take(&mut self.idle);
+        idle.clear();
+        if let Some(f) = &self.logic {
+            idle.extend(
+                f.surfaces
+                    .keys()
+                    .copied()
+                    .filter(|s| !self.renderer.wants_frame(*s)),
+            );
+        }
         if let Some(f) = &mut self.logic {
             f.input(event, &mut self.renderer);
             // (M4) `parallax` and `tilt` follow the router's pointer.
@@ -626,6 +714,7 @@ impl SurfaceHost for Host {
         // diff to follow (a key scrolling a list to the row it selects)
         // still needs a frame: only then is the loop woken.
         let woke = idle.iter().any(|s| self.renderer.wants_frame(*s));
+        self.idle = idle;
         if woke && let Some(p) = &self.wake {
             p.ping();
         }
@@ -657,6 +746,15 @@ impl SurfaceHost for Host {
         // The blur ladder's first rung: with `ext-background-effect-v1`
         // confirmed, `blur` draws no tint (the compositor blurs).
         self.renderer.set_compositor_blur(caps.background_effect);
+        // Compositor-animated poses (M4): surface roots' fades, scales
+        // and small moves go to the alpha modifier, the viewport and
+        // the margins where the compositor has the first two.
+        self.renderer.set_compositor_poses(caps.delegates_poses());
+        // Hyprland draws a layer surface stretched to the box it
+        // arranged, whatever its viewport: a root's scale is painted
+        // there (decisions.md, m4-surface-w2).
+        self.renderer
+            .set_compositor_pose_scale(!self.blur_fallback.hyprland);
         self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).
@@ -725,6 +823,167 @@ mod tests {
             b.frame("strand-Top")
                 .unwrap()
                 .contains("strand compositor-rules")
+        );
+    }
+
+    /// Compositor-animated poses follow the capabilities: with the alpha
+    /// modifier and the viewporter a panel's entering fade and scale are
+    /// handed to the surface manager as a pose (and not painted), on
+    /// Hyprland the fade only, and without them it is painted and no pose
+    /// is reported.
+    #[test]
+    fn poses_are_delegated_only_with_the_protocols() {
+        use std::time::Duration;
+        let pose = |caps: CompositorCaps, hyprland: bool| {
+            let font = std::fs::read(strand_text::test_font_path()).unwrap();
+            let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+                std::sync::Arc::new(font),
+            ]));
+            let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+            let mut host = Host::new(renderer, false);
+            host.blur_fallback.hyprland = hyprland;
+            host.compositor_caps(&caps);
+            let panel = NodeId::new(0, 0);
+            let num = strand_scene::PropValue::Number;
+            let mut d = SceneDiff::new();
+            d.create(panel, strand_scene::NodeKind::Panel, None, 0)
+                .set(panel, Prop::Width, num(100.0))
+                .set(panel, Prop::Height, num(100.0))
+                .set(
+                    panel,
+                    Prop::Anchor,
+                    strand_scene::PropValue::Keyword("top_right".into()),
+                )
+                .set(
+                    panel,
+                    Prop::Enter,
+                    strand_scene::PropValue::Pose(vec![
+                        (Prop::Opacity, num(0.0)),
+                        (Prop::Scale, num(0.5)),
+                    ]),
+                );
+            assert!(host.renderer.apply(d).is_empty());
+            let s = SurfaceId(1);
+            host.surface_attached(s, panel, None);
+            host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+            let mut px = vec![0u8; 100 * 100 * 4];
+            let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+            let mut t = t.at(Duration::from_secs(1));
+            assert!(!host.paint(s, &mut t).is_empty());
+            host.surface_pose(s)
+        };
+        let delegating = CompositorCaps {
+            alpha_modifier: true,
+            viewporter: true,
+            ..CompositorCaps::default()
+        };
+        let p = pose(delegating, false).expect("a pose");
+        assert!(p.opacity < 0.5 && p.scale < 0.8, "{p:?}");
+        // Hyprland stretches a layer surface to its box: only the fade
+        // (and offsets) go to it, the scale is painted.
+        let p = pose(delegating, true).expect("a pose");
+        assert!(p.opacity < 0.5 && p.scale == 1.0, "{p:?}");
+        assert_eq!(pose(CompositorCaps::default(), false), None);
+        let no_alpha = CompositorCaps {
+            viewporter: true,
+            ..CompositorCaps::default()
+        };
+        assert_eq!(pose(no_alpha, false), None);
+    }
+
+    /// (M4) A press sets the tray's click point: the bottom-left corner
+    /// of the innermost node pressed, on the output (the surface's
+    /// origin added); the surface's box where no child was hit; nothing
+    /// for a surface not placed yet, gone, or a release. Rounded to
+    /// logical pixels.
+    #[test]
+    fn a_press_sets_the_tray_click_point() {
+        use std::time::Duration;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (panel, icon) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let num = strand_scene::PropValue::Number;
+        let mut d = SceneDiff::new();
+        d.create(panel, strand_scene::NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, num(100.0))
+            .set(panel, Prop::Height, num(100.0))
+            .create(icon, strand_scene::NodeKind::Box, Some(panel), 0)
+            .set(icon, Prop::Width, num(20.0))
+            .set(icon, Prop::Height, num(20.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let mut px = vec![0u8; 100 * 100 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+        let mut t = t.at(Duration::from_secs(1));
+        assert!(!host.paint(s, &mut t).is_empty());
+        let press = |x: f32, y: f32| InputEvent::PointerButton {
+            surface: s,
+            position: strand_scene::LogicalPoint::new(x, y),
+            button: button::RIGHT,
+            state: strand_scene::ButtonState::Pressed,
+            time: 0,
+        };
+        // Not placed yet: the point when none is known, not the last
+        // press's.
+        assert_eq!(host.press_point(&press(5.0, 5.0)), Some((0, 0)));
+        host.surface_placed(s, (1800, 40));
+        assert_eq!(host.press_point(&press(5.0, 5.0)), Some((1800, 60)));
+        assert_eq!(host.press_point(&press(50.0, 80.0)), Some((1800, 140)));
+        let release = InputEvent::PointerButton {
+            surface: s,
+            position: strand_scene::LogicalPoint::new(5.0, 5.0),
+            button: button::RIGHT,
+            state: strand_scene::ButtonState::Released,
+            time: 0,
+        };
+        assert_eq!(host.press_point(&release), None);
+        // A key press (keyboard activation) has no point either.
+        let key = |state| InputEvent::Key {
+            surface: s,
+            key: strand_scene::KeyInput {
+                name: "Return".into(),
+                text: String::new(),
+                state,
+                repeat: false,
+                modifiers: strand_scene::Modifiers::default(),
+                time: 0,
+            },
+        };
+        assert_eq!(
+            host.press_point(&key(strand_scene::ButtonState::Pressed)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            host.press_point(&key(strand_scene::ButtonState::Released)),
+            None
+        );
+        host.surface_detached(s);
+        assert_eq!(host.press_point(&press(5.0, 5.0)), Some((0, 0)));
+        assert_eq!(
+            click_point(
+                (10, 20),
+                None,
+                strand_scene::LogicalPoint::new(3.4, 7.6),
+                1.0
+            ),
+            (13, 28)
+        );
+        // Under a delegated scale the corner is drawn that much nearer
+        // the surface's top-left corner: (40, 100) at 0.8 is (32, 80).
+        assert_eq!(
+            click_point(
+                (1800, 40),
+                Some(strand_scene::LogicalRect::new(40.0, 80.0, 20.0, 20.0)),
+                strand_scene::LogicalPoint::new(45.0, 85.0),
+                0.8
+            ),
+            (1832, 120)
         );
     }
 

@@ -191,6 +191,11 @@ impl<'a> Flattener<'a> {
             laid,
             self.logical,
         );
+        // (M4) The root paints at rest what the compositor applies.
+        if root && self.extras.compositor_poses {
+            let scale = !self.extras.compositor_pose_scale_off;
+            self.out.pose = crate::pose::delegate(node.kind, &mut props, laid, scale);
+        }
         let inert = inh.inert || self.tree.is_ghost(node.id);
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 
@@ -625,8 +630,12 @@ impl<'a> Flattener<'a> {
                 .or(default_bg)
                 .map(|p| if tint { tinted(p) } else { p })
         {
+            // A root the compositor fades (a delegated opacity below 1,
+            // `pose::delegate` took it out of the props) claims nothing
+            // either.
             if root
                 && opacity >= 1.0
+                && self.out.pose.is_none_or(|p| p.opacity >= 1.0)
                 && layer_group.is_none()
                 && saved == self.xform
                 && self.xform == kurbo::Affine::IDENTITY

@@ -197,6 +197,10 @@ pub struct Flattened {
     /// (M4) The passes of drawn `shader` nodes.
     #[cfg(feature = "gpu")]
     pub(crate) passes: Vec<crate::renderer::backend::PassWant>,
+    /// (M4) The pose the compositor applies to the whole surface this
+    /// frame, taken out of the root's props ([`crate::pose`]); `None`
+    /// when nothing is delegated.
+    pub pose: Option<strand_scene::SurfacePose>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -299,6 +303,14 @@ pub struct Extras {
     /// The compositor blurs behind surfaces (`ext-background-effect-v1`,
     /// M4): `blur` needs no tint fallback.
     pub compositor_blur: bool,
+    /// (M4) The compositor applies surface poses (`wp_alpha_modifier_v1`
+    /// and the viewporter): a root's opacity, scale and offset go to
+    /// it where its placement allows ([`crate::pose`]).
+    pub compositor_poses: bool,
+    /// (M4) The compositor draws a layer surface stretched to its
+    /// arranged box whatever its viewport (Hyprland): a root's scale is
+    /// painted, not delegated.
+    pub compositor_pose_scale_off: bool,
     /// Hover, press, focus, carets and slider drags from the input
     /// router.
     pub widgets: crate::widgets::Widgets,

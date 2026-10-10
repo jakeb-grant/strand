@@ -136,16 +136,28 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.stats.paints += 1;
         self.stats.paints += 1;
         let wants_more = self.host.wants_frame(id);
+        // A compositor pose (M4) rides this frame's commit, or a bare one
+        // when it drew nothing.
+        let posed = self.sync_pose(id);
         // What this frame asks the compositor to blur, sent with its
-        // commit when it changed (the blur ladder's first rung).
-        let blur = self
-            .blurs()
-            .then(|| crate::blur::region_rects(&self.host.blur_region(id), scale));
+        // commit when it changed (the blur ladder's first rung), in the
+        // coordinates of the pose just set.
+        let mut blur = self.blurs().then(|| self.blur_rects(id, scale));
+        // So does a new opaque region: a delegated fade that settles
+        // claims its region with the bare commit that ends it.
+        let opaqued = self.sync_opaque(id, scale);
+        // And a blur region a scale pose moved, on a frame that drew
+        // nothing.
+        let blurred =
+            damage.is_empty() && blur.take().is_some_and(|rects| self.set_blur(id, rects));
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
         let wl = s.wl().clone();
         if damage.is_empty() {
+            if posed || opaqued || blurred {
+                s.ack_pending = true;
+            }
             // Nothing drawn, nothing recorded: the buffer keeps its age.
             s.stats.empty_paints += 1;
             self.stats.empty_paints += 1;
@@ -207,33 +219,6 @@ impl<H: SurfaceHost + 'static> State<H> {
             wl.damage(0, 0, i32::MAX, i32::MAX);
             s.last_damage = vec![Rect::new(0, 0, size.w, size.h)];
         }
-        let opaque = scale.inner_logical_region(&self.host.opaque_region(id));
-        if opaque != s.opaque {
-            let sent = if opaque.is_empty() {
-                wl.set_opaque_region(None);
-                true
-            } else {
-                match Region::new(&self.compositor) {
-                    Ok(region) => {
-                        for r in &opaque {
-                            region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
-                        }
-                        wl.set_opaque_region(Some(region.wl_region()));
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("{}: no opaque region: {e}", s.config.namespace);
-                        false
-                    }
-                }
-            };
-            // Unsent regions are retried with the next frame.
-            if sent {
-                s.opaque = opaque;
-                s.stats.opaque_updates += 1;
-                self.stats.opaque_updates += 1;
-            }
-        }
         if let Some(rects) = blur {
             self.set_blur(id, rects);
         }
@@ -270,6 +255,68 @@ impl<H: SurfaceHost + 'static> State<H> {
             let node = s.node;
             self.reconcile_children(node);
         }
+    }
+
+    /// Sets `id`'s opaque region as pending state when the host's
+    /// changed; true if one was sent (it takes effect with the next
+    /// commit, with a buffer or bare).
+    pub(super) fn sync_opaque(&mut self, id: SurfaceId, scale: Scale) -> bool {
+        let opaque = scale.inner_logical_region(&self.host.opaque_region(id));
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return false;
+        };
+        // In the coordinates of its pose's scale: the shrunken content
+        // claims only what it covers.
+        let factor = s.pose_factor();
+        let opaque: Vec<Rect> = if factor == (1.0, 1.0) {
+            opaque
+        } else {
+            opaque
+                .iter()
+                .filter_map(|r| {
+                    let (x, y, w, h) = pose::posed_rect(
+                        (
+                            i64::from(r.x),
+                            i64::from(r.y),
+                            i64::from(r.w),
+                            i64::from(r.h),
+                        ),
+                        factor,
+                        true,
+                    )?;
+                    Some(Rect::new(x, y, w as u32, h as u32))
+                })
+                .collect()
+        };
+        if opaque == s.opaque {
+            return false;
+        }
+        let wl = s.wl().clone();
+        let sent = if opaque.is_empty() {
+            wl.set_opaque_region(None);
+            true
+        } else {
+            match Region::new(&self.compositor) {
+                Ok(region) => {
+                    for r in &opaque {
+                        region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
+                    }
+                    wl.set_opaque_region(Some(region.wl_region()));
+                    true
+                }
+                Err(e) => {
+                    log::warn!("{}: no opaque region: {e}", s.config.namespace);
+                    false
+                }
+            }
+        };
+        // Unsent regions are retried with the next frame.
+        if sent {
+            s.opaque = opaque;
+            s.stats.opaque_updates += 1;
+            self.stats.opaque_updates += 1;
+        }
+        sent
     }
 
     /// Sends a bare commit if a configure was acked and nothing has
@@ -427,6 +474,7 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
             self.add_secondary_catchers(id, node, &under, global);
         }
         self.host.surface_entered(id, &monitor);
+        self.place_layer(id);
     }
 
     fn surface_leave(
@@ -518,13 +566,13 @@ pub(super) fn send_geometry(s: &mut Surface) {
     }
     s.geometry_dirty = false;
     let wl = s.wl();
-    match &s.viewport {
-        Some(vp) if s.fractional.is_some() => {
-            wl.set_buffer_scale(1);
-            vp.set_destination(s.logical.0 as i32, s.logical.1 as i32);
-        }
-        _ => wl.set_buffer_scale(s.integer_scale.max(1)),
+    if s.is_fractional() {
+        wl.set_buffer_scale(1);
+    } else {
+        wl.set_buffer_scale(s.integer_scale.max(1));
     }
+    // The logical size, times a pose's scale (`pose.rs`).
+    s.send_destination();
     // A popup's window geometry is its box: the compositor positions
     // that, and its shadow reaches past it.
     if let Role::Popup { popup, config, .. } = &s.role {

@@ -19,9 +19,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// sends it with a bare commit when it changed.
     pub(super) fn resend_blur(&mut self, id: SurfaceId) {
         let rects = match self.surfaces.get(&id) {
-            Some(s) if s.mapped() && !self.gpu.has(id) => {
-                region_rects(&self.host.blur_region(id), s.scale)
-            }
+            Some(s) if s.mapped() && !self.gpu.has(id) => self.blur_rects(id, s.scale),
             _ => return,
         };
         if self.set_blur(id, rects)
@@ -31,6 +29,35 @@ impl<H: SurfaceHost + 'static> State<H> {
             s.stats.bare_commits += 1;
             self.stats.bare_commits += 1;
         }
+    }
+
+    /// The rectangles of what surface `id`'s last frame asks the
+    /// compositor to blur (painted at `scale`), in the coordinates of its
+    /// pose's scale ([`Surface::pose_factor`]), each edge to the nearest
+    /// pixel: the bands down a rounded corner stay edge to edge (rounding
+    /// inwards would open a one-pixel unblurred line between two), at
+    /// most half a pixel past the shrunken shape.
+    pub(super) fn blur_rects(&self, id: SurfaceId, scale: Scale) -> Vec<BlurRect> {
+        let rects = region_rects(&self.host.blur_region(id), scale);
+        let factor = self
+            .surfaces
+            .get(&id)
+            .map_or((1.0, 1.0), |s| s.pose_factor());
+        if factor == (1.0, 1.0) {
+            return rects;
+        }
+        let mut out: Vec<BlurRect> = rects
+            .into_iter()
+            .filter_map(|(x, y, w, h)| {
+                super::pose::posed_rect(
+                    (i64::from(x), i64::from(y), i64::from(w), i64::from(h)),
+                    factor,
+                    false,
+                )
+            })
+            .collect();
+        out.dedup();
+        out
     }
 
     /// Sets surface `id`'s pending blur region to `rects` if they differ

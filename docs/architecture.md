@@ -2523,11 +2523,36 @@ and the connection):
     `background_effect` is true only once that event names blur.
     `State::compositor_caps()` reads them. The binary's host hands
     `set_compositor_blur` to render and forwards `Painter::blur_region`.
-  - Poses: each frame it reads `Painter::surface_pose` and applies it
-    (alpha modifier, viewporter destination size, layer-shell margins);
-    a pose change with no damage is a bare commit with no buffer, and
-    margin changes ride the next buffer commit when a paint is pending.
-    Render already holds `Removed`/`open: false` until an exit settles.
+  - Poses (`manager/pose.rs`, wave 2): each frame, right after
+    `paint`, it reads `Painter::surface_pose` and sets what changed as
+    pending state (a `wp_alpha_modifier_surface_v1` multiplier, made with
+    the first opacity; the viewport's destination, the logical size times
+    the scale, which every surface now has whenever the viewporter is
+    bound; the layer surface's margins moved by the offset,
+    `placement::posed_margin`); it rides that frame's buffer commit, or a
+    bare commit with no buffer when the paint drew nothing. A reconfigure
+    keeps a pose's margins. `SurfacePose` is in the surface's own terms:
+    the top-left corner stays and the offset moves it (compositors draw a
+    smaller layer surface from its arranged box's top-left corner);
+    render's `strand_render::pose` decides what a placement can take
+    (opacity everywhere but a lock; an offset on an axis a panel or OSD
+    is anchored to on one side; scale only with both) and folds the
+    centre-keeping move into the offset. `State::clear_pose` drops a
+    pose as pending state, for the GPU hand-off. Render holds
+    `Removed`/`open: false` until an exit settles, so a delegated exit
+    plays to its end.
+  - Origins and submenus (`manager/origin.rs`, wave 2): the no-op-default
+    hook `SurfaceHost::surface_placed(surface, (x, y))` says where a
+    surface's buffer lies on its output, logical pixels, when that
+    changes: a layer surface as `LayerConfig::position_in` arranges its
+    configured size over the whole output (other surfaces' exclusive
+    zones are not known), a popup from its configure's position under its
+    parent's window geometry. `SurfaceInfo::origin` reads it. The
+    binary's host turns a press into the tray's click point with it
+    (`strand_services::tray::set_click_point`: the pressed node's
+    bottom-left corner on the output). A popup nested in a popup opens
+    beside its anchor (`PopupConfig::aligned`: level with the row's top,
+    flipped in x), right unless its `anchor:` names left, top or bottom.
   - Solid surfaces (`solid.rs`): a single-pixel buffer scaled by the
     viewporter, for scrims and lock backgrounds; shm when the protocol is
     missing (1×1 with the viewporter, else surface-sized). A spec's

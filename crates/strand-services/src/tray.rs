@@ -31,6 +31,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_lite::StreamExt;
@@ -149,6 +150,27 @@ pub fn scroll_delta(dy: f64) -> i32 {
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
     if d == 0 { -(dy.signum() as i32) } else { d }
+}
+
+/// Where the shell's last press was, packed (`x` high, `y` low): the
+/// `x`/`y` sent with `Activate`, `SecondaryActivate` and `ContextMenu`.
+static CLICK_POINT: AtomicU64 = AtomicU64::new(0);
+
+/// Sets the point sent with the next item actions (`Activate`,
+/// `SecondaryActivate`, `ContextMenu`): the shell's host calls it on
+/// every press, with the bottom-left corner of the node pressed in its
+/// output's logical coordinates (where an app placing a menu of its own
+/// should put it). The actions read it when they run, after the press
+/// that caused them; `(0, 0)` until the first press.
+pub fn set_click_point(x: i32, y: i32) {
+    let packed = (u64::from(x as u32) << 32) | u64::from(y as u32);
+    CLICK_POINT.store(packed, Ordering::Relaxed);
+}
+
+/// The point [`set_click_point`] last set.
+pub fn click_point() -> (i32, i32) {
+    let packed = CLICK_POINT.load(Ordering::Relaxed);
+    ((packed >> 32) as u32 as i32, packed as u32 as i32)
 }
 
 /// An item's bus name and object path from what it registered: a bus
@@ -870,6 +892,8 @@ impl Host {
         let conn = self.conn.clone();
         let t = t.clone();
         let path = path.to_string();
+        // The point of the press that asked for this, for a fallback.
+        let at = click_point();
         self.tasks.spawn(async move {
             let r = timed(conn.call_method(
                 Some(t.bus.as_str()),
@@ -899,7 +923,7 @@ impl Host {
                         t.path.as_str(),
                         Some(ITEM),
                         "ContextMenu",
-                        &(0i32, 0i32),
+                        &at,
                     ))
                     .await;
                 }
@@ -926,10 +950,17 @@ impl Host {
                     // opens, as `item.menu.open()` does.
                     (true, Some(_)) => return self.open_menu(&item.id),
                     (true, None) => {
-                        self.send(&t, &path, ITEM, "ContextMenu", (0i32, 0i32), Then::Nothing);
+                        self.send(&t, &path, ITEM, "ContextMenu", click_point(), Then::Nothing);
                     }
                     (false, _) => {
-                        self.send(&t, &path, ITEM, "Activate", (0i32, 0i32), Then::MenuOnError);
+                        self.send(
+                            &t,
+                            &path,
+                            ITEM,
+                            "Activate",
+                            click_point(),
+                            Then::MenuOnError,
+                        );
                     }
                 }
             }
@@ -941,7 +972,7 @@ impl Host {
                         &path,
                         ITEM,
                         "SecondaryActivate",
-                        (0i32, 0i32),
+                        click_point(),
                         Then::Nothing,
                     );
                 }
@@ -970,7 +1001,7 @@ impl Host {
                     // No DBusMenu: the app shows its own.
                     None => {
                         let path = t.path.clone();
-                        self.send(&t, &path, ITEM, "ContextMenu", (0i32, 0i32), Then::Nothing);
+                        self.send(&t, &path, ITEM, "ContextMenu", click_point(), Then::Nothing);
                     }
                     Some(_) => return self.open_menu(&item.item),
                 }
