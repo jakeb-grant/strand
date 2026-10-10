@@ -464,8 +464,12 @@ impl<'a> Flattener<'a> {
                 .or(default_bg)
                 .map(|p| if tint { tinted(p) } else { p })
         {
+            // A root the compositor fades (a delegated opacity below 1,
+            // `pose::delegate` took it out of the props) claims nothing
+            // either.
             if root
                 && opacity >= 1.0
+                && self.out.pose.is_none_or(|p| p.opacity >= 1.0)
                 && layer_group.is_none()
                 && saved == self.xform
                 && self.xform == kurbo::Affine::IDENTITY

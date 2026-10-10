@@ -319,3 +319,78 @@ fn without_compositor_scale_the_scale_repaints() {
     assert!(seen.iter().take(4).all(|s| s.damage > 0), "{seen:?}");
     assert_eq!(seen[0].centre[3], 255, "the fade is not painted");
 }
+
+/// A root the compositor fades claims no opaque region while its
+/// delegated opacity is below 1 (the compositor need not check the
+/// multiplier before culling what is behind), and claims its box once
+/// the fade settles, though that frame paints nothing. A static
+/// `opacity` below 1, delegated for good, never claims it.
+#[test]
+fn a_delegated_fade_claims_no_opaque_region() {
+    let (diff, root) = panel("top_right", vec![(Prop::Opacity, num(0.0))]);
+    let mut h = Host::new(true, diff, root);
+    h.open(true);
+    let id = h.surface.as_ref().unwrap().0;
+    let mut regions = Vec::new();
+    loop {
+        let (_, buf, age) = h.surface.as_mut().unwrap();
+        if !h.r.wants_frame(id) {
+            break;
+        }
+        let _ = buf.paint_at(&mut h.r, id, *age, frame(h.k));
+        *age = 1;
+        h.k += 1;
+        let pose = h.r.surface_pose(id).unwrap_or(SurfacePose::IDENTITY);
+        regions.push((pose.opacity, h.r.opaque_region(id).area()));
+        assert!(regions.len() < 400, "never settled");
+    }
+    assert!(regions.len() >= 5, "{regions:?}");
+    for (opacity, area) in &regions {
+        if *opacity < 1.0 {
+            assert_eq!(*area, 0, "faded but opaque: {regions:?}");
+        }
+    }
+    assert_eq!(
+        regions.last().copied(),
+        Some((1.0, 80 * 40)),
+        "settled: the box is opaque"
+    );
+
+    // A static opacity is delegated for good: never opaque.
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Anchor, kw("top_right")),
+            (Prop::Opacity, num(0.8)),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let mut h = Host::new(true, b.diff, root);
+    let _ = h.run();
+    let id = h.surface.as_ref().unwrap().0;
+    let pose = h.r.surface_pose(id).expect("a delegated opacity");
+    assert!((pose.opacity - 0.8).abs() < 1e-4, "{pose:?}");
+    assert_eq!(h.r.opaque_region(id).area(), 0);
+    // The same panel at full opacity claims its box.
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Anchor, kw("top_right")),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let mut h = Host::new(true, b.diff, root);
+    let _ = h.run();
+    let id = h.surface.as_ref().unwrap().0;
+    assert_eq!(h.r.opaque_region(id).area(), 80 * 40, "opaque at rest");
+}

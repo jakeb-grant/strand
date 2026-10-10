@@ -139,12 +139,15 @@ impl<H: SurfaceHost + 'static> State<H> {
         // A compositor pose (M4) rides this frame's commit, or a bare one
         // when it drew nothing.
         let posed = self.sync_pose(id);
+        // So does a new opaque region: a delegated fade that settles
+        // claims its region with the bare commit that ends it.
+        let opaqued = self.sync_opaque(id, scale);
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
         let wl = s.wl().clone();
         if damage.is_empty() {
-            if posed {
+            if posed || opaqued {
                 s.ack_pending = true;
             }
             // Nothing drawn, nothing recorded: the buffer keeps its age.
@@ -229,33 +232,6 @@ impl<H: SurfaceHost + 'static> State<H> {
             wl.damage(0, 0, i32::MAX, i32::MAX);
             s.last_damage = vec![Rect::new(0, 0, size.w, size.h)];
         }
-        let opaque = scale.inner_logical_region(&self.host.opaque_region(id));
-        if opaque != s.opaque {
-            let sent = if opaque.is_empty() {
-                wl.set_opaque_region(None);
-                true
-            } else {
-                match Region::new(&self.compositor) {
-                    Ok(region) => {
-                        for r in &opaque {
-                            region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
-                        }
-                        wl.set_opaque_region(Some(region.wl_region()));
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("{}: no opaque region: {e}", s.config.namespace);
-                        false
-                    }
-                }
-            };
-            // Unsent regions are retried with the next frame.
-            if sent {
-                s.opaque = opaque;
-                s.stats.opaque_updates += 1;
-                self.stats.opaque_updates += 1;
-            }
-        }
         if let Some(rects) = blur {
             self.set_blur(id, rects);
         }
@@ -292,6 +268,45 @@ impl<H: SurfaceHost + 'static> State<H> {
             let node = s.node;
             self.reconcile_children(node);
         }
+    }
+
+    /// Sets `id`'s opaque region as pending state when the host's
+    /// changed; true if one was sent (it takes effect with the next
+    /// commit, with a buffer or bare).
+    pub(super) fn sync_opaque(&mut self, id: SurfaceId, scale: Scale) -> bool {
+        let opaque = scale.inner_logical_region(&self.host.opaque_region(id));
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return false;
+        };
+        if opaque == s.opaque {
+            return false;
+        }
+        let wl = s.wl().clone();
+        let sent = if opaque.is_empty() {
+            wl.set_opaque_region(None);
+            true
+        } else {
+            match Region::new(&self.compositor) {
+                Ok(region) => {
+                    for r in &opaque {
+                        region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
+                    }
+                    wl.set_opaque_region(Some(region.wl_region()));
+                    true
+                }
+                Err(e) => {
+                    log::warn!("{}: no opaque region: {e}", s.config.namespace);
+                    false
+                }
+            }
+        };
+        // Unsent regions are retried with the next frame.
+        if sent {
+            s.opaque = opaque;
+            s.stats.opaque_updates += 1;
+            self.stats.opaque_updates += 1;
+        }
+        sent
     }
 
     /// Sends a bare commit if a configure was acked and nothing has

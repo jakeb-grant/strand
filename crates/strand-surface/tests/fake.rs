@@ -693,3 +693,38 @@ fn no_alpha_modifier_no_multiplier() {
     assert_eq!(rec.alpha, None, "{rec:?}");
     assert!(rec.alpha_sets.is_empty());
 }
+
+/// An opaque region that changes on a frame that drew nothing (a
+/// delegated fade settling: render claims the box only at full opacity)
+/// goes out with that frame's bare commit, not only with a buffer.
+#[test]
+fn an_opaque_region_rides_a_bare_commit() {
+    use strand_scene::SurfacePose;
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    show_panel(&fake, &mut mgr);
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert!(info.opaque_region.is_empty());
+    assert_eq!(info.stats.commits, 1);
+    let bare = fake.layer("strand-Dash")[0].commits;
+    // The fade ends: no new content, but the box is opaque now.
+    let host = mgr.state_mut().host_mut();
+    host.opaque = true;
+    host.poses = [SurfacePose::IDENTITY].into_iter().collect();
+    mgr.state_mut().poll();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| !i.opaque_region.is_empty())
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surface(id));
+    common::pump(&mut mgr, Duration::from_millis(100));
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.stats.commits, 1, "no buffer: {:?}", info.stats);
+    assert_eq!(info.stats.opaque_updates, 1, "{:?}", info.stats);
+    let rec = &fake.layer("strand-Dash")[0];
+    assert_eq!(rec.buffer_commits, 1, "{rec:?}");
+    assert!(rec.commits > bare, "a bare commit carried it: {rec:?}");
+}
