@@ -57,6 +57,12 @@ fn tint_code() -> Arc<ShaderCode> {
 /// A 240×60 bar with a 40×20 `shader` node at (10, 10).
 fn shader_scene(tint: &str) -> (SceneDiff, NodeId) {
     let mut b = Builder::default();
+    let node = shader_bar(&mut b, tint).1;
+    (b.diff, node)
+}
+
+/// [`shader_scene`]'s bar and node, in `b`.
+fn shader_bar(b: &mut Builder, tint: &str) -> (NodeId, NodeId) {
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let node = b.node(
         NodeKind::Shader,
@@ -73,7 +79,7 @@ fn shader_scene(tint: &str) -> (SceneDiff, NodeId) {
             ),
         ],
     );
-    (b.diff, node)
+    (root, node)
 }
 
 #[test]
@@ -1481,4 +1487,145 @@ fn a_shader_file_that_hung_a_pass_is_never_run_again() {
     d.set(again, Prop::Shader, PropValue::Shader(edited_tint_code()));
     assert!(r.apply(d).is_empty());
     assert!(asked(&mut r, &mut buf), "an edited file is asked for");
+}
+
+/// A bar holding a `shader` node (returned), a bloomed box (a bundled
+/// effect with a CPU version: a glow) and text.
+fn off_scene() -> (SceneDiff, NodeId) {
+    let mut b = Builder::default();
+    let (root, shader) = shader_bar(&mut b, "#ff0000");
+    b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(70.0)),
+            (Prop::Y, num(15.0)),
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Bg, color("#f38ba8")),
+            (
+                Prop::Filter,
+                PropValue::Call {
+                    name: "bloom".into(),
+                    args: vec![num(6.0)],
+                },
+            ),
+        ],
+    );
+    b.node(
+        NodeKind::Text,
+        Some(root),
+        vec![
+            (Prop::X, num(130.0)),
+            (Prop::Y, num(20.0)),
+            (Prop::Text, text("Strand")),
+            (Prop::Font, PropValue::Font(font(14.0))),
+            (Prop::Color, color("#cdd6f4")),
+        ],
+    );
+    (b.diff, shader)
+}
+
+/// (m4-close-gpucap) The third lost device in a process turns the GPU
+/// off until strand restarts, not the first or second: the status says
+/// so (`GPU_OFF`, told by the host once, `run/gpu.rs`), no device is
+/// asked for again (no pass, no promotion), a `shader` node draws
+/// nothing and everything else is drawn as the CPU draws it with no GPU
+/// at all, the bundled bloom's glow included (ref `gpu_off.png`). Needs
+/// no device: replies are delivered by hand.
+///
+/// The retry wait is zero here (`set_gpu_retry`), so the whole
+/// retry-and-lose cycle runs at renderer level: after the first and
+/// second loss the device is asked for again at once (a promotion),
+/// comes up and is lost again. With `RETRY_AFTER`'s 30 s the checks
+/// after the third loss would pass during the wait without any cap;
+/// with no wait only the cap keeps the device off.
+#[test]
+fn the_gpu_is_off_after_three_lost_devices() {
+    use strand_render::promote::{GPU_OFF, LOST_CAP};
+    let mut r = renderer();
+    r.set_gpu_retry(Duration::ZERO);
+    let (diff, shader) = off_scene();
+    assert!(r.apply(diff.clone()).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    assert!(
+        r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_))),
+        "the shader asks for a device"
+    );
+    let promoted = |r: &mut Renderer| {
+        r.take_backend_changes()
+            .iter()
+            .any(|c| matches!(c, BackendChange::Promote(_)))
+    };
+    for n in 1..=LOST_CAP {
+        if n > 1 {
+            // Retried at once: the device is asked for again.
+            r.promote_now(S);
+            assert!(promoted(&mut r), "asked for again after loss {}", n - 1);
+            assert_eq!(r.gpu_status(), GpuStatus::Starting);
+        }
+        up_without_a_device(&mut r);
+        r.deliver_gpu(GpuReply::Lost(strand_gpu::GpuError {
+            kind: GpuErrorKind::Lost,
+            message: format!("the GPU device was lost (test {n})"),
+        }));
+        r.deliver_gpu(GpuReply::Exited);
+        if n < LOST_CAP {
+            assert!(!r.gpu_off(), "not off after loss {n}");
+            assert_eq!(
+                r.gpu_status(),
+                GpuStatus::Unavailable {
+                    reason: format!("the GPU device was lost (test {n})")
+                }
+            );
+        }
+    }
+    assert!(r.gpu_off(), "off at loss {LOST_CAP}");
+    assert_eq!(
+        r.gpu_status(),
+        GpuStatus::Unavailable {
+            reason: GPU_OFF.into()
+        }
+    );
+    // A change that wants the shader's pass again, painted whole: no
+    // device is asked for.
+    let mut d = SceneDiff::new();
+    d.set(
+        shader,
+        Prop::Uniforms,
+        PropValue::Uniforms(vec![("u_tint".into(), color("#0000ff"))]),
+    );
+    assert!(r.apply(d).is_empty());
+    r.update();
+    buf.paint(&mut r, S, 0);
+    assert!(r.take_gpu_requests().is_empty(), "no device asked for");
+    r.promote_now(S);
+    assert!(!promoted(&mut r), "never promoted");
+    assert_eq!(r.backend(S), Backend::Cpu);
+    // Drawn as with no GPU at all.
+    let mut cpu = renderer();
+    assert!(cpu.apply(diff).is_empty());
+    let mut d = SceneDiff::new();
+    d.set(
+        shader,
+        Prop::Uniforms,
+        PropValue::Uniforms(vec![("u_tint".into(), color("#0000ff"))]),
+    );
+    assert!(cpu.apply(d).is_empty());
+    cpu.attach_surface(S, cpu.tree().roots()[0]);
+    cpu.deliver_gpu(GpuReply::Unavailable(strand_gpu::GpuError {
+        kind: GpuErrorKind::NoAdapter,
+        message: "no Vulkan adapter".into(),
+    }));
+    let mut want = Buffer::new(240, 60, Scale::ONE);
+    want.paint(&mut cpu, S, 0);
+    assert!(buf.pixels == want.pixels, "drawn as the CPU draws it");
+    assert_eq!(buf.px(20, 20), buf.px(5, 5), "the shader draws nothing");
+    assert_ne!(buf.px(90, 30), buf.px(5, 5), "the bloomed box is drawn");
+    assert_matches_ref("gpu_off", &buf, 0);
 }

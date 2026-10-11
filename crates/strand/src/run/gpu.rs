@@ -16,7 +16,8 @@ use super::ToLogic;
 
 /// Tells logic the GPU status when it changes while a frame shows
 /// something only a GPU draws (logic logs each reason once and makes it
-/// a `strand watch` notice).
+/// a `strand watch` notice), and once the GPU is turned off after
+/// `LOST_CAP` lost devices, whatever the frame shows (m4-close-gpucap).
 #[derive(Debug, Default)]
 pub(crate) struct StatusForward {
     told: Option<GpuStatus>,
@@ -25,7 +26,7 @@ pub(crate) struct StatusForward {
 impl StatusForward {
     /// The status to send now, if any.
     pub(crate) fn check(&mut self, renderer: &Renderer) -> Option<GpuStatus> {
-        if !renderer.gpu_in_demand() {
+        if !renderer.gpu_in_demand() && !renderer.gpu_off() {
             return None;
         }
         let status = renderer.gpu_status();
@@ -698,5 +699,47 @@ mod host {
                 Release::TakeBack
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod status_tests {
+    use super::*;
+    use strand_gpu::{GpuError, GpuErrorKind, GpuReply};
+
+    /// (m4-close-gpucap) With nothing on screen that only a GPU draws, a
+    /// lost device's status is not told (as before), except the one that
+    /// turns the GPU off: it is told once, at the third loss, and never
+    /// again (logic makes it a WARN and a `strand watch` notice).
+    #[test]
+    fn the_gpu_turned_off_is_told_once_whatever_the_frame_shows() {
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let mut r = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut fwd = StatusForward::default();
+        let lose = |r: &mut Renderer| {
+            r.deliver_gpu(GpuReply::Lost(GpuError {
+                kind: GpuErrorKind::Lost,
+                message: "the GPU device was lost (test)".into(),
+            }));
+            r.deliver_gpu(GpuReply::Exited);
+        };
+        assert!(!r.gpu_in_demand());
+        for _ in 1..strand_render::promote::LOST_CAP {
+            lose(&mut r);
+            assert_eq!(fwd.check(&r), None, "not off: not told");
+        }
+        lose(&mut r);
+        assert_eq!(
+            fwd.check(&r),
+            Some(GpuStatus::Unavailable {
+                reason: strand_render::promote::GPU_OFF.into()
+            })
+        );
+        assert_eq!(fwd.check(&r), None, "told once");
+        lose(&mut r);
+        assert_eq!(fwd.check(&r), None, "a late loss changes nothing");
     }
 }

@@ -56,7 +56,7 @@ use super::Renderer;
 use crate::cache::{PaintCache, ShadowShape};
 use crate::flatten::{DisplayItem, FillShape, Item};
 use crate::offscreen::{Drawn, layer_key};
-use crate::promote::{Device, Promotion, Switch};
+use crate::promote::{Device, GPU_OFF, Promotion, Switch};
 use crate::raster::AtlasMirror;
 
 /// How long a frame holds for a pass or a readback before drawing what
@@ -653,6 +653,13 @@ impl Renderer {
         !self.gpu.demand.is_empty()
     }
 
+    /// (M4) True once [`crate::promote::LOST_CAP`] devices were lost: the GPU is off until
+    /// strand restarts, and the host tells the status whether or not a
+    /// frame shows a `shader` node.
+    pub fn gpu_off(&self) -> bool {
+        self.gpu.device.is_off()
+    }
+
     /// (M4) Unavailable reasons logged as warnings so far (tests).
     #[doc(hidden)]
     pub fn gpu_warnings(&self) -> u64 {
@@ -701,6 +708,14 @@ impl Renderer {
     #[doc(hidden)]
     pub fn set_gpu_idle(&mut self, idle: Duration) {
         self.gpu.device.set_idle(idle);
+    }
+
+    /// (M4) How long a failed or lost device waits before it is asked
+    /// for again (30 s; tests shorten it, so a retry-and-lose cycle runs
+    /// without the wait hiding what the GPU-off cap does).
+    #[doc(hidden)]
+    pub fn set_gpu_retry(&mut self, retry: Duration) {
+        self.gpu.device.set_retry(retry);
     }
 
     /// (M4) What draws `surface`.
@@ -757,7 +772,7 @@ impl Renderer {
                     s.mark_dirty();
                 }
             }
-            GpuReply::Unavailable(e) | GpuReply::Lost(e) => {
+            GpuReply::Unavailable(ref e) | GpuReply::Lost(ref e) => {
                 // Asked again every 30 s while demand lasts: a reason that
                 // cannot change (no adapter, only a software one) is
                 // said once.
@@ -768,8 +783,20 @@ impl Renderer {
                     self.gpu.warned = Some(e.message.clone());
                     self.gpu.warnings += 1;
                 }
-                self.gpu.device.failed(now);
-                self.gpu.status = GpuStatus::Unavailable { reason: e.message };
+                // The third lost device turns the GPU off for the process
+                // (m4-close-gpucap): the status says so from then on, and
+                // the host tells it once (`gpu_off`).
+                if matches!(reply, GpuReply::Lost(_)) {
+                    self.gpu.device.lost(now);
+                } else {
+                    self.gpu.device.failed(now);
+                }
+                let reason = if self.gpu.device.is_off() {
+                    GPU_OFF.to_string()
+                } else {
+                    e.message.clone()
+                };
+                self.gpu.status = GpuStatus::Unavailable { reason };
                 self.repaint_fallen();
             }
             GpuReply::Exited => {

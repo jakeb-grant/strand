@@ -3025,7 +3025,14 @@ can bring the device's drop forward; decisions.md m4-gpu-w2):
 - A failed start or a lost device is recorded as `GpuStatus::Unavailable
   { reason }`. Every promoted surface goes back to the CPU at once (it
   cannot wait for a settled frame) with a full repaint. Render asks
-  again at most once per 30 s while demand lasts.
+  again at most once per 30 s while demand lasts, until the device has
+  been lost 3 times in the process (`promote::LOST_CAP`; a
+  `GpuReply::Lost`: a hang, a reset or a panic; a failed start does not
+  count). From then on the GPU is off until strand restarts: render
+  never asks for a device again, promotes nothing, and holds
+  `GpuStatus::Unavailable { reason: promote::GPU_OFF }`. The renderer
+  lives for the whole process and survives reloads, so the count does
+  too (m4-close-gpucap).
 - Under `reduced_motion` the clock stops at `t = 0`
   (`TimeContext::frozen`), so a shader's `time` reads 0 and its pass
   runs only when its uniforms change.
@@ -3198,9 +3205,12 @@ waits for it. `Renderer::gpu_status() -> GpuStatus` (`Unused`,
 `Starting`, `Up(AdapterInfo)`, `Unavailable { reason }`, with
 `"built without the GPU backend"` as a reason) is sent to logic as
 `ToLogic::GpuStatus` when it changes while a shader or bundled effect
-is shown; logic logs it once per reason, reports it as a `strand
-watch` notice, and keeps it for `strand report` and the inspector (M5)
-to say why.
+is shown (`Renderer::gpu_in_demand() -> bool`), or once
+`Renderer::gpu_off() -> bool` is true (the GPU turned off after
+`LOST_CAP` lost devices; always false without the `gpu` feature),
+whatever the frame shows; logic logs it once per reason, reports it as
+a `strand watch` notice, and keeps it for `strand report` and the
+inspector (M5) to say why.
 
 **Budgets and tests.**
 - `.text` (`strand/tests/budgets.rs`): the default build at most 18.5
