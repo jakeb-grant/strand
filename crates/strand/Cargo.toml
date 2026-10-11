@@ -86,6 +86,9 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # strand-render's own versions).
 png = "0.18"
 gif = "0.14.2"
+# A key's name in the input measurement (strand-surface's version, via
+# smithay-client-toolkit).
+xkeysym = "0.2.1"
 wayland-client = "0.31.15"
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }

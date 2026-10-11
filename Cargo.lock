@@ -2845,6 +2845,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "xkeysym",
  "zbus",
 ]
 

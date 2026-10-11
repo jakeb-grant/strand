@@ -20,7 +20,8 @@
 //! The existing render benches are included as they are (their gates
 //! still apply), beside measurements of paths none covered: a Lottie
 //! frame and first show, image decodes at drawn size, the wallpaper's
-//! seed, a `material(seed:)` solve and launcher search per keystroke.
+//! seed, a `material(seed:)` solve, launcher search per keystroke,
+//! Wayland, calloop and keysym dispatch, and a settings file's parse.
 //! Each prints a `speed <name>: <value> us` line for A/B runs.
 
 #[allow(warnings, clippy::all, clippy::pedantic)]
@@ -527,4 +528,138 @@ fn fonts_cost() {
     }
     report("system fonts first lookup + fallback", first);
     report("reload_fonts + fallback", reload);
+}
+
+/// Records `wl_callback.done` events for [`input_dispatch_cost`].
+struct Callbacks(usize);
+
+impl wayland_client::Dispatch<wayland_client::protocol::wl_callback::WlCallback, ()> for Callbacks {
+    fn event(
+        state: &mut Self,
+        _: &wayland_client::protocol::wl_callback::WlCallback,
+        event: wayland_client::protocol::wl_callback::Event,
+        _: &(),
+        _: &wayland_client::Connection,
+        _: &wayland_client::QueueHandle<Self>,
+    ) {
+        if let wayland_client::protocol::wl_callback::Event::Done { .. } = event {
+            state.0 += 1;
+        }
+    }
+}
+
+/// The input and frame path's dispatch (decisions.md, m5-speed-input):
+/// what every pointer motion, key and frame callback costs in
+/// wayland-client and wayland-backend (the CPU-only build's pure-Rust
+/// backend; the GPU build's is libwayland's C), a wake through a calloop
+/// channel (main ↔ logic) and a key's name through xkeysym. A fake
+/// compositor on the other end of a socket pair answers each
+/// `wl_display.sync` with `wl_callback.done` and `wl_display.delete_id`,
+/// as a burst of 32 events arrives in one read; its own work is not
+/// timed.
+#[test]
+#[ignore = "measurement, not a gate"]
+fn input_dispatch_cost() {
+    use std::io::{Read, Write};
+    use wayland_client::Connection;
+    const BURST: usize = 32;
+    let (client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+    let conn = Connection::from_socket(client).unwrap();
+    let display = conn.display();
+    let mut queue = conn.new_event_queue::<Callbacks>();
+    let qh = queue.handle();
+    let mut state = Callbacks(0);
+    let mut wl = Vec::new();
+    let mut request = vec![0u8; BURST * 12];
+    for round in 0..3_000 {
+        let t = Instant::now();
+        for _ in 0..BURST {
+            display.sync(&qh, ());
+        }
+        conn.flush().unwrap();
+        let sent = t.elapsed();
+        server.read_exact(&mut request).unwrap();
+        let mut reply = Vec::with_capacity(BURST * 24);
+        for r in request.chunks_exact(12) {
+            let id = u32::from_ne_bytes([r[8], r[9], r[10], r[11]]);
+            for word in [id, 12 << 16, 7, 1, (12 << 16) | 1, id] {
+                reply.extend_from_slice(&word.to_ne_bytes());
+            }
+        }
+        server.write_all(&reply).unwrap();
+        let want = (round + 1) * BURST;
+        let t = Instant::now();
+        while state.0 < want {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        wl.push(sent + t.elapsed());
+    }
+    report("wayland 32 requests + 64 events", wl);
+
+    let mut ev = calloop::EventLoop::<usize>::try_new().unwrap();
+    let (tx, rx) = calloop::channel::channel::<u64>();
+    ev.handle()
+        .insert_source(rx, |e, _, n: &mut usize| {
+            if let calloop::channel::Event::Msg(_) = e {
+                *n += 1;
+            }
+        })
+        .unwrap();
+    let mut n = 0usize;
+    let mut wake = Vec::new();
+    for round in 0..3_000u64 {
+        let t = Instant::now();
+        for i in 0..BURST as u64 {
+            tx.send(round ^ i).unwrap();
+        }
+        let want = (round as usize + 1) * BURST;
+        while n < want {
+            ev.dispatch(Some(Duration::ZERO), &mut n).unwrap();
+        }
+        wake.push(t.elapsed());
+    }
+    report("calloop channel 32 messages", wake);
+
+    let syms: Vec<xkeysym::Keysym> = (0x20u32..0x7f)
+        .chain(0xff08..0xff20)
+        .chain(0xff50..0xff60)
+        .chain(0xffbe..0xffd0)
+        .map(xkeysym::Keysym::from)
+        .collect();
+    let mut names = Vec::new();
+    for _ in 0..3_000 {
+        let t = Instant::now();
+        for s in &syms {
+            std::hint::black_box(std::hint::black_box(*s).name());
+        }
+        names.push(t.elapsed());
+    }
+    report(&format!("xkeysym {} names", syms.len()), names);
+}
+
+/// A settings file's parse on read and on every reload (strand-core's
+/// `parse_doc`, toml_edit's `DocumentMut`; decisions.md, m5-speed-kept):
+/// a 40-key file, larger than a shell's preferences usually are.
+#[test]
+#[ignore = "measurement, not a gate"]
+fn settings_parse_cost() {
+    use strand_core::settings::toml_edit::DocumentMut;
+    let mut text = String::from("# the shell's preferences\n");
+    for i in 0..10 {
+        text.push_str(&format!(
+            "accent_{i} = \"#7aa2f7\"\ncompact_{i} = false\n# a comment\nscale_{i} = 1.25\n\
+             apps_{i} = [\"firefox\", \"foot\", \"thunar\"]\n"
+        ));
+    }
+    let mut parse = Vec::new();
+    for _ in 0..5_000 {
+        let t = Instant::now();
+        std::hint::black_box(
+            std::hint::black_box(text.as_str())
+                .parse::<DocumentMut>()
+                .unwrap(),
+        );
+        parse.push(t.elapsed());
+    }
+    report(&format!("settings parse {} B", text.len()), parse);
 }

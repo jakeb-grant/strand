@@ -2102,6 +2102,8 @@ const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("toml_parser", "s"),
     ("fontique", "s"),
     ("quick-xml", "s"),
+    ("calloop", "s"),
+    ("xkeysym", "s"),
     ("miette", "z"),
     ("chrono", "s"),
     ("freedesktop-desktop-entry", "z"),
@@ -2120,10 +2122,8 @@ const RELEASE_SPEED_CRATES: &[&str] = &[
     "wayland-client",
     "wayland-backend",
     "smithay-client-toolkit",
-    "calloop",
     "material-colors",
     "roxmltree",
-    "xkeysym",
     "velato",
     "image-webp",
     "jpeg-decoder",
@@ -2142,8 +2142,14 @@ const RELEASE_SPEED_CRATES: &[&str] = &[
     "tiny-skia-path",
 ];
 
+/// The key [`release_opt_levels`] gives `[profile.release]`'s own
+/// `opt-level`, the level of every crate without an override.
+const RELEASE_WIDE: &str = "[profile.release]";
+
 /// `[profile.release.package.<name>]` → its `opt-level`, read from a
-/// Cargo.toml's text (section headers and `key = value` lines only).
+/// Cargo.toml's text (section headers and `key = value` lines only);
+/// `[profile.release]`'s own is under [`RELEASE_WIDE`] and the wildcard
+/// `[profile.release.package."*"]`'s under `*`.
 fn release_opt_levels(manifest: &str) -> std::collections::BTreeMap<String, String> {
     let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
     let mut levels = std::collections::BTreeMap::new();
@@ -2151,10 +2157,13 @@ fn release_opt_levels(manifest: &str) -> std::collections::BTreeMap<String, Stri
     for line in manifest.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.starts_with('[') {
-            package = line
-                .strip_prefix("[profile.release.package.")
-                .and_then(|rest| rest.strip_suffix(']'))
-                .map(unquote);
+            package = if line == RELEASE_WIDE {
+                Some(RELEASE_WIDE.to_string())
+            } else {
+                line.strip_prefix("[profile.release.package.")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                    .map(unquote)
+            };
         } else if let (Some(name), Some((key, value))) = (&package, line.split_once('='))
             && key.trim() == "opt-level"
         {
@@ -2184,19 +2193,59 @@ fn the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on() {
         "the workspace's [profile.release.package] opt-levels changed; the bar's memory budget \
          rests on them (decisions.md, wave4-exitMemory): {changed:#?}"
     );
-    let sized: Vec<String> = RELEASE_SPEED_CRATES
-        .iter()
-        .filter_map(|name| {
-            levels
-                .get(*name)
-                .map(|level| format!("{name}: opt-level {level}"))
-        })
-        .collect();
+    let sized = sized_speed_crates(&levels);
     assert!(
         sized.is_empty(),
         "crates a person waits on are built for size; they stay at the release default, 3 \
          (decisions.md, m5-speed-profile): {sized:#?}"
     );
+}
+
+/// What builds a speed crate for size: an override of its own, a
+/// wildcard (`"*"`) level other than 3, which reaches every dependency
+/// without an override, or a profile-wide one, which reaches `strand`
+/// too and so the whole binary's fat-LTO pass (decisions.md,
+/// m5-speed-strand).
+fn sized_speed_crates(levels: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    let mut sized: Vec<String> = [RELEASE_WIDE, "*"]
+        .iter()
+        .filter_map(|key| {
+            levels
+                .get(*key)
+                .filter(|level| level.as_str() != "3")
+                .map(|level| format!("{key}: opt-level {level}"))
+        })
+        .collect();
+    sized.extend(RELEASE_SPEED_CRATES.iter().filter_map(|name| {
+        levels
+            .get(*name)
+            .filter(|level| level.as_str() != "3")
+            .map(|level| format!("{name}: opt-level {level}"))
+    }));
+    sized
+}
+
+#[test]
+fn a_size_level_reaching_a_speed_crate_is_caught() {
+    let clean =
+        "[profile.release]\nlto = \"fat\"\n[profile.release.package.zbus]\nopt-level = \"z\"\n";
+    assert!(sized_speed_crates(&release_opt_levels(clean)).is_empty());
+    for manifest in [
+        "[profile.release]\nopt-level = \"s\"\n",
+        "[profile.release]\nopt-level = 2 # a comment\n",
+        "[profile.release.package.\"*\"]\nopt-level = \"z\"\n",
+        "[profile.release.package.strand]\nopt-level = \"s\"\n",
+        "[profile.release.package.velato]\nopt-level = 'z'\n",
+    ] {
+        assert_eq!(
+            sized_speed_crates(&release_opt_levels(manifest)).len(),
+            1,
+            "{manifest}"
+        );
+    }
+    let three =
+        "[profile.release]\nopt-level = 3\n[profile.release.package.strand]\nopt-level = 3\n";
+    assert!(sized_speed_crates(&release_opt_levels(three)).is_empty());
 }
 
 #[test]
