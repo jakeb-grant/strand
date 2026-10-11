@@ -34,7 +34,7 @@ use std::sync::Arc;
 use strand_core::{Error, Runtime};
 
 pub use exec::{EventCtx, Frame};
-pub use host::{ActionTarget, ServiceHost};
+pub use host::{ActionCtx, ActionTarget, InputCtx, ServiceHost};
 pub use value::{Num, Slot, Value, ValueKey};
 
 use crate::hir::{DefId, DefKind, LocalId, NodeIdx};

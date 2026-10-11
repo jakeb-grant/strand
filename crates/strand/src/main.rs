@@ -1,28 +1,12 @@
-//! The Strand shell runtime and CLI.
+//! The Strand shell runtime and CLI: `main` and the COMMANDS table over
+//! the `strand` library's module tree (`lib.rs`).
 //!
 //! See `docs/design.md` for the design and roadmap.
-
-mod check;
-mod demo;
-mod fmt;
-mod ipc;
-mod live;
-mod logging;
-mod mock;
-mod overlay;
-mod rules;
-mod run;
-mod services;
-mod system;
-
-#[cfg(test)]
-mod bench;
-#[cfg(test)]
-mod fuzz;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
+use strand::cli;
 use strand_compiler::diagnostic::Style;
 
 /// mimalloc for the whole runtime (`docs/design.md`, "Stack").
@@ -152,12 +136,12 @@ fn main() -> ExitCode {
     // freed pages, which only its own thread can return: it trims as its
     // queue drains (decisions.md, wave4-exitMemory); so does the image
     // decoder.
-    strand_text::set_idle_hook(run::trim);
-    strand_render::image::set_idle_hook(run::trim);
+    strand_text::set_idle_hook(cli::trim);
+    strand_render::image::set_idle_hook(cli::trim);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tool: Option<Tool> = match args.first().map(String::as_str) {
-        Some("check") => Some(check::run),
-        Some("fmt") => Some(fmt::run),
+        Some("check") => Some(cli::check),
+        Some("fmt") => Some(cli::fmt),
         _ => None,
     };
     if let Some(tool) = tool {
@@ -173,7 +157,7 @@ fn main() -> ExitCode {
     }
     match args.first().map(String::as_str) {
         Some("reload") => {
-            return match ipc::reload_cli(&args[1..]) {
+            return match cli::reload_cli(&args[1..]) {
                 Ok(text) => {
                     print!("{text}");
                     ExitCode::SUCCESS
@@ -185,7 +169,7 @@ fn main() -> ExitCode {
             };
         }
         Some("set") => {
-            return match ipc::set_cli(&args[1..]) {
+            return match cli::set_cli(&args[1..]) {
                 Ok(text) => {
                     print!("{text}");
                     ExitCode::SUCCESS
@@ -198,7 +182,7 @@ fn main() -> ExitCode {
         }
         Some("compositor-rules") => {
             // Printed for the user to paste; never applied to the session.
-            return match rules::run(&args[1..]) {
+            return match cli::compositor_rules(&args[1..]) {
                 Ok(text) => {
                     print!("{text}");
                     ExitCode::SUCCESS
@@ -210,7 +194,7 @@ fn main() -> ExitCode {
             };
         }
         Some("watch") => {
-            return match ipc::watch_cli(&args[1..], &mut std::io::stdout()) {
+            return match cli::watch_cli(&args[1..], &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("strand watch: {e}");
@@ -226,9 +210,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Action::Demo) => {
-            let log = logging::LogConfig::from_env();
+            let log = cli::LogConfig::from_env();
             log.install();
-            match demo::run(&log) {
+            match cli::demo(&log) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
                     eprintln!("strand run: {err}");
@@ -237,10 +221,10 @@ fn main() -> ExitCode {
             }
         }
         Ok(Action::Run(dir)) => {
-            let log = logging::LogConfig::from_env();
+            let log = cli::LogConfig::from_env();
             log.install();
             let dir = dir.or_else(|| {
-                check::default_dir(
+                cli::default_dir(
                     std::env::var_os("XDG_CONFIG_HOME"),
                     std::env::var_os("HOME"),
                 )
@@ -249,7 +233,7 @@ fn main() -> ExitCode {
                 eprintln!("strand run: no config directory (set XDG_CONFIG_HOME or HOME)");
                 return ExitCode::FAILURE;
             };
-            match run::run(&dir, &log) {
+            match cli::run(&dir, &log) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
                     eprintln!("strand run: {err}");

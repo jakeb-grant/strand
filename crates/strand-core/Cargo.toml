@@ -11,6 +11,9 @@ publish.workspace = true
 foldhash = "0.2.0"
 toml_edit = "0.25.15"
 slotmap = "1.1.1"
+# The IPC protocol's JSON-line codec (`ipc`; already in the graph through
+# strand-services and the binary).
+serde_json = "1.0.151"
 
 [dev-dependencies]
 proptest = "1.11.0"

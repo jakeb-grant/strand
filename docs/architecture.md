@@ -642,9 +642,11 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
 **IPC protocol in `strand-core` (`strand_core::ipc`, new).**
 - The request, answer and event types and their JSON-line codec move
   from `crates/strand/src/ipc.rs` into `strand_core::ipc`: types and
-  codec only, no I/O and no threads. `strand-core` gains `serde` and
-  `serde_json` (both already in the graph through strand-services and
-  the binary). The binary (socket server and CLI), strand-services (the
+  codec only, no I/O and no threads. `strand-core` gains `serde_json`
+  (already in the graph through strand-services and the binary; the
+  codec reads `serde_json::Value`, so `serde`'s derives are not needed).
+  Answers and events are JSON objects (`ipc::Answer`, with `ok()`,
+  `refused(why)`, `unknown(cmd)`, `refusal(answer)` and `line(v)`). The binary (socket server and CLI), strand-services (the
   D-Bus front end) and strand-dev (`strand-dev inspect`, which reaches
   strand-core through strand-compiler) all name these types.
 - `ipc.rs` in the binary becomes `ipc/{mod, server, cli, describe}.rs`
@@ -657,7 +659,24 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     `inspect.dump{surface?}`, `inspect.highlight{id?}`,
     `inspect.flash{on}`;
   - the existing `reset` gains a `{node}` form, "reset subtree"
-    (`Instance::reset_subtree`).
+    (`Instance::reset_subtree`), `Request::ResetNode`.
+  - On the wire a node id (`inspect.node{id}`, `inspect.highlight{id}`,
+    `reset{node}`) and `inspect.dump`'s `surface` are opaque strings
+    the inspector's own answers spell (S-inspect picks the spelling);
+    `call`'s `args` are a list of strings, each read by the action
+    parameter's type as `set`'s value is.
+  - A command the shell does not serve yet is answered exactly as an
+    unknown one (`unknown command `x``), so 0b changes no answer.
+    `Request` has every command's variant and `encode` writes each, but
+    `ipc::parse` reads only the commands the shell serves: M5's fields
+    are read by `ipc::parse_m5(cmd, &v)`, which a stream calls from a
+    `parse` arm when it serves its command (S-inspect's arm sends a
+    `reset` with a `node` to it). Until then `parse` answers as M4 did,
+    field for field: a `reset` naming a `node` beside its `path` resets
+    the path, and one with only a `node` hears "`reset` needs a `path`".
+    (0a had `parse` read every command; 0b measured that at about 5 KB
+    of `.text` for commands nothing serves, and it changed what M4
+    clients heard for malformed requests: decisions.md, m5-core.)
   - `get` reads what `set` writes: exported values, settings fields and
     token overlays (decisions.md wave3-theme, `strand set`; service field
     reads are out of scope). `call` reaches service-level actions only
@@ -676,14 +695,29 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
 **Request channel from the services thread to logic (`IpcRequests`,
 new).**
 - `strand_core::ipc::IpcRequests` sends `IpcCall { request: Request,
-  reply: Reply }` to the logic loop. It is a `std::sync::mpsc` sender
-  plus a wake function the binary supplies (the logic loop's sleeper
-  ping), so strand-core depends on neither calloop nor tokio. `Reply` is
+  reply: Reply }` to the logic loop (`ipc::channel(wake) ->
+  (IpcRequests, IpcReceiver)`; `IpcRequests::call(request) ->
+  Result<ReplyFuture, IpcClosed>`). It is a shared queue (a
+  `Mutex<Vec<IpcCall>>` the receiver drains whole) plus a wake function
+  the binary supplies (the logic loop's sleeper ping), so strand-core
+  depends on neither calloop nor tokio. (0a said a `std::sync::mpsc`
+  sender; 0b measured its generic channel code at about 2 KB of
+  `.text` against 0b's 1 KB bound, and the queue does the same job:
+  decisions.md, m5-core.) Dropping the receiver refuses what is queued
+  and every later call (`IpcClosed`). `Reply` is
   a one-shot that completes once and wakes a `std::task::Waker`, so an
-  async caller awaits it without a runtime in strand-core.
+  async caller awaits it (`ReplyFuture`) without a runtime in
+  strand-core; a `Reply` dropped unanswered completes with a refusal,
+  so a caller never hangs.
 - The logic loop drains it as a non-blocking source beside the socket
   and answers each call through the same `Shell::request` dispatch the
-  socket uses; logic never waits on the services thread.
+  socket uses (`Caller::Socket(id)` or `Caller::Bus(reply)`); logic
+  never waits on the services thread. The loop makes the channel (its
+  wake is the sleeper's ping) and hands a clone of the sender to
+  `Live::requests_to` when one is given (tests; S-ipc passes its own
+  to `strand_services::ipc_bus`). `reload` and `watch` stay the
+  socket's: from the channel they are answered as unknown until S-ipc
+  serves them there.
 - The D-Bus front end (`strand_services::ipc_bus`, new, S-ipc) runs on
   the services thread's tokio runtime, which owns the zbus connection.
   Each method call becomes a `Request`, awaited through `Reply`.
@@ -697,7 +731,12 @@ new).**
 **Snapshot hop between logic and main (new).** Logic sends main
 `ToMain::Snapshot { kind: SnapshotKind, reply }` (a logic→main channel;
 today logic sends main only `SceneDiff`s) and main answers with
-`ToLogic::Snapshot(Snapshot)`. `SnapshotKind` covers `report` (the
+`ToLogic::Snapshot(Snapshot)`, where `reply` is a `SnapshotId` of
+logic's numbering and `Snapshot { reply, data }` carries the snapshot
+as the JSON its IPC answer holds. 0b lands the types in
+`strand/src/run/mod.rs` (`SnapshotKind::{Report, Pick, Layout { node
+}}`); the channel itself is wired by the first stream that sends one,
+since an unused calloop channel would cost `.text` for nothing. `SnapshotKind` covers `report` (the
 compositor's globals with versions, outputs and scales, frame summaries,
 GPU status, reason and lost-device count, promotion reasons) and the
 inspector (a pick's result, a node's layout). It is one interface for
@@ -743,8 +782,14 @@ contrast-guard step where they apply.
 - `Renderer::set_damage_flash(bool)`: each frame's damage tinted for
   300 ms, the flash's own repaint excluded; off means no clock and no
   allocation;
-- `Renderer::frame_summary(surface)`: p50/p95/p99 over the last 600
-  frames, presented and discarded.
+- `Renderer::frame_summary(surface) -> Option<FrameSummary>`:
+  p50/p95/p99 over the last 600 frames, presented and discarded
+  (`renderer/summary.rs`, S-tools).
+
+0b lands these inert: `pick` is `None`, `node_layout` the default
+`LayoutInfo { rect: None }`, `frame_summary` `None`; the highlight and
+flash are only kept (`Renderer::highlight`, `damage_flash`), in
+`src/inspect/` (S-inspect).
 
 Highlight and flash draw on CPU and `GpuPresent` surfaces alike; they
 are the only inspector UI the shell draws (m5-owner Q9: the panel is
@@ -761,8 +806,13 @@ pickable, and `inspect.pick` is refused while locked.
   surface, serial }`, available to its actions until the handler's
   first `await`.
 - `ServiceHost::action` gains an `ActionCtx` argument (the `InputCtx`,
-  if any, and the handler invocation's id); 0b threads an empty one
-  through every host.
+  if any, and the handler invocation's id), as its last parameter:
+  `ActionCtx { input: Option<InputCtx>, invocation: u64 }`, `InputCtx {
+  surface: SurfaceId, serial: u32 }` in `strand_compiler::vm::host`. 0b
+  threads the empty `ActionCtx::default()` through every host
+  (`SchemaHost`, which records it in `ActionCall::ctx`, and the
+  binary's composite, store and custom hosts); strand-services'
+  `DynService::action` does not take it yet (S-platform's).
 - `strand_surface::activation_token(surface, serial) -> async
   Option<String>`, reached through `SurfaceHost`; key-press serials are
   tracked beside `button_serial` (`manager/seat.rs`).
@@ -777,7 +827,8 @@ pickable, and `inspect.pick` is refused while locked.
   action.
 
 **`strand-compiler` `Suggestion`** gains `title: Option<String>` (the
-code action's title; `None` keeps today's "Replace with …"), and a
+code action's title; `None` keeps today's "Change to `…`", the title
+`strand-dev`'s quick fixes have used since M1), and a
 zero-width span (an insertion) is allowed.
 
 **`strand-dev` (M5).**
@@ -818,7 +869,13 @@ the watched config directory, where `strand check` and the LSP read
 them; no dylib is loaded (m5-owner Q18). A plugin binary must copy the
 workspace's `[profile.release]` and its package overrides, or the size
 and PSS figures do not hold. The example is `[[example]] plugin_hello`
-in the strand crate, never in the release binary's `.text`.
+in the strand crate, never in the release binary's `.text`. The binary
+reaches the library through a hidden `strand::cli` module (its entry
+points: `check`, `fmt`, the IPC commands, `compositor_rules`, `demo`,
+`run`, `trim`, `LogConfig`, `default_dir`); the module tree stays
+private. `main.rs` keeps `#[global_allocator]` and the `NO_THP`
+constructor; `lib.rs` repeats both under `cfg(test)` so the unit tests
+run as the binary does.
 
 **Ownership.** Integrator: this section, the root `Cargo.toml` and
 `Cargo.lock`, CI files, budgets.rs's gate constants and

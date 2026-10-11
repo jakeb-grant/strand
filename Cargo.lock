@@ -2884,6 +2884,7 @@ dependencies = [
  "criterion",
  "foldhash",
  "proptest",
+ "serde_json",
  "slotmap",
  "toml_edit",
 ]

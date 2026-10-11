@@ -21,6 +21,16 @@ gpu = ["strand-render/gpu", "strand-surface/gpu", "strand-compiler/shaders", "de
 # `the_binary_holds_no_fault_code` checks the binary's bytes.
 faults = ["strand-auth/faults"]
 
+# The library holds the module tree; the binary is `main` and the
+# COMMANDS table over it (decisions.md, m5-core). The library is for
+# plugins (`strand::Shell::builder()`), git-only and unstable.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "strand"
+path = "src/main.rs"
+
 [dependencies]
 strand-gpu = { workspace = true, optional = true }
 # The built-in fallback lock's own password client (`run/lock.rs`).

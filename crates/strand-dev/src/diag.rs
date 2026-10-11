@@ -84,7 +84,10 @@ pub fn quick_fixes(an: &Analysis, file: FileId, range: Span) -> Vec<QuickFix> {
         let only = d.suggestions.len() == 1;
         for s in d.suggestions.iter().filter(|s| s.file == file) {
             out.push(QuickFix {
-                title: format!("Change to `{}`", s.replacement),
+                title: s
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| format!("Change to `{}`", s.replacement)),
                 diagnostic: convert(an, d),
                 span: s.span,
                 new_text: s.replacement.clone(),

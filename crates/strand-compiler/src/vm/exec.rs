@@ -353,7 +353,14 @@ impl Machine {
                             Value::Service(s) => super::ActionTarget::Service(s),
                             v => super::ActionTarget::Item(v),
                         };
-                        vm.host.action(rt, target, name, &a.into_vec())?;
+                        // The empty context until the VM records handler input (M5).
+                        vm.host.action(
+                            rt,
+                            target,
+                            name,
+                            &a.into_vec(),
+                            super::ActionCtx::default(),
+                        )?;
                         Value::Unit
                     } else {
                         builtins::method(vm, rt, &recv, name, a)?

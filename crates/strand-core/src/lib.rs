@@ -40,6 +40,7 @@ mod async_value;
 mod echo;
 mod error;
 mod events;
+pub mod ipc;
 pub mod keyed;
 mod order;
 pub mod persist;

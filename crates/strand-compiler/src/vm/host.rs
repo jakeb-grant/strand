@@ -26,6 +26,28 @@ pub enum ActionTarget<'a> {
     Item(&'a Value),
 }
 
+/// The input event that started a handler (M5, S-platform): the
+/// surface it arrived on and the compositor's serial for it, what an
+/// `xdg_activation_v1` token is asked with. Available to the handler's
+/// actions until its first `await`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputCtx {
+    pub surface: strand_scene::SurfaceId,
+    pub serial: u32,
+}
+
+/// What an action knows about the handler that runs it (M5): its input
+/// event, if any, and the handler invocation's id, so the services side
+/// keeps one invocation's actions in order behind a token wait
+/// (docs/architecture.md, "Handler input context"). The default, empty
+/// context (no input, invocation 0) is what every action gets until the
+/// VM records them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActionCtx {
+    pub input: Option<InputCtx>,
+    pub invocation: u64,
+}
+
 /// The services a program reads, as the VM sees them.
 ///
 /// Reads go through the reactive graph: `read` and `call` must read
@@ -186,13 +208,14 @@ pub trait ServiceHost {
         })
     }
 
-    /// Run an action.
+    /// Run an action, from the handler `ctx` describes.
     fn action(
         &self,
         rt: &Runtime,
         target: ActionTarget<'_>,
         name: &str,
         args: &[Value],
+        ctx: ActionCtx,
     ) -> Result<(), Error>;
 
     /// The lossless queue of `service.event` (`notifications.received`);

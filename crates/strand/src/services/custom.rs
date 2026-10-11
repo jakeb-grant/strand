@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use strand_compiler::hir::{PollTarget, SourceSpec};
 use strand_compiler::lower::CustomService;
 use strand_compiler::ty::{Prim, Ty, TypeTable};
-use strand_compiler::vm::host::{ActionTarget, PathSeg, ServiceHost};
+use strand_compiler::vm::host::{ActionCtx, ActionTarget, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
@@ -621,6 +621,7 @@ impl ServiceHost for CustomHost {
         _target: ActionTarget<'_>,
         name: &str,
         _args: &[Value],
+        _ctx: ActionCtx,
     ) -> Result<(), Error> {
         Err(Error::failed(format!(
             "a no-code service has no action `{name}`"
