@@ -7,8 +7,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use strand_compiler::SourceMap;
-use strand_compiler::diagnostic::{Style, render};
+use strand_compiler::diagnostic::{Diagnostic, Style, render};
 use strand_compiler::source::find_files;
+use strand_compiler::syntax::Parse;
+use strand_compiler::syntax::ast::ItemKind;
+
+/// Finds the lock's PAM helper: [`strand_auth::default_helper`], the
+/// lookup `strand run` uses; tests pass their own.
+type HelperLookup = fn() -> Option<PathBuf>;
 
 /// What a check found.
 #[derive(Debug, Default)]
@@ -45,14 +51,18 @@ pub fn default_dir(xdg_config_home: Option<OsString>, home: Option<OsString>) ->
 /// [`check_file`] (with the default config directory from the
 /// environment).
 pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
+    check_dir_with(dir, style, strand_auth::default_helper)
+}
+
+fn check_dir_with(dir: &Path, style: Style, helper: HelperLookup) -> Result<Report, String> {
     if dir.is_file() {
         let root = default_dir(
             std::env::var_os("XDG_CONFIG_HOME"),
             std::env::var_os("HOME"),
         );
-        return check_file(dir, root.as_deref(), style);
+        return check_file(dir, root.as_deref(), style, helper);
     }
-    check_config(dir, None, style)
+    check_config(dir, None, style, helper)
 }
 
 /// Checks one file as part of its config, so its references to other
@@ -60,10 +70,11 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
 /// else the file's directory. Every file of that config is compiled, and
 /// only the diagnostics that point into `file` are reported. A file the config's
 /// module set does not include (hidden, or too deep) is checked alone.
-pub fn check_file(
+fn check_file(
     file: &Path,
     default_root: Option<&Path>,
     style: Style,
+    helper: HelperLookup,
 ) -> Result<Report, String> {
     let canonical = std::fs::canonicalize(file)
         .map_err(|e| format!("strand check: cannot read {}: {e}", file.display()))?;
@@ -83,15 +94,20 @@ pub fn check_file(
             .any(|f| std::fs::canonicalize(f).is_ok_and(|f| f == canonical))
     });
     if in_set {
-        check_config(&root, Some(&canonical), style)
+        check_config(&root, Some(&canonical), style, helper)
     } else {
-        check_config(file, None, style)
+        check_config(file, None, style, helper)
     }
 }
 
 /// Checks the config at `dir`; with `focus`, reports only the diagnostics
 /// with a label (primary or secondary) in that file (a canonical path).
-fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report, String> {
+fn check_config(
+    dir: &Path,
+    focus: Option<&Path>,
+    style: Style,
+    helper: HelperLookup,
+) -> Result<Report, String> {
     let found =
         find_files(dir).map_err(|e| format!("strand check: cannot read {}: {e}", dir.display()))?;
     let mut report = Report {
@@ -160,6 +176,7 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
         &compiled.program,
         Some(dir),
     ));
+    diags.extend(lock_helper(&compiled.parses, helper));
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call
@@ -195,6 +212,40 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
         ),
     };
     Ok(report)
+}
+
+/// `check::lock_no_helper`: the config has a `lock` and no `strand-auth`
+/// helper is installed where strand looks for it. `strand run` warns at
+/// start and still locks (failing closed), so the only way out would be
+/// a TTY; check is where the user hears it before installing the config
+/// (decisions.md, m4-close-helper). One error, on the first `lock`.
+fn lock_helper(parses: &[Parse], helper: HelperLookup) -> Option<Diagnostic> {
+    let (file, span) = parses.iter().find_map(|p| {
+        p.file.items.iter().find_map(|item| match &item.kind {
+            ItemKind::Surface(s) if s.kind.name == "lock" => Some((p.file_id, s.kind.span)),
+            _ => None,
+        })
+    })?;
+    if helper().is_some() {
+        return None;
+    }
+    Some(
+        Diagnostic::error(
+            "check::lock_no_helper",
+            "no `strand-auth` helper is installed: this `lock` would lock the session \
+             with no way to unlock it but a TTY",
+        )
+        .with_label_in(
+            file,
+            span,
+            "this `lock` needs the helper to check a password",
+        )
+        .with_help(
+            "install it: `cargo install --locked --path crates/strand-auth` (strand looks \
+             beside its own executable, then in /usr/libexec/strand, /usr/lib/strand and \
+             /usr/local/libexec/strand)",
+        ),
+    )
 }
 
 const USAGE: &str = "usage: strand check [dir | file]\n\n\
@@ -397,7 +448,13 @@ mod tests {
             "bar Top {\n  text theme.look == dark ? \"d\" : \"l\"\n  Dot\n}\n",
         );
         // No default root: the file's directory is its config.
-        let report = check_file(&t.0.join("bar.strand"), None, Style::Plain).unwrap();
+        let report = check_file(
+            &t.0.join("bar.strand"),
+            None,
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
         assert_eq!(report.errors, 0, "{}", report.text);
         assert_eq!(report.files, 2, "{}", report.text);
         assert!(
@@ -406,7 +463,13 @@ mod tests {
             report.text
         );
         // theme.strand's own error is reported when it is the file asked for.
-        let report = check_file(&t.0.join("theme.strand"), None, Style::Plain).unwrap();
+        let report = check_file(
+            &t.0.join("theme.strand"),
+            None,
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
         assert_eq!(report.errors, 1, "{}", report.text);
         assert!(
             report.text.contains("unknown name `nope`"),
@@ -415,11 +478,23 @@ mod tests {
         );
         // Inside the default config directory, the whole of it counts.
         t.write("widgets/use.strand", "bar Side { Dot }\n");
-        let report = check_file(&t.0.join("widgets/use.strand"), Some(&t.0), Style::Plain).unwrap();
+        let report = check_file(
+            &t.0.join("widgets/use.strand"),
+            Some(&t.0),
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
         assert_eq!(report.errors, 0, "{}", report.text);
         assert_eq!(report.files, 3, "{}", report.text);
         // Outside it, only its own directory.
-        let report = check_file(&t.0.join("widgets/use.strand"), None, Style::Plain).unwrap();
+        let report = check_file(
+            &t.0.join("widgets/use.strand"),
+            None,
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
         assert_eq!(report.errors, 1, "{}", report.text);
         assert!(
             report.text.contains("unknown element `Dot`"),
@@ -432,7 +507,13 @@ mod tests {
         t.write("a.strand", "component Card { box {} }\n");
         t.write("b.strand", "component Card { box {} }\n");
         for f in ["a.strand", "b.strand"] {
-            let report = check_file(&t.0.join(f), None, Style::Plain).unwrap();
+            let report = check_file(
+                &t.0.join(f),
+                None,
+                Style::Plain,
+                strand_auth::default_helper,
+            )
+            .unwrap();
             assert_eq!(report.errors, 1, "{f}: {}", report.text);
             assert!(!report.ok(), "{f}");
         }
@@ -547,6 +628,56 @@ mod tests {
             "{}",
             report.text
         );
+    }
+
+    /// A lock whose password reaches `auth`, as auth.schema documents it.
+    const LOCK: &str = "lock {\n  state secret = \"\"\n  input { type: password; text: <-> secret\n    on activate { if secret != \"\" { auth.submit(secret) }; secret = \"\" }\n  }\n}\n";
+
+    fn no_helper() -> Option<PathBuf> {
+        None
+    }
+
+    fn a_helper() -> Option<PathBuf> {
+        Some(PathBuf::from("/usr/libexec/strand/strand-auth"))
+    }
+
+    /// (m4-close-helper) A config with a `lock` and no `strand-auth`
+    /// helper fails the check, naming the install command, on the lock's
+    /// file; with a helper, or with no `lock`, it passes.
+    #[test]
+    fn a_lock_without_the_helper_is_an_error() {
+        let t = TempDir::new();
+        t.write("bar.strand", "bar Top { text \"x\" }\n");
+        t.write("lock.strand", LOCK);
+        let report = check_dir_with(&t.0, Style::Plain, no_helper).unwrap();
+        assert_eq!(report.errors, 1, "{}", report.text);
+        for want in [
+            "check::lock_no_helper",
+            "lock.strand:1:",
+            "cargo install --locked --path crates/strand-auth",
+            "/usr/libexec/strand",
+        ] {
+            assert!(report.text.contains(want), "{want}: {}", report.text);
+        }
+        assert!(!report.ok());
+        let report = check_dir_with(&t.0, Style::Plain, a_helper).unwrap();
+        assert!(report.ok(), "{}", report.text);
+        assert_eq!(report.warnings, 0, "{}", report.text);
+        // Checking one file: the lock's file has the error, the bar's not.
+        let lock = t.0.join("lock.strand");
+        let report = check_file(&lock, None, Style::Plain, no_helper).unwrap();
+        assert_eq!(report.errors, 1, "{}", report.text);
+        let bar = t.0.join("bar.strand");
+        let report = check_file(&bar, None, Style::Plain, no_helper).unwrap();
+        assert!(report.ok(), "{}", report.text);
+        // No `lock`, no helper needed: the lookup is not even asked.
+        let t = TempDir::new();
+        t.write("bar.strand", "bar Top { text \"x\" }\n");
+        fn unasked() -> Option<PathBuf> {
+            panic!("the helper was looked up for a config with no lock")
+        }
+        let report = check_dir_with(&t.0, Style::Plain, unasked).unwrap();
+        assert!(report.ok(), "{}", report.text);
     }
 
     #[test]
