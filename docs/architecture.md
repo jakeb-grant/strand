@@ -1980,7 +1980,7 @@ Palettes, used by the compiler's VM (`material()`, `import()`) and by
 the instance's built-in theme; render reaches it only through the token
 table.
 
-- `Role` (49 Material 3 system roles, the fixed accents included,
+- `Role` (49 Material 3 system roles, the fixed accents included (62 with the proposed hue roles below),
   `name()` / `m3()`), `Palette` (every role a colour, `is_dark()`,
   `source()` / `with_source()` (provenance, not compared),
   `insert_into(&mut TokenTable)` writes the roots, their origins and
@@ -2020,6 +2020,122 @@ table.
   1 MiB (`MAX_IMPORT_BYTES`) (`docs/decisions.md`, wave3-theme).
 - `contrast::{PAIRS, guard, ratio, solve}`, `defaults::base_tokens()`
   (design.md's `tokens base`), `gamut::map`.
+
+#### Proposed: the theming hub (m5-tools, owner-approved 2026-10-11)
+
+> **Proposed text for the integrator; not in force until merged.** The
+> design and its reasons are in decisions.md m5-tools ("the
+> owner-approved theming design" and the paragraphs after it). Each
+> bullet names the crate that would own it.
+
+- **strand-theme.**
+  - `Role` gains 13 hue roles after the 49 Material 3 roles: `Red`,
+    `Orange`, `Yellow`, `Green`, `Cyan`, `Blue`, `Magenta`,
+    `BrightRed`, `BrightYellow`, `BrightGreen`, `BrightCyan`,
+    `BrightBlue`, `BrightMagenta` (`Role::COUNT` 49 → 62; `m3()` is
+    `None`-like for them, so it becomes `Option<&str>` or a separate
+    table).
+  - `Partial::fill` derives a missing hue by `blend::harmonize`
+    toward the accent (≤ 15°) at tone 80 dark / 40 light; a missing
+    bright is its base ± 0.08 OKLCH L. Given hues are never changed,
+    and hue roles are not contrast pairs.
+  - `Palette` gains `extras() -> &[(String, Color)]` (source order,
+    snake_case dotted names; identity names get a trailing `_`) and
+    `name()`, beside `source()` and `is_dark()`.
+  - `to_text`/`from_text` write and read a `name <text>` line and
+    `extra <name> #rrggbbaa` lines; older files derive the hues and
+    read the name as the source string.
+  - Each importer fills extras (Catppuccin's 26, base16/base24's
+    `baseXX`, matugen's non-role keys, W3C colour tokens,
+    `source_color` for material).
+  - `export::{json(&Palette, &TokenTable) -> String,
+    base24(&Palette, &TokenTable) -> String}` are pure writers; the
+    `Palette` gives identity and source, the resolved `TokenTable`
+    (overlays included) every value, so `strand set` reaches both;
+    `base24` follows the slot table in decisions.md m5-tools ("the
+    CLI"), and `json` the value rules in "template expressions and
+    formats".
+  - Owner: a wave-2 palette owner beside S-tools.
+- **strand-scene.** `TokenTable` gains the hue roots and reserves
+  `palette` as a first segment for extras and identity (read only by
+  templates for now). No new `TokenMethod`: the template-only methods
+  (`.red()`, `.green()`, `.blue()`, `.opacity()`, `.light()`,
+  `.dark()`) never reach the render thread.
+- **strand-compiler.**
+  - `Instance::palette(rt) -> Result<Palette, Error>` evaluates
+    `use palette` with no fallback (built-in only when the program
+    has none); `token_table` swallows a failing palette
+    (`instantiate/mod.rs` 467–494).
+  - Mounting with a pinned palette root (the persisted palette, for
+    the offline mount), and with a read-only `ThemeHost`: it reads
+    `palettes/palette` and the `Quantiser`'s seed index from the
+    `palettes` directory but writes neither (`remember_palette` keeps
+    the palette in memory only; the `Quantiser` stores no seed), since
+    `Storage::palette_dir` would otherwise give it the real directory
+    and an offline export would write `palettes/palette`.
+  - `Instance::other_mode(rt) -> Memo<Result<TokenTable, Error>>`: the
+    theme's `use palette` and `use tokens` evaluated with every read of
+    `system.dark` answered by its negation, with no fallback. It
+    evaluates in an other-mode child env with fresh slots for every
+    top-level `let` that the theme reaches and that reaches
+    `system.dark` (the static dependency graph, through `fn` bodies),
+    since a `let` is one shared slot already computed with the real
+    `system.dark`; states, settings and `persist` cells stay shared;
+    the env flags the service read (and `default_palette`) to negate
+    `system.dark`. It never calls `ThemeHost::remember_palette`, never
+    reads or sets `last_palette`, and stores no `Quantiser` seed. The
+    runtime token overlays apply to its table as to the current one.
+    One per instance, held (counted) by each mounted output whose
+    template reads `.light()` or `.dark()` and by an IPC `export`
+    request whose template does, for that request; made with the first
+    holder and dropped with the last; it writes no cell, tracks what only the other mode reads (imports, settings
+    fields, a pending image's `Async`) as any memo does, and is pulled
+    on the logic thread after the tick's diff, once per change for all
+    outputs.
+  - A `pub` path for the persisted palette (today `LAST_PALETTE` is
+    private in `vm/theme.rs`).
+  - `template::Template::compile(file, src, scope) -> Result<Template,
+    Vec<Diagnostic>>` produces a pure IR (text runs and compiled holes;
+    token-only scope; the template-only methods `.red()`, `.green()`,
+    `.blue()`, `.opacity()`, `.light()` and `.dark()`; a flag saying
+    whether it reads the other mode).
+    `Template::render(&self, current: &TokenTable, other:
+    Option<&TokenTable>) -> Result<Vec<u8>, Vec<Diagnostic>>` is
+    `Send` and runs off the logic thread.
+  - The `file` element in the schema, and at the top level in the
+    parser (grammar.md `top_file`; every other top-level element keeps
+    `syntax::misplaced`): one of `template:`/`text:`, `run:` checked
+    against `permit exec`.
+  - `Update` gains `outputs: Vec<OutputChange>`: a path plus the
+    compiled template or text and the token tables (current, and the
+    other mode only when the template reads it), produced only when an
+    output's memo changes, after the tick's diff. An output's memo reads
+    `other_mode` when its template does, so an edit that changes only
+    the other mode re-renders it.
+- **strand-core.** A read-only `PersistStore` (reads cells, never
+  writes) for the offline mount.
+- **strand (binary).**
+  - `strand export json | base24 | --template <file> [--palette
+    <expr>] [-o <file>]` (`src/export.rs`).
+  - An `export` IPC request in the socket's COMMANDS table (S-ipc's
+    area; no D-Bus method) that renders against the live table,
+    overlays included, on the logic thread after the tick's diff,
+    holding `Instance::other_mode` while it builds its reply when its
+    template reads the other mode; the offline mount is the fallback.
+  - An output host on the main side renders `Update.outputs` off the
+    logic thread and writes through a `FileWriter`. It follows
+    symlinks and keeps the file's mode. Strand's own writes are
+    registered with the watcher in advance.
+  - It keeps a manifest of written files and their hashes in
+    `$XDG_STATE_HOME/strand/files`, and refuses unowned and `.strand`
+    targets.
+  - It runs `run:` with a 200 ms trailing debounce, at most one run
+    per file plus one queued, and a 10 s timeout that kills the
+    process group. A failure becomes an overlay notice and a
+    `strand watch` event.
+  - main.rs's `export` help line changes from "write the palette for
+    gtk, kitty or hyprland" to "write the palette as JSON, base24 or
+    through a template".
 
 ### `strand-core`
 
