@@ -2,7 +2,7 @@
 //! body, in the library so a plugin binary answers every command as
 //! `strand` does (docs/architecture.md, "Plugin builder"; decisions.md
 //! m5-plugins). `main.rs` keeps `process_setup!` and `main`, which calls
-//! [`main`] through `strand::cli`.
+//! [`main`] through `strand::Shell::builder().run()` (`plugin.rs`).
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -123,6 +123,9 @@ pub fn main() -> ExitCode {
     strand_text::set_idle_hook(cli::trim);
     strand_render::image::set_idle_hook(cli::trim);
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--write-schemas") {
+        return crate::plugin::write_schemas_main(&args[1..]);
+    }
     let tool: Option<Tool> = match args.first().map(String::as_str) {
         Some("check") => Some(cli::check),
         Some("fmt") => Some(cli::fmt),

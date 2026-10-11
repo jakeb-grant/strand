@@ -2161,3 +2161,138 @@ fn dbus_services_are_checked_off_the_analysis_path() {
         "{diags:?}"
     );
 }
+
+/// A plugin's schema file (`--write-schemas`'s output, decisions.md
+/// m5-plugins), as a plugin binary writes it.
+const HELLO_SCHEMA: &str = "// strand plugin schema, written by /opt/my-shell --write-schemas; do not edit\n\
+/// The plugin example's service.\n\
+service hello {\n  /// The last greeting, from the plugin.\n  greeting: text\n  /// How many.\n  count: int rw\n}\n";
+
+const READS_HELLO: &str = "bar B { text hello.greeting }\n";
+
+/// The builtin schema with the plugin files in `dir`, as `strand-dev
+/// lsp` builds it (`server::schema`).
+fn schema_with_plugins(dir: &Path) -> Schema {
+    use strand_compiler::schema::plugins;
+    let mut s = Schema::builtin_with(&strand_services_schema::schemas()).unwrap();
+    let (files, skipped) = plugins::load(dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(plugins::apply(&mut s, &files, &[]).is_empty());
+    s
+}
+
+/// Hover and completion see a plugin schema file's service.
+#[test]
+fn plugin_schemas_hover() {
+    let data = TempDir::new();
+    std::fs::write(data.0.join("hello.schema"), HELLO_SCHEMA).unwrap();
+    let schema = schema_with_plugins(&data.0);
+    let mut c = Client::start_schema(&[("a.strand", READS_HELLO.into())], schema);
+    c.open("a.strand");
+    assert_eq!(c.diagnostics("a.strand"), Vec::<Value>::new());
+    let h = c.hover("a.strand", Client::pos(READS_HELLO, "greeting", 0, 2));
+    assert!(
+        h.contains("greeting: text") && h.contains("The last greeting, from the plugin."),
+        "{h}"
+    );
+    let text = READS_HELLO.replace("hello.greeting", "hello.");
+    c.change("a.strand", 2, &text);
+    let labels = c.completion("a.strand", Client::pos(&text, "hello.", 0, 6));
+    for want in ["greeting", "count"] {
+        assert!(
+            labels.iter().any(|l| l == want),
+            "{want} missing: {labels:?}"
+        );
+    }
+}
+
+/// The built `strand-dev lsp`, over stdio, reads `$XDG_DATA_HOME/strand/
+/// schemas/` itself (its schema is a process-wide `OnceLock`, so this is
+/// a process of its own).
+#[test]
+fn the_lsp_binary_reads_plugin_schemas() {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+    let data = TempDir::new();
+    let schemas = data.0.join("strand/schemas");
+    std::fs::create_dir_all(&schemas).unwrap();
+    std::fs::write(schemas.join("hello.schema"), HELLO_SCHEMA).unwrap();
+    let work = TempDir::new();
+    let file = work.0.join("a.strand");
+    std::fs::write(&file, READS_HELLO).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_strand-dev"))
+        .arg("lsp")
+        .env("XDG_DATA_HOME", &data.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let output = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        let mut r = BufReader::new(output);
+        while let Ok(Some(m)) = Message::read(&mut r) {
+            if tx.send(m).is_err() {
+                return;
+            }
+        }
+    });
+    let mut send = |m: Message| m.write(&mut input).unwrap();
+    let answer = |id: i32| loop {
+        match rx
+            .recv_timeout(WAIT)
+            .expect("no answer from strand-dev lsp")
+        {
+            Message::Response(r) if r.id == RequestId::from(id) => {
+                return r.response_result.unwrap_or(Value::Null);
+            }
+            _ => {}
+        }
+    };
+    let root = path_to_uri(&work.0);
+    send(Message::Request(Request::new(
+        1.into(),
+        "initialize".into(),
+        json!({ "processId": null, "rootUri": root, "capabilities": {} }),
+    )));
+    answer(1);
+    send(Message::Notification(Notification::new(
+        "initialized".into(),
+        json!({}),
+    )));
+    let uri = path_to_uri(&file);
+    send(Message::Notification(Notification::new(
+        "textDocument/didOpen".into(),
+        json!({ "textDocument": {
+            "uri": uri, "languageId": "strand", "version": 1, "text": READS_HELLO,
+        }}),
+    )));
+    send(Message::Request(Request::new(
+        2.into(),
+        "textDocument/hover".into(),
+        json!({
+            "textDocument": { "uri": uri },
+            "position": Client::pos(READS_HELLO, "greeting", 0, 2),
+        }),
+    )));
+    let hover = answer(2);
+    let h = hover["contents"]["value"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    send(Message::Request(Request::new(
+        3.into(),
+        "shutdown".into(),
+        Value::Null,
+    )));
+    answer(3);
+    send(Message::Notification(Notification::new(
+        "exit".into(),
+        Value::Null,
+    )));
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    assert!(h.contains("The last greeting, from the plugin."), "{h}");
+}

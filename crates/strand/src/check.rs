@@ -116,6 +116,11 @@ fn check_config(
     };
     // Problems elsewhere in the config are not this file's.
     let whole = focus.is_none();
+    // Plugin schema files skipped or stale (decisions.md m5-plugins).
+    for w in crate::services::served().warnings.iter().filter(|_| whole) {
+        report.warnings += 1;
+        let _ = writeln!(report.text, "warning: plugin schema: {w}\n");
+    }
     for (path, e) in found.errors.iter().filter(|_| whole) {
         report.errors += 1;
         let _ = writeln!(report.text, "error: cannot read {}: {e}\n", path.display());

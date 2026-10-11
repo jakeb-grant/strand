@@ -37,6 +37,17 @@ path = "src/lib.rs"
 name = "strand"
 path = "src/main.rs"
 
+# A plugin binary (`strand::Shell::builder()`), and one without
+# `process_setup!()`: built by `cargo test` for tests/m5/plugin.rs, never
+# part of the `strand` binary (decisions.md m5-plugins).
+[[example]]
+name = "plugin_hello"
+path = "examples/plugin_hello.rs"
+
+[[example]]
+name = "plugin_bare"
+path = "examples/plugin_bare.rs"
+
 [dependencies]
 strand-gpu = { workspace = true, optional = true }
 # The built-in fallback lock's own password client (`run/lock.rs`).

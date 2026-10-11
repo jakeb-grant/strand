@@ -86,22 +86,32 @@ pub fn capabilities() -> ServerCapabilities {
 
 /// The schema `strand-dev lsp` serves: the builtin schema extended by
 /// every builtin service (`strand_services_schema::schemas()`, the texts
-/// without the service runtime), as
-/// `strand check` and `strand run` check against it. A service schema
-/// that does not apply (a bug the service crates' tests catch) is
+/// without the service runtime), then by the plugin schema files
+/// (`schema::plugins`, read once), as `strand check` and `strand run`
+/// check against it. A service schema that does not apply (a bug the
+/// service crates' tests catch) and a plugin file that does not are
 /// logged and left out.
 pub fn schema() -> Arc<Schema> {
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
     SCHEMA
         .get_or_init(|| {
+            use strand_compiler::schema::plugins;
             let texts = strand_services_schema::schemas();
-            Arc::new(match Schema::builtin_with(&texts) {
+            let mut s = match Schema::builtin_with(&texts) {
                 Ok(s) => s,
                 Err((i, errors)) => {
                     eprintln!("strand-dev: service schema #{i} does not apply: {errors:?}");
                     Schema::builtin().clone()
                 }
-            })
+            };
+            let (files, mut skipped) = plugins::dir()
+                .map(|d| plugins::load(&d))
+                .unwrap_or_default();
+            skipped.extend(plugins::apply(&mut s, &files, &[]));
+            for w in skipped {
+                eprintln!("strand-dev: plugin schema: {w}");
+            }
+            Arc::new(s)
         })
         .clone()
 }
