@@ -156,9 +156,14 @@ pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
     let disabled_actions = client["textDocument"]["codeAction"]["disabledSupport"]
         .as_bool()
         .unwrap_or(false);
-    let resolve_edits = client["textDocument"]["codeAction"]["resolveSupport"]["properties"]
-        .as_array()
-        .is_some_and(|p| p.iter().any(|p| p == "edit"));
+    // The deferred edit is rebuilt from the action's `data`, which a client
+    // keeps between the request and its resolve only with `dataSupport`;
+    // a client without it is answered eagerly.
+    let code_action = &client["textDocument"]["codeAction"];
+    let resolve_edits = code_action["dataSupport"].as_bool() == Some(true)
+        && code_action["resolveSupport"]["properties"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p == "edit"));
     // Hear about `.strand` files changed outside the editor.
     if client["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"].as_bool() == Some(true) {
         conn.sender.send(Message::Request(Request::new(
@@ -761,7 +766,17 @@ impl Server<'_> {
             data["uri"].as_str(),
             serde_json::from_value::<lsp_types::Range>(data["range"].clone()),
         ) else {
-            return Ok(serde_json::to_value(action)?);
+            // An action that already carries its edit has nothing to
+            // resolve; one that needs its `data` and lost it cannot be made.
+            if action.edit.is_some() {
+                return Ok(serde_json::to_value(action)?);
+            }
+            return Err(Failed(
+                "the action lost its data (the client keeps it only with \
+                 codeAction.dataSupport); ask for the action again"
+                    .into(),
+            )
+            .into());
         };
         let version = self.ws.docs.get(uri).map(|d| d.version);
         if serde_json::to_value(version)? != data["version"] {

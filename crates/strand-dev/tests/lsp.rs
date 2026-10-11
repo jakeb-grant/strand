@@ -1419,6 +1419,7 @@ fn extract_component_is_made_when_chosen() {
     let resolving = |p: &mut Value| {
         p["capabilities"]["textDocument"]["codeAction"] = json!({
             "disabledSupport": true,
+            "dataSupport": true,
             "resolveSupport": { "properties": ["edit"] },
         });
     };
@@ -1444,6 +1445,27 @@ fn extract_component_is_made_when_chosen() {
     let expected = &actions_at(&mut eager, "side.strand", SIDE, at + 1, at + 1)[0]["edit"];
     assert_eq!(
         c.applied(&resolved["edit"], "side.strand", SIDE),
+        eager.applied(expected, "side.strand", SIDE)
+    );
+
+    // A resolve whose `data` the client dropped fails with the reason
+    // rather than coming back without an edit.
+    let mut dropped = offered.clone();
+    dropped.as_object_mut().unwrap().remove("data");
+    let e = c.request_err("codeAction/resolve", dropped);
+    assert!(e.contains("lost its data"), "{e}");
+
+    // A client that resolves `edit` but does not keep `data`
+    // (no `dataSupport`) is answered eagerly, with the edit.
+    let mut no_data = Client::start_with(&[("side.strand", SIDE.into())], |p| {
+        p["capabilities"]["textDocument"]["codeAction"] = json!({
+            "resolveSupport": { "properties": ["edit"] },
+        });
+    });
+    no_data.open_text("side.strand", SIDE);
+    let got = &actions_at(&mut no_data, "side.strand", SIDE, at + 1, at + 1)[0]["edit"];
+    assert_eq!(
+        no_data.applied(got, "side.strand", SIDE),
         eager.applied(expected, "side.strand", SIDE)
     );
 
