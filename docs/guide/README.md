@@ -4,7 +4,10 @@ This guide takes you from `strand new` to a full desktop shell in five
 levels. Each level teaches a handful of ideas and ends with something
 you can use. Levels 1 to 3 build one bar, on every monitor, with
 workspace dots, the focused window's title, a clock with a calendar
-popup, a volume slider, the battery and the tray.
+popup, a volume slider, the battery and the tray. Level 4 adds the
+surfaces that come and go (an on-screen display, notifications, a
+launcher and a lock screen), and level 5 your own theme, services, a
+control centre and a dock.
 
 Nothing at level N+1 appears in a level-N example. If you stop after
 any level, everything you have written still works.
@@ -51,8 +54,19 @@ same order to a running shell on two monitors and check each step's
 frame, so that a block that is wrong fails the build. Until it lands,
 nothing checks the blocks automatically.
 
-Short pieces of syntax inside a sentence (`when hover { … }`) are not
-steps.
+A step can also need a file that is not `.strand`, such as level 5's
+template. Its block is tagged with its own language and the same
+`level=` and `file=`, and is that file's whole content too:
+
+````
+```css level=5 file=colors.css.tmpl
+:root { … }
+```
+````
+
+Short pieces of syntax inside a sentence (`when hover { … }`), and
+untagged blocks (commands to type, keybind lines for your compositor),
+are not steps.
 
 ## What you need
 
@@ -64,8 +78,8 @@ Then start at [level 1](level-1.md).
 
 ## Pages still to come
 
-- [level-4.md](level-4.md) and [level-5.md](level-5.md) are outlines
-  (M5 wave 2).
+- Plugins: a service written in Rust and built into your own `strand`
+  binary (level 5, section 7), with the plugin builder (M5 wave 2).
 - The language itself, in full: [`docs/spec.md`](../spec.md) for what
   each construct means, [`docs/grammar.md`](../grammar.md) for how it
   is written.

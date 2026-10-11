@@ -270,4 +270,5 @@ five files and about 80 lines.
 | `battery.strand` | `Battery` |
 
 Next, [level 4](level-4.md) builds surfaces that come and go: an
-on-screen display for volume, notifications and an app launcher.
+on-screen display for volume, notifications, an app launcher and a lock
+screen.
