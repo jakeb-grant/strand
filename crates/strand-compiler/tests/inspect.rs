@@ -335,6 +335,76 @@ fn reset_subtree_resets_only_the_subtree() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Reset subtree writes as a reload does: a component's `on change` does
+/// not fire for the cells it resets (decisions.md m5-inspect, "Reset
+/// subtree resets scopes, as a reload write").
+#[test]
+fn reset_subtree_does_not_fire_on_change() {
+    let src = "state fired = 0\n\
+bar Top {\n  row {\n    Tally \"a\"\n    text join(\" \", \"fired\", fired)\n  }\n}\n\
+component Tally(name: text) {\n  state n = 0\n  on change n { fired += 1 }\n  \
+text join(\"\", name, n) { on click { n += 1 } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], Storage::none(), &["DP-1"]);
+    shell.click(shell.text("a0"));
+    assert!(
+        shell.scene.find_text("fired 1").is_some(),
+        "a click fires it"
+    );
+    let a = shell.text("a1");
+    assert_eq!(shell.inst.reset_subtree(a).unwrap(), 1);
+    shell.flush();
+    for at in [0.01, 1.0] {
+        let u = shell.inst.tick(Duration::from_secs_f64(at));
+        shell.scene.apply(&u.diff).unwrap();
+    }
+    assert!(
+        shell.scene.find_text("a0").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert!(
+        shell.scene.find_text("fired 1").is_some(),
+        "a reset is a reload write: {}",
+        shell.scene.render()
+    );
+}
+
+/// A closed popup's content keeps its cells (unmounted, bound again when
+/// it opens): reset subtree skips them, so the popup opens as it closed.
+#[test]
+fn reset_subtree_skips_a_closed_popups_cells() {
+    let src = "export state p = false\n\
+component Cal {\n  state month = 1\n  text join(\" \", \"M\", month)\n  box { on click { month += 1 } }\n}\n\
+component Seen {\n  state s = 0\n  text join(\" \", \"S\", s) { on click { s += 1 } }\n}\n\
+bar B {\n  Seen\n  popup { open: <-> p; Cal }\n}\n";
+    let mut shell = boot(&[("cal.strand", src)], Storage::none(), &["DP-1"]);
+    shell.click(shell.text("S 0"));
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.click(inc);
+    assert!(shell.scene.find_text("M 2").is_some());
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.find_text("M 2").is_none(), "closed");
+    // The bar: its own `Seen` resets, the closed calendar does not.
+    let bar = shell.scene.of_kind(NodeKind::Bar)[0];
+    assert_eq!(shell.inst.reset_subtree(bar).unwrap(), 1);
+    shell.flush();
+    assert!(
+        shell.scene.find_text("S 0").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(
+        shell.scene.find_text("M 2").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+}
+
 /// The source hash is BLAKE3 of the text the program was compiled from,
 /// and follows a reload.
 #[test]
