@@ -304,13 +304,17 @@ pub fn harmonised(canonical: Color, accent: Color, dark: bool) -> Color {
 /// are kept.
 pub(crate) fn fill_hues(p: &mut BTreeMap<Role, Color>, accent: Color, dark: bool) {
     for (r, canonical) in BASE_HUES {
-        p.entry(r)
-            .or_insert_with(|| harmonised(hex(canonical), accent, dark));
+        // Not the entry API: `insert` is instantiated already, the entry
+        // API's vacant insert would be another 3 KB.
+        if p.get(&r).is_none() {
+            p.insert(r, harmonised(hex(canonical), accent, dark));
+        }
     }
     for (bright, base) in BRIGHT_HUES {
-        let c = p[&base];
-        p.entry(bright)
-            .or_insert_with(|| shifted(c, if dark { 0.08 } else { -0.08 }));
+        if !p.contains_key(&bright) {
+            let c = shifted(p[&base], if dark { 0.08 } else { -0.08 });
+            p.insert(bright, c);
+        }
     }
 }
 

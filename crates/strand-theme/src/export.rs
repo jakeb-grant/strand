@@ -5,7 +5,6 @@
 //! every value, so `strand set` reaches both. Neither writes a file:
 //! the CLI and the IPC request (S-tools) do.
 
-use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use strand_scene::tokens::OVERLAY_ORIGIN;
@@ -13,16 +12,6 @@ use strand_scene::{Color, Length, PropValue, TimeContext, TokenScope, TokenTable
 
 use crate::palette::Palette;
 use crate::role::Role;
-
-/// A JSON value, written in the order it is built.
-enum J {
-    Null,
-    Bool(bool),
-    Num(f64),
-    Str(String),
-    Arr(Vec<J>),
-    Obj(Vec<(String, J)>),
-}
 
 /// `v` in its shortest form, at most 3 decimals (`8`, `0.65`, `-1.5`).
 pub fn number(v: f64) -> String {
@@ -49,84 +38,118 @@ fn quoted(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
-impl J {
-    fn write(&self, out: &mut String, indent: usize) {
-        let pad = |out: &mut String, n: usize| out.extend(std::iter::repeat_n(' ', n));
-        match self {
-            J::Null => out.push_str("null"),
-            J::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            J::Num(n) => out.push_str(&number(*n)),
-            J::Str(s) => out.push_str(&quoted(s)),
-            J::Arr(items) if items.is_empty() => out.push_str("[]"),
-            J::Obj(items) if items.is_empty() => out.push_str("{}"),
-            J::Arr(items) => {
-                out.push_str("[\n");
-                for (i, v) in items.iter().enumerate() {
-                    pad(out, indent + 2);
-                    v.write(out, indent + 2);
-                    out.push_str(if i + 1 < items.len() { ",\n" } else { "\n" });
-                }
-                pad(out, indent);
-                out.push(']');
-            }
-            J::Obj(items) => {
-                out.push_str("{\n");
-                for (i, (k, v)) in items.iter().enumerate() {
-                    pad(out, indent + 2);
-                    out.push_str(&quoted(k));
-                    out.push_str(": ");
-                    v.write(out, indent + 2);
-                    out.push_str(if i + 1 < items.len() { ",\n" } else { "\n" });
-                }
-                pad(out, indent);
-                out.push('}');
-            }
-        }
-    }
+/// Pretty JSON (two-space indent) written as it is called, so objects
+/// keep the order they are written in (serde_json's maps would sort the
+/// roles).
+#[derive(Default)]
+struct Json {
+    out: String,
+    depth: usize,
+    /// Nothing written in the innermost open object or array yet.
+    first: bool,
 }
 
-/// A resolved token value as `export json` writes it: colours as hex,
-/// numbers (pixels, degrees, milliseconds) bare, other lengths, strings
-/// and keywords as strings, fonts, springs and shadow lists as objects
-/// with strand-scene's field names, any other kind `null`.
-fn value(v: &PropValue) -> J {
-    let num = |n: f32| J::Num(f64::from(n));
-    match v {
-        PropValue::Color(c) => J::Str(hex(*c)),
-        PropValue::Number(n) | PropValue::Angle(n) | PropValue::Length(Length::Px(n)) => num(*n),
-        PropValue::Duration(d) => J::Num(d.as_secs_f64() * 1000.0),
-        PropValue::Length(Length::Percent(n)) => J::Str(format!("{}%", number(f64::from(*n)))),
-        PropValue::Length(Length::Ch(n)) => J::Str(format!("{}ch", number(f64::from(*n)))),
-        PropValue::Length(Length::Auto) => J::Str("auto".into()),
-        PropValue::Text(s) | PropValue::Keyword(s) => J::Str(s.clone()),
-        PropValue::Bool(b) => J::Bool(*b),
-        PropValue::Font(f) => J::Obj(vec![
-            ("family".into(), J::Str(f.family.clone())),
-            ("size".into(), num(f.size)),
-            ("weight".into(), J::Num(f64::from(f.weight))),
-        ]),
-        PropValue::Transition(Transition::Spring { stiffness, damping }) => J::Obj(vec![(
-            "spring".into(),
-            J::Obj(vec![
-                ("stiffness".into(), num(*stiffness)),
-                ("damping".into(), num(*damping)),
-            ]),
-        )]),
-        PropValue::Shadow(layers) => J::Arr(
-            layers
-                .iter()
-                .map(|s| {
-                    J::Obj(vec![
-                        ("x".into(), num(s.x)),
-                        ("y".into(), num(s.y)),
-                        ("blur".into(), num(s.blur)),
-                        ("spread".into(), num(s.spread)),
-                        ("color".into(), J::Str(hex(s.color))),
-                    ])
-                })
-                .collect(),
-        ),
-        _ => J::Null,
+impl Json {
+    fn line(&mut self) {
+        self.out.push('\n');
+        self.out.extend(std::iter::repeat_n(' ', self.depth * 2));
+    }
+
+    /// Starts an item: the separator, and the key in an object.
+    fn item(&mut self, key: Option<&str>) {
+        if self.depth > 0 {
+            if !self.first {
+                self.out.push(',');
+            }
+            self.line();
+        }
+        self.first = false;
+        if let Some(k) = key {
+            self.out.push_str(&quoted(k));
+            self.out.push_str(": ");
+        }
+    }
+
+    fn raw(&mut self, key: Option<&str>, v: &str) {
+        self.item(key);
+        self.out.push_str(v);
+    }
+
+    fn str(&mut self, key: Option<&str>, v: &str) {
+        self.raw(key, &quoted(v));
+    }
+
+    fn num(&mut self, key: Option<&str>, v: f32) {
+        self.raw(key, &number(f64::from(v)));
+    }
+
+    fn open(&mut self, key: Option<&str>, bracket: char) {
+        self.item(key);
+        self.out.push(bracket);
+        self.depth += 1;
+        self.first = true;
+    }
+
+    fn close(&mut self, bracket: char) {
+        self.depth -= 1;
+        if !self.first {
+            self.line();
+        }
+        self.out.push(bracket);
+        self.first = false;
+    }
+
+    /// A resolved token value as `export json` writes it: colours as
+    /// hex, numbers (pixels, degrees, milliseconds) bare, other lengths,
+    /// strings and keywords as strings, fonts, springs and shadow lists
+    /// as objects with strand-scene's field names, any other kind `null`.
+    fn value(&mut self, key: Option<&str>, v: Option<&PropValue>) {
+        let k = key;
+        match v {
+            Some(PropValue::Color(c)) => self.str(k, &hex(*c)),
+            Some(PropValue::Number(n) | PropValue::Angle(n) | PropValue::Length(Length::Px(n))) => {
+                self.num(k, *n)
+            }
+            Some(PropValue::Duration(d)) => self.raw(k, &number(d.as_secs_f64() * 1000.0)),
+            Some(PropValue::Length(Length::Percent(n))) => {
+                self.str(k, &format!("{}%", number(f64::from(*n))))
+            }
+            Some(PropValue::Length(Length::Ch(n))) => {
+                self.str(k, &format!("{}ch", number(f64::from(*n))))
+            }
+            Some(PropValue::Length(Length::Auto)) => self.str(k, "auto"),
+            Some(PropValue::Text(s) | PropValue::Keyword(s)) => self.str(k, s),
+            Some(PropValue::Bool(b)) => self.raw(k, if *b { "true" } else { "false" }),
+            Some(PropValue::Font(f)) => {
+                self.open(k, '{');
+                self.str(Some("family"), &f.family);
+                self.num(Some("size"), f.size);
+                self.raw(Some("weight"), &f.weight.to_string());
+                self.close('}');
+            }
+            Some(PropValue::Transition(Transition::Spring { stiffness, damping })) => {
+                self.open(k, '{');
+                self.open(Some("spring"), '{');
+                self.num(Some("stiffness"), *stiffness);
+                self.num(Some("damping"), *damping);
+                self.close('}');
+                self.close('}');
+            }
+            Some(PropValue::Shadow(layers)) => {
+                self.open(k, '[');
+                for s in layers {
+                    self.open(None, '{');
+                    self.num(Some("x"), s.x);
+                    self.num(Some("y"), s.y);
+                    self.num(Some("blur"), s.blur);
+                    self.num(Some("spread"), s.spread);
+                    self.str(Some("color"), &hex(s.color));
+                    self.close('}');
+                }
+                self.close(']');
+            }
+            _ => self.raw(k, "null"),
+        }
     }
 }
 
@@ -152,33 +175,50 @@ fn scope<'a>(levels: &'a [&'a TokenTable; 1]) -> TokenScope<'a> {
 pub fn json(palette: &Palette, table: &TokenTable) -> String {
     let levels = [table];
     let scope = scope(&levels);
-    let text = |s: Option<&str>| s.map_or(J::Null, |s| J::Str(s.into()));
-    let roles = Role::ALL
-        .iter()
-        .map(|&r| (r.name().into(), J::Str(hex(role_color(&scope, palette, r)))))
-        .collect();
-    let paths: BTreeSet<&String> = table.tokens.keys().chain(table.derived.keys()).collect();
-    let tokens = paths
-        .into_iter()
-        .map(|p| (p.clone(), scope.lookup(p).as_ref().map_or(J::Null, value)))
-        .collect();
-    let extras = palette
-        .extras()
-        .iter()
-        .map(|(n, c)| (n.clone(), J::Str(hex(*c))))
-        .collect();
-    let doc = J::Obj(vec![
-        ("name".into(), text(palette.name())),
-        ("source".into(), text(palette.source())),
-        ("dark".into(), J::Bool(palette.is_dark())),
-        ("roles".into(), J::Obj(roles)),
-        ("tokens".into(), J::Obj(tokens)),
-        ("extras".into(), J::Obj(extras)),
-    ]);
-    let mut out = String::new();
-    doc.write(&mut out, 0);
-    out.push('\n');
-    out
+    let mut w = Json::default();
+    w.open(None, '{');
+    for (key, v) in [("name", palette.name()), ("source", palette.source())] {
+        match v {
+            Some(v) => w.str(Some(key), v),
+            None => w.raw(Some(key), "null"),
+        }
+    }
+    w.raw(
+        Some("dark"),
+        if palette.is_dark() { "true" } else { "false" },
+    );
+    w.open(Some("roles"), '{');
+    for &r in Role::ALL {
+        w.str(Some(r.name()), &hex(role_color(&scope, palette, r)));
+    }
+    w.close('}');
+    // Plain and derived paths are disjoint and each sorted: merged, they
+    // are every path in order, with no sort.
+    w.open(Some("tokens"), '{');
+    let (mut plain, mut derived) = (
+        table.tokens.keys().peekable(),
+        table.derived.keys().peekable(),
+    );
+    loop {
+        let path = match (plain.peek(), derived.peek()) {
+            (Some(a), Some(b)) if a <= b => plain.next(),
+            (Some(_), Some(_)) | (None, Some(_)) => derived.next(),
+            (Some(_), None) => plain.next(),
+            (None, None) => break,
+        };
+        if let Some(p) = path {
+            w.value(Some(p), scope.lookup(p).as_ref());
+        }
+    }
+    w.close('}');
+    w.open(Some("extras"), '{');
+    for (n, c) in palette.extras() {
+        w.str(Some(n), &hex(*c));
+    }
+    w.close('}');
+    w.close('}');
+    w.out.push('\n');
+    w.out
 }
 
 /// base24's slots and the role each is written from (decisions.md

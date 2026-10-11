@@ -291,7 +291,8 @@ fn catppuccin(rest: &str) -> Result<Partial, ImportError> {
         name: Some(format!("Catppuccin {title}")),
         extras: CATPPUCCIN_NAMES
             .iter()
-            .map(|n| (n.to_string(), c(n)))
+            .zip(table)
+            .map(|(n, h)| (n.to_string(), Color::from_hex(h).unwrap_or(Color::BLACK)))
             .collect(),
         ..Partial::default()
     };
@@ -495,10 +496,10 @@ fn json_color(v: &serde_json::Value) -> Option<Color> {
 }
 
 /// Every object key of the JSON document `text` (already parsed, so
-/// valid), as the path of keys leading to it, mapped to its position in
-/// the document: the source order serde_json's sorted maps lose.
-fn key_order(text: &str) -> std::collections::HashMap<Vec<String>, usize> {
-    let mut order = std::collections::HashMap::new();
+/// valid), as the path of keys leading to it, in document order: the
+/// source order serde_json's sorted maps lose.
+fn key_order(text: &str) -> Vec<Vec<String>> {
+    let mut order = Vec::new();
     let mut path: Vec<String> = Vec::new();
     // Per open bracket: an object (and whether its current key is on
     // `path`), or an array.
@@ -539,8 +540,7 @@ fn key_order(text: &str) -> std::collections::HashMap<Vec<String>, usize> {
                     let key = serde_json::from_str::<String>(&text[i..end]).unwrap_or_default();
                     path.push(key);
                     *keyed = true;
-                    let n = order.len();
-                    order.entry(path.clone()).or_insert(n);
+                    order.push(path.clone());
                 }
             }
             _ => {}
@@ -549,29 +549,47 @@ fn key_order(text: &str) -> std::collections::HashMap<Vec<String>, usize> {
     order
 }
 
-/// `found` (source path, colour) in source order as extras, each named
-/// by the part of its path `named` picks; two names that become the same
-/// are an error naming both.
+/// `found` (source path, colour), sorted by path as serde_json's maps
+/// iterate, as extras in the order `order` (every key path of the
+/// document, [`key_order`]) lists their paths, each named by its whole
+/// path, or by its last key when `by_key`; two names that become the
+/// same are an error naming both. A walk with binary searches, not a
+/// sort or a second map: each instantiation costs kilobytes.
 fn extras_in_order(
-    mut found: Vec<(Vec<String>, Color)>,
-    order: &std::collections::HashMap<Vec<String>, usize>,
-    named: impl Fn(&[String]) -> &[String],
+    found: Vec<(Vec<String>, Color)>,
+    order: Vec<Vec<String>>,
+    by_key: bool,
 ) -> Result<Vec<(String, Color)>, String> {
-    found.sort_by_key(|(path, _)| order.get(path).copied().unwrap_or(usize::MAX));
+    let sorted = found.is_sorted_by(|a, b| a.0 <= b.0);
+    let mut used = vec![false; found.len()];
+    // Each name taken, and the index of the colour that took it.
+    let mut taken = std::collections::HashMap::<String, usize>::new();
     let mut out: Vec<(String, Color)> = Vec::with_capacity(found.len());
-    // Each name taken, and the source path it came from.
-    let mut taken: std::collections::HashMap<String, String> = Default::default();
-    for (path, c) in found {
-        let path = named(&path);
-        let name = extra_name(path);
-        let joined = path.join(".");
-        if let Some(first) = taken.get(&name) {
+    for path in order {
+        let i = if sorted {
+            found.binary_search_by(|(p, _)| p.cmp(&path)).ok()
+        } else {
+            found.iter().position(|(p, _)| *p == path)
+        };
+        let Some(i) = i.filter(|&i| !used[i]) else {
+            continue;
+        };
+        used[i] = true;
+        let part = if by_key {
+            &path[path.len().saturating_sub(1)..]
+        } else {
+            &path[..]
+        };
+        let name = extra_name(part);
+        if let Some(&first) = taken.get(&name) {
             return Err(format!(
-                "`{first}` and `{joined}` are both `$palette.{name}`"
+                "`{}` and `{}` are both `$palette.{name}`",
+                found[first].0.join("."),
+                path.join(".")
             ));
         }
-        taken.insert(name.clone(), joined);
-        out.push((name, c));
+        taken.insert(name.clone(), i);
+        out.push((name, found[i].1));
     }
     Ok(out)
 }
@@ -629,9 +647,7 @@ pub fn matugen(text: &str) -> Result<Partial, String> {
         }
     }
     // An extra is named by its key alone.
-    p.extras = extras_in_order(extras, &key_order(text), |path| {
-        &path[path.len().saturating_sub(1)..]
-    })?;
+    p.extras = extras_in_order(extras, key_order(text), true)?;
     if p.roles.is_empty() {
         return Err(format!("no Material 3 roles for the `{mode}` mode"));
     }
@@ -754,7 +770,7 @@ pub fn w3c(text: &str) -> Result<Partial, String> {
     if p.roles.is_empty() {
         return Err("no colour token names a palette role".into());
     }
-    p.extras = extras_in_order(extras, &key_order(text), |path| path)?;
+    p.extras = extras_in_order(extras, key_order(text), false)?;
     Ok(p)
 }
 
