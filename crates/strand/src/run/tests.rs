@@ -664,17 +664,13 @@ fn saves_reload_live_with_state_kept() {
             ipc::Request::Clear {
                 path: "$nothing".into(),
             },
-            "",
+            "no token `$nothing`",
         ),
     ] {
         let ans = ipc::request(&mut client, &req, Duration::from_secs(10)).unwrap();
-        if why.is_empty() {
-            assert_eq!(ans, json!({"ok": true, "cleared": false}), "{req:?}");
-        } else {
-            assert_eq!(ans["ok"], false, "{req:?}");
-            let said = ans["error"].as_str().unwrap();
-            assert!(said.contains(why), "{req:?}: {said}");
-        }
+        assert_eq!(ans["ok"], false, "{req:?}");
+        let said = ans["error"].as_str().unwrap();
+        assert!(said.contains(why), "{req:?}: {said}");
     }
     for (req, cmd) in [
         (ipc::Request::Report, "report"),

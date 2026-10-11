@@ -80,14 +80,15 @@ pub(crate) fn value_json(v: &Value, types: &TypeTable) -> Json {
         Value::Num(n, Num::Float) => json!(n),
         Value::Text(t) => json!(&**t),
         Value::List(items) => items.iter().map(|i| value_json(i, types)).collect(),
-        Value::Record(r) => types
-            .record(r.ty)
-            .fields
-            .iter()
-            .zip(&r.fields)
-            .map(|(f, v)| (f.name.clone(), value_json(v, types)))
-            .collect::<serde_json::Map<_, _>>()
-            .into(),
+        Value::Record(r) => {
+            // Field by field: collecting into the map sorts the pairs
+            // first, a sort `strand run` carries for this alone.
+            let mut map = serde_json::Map::new();
+            for (f, v) in types.record(r.ty).fields.iter().zip(&r.fields) {
+                map.insert(f.name.clone(), value_json(v, types));
+            }
+            Json::Object(map)
+        }
         Value::Async(a) => a
             .value
             .as_ref()

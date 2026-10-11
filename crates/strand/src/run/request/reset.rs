@@ -9,6 +9,8 @@ use super::{Caller, Shell};
 impl Shell {
     /// The overlay's `[reset]`: the state cell back to its default (a
     /// persisted one forgets its stored value).
+    #[cold]
+    #[inline(never)]
     pub(super) fn reset_request(&mut self, from: Caller, path: &str) {
         let ans = match self.inst.reset(path) {
             Ok(()) => {

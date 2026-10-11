@@ -12,6 +12,8 @@ use strand_core::ipc as proto;
 use super::{Caller, Shell};
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn call_request(&mut self, from: Caller, target: &str, args: &[String]) {
         let ans = match crate::ipc::resolve_call(crate::services::schema(), target, args) {
             Ok(call) => match self.run_action(&call.service, &call.action, &call.args) {

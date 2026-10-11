@@ -7,6 +7,8 @@ use serde_json::json;
 use super::{Caller, Shell};
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn set_request(&mut self, from: Caller, path: &str, value: &str) {
         // A service's `rw` field (`brightness.level +5%`) goes through the
         // service host; a token (`$accent`) to its overlay; everything

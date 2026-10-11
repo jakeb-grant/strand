@@ -9,9 +9,14 @@ use super::{Caller, Shell};
 use crate::ipc::token_path;
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn clear_request(&mut self, from: Caller, path: &str) {
         let cleared = match token_path(path) {
-            Some(token) => Ok(self.inst.clear_token_overlay(token)),
+            Some(token) => self
+                .inst
+                .clear_token_overlay(token)
+                .map_err(|e| e.to_string()),
             None => self.inst.clear_overlay(path).map_err(|e| e.to_string()),
         };
         let ans = match cleared {

@@ -174,8 +174,11 @@ fn a_token_overlay_wins_springs_and_persists() {
     assert_eq!(sh.origin("probe.c"), Some(OVERLAY_ORIGIN));
 
     // `strand clear '$probe.c'`: the file's value and origin again.
-    assert!(sh.inst.clear_token_overlay("probe.c"));
-    assert!(!sh.inst.clear_token_overlay("probe.c"), "nothing left");
+    assert!(sh.inst.clear_token_overlay("probe.c").unwrap());
+    assert!(
+        !sh.inst.clear_token_overlay("probe.c").unwrap(),
+        "nothing left"
+    );
     let u = sh.flush();
     assert!(
         u.diff
@@ -362,5 +365,136 @@ fn toggle_flips_booleans_only_and_settings_fields_have_layers() {
     assert!(!sh.inst.clear_overlay("prefs.gap").unwrap());
     let err = sh.inst.clear_overlay("bar.open").unwrap_err().to_string();
     assert!(err.contains("not a settings field or a token"), "{err}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `strand clear '$probe.cc'`: an unknown token is refused with the
+/// closest name, as `set` refuses it; a known token without an overlay
+/// clears to `false`; an overlay of a token the build no longer defines
+/// is still cleared.
+#[test]
+fn clearing_an_unknown_token_is_refused_with_the_closest_name() {
+    let dir = temp_dir("clear-unknown");
+    let state = dir.join("state");
+    let storage = Storage::in_dirs(&state, &dir);
+    let (mut sh, _) = boot(&[("bar.strand", &shell("#112233"))], storage.clone());
+    sh.inst.set_token_overlay("probe.c", "#ff8800").unwrap();
+    sh.flush();
+    let err = sh
+        .inst
+        .clear_token_overlay("probe.cc")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("no token `$probe.cc`; did you mean `$probe.c`?"),
+        "{err}"
+    );
+    assert_eq!(sh.token("probe.c"), Some(hex("#ff8800")), "still overlaid");
+    assert!(!sh.inst.clear_token_overlay("probe.gap").unwrap());
+
+    // A build without `probe.c`: its overlay is kept, and clears.
+    let gone = shell("#112233").replace("probe.c: #112233; ", "");
+    let gone = gone.replace("bg: $probe.c", "bg: #000000");
+    sh.reload(&[("bar.strand", &gone)]);
+    assert_eq!(sh.token("probe.c"), None);
+    assert!(sh.inst.clear_token_overlay("probe.c").unwrap());
+    assert!(storage.tokens.sync(Duration::from_secs(10)));
+    assert!(!tokens_toml(&state).contains("probe.c"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A `tokens.toml` that is there but cannot be read (here: not UTF-8)
+/// is said once and never written over: `set` and `clear` are refused,
+/// the file keeps every overlay it held, and once it reads again they
+/// apply and the next `set` keeps them.
+#[test]
+fn an_unreadable_overlay_file_is_not_written_over() {
+    let dir = temp_dir("unreadable");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let file = state.join(TOKENS_FILE);
+    let mut held = b"\"probe.gap\" = \"6px\"\n# \xff\n".to_vec();
+    std::fs::write(&file, &held).unwrap();
+    let storage = Storage::in_dirs(&state, &dir);
+    let (mut sh, u) = boot(&[("bar.strand", &shell("#112233"))], storage.clone());
+    assert!(
+        u.diagnostics.iter().any(|d| matches!(
+            d,
+            Diagnostic::Settings(n) if matches!(n.issue, SettingsIssue::Unreadable(_))
+        )),
+        "{:?}",
+        u.diagnostics
+    );
+    let err = sh
+        .inst
+        .set_token_overlay("probe.c", "#ffffff")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("could not be read"), "{err}");
+    let err = sh
+        .inst
+        .clear_token_overlay("probe.gap")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("could not be read"), "{err}");
+    let u = sh.flush();
+    assert!(
+        !u.diagnostics.iter().any(|d| matches!(
+            d,
+            Diagnostic::Settings(n) if matches!(n.issue, SettingsIssue::Unreadable(_))
+        )),
+        "said once: {:?}",
+        u.diagnostics
+    );
+    assert!(storage.tokens.sync(Duration::from_secs(10)));
+    assert_eq!(std::fs::read(&file).unwrap(), held, "not written over");
+
+    // Fixed by hand: the next `set` reads it, and keeps what it held.
+    held.truncate(held.len() - 4);
+    std::fs::write(&file, &held).unwrap();
+    sh.inst.set_token_overlay("probe.c", "#ffffff").unwrap();
+    sh.flush();
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(6.0)));
+    assert_eq!(sh.token("probe.c"), Some(hex("#ffffff")));
+    assert!(storage.tokens.sync(Duration::from_secs(10)));
+    let text = tokens_toml(&state);
+    assert!(text.contains("\"probe.gap\" = \"6px\""), "{text}");
+    assert!(text.contains("\"probe.c\" = \"#ffffff\""), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An entry that is not a token's value is said, not dropped silently:
+/// an unquoted dotted key (`probe.gap = "8px"` makes a table) is told to
+/// quote the path, and an array is named.
+#[test]
+fn an_entry_that_is_not_a_value_is_said() {
+    let dir = temp_dir("table");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join(TOKENS_FILE),
+        "probe.gap = \"8px\"\nlist = [1, 2]\n",
+    )
+    .unwrap();
+    let (mut sh, u) = boot(
+        &[("bar.strand", &shell("#112233"))],
+        Storage::in_dirs(&state, &dir),
+    );
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(4.0)));
+    assert_eq!(u.notices.len(), 2, "{:?}", u.notices);
+    assert!(
+        u.notices[0].contains(
+            "`probe` is a table, not a token's value, and is ignored; quote a token's \
+             path as its key (\"probe.gap\" = ...)"
+        ),
+        "{:?}",
+        u.notices
+    );
+    assert!(
+        u.notices[1].contains("`list` is not text, a number or a bool"),
+        "{:?}",
+        u.notices
+    );
+    assert!(sh.flush().notices.is_empty(), "said once");
     let _ = std::fs::remove_dir_all(dir);
 }

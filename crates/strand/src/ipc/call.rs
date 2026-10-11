@@ -50,7 +50,10 @@ pub(crate) fn resolve(schema: &Schema, target: &str, args: &[String]) -> Result<
         ));
     }
     let Some(&record) = schema.services.get(service) else {
-        let hint = suggest(service, schema.services.keys().map(String::as_str))
+        // `suggest` over a `Vec<&str>` here and below: one instantiation
+        // the binary already has, not one per iterator.
+        let names: Vec<&str> = schema.services.keys().map(String::as_str).collect();
+        let hint = suggest(service, names)
             .map(|s| format!("; did you mean `{s}`?"))
             .unwrap_or_default();
         return Err(format!("no service `{service}`{hint}"));
@@ -76,14 +79,12 @@ pub(crate) fn resolve(schema: &Schema, target: &str, args: &[String]) -> Result<
                 "`{target}` is a method, not an action: `call` runs actions"
             ));
         }
-        let hint = match suggest(action, actions.iter().map(|(n, _)| *n)) {
+        let mut names: Vec<&str> = actions.iter().map(|(n, _)| *n).collect();
+        names.dedup();
+        let hint = match suggest(action, names.clone()) {
             Some(s) => format!("; did you mean `{s}`?"),
             None if actions.is_empty() => format!("; `{service}` has no actions"),
-            None => {
-                let mut names: Vec<&str> = actions.iter().map(|(n, _)| *n).collect();
-                names.dedup();
-                format!("; its actions: {}", names.join(", "))
-            }
+            None => format!("; its actions: {}", names.join(", ")),
         };
         return Err(format!("`{service}` has no action `{action}`{hint}"));
     };

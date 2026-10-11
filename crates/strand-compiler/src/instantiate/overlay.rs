@@ -36,7 +36,6 @@
 //! clear` on a settings field) and [`Instance::token`] (`strand get
 //! '$accent'`).
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,13 +86,19 @@ struct Shared {
 struct State {
     /// The file has been read (once, at the first build).
     loaded: bool,
+    /// The file is there but could not be read (why): it is not written
+    /// over, so `set` and `clear` are refused and read it again.
+    unreadable: Option<String>,
+    /// Entries of the file that are not a token's value (a table made by
+    /// an unquoted dotted key, an array), for the next table's notices.
+    skipped: Vec<String>,
     /// What the file holds, edited in place.
     doc: DocumentMut,
     /// Overlaid paths (no `$`) and their text.
-    values: BTreeMap<String, String>,
+    values: Keyed<String>,
     /// Each overlaid path's value without the overlay, as the last build
     /// of the table had it (`None`: no such token).
-    base: BTreeMap<String, Option<PropValue>>,
+    base: Keyed<Option<PropValue>>,
     /// The program the last table was built from (its address): a new
     /// one is a committed build, whose changed file values are shadowed.
     program: usize,
@@ -101,10 +106,45 @@ struct State {
     /// is built again. A root node of the instance's runtime.
     generation: Option<Signal<u64>>,
     /// Overlay values the token's type does not read, already said.
-    bad: BTreeSet<(String, String)>,
+    bad: Vec<(String, String)>,
     /// Notices for the next update (settings' kind, so the overlay shows
     /// them with `[clear]` and `strand watch` hears them).
     notices: Vec<Diagnostic>,
+}
+
+/// A few entries kept sorted by path: overlays are a handful, so a
+/// vector beats a map's code for them.
+struct Keyed<V>(Vec<(String, V)>);
+
+impl<V> Default for Keyed<V> {
+    fn default() -> Self {
+        Keyed(Vec::new())
+    }
+}
+
+impl<V> Keyed<V> {
+    fn find(&self, path: &str) -> Result<usize, usize> {
+        self.0.binary_search_by(|(k, _)| k.as_str().cmp(path))
+    }
+
+    fn get(&self, path: &str) -> Option<&V> {
+        self.find(path).ok().map(|i| &self.0[i].1)
+    }
+
+    /// Set `path` to `v`; the value it had.
+    fn insert(&mut self, path: String, v: V) -> Option<V> {
+        match self.find(&path) {
+            Ok(i) => Some(std::mem::replace(&mut self.0[i].1, v)),
+            Err(i) => {
+                self.0.insert(i, (path, v));
+                None
+            }
+        }
+    }
+
+    fn remove(&mut self, path: &str) -> Option<V> {
+        self.find(path).ok().map(|i| self.0.remove(i).1)
+    }
 }
 
 impl Shared {
@@ -147,10 +187,7 @@ impl TokenOverlay {
     pub fn values(&self) -> Vec<(String, String)> {
         let mut st = self.0.state();
         self.load(&mut st);
-        st.values
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        st.values.0.clone()
     }
 
     /// Wait until the queued write reached the disk, at most `timeout`
@@ -193,12 +230,14 @@ impl TokenOverlay {
         }
         self.load(&mut st);
         let st = &mut *st;
+        notices.borrow_mut().append(&mut st.skipped);
         let committed = st.program != 0 && st.program != program;
         st.program = program;
         // The file's values first: a derived token reads the overlaid
         // ones once they are in.
         let files: Vec<(String, String, Option<PropValue>)> = st
             .values
+            .0
             .iter()
             .map(|(p, text)| (p.clone(), text.clone(), t.lookup(p)))
             .collect();
@@ -219,7 +258,9 @@ impl TokenOverlay {
                     t.set_origin(path, OVERLAY_ORIGIN);
                 }
                 Err(why) => {
-                    if st.bad.insert((path.clone(), text.clone())) {
+                    let said = (path.clone(), text.clone());
+                    if !st.bad.contains(&said) {
+                        st.bad.push(said);
                         notices.borrow_mut().push(format!(
                             "${path}: runtime overlay {why}; the theme's value applies \
                              (strand clear '${path}')"
@@ -245,10 +286,10 @@ impl TokenOverlay {
     }
 
     /// Set `path`'s overlay to `text` (already checked) and build the
-    /// table again.
-    fn set(&self, rt: &Runtime, path: &str, text: &str) {
+    /// table again; refused while the file cannot be read.
+    fn set(&self, rt: &Runtime, path: &str, text: &str) -> Result<(), Error> {
         let mut st = self.0.state();
-        self.load(&mut st);
+        self.writable(&mut st)?;
         st.values.insert(path.to_string(), text.to_string());
         // In place where the key is there, so a comment above it stays.
         match st.doc.get_mut(path) {
@@ -258,19 +299,46 @@ impl TokenOverlay {
             }
         }
         self.changed(rt, &mut st);
+        Ok(())
     }
 
-    /// Drop `path`'s overlay; whether it had one.
-    fn clear(&self, rt: &Runtime, path: &str) -> bool {
+    /// Drop `path`'s overlay; whether it had one. Refused while the file
+    /// cannot be read.
+    fn clear(&self, rt: &Runtime, path: &str) -> Result<bool, Error> {
         let mut st = self.0.state();
-        self.load(&mut st);
+        self.writable(&mut st)?;
         if st.values.remove(path).is_none() {
-            return false;
+            return Ok(false);
         }
         st.doc.as_table_mut().remove(path);
         st.base.remove(path);
         self.changed(rt, &mut st);
-        true
+        Ok(true)
+    }
+
+    /// Whether `path` has an overlay.
+    fn has(&self, path: &str) -> bool {
+        let mut st = self.0.state();
+        self.load(&mut st);
+        st.values.get(path).is_some()
+    }
+
+    /// Loaded, and safe to write: a file that could not be read is read
+    /// again, and while it still cannot be, the change is refused rather
+    /// than writing the overlays it holds away.
+    fn writable(&self, st: &mut State) -> Result<(), Error> {
+        if st.unreadable.is_some() {
+            st.loaded = false;
+        }
+        self.load(st);
+        match &st.unreadable {
+            None => Ok(()),
+            Some(why) => Err(Error::failed(format!(
+                "{} could not be read ({why}); it is not written over, so the token \
+                 overlay is unchanged",
+                self.0.display()
+            ))),
+        }
     }
 
     fn changed(&self, rt: &Runtime, st: &mut State) {
@@ -282,25 +350,42 @@ impl TokenOverlay {
         }
     }
 
-    /// Read the file, once.
+    /// Read the file, once (again after it could not be read: see
+    /// [`Self::writable`]).
     fn load(&self, st: &mut State) {
-        if std::mem::replace(&mut st.loaded, true) {
-            return;
+        if !st.loaded {
+            self.read_file(st);
         }
+    }
+
+    /// [`Self::load`]'s read: once per boot, so kept out of the memo.
+    #[cold]
+    #[inline(never)]
+    fn read_file(&self, st: &mut State) {
+        st.loaded = true;
         let Some(file) = &self.0.file else {
             return;
         };
         let text = match std::fs::read_to_string(file) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                st.unreadable = None;
+                return;
+            }
             Err(e) => {
-                st.notices.push(
-                    self.0
-                        .notice(None, SettingsIssue::Unreadable(Arc::from(e.to_string()))),
-                );
+                let why = e.to_string();
+                // Said once, not at every retry.
+                if st.unreadable.is_none() {
+                    st.notices.push(
+                        self.0
+                            .notice(None, SettingsIssue::Unreadable(Arc::from(why.as_str()))),
+                    );
+                }
+                st.unreadable = Some(why);
                 return;
             }
         };
+        st.unreadable = None;
         let doc: DocumentMut = match text.parse() {
             Ok(d) => d,
             Err(e) => {
@@ -316,19 +401,47 @@ impl TokenOverlay {
             }
         };
         for (k, item) in doc.iter() {
-            let text = match item.as_value() {
-                Some(v) => match (v.as_str(), v.as_integer(), v.as_float(), v.as_bool()) {
-                    (Some(s), ..) => s.to_string(),
-                    (_, Some(i), ..) => i.to_string(),
-                    (_, _, Some(f), _) => f.to_string(),
-                    (.., Some(b)) => b.to_string(),
-                    _ => continue,
-                },
-                None => continue,
-            };
-            st.values.insert(k.to_string(), text);
+            let text = item.as_value().and_then(|v| {
+                match (v.as_str(), v.as_integer(), v.as_float(), v.as_bool()) {
+                    (Some(s), ..) => Some(s.to_string()),
+                    (_, Some(i), ..) => Some(i.to_string()),
+                    (_, _, Some(f), _) => Some(f.to_string()),
+                    (.., Some(b)) => Some(b.to_string()),
+                    _ => None,
+                }
+            });
+            match text {
+                Some(text) => {
+                    st.values.insert(k.to_string(), text);
+                }
+                None => st.skipped.push(skipped(&self.0.display(), k, item)),
+            }
         }
         st.doc = doc;
+    }
+}
+
+/// The notice for an entry of the file that is not a token's value: a
+/// table (an unquoted dotted key, `radius.lg = "4px"`, makes one) is
+/// told to quote its path.
+fn skipped(file: &str, key: &str, item: &strand_core::settings::toml_edit::Item) -> String {
+    let mut path = key.to_string();
+    let mut at = item;
+    while let Some((k, next)) = at.as_table_like().and_then(|t| t.iter().next()) {
+        path.push('.');
+        path.push_str(k);
+        at = next;
+    }
+    if path != key {
+        format!(
+            "{file}: `{key}` is a table, not a token's value, and is ignored; quote a \
+             token's path as its key (\"{path}\" = ...)"
+        )
+    } else {
+        format!(
+            "{file}: `{key}` is not text, a number or a bool, and is ignored (strand clear \
+             '${key}')"
+        )
     }
 }
 
@@ -494,6 +607,18 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
     r
 }
 
+/// `no token `$path``, with the closest name the table has.
+fn no_token(table: &TokenTable, path: &str) -> Error {
+    // A `Vec<&str>`: the instantiation of `suggest` the binary has.
+    let names: Vec<&str> = (table.tokens.keys().chain(table.derived.keys()))
+        .map(String::as_str)
+        .collect();
+    let hint = crate::diagnostic::suggest(path, names)
+        .map(|s| format!("; did you mean `${s}`?"))
+        .unwrap_or_default();
+    Error::failed(format!("no token `${path}`{hint}"))
+}
+
 impl Ctx {
     /// The table's last step: the token overlay over it.
     pub(super) fn token_overlay(
@@ -526,23 +651,31 @@ impl Instance {
             .token_table_now()
             .ok_or_else(|| Error::failed("no token table yet"))?;
         let Some(current) = table.lookup(path) else {
-            let names = table.tokens.keys().chain(table.derived.keys());
-            let hint = crate::diagnostic::suggest(path, names.map(String::as_str))
-                .map(|s| format!("; did you mean `${s}`?"))
-                .unwrap_or_default();
-            return Err(Error::failed(format!("no token `${path}`{hint}")));
+            return Err(no_token(&table, path));
         };
         read(&self.ctx.vm.prog.types, &current, text)
             .map_err(|why| Error::failed(format!("`${path}`: {why}")))?;
-        self.ctx.storage.tokens.set(&self.rt, path, text.trim());
-        Ok(())
+        self.ctx.storage.tokens.set(&self.rt, path, text.trim())
     }
 
     /// `strand clear '$accent'` and the notice's `[clear]`: drop the
     /// token overlay at `path` (no `$`), so the theme's value applies
-    /// again. Whether there was one.
-    pub fn clear_token_overlay(&self, path: &str) -> bool {
-        self.ctx.storage.tokens.clear(&self.rt, path)
+    /// again. Whether there was one: `false` for a token without one; an
+    /// unknown token is refused with the closest name, as
+    /// [`Self::set_token_overlay`] refuses it (an overlay of a token this
+    /// build no longer defines is still cleared). Refused while
+    /// `tokens.toml` cannot be read.
+    pub fn clear_token_overlay(&self, path: &str) -> Result<bool, Error> {
+        let tokens = &self.ctx.storage.tokens;
+        if !tokens.has(path) {
+            let table = self
+                .token_table_now()
+                .ok_or_else(|| Error::failed("no token table yet"))?;
+            if table.lookup(path).is_none() {
+                return Err(no_token(&table, path));
+            }
+        }
+        tokens.clear(&self.rt, path)
     }
 
     /// The token at `path` (no `$`) as the scene has it, the overlay
@@ -557,7 +690,10 @@ impl Instance {
     /// A settings notice's `[clear]` on the token overlay's file: the
     /// token's overlay goes (`None`: `file` is another file).
     pub(super) fn clear_token_notice(&self, file: &str, field: &str) -> Option<bool> {
-        (*self.ctx.storage.tokens.0.display() == *file).then(|| self.clear_token_overlay(field))
+        let tokens = &self.ctx.storage.tokens;
+        // The notice names an overlaid token: no table check. A file that
+        // cannot be read clears nothing.
+        (*tokens.0.display() == *file).then(|| tokens.clear(&self.rt, field).unwrap_or(false))
     }
 
     /// The settings file declaration and field a path names

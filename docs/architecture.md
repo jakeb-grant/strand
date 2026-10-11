@@ -810,8 +810,15 @@ evaluation).**
 `clear_token_overlay(path)` mirror `strand_core::settings`'
 `set_overlay`/`clear_overlay`. A token overlay is global, persisted in
 `$XDG_STATE_HOME/strand/tokens.toml` beside settings' overlay (written
-on the persist IO thread), and takes the token swap path (design.md,
-"Reload"). `TokenTable`'s recorded origins stay strings (a tier and its
+off the logic thread by the overlay's own writer thread, `strand-tokens`:
+temp file, `fsync`, rename, directory `fsync`, the newest text queued
+winning; a failed write is settings' `WriteFailed` notice; not the
+persist IO thread, which has no raw-file write; decisions.md m5-ipc),
+and takes the token swap path (design.md, "Reload"). Clearing an
+unknown token is refused with the closest name, as setting one is; a
+known token without an overlay clears to `false`. A `tokens.toml` that
+cannot be read is never written over: `set` and `clear` on a token are
+refused until it can be. `TokenTable`'s recorded origins stay strings (a tier and its
 name: `base`, `tokens compact`, `palette:wallpaper`); the overlay origin
 is the reserved string `overlay`, `strand_scene::tokens::OVERLAY_ORIGIN`
 (landed in the wave-0 hardening, so no stream edits `tokens.rs` for it).

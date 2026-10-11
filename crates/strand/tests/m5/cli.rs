@@ -398,8 +398,12 @@ fn get_toggle_and_a_token_overlay_over_the_socket() {
         json(&d.ok(&["get", "--json", "$probe.c"]))["layer"],
         "tokens base"
     );
-    // Clearing what has no overlay is not an error; a path without one is.
+    // Clearing what has no overlay is not an error; a path without one is,
+    // and so is a token this shell does not have (with the closest name,
+    // as `set` says it).
     d.ok(&["clear", "$probe.c"]);
+    let why = d.refused(&["clear", "$probe.cc"]);
+    assert!(why.contains("did you mean `$probe.c`?"), "{why}");
     let why = d.refused(&["clear", "bar.open"]);
     assert!(why.contains("not a settings field or a token"), "{why}");
 }

@@ -6,6 +6,8 @@ use serde_json::{Value as Json, json};
 use super::{Caller, Shell};
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn mock_request(&mut self, from: Caller, req: &Json) {
         let ans = if crate::mock::requested().is_none() {
             json!({"ok": false, "error": "`mock` needs a shell run with STRAND_MOCK"})

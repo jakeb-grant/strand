@@ -10,6 +10,8 @@ use super::{Caller, Shell};
 use crate::ipc::{layer_name, token_json, token_path, token_text, value_json};
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn get_request(&mut self, from: Caller, path: &str) {
         let ans = match token_path(path) {
             Some(token) => match self.inst.token(token) {

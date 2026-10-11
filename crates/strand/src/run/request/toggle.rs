@@ -8,6 +8,8 @@ use strand_core::ipc as proto;
 use super::{Caller, Shell};
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn toggle_request(&mut self, from: Caller, path: &str) {
         let ans = match self.inst.toggle(path) {
             Ok(on) => json!({"ok": true, "value": on}),
