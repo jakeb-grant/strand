@@ -10,7 +10,9 @@
 //! needs the GPU no Vulkan library is mapped and no `strand-gpu` thread
 //! runs. Each cycle: `on` is set; `Glow` is promoted and presented
 //! through the surface hand-off (lavapipe presents on CI's pixman sway;
-//! the hardware leg may read back there), while `Ref`, too small to
+//! the hardware leg reads back on a pixman sway, and presents on the
+//! GPU sway `gpu-session.sh` names with `STRAND_GPU_PRESENT=1`), while
+//! `Ref`, too small to
 //! promote, draws its still shader by reading the pass back; the
 //! screenshot shows the still shader's colour in both (premultiplied,
 //! red and blue in place), the bloomed box is brighter inside than the
@@ -175,6 +177,25 @@ fn until(what: &str, limit: Duration, mut ok: impl FnMut() -> bool, log: &dyn Fn
     }
 }
 
+/// The renderer of the test's own sway: pixman, as every sway test,
+/// unless the hardware leg asks to present (`STRAND_GPU_PRESENT=1`) and
+/// its session names a GPU renderer that started on the render node
+/// (`STRAND_GPU_SWAY_RENDERER`, exported by
+/// `scripts/container/gpu-session.sh`). ANV's WSI presents only to a
+/// compositor offering linux-dmabuf, which a pixman sway does not
+/// (decisions.md m5-infra, spike 1). Opt-in: on the presented path the
+/// laptop's ANV leaves 6.9-7.7 MiB after the drop, past the 6 MiB the
+/// readback leg is held to, which is the owner's to settle (decisions.md
+/// m5-infra); the default leg stays the readback one it was.
+fn sway_renderer() -> Option<String> {
+    let on = |v: &str| std::env::var(v).as_deref() == Ok("1");
+    std::env::var("STRAND_GPU_SWAY_RENDERER").ok().filter(|r| {
+        on("STRAND_GPU_HARDWARE")
+            && on("STRAND_GPU_PRESENT")
+            && matches!(r.as_str(), "gles2" | "vulkan")
+    })
+}
+
 fn sway(dir: &Path) -> (Proc, String) {
     let cfg = dir.join("sway.cfg");
     std::fs::write(
@@ -192,12 +213,17 @@ fn sway(dir: &Path) -> (Proc, String) {
                 .map_err(std::io::Error::from)
         });
     }
+    match sway_renderer() {
+        Some(renderer) => cmd
+            .env("WLR_RENDERER", renderer)
+            .env("WLR_RENDER_DRM_DEVICE", "/dev/dri/renderD128"),
+        None => cmd.env("WLR_RENDERER", "pixman"),
+    };
     let child = cmd
         .arg("-c")
         .arg(&cfg)
         .env("XDG_RUNTIME_DIR", dir)
         .env("WLR_BACKENDS", "headless")
-        .env("WLR_RENDERER", "pixman")
         .env("WLR_LIBINPUT_NO_DEVICES", "1")
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("SWAYSOCK")
@@ -457,8 +483,14 @@ fn gpu_is_released_when_idle() {
     }
     let required = std::env::var_os("STRAND_REQUIRE_GPU").is_some();
     // The hardware leg (`gpu.sh`): ANV cannot present on a pixman sway,
-    // so the promoted panel may be read back there. Lavapipe presents.
+    // so the promoted panel may be read back there. Lavapipe presents,
+    // and so does hardware on a sway rendering on the render node
+    // (`sway_renderer`).
     let hardware = std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1");
+    let gpu_sway = sway_renderer();
+    if let Some(renderer) = &gpu_sway {
+        eprintln!("the test's sway renders with {renderer} on /dev/dri/renderD128");
+    }
     // Under the system's temp dir, not the target dir: sway's IPC socket
     // path (`<run>/sway-ipc.<uid>.<pid>.sock`) must fit `sun_path`'s 108
     // bytes, which a worktree's target dir can pass.
@@ -575,9 +607,9 @@ fn gpu_is_released_when_idle() {
             std::thread::sleep(Duration::from_millis(20));
         };
         assert!(
-            mode == "Present" || hardware,
-            "cycle {cycle}: lavapipe presents on a pixman sway, but the panel was attached \
-             for {mode}\n{}",
+            mode == "Present" || (hardware && gpu_sway.is_none()),
+            "cycle {cycle}: lavapipe presents on a pixman sway, and hardware on a GPU sway \
+             ({gpu_sway:?}), but the panel was attached for {mode}\n{}",
             log()
         );
         assert!(
@@ -652,6 +684,15 @@ fn gpu_is_released_when_idle() {
             img.px((320, 160)),
             bg,
             "cycle {cycle}: the animated shader is on screen"
+        );
+        // The promoted cost (features.md M5, "The promoted GPU cost on
+        // hardware"): PSS with the panel promoted and animating, against
+        // the baseline before the GPU. Reported, never gated here.
+        let promoted = pss_kb(pid);
+        eprintln!(
+            "cycle {cycle}: promoted ({mode}): PSS {promoted} kB, {} kB over the baseline \
+             of {baseline} kB",
+            promoted.saturating_sub(baseline)
         );
         // Hidden (both panels stay open): Glow goes back to the CPU, its
         // swapchain released before the manager commits it again.

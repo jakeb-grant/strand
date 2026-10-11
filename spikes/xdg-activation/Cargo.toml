@@ -1,0 +1,13 @@
+[package]
+name = "xdg-activation-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Not a member of the strand workspace (decisions.md, m5-infra, spike 3).
+[workspace]
+
+[dependencies]
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }

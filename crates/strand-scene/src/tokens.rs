@@ -1677,13 +1677,23 @@ mod tests {
             }
             t.insert_derived(format!("n{level}"), sum(&format!("n{}", level - 1), 64));
         }
-        let start = std::time::Instant::now();
+        // Fails by work done, not wall clock (decisions.md m5-infra): the
+        // lookup stops when its step budget is spent, after exactly
+        // MAX_TOKEN_STEPS steps instead of 64^4 leaf evaluations; the
+        // resolve takes no more (it counts depth for each expression node
+        // as well as each reference, so it meets MAX_TOKEN_DEPTH first:
+        // 33 steps today).
         assert!(t.lookup("n4").is_none());
+        assert_eq!(last_token_steps(), MAX_TOKEN_STEPS, "lookup");
         assert!(
             t.resolve(&PropValue::Token(TokenExpr::path("n4")))
                 .is_none()
         );
-        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        assert!(
+            last_token_steps() <= MAX_TOKEN_STEPS,
+            "resolve: {} steps",
+            last_token_steps()
+        );
         // A small fan-out still resolves.
         assert_eq!(t.lookup("n1"), Some(PropValue::Number(64.0)));
     }

@@ -802,8 +802,15 @@ zero-width span (an insertion) is allowed.
   dev-dependency (the conformance tests), so neither the runtime binary
   nor `strand-dev lsp` links it. The root `Cargo.toml` lists it in
   `members` explicitly, since `crates/*` does not reach it. A pinned
-  prebuilt tree-sitter CLI (with its sha256) runs only in CI's lint job
-  and the container image, to check `parser.c` against `grammar.json`.
+  prebuilt tree-sitter CLI (0.27.0, with its sha256) runs only in CI's
+  lint job and the container image: `scripts/check-tree-sitter.sh`
+  regenerates `src/` from `grammar.js` with `tree-sitter generate
+  --js-runtime native` (the CLI's built-in QuickJS, so no node) and
+  fails on any difference in `parser.c`, `grammar.json`,
+  `node-types.json` or `tree_sitter/`. (Changed in m5-infra from
+  "`parser.c` against `grammar.json`": the spike showed the prebuilt CLI
+  evaluates `grammar.js` itself, and checking from `grammar.js` also
+  catches a stale `grammar.json`; decisions.md m5-infra.)
 
 **Plugins: `strand` gains a `[lib]` target (new).** `main.rs`'s module
 tree moves under `lib.rs`, and `main.rs` keeps `main` and the COMMANDS
