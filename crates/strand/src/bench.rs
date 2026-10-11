@@ -3,9 +3,9 @@
 //! portal or monitor changes on the next frame; the M1 exit gate "under
 //! 50 ms from save to pixels").
 //!
-//! `strand run`'s threads (watcher, compiler worker, logic thread, text
-//! worker, renderer and surface manager) run against a headless sway at
-//! 2560×1440, 60 Hz. Each edit is saved in place; the time runs from just
+//! `strand run`'s threads (watcher, compiler worker with its last-good
+//! cache, logic thread, text worker, renderer and surface manager) run
+//! against a headless sway at 2560×1440, 60 Hz. Each edit is saved in place; the time runs from just
 //! before the write to the `wp_presentation_feedback.presented`
 //! timestamp of the first frame that carries it (painted with its text
 //! shaped, and painted before that presentation), both on
@@ -488,7 +488,11 @@ fn measure(rounds: usize) -> Option<Measured> {
 
     // `strand run`'s threads, as `run::run` starts them.
     let (wtx, wrx) = calloop::channel::channel();
-    let (compiler, boot) = Worker::spawn(&root, None, wtx).unwrap();
+    // With a last-good cache, as `strand run` has (beside the config,
+    // not in it): its write follows the reload's build, never precedes it.
+    let cache = root.with_file_name(format!("strand-latency-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let (compiler, boot) = Worker::spawn(&root, Some(cache.clone()), wtx).unwrap();
     let live = Live {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
@@ -745,6 +749,7 @@ fn measure(rounds: usize) -> Option<Measured> {
     drop(portal);
     drop(bus);
     let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&cache);
     Some(Measured {
         tokens,
         markup,

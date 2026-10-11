@@ -227,9 +227,8 @@ impl Worker {
             Loader::new(dir, crate::services::schema().clone(), cache).with_check(check);
         let boot = loader.boot();
         waits.stop_waiting();
-        if let Some(e) = loader.cache_error() {
-            log::warn!("last-good cache: {e}");
-        }
+        // The boot's last-good cache is written on the worker thread
+        // (`run`), off the shell's start.
         let shared = watcher.clone();
         let thread = std::thread::Builder::new()
             .name("strand-compile".into())
@@ -386,6 +385,7 @@ fn run(
     if let Some(w) = &watcher {
         sync_shaders(&loader, w, &given, &mut shaders);
     }
+    store_cache(&mut loader);
     while let Ok(job) = jobs.recv() {
         // Everything queued now is one batch of work.
         let mut queue = vec![job];
@@ -548,9 +548,6 @@ fn run(
             // The files did not compile again, but the answers changed.
             outcome = loader.recheck();
         }
-        if let Some(e) = loader.cache_error() {
-            log::warn!("last-good cache: {e}");
-        }
         if let Some(w) = &watcher {
             sync_shaders(&loader, w, &given, &mut shaders);
         }
@@ -586,6 +583,18 @@ fn run(
         if out.send(FromWorker::Loaded(Box::new(loaded))).is_err() {
             return;
         }
+        // The build is on its way: now the disk write.
+        store_cache(&mut loader);
+    }
+}
+
+/// Writes the last commit's sources to the last-good cache, once the
+/// build they made has been sent on (the write is disk I/O, never on
+/// the path from a save to its pixels: decisions.md, m5-open-reload).
+fn store_cache(loader: &mut Loader) {
+    loader.store_cache();
+    if let Some(e) = loader.cache_error() {
+        log::warn!("last-good cache: {e}");
     }
 }
 
@@ -676,6 +685,78 @@ mod tests {
         let loaded = loaded.expect("the save reloads");
         let build = loaded.outcome.build.as_ref().expect("a build");
         assert_eq!(build.program.shaders["a.wgsl"].wgsl, edited);
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reload's build is sent before its sources are written to the
+    /// last-good cache: the disk write is never on the path from a save
+    /// to its pixels (decisions.md, m5-open-reload). The cached manifest
+    /// is made a FIFO, so the store blocks in its first read until the
+    /// test opens it: the build must arrive while it is blocked. The boot
+    /// is cached too, on the worker thread.
+    #[test]
+    fn a_reload_is_sent_before_its_sources_are_cached() {
+        let dir = std::env::temp_dir().join(format!("strand-live-lastgood-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        let bar = dir.join("config/bar.strand");
+        std::fs::write(&bar, "bar Top {\n  text \"a\"\n}\n").unwrap();
+        let cache = dir.join("cache");
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, boot) = Worker::spawn(&dir.join("config"), Some(cache.clone()), out).unwrap();
+        assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let manifest = loop {
+            let found = std::fs::read_dir(&cache).ok().and_then(|d| {
+                d.filter_map(Result::ok)
+                    .find(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .map(|e| e.path().join("manifest"))
+                    .filter(|m| m.exists())
+            });
+            if let Some(m) = found {
+                break m;
+            }
+            assert!(Instant::now() < deadline, "the boot was never cached");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let booted = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::remove_file(&manifest).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(&manifest)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        std::fs::write(&bar, "bar Top {\n  text \"b\"\n}\n").unwrap();
+        let mut loaded = None;
+        while loaded.is_none() && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(FromWorker::Loaded(l)) => loaded = Some(l),
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        // Unblock the store (it reads one line that is no key, so it
+        // writes the new sources), whatever came.
+        std::fs::write(&manifest, "not a key\n").unwrap();
+        let loaded = loaded.expect("the build came while its cache write waited");
+        assert!(loaded.outcome.build.is_some());
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            // Read only once the FIFO is replaced (opening it would wait
+            // for a writer).
+            let file = std::fs::symlink_metadata(&manifest).is_ok_and(|m| m.file_type().is_file());
+            let now = match file {
+                true => std::fs::read_to_string(&manifest).unwrap_or_default(),
+                false => String::new(),
+            };
+            if now.lines().count() > 1 {
+                assert_ne!(now, booted, "the reload's sources are cached");
+                break;
+            }
+            assert!(Instant::now() < deadline, "the reload was never cached");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(worker.join().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }

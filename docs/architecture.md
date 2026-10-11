@@ -2217,10 +2217,14 @@ Public interfaces other crates and later stages build on:
   `diagnostics` keeps a successful compile's warnings, and a revert to
   the running text carries the running program's): the
   largest consistent set of changed files committed, the rest held with
-  the diagnostics of the whole attempt; a commit stores the sources under
-  `Cache` (`$XDG_CACHE_HOME/strand/last-good/<config hash>`) keyed by
-  their hashes, `COMPILER_VERSION` and `Schema::fingerprint()`, and a
-  config broken at boot starts from them.
+  the diagnostics of the whole attempt; a commit's sources are stored
+  under `Cache` (`$XDG_CACHE_HOME/strand/last-good/<config hash>`) keyed
+  by their hashes, `COMPILER_VERSION` and `Schema::fingerprint()`, and a
+  config broken at boot starts from them. The write is `store_cache()`'s
+  (a no-op without a commit since the last call; `cache_error()` reports
+  its failure), which the compiler worker calls after sending the build
+  on, so the disk write is never on the path from a save to its pixels
+  (decisions.md m5-open-reload).
 - **Diagnostics** (`strand_compiler::diagnostic`): `Diagnostic { severity,
   code: &'static str, message, labels: Vec<Label { file: FileId, span,
   message, primary }>, help: Option<String>, suggestions: Vec<Suggestion {

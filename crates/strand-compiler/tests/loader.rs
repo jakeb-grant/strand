@@ -112,6 +112,7 @@ fn a_config_broken_at_boot_runs_its_last_good_version() {
     {
         let mut l = loader(&d);
         assert!(l.boot().build.is_some());
+        l.store_cache();
         assert!(l.cache_error().is_none(), "{:?}", l.cache_error());
     }
     std::fs::write(&bar, "bar Top {\n  Clock { open: tru }\n}\n").unwrap();
@@ -153,6 +154,7 @@ fn the_cache_follows_the_schema() {
     {
         let mut l = Loader::new(&root, Schema::builtin().clone(), Some(cache.clone()));
         assert!(l.boot().build.is_some());
+        l.store_cache();
     }
     assert!(c.load(Schema::builtin()).is_some());
     let mut other = Schema::builtin().clone();
@@ -161,6 +163,47 @@ fn the_cache_follows_the_schema() {
         .unwrap();
     assert_ne!(other.fingerprint(), Schema::builtin().fingerprint());
     assert!(c.load(&other).is_none(), "cached against another schema");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A commit leaves the cache to `store_cache`, which the compiler worker
+/// calls once the build is sent on: the disk write is never on the path
+/// from a save to its pixels (decisions.md, m5-open-reload). It writes
+/// the last commit once, and nothing without one.
+#[test]
+fn the_cache_is_written_by_store_cache_after_the_commit() {
+    let d = dir("deferred");
+    write(&d, "bar.strand", BAR);
+    let clock = write(&d, "clock.strand", CLOCK);
+    let mut l = loader(&d);
+    assert!(l.boot().build.is_some());
+    assert!(
+        !d.join("cache").exists(),
+        "the boot's commit wrote the cache"
+    );
+    l.store_cache();
+    assert!(l.cache_error().is_none(), "{:?}", l.cache_error());
+    let first = cached_manifest(&d);
+    std::fs::write(&clock, CLOCK.replace("shut", "closed")).unwrap();
+    assert!(l.changed([(clock.clone(), true)]).build.is_some());
+    assert_eq!(
+        cached_manifest(&d),
+        first,
+        "the reload's commit wrote the cache"
+    );
+    l.store_cache();
+    let second = cached_manifest(&d);
+    assert_ne!(second, first, "the reload's sources are cached");
+    // Nothing committed since: nothing written (a removed cache stays
+    // removed until the next commit's store).
+    let _ = std::fs::remove_dir_all(d.join("cache"));
+    l.store_cache();
+    assert!(!d.join("cache").exists(), "a second store wrote again");
+    // The next commit is stored again.
+    std::fs::write(&clock, CLOCK).unwrap();
+    assert!(l.changed([(clock, true)]).build.is_some());
+    l.store_cache();
+    assert_eq!(cached_manifest(&d), first, "back to the first sources");
     let _ = std::fs::remove_dir_all(d);
 }
 
@@ -185,6 +228,7 @@ fn an_unreadable_file_keeps_its_last_good_text() {
     write(&d, "clock.strand", CLOCK);
     let mut l = loader(&d);
     let first = l.boot().build.unwrap();
+    l.store_cache();
     let manifest = cached_manifest(&d);
     std::fs::write(&bar, [0xff, 0xfe, b'b', b'a', b'r']).unwrap();
     let out = l.changed([(bar.clone(), true)]);
@@ -195,6 +239,7 @@ fn an_unreadable_file_keeps_its_last_good_text() {
         &l.last().unwrap().program,
         &first.program
     ));
+    l.store_cache();
     assert_eq!(cached_manifest(&d), manifest);
     // Another file saved meanwhile commits with the bar still in it.
     let clock = d.join("conf").join("clock.strand");
@@ -210,6 +255,7 @@ fn an_unreadable_file_keeps_its_last_good_text() {
             .any(|(_, f)| f.name.ends_with("bar.strand")),
         "the bar is still in the build"
     );
+    l.store_cache();
     assert!(cached_manifest(&d).contains("bar.strand"));
     // Readable again: it commits.
     std::fs::write(&bar, BAR.replace("true", "false")).unwrap();
