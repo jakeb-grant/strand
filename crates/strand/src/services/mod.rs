@@ -156,6 +156,50 @@ fn declare_at_defaults(
     }
 }
 
+/// The records `service`'s values hand out (its own, and those its
+/// fields, events and methods reach, transitively) that neither the
+/// builtin schema declares nor a store already serves the items of
+/// (`claimed`): an [`UnservedHost`] is their items' only owner.
+fn handed_out(
+    schema: &Schema,
+    service: &str,
+    claimed: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    use strand_compiler::ty::{RecordId, Ty};
+    fn push(ty: &Ty, todo: &mut Vec<RecordId>) {
+        match ty {
+            Ty::Record(id) => todo.push(*id),
+            Ty::List(t, _) | Ty::Optional(t) | Ty::Async(t) => push(t, todo),
+            Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().for_each(|t| push(t, todo)),
+            _ => {}
+        }
+    }
+    let types = &schema.types;
+    let builtin = &Schema::builtin().types;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut todo: Vec<RecordId> = schema.services.get(service).copied().into_iter().collect();
+    let mut out = Vec::new();
+    while let Some(id) = todo.pop() {
+        let Some(def) = types.records.get(id.0 as usize) else {
+            continue;
+        };
+        if !seen.insert(id.0) {
+            continue;
+        }
+        if builtin.find_record(&def.name).is_none() && !claimed.contains(&def.name) {
+            out.push(def.name.clone());
+        }
+        def.fields.iter().for_each(|f| push(&f.ty, &mut todo));
+        for e in &def.events {
+            e.params.iter().for_each(|p| push(&p.ty, &mut todo));
+        }
+        for m in &def.methods {
+            m.sigs.iter().for_each(|s| push(&s.ret, &mut todo));
+        }
+    }
+    out
+}
+
 /// Under `STRAND_MOCK` the schema host stands in for every service and
 /// no [`Real`] starts, so the services `served` adds to the builtin
 /// schema (a plugin's own, a file's) get its cells here, read at their
@@ -373,8 +417,10 @@ impl Real {
         let types = Rc::new(types.clone());
         let mut host = Composite::new(fallback.clone(), types.clone());
         let mut stores = Vec::new();
+        let mut claimed = std::collections::BTreeSet::new();
         for svc in builtin.all().into_iter().chain(extras.iter().cloned()) {
             let items = svc.item_records();
+            claimed.extend(items.iter().cloned());
             let store = Rc::new(StoreHost::new(rt, svc, types.clone()));
             host.add(store.clone(), &[store.name()], &items);
             stores.push(store);
@@ -388,7 +434,11 @@ impl Real {
             // (it holds only the builtin schema's names until told).
             declare_at_defaults(rt, &fallback, &types, &served.schema, name, path);
             let unserved = UnservedHost::new(name, path, fallback.clone(), services.clone());
-            host.add(Rc::new(unserved), &[name], &[]);
+            // Its item actions and writes are refused too, not simulated
+            // by the fallback (review round 3).
+            let items = handed_out(&served.schema, name, &claimed);
+            claimed.extend(items.iter().cloned());
+            host.add(Rc::new(unserved), &[name], &items);
         }
         let custom = Rc::new(CustomHost::new(services.clone(), None));
         host.set_custom(custom.clone());
@@ -2863,7 +2913,7 @@ service shelf {
     mod plugins {
         use std::path::{Path, PathBuf};
 
-        use strand_compiler::vm::host::{ActionCtx, ActionTarget};
+        use strand_compiler::vm::host::{ActionCtx, ActionTarget, PathSeg};
         use strand_services::{Call, Cx, Msg, ServiceError, Store, service};
 
         use super::*;
@@ -3069,6 +3119,40 @@ service counter {
                 d.len() == 1 && d[0].resolved && d[0].message == said,
                 "{d:?}"
             );
+            real.shutdown(&rt);
+        }
+
+        /// An unserved file service's items refuse their actions and
+        /// writes with the notice's text too (review round 3: they went
+        /// to the fallback, which simulated them and answered `Ok`).
+        #[test]
+        fn an_unserved_file_service_refuses_item_actions() {
+            const GREETER: &str = "/// A greeter.\nrecord Greeter {\n  /// Its name.\n  name: text\n  /// Pokes it.\n  action poke()\n}\n/// Hello.\nservice hello {\n  /// The main one.\n  main: Greeter\n}\n";
+            let t = Temp::new("unserved-items");
+            let hello = t.file("hello.schema", GREETER);
+            let served = leak(schema_with(&[], std::slice::from_ref(&hello)));
+            assert!(served.warnings.is_empty(), "{:?}", served.warnings);
+            let (rt, real, mut inst) = boot("bar B { text hello.main.name }\n", &[], served);
+            let said = unserved::notice("hello", &hello.0);
+            let g = real.host.read(&rt, "hello", "main").unwrap();
+            assert!(matches!(g, Value::Record(_)), "{g:?}");
+            let err = real
+                .host
+                .action(
+                    &rt,
+                    ActionTarget::Item(&g),
+                    "poke",
+                    &[],
+                    ActionCtx::default(),
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains(&said), "{err}");
+            let err = real
+                .host
+                .write_item(&rt, &g, &[PathSeg::Field("name".into())], Value::text("x"))
+                .unwrap_err();
+            assert!(err.to_string().contains(&said), "{err}");
+            inst.shutdown();
             real.shutdown(&rt);
         }
 
