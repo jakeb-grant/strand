@@ -754,10 +754,21 @@ fn saves_reload_live_with_state_kept() {
     });
     assert_eq!(pane["ok"], true, "{pane}");
     assert_eq!(pane["node"], nodes[0], "{pane}");
-    // Reset subtree: `n`, kept at 1 over its new default, goes to 7, and
-    // the reload overlay's kept row for it goes, as `reset{path}`'s does.
+    // Reset subtree: `n`, kept at 1 over its new default, then clicked
+    // to 2 (no longer the kept value, so no `kept` badge, but its row
+    // stays), goes to 7, and the reload overlay's kept row for it goes,
+    // as `reset{path}`'s does.
     let kept_row = |s: &SceneMirror| s.texts().iter().any(|t| t.contains("(default changed)"));
     m.until("the kept row", |s| kept_row(s));
+    to_logic
+        .send(ToLogic::Event {
+            node: root,
+            event: NodeEvent::Click,
+        })
+        .unwrap();
+    m.until("a click past the kept value, its row kept", |s| {
+        s.texts().contains(&"n 2".to_string()) && kept_row(s)
+    });
     let reset = ask(&ipc::Request::ResetNode {
         node: bar_ref.clone(),
     });
@@ -2470,6 +2481,109 @@ fn an_unavailable_gpu_is_a_notice_once() {
 /// reload event, and not in a boot `notices` signal nobody subscribed in
 /// time to hear. A bus `reload` is answered with that event as a socket
 /// `strand reload` is, the cell named.
+/// Cells kept over a changed default at boot, with nobody watching, and
+/// then reset or set over IPC: the next reload event (the sink's
+/// D-Bus `Changed`, a bus `Reload`'s answer) no longer lists them, as the
+/// overlay no longer does (S-ipc review round 3).
+#[test]
+fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
+    let dir = temp_dir("boot-kept-reset");
+    let src = "export state hits = 0 persist\nexport state level = 0 persist\n\
+               bar Top {\n  text join(\" \", hits, level) {\n    \
+               on click {\n      hits += 1\n      level = 3\n    }\n  }\n}\n";
+    let file = dir.join("bar.strand");
+    std::fs::write(&file, src).unwrap();
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    // A first run persists `hits = 1` and `level = 3`.
+    {
+        let program = load(&dir);
+        let st = storage();
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(program, st, from_main, tx, Live::default()));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["0 0"]);
+        let text = m.scene.of_kind(NodeKind::Text)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: text,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["1 3"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+    // Every default changes: the persisted values are kept over them at
+    // boot, with nobody watching.
+    std::fs::write(
+        &file,
+        src.replace("hits = 0", "hits = 5")
+            .replace("level = 0", "level = 9"),
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let st = storage();
+    compiler.register_own_writes(&st);
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        events_to: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the kept values", |s| s.texts() == ["1 3"]);
+    // Each put back to its default over IPC: one reset, one set.
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    for req in [
+        ipc::Request::Reset {
+            path: "bar.hits".into(),
+        },
+        ipc::Request::Set {
+            path: "bar.level".into(),
+            value: "9".into(),
+        },
+    ] {
+        let mut c =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ans = ipc::request(&mut c, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(ans["ok"], true, "{req:?}: {ans}");
+    }
+    m.until("the defaults", |s| s.texts() == ["5 9"]);
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    assert_eq!(
+        ans["event"]["kept_over_default"],
+        json!([]),
+        "cells back at their defaults are not kept: {ans}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
     let dir = temp_dir("boot-kept-sink");

@@ -74,25 +74,25 @@ impl Shell {
     /// `reset{node}`, "reset subtree": the state under the node back to
     /// its defaults (`Instance::reset_subtree`), `{"ok": true, "reset":
     /// n}` with how many cells changed.
-    #[cold]
-    #[inline(never)]
     ///
     /// The reload overlay's kept-over-default rows of the cells it reset
-    /// go, as `reset{path}`'s do (`Overlay::forget_cell`): a cell kept
-    /// under the node before and not after was reset by it, since the
-    /// reset changes no cell outside the subtree.
+    /// go, as `reset{path}`'s do (`Overlay::forget_cell`): every cell the
+    /// nodes under it show, except the persisted ones, which the reset
+    /// leaves alone. A cell changed since it was kept no longer has the
+    /// inspector's `kept` badge but still has its row, so the badge
+    /// cannot tell which rows to drop.
+    #[cold]
+    #[inline(never)]
     pub(super) fn reset_node_request(&mut self, from: Caller, id: &str) {
         let ans = node(id).and_then(|n| {
-            let before = self.overlay.has_resets().then(|| kept_under(&self.inst, n));
+            let under = self
+                .overlay
+                .has_resets()
+                .then(|| reset_under(&self.inst, n));
             match self.inst.reset_subtree(n) {
                 Ok(count) => {
-                    if let Some(before) = before {
-                        let after = kept_under(&self.inst, n);
-                        let reset: Vec<String> =
-                            before.into_iter().filter(|p| !after.contains(p)).collect();
-                        if !reset.is_empty() {
-                            self.overlay.forget_cells(&reset, &self.inst);
-                        }
+                    if let Some(reset) = under.filter(|r| !r.is_empty()) {
+                        self.overlay.forget_cells(&reset, &self.inst);
                     }
                     Ok(serde_json::json!({"ok": true, "reset": count}))
                 }
@@ -103,9 +103,9 @@ impl Shell {
     }
 }
 
-/// The paths of the cells kept over a changed default that the nodes
-/// under `n` show (the inspector's `kept` badge), each once.
-fn kept_under(inst: &strand_compiler::instantiate::Instance, n: NodeId) -> Vec<String> {
+/// The paths of the cells the nodes under `n` show that a subtree reset
+/// puts back to their defaults (all but the persisted ones), each once.
+fn reset_under(inst: &strand_compiler::instantiate::Instance, n: NodeId) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let Some(dump) = inst.dump(Some(n)) else {
         return out;
@@ -119,7 +119,7 @@ fn kept_under(inst: &strand_compiler::instantiate::Instance, n: NodeId) -> Vec<S
         .filter_map(|node| node["cells"].as_array())
         .flatten()
     {
-        if cell["kept"] == true
+        if cell["persisted"] != true
             && let Some(p) = cell["path"].as_str()
             && !out.iter().any(|o| o == p)
         {

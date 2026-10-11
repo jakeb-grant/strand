@@ -14,6 +14,7 @@ impl Shell {
         let ans = match self.inst.reset(path) {
             Ok(()) => {
                 self.overlay.forget_cell(path, &self.inst);
+                self.forget_unheard(path);
                 json!({"ok": true})
             }
             Err(e) => json!({"ok": false, "error": e.to_string()}),

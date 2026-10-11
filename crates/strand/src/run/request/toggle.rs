@@ -12,7 +12,10 @@ impl Shell {
     #[inline(never)]
     pub(super) fn toggle_request(&mut self, from: Caller, path: &str) {
         let ans = match self.inst.toggle(path) {
-            Ok(on) => json!({"ok": true, "value": on}),
+            Ok(on) => {
+                self.forget_unheard(path);
+                json!({"ok": true, "value": on})
+            }
             Err(e) => proto::refused(e.to_string()),
         };
         self.answer(from, ans);

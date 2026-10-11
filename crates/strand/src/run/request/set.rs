@@ -35,7 +35,12 @@ impl Shell {
             self.inst.set_text(path, value).map_err(|e| e.to_string())
         };
         let ans = match r {
-            Ok(()) => json!({"ok": true}),
+            Ok(()) => {
+                if token.is_none() {
+                    self.forget_unheard(path);
+                }
+                json!({"ok": true})
+            }
             Err(e) => json!({"ok": false, "error": e}),
         };
         self.answer(from, ans);

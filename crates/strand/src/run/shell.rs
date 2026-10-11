@@ -665,6 +665,24 @@ pub(super) fn absorb(l: &mut Loaded, old: &Loaded) {
 }
 
 /// Cells kept over a changed default, as `strand watch` lists them.
+impl Shell {
+    /// The cell at `path` (or a field of it) was reset or set over IPC:
+    /// it no longer holds the value it kept at boot, so the next reload
+    /// event does not list it in `kept_over_default`, as the overlay no
+    /// longer does.
+    pub(super) fn forget_unheard(&mut self, path: &str) {
+        if self.unheard.is_empty() {
+            return;
+        }
+        self.unheard.retain(|k| {
+            !(path == k.path
+                || path
+                    .strip_prefix(k.path.as_str())
+                    .is_some_and(|f| f.starts_with('.')))
+        });
+    }
+}
+
 pub(super) fn kept_json(kept: &[strand_compiler::reconcile::KeptCell]) -> Json {
     kept.iter()
         .map(|k| json!({"path": k.path, "shown": k.shown}))
