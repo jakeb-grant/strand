@@ -320,9 +320,10 @@ Expected: 20–80 KB. Recorded as measured, not promised.
 
 Each byte of `.text` is roughly a byte of bar PSS (decisions.md
 wave4-exitMemory). +230 KB, less the reclaims, moves the design bar by
-about 0.15–0.25 MB. The bar is about 34.1–34.9 MB against the 34.8 MB
-target (WARN) and the 38.9 MB ceiling (fail), so it may WARN and stays
-far below the ceiling.
+about 0.15–0.25 MB. The bar is about 36.5–37.8 MB after the speed
+profile against the 42 MB target (WARN) and the 48 MB ceiling (fail),
+raised with headroom for waves 1-2 (decisions.md m5-open-budgets; it
+was 34.1–34.9 MB against 34.8 / 38.9 MB when this plan was written).
 - budgets.rs's design-bar run also reports PSS with the D-Bus name owned
   (S-ipc).
 - The existing per-mapping PSS print (budgets.rs:1187) is copied into

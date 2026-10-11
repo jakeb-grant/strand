@@ -160,7 +160,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: release
-      # The bar's PSS budget (39 MB target warns, 44 MB ceiling fails) is checked on a release build (design.md, "Testing": budgets).
+      # The bar's PSS budget (42 MB target warns, 48 MB ceiling fails) is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private
       # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
@@ -170,11 +170,11 @@ jobs:
       # tray and notifications on the real backends (python-dbusmock's
       # UPower, NetworkManager and logind and a mock portal on a private
       # bus, the shell's own notifications server and tray host, sway's
-      # IPC, a private PipeWire) within the PSS budget (39 MB target
-      # warns, 44 MB ceiling fails) with no huge
+      # IPC, a private PipeWire) within the PSS budget (42 MB target
+      # warns, 48 MB ceiling fails) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
-      # a 67 MB target (warns) and 74 MB ceiling (fails), decisions.md m5-speed.
+      # a 76 MB target (warns) and 86 MB ceiling (fails), decisions.md m5-open-budgets.
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger

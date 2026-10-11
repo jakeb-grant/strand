@@ -5,7 +5,7 @@ is merged on top, and wave 1 has not started. Read this first when picking the r
 `docs/m5-plan.md` (streams, waves, ledger, closing checks),
 `docs/decisions.md` (`## m5-owner`, `## m5-integration`, `## m5-core`,
 `## m5-size`, `## m5-infra`, `## m5-w0-harden`, the `## m5-speed-*`
-sections and `## m5-speed`) for the reasons, and
+sections, `## m5-speed` and `## m5-open-budgets`) for the reasons, and
 `docs/features.md` for M5's boxes. `docs/m4-report.md` has M4's
 measured numbers.
 
@@ -91,10 +91,12 @@ measured numbers.
     repaint; offscreen, image and player caches 32 MB; a stopped frame
     loop keeps unused entries 30 s), the 4K crossfade snapshot in its
     own huge-page mapping (`hugepage::HugeBuf`, THP otherwise off), the
-    presented GPU leg's after-drop bound at 12 MiB.
+    presented GPU leg's after-drop bound at 12 MiB (since a 16 MiB
+    backstop beside a three-cycle no-growth tripwire, m5-open-budgets).
   - Gates re-based: `.text` 18,350,080 B CPU-only and 22,282,240 B GPU;
     the bar's PSS 39 MB target / 44 MB ceiling, the full shell's 67 / 74
-    MB ("Budgets now").
+    MB, since raised with headroom for waves 1-2 to 42 / 48 MB and
+    76 / 86 MB (m5-open-budgets; "Budgets now").
 - **Wave 0's writing column was not done.** S-docs' spec.md skeleton,
   guide outline, ladder placements and `strand new` template, and
   S-tools' export mapping table, move to the start of wave 1's writing
@@ -171,7 +173,14 @@ in decisions.md.
    drop over six presented runs on renderD128, so the merged bound is
    12 MiB (`PRESENTED_SLACK_KB`), about 4 MiB over that spread. The
    integrator's `STRAND_GPU_PRESENT=1 gpu.sh` run on the merged tree
-   left 7,128 kB over the baseline after the drop, inside it.
+   left 7,128 kB over the baseline after the drop, inside it. Since
+   m5-open-budgets the tripwire is growth between cycles (the hardware
+   leg runs three; each later one within 4 MiB of the first), and the
+   after-drop figures are backstops checked after every cycle: 16 MiB
+   presenting (4.6–8.8 MiB measured in thirteen runs) and 12 MiB reading
+   back (4.6–7.3 MiB in four; 6 MiB had been 21 kB from failing). The
+   spread is one glibc arena of Mesa's, whose resident part moves by
+   2–2.7 MiB between cycles and runs.
 2. **`scripts/gpu-measure.sh`'s KMS-card run: not needed.** `gpu.sh`
    presents on renderD128 (Q19 (A)), which is what the GPU-cost box
    needed. The script stays, owner-optional; agents never run it.
@@ -223,14 +232,18 @@ and m4-owner-3; summarised under "M4 owner items" below).
     35,000; D-Bus 37,400; report 20,000; xdg-activation 20,000;
     inspector 55,000; new/export 15,000; Suggestion 3,000; reserve
     29,176 B; GPU-only 40,000 B (GPU build).
-- **Memory** (benchmark targets for CI, never runtime caps on a user's
-  shell; re-based by judgement under the owner's 2026-10-10 policy,
-  decisions.md m5-speed): the design bar warns above 39 MB (39,936 kB)
-  and fails above 44 MB (45,056 kB); it measured 36,465 kB in the
-  container on the merged tree and 37,817 kB on GitHub with the
-  profile alone. The full shell warns above 67 MB and fails above 74
-  MB; 52,870 kB (4 entries) and 61,428 kB (161 entries) here, 63,184–
-  64,480 kB in speed-code's runs. A target warning is info.
+- **Memory** (tripwires for accidental regressions in CI, never
+  runtime caps on a user's shell; set by judgement under the owner's
+  2026-10-10 policy, with headroom for waves 1-2's IPC, inspector and
+  LSP code, decisions.md m5-open-budgets): the design bar warns above
+  42 MB (43,008 kB) and fails above 48 MB (49,152 kB); it measured
+  36,465 kB in the container on the merged tree and 37,588–37,817 kB
+  on GitHub. The full shell warns above 76 MB (77,824 kB) and fails
+  above 86 MB (88,064 kB); 61,428 kB (161 entries) here, 63,184–64,480
+  kB in speed-code's runs, 62,503 and 68,040 kB (172 entries) on
+  GitHub at `31da659` and `2fedfa2`. A target warning is info; raise
+  them again with a recorded measurement rather than trimming a
+  feature to fit.
 - **Latency** (GitHub's timing job enforces; advisory on the laptop):
   reload p95 35 ms token / 50 ms markup at design.md's model, gated by
   the headless break; at `94fe372` token p95 17.1 ms against a break of
@@ -317,8 +330,10 @@ The memory gates the owner confirmed in M3 (34 / 38 MB for the bar,
 64 / 70 MB for the full shell; decisions.md wave4-core, commit 607bd10)
 were re-based under the owner's later policy of 2026-10-10, which lets
 agents set binary and memory gates by judgement with recorded reasons:
-39 / 44 MB and 67 / 74 MB (decisions.md m5-speed). Change them again
-only with a measurement and a recorded reason.
+39 / 44 MB and 67 / 74 MB (decisions.md m5-speed), then 42 / 48 MB and
+76 / 86 MB with headroom for M5's waves 1-2 (decisions.md
+m5-open-budgets). Change them again only with a measurement and a
+recorded reason.
 
 ## Deferred work
 

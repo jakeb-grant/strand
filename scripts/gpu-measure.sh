@@ -153,9 +153,10 @@ dropped() { log | grep -q 'GPU: the thread ended'; }
 wait_for 30 "the device to drop" dropped
 sleep 2
 after=$(pss)
-# The presented leg's bound (gpu_idle.rs's PRESENTED_SLACK_KB, 12 MiB: a
-# leak tripwire; decisions.md m5-speed-gpu-bound).
-bound=$((12 * 1024))
+# The presented leg's backstop (gpu_idle.rs's PRESENTED_SLACK_KB, 16 MiB;
+# the test's growth between cycles is the leak tripwire; decisions.md
+# m5-speed-gpu-bound, m5-open-budgets).
+bound=$((16 * 1024))
 verdict=within; [ $((after - base)) -le "$bound" ] || verdict="BOUND MISS"
 echo "PSS after the device dropped: $after kB ($((after - base)) kB over the baseline; bound $bound kB: $verdict)" | tee -a "$OUT/summary.txt"
 echo "written: $OUT/summary.txt"

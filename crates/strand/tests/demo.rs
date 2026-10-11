@@ -1,9 +1,9 @@
 //! `strand run --demo` end to end on a headless sway: two 2560x1440 outputs
-//! (the second at scale 1.25) within the PSS budget (39 MB target, 44 MB
+//! (the second at scale 1.25) within the PSS budget (42 MB target, 48 MB
 //! ceiling), a bar on each with its clock centred, no wakeups while idle,
 //! then a third output of another width at scale 1 (hotplugged) whose bar
 //! is aligned to its own width. Skipped, loudly, when sway or grim is not
-//! installed. The 44 MB ceiling (39 MB target, warned) is asserted when the
+//! installed. The 48 MB ceiling (42 MB target, warned) is asserted when the
 //! test runs in release (`cargo test --release -p strand --test demo`); a
 //! debug run is held to a looser debug ceiling. `scripts/m0-exit.sh`
 //! measures the full M0 gates on a
@@ -201,12 +201,13 @@ fn damage_lines(log: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The memory gate (`docs/design.md`: the two-monitor bar aims at 39 MB and
-/// the build fails above 44 MB; re-based from 34 / 38 MB for the speed
-/// profile, decisions.md m5-speed), held on a release build (`cargo test
+/// The memory gate (`docs/design.md`: the two-monitor bar aims at 42 MB and
+/// the build fails above 48 MB; re-based from 34 / 38 MB for the speed
+/// profile, decisions.md m5-speed, then from 39 / 44 MB for M5's waves
+/// 1-2, decisions.md m5-open-budgets), held on a release build (`cargo test
 /// --release`).
-const PSS_TARGET_KB: u64 = 39 * 1024;
-const PSS_GATE_KB: u64 = 44 * 1024;
+const PSS_TARGET_KB: u64 = 42 * 1024;
+const PSS_GATE_KB: u64 = 48 * 1024;
 
 /// A debug build carries about 9 MB more than release (30–31 MB against
 /// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
@@ -218,18 +219,18 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "44 MB ceiling")
+        (PSS_GATE_KB, "48 MB ceiling")
     }
 }
 
-/// A release measurement above the 39 MB target: a warning (a CI
+/// A release measurement above the 42 MB target: a warning (a CI
 /// annotation), not a failure.
 fn warn_over_target(what: &str, pss: u64) {
     if !cfg!(debug_assertions) && pss > PSS_TARGET_KB {
         eprintln!("{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target");
         if std::env::var_os("GITHUB_ACTIONS").is_some() {
             println!(
-                "\n::warning title=memory over target::{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target (the build fails above 44 MB)"
+                "\n::warning title=memory over target::{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target (the build fails above 48 MB)"
             );
         }
     }
@@ -626,8 +627,8 @@ fn demo_bar_on_two_outputs_then_idle() {
 
 /// The M0 budget on design.md's own bar (theme.strand and bar.strand,
 /// unchanged, on the mock desktop with the real clock), not the M0 demo:
-/// two 2560x1440 outputs at 1.0 and 1.25 within the PSS budget (39 MB
-/// target warned, 44 MB ceiling fails; in a release run; the debug ceiling otherwise); once boot work is done, no
+/// two 2560x1440 outputs at 1.0 and 1.25 within the PSS budget (42 MB
+/// target warned, 48 MB ceiling fails; in a release run; the debug ceiling otherwise); once boot work is done, no
 /// thread waking from then (by :45) to :57 of the minute (no idle-cache
 /// or other timer of its own: the next wake is the minute tick); and the
 /// tick itself repainting at most 2,000 px² over both outputs. Several
