@@ -14,15 +14,16 @@ use std::time::{Duration, Instant};
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
-    CodeActionProviderCapability, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentChanges, DocumentFormattingParams, GotoDefinitionParams,
-    GotoDefinitionResponse, HoverParams, HoverProviderCapability, Location, OneOf,
-    OptionalVersionedTextDocumentIdentifier, PrepareRenameResponse, PublishDiagnosticsParams,
-    RenameOptions, RenameParams, ServerCapabilities, TextDocumentEdit, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
+    CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
+    CodeActionParams, CodeActionProviderCapability, CompletionOptions, CompletionParams,
+    CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChanges,
+    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, HoverParams,
+    HoverProviderCapability, Location, OneOf, OptionalVersionedTextDocumentIdentifier,
+    PrepareRenameResponse, PublishDiagnosticsParams, RenameOptions, RenameParams,
+    ServerCapabilities, TextDocumentEdit, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri,
+    WorkspaceEdit,
 };
 use serde_json::{Value, json};
 use strand_compiler::FileId;
@@ -32,7 +33,7 @@ use strand_compiler::syntax::Span;
 
 use crate::text::uri_to_path;
 use crate::workspace::{Analysis, ConfigKey, Workspace, default_dir};
-use crate::{completion, diag, nav};
+use crate::{completion, diag, nav, refactor};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -69,7 +70,10 @@ pub fn capabilities() -> ServerCapabilities {
             work_done_progress_options: Default::default(),
         })),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            code_action_kinds: Some(vec![
+                CodeActionKind::QUICKFIX,
+                CodeActionKind::REFACTOR_EXTRACT,
+            ]),
             ..CodeActionOptions::default()
         })),
         document_formatting_provider: Some(OneOf::Left(true)),
@@ -146,6 +150,9 @@ pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
     let document_changes = client["workspace"]["workspaceEdit"]["documentChanges"]
         .as_bool()
         .unwrap_or(false);
+    let disabled_actions = client["textDocument"]["codeAction"]["disabledSupport"]
+        .as_bool()
+        .unwrap_or(false);
     // Hear about `.strand` files changed outside the editor.
     if client["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"].as_bool() == Some(true) {
         conn.sender.send(Message::Request(Request::new(
@@ -163,6 +170,7 @@ pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
         ws: Workspace::new(roots, config_dir, schema),
         debounce,
         document_changes,
+        disabled_actions,
         dirty: HashSet::new(),
         deadline: None,
         published: HashMap::new(),
@@ -178,6 +186,9 @@ struct Server<'c> {
     /// The client applies versioned `documentChanges`, so it can refuse
     /// edits made for text it no longer has.
     document_changes: bool,
+    /// The client shows disabled code actions with their reason (a
+    /// refused "extract component").
+    disabled_actions: bool,
     /// Configs whose diagnostics wait for the debounce.
     dirty: HashSet<ConfigKey>,
     deadline: Option<Instant>,
@@ -664,21 +675,52 @@ impl Server<'_> {
             return Ok(Value::Null);
         };
         let range = Span::new(an.offset(file, p.range.start), an.offset(file, p.range.end));
-        let actions: Vec<CodeActionOrCommand> = diag::quick_fixes(&an, file, range)
-            .into_iter()
-            .map(|fix| {
+        // Only the kinds asked for (`refactor` asks for `refactor.extract`).
+        let wanted = |kind: &CodeActionKind| {
+            p.context.only.as_ref().is_none_or(|only| {
+                only.iter().any(|o| {
+                    kind.as_str() == o.as_str()
+                        || kind.as_str().starts_with(&format!("{}.", o.as_str()))
+                })
+            })
+        };
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+        if wanted(&CodeActionKind::QUICKFIX) {
+            actions.extend(diag::quick_fixes(&an, file, range).into_iter().map(|fix| {
                 CodeActionOrCommand::CodeAction(CodeAction {
                     title: fix.title,
                     kind: Some(CodeActionKind::QUICKFIX),
                     diagnostics: Some(vec![fix.diagnostic]),
                     edit: Some(
-                        self.workspace_edit(&an, vec![(file, vec![(fix.span, fix.new_text)])]),
+                        self.workspace_edit(&an, vec![(fix.file, vec![(fix.span, fix.new_text)])]),
                     ),
                     is_preferred: Some(fix.preferred),
                     ..CodeAction::default()
                 })
-            })
-            .collect();
+            }));
+        }
+        if wanted(&CodeActionKind::REFACTOR_EXTRACT) {
+            match refactor::extract(&an, file, range) {
+                Some(refactor::Extract::Edit { title, edits }) => {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title,
+                        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                        edit: Some(self.workspace_edit(&an, vec![(file, edits)])),
+                        ..CodeAction::default()
+                    }));
+                }
+                // A client that cannot show why leaves it out.
+                Some(refactor::Extract::Refused { reason }) if self.disabled_actions => {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: refactor::TITLE.into(),
+                        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                        disabled: Some(CodeActionDisabled { reason }),
+                        ..CodeAction::default()
+                    }));
+                }
+                _ => {}
+            }
+        }
         Ok(serde_json::to_value(actions)?)
     }
 

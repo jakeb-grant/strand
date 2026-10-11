@@ -57,10 +57,12 @@ fn convert(an: &Analysis, d: &Diagnostic) -> lsp_types::Diagnostic {
     }
 }
 
-/// A quick fix: replace `span` in the diagnostic's file with `new_text`.
+/// A quick fix: replace `span` of `file` with `new_text` (insert it, for
+/// a zero-width span).
 pub struct QuickFix {
     pub title: String,
     pub diagnostic: lsp_types::Diagnostic,
+    pub file: FileId,
     pub span: Span,
     pub new_text: String,
     pub preferred: bool,
@@ -70,7 +72,10 @@ pub struct QuickFix {
 /// replacement the compiler proposes ([`Diagnostic::suggestions`]), so a
 /// "did you mean `x`?" gives one preferred fix and an unknown parameter
 /// one fix per parameter its call does not set yet (design.md "What you
-/// see" #2). The help text is never parsed.
+/// see" #2). A missing key gives one fix per field that could key the
+/// items, the compiler's guess first and preferred; a keyed method on an
+/// unkeyed `state` adds the key at the declaration, which may be in
+/// another file. The help text is never parsed.
 pub fn quick_fixes(an: &Analysis, file: FileId, range: Span) -> Vec<QuickFix> {
     let mut out = Vec::new();
     for d in &an.compiled.diagnostics {
@@ -78,20 +83,27 @@ pub fn quick_fixes(an: &Analysis, file: FileId, range: Span) -> Vec<QuickFix> {
             continue;
         };
         let touches = |s: Span| s.end >= range.start && s.start <= range.end;
-        if !touches(l.span) && !d.suggestions.iter().any(|s| touches(s.span)) {
+        if !touches(l.span)
+            && !d
+                .suggestions
+                .iter()
+                .any(|s| s.file == file && touches(s.span))
+        {
             continue;
         }
         let only = d.suggestions.len() == 1;
-        for s in d.suggestions.iter().filter(|s| s.file == file) {
+        let guess_first = d.code == "check::missing_key";
+        for (i, s) in d.suggestions.iter().enumerate() {
             out.push(QuickFix {
                 title: s
                     .title
                     .clone()
                     .unwrap_or_else(|| format!("Change to `{}`", s.replacement)),
                 diagnostic: convert(an, d),
+                file: s.file,
                 span: s.span,
                 new_text: s.replacement.clone(),
-                preferred: only,
+                preferred: only || (guess_first && i == 0),
             });
         }
     }

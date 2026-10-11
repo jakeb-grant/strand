@@ -1,12 +1,17 @@
 // expect: check::missing_key
 // A `for` over plain data needs a `key`; service items and keyed
-// collections bring their own.
-type Pin { app: text; label: text }
+// collections bring their own. Each fix adds one field that could key
+// the items, the guess first.
+type Pin { app: text; label: text; at: int; tags: [text] }
 state pins: [Pin] = []
+state notes: [Pin] = []
+state named: [Pin] key "app" = []
 component C {
   col {
     for p in pins { text p.label }
     for p in pins key p.app { text p.label }
     for ws in workspaces.all { text ws.name }
+    for s in ["a", "b"] { text s }
+    text "x" { on click { notes.remove_key("a") } }
   }
 }

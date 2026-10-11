@@ -11,6 +11,7 @@ mod ctx;
 mod describe;
 mod diag;
 mod nav;
+pub mod refactor;
 pub mod server;
 pub mod text;
 mod walk;

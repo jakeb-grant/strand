@@ -2901,6 +2901,7 @@ dependencies = [
  "lsp-types",
  "serde_json",
  "strand-compiler",
+ "strand-core",
  "strand-introspect",
  "strand-services-schema",
 ]

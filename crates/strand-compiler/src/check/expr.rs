@@ -1888,13 +1888,33 @@ impl<'a> Checker<'a> {
                 Some(k) => k,
                 None => {
                     let owner = quoted(recv_ast);
-                    self.error(
+                    // An unkeyed `state` list of records: offer each field
+                    // that could key it, at its declaration.
+                    let slot = match (&recv.kind, elem) {
+                        (ExprKind::Def(d), Ty::Record(r)) => self
+                            .key_slots
+                            .get(d)
+                            .map(|&(file, at)| (file, at, self.key_fields(*r))),
+                        _ => None,
+                    };
+                    let d = self.error(
                         "check::missing_key",
                         format!("`{n}` needs a keyed collection, and {owner} has no key"),
                         name.span,
                         "no key to find items by",
-                    )
-                    .help = Some("declare one: `state xs: [T] key field = []`".into());
+                    );
+                    d.help = Some("declare one: `state xs: [T] key field = []`".into());
+                    if let Some((file, at, fields)) = slot {
+                        for f in fields {
+                            super::tree::add_key(
+                                d,
+                                file,
+                                Span::new(at, at),
+                                format!(" key {f}"),
+                                format!("Add `key {f}`"),
+                            );
+                        }
+                    }
                     Ty::Error
                 }
             };

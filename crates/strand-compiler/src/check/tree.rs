@@ -6,8 +6,10 @@ use std::sync::Arc;
 use super::collect::first_program;
 use super::expr::path_text;
 use super::{Checker, NodeCtx, TOP_KEYWORDS, TREE_KEYWORDS};
+use crate::diagnostic::{Diagnostic, Suggestion};
 use crate::hir::{self, DefId, DefKind, ElementKind, LocalKind, Node, Target};
 use crate::schema::PropSchema;
+use crate::source::FileId;
 use crate::syntax::Span;
 use crate::syntax::ast::{self, ItemKind};
 use crate::ty::{FieldDef, FnSig, Origin, ParamSig, Prim, RecordDef, Ty};
@@ -684,36 +686,35 @@ impl<'a> Checker<'a> {
         });
         if key.is_none() && !keyed && !iter.ty.is_lenient() && !elem.is_lenient() {
             let b = &f.binding.name;
-            let suggestion = match &elem {
-                Ty::Record(r) => {
-                    let rec = self.types.record(*r);
-                    // An id-like field, else the first text or int one
-                    // (`key p.app`): keying by a whole record is rarely
-                    // what identifies it.
-                    ["id", "key", "name", "app"]
-                        .into_iter()
-                        .find(|n| rec.field(n).is_some())
-                        .or_else(|| {
-                            rec.fields
-                                .iter()
-                                .find(|f| f.ty == Ty::TEXT || f.ty == Ty::INT)
-                                .map(|f| f.name.as_str())
-                        })
-                        .map_or_else(|| b.clone(), |n| format!("{b}.{n}"))
-                }
-                _ => b.clone(),
+            // One fix per field that could key an item, the guess first
+            // (`key p.app`: keying by a whole record is rarely what
+            // identifies it); plain items key by themselves.
+            let candidates: Vec<String> = match &elem {
+                Ty::Record(r) => self
+                    .key_fields(*r)
+                    .into_iter()
+                    .map(|n| format!("{b}.{n}"))
+                    .collect(),
+                t if self.types.is_comparable(t) => vec![b.clone()],
+                _ => Vec::new(),
             };
+            let suggestion = candidates.first().cloned().unwrap_or_else(|| b.clone());
             let what =
                 path_text(&f.iter).map_or_else(|| "this list".to_string(), |p| format!("`{p}`"));
-            self.error(
+            let at = Span::new(f.iter.span.end, f.iter.span.end);
+            let file = self.file();
+            let d = self.error(
                 "check::missing_key",
                 format!("{what} is plain data, so `for` needs a `key`"),
                 f.iter.span,
                 "items have no identity",
-            )
-            .help = Some(format!(
+            );
+            d.help = Some(format!(
                 "say what identifies an item: `for {b} in … key {suggestion}`"
             ));
+            for c in candidates {
+                add_key(d, file, at, format!(" key {c}"), format!("Add `key {c}`"));
+            }
         }
         let (_, body) = self.tree_items(&f.body.items, Place::Children { list_item: true });
         self.pop_scope();
@@ -1889,6 +1890,12 @@ impl<'a> Checker<'a> {
                 let key_path = key.as_ref().and_then(|k| self.state_key(&mut final_ty, k));
                 if let Some(path) = &key_path {
                     self.state_keys.insert(id, path.clone());
+                } else if key.is_none()
+                    && matches!(final_ty.list_elem(), Some((Ty::Record(_), false)))
+                {
+                    // Where a keyed method's missing-key fix adds `key …`.
+                    let at = ty.as_ref().map_or(s.name.span.end, |t| t.span.end);
+                    self.key_slots.insert(id, (self.file(), at));
                 }
                 if let Some(p) = persist
                     && !self.types.is_data(&final_ty)
@@ -1999,6 +2006,32 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The fields of `r` that could key its items, the compiler's guess
+    /// first: an id-like field, else the first text or int one. The
+    /// missing-key fixes offer each (the first preferred).
+    pub(super) fn key_fields(&self, r: crate::ty::RecordId) -> Vec<String> {
+        let rec = self.types.record(r);
+        let guess = ["id", "key", "name", "app"]
+            .into_iter()
+            .find(|n| {
+                rec.field(n)
+                    .is_some_and(|f| self.types.is_comparable(&f.ty))
+            })
+            .or_else(|| {
+                rec.fields
+                    .iter()
+                    .find(|f| f.ty == Ty::TEXT || f.ty == Ty::INT)
+                    .map(|f| f.name.as_str())
+            });
+        let mut out: Vec<String> = guess.into_iter().map(str::to_string).collect();
+        for f in &rec.fields {
+            if !out.contains(&f.name) && self.types.is_comparable(&f.ty) {
+                out.push(f.name.clone());
+            }
+        }
+        out
+    }
+
     /// `key app` of a keyed state collection: a field path of its items.
     fn state_key(&mut self, ty: &mut Ty, k: &ast::Expr) -> Option<Vec<String>> {
         fn path(e: &ast::Expr) -> Option<Vec<String>> {
@@ -2017,13 +2050,21 @@ impl<'a> Checker<'a> {
             }
         }
         let Some(p) = path(k) else {
-            self.error(
+            let fields = match ty.list_elem() {
+                Some((Ty::Record(r), _)) => self.key_fields(*r),
+                _ => Vec::new(),
+            };
+            let file = self.file();
+            let d = self.error(
                 "check::missing_key",
                 "a collection's `key` names a field of its items",
                 k.span,
                 "not a field name",
-            )
-            .help = Some("`state pins: [Pin] key app = []`".into());
+            );
+            d.help = Some("`state pins: [Pin] key app = []`".into());
+            for f in fields {
+                add_key(d, file, k.span, f.clone(), format!("Use `key {f}`"));
+            }
             return None;
         };
         let Ty::List(elem, _) = ty.clone() else {
@@ -2802,6 +2843,23 @@ fn keyframe_settings(schema: &crate::schema::Schema) -> Vec<PropSchema> {
         sub: Vec::new(),
     })
     .collect()
+}
+
+/// Adds a missing-key fix to `d`: `replacement` for `span` in `file`
+/// (zero-width to insert), titled for the editor's code action.
+pub(super) fn add_key(
+    d: &mut Diagnostic,
+    file: FileId,
+    span: Span,
+    replacement: String,
+    title: String,
+) {
+    d.suggestions.push(Suggestion {
+        file,
+        span,
+        replacement,
+        title: Some(title),
+    });
 }
 
 #[cfg(test)]

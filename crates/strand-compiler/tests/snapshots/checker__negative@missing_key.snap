@@ -4,12 +4,62 @@ expression: rendered
 ---
 check::missing_key
 
-  × `pins` is plain data, so `for` needs a `key`
-   ╭─[missing_key.strand:8:14]
- 7 │   col {
- 8 │     for p in pins { text p.label }
-   ·              ──┬─
-   ·                ╰── items have no identity
- 9 │     for p in pins key p.app { text p.label }
+  × a collection's `key` names a field of its items
+   ╭─[missing_key.strand:8:24]
+ 7 │ state notes: [Pin] = []
+ 8 │ state named: [Pin] key "app" = []
+   ·                        ──┬──
+   ·                          ╰── not a field name
+ 9 │ component C {
    ╰────
+  help: `state pins: [Pin] key app = []`
+
+check::missing_key
+
+  × `pins` is plain data, so `for` needs a `key`
+    ╭─[missing_key.strand:11:14]
+ 10 │   col {
+ 11 │     for p in pins { text p.label }
+    ·              ──┬─
+    ·                ╰── items have no identity
+ 12 │     for p in pins key p.app { text p.label }
+    ╰────
   help: say what identifies an item: `for p in … key p.app`
+
+check::missing_key
+
+  × this list is plain data, so `for` needs a `key`
+    ╭─[missing_key.strand:14:14]
+ 13 │     for ws in workspaces.all { text ws.name }
+ 14 │     for s in ["a", "b"] { text s }
+    ·              ─────┬────
+    ·                   ╰── items have no identity
+ 15 │     text "x" { on click { notes.remove_key("a") } }
+    ╰────
+  help: say what identifies an item: `for s in … key s`
+
+check::missing_key
+
+  × `remove_key` needs a keyed collection, and `notes` has no key
+    ╭─[missing_key.strand:15:33]
+ 14 │     for s in ["a", "b"] { text s }
+ 15 │     text "x" { on click { notes.remove_key("a") } }
+    ·                                 ─────┬────
+    ·                                      ╰── no key to find items by
+ 16 │   }
+    ╰────
+  help: declare one: `state xs: [T] key field = []`
+
+fix [check::missing_key] missing_key.strand: `"app"` -> `app` (Use `key app`)
+fix [check::missing_key] missing_key.strand: `"app"` -> `label` (Use `key label`)
+fix [check::missing_key] missing_key.strand: `"app"` -> `at` (Use `key at`)
+fix [check::missing_key] missing_key.strand: `"app"` -> `tags` (Use `key tags`)
+fix [check::missing_key] missing_key.strand@377: + ` key p.app` (Add `key p.app`)
+fix [check::missing_key] missing_key.strand@377: + ` key p.label` (Add `key p.label`)
+fix [check::missing_key] missing_key.strand@377: + ` key p.at` (Add `key p.at`)
+fix [check::missing_key] missing_key.strand@377: + ` key p.tags` (Add `key p.tags`)
+fix [check::missing_key] missing_key.strand@509: + ` key s` (Add `key s`)
+fix [check::missing_key] missing_key.strand@298: + ` key app` (Add `key app`)
+fix [check::missing_key] missing_key.strand@298: + ` key label` (Add `key label`)
+fix [check::missing_key] missing_key.strand@298: + ` key at` (Add `key at`)
+fix [check::missing_key] missing_key.strand@298: + ` key tags` (Add `key tags`)
