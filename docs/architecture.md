@@ -3642,17 +3642,21 @@ inspector (M5) to say why.
   while it animates, and its screenshot matches a small panel's
   CPU-drawn strip whose still shader reads back; hidden, it is demoted
   and taken back; after each cycle the `strand-gpu` thread is gone and
-  the process takes no wakeups, and PSS after the second cycle is within 3
-  MiB of PSS after the first (no growth). PSS back to the pre-GPU
+  the process takes no wakeups, and PSS after every later cycle is within
+  4 MiB of PSS after the first (no growth; a glibc arena of Mesa's moves
+  by up to 2.7 MiB between cycles, decisions.md m5-open-budgets). PSS back to the pre-GPU
   baseline is not asserted there: lavapipe and LLVM stay mapped after
   the device drops (about 80 MiB the spike measured, the same every
   cycle).
 - Hardware leg (`gpu.sh`, advisory): the same tests on
-  `/dev/dri/renderD128`, plus PSS after the drop within about 6 MiB of
-  the pre-GPU baseline in readback mode (the spike's ANV left 5.2–6.3
-  MiB, all libraries unmapped) and 12 MiB presenting (`STRAND_GPU_PRESENT=1`:
-  4.6–8.1 MiB measured in six runs; a leak tripwire with headroom over
-  that spread, decisions.md m5-speed-gpu-bound), and the promoted cost checked against design.md's +20–40 MB
+  `/dev/dri/renderD128` over three cycles, whose no-growth check is the
+  leak tripwire (a leaked device or swapchain adds itself each cycle;
+  what the first cycle leaves is paid once), plus after-drop backstops
+  over the pre-GPU baseline after every cycle: 12 MiB in readback mode
+  (the spike's ANV left 5.2–6.3 MiB, all libraries unmapped; 4.6–7.3
+  MiB measured in M5) and 16 MiB presenting (`STRAND_GPU_PRESENT=1`:
+  4.6–8.8 MiB measured; decisions.md m5-speed-gpu-bound,
+  m5-open-budgets), and the promoted cost checked against design.md's +20–40 MB
 (the spike's ANV: about 15 MiB with the device up, 19–24 MiB
 presenting).
 - GPU frames are compared with the CPU frame under their own documented

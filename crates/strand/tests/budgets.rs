@@ -1,6 +1,6 @@
 //! M3 exit, "memory verified", and the idle budget on the real services
 //! (design.md, "Memory budget" and "Testing": the two-monitor bar aims at
-//! 39 MB, a warning above it, and the build fails above 44 MB; a running
+//! 42 MB, a warning above it, and the build fails above 48 MB; a running
 //! service with nothing changing wakes nothing).
 //!
 //! `strand run` without `STRAND_MOCK` on a headless sway with two
@@ -18,7 +18,7 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 44 MB ceiling (fails above it; above the 39 MB target
+//!   within the 48 MB ceiling (fails above it; above the 42 MB target
 //!   it warns) in release (a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
 //!   minute ticks no thread of strand's wakes (or comes or goes) and no
@@ -32,8 +32,8 @@
 //!   (the test's apps' icons found on screen), two notifications from an
 //!   app as toasts (on screen), the OSD up too (a `wpctl` volume change;
 //!   on screen), then the launcher closed. The larger of the settled
-//!   launcher-and-toasts figure and the OSD's aims at the 67 MB target (a
-//!   warning above it), and fails above the 74 MB ceiling, in release.
+//!   launcher-and-toasts figure and the OSD's aims at the 76 MB target (a
+//!   warning above it), and fails above the 86 MB ceiling, in release.
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
@@ -74,25 +74,26 @@ use strand_services::testing::{DbusMock, PrivateBus};
 use window::TestWindow;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
-/// design.md: the two-monitor bar aims at 39 MB (CI warns above it) and
-/// the build fails above 44 MB. Re-based from the owner-confirmed 34 / 38
-/// MB for the speed profile's larger resident code (GitHub measured
-/// 37,817 kB; the target is that plus about 5%, the ceiling keeps the old
-/// 38/34 margin, rounded up: decisions.md m5-speed).
-const PSS_TARGET_KB: u64 = 39 * 1024;
-const PSS_GATE_KB: u64 = 44 * 1024;
+/// design.md: the two-monitor bar aims at 42 MB (CI warns above it) and
+/// the build fails above 48 MB. Re-based from 39 / 44 MB (and the
+/// owner-confirmed 34 / 38 MB before that) with headroom for M5's waves
+/// 1-2 resident code: the highest run, GitHub's 37,817 kB, plus about
+/// 14%, and the ceiling a further 14% (decisions.md m5-open-budgets).
+/// Tripwires for accidental growth, never a cap on a user's shell.
+const PSS_TARGET_KB: u64 = 42 * 1024;
+const PSS_GATE_KB: u64 = 48 * 1024;
 /// A debug build's code is about three times release's (65 MB against
 /// 32 MB here): a ceiling of its own that only catches gross growth; the
 /// gate is checked in release (CI).
 const DEBUG_PSS_CEILING_KB: u64 = 96 * 1024;
 /// The full shell with the launcher open: the target (CI warns above it)
-/// is 67 MB and the build fails above 74 MB, held in release. Re-based
-/// from the owner-confirmed 64 / 70 MB for the speed profile's resident
-/// code and caches (the highest release run, 64,480 kB with 161 entries,
-/// plus about 5%; the ceiling keeps the old 70/64 margin: decisions.md
-/// m5-speed).
-const FULL_SHELL_TARGET_KB: u64 = 67 * 1024;
-const FULL_SHELL_KB: u64 = 74 * 1024;
+/// is 76 MB and the build fails above 86 MB, held in release. Re-based
+/// from 67 / 74 MB (and the owner-confirmed 64 / 70 MB before that): the
+/// highest run, GitHub's 68,040 kB with 172 entries (run 38130824504, at
+/// the old target), plus about 14% for M5's waves 1-2, and the ceiling a
+/// further 13% (decisions.md m5-open-budgets).
+const FULL_SHELL_TARGET_KB: u64 = 76 * 1024;
+const FULL_SHELL_KB: u64 = 86 * 1024;
 /// The gates the owner confirmed in M3 (decisions.md wave4-core), which
 /// docs/m3-report.md records; the ones in force are above.
 const M3_PSS_TARGET_KB: u64 = 34 * 1024;
@@ -1452,7 +1453,7 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "44 MB ceiling")
+        (PSS_GATE_KB, "48 MB ceiling")
     }
 }
 
@@ -1469,8 +1470,8 @@ fn warn_over_target(what: &str, pss: u64, target: u64) {
     }
 }
 
-/// The two-monitor design bar on the real services: within the 44 MB
-/// ceiling (a warning above the 39 MB target), no huge page, and 10 s between minute ticks without a wakeup or
+/// The two-monitor design bar on the real services: within the 48 MB
+/// ceiling (a warning above the 42 MB target), no huge page, and 10 s between minute ticks without a wakeup or
 /// a frame.
 #[test]
 fn the_design_bar_on_the_real_services_keeps_the_budget() {

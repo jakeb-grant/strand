@@ -23,7 +23,9 @@
 //! hides the shaders with both panels left open: `Glow` is demoted (its
 //! swapchain released, the surface taken back) and the device drops
 //! once idle, the thread gone and the process taking no wakeups. PSS
-//! after the second cycle is within 3 MiB of the PSS after the first.
+//! after every later cycle is within 4 MiB of the PSS after the first
+//! (no growth); the hardware leg runs three cycles, and that is its
+//! leak tripwire (decisions.md m5-open-budgets).
 //!
 //! Lavapipe tier: `STRAND_REQUIRE_GPU=1` (with `STRAND_GPU_SOFTWARE=1`,
 //! which accepts lavapipe) makes a device that does not come up a
@@ -129,16 +131,34 @@ fn bloom_gain(i: &Img) -> i32 {
 const GPU_TOLERANCE: u8 = 6;
 const EDGE_SHARE: f64 = 0.02;
 
-/// Two cycles' PSS may differ by this much (no growth).
-const PSS_SLACK_KB: u64 = 3 * 1024;
-/// The hardware leg: PSS after the drop over the pre-GPU baseline.
-const HARDWARE_SLACK_KB: u64 = 6 * 1024;
-/// The presented hardware leg's after-drop bound: ANV's presented path
-/// left 4.6-8.1 MiB in six runs (4,662 to 8,082 kB), so 12 MiB gives
-/// about 4 MiB over the worst while a device held past the drop (20-40
-/// MB) still trips it (owner, 2026-10-10: memory is not sacred, the bound
-/// stays a leak tripwire; decisions.md m5-speed-gpu-bound).
-const PRESENTED_SLACK_KB: u64 = 12 * 1024;
+/// A later cycle's PSS after the drop may exceed the first cycle's by
+/// this much: the leak tripwire. What the first cycle leaves (strand's
+/// GPU code paged in, mimalloc's pages, libstdc++, a glibc arena of
+/// Mesa's) is paid once; on ANV later cycles came back within 36-66 kB
+/// of the first, except that the arena's resident part moves by 2-2.7
+/// MiB between cycles in some runs (+1,960 and +2,048 kB, -2,053 and
+/// -2,742 kB), so 4 MiB, while a leaked device (20-40 MB) adds itself
+/// every cycle and a leaked swapchain (3.2 MB) passes the bound by the
+/// third (decisions.md m5-open-budgets).
+const PSS_SLACK_KB: u64 = 4 * 1024;
+/// Cycles the hardware leg runs by default (two elsewhere), so that the
+/// growth bound sees a leak twice.
+const HARDWARE_CYCLES: u32 = 3;
+/// The readback hardware leg's after-drop backstop over the pre-GPU
+/// baseline: the spike's ANV left 5.2-6.3 MiB, and four runs here
+/// 4,611-6,123 kB after the first cycle and up to 7,466 kB after a
+/// later one, the arena's swing again; 6 MiB was 21 kB from failing.
+/// 12 MiB, the presented leg's old bound: a device held past the drop
+/// (20-40 MB) still trips it (decisions.md m5-open-budgets).
+const HARDWARE_SLACK_KB: u64 = 12 * 1024;
+/// The presented hardware leg's after-drop backstop: ANV's presented
+/// path left 4.6-8.1 MiB in six earlier runs and 4,726-8,506 kB after
+/// the first cycle in thirteen here (up to 8,833 kB after a later one),
+/// the arena's swing included; growth between cycles
+/// ([`PSS_SLACK_KB`]) is the tripwire, and this bound only catches a
+/// device held past the drop (20-40 MB) (decisions.md
+/// m5-speed-gpu-bound, m5-open-budgets).
+const PRESENTED_SLACK_KB: u64 = 16 * 1024;
 /// The device outlives its last use this long (30 s outside tests).
 const IDLE_MS: u64 = 1500;
 const STEP: Duration = Duration::from_secs(30);
@@ -190,11 +210,11 @@ fn until(what: &str, limit: Duration, mut ok: impl FnMut() -> bool, log: &dyn Fn
 /// `scripts/container/gpu-session.sh`). ANV's WSI presents only to a
 /// compositor offering linux-dmabuf, which a pixman sway does not
 /// (decisions.md m5-infra, spike 1). Opt-in: on the presented path the
-/// laptop's ANV left 4.6-7.5 MiB after the drop (6,868 and 7,704 kB
-/// in two runs, past the 6 MiB the readback leg is held to, and 4,662
-/// kB in a third; up to 8,082 kB later), so that leg is held to its own 12 MiB
-/// ([`PRESENTED_SLACK_KB`], decisions.md m5-speed-gpu-bound); the
-/// default leg stays the readback one it was.
+/// laptop's ANV left 4.6-8.8 MiB after the drop (past the 6 MiB the
+/// readback leg was held to then), so that leg is held to its own 16 MiB
+/// backstop ([`PRESENTED_SLACK_KB`]) beside the growth tripwire
+/// ([`PSS_SLACK_KB`]; decisions.md m5-speed-gpu-bound,
+/// m5-open-budgets); the default leg stays the readback one it was.
 fn sway_renderer() -> Option<String> {
     let on = |v: &str| std::env::var(v).as_deref() == Ok("1");
     std::env::var("STRAND_GPU_SWAY_RENDERER").ok().filter(|r| {
@@ -585,7 +605,8 @@ fn gpu_is_released_when_idle() {
     let cycles: u32 = std::env::var("STRAND_GPU_IDLE_CYCLES")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+        .unwrap_or(if hardware { HARDWARE_CYCLES } else { 2 });
+    assert!(cycles >= 2, "STRAND_GPU_IDLE_CYCLES: at least two cycles");
     for cycle in 1..=cycles {
         let text = log();
         let attached = text.matches("attached (").count();
@@ -755,42 +776,60 @@ fn gpu_is_released_when_idle() {
         pss.push(kb);
         maps.push(pss_by_mapping(pid));
     }
-    let (first, second) = (pss[0], pss[1]);
-    assert!(
-        second <= first + PSS_SLACK_KB,
-        "PSS grew from {first} kB after the first cycle to {second} kB after the second:\n{}",
-        growth(&maps[0], &maps[1])
-    );
+    // No growth: the first cycle pays the one-time costs, a leak adds
+    // itself every cycle ([`PSS_SLACK_KB`]).
+    let first = pss[0];
+    for (i, &kb) in pss.iter().enumerate().skip(1) {
+        let cycle = i + 1;
+        eprintln!(
+            "cycle {cycle}: {:+} kB against the first cycle (bound {PSS_SLACK_KB} kB)",
+            kb as i64 - first as i64
+        );
+        assert!(
+            kb <= first + PSS_SLACK_KB,
+            "PSS grew from {first} kB after the first cycle to {kb} kB after cycle {cycle}, \
+             more than {PSS_SLACK_KB} kB:\n{}",
+            growth(&maps[0], &maps[i])
+        );
+    }
     let text = log();
     assert!(text.contains("GPU: the thread ended"), "{text}");
     // The hardware leg (`scripts/container/gpu.sh`), in release: a
     // hardware driver unmaps its libraries with the device, so PSS goes
-    // back to within about 6 MiB of the baseline (the spike's ANV left
-    // 5.2-6.3 MiB): what stays is strand's own GPU code paged in. A debug
+    // back to within 12 MiB of the baseline (the spike's ANV left 5.2-6.3
+    // MiB; 4.6-7.3 MiB here): what stays is strand's own GPU code paged
+    // in, mimalloc's pages and a glibc arena of Mesa's. A debug
     // binary's is several times larger (8.9 MiB of it on ANV), so a debug
-    // run only reports it.
+    // run only reports it. The bounds are backstops ([`HARDWARE_SLACK_KB`],
+    // [`PRESENTED_SLACK_KB`]); growth between cycles is the tripwire.
     eprintln!(
         "after the drop: {first} kB, {} kB over the baseline:\n{}",
         first.saturating_sub(baseline),
         growth(&baseline_maps, &maps[0])
     );
     // The presented leg (`STRAND_GPU_PRESENT=1` on a GPU sway) is held
-    // to 12 MiB: ANV's presented path left 4.6-8.1 MiB in six runs; the
-    // bound is a leak tripwire with headroom over that spread, not a
-    // budget (decisions.md m5-speed-gpu-bound).
-    if hardware && !cfg!(debug_assertions) && gpu_sway.is_some() {
+    // to a 16 MiB backstop: ANV's presented path left 4.6-8.8 MiB; growth
+    // between cycles above is the leak tripwire, this only catches a
+    // device held past the drop (decisions.md m5-speed-gpu-bound,
+    // m5-open-budgets). Every cycle is checked, the highest reported.
+    let (worst_at, worst) = pss
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by_key(|&(_, kb)| kb)
+        .unwrap_or((0, first));
+    let bound = if gpu_sway.is_some() {
+        PRESENTED_SLACK_KB
+    } else {
+        HARDWARE_SLACK_KB
+    };
+    if hardware && !cfg!(debug_assertions) {
         assert!(
-            first <= baseline + PRESENTED_SLACK_KB,
-            "presented leg: PSS {first} kB after the drop, more than {PRESENTED_SLACK_KB} kB \
-             over the {baseline} kB before the GPU:\n{}",
-            growth(&baseline_maps, &maps[0])
-        );
-    } else if hardware && !cfg!(debug_assertions) {
-        assert!(
-            first <= baseline + HARDWARE_SLACK_KB,
-            "PSS {first} kB after the drop, more than {HARDWARE_SLACK_KB} kB over the \
-             {baseline} kB before the GPU:\n{}",
-            growth(&baseline_maps, &maps[0])
+            worst <= baseline + bound,
+            "PSS {worst} kB after cycle {}'s drop, more than {bound} kB over the {baseline} kB \
+             before the GPU:\n{}",
+            worst_at + 1,
+            growth(&baseline_maps, &maps[worst_at])
         );
     }
 }

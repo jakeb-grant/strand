@@ -59,7 +59,8 @@ reconnecting, and on
 two 2560×1440 monitors with the real services uses about 36–38 MB in
 today's default build, built for speed and linking the GPU backend
 (36,465 kB in the container and 37,817 kB on GitHub after M5's speed
-profile; target 39 MB, ceiling 44 MB, decisions.md m5-speed; before it
+profile; target 42 MB, ceiling 48 MB with headroom for M5's later
+waves, decisions.md m5-open-budgets; before it
 33,731–34,016 kB
 when it landed, 34.1–34.5 MB in the M4 integration's laptop budget
 runs and 34,187 kB at M4's close; 35,557 and 35,617 kB in CI's runs at `70af44f` and `e765276`,
@@ -216,7 +217,7 @@ event-rate glue (D-Bus, services, settings parsing) for size
 to fat LTO, and m5-speed-profile, which re-chose the levels for
 speed). Copy the
 tables from `Cargo.toml` itself, not from this paragraph. The memory figures in the docs
-(the bar's 39 MB target, the full shell's 67 MB) are measured with
+(the bar's 42 MB target, the full shell's 76 MB) are measured with
 exactly these settings and hold for our builds only. Both commands above,
 and `cargo install --git` of this repository, read them. A build that
 does not read the root manifest's profile tables does not get them: a
@@ -250,7 +251,7 @@ matches CI (`CI_JOB=NAME` for one job). The steps:
   (the workspace tests, offline render tests included, without the
   reload fuzzer; the acceptance tests run here in debug too, but for the
   OSD's, whose 1.2 s window is release-only);
-- `cargo test --release -p strand --test demo` for the 39 MB PSS budget
+- `cargo test --release -p strand --test demo` for the 42 MB PSS budget
   (the M0 demo and design.md's bar);
 - `cargo test --release -p strand --test acceptance -- --test-threads=1`:
   the four design shells, unchanged, on sway with two outputs against
