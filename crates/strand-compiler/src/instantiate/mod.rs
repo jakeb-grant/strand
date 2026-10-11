@@ -24,6 +24,7 @@ mod convert;
 pub(crate) use convert::canvas_paint;
 mod edges;
 mod emit;
+pub mod inspect;
 mod lock;
 mod mirror;
 mod mount;
@@ -748,6 +749,8 @@ pub struct Instance {
     /// and its streams (a Wi-Fi scan, a level meter) never switch off and
     /// on.
     bridge: RefCell<Vec<Arc<crate::lower::ServiceUses>>>,
+    /// (M5) What the inspector keeps across reloads (`inspect.rs`).
+    inspect: inspect::Track,
 }
 
 impl std::fmt::Debug for Instance {
@@ -779,14 +782,16 @@ impl Instance {
         host: Rc<dyn ServiceHost>,
         storage: Storage,
     ) -> Instance {
-        Self::mount(
+        let inst = Self::mount(
             rt,
             build.program.clone(),
             Some(build.identity.clone()),
             Some(build.hashes.clone()),
             host,
             storage,
-        )
+        );
+        inst.inspect.compiled(build, true);
+        inst
     }
 
     fn mount(
@@ -823,6 +828,7 @@ impl Instance {
             tokens: None,
             root: None,
             bridge: RefCell::default(),
+            inspect: inspect::Track::default(),
         };
         inst.boot(true);
         inst
@@ -1108,6 +1114,7 @@ impl Instance {
             report.notices.push(w.clone());
             report.ambiguous.push(w.clone());
         }
+        self.inspect.reloaded(build, &report);
         report
     }
 
@@ -1196,6 +1203,7 @@ impl Instance {
         let mut ops = prior;
         ops.append(&mut ctx.em.borrow_mut().ops);
         ctx.em.borrow_mut().ops = ops;
+        self.inspect.compiled(build, true);
         let mut r = crate::reconcile::Report::default();
         r.class(crate::reconcile::EditClass::Hard);
         r
@@ -1389,7 +1397,9 @@ impl Instance {
             errors,
             diagnostics: tick.diagnostics,
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
-            kept: self.ctx.kept.borrow_mut().drain(..).collect(),
+            kept: self
+                .inspect
+                .kept(self.ctx.kept.borrow_mut().drain(..).collect()),
         }
     }
 

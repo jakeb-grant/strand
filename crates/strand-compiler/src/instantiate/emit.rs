@@ -289,6 +289,24 @@ impl Emitter {
         frag.map(|f| self.top_nodes(f)).unwrap_or_default()
     }
 
+    /// (M5) `parent`'s scene children in render's order (`None`: the
+    /// surface roots); the inspector's sibling index and dump order.
+    pub fn children_of(&self, parent: Option<NodeId>) -> &[NodeId] {
+        self.order.get(&parent).map_or(&[], Vec::as_slice)
+    }
+
+    /// (M5) Every mounted block with a scope (a component, surface, list
+    /// item or branch instance): its scope, the scene node its content
+    /// sits in, and its top scene nodes (`reset_subtree`).
+    pub fn scoped(&self) -> Vec<(CoreId, Option<NodeId>, Vec<NodeId>)> {
+        (0..self.frags.len())
+            .filter_map(|i| {
+                let s = self.frag(i)?.scope?;
+                Some((s.id(), self.scene_parent(i), self.top_nodes(i)))
+            })
+            .collect()
+    }
+
     /// Live fragments, scene nodes and bindings (tests: nothing leaks).
     #[cfg(test)]
     pub fn counts(&self) -> (usize, usize, usize) {
