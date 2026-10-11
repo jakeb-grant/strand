@@ -138,13 +138,12 @@ None blocks wave 1's building streams. Each has its paragraph in
 decisions.md.
 
 1. **The presented GPU leg's after-drop bound** (m5-infra; features.md's
-   GPU-cost box). Presenting on renderD128 left +6,868 and +7,704 kB
-   after the drop in two runs and +4,662 kB in a third (4.6–7.5 MiB),
-   against the readback leg's 6,144 kB (6 MiB) bound. Raise the
-   presented leg's bound to about 8 MiB, or chase the retained anonymous
-   memory? The same answer decides whether `scripts/gpu-measure.sh`'s
-   KMS-card run is still wanted. Until then that leg reports `BOUND
-   MISS` instead of asserting.
+   GPU-cost box): settled (owner, 2026-10-10: memory is not sacred).
+   Presenting on renderD128 left 4.6–8.1 MiB after the drop in six
+   runs; that leg is now held to 12 MiB, asserted again, a leak
+   tripwire with headroom over that spread
+   (decisions.md m5-speed-gpu-bound). Whether `scripts/gpu-measure.sh`'s
+   KMS-card run is still wanted stays the owner's call.
 2. **The duplicated image decoders** (m5-size, last paragraph).
    `jpeg_decoder` and `image_webp` are each built twice (about 44 KB +
    45 KB, ~89 KB), once for strand-theme and once for strand-render.

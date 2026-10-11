@@ -133,6 +133,12 @@ const EDGE_SHARE: f64 = 0.02;
 const PSS_SLACK_KB: u64 = 3 * 1024;
 /// The hardware leg: PSS after the drop over the pre-GPU baseline.
 const HARDWARE_SLACK_KB: u64 = 6 * 1024;
+/// The presented hardware leg's after-drop bound: ANV's presented path
+/// left 4.6-8.1 MiB in six runs (4,662 to 8,082 kB), so 12 MiB gives
+/// about 4 MiB over the worst while a device held past the drop (20-40
+/// MB) still trips it (owner, 2026-10-10: memory is not sacred, the bound
+/// stays a leak tripwire; decisions.md m5-speed-gpu-bound).
+const PRESENTED_SLACK_KB: u64 = 12 * 1024;
 /// The device outlives its last use this long (30 s outside tests).
 const IDLE_MS: u64 = 1500;
 const STEP: Duration = Duration::from_secs(30);
@@ -186,8 +192,8 @@ fn until(what: &str, limit: Duration, mut ok: impl FnMut() -> bool, log: &dyn Fn
 /// (decisions.md m5-infra, spike 1). Opt-in: on the presented path the
 /// laptop's ANV left 4.6-7.5 MiB after the drop (6,868 and 7,704 kB
 /// in two runs, past the 6 MiB the readback leg is held to, and 4,662
-/// kB, within it, in a third), which is the owner's to settle
-/// (decisions.md m5-infra), so that leg reports the bound and does not assert it; the
+/// kB in a third; up to 8,082 kB later), so that leg is held to its own 12 MiB
+/// ([`PRESENTED_SLACK_KB`], decisions.md m5-speed-gpu-bound); the
 /// default leg stays the readback one it was.
 fn sway_renderer() -> Option<String> {
     let on = |v: &str| std::env::var(v).as_deref() == Ok("1");
@@ -768,21 +774,16 @@ fn gpu_is_released_when_idle() {
         first.saturating_sub(baseline),
         growth(&baseline_maps, &maps[0])
     );
-    // The presented leg (`STRAND_GPU_PRESENT=1` on a GPU sway) reports
-    // the bound instead: ANV's presented path left 4.6-7.5 MiB (6,868
-    // and 7,704 kB in two runs, 4,662 kB in a third), the bound is the
-    // owner's to settle, and memory budgets are benchmark
-    // targets (decisions.md m5-infra).
+    // The presented leg (`STRAND_GPU_PRESENT=1` on a GPU sway) is held
+    // to 12 MiB: ANV's presented path left 4.6-8.1 MiB in six runs; the
+    // bound is a leak tripwire with headroom over that spread, not a
+    // budget (decisions.md m5-speed-gpu-bound).
     if hardware && !cfg!(debug_assertions) && gpu_sway.is_some() {
-        let over = first.saturating_sub(baseline);
-        eprintln!(
-            "presented leg: {over} kB over the baseline after the drop, bound \
-             {HARDWARE_SLACK_KB} kB ({}; reported, not asserted: open for the owner)",
-            if over <= HARDWARE_SLACK_KB {
-                "within"
-            } else {
-                "BOUND MISS"
-            }
+        assert!(
+            first <= baseline + PRESENTED_SLACK_KB,
+            "presented leg: PSS {first} kB after the drop, more than {PRESENTED_SLACK_KB} kB \
+             over the {baseline} kB before the GPU:\n{}",
+            growth(&baseline_maps, &maps[0])
         );
     } else if hardware && !cfg!(debug_assertions) {
         assert!(

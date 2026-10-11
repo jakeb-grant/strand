@@ -33,8 +33,10 @@ use vello_cpu::Pixmap;
 use vello_cpu::color::PremulRgba8;
 
 /// Bytes of decoded pixels kept (design.md: "Images decode at drawn size
-/// into a 6 MB LRU").
-pub const IMAGE_CACHE_BYTES: usize = 6 << 20;
+/// into a 32 MB LRU"): about 900 icons at 96 px, so a launcher of a
+/// desktop's apps at 2× scrolled through and opened again decodes none
+/// twice (decisions.md, m5-speed-caches).
+pub const IMAGE_CACHE_BYTES: usize = 32 << 20;
 
 /// Failed loads remembered (so a missing icon is not looked up every
 /// frame); the oldest are forgotten past this.
@@ -1629,7 +1631,8 @@ mod tests {
     fn the_store_is_an_lru_within_its_budget() {
         let mut s = ImageStore::default();
         let side = 512u32; // 1 MB each
-        for i in 0..10 {
+        let held = IMAGE_CACHE_BYTES / (512 * 512 * 4);
+        for i in 0..held + 4 {
             let k = ImageKey {
                 source: format!("k{i}"),
                 icon: false,
@@ -1651,9 +1654,9 @@ mod tests {
             );
         }
         assert!(s.bytes() <= IMAGE_CACHE_BYTES);
-        assert_eq!(s.bytes(), 6 * 512 * 512 * 4);
-        let has = |s: &ImageStore, i: u32| s.entries.keys().any(|k| k.source == format!("k{i}"));
-        assert!(!has(&s, 0) && has(&s, 9), "the oldest go first");
+        assert_eq!(s.bytes(), held * 512 * 512 * 4);
+        let has = |s: &ImageStore, i: usize| s.entries.keys().any(|k| k.source == format!("k{i}"));
+        assert!(!has(&s, 0) && has(&s, held + 3), "the oldest go first");
     }
 
     /// A surface drawing one image twice (two rows with one app's icon)

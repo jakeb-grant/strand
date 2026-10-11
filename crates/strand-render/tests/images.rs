@@ -1,5 +1,5 @@
 //! `icon` and `image` (design.md: images decode at drawn size into a
-//! 6 MB LRU; icons from the freedesktop icon theme, symbolic icons
+//! 32 MB LRU; icons from the freedesktop icon theme, symbolic icons
 //! recoloured by `color`): offline PNGs against an icon theme made in a
 //! temporary directory, so the result does not depend on the icons
 //! installed on the machine.
@@ -265,10 +265,10 @@ fn icons_are_decoded_for_the_scale() {
     assert!(b > 3 * a && b < 5 * a, "{a} {b}");
 }
 
-/// Decoded images stay within 6 MB however many are drawn: the least
-/// recently drawn go first.
+/// Decoded images stay within `IMAGE_CACHE_BYTES` (32 MB) however many
+/// are drawn: the least recently drawn go first.
 #[test]
-fn the_image_cache_holds_six_megabytes() {
+fn the_image_cache_holds_its_budget() {
     let mut r = renderer_with_theme();
     let mut b = Builder::default();
     let root = b.node(
@@ -277,8 +277,10 @@ fn the_image_cache_holds_six_megabytes() {
         vec![(Prop::Width, num(600.0)), (Prop::Height, num(600.0))],
     );
     let photo = fixture("halves.jpg");
-    // Ten 512 × 512 decodes (1 MB each) of the same file, stacked.
-    for i in 0..10 {
+    // More 512-wide decodes (0.5 to 1 MB each) of the same file than the
+    // budget holds, stacked.
+    let n = 2 * (IMAGE_CACHE_BYTES >> 20) as u32 + 4;
+    for i in 0..n {
         b.node(
             NodeKind::Image,
             Some(root),
@@ -295,10 +297,11 @@ fn the_image_cache_holds_six_megabytes() {
     r.configure_surface(SurfaceId(1), Size::new(600, 600), Scale::ONE);
     let mut buf = Buffer::new(600, 600, Scale::ONE);
     buf.paint(&mut r, SurfaceId(1), 0);
-    // One frame needs all ten (10 MB): kept while drawn. After the frame
-    // a new image pushes the oldest out.
+    // One frame needs all of them: kept while drawn. After the frame a
+    // new image pushes the oldest out.
+    assert!(r.image_bytes() > IMAGE_CACHE_BYTES, "kept while drawn");
     let mut d = SceneDiff::new();
-    for i in 0..10u32 {
+    for i in 0..n {
         d.push(SceneOp::Remove {
             id: NodeId::new(i + 1, 0),
             window: false,
@@ -307,9 +310,9 @@ fn the_image_cache_holds_six_megabytes() {
     r.apply(d);
     buf.paint(&mut r, SurfaceId(1), 1);
     let mut d = SceneDiff::new();
-    d.create(NodeId::new(20, 0), NodeKind::Image, Some(root), 0)
-        .set(NodeId::new(20, 0), Prop::Source, text(&photo))
-        .set(NodeId::new(20, 0), Prop::Size, num(100.0));
+    d.create(NodeId::new(n + 20, 0), NodeKind::Image, Some(root), 0)
+        .set(NodeId::new(n + 20, 0), Prop::Source, text(&photo))
+        .set(NodeId::new(n + 20, 0), Prop::Size, num(100.0));
     r.apply(d);
     buf.paint(&mut r, SurfaceId(1), 1);
     assert!(
@@ -317,6 +320,63 @@ fn the_image_cache_holds_six_megabytes() {
         "{} bytes",
         r.image_bytes()
     );
+}
+
+/// A launcher of 300 apps at 2× (48 px icons drawn at 96 px, 36 kB
+/// each, from 256 px PNGs) scrolled from top to bottom, closed and
+/// opened again, then scrolled back: every icon was decoded once, and
+/// none again (decisions.md, m5-speed-caches: the 6 MB cache held about
+/// 170 of them, so a reopened launcher decoded its first rows again and
+/// they popped in late).
+#[test]
+fn a_reopened_launcher_decodes_no_icon_again() {
+    use std::time::Instant;
+    use strand_render::image::{ImageBackend, ImageStore};
+    const APPS: usize = 300;
+    const ROWS: usize = 12;
+    let dir = theme_dir().join("launcher-apps");
+    std::fs::create_dir_all(&dir).unwrap();
+    let keys: Vec<ImageKey> = (0..APPS)
+        .map(|i| {
+            let path = dir.join(format!("app{i}.png"));
+            if !path.exists() {
+                let tint = (i * 37 % 256) as u8;
+                write_png(&path, 256, 256, |x, y| {
+                    [tint, (x as u8) ^ tint, (y as u8).wrapping_add(tint), 255]
+                });
+            }
+            ImageKey {
+                source: path.to_string_lossy().into_owned(),
+                icon: false,
+                w: 96,
+                h: 96,
+                fit: Fit::Contain,
+                scale: 2,
+                frame: 0,
+            }
+        })
+        .collect();
+    let mut s = ImageStore::new(ImageBackend::Inline(IconTheme::named("StrandTest")));
+    let surface = SurfaceId(1);
+    // Scrolls a window of ROWS rows over `order`, one row a frame,
+    // counting the decodes each frame asks for.
+    let scroll = |s: &mut ImageStore, firsts: &mut dyn Iterator<Item = usize>| {
+        let (mut decodes, start) = (0, Instant::now());
+        for first in firsts {
+            let window = &keys[first..first + ROWS];
+            decodes += window.iter().filter(|k| s.get(k).is_none()).count();
+            s.want(surface, window, false);
+        }
+        (decodes, start.elapsed())
+    };
+    let (first_pass, _) = scroll(&mut s, &mut (0..=APPS - ROWS));
+    assert_eq!(first_pass, APPS, "each icon decoded once");
+    assert!(s.bytes() <= IMAGE_CACHE_BYTES);
+    // Closed, then opened again at the top and scrolled back down.
+    s.forget(surface);
+    let (again, took) = scroll(&mut s, &mut (0..=APPS - ROWS));
+    eprintln!("reopened launcher: {again} icons decoded again in {took:?}");
+    assert_eq!(again, 0, "a reopened launcher decodes no icon again");
 }
 
 /// With a text worker, images decode on a worker too and the frame that

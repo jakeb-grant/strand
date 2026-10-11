@@ -9,9 +9,9 @@
 //! The pixmap is cached by the hash of what the group draws, so it is
 //! redrawn only when its content changes; the cache has its own byte
 //! budget ([`OFFSCREEN_BYTES`], least recently used dropped first) and
-//! frees entries no frame used for [`crate::cache::IDLE_FREE`] or since
-//! the frame loop stopped, like the paint cache. A group larger than the
-//! budget is drawn each frame it is damaged, uncached.
+//! frees entries no frame used for [`crate::cache::IDLE_FREE`], like the
+//! paint cache. A group larger than the budget is drawn each frame it is
+//! damaged, uncached.
 //!
 //! **Raster nodes.** A node with a [`RasterSource`] (particles, grain,
 //! graphs, spectrum, animated frames: S-effects) draws into a pixmap of
@@ -37,8 +37,12 @@ use crate::clock::Rate;
 use crate::flatten::{DisplayItem, Item};
 use crate::raster::AtlasMirror;
 
-/// Bytes of offscreen group pixmaps kept (design.md: "about 4 MB").
-pub const OFFSCREEN_BYTES: usize = 4 << 20;
+/// Bytes of offscreen group pixmaps kept (design.md: "about 32 MB"): a
+/// blurred or filtered group of a 2× launcher or a 1440p overlay
+/// (decisions.md, m5-speed-caches: over the old 4 MB such a group was
+/// drawn and filtered again on every frame that touched it, 125 ms
+/// against 8 ms a frame for a 1400 × 1000 px group).
+pub const OFFSCREEN_BYTES: usize = 32 << 20;
 
 /// A group's filtered pixels and where they go on the surface.
 #[derive(Clone, Debug)]
@@ -111,12 +115,6 @@ impl Offscreen {
         let idle = self.idle.unwrap_or(IDLE_FREE);
         self.entries
             .retain(|_, e| now.saturating_duration_since(e.at) < idle);
-        self.recount();
-    }
-
-    /// Frees groups no frame has used since `since` (the loop stopped).
-    pub fn trim_unused_since(&mut self, since: Instant) {
-        self.entries.retain(|_, e| e.at >= since);
         self.recount();
     }
 
@@ -410,7 +408,7 @@ pub(crate) fn rasterise(
     ctx.flush();
     // Drawn straight into the pixmap that is kept, and filtered there:
     // the transient heap is the context and the blur's few rows (design.md
-    // bounds a group at about 4 MB; a group over the budget is drawn on
+    // bounds the groups at about 32 MB; a group over the budget is drawn on
     // every damaged frame).
     let mut pm = Pixmap::new(w, h);
     let mut resources = Resources::new();

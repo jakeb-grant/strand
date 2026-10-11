@@ -275,10 +275,6 @@ pub struct Renderer {
     anim: Animator,
     /// `reduced_motion` as the host set it ([`Renderer::set_reduced_motion`]).
     reduced_motion: bool,
-    /// When the frame loop's current run of paints began (none while
-    /// nothing paints): what the paint cache holds unused since then is
-    /// freed when the run ends.
-    burst: Option<Instant>,
     /// Surfaces whose closing pose finished: their spec reports them
     /// closed until they open again.
     closed: HashSet<NodeId>,
@@ -423,7 +419,6 @@ impl Renderer {
             resize_wait: Duration::ZERO,
             anim: Animator::default(),
             reduced_motion: false,
-            burst: None,
             closed: HashSet::new(),
             held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
@@ -449,7 +444,7 @@ impl Renderer {
     }
 
     /// How long a cached shadow or gradient nothing draws lives
-    /// (10 s; tests shorten it).
+    /// (30 s; tests shorten it).
     pub fn set_paint_cache_idle(&mut self, idle: Duration) {
         self.raster.set_idle_free(idle);
     }

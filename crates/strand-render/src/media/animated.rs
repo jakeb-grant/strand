@@ -47,7 +47,7 @@ const MAX_PLAYERS: usize = 16;
 /// change of two animations drawn together, so one animation larger
 /// than this still plays, and so do several (decisions.md,
 /// m4-effects-media-w2).
-pub const MAX_PLAYER_BYTES: usize = 16 << 20;
+pub const MAX_PLAYER_BYTES: usize = 32 << 20;
 
 /// An animated image's frames in time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -843,10 +843,10 @@ mod tests {
     /// the least recently used go, never the one being drawn.
     #[test]
     fn players_share_files_and_stay_within_their_bytes() {
-        // 900 × 900: a 3.2 MB canvas, 6.5 MB with its decoder's frame;
-        // two fit the budget, three do not.
-        let file = big_gif(900);
-        let each = 900 * 900 * 4 * 2;
+        // 1300 × 1300: a 6.8 MB canvas, 13.5 MB with its decoder's
+        // frame; two fit the budget, three do not.
+        let file = big_gif(1300);
+        let each = 1300 * 1300 * 4 * 2;
         let mut players = Players::default();
         let mut reads = 0;
         for w in [48, 96] {
@@ -864,17 +864,17 @@ mod tests {
         assert!(players.bytes() <= MAX_PLAYER_BYTES);
         // A third: the least recently used goes.
         players
-            .get(&key("/b.gif", 48), || Ok((big_gif(900), Format::Gif)))
+            .get(&key("/b.gif", 48), || Ok((big_gif(1300), Format::Gif)))
             .unwrap();
         assert_eq!(players.len(), 2);
         assert!(players.bytes() <= MAX_PLAYER_BYTES);
         assert!(!players.players.contains_key(&key("/a.gif", 48)));
         // One larger than the budget alone still plays, alone.
-        let huge = big_gif(2048);
+        let huge = big_gif(2400);
         let p = players
             .get(&key("/huge.gif", 48), || Ok((huge.clone(), Format::Gif)))
             .unwrap();
-        assert_eq!(p.frame(1).unwrap().len(), 2048 * 2048 * 4);
+        assert_eq!(p.frame(1).unwrap().len(), 2400 * 2400 * 4);
         assert_eq!(players.len(), 1);
     }
 
@@ -890,9 +890,9 @@ mod tests {
         ]));
         let l = live.clone();
         let mut players = Players::with_live(move |k| l.lock().unwrap().contains(k));
-        // 1300 × 1300: 13.5 MB each with its decoder's frame, so two
-        // are over the budget.
-        let (a, b) = (big_gif(1300), big_gif(1300));
+        // 1500 × 1500: 18 MB each with its decoder's frame, so two are
+        // over the budget.
+        let (a, b) = (big_gif(1500), big_gif(1500));
         let mut reads = 0;
         for frame in 0..6 {
             for (k, file) in [(key("/a.gif", 48), &a), (key("/b.gif", 48), &b)] {

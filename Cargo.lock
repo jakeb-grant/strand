@@ -2949,6 +2949,7 @@ dependencies = [
  "gif",
  "image-webp",
  "jpeg-decoder",
+ "libc",
  "log",
  "png",
  "resvg",

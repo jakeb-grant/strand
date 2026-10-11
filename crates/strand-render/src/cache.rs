@@ -1,7 +1,7 @@
 //! Cached paint: dithered gradients and blurred shadows rendered once
 //! into pixmaps and drawn from there (design.md, "Paint and light":
 //! banding removed by automatic dithering; "Runtime changes": cached
-//! offscreen groups, about 4 MB).
+//! offscreen groups, about 32 MB).
 //!
 //! Every entry is a pure function of its key, and whether a key is
 //! cached at all depends only on the key (its size), so a partial
@@ -23,18 +23,32 @@ use vello_cpu::{
 };
 
 /// Bytes of cached pixmaps kept, least recently used dropped first.
-pub const PAINT_CACHE_BYTES: usize = 4 << 20;
+pub const PAINT_CACHE_BYTES: usize = 32 << 20;
 
-/// Largest single cached pixmap; larger gradients are dithered cell by
-/// cell, uncached, and larger shadows draw directly (decided by size
-/// alone).
-pub const MAX_ENTRY_BYTES: usize = 2 << 20;
+/// Largest single cached pixmap (16 MB: a 2× launcher's gradient and
+/// shadow, a full-height panel at 2×, a 1440p overlay); larger gradients
+/// are dithered cell by cell, uncached, and larger shadows draw directly
+/// (decided by size alone). At 2 MB a 2× launcher's gradient and shadow
+/// were drawn again on every full repaint: 39 ms a frame against 6.5 ms
+/// (decisions.md, m5-speed-caches).
+pub const MAX_ENTRY_BYTES: usize = 16 << 20;
+
+/// Entries up to this size are cached as soon as a frame draws them (a
+/// shadow) or a second frame does (a gradient). A larger one is cached
+/// only when a second frame repaints all of it: building it costs more
+/// than drawing the part a frame shows, so a launcher's first frame and
+/// the partial frames after it (typing, hover) draw it directly, and only
+/// repeated full repaints (a fade or scale where the compositor cannot
+/// do it, a resize) pay the build once (decisions.md, m5-speed-caches).
+pub const EAGER_ENTRY_BYTES: usize = 2 << 20;
 
 /// Entries no frame has used for this long are freed (design.md: the
 /// cached offscreen groups are "freed when idle") at the next paint or
-/// wake of the render loop; when the frame loop stops, what its frames
-/// did not use goes at once ([`PaintCache::trim_unused_since`]).
-pub const IDLE_FREE: Duration = Duration::from_secs(10);
+/// wake of the render loop, never at a wake of their own. A surface
+/// shown again within it (a launcher reopened) draws from what its last
+/// showing cached: 6–7 ms against 37–40 ms for a 2× launcher's first
+/// frame (decisions.md, m5-speed-caches).
+pub const IDLE_FREE: Duration = Duration::from_secs(30);
 
 /// Most gradient keys remembered as drawn once, uncached (see
 /// [`PaintCache::gradient`]); past it the record starts over.
@@ -173,6 +187,12 @@ pub fn cacheable(w: u32, h: u32) -> bool {
     }
 }
 
+/// True if a `w × h` pixmap is small enough to cache without a second
+/// whole repaint asking for it ([`EAGER_ENTRY_BYTES`]).
+fn eager(w: u32, h: u32) -> bool {
+    (w as usize) * (h as usize) * 4 <= EAGER_ENTRY_BYTES
+}
+
 impl PaintCache {
     /// Bytes of pixmaps held.
     pub fn bytes(&self) -> usize {
@@ -214,18 +234,6 @@ impl PaintCache {
         }
         self.seen
             .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
-    }
-
-    /// Frees the entries no frame has used since `since`: the frame loop
-    /// stopped (nothing animates, nothing waits for a frame), and what
-    /// its frames did not draw is idle until something wakes the shell.
-    pub fn trim_unused_since(&mut self, since: Instant) {
-        let before = self.entries.len();
-        self.entries.retain(|_, e| e.at >= since);
-        if self.entries.len() != before {
-            self.bytes = self.entries.values().map(|e| e.bytes).sum();
-        }
-        self.seen.retain(|_, (_, at)| *at >= since);
     }
 
     /// How long an unused entry lives.
@@ -278,8 +286,24 @@ impl PaintCache {
 
     /// The dithered pixmap of `paint` over a `w × h` frame (`None` for a
     /// solid paint, one too large to cache, or one no earlier frame drew:
-    /// the raster then dithers it cell by cell).
+    /// the raster then dithers it cell by cell). As [`Self::gradient_in`]
+    /// for a frame that repaints all of it (tests).
+    #[cfg(test)]
     pub fn gradient(&mut self, paint: &Paint, w: u32, h: u32) -> Option<Arc<Pixmap>> {
+        self.gradient_in(paint, w, h, true)
+    }
+
+    /// [`Self::gradient`] in a frame that repaints all of it (`whole`) or
+    /// only part: one over [`EAGER_ENTRY_BYTES`] is admitted only by a
+    /// second frame repainting all of it, and a partial frame neither
+    /// builds nor records it.
+    pub fn gradient_in(
+        &mut self,
+        paint: &Paint,
+        w: u32,
+        h: u32,
+        whole: bool,
+    ) -> Option<Arc<Pixmap>> {
         if matches!(paint, Paint::Solid(_)) || !cacheable(w, h) {
             return None;
         }
@@ -287,33 +311,64 @@ impl PaintCache {
         if let Some(p) = self.get(key) {
             return Some(p);
         }
+        if !whole && !eager(w, h) {
+            return None;
+        }
         // Admitted on a second frame's use: a gradient whose paint or
         // size changes every frame (a conic ring turning with `t`, a box
         // whose size springs, however many share a size) never repeats a
         // key, so it is drawn cell by cell (`raster::paint_for`, the same
         // pixels) and never evicts the shadows beside it (design.md:
         // "only the ring repaints").
-        let frame = self.frame;
-        match self.seen.get(&key) {
-            Some(&(f, _)) if f != frame => {
-                self.seen.remove(&key);
-            }
-            Some(_) => return None,
-            None => {
-                if self.seen.len() >= SEEN_MAX {
-                    self.seen.clear();
-                }
-                self.seen.insert(key, (frame, Instant::now()));
-                return None;
-            }
+        if !self.seen_before(key) {
+            return None;
         }
         let pm = render_gradient(paint, w, h)?;
         Some(self.insert(key, pm))
     }
 
+    /// Whether an earlier frame asked for `key` (consuming that record);
+    /// otherwise records this frame's ask.
+    fn seen_before(&mut self, key: u64) -> bool {
+        let frame = self.frame;
+        match self.seen.get(&key) {
+            Some(&(f, _)) if f != frame => {
+                self.seen.remove(&key);
+                true
+            }
+            Some(_) => false,
+            None => {
+                if self.seen.len() >= SEEN_MAX {
+                    self.seen.clear();
+                }
+                self.seen.insert(key, (frame, Instant::now()));
+                false
+            }
+        }
+    }
+
     /// The pixmap of a blurred rounded rect, its origin at the shape's
-    /// `extent` corner rounded down (`None` when too large to cache).
+    /// `extent` corner rounded down (`None` when too large to cache),
+    /// built at first sight whatever its size: the GPU backend's frames
+    /// are whole and count no frames here.
+    #[cfg(any(test, feature = "gpu"))]
     pub fn shadow(&mut self, s: &ShadowShape) -> Option<Arc<Pixmap>> {
+        self.shadow_with(s, |_, _| true)
+    }
+
+    /// [`Self::shadow`] for the CPU raster, in a frame that repaints all
+    /// of it (`whole`) or only part: one up to [`EAGER_ENTRY_BYTES`] is
+    /// cached at once, a larger one only by a second frame repainting all
+    /// of it (the raster draws it directly until then).
+    pub fn shadow_in(&mut self, s: &ShadowShape, whole: bool) -> Option<Arc<Pixmap>> {
+        self.shadow_with(s, |c, key| whole && c.seen_before(key))
+    }
+
+    fn shadow_with(
+        &mut self,
+        s: &ShadowShape,
+        admit_large: impl FnOnce(&mut Self, u64) -> bool,
+    ) -> Option<Arc<Pixmap>> {
         let (w, h) = shadow_size(s);
         if !cacheable(w, h) {
             return None;
@@ -321,6 +376,9 @@ impl PaintCache {
         let key = shadow_key(s);
         if let Some(p) = self.get(key) {
             return Some(p);
+        }
+        if !eager(w, h) && !admit_large(self, key) {
+            return None;
         }
         let pm = render_shadow(s, w as u16, h as u16);
         Some(self.insert(key, pm))
@@ -558,7 +616,8 @@ fn render_shadow(s: &ShadowShape, w: u16, h: u16) -> Pixmap {
         );
     }
     let mut pm = Pixmap::new(w, h);
-    for (d, s) in pm.data_mut().iter_mut().zip(bytes.chunks_exact(4)) {
+    let data = pm.data_mut();
+    for (d, s) in data.iter_mut().zip(bytes.chunks_exact(4)) {
         *d = PremulRgba8 {
             r: s[0],
             g: s[1],
@@ -648,6 +707,51 @@ mod tests {
             color: Color::from_hex("#00000060").unwrap(),
             extent: kurbo::Rect::new(0.0, 0.0, 640.0, 240.0),
         }
+    }
+
+    /// A gradient or shadow over `EAGER_ENTRY_BYTES` is built only by a
+    /// second frame repainting all of it: a first frame and partial
+    /// frames draw it directly (decisions.md, m5-speed-caches). The GPU
+    /// backend's `shadow` still builds at first sight.
+    #[test]
+    fn large_entries_wait_for_a_second_whole_frame() {
+        let big = ShadowShape {
+            rect: kurbo::Rect::new(48.0, 48.0, 1248.0, 1048.0),
+            extent: kurbo::Rect::new(0.0, 0.0, 1300.0, 1100.0),
+            ..shadow()
+        };
+        let (w, h) = shadow_size(&big);
+        assert!(!eager(w, h) && cacheable(w, h));
+        let ramp = Paint::Linear {
+            angle: 160.0,
+            stops: stops("#1e1e2e", "#313244"),
+        };
+        let mut c = PaintCache::default();
+        c.begin_frame();
+        assert!(c.shadow_in(&big, true).is_none(), "first whole frame");
+        assert!(c.gradient_in(&ramp, w, h, true).is_none());
+        for _ in 0..3 {
+            c.begin_frame();
+            assert!(c.shadow_in(&big, false).is_none(), "partial frame");
+            assert!(c.gradient_in(&ramp, w, h, false).is_none());
+        }
+        assert_eq!((c.builds(), c.bytes()), (0, 0));
+        c.begin_frame();
+        assert!(c.shadow_in(&big, true).is_some(), "second whole frame");
+        assert!(c.gradient_in(&ramp, w, h, true).is_some());
+        assert_eq!(c.builds(), 2);
+        c.begin_frame();
+        assert!(c.shadow_in(&big, false).is_some(), "cached for any frame");
+        // Small entries keep their rule: a shadow at once, a gradient on a
+        // second frame's use, partial or not.
+        c.begin_frame();
+        assert!(c.shadow_in(&shadow(), false).is_some());
+        assert!(c.gradient_in(&ramp, 100, 100, false).is_none());
+        c.begin_frame();
+        assert!(c.gradient_in(&ramp, 100, 100, false).is_some());
+        // The GPU backend's frames are whole: built at first sight.
+        let mut g = PaintCache::default();
+        assert!(g.shadow(&big).is_some());
     }
 
     fn stops(a: &str, b: &str) -> Vec<GradientStop> {

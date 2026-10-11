@@ -544,7 +544,7 @@ Nine lines give a squircle pill with a slowly rotating gradient border, a spinni
 ### Runtime changes these need
 
 1. **Effect layers in the scene IR.** A tagged group (filter, blend, mask, colour matrix, shader) whose dirty area grows by the effect's reach. Each backend lowers it its own way, so the GPU path is never asked for masks it can't do.
-2. **Cached offscreen groups.** Text glows, filtered subtrees and glass sources render once and redraw only when children change; about 4 MB, freed when idle.
+2. **Cached offscreen groups.** Text glows, filtered subtrees and glass sources render once and redraw only when children change; about 32 MB, freed when idle (unused for 30 s, so a launcher or popup opened again draws its first frame from what it cached).
 3. **CPU raster nodes** for particle sprites, goo fields, grain and dithering, avoiding the per-path overhead that dominates large particle counts.
 4. **Per-node clocks with frame caps.** GIFs at their own rate, grain at 12 fps, shimmer at 30, everything else at refresh. The frame loop stops when every clock is idle.
 5. **Rectangle clips for damage** (`push_clip_rect`), which cut a 600×500 blur from 8.2 ms to 0.31 ms under a clock-sized damage rect.
@@ -564,7 +564,7 @@ File saves and system changes enter at the top and become writes into the reacti
 - **Wayland:** [smithay-client-toolkit](https://github.com/Smithay/client-toolkit) 0.21 plus `wayland-protocols` 0.32 for fractional scale, viewporter, single-pixel buffers, alpha modifier and background effect.
 - **Text:** parley 0.11 shapes on a worker thread; swash rasterises into LRU glyph atlases, one per output scale. Mixed-DPI setups stay sharp, unlike pleamar's single max-scale atlas.
 - **Paint:** our own scene IR feeds two backends. [vello\_cpu](https://github.com/linebender/vello) into `wl_shm` is the default. vello\_gpu on wgpu 30 handles shaders and surfaces animating large areas for more than 500 ms; the device is dropped after 30 s idle. Backends switch only when springs settle. The GPU backend is in every build; when no device starts (no Vulkan driver, a lost device), Strand stays on the CPU, bundled GPU effects use their CPU versions, and a `shader` node draws nothing while the inspector and `strand report` say why. After 3 lost devices (a hang, a reset or a panic) in one process the GPU stays off until Strand restarts: no device is created and nothing is promoted, the CPU draws everything it can, `shader` nodes draw nothing, and one warning and `strand watch` notice say so.
-- **Images** decode at drawn size into a 6 MB LRU. mimalloc as allocator. GPU crates stay cold unless used; LSP and tree-sitter live in a separate `strand-dev` binary.
+- **Images** decode at drawn size into a 32 MB LRU. mimalloc as allocator. GPU crates stay cold unless used; LSP and tree-sitter live in a separate `strand-dev` binary.
 
 **Compositor-animated poses.** Surface-level fades and scales cost no repaint: opacity via `wp_alpha_modifier_v1`, scale via viewporter, small moves via layer-shell margins. Without those protocols, Strand repaints instead.
 

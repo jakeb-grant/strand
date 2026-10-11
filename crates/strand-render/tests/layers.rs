@@ -410,10 +410,10 @@ fn nested_offscreen_groups_keep_their_filters_on_partial_repaints() {
 }
 
 /// design.md: cached offscreen groups redraw only when their children
-/// change, within a 4 MB budget, freed when idle. A repaint of the whole
+/// change, within a 32 MB budget, freed when idle. A repaint of the whole
 /// surface reuses the group; a change inside it draws it again; four
-/// 1.25 MB groups keep three (the frame's fourth is drawn uncached); an
-/// idle cache empties.
+/// groups of 30% of the budget each keep three (the frame's fourth is
+/// drawn uncached); an idle cache empties.
 #[test]
 fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     let (diff, effects, sq) = filtered("#f38ba8");
@@ -434,7 +434,9 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     buf.paint(&mut r, S, 1);
     assert_eq!(r.offscreen_cache().1, 4, "the changed group redraws");
 
-    // The budget: four 560 px grayscale groups (1.25 MB each).
+    // The budget: four grayscale groups of 30% of it each.
+    let side = (strand_render::OFFSCREEN_BYTES as f64 * 0.3 / 4.0).sqrt() as u32;
+    let pitch = side + 10;
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let mut big = Vec::new();
@@ -443,8 +445,8 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
             NodeKind::Box,
             Some(root),
             vec![
-                (Prop::X, num(i as f32 * 570.0)),
-                (Prop::Size, num(560.0)),
+                (Prop::X, num((i * pitch) as f32)),
+                (Prop::Size, num(side as f32)),
                 (Prop::Bg, color("#f38ba8")),
             ],
         );
@@ -454,14 +456,14 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     assert!(r.apply(b.diff).is_empty());
     with_fx(&mut r, &big);
     r.attach_surface(S, r.tree().roots()[0]);
-    let mut buf = Buffer::new(2280, 560, Scale::ONE);
+    let mut buf = Buffer::new(4 * pitch, side, Scale::ONE);
     buf.paint(&mut r, S, 0);
     let (bytes, builds, kept) = r.offscreen_cache();
     assert!(bytes <= strand_render::OFFSCREEN_BYTES, "{bytes}");
     assert_eq!((builds, kept), (4, 3), "over the budget: three kept");
     // Every group drew, the uncached one too: all grey.
     for i in 0..4u32 {
-        let [b, g, r, _] = buf.px(i * 570 + 280, 280);
+        let [b, g, r, _] = buf.px(i * pitch + side / 2, side / 2);
         assert!(b.abs_diff(g) <= 1 && g.abs_diff(r) <= 1, "group {i}");
     }
 

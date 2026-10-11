@@ -999,7 +999,14 @@ mod tests {
             return;
         };
         crate::child::thp_off();
-        assert_eq!(own(), Some(false), "THP is off for strand");
+        // SAFETY: `prctl` with integer arguments only.
+        let off = unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) };
+        assert!(off > 0, "THP is off for strand: {off}");
+        // Off but for advised regions (Linux 6.18 on), `THP_enabled:`
+        // reads 1 (decisions.md m5-speed-thp).
+        if !crate::child::thp_on_for_advised() {
+            assert_eq!(own(), Some(false), "THP is off for strand");
+        }
         assert_eq!(
             launched_thp(),
             Some(before),
