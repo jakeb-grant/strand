@@ -13,8 +13,10 @@ blake3 = "1.8.7"
 # The Material 3 algorithm (HCT, dynamic schemes, Celebi quantiser).
 material-colors = { version = "0.5.0", features = ["quantize"] }
 # Wallpaper decoding for `material(image:)`.
-# WebP wallpapers (no reduced-size decoder exists; capped, see image.rs).
-image = { version = "0.25.10", default-features = false, features = ["webp"] }
+# WebP wallpapers (no reduced-size decoder exists; capped, see image.rs),
+# decoded with image-webp directly, as strand-render does (no `image`
+# glue in the binary).
+image-webp = "0.2.4"
 # JPEG decoded at 1/8 scale (DCT scaling) and PNG decoded row by row,
 # so a wallpaper never costs a full-resolution frame.
 jpeg-decoder = { version = "0.3.2", default-features = false }
