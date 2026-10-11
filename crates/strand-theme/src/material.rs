@@ -118,8 +118,10 @@ thread_local! {
         const { std::cell::RefCell::new((Vec::new(), 0)) };
 }
 
-/// The Material 3 palette for `seed`. Every role is filled straight
-/// from the dynamic scheme (the 1:1 role table), then guarded.
+/// The Material 3 palette for `seed`. Every Material 3 role is filled
+/// straight from the dynamic scheme (the 1:1 role table), the hue roles
+/// harmonised toward its accent (`palette::fill_hues`), then guarded. Its
+/// one extra is `source_color`, the seed.
 pub fn from_seed(seed: Color, opts: Options) -> Palette {
     let contrast = if opts.contrast.is_finite() {
         opts.contrast.clamp(-1.0, 1.0)
@@ -183,15 +185,22 @@ fn solve_seed(rgb: Rgb, variant: Variant, dark: bool, contrast: f64) -> Palette 
     // scheme getter would solve the roles it depends on again), with
     // the same colours (`one_resolver_gives_every_getters_colour`).
     let resolver = s.resolver();
-    let mut p = Palette::from_fn(dark, |r| from_rgb(resolver.rgb(mc_role(r).color())));
+    let accent = from_rgb(resolver.rgb(McRole::Primary.color()));
+    let mut hues = std::collections::BTreeMap::new();
+    crate::palette::fill_hues(&mut hues, accent, dark);
+    let mut p = Palette::from_fn(dark, |r| match mc_role(r) {
+        Some(m) => from_rgb(resolver.rgb(m.color())),
+        None => hues.get(&r).copied().unwrap_or(Color::BLACK),
+    });
     contrast::guard(&mut p);
     p.with_source("material(seed)")
+        .with_extras(vec![("source_color".into(), from_rgb(rgb))])
 }
 
 /// The `material-colors` role each palette role is filled from (the
-/// 1:1 role table).
-fn mc_role(r: Role) -> McRole {
-    match r {
+/// 1:1 role table); `None` for a hue role.
+fn mc_role(r: Role) -> Option<McRole> {
+    Some(match r {
         Role::Accent => McRole::Primary,
         Role::OnAccent => McRole::OnPrimary,
         Role::AccentContainer => McRole::PrimaryContainer,
@@ -241,7 +250,8 @@ fn mc_role(r: Role) -> McRole {
         Role::TertiaryFixedDim => McRole::TertiaryFixedDim,
         Role::OnTertiaryFixed => McRole::OnTertiaryFixed,
         Role::OnTertiaryFixedVariant => McRole::OnTertiaryFixedVariant,
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -305,6 +315,7 @@ mod tests {
             Role::TertiaryFixedDim => s.tertiary_fixed_dim(),
             Role::OnTertiaryFixed => s.on_tertiary_fixed(),
             Role::OnTertiaryFixedVariant => s.on_tertiary_fixed_variant(),
+            _ => unreachable!("{r} has no scheme getter"),
         }
     }
 
@@ -330,9 +341,9 @@ mod tests {
                             SPEC,
                         );
                         let resolver = s.resolver();
-                        for &r in Role::ALL {
+                        for &r in Role::ALL.iter().filter(|r| !r.is_hue()) {
                             assert_eq!(
-                                resolver.rgb(mc_role(r).color()),
+                                resolver.rgb(mc_role(r).unwrap().color()),
                                 getter(&s, r),
                                 "{seed} {variant:?} dark {dark} contrast {contrast}: {r}"
                             );

@@ -452,6 +452,10 @@ impl<'a> Checker<'a> {
                 continue;
             }
             own.insert(path.to_string(), e);
+            if strand_scene::tokens::is_palette_path(path) {
+                self.error("check::reserved_token", format!("`${path}` is under `palette`, which is reserved for the palette's extras and identity"), entry.span, "reserved").help = Some("templates read `$palette.<name>`; give the token another name".into());
+                continue;
+            }
             // A component's token (`$Toast.radius`) is a knob sets
             // override like an inherited one.
             let inherited = self

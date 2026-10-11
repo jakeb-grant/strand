@@ -1180,8 +1180,9 @@ element merge(length -> value): node {}
 
 // ---------------------------------------------------------------------------
 // Tokens. The palette maps 1:1 onto Material 3 system roles (primary is
-// `accent`, on_surface is `fg`, background is `bg`); base tiers and the
-// derived roles design.md uses are typed here and valued by a theme.
+// `accent`, on_surface is `fg`, background is `bg`), then the 13 hue
+// roles; base tiers and the derived roles design.md uses are typed here
+// and valued by a theme.
 
 palette {
   /// The accent colour (Material 3 `primary`).
@@ -1282,6 +1283,32 @@ palette {
   on_tertiary_fixed
   /// Lower-emphasis text on `tertiary_fixed` (`on_tertiary_fixed_variant`).
   on_tertiary_fixed_variant
+  /// A red that stays red (terminal red, errors): a hue role.
+  red
+  /// An orange that stays orange: a hue role.
+  orange
+  /// A yellow that stays yellow (warnings): a hue role.
+  yellow
+  /// A green that stays green (success): a hue role.
+  green
+  /// A cyan that stays cyan: a hue role.
+  cyan
+  /// A blue that stays blue: a hue role.
+  blue
+  /// A magenta that stays magenta: a hue role.
+  magenta
+  /// A brighter `red` (lighter in dark palettes, darker in light).
+  bright_red
+  /// A brighter `yellow`.
+  bright_yellow
+  /// A brighter `green`.
+  bright_green
+  /// A brighter `cyan`.
+  bright_cyan
+  /// A brighter `blue`.
+  bright_blue
+  /// A brighter `magenta`.
+  bright_magenta
 }
 
 tokens {

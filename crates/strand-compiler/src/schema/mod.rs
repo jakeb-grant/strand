@@ -350,7 +350,7 @@ impl Schema {
         self.methods.get(type_name).map_or(&[], Vec::as_slice)
     }
 
-    /// Palette role names, in declaration order of the token table.
+    /// Palette role names, in name order (the token table is sorted).
     pub fn palette_roles(&self) -> impl Iterator<Item = &str> {
         self.tokens
             .iter()

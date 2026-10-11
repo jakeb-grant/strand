@@ -638,3 +638,18 @@ fn a_dropped_theme_host_ends_its_task() {
     }
     assert_eq!(counts[2], counts[5], "{counts:?}");
 }
+
+/// The builtin schema's `palette { }` block, which the checker reads, is
+/// strand-theme's role list: every role, the 13 hues included, and
+/// nothing else (a misspelt hue would make `$bright_magenta` unknown and
+/// let a user token take the name without `override`).
+#[test]
+fn the_schema_palette_block_is_the_role_list() {
+    let mut schema: Vec<&str> = strand_compiler::schema::Schema::builtin()
+        .palette_roles()
+        .collect();
+    let mut roles: Vec<&str> = Role::ALL.iter().map(|r| r.name()).collect();
+    schema.sort_unstable();
+    roles.sort_unstable();
+    assert_eq!(schema, roles);
+}

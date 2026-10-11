@@ -29,6 +29,39 @@ pub const MAX_TOKEN_DEPTH: u32 = 32;
 /// interfaces").
 pub const OVERLAY_ORIGIN: &str = "overlay";
 
+/// (M5) The 13 hue roles' token roots, after the Material 3 roles in
+/// strand-theme's `Role` (design.md, "Hue roles"): palette roots like any
+/// role, so they spring in a swap and a user token of one of these names
+/// needs `override`.
+pub const HUE_ROOTS: [&str; 13] = [
+    "red",
+    "orange",
+    "yellow",
+    "green",
+    "cyan",
+    "blue",
+    "magenta",
+    "bright_red",
+    "bright_yellow",
+    "bright_green",
+    "bright_cyan",
+    "bright_blue",
+    "bright_magenta",
+];
+
+/// (M5) The token first segment reserved for the palette's extras and
+/// identity (`$palette.mauve`, `$palette.name`): no token set may declare
+/// a token under it. They are held in [`TokenTable::palette`], never
+/// among the table's tokens, so they never spring and the token graph
+/// never reads them; templates read them (spec.md 9.5).
+pub const PALETTE_SEGMENT: &str = "palette";
+
+/// Whether `path` (without the `$`) lies under [`PALETTE_SEGMENT`].
+pub fn is_palette_path(path: &str) -> bool {
+    path.strip_prefix(PALETTE_SEGMENT)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
 /// A colour method: a `$` path segment followed by `(` (`$fg.alpha(0.65)`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TokenMethod {
@@ -294,6 +327,12 @@ pub struct TokenTable {
     /// name (`palette:catppuccin:mocha`, `base`, `tokens compact`,
     /// `component Toast`). Informational: evaluation never reads it.
     pub origins: BTreeMap<String, String>,
+    /// (M5) The palette's identity and extras, by their name under the
+    /// reserved `palette` segment (`name`, `source`, `dark`, then the
+    /// source's own colours in source order: `mauve`, `base0d`), as
+    /// [`TokenTable::palette_value`] reads them. Templates read them;
+    /// the render thread and the token graph never do.
+    pub palette: Vec<(String, PropValue)>,
     /// Every token evaluated once, as the global scope sees it
     /// ([`TokenTable::freeze`]).
     frozen: Frozen,
@@ -353,6 +392,12 @@ impl TokenTable {
     /// Where `path` was defined, if recorded.
     pub fn origin(&self, path: &str) -> Option<&str> {
         self.origins.get(path).map(String::as_str)
+    }
+
+    /// (M5) The palette entry `name` (`mauve` for `$palette.mauve`,
+    /// `name`, `source`, `dark`), if the table's palette has it.
+    pub fn palette_value(&self, name: &str) -> Option<&PropValue> {
+        self.palette.iter().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
     /// The plain value stored at `path` (not evaluating derived tokens).
@@ -1054,6 +1099,29 @@ fn gamut_map(c: Color) -> Color {
 mod tests {
     use super::*;
     use crate::protocol::{Border, GradientStop, Shadow};
+
+    #[test]
+    fn the_palette_segment_is_reserved_and_held_apart() {
+        assert!(is_palette_path("palette"));
+        assert!(is_palette_path("palette.mauve"));
+        assert!(is_palette_path("palette.color.brand_primary"));
+        assert!(!is_palette_path("palettes"));
+        assert!(!is_palette_path("surface.palette"));
+        let mut t = TokenTable::default();
+        t.insert("accent", PropValue::Color(Color::WHITE));
+        t.palette = vec![
+            ("name".into(), PropValue::Text("Catppuccin Mocha".into())),
+            ("mauve".into(), PropValue::Color(Color::BLACK)),
+        ];
+        assert_eq!(
+            t.palette_value("mauve"),
+            Some(&PropValue::Color(Color::BLACK))
+        );
+        assert_eq!(t.palette_value("lavender"), None);
+        // Not a token: the graph and the render thread never see it.
+        assert_eq!(t.lookup("palette.mauve"), None);
+        assert_ne!(t, TokenTable::default());
+    }
 
     #[test]
     fn the_overlay_origin_is_recorded_and_read_like_any_other() {
