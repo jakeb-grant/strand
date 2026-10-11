@@ -2,8 +2,9 @@
 //! experience": identity, layout, token provenance, kept-state badges;
 //! architecture.md, "M5 interfaces"). Read only, never read by
 //! evaluation, and nothing here runs unless asked, except
-//! [`Track::kept`], which notes the cells a tick kept over a changed
-//! default.
+//! [`Instance::inspect_tick`], which notes the cells a tick kept over a
+//! changed default (and forgets those no longer holding the kept value)
+//! and the password values a dump redacts.
 //!
 //! - [`Instance::identity`]: what keeps a node's identity across reloads
 //!   (design.md, "Identity and state, in plain words").
@@ -18,7 +19,7 @@
 //!   redacted.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ use serde_json::{Map, Value as Json};
 use strand_core::{Error, NodeId as CoreId, SettingsLayer};
 use strand_scene::provenance::value_reads;
 use strand_scene::tokens::OVERLAY_ORIGIN;
-use strand_scene::{NodeId, NodeKind, Prop, PropValue, StepKind, TokenExpr, TokenTable};
+use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneOp, StepKind, TokenExpr, TokenTable};
 
 use super::Instance;
 use super::emit::Emitter;
@@ -76,12 +77,84 @@ pub struct CellInfo {
 }
 
 /// What the inspector keeps across reloads: the sources the running
-/// program was compiled from, and the paths of cells kept over a changed
-/// default since the last boot or hard reload.
+/// program was compiled from, the cells kept over a changed default since
+/// the last boot or hard reload, and the password values a dump redacts.
 #[derive(Default)]
 pub(crate) struct Track {
     sources: RefCell<Option<Arc<SourceMap>>>,
-    kept: RefCell<HashSet<String>>,
+    /// Each kept cell by its registry key (one instance's cell, not every
+    /// cell sharing its path), with the value it kept: forgotten once the
+    /// cell holds anything else (reset, written, gone).
+    kept: RefCell<HashMap<Rc<str>, Value>>,
+    secrets: RefCell<Secrets>,
+}
+
+/// The password values a dump redacts, as the lock's `lock::Secrets`
+/// keeps them: each password input's sent `text` and `value`, and the
+/// newest [`REMEMBERED`] replaced by a value they do not start
+/// (submitted and emptied, edited, their input removed).
+#[derive(Default)]
+struct Secrets {
+    inputs: HashMap<NodeId, [Option<String>; 2]>,
+    remembered: VecDeque<String>,
+}
+
+/// How many replaced password values [`Secrets`] keeps (the lock's
+/// rule).
+const REMEMBERED: usize = 4;
+
+impl Secrets {
+    /// A tick's `ops` went out, and `em` holds what was sent.
+    fn see(&mut self, em: &Emitter, ops: &[SceneOp]) {
+        for op in ops {
+            if let SceneOp::SetProp {
+                id,
+                prop: Prop::InputType,
+                ..
+            } = op
+            {
+                self.inputs.entry(*id).or_default();
+            }
+        }
+        if self.inputs.is_empty() {
+            return;
+        }
+        let Secrets { inputs, remembered } = self;
+        inputs.retain(|id, slots| {
+            let live = is_password(em, *id);
+            for (slot, p) in slots.iter_mut().zip([Prop::Text, Prop::Value]) {
+                let new = match em.sent.get(id).and_then(|s| s.get(&p)) {
+                    Some(PropValue::Text(t)) if live && !t.is_empty() => Some(t.to_string()),
+                    _ => None,
+                };
+                if *slot == new {
+                    continue;
+                }
+                let old = std::mem::replace(slot, new);
+                // Typed on (the old value starts the new one): nothing to
+                // keep.
+                if let Some(old) = old
+                    && !slot.as_deref().is_some_and(|n| n.starts_with(&old))
+                {
+                    remember(remembered, old);
+                }
+            }
+            live
+        });
+    }
+}
+
+/// Keeps a replaced value: one inside a kept value is dropped, and kept
+/// ones inside it go.
+fn remember(remembered: &mut VecDeque<String>, value: String) {
+    if value.len() < MIN_SECRET || remembered.iter().any(|r| r.contains(&value)) {
+        return;
+    }
+    remembered.retain(|r| !value.contains(r.as_str()));
+    if remembered.len() == REMEMBERED {
+        remembered.pop_front();
+    }
+    remembered.push_back(value);
 }
 
 impl Track {
@@ -93,26 +166,95 @@ impl Track {
             self.kept.borrow_mut().clear();
         }
     }
+}
 
+/// A plain or keyed cell's path, value and default (`None`: a settings
+/// slot, or a value that cannot be read).
+fn cell_value<'a>(
+    rec: &'a CellRec,
+    rt: &strand_core::Runtime,
+) -> Option<(&'a str, Value, &'a Value)> {
+    match rec {
+        CellRec::Plain {
+            sig, default, path, ..
+        } => Some((path, sig.get_untracked(rt).ok()?, default)),
+        CellRec::Keyed {
+            list,
+            default,
+            path,
+            ..
+        } => Some((path, list.get_untracked(rt).ok()?, default)),
+        CellRec::Settings { .. } => None,
+    }
+}
+
+impl Instance {
     /// `build` was committed by a reload that did `report`.
-    pub(crate) fn reloaded(&self, build: &Build, report: &Report) {
-        self.compiled(build, false);
-        self.note(&report.kept_over_default);
+    pub(crate) fn inspect_reloaded(&self, build: &Build, report: &Report) {
+        self.inspect.compiled(build, false);
+        self.note_kept(&report.kept_over_default);
     }
 
-    /// A tick's persisted cells kept over a changed default: noted, and
-    /// passed on.
-    pub(crate) fn kept(&self, cells: Vec<KeptCell>) -> Vec<KeptCell> {
-        if !cells.is_empty() {
-            self.note(&cells);
-        }
+    /// A tick sends `ops` and reports `cells` (persisted cells kept over a
+    /// changed default): kept cells that changed are forgotten, the new
+    /// ones noted, the password values seen; `cells` passed on.
+    pub(crate) fn inspect_tick(&self, ops: &[SceneOp], cells: Vec<KeptCell>) -> Vec<KeptCell> {
+        self.prune_kept();
+        self.note_kept(&cells);
+        self.inspect
+            .secrets
+            .borrow_mut()
+            .see(&self.ctx.em.borrow(), ops);
         cells
     }
 
-    fn note(&self, cells: &[KeptCell]) {
-        self.kept
-            .borrow_mut()
-            .extend(cells.iter().map(|c| c.path.clone()));
+    /// Notes the cells `cells` name that hold a value other than their
+    /// default: just after a reload or a restore, exactly those kept
+    /// (one at its old default took the new one).
+    fn note_kept(&self, cells: &[KeptCell]) {
+        if cells.is_empty() {
+            return;
+        }
+        let reg = self.ctx.registry.borrow();
+        let mut kept = self.inspect.kept.borrow_mut();
+        for (k, rec) in &reg.cells {
+            if let Some((path, v, d)) = cell_value(rec, &self.rt)
+                && v != *d
+                && cells.iter().any(|c| c.path == path)
+            {
+                kept.insert(k.clone(), v);
+            }
+        }
+    }
+
+    /// Forgets the kept cells that no longer hold the value they kept.
+    fn prune_kept(&self) {
+        let mut kept = self.inspect.kept.borrow_mut();
+        if kept.is_empty() {
+            return;
+        }
+        let reg = self.ctx.registry.borrow();
+        kept.retain(|k, was| {
+            reg.cells
+                .get(k)
+                .and_then(|rec| cell_value(rec, &self.rt))
+                .is_some_and(|(_, v, _)| v == *was)
+        });
+    }
+
+    /// Forgets the kept cells at `path` (`reset(path)`).
+    pub(crate) fn forget_kept(&self, path: &str) {
+        let mut kept = self.inspect.kept.borrow_mut();
+        if kept.is_empty() {
+            return;
+        }
+        let reg = self.ctx.registry.borrow();
+        kept.retain(|k, _| {
+            reg.cells
+                .get(k)
+                .and_then(|rec| cell_value(rec, &self.rt))
+                .is_some_and(|(p, ..)| p != path)
+        });
     }
 }
 
@@ -176,15 +318,26 @@ fn is_password(em: &Emitter, node: NodeId) -> bool {
         )
 }
 
+/// `text` holds a run of [`MIN_SECRET`] bytes of one of `secrets`
+/// (lower-cased already), compared lower-cased: a slice or a case-changed
+/// copy of a password counts (the lock's `Secrets` rule).
+fn holds(text: &str, secrets: &[String]) -> bool {
+    if secrets.is_empty() || text.len() < MIN_SECRET {
+        return false;
+    }
+    let text = text.to_lowercase();
+    let runs = || text.as_bytes().windows(MIN_SECRET);
+    secrets.iter().any(|s| {
+        s.as_bytes()
+            .windows(MIN_SECRET)
+            .any(|w| runs().any(|t| t == w))
+    })
+}
+
 /// `v` shows one of `secrets`, raw or as shown.
-fn leaks(v: &PropValue, shown: &str, secrets: &[Rc<str>]) -> bool {
-    let raw = |v: &PropValue| match v {
-        PropValue::Text(t) => secrets.iter().any(|s| t.contains(&**s)),
-        _ => false,
-    };
-    secrets.iter().any(|s| shown.contains(&**s))
-        || raw(v)
-        || matches!(v, PropValue::List(items) if items.iter().any(raw))
+fn leaks(v: &PropValue, shown: &str, secrets: &[String]) -> bool {
+    let raw = |v: &PropValue| matches!(v, PropValue::Text(t) if holds(t, secrets));
+    holds(shown, secrets) || raw(v) || matches!(v, PropValue::List(items) if items.iter().any(raw))
 }
 
 impl Instance {
@@ -247,7 +400,10 @@ impl Instance {
         let reg = self.ctx.registry.borrow();
         let closed = self.ctx.closed.borrow();
         let kept = self.inspect.kept.borrow();
-        let differs = |v: Option<Value>, d: &Value| v.is_some_and(|v| v != *d);
+        // Kept: this cell still holds the value it kept.
+        let is_kept = |k: &Rc<str>, v: Option<Value>, d: &Value| {
+            v.is_some_and(|v| v != *d && kept.get(k) == Some(&v))
+        };
         // (rank: the scope's depth on the mount path, 0 for a read; cell)
         let mut found: Vec<(usize, CellInfo)> = Vec::new();
         for (k, rec) in &reg.cells {
@@ -277,8 +433,7 @@ impl Instance {
                     reads.contains(&sig.id()),
                     CellInfo {
                         path: path.clone(),
-                        kept: kept.contains(path)
-                            && differs(sig.get_untracked(&self.rt).ok(), default),
+                        kept: is_kept(k, sig.get_untracked(&self.rt).ok(), default),
                         persisted: persisted.is_some(),
                         layer: None,
                     },
@@ -293,8 +448,7 @@ impl Instance {
                     reads.contains(&kv.id()) || reads.contains(&list.id()),
                     CellInfo {
                         path: path.clone(),
-                        kept: kept.contains(path)
-                            && differs(list.get_untracked(&self.rt).ok(), default),
+                        kept: is_kept(k, list.get_untracked(&self.rt).ok(), default),
                         persisted: false,
                         layer: None,
                     },
@@ -434,6 +588,8 @@ impl Instance {
             let items = d.as_list().map(<[Value]>::to_vec).unwrap_or_default();
             n += usize::from(matches!(k.replace_all_reloaded(rt, items), Ok(true)));
         }
+        // Back at their defaults: no longer kept.
+        self.prune_kept();
         Ok(n)
     }
 
@@ -495,19 +651,27 @@ impl Instance {
         ]))
     }
 
-    /// The values of the password inputs on the scene (their `Text` or
-    /// `Value` prop).
-    fn secrets(&self) -> Vec<Rc<str>> {
+    /// The password values a dump redacts, lower-cased: the password
+    /// inputs' `Text` and `Value` on the scene, and the newest replaced
+    /// ones ([`Secrets`]), each of [`MIN_SECRET`] bytes or more.
+    fn secrets(&self) -> Vec<String> {
         let em = self.ctx.em.borrow();
-        let mut out = Vec::new();
+        let mut out: Vec<String> = Vec::new();
+        let mut add = |t: &str| {
+            let t = t.to_lowercase();
+            if t.len() >= MIN_SECRET && !out.contains(&t) {
+                out.push(t);
+            }
+        };
         for n in em.nodes.keys().filter(|n| is_password(&em, **n)) {
             for p in [Prop::Text, Prop::Value] {
-                if let Some(PropValue::Text(t)) = em.sent.get(n).and_then(|s| s.get(&p))
-                    && t.len() >= MIN_SECRET
-                {
-                    out.push(Rc::from(t.as_str()));
+                if let Some(PropValue::Text(t)) = em.sent.get(n).and_then(|s| s.get(&p)) {
+                    add(t);
                 }
             }
+        }
+        for t in &self.inspect.secrets.borrow().remembered {
+            add(t);
         }
         out
     }
@@ -523,7 +687,7 @@ impl Instance {
         &self,
         node: NodeId,
         table: &TokenTable,
-        secrets: &[Rc<str>],
+        secrets: &[String],
         files: &mut Map<String, Json>,
     ) -> Option<Json> {
         let identity = self.identity(node)?;
@@ -575,7 +739,7 @@ impl Instance {
                 ]));
             }
         }
-        let redact = |s: &str| match secrets.iter().any(|x| s.contains(&**x)) {
+        let redact = |s: &str| match holds(s, secrets) {
             true => REDACTED.to_string(),
             false => s.to_string(),
         };

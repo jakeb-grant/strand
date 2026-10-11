@@ -420,3 +420,108 @@ input { type: password; text: <-> pw }\n  text pw\n  box { bg: $surface.hi }\n}\
     assert!(!one.to_string().contains("hunter22"));
     assert_eq!(one["node"]["props"]["type"], "password");
 }
+
+/// The kept badge is one instance's: a sibling sharing the cell's path
+/// that later takes the same value by an ordinary write has none, and a
+/// reset cell written back to the kept value has none either.
+#[test]
+fn a_kept_badge_belongs_to_the_instance_that_kept() {
+    let mut shell = boot(&[("t.strand", COUNTER)], Storage::none(), &["DP-1"]);
+    shell.click(shell.text("onex"));
+    let edited = COUNTER.replace("state q = \"x\"", "state q = \"y\"");
+    shell.reload(&[("t.strand", &edited)]);
+    assert!(shell.cell(shell.text("onefir"), "Counter.q").kept);
+    // Counter two writes "fir" itself: never kept over a default.
+    shell.click(shell.text("twoy"));
+    let two = shell.text("twofir");
+    assert!(!shell.cell(two, "Counter.q").kept, "an ordinary write");
+    assert!(shell.cell(shell.text("onefir"), "Counter.q").kept);
+    // Reset, then written back to "fir": no reload in between.
+    shell.inst.reset("Counter.q").unwrap();
+    shell.flush();
+    shell.click(shell.text("oney"));
+    let one = shell.text("onefir");
+    assert!(!shell.cell(one, "Counter.q").kept, "written after a reset");
+    // Reset subtree forgets it too.
+    let mut shell = boot(&[("t.strand", COUNTER)], Storage::none(), &["DP-1"]);
+    shell.click(shell.text("onex"));
+    shell.reload(&[("t.strand", &edited)]);
+    let one = shell.text("onefir");
+    assert_eq!(shell.inst.reset_subtree(one).unwrap(), 1);
+    shell.flush();
+    shell.click(shell.text("oney"));
+    assert!(!shell.cell(shell.text("onefir"), "Counter.q").kept);
+}
+
+const HITS: &str = "bar Top {\n  Hits \"h\"\n}\n\
+component Hits(label: text) {\n  state hits = 0 persist\n  \
+text join(\"\", label, hits) { on click { hits += 1 } }\n}\n";
+
+/// A persisted value restored over a changed default (a tick's kept
+/// cells, not a reload's) is kept at boot and again after a hard reload,
+/// until it is written.
+#[test]
+fn a_persisted_value_kept_at_boot_shows_the_badge() {
+    let dir = temp_dir("boot-kept");
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    {
+        let mut shell = boot(&[("t.strand", HITS)], storage(), &["DP-1"]);
+        shell.click(shell.text("h0"));
+        let h = shell.text("h1");
+        assert!(!shell.cell(h, "Hits.hits").kept, "its own write");
+        if let Some(s) = &shell.storage.persist {
+            assert!(s.sync(Duration::from_secs(5)));
+        }
+    }
+    let edited = HITS.replace("hits = 0", "hits = 5");
+    let mut shell = boot(&[("t.strand", &edited)], storage(), &["DP-1"]);
+    let h = shell.text("h1");
+    let hits = shell.cell(h, "Hits.hits");
+    assert!(hits.kept && hits.persisted, "{hits:?}");
+    // A hard reload forgets what was kept before it.
+    let build = compile(Some(&shell.build), &[("t.strand", &edited)]);
+    shell.inst.reload_hard(&build);
+    shell.build = build;
+    shell.flush();
+    let h = shell.text("h1");
+    assert!(
+        !shell.cell(h, "Hits.hits").kept,
+        "forgotten by a hard reload"
+    );
+    // One that changes the default again keeps the value over it.
+    let again = HITS.replace("hits = 0", "hits = 7");
+    let build = compile(Some(&shell.build), &[("t.strand", &again)]);
+    shell.inst.reload_hard(&build);
+    shell.build = build;
+    shell.flush();
+    let h = shell.text("h1");
+    assert!(shell.cell(h, "Hits.hits").kept, "kept over 7");
+    // Written: no longer the kept value.
+    shell.click(h);
+    assert!(!shell.cell(shell.text("h2"), "Hits.hits").kept);
+    if let Some(s) = &shell.storage.persist {
+        s.sync(Duration::from_secs(5));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A dump redacts what the lock's `Secrets` rule does: a password copied
+/// and cleared on submit (the field's text is empty, the copy is not),
+/// a case-changed copy and a 4-byte slice of it.
+#[test]
+fn a_dump_redacts_a_submitted_password_and_its_fragments() {
+    let src = "state pw = \"hunter22\"\nstate tried = \"\"\nbar B {\n  \
+input { type: password; text: <-> pw; on activate { tried = pw; pw = \"\" } }\n  \
+text join(\"\", \"tried \", tried)\n  text tried.upper()\n  text \"plain\"\n}\n";
+    let mut shell = boot(&[("t.strand", src)], Storage::none(), &["DP-1"]);
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    assert!(shell.inst.event(input, "activate", Vec::new()));
+    shell.flush();
+    assert!(shell.scene.find_text("tried hunter22").is_some());
+    assert!(shell.scene.find_text("HUNTER22").is_some());
+    let text = shell.inst.dump(None).unwrap().to_string();
+    for shown in ["hunter22", "HUNTER22", "hunt"] {
+        assert!(!text.contains(shown), "{shown} in {text}");
+    }
+    assert!(text.contains("plain"), "other text is shown");
+}

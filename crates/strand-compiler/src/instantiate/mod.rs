@@ -1114,7 +1114,7 @@ impl Instance {
             report.notices.push(w.clone());
             report.ambiguous.push(w.clone());
         }
-        self.inspect.reloaded(build, &report);
+        self.inspect_reloaded(build, &report);
         report
     }
 
@@ -1379,6 +1379,7 @@ impl Instance {
                 transition: Transition::Default,
             });
         }
+        let kept = self.inspect_tick(&ops, self.ctx.kept.borrow_mut().drain(..).collect());
         let mut errors: Vec<RuntimeError> = self.ctx.errors.borrow_mut().drain(..).collect();
         for (id, e) in tick.errors {
             let site = self.ctx.sites.borrow().get(&id).cloned();
@@ -1397,9 +1398,7 @@ impl Instance {
             errors,
             diagnostics: tick.diagnostics,
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
-            kept: self
-                .inspect
-                .kept(self.ctx.kept.borrow_mut().drain(..).collect()),
+            kept,
         }
     }
 
@@ -2033,6 +2032,7 @@ impl Instance {
     /// reload kept over a changed default: `launcher.query: kept "fir"
     /// (default changed) [reset]`) is set to its current default.
     pub fn reset(&self, path: &str) -> Result<(), Error> {
+        self.forget_kept(path);
         let mut found = false;
         {
             let cells = self.ctx.persisted.borrow();
