@@ -96,8 +96,8 @@ fn main() -> std::process::ExitCode {
   first read is in. Add `thread` to `#[service(…)]` for a body that
   blocks; it then gets a thread of its own.
 - A registration the builder cannot serve (a bad or taken name, a
-  schema that does not apply) stops every command with a message,
-  before anything runs.
+  schema that does not apply or that declares a service besides its
+  own) stops every command with a message, before anything runs.
 
 ## The two things every plugin must copy
 

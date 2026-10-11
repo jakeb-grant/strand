@@ -216,6 +216,17 @@ fn layered(list: &[Registration]) -> Result<Vec<(Schema, Schema)>, PluginError> 
         if next.provisional.len() < s.provisional.len() {
             return Err(schema_err(vec!["it redeclares a builtin service".into()]));
         }
+        // Exactly one new service: another would be served with no store
+        // behind it (decisions.md m5-plugins, review round 1 item 1).
+        let others: Vec<String> = next
+            .services
+            .keys()
+            .filter(|k| k.as_str() != r.name && !s.services.contains_key(k.as_str()))
+            .map(|k| format!("it declares `service {k}` too; one text serves one service"))
+            .collect();
+        if !others.is_empty() {
+            return Err(schema_err(others));
+        }
         out.push((s, next.clone()));
         s = next;
     }
@@ -454,6 +465,20 @@ pub(crate) mod tests {
             validate(&[other]),
             Err(PluginError::Schema { .. })
         ));
+        // A text declaring its own service and another one.
+        let two = reg("hello", || {
+            "service hello {\n  /// x.\n  x: int\n}\n\
+             service extra {\n  /// x.\n  x: int rw\n  /// a.\n  action go()\n}\n"
+        });
+        let err = validate(&[two]).unwrap_err();
+        let PluginError::Schema { service, errors } = &err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(service, "hello");
+        assert!(
+            errors.iter().any(|e| e.contains("`service extra`")),
+            "{errors:?}"
+        );
     }
 
     #[test]

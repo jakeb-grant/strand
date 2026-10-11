@@ -445,6 +445,42 @@ fn the_stock_strand_reads_plugin_schemas() {
     );
 }
 
+/// Plugin schema files that are skipped (one not UTF-8, one that does
+/// not apply) next to a good one: the stock `strand check` prints each
+/// as a warning, counts it and still passes, and the stock `strand run`
+/// logs each (decisions.md m5-plugins, review round 1 item 2).
+#[test]
+fn skipped_plugin_files_are_reported() {
+    let mut d = Desk::new("skip");
+    d.write_schemas();
+    let dir = d.schema_file().parent().unwrap().to_path_buf();
+    let not_utf8 = dir.join("broken.schema");
+    std::fs::write(&not_utf8, b"service broken {\xff\n}\n").unwrap();
+    let bad = dir.join("bad.schema");
+    std::fs::write(&bad, "/// Bad.\nservice bad {\n").unwrap();
+    d.save(READS_HELLO);
+    let out = d.strand(&["check", &d.config().display().to_string()]);
+    let said = format!("{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(out.status.success(), "{said}");
+    for path in [&not_utf8, &bad] {
+        assert!(
+            said.contains(&format!("warning: plugin schema: {}", path.display())),
+            "{said}"
+        );
+    }
+    assert!(said.contains("0 errors, 2 warnings"), "{said}");
+    if !sway_tools() {
+        return;
+    }
+    d.save(PLAIN);
+    d.sway();
+    d.start(&PathBuf::from(env!("CARGO_BIN_EXE_strand")), "bar.label");
+    let log = d.log_text();
+    for path in [&not_utf8, &bad] {
+        assert!(log.contains(&path.display().to_string()), "{log}");
+    }
+}
+
 /// A plugin binary without `strand::process_setup!()` says so; one with
 /// it does not.
 #[test]
