@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use material_colors::color::Rgb;
 use material_colors::hct::Hct;
-use strand_scene::{Color, Oklch};
+use strand_scene::{Color, Oklch, PropValue, TokenTable};
 use strand_theme::contrast::{self, MIN_CONTRAST};
 use strand_theme::import::CATPPUCCIN;
 use strand_theme::import::CATPPUCCIN_NAMES;
@@ -376,4 +376,88 @@ fn the_persisted_text_round_trips_extras_and_name() {
     harmonised(&back);
     assert_eq!(back.name(), Some("catppuccin:mocha"));
     assert!(back.extras().is_empty());
+}
+
+/// What `insert_into` hands the token table's palette entries, the only
+/// thing `$palette.<name>` (templates, `strand export`) reads: the
+/// identity first (`name` with its source-string fallback, `source` only
+/// when there is one, `dark` a bool), then the extras in source order.
+#[test]
+fn insert_into_writes_the_identity_then_the_extras_in_order() {
+    let text = |s: &str| PropValue::Text(s.into());
+    let names =
+        |t: &TokenTable| -> Vec<String> { t.palette.iter().map(|(n, _)| n.clone()).collect() };
+
+    let p = import("catppuccin:mocha", None).unwrap();
+    let mut t = TokenTable::default();
+    p.insert_into(&mut t);
+    assert_eq!(t.palette_value("name"), Some(&text("Catppuccin Mocha")));
+    assert_eq!(t.palette_value("source"), Some(&text("catppuccin:mocha")));
+    assert_eq!(t.palette_value("dark"), Some(&PropValue::Bool(true)));
+    assert_eq!(
+        t.palette_value("mauve"),
+        Some(&PropValue::Color(hex("#cba6f7")))
+    );
+    let want: Vec<String> = ["name", "source", "dark"]
+        .into_iter()
+        .chain(CATPPUCCIN_NAMES.iter().copied())
+        .map(String::from)
+        .collect();
+    assert_eq!(names(&t), want);
+    let latte = import("catppuccin:latte", None).unwrap();
+    latte.insert_into(&mut t);
+    assert_eq!(t.palette_value("dark"), Some(&PropValue::Bool(false)));
+    assert_eq!(t.palette_value("name"), Some(&text("Catppuccin Latte")));
+
+    // No scheme name: `name` is the source string.
+    let dir = temp("insert");
+    std::fs::write(
+        dir.join("m.json"),
+        r##"{ "mode": "dark", "colors": { "dark": {
+            "zeta": "#112233", "primary": "#a4c9fe", "alpha": "#445566" } } }"##,
+    )
+    .unwrap();
+    let p = import("matugen:m.json", Some(&dir)).unwrap();
+    let mut t = TokenTable::default();
+    p.insert_into(&mut t);
+    assert_eq!(t.palette_value("name"), Some(&text("matugen:m.json")));
+    assert_eq!(names(&t), ["name", "source", "dark", "zeta", "alpha"]);
+    let _ = std::fs::remove_dir_all(dir);
+
+    // No source and no name: neither entry, `dark` alone, the extras after.
+    let p = Partial::new()
+        .with(Role::Accent, hex("#7aa2f7"))
+        .with(Role::Surface, hex("#fafafa"))
+        .fill()
+        .with_extras(vec![("glow".into(), hex("#ff0000"))]);
+    let mut t = TokenTable::default();
+    p.insert_into(&mut t);
+    assert_eq!(t.palette_value("name"), None);
+    assert_eq!(t.palette_value("source"), None);
+    assert_eq!(names(&t), ["dark", "glow"]);
+    assert_eq!(t.palette_value("dark"), Some(&PropValue::Bool(p.is_dark())));
+}
+
+/// A first segment the identity uses is renamed whether it is a colour
+/// or a W3C group (`$palette.dark` is a bool, so `$palette.dark.surface`
+/// could not be read under it); later segments never are.
+#[test]
+fn identity_names_are_renamed_as_colours_and_as_groups() {
+    use strand_theme::palette::extra_name;
+    assert_eq!(extra_name(&["dark"]), "dark_");
+    assert_eq!(extra_name(&["Source"]), "source_");
+    assert_eq!(extra_name(&["dark", "surface"]), "dark_.surface");
+    assert_eq!(extra_name(&["color", "name"]), "color.name");
+    let dir = temp("groups");
+    std::fs::write(
+        dir.join("w.json"),
+        r##"{ "dark": { "$type": "color", "surface": { "$value": "#111111" } },
+              "color": { "$type": "color", "accent": { "$value": "#ff5500" },
+                         "name": { "$value": "#222222" } } }"##,
+    )
+    .unwrap();
+    let p = import("w3c:w.json", Some(&dir)).unwrap();
+    let names: Vec<&str> = p.extras().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["dark_.surface", "color.accent", "color.name"]);
+    let _ = std::fs::remove_dir_all(dir);
 }
