@@ -113,8 +113,13 @@ fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 if [ ! -e /.dockerenv ]; then
-  # run.sh passes only STRAND_* in: carry SIZE_REPORT_* on the command.
-  exec "$ROOT/scripts/container/run.sh" env $(env | grep -E '^SIZE_REPORT_[A-Z]+=' || true) \
+  # run.sh passes only STRAND_* in: carry SIZE_REPORT_* on the command,
+  # one word each, so values with spaces ("cpu gpu", paths) survive.
+  vars=()
+  for v in $(compgen -e | grep -E '^SIZE_REPORT_[A-Z]+$' || true); do
+    vars+=("$v=${!v}")
+  done
+  exec "$ROOT/scripts/container/run.sh" env "${vars[@]}" \
     "$ROOT/scripts/size-report.sh" "$@"
 fi
 cd "$ROOT"

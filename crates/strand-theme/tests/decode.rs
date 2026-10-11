@@ -247,3 +247,22 @@ fn a_lossless_webp_seeds_as_the_same_png_does() {
         assert_eq!(from_webp, from_png, "case {i}");
     }
 }
+
+/// A corrupt WebP reads as it did through `image`'s wrapper: "Format
+/// error decoding WebP: " and image-webp's cause (decisions.md, m5-size
+/// reclaim 1).
+#[test]
+fn a_corrupt_webp_keeps_its_error_wording() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // A RIFF/WEBP file whose chunk is neither VP8, VP8L nor VP8X.
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&(4 + 8 + 16u32).to_le_bytes());
+    webp.extend_from_slice(b"WEBPJUNK");
+    webp.extend_from_slice(&16u32.to_le_bytes());
+    webp.extend_from_slice(&[0u8; 16]);
+    let e = seed_from_bytes(&webp).unwrap_err().to_string();
+    assert!(
+        e.starts_with("cannot decode the image: Format error decoding WebP: "),
+        "{e}"
+    );
+}

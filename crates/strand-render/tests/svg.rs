@@ -250,3 +250,92 @@ fn the_file_is_read_on_the_image_worker() {
         rgb(&buf, 28, 16)
     );
 }
+
+/// A 300 × 40 meter (design.md rates a bindable SVG "Trivial": under
+/// 0.1 ms a frame for a 300 × 40 region): a track, a filled bar and a
+/// needle, each a layer.
+const METER: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="40" viewBox="0 0 300 40">
+  <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#89b4fa"/><stop offset="1" stop-color="#cba6f7"/></linearGradient></defs>
+  <rect id="track" x="4" y="14" width="292" height="12" rx="6" fill="#45475a"/>
+  <rect id="bar" x="4" y="14" width="180" height="12" rx="6" fill="url(#g)"/>
+  <g transform="translate(150 20)">
+    <path id="needle" d="M -2 -18 L 2 -18 L 3 18 L -3 18 Z" fill="#f5e0dc" stroke="#11111b" stroke-width="1"/>
+  </g>
+</svg>"##;
+
+/// Not a gate: the per-frame cost of an animated bindable SVG (a part
+/// whose `rotate` reads `time`, so every frame re-parses and redraws),
+/// printed for A/B builds (decisions.md, m5-size reclaim 2). Run with
+/// `cargo test --profile timing -p strand-render --test svg -- --ignored
+/// --nocapture svg_frame_cost`.
+#[test]
+#[ignore = "measurement, not a gate"]
+fn svg_frame_cost() {
+    use std::time::Instant;
+    let dir = std::env::temp_dir().join(format!("strand-svg-{}-cost", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("meter.svg");
+    std::fs::write(&file, METER).unwrap();
+    let frames: u32 = std::env::var("SVG_COST_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    let run = |spin: bool| -> f64 {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Bar,
+            None,
+            vec![
+                (Prop::Width, num(300.0)),
+                (Prop::Height, num(40.0)),
+                (Prop::Bg, color("#1e1e2e")),
+            ],
+        );
+        let svg = b.node(
+            NodeKind::Svg,
+            Some(root),
+            vec![
+                (Prop::Source, text(file.to_str().unwrap())),
+                (Prop::Width, num(300.0)),
+                (Prop::Height, num(40.0)),
+            ],
+        );
+        let rotate = if spin {
+            PropValue::Token(TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Time),
+                rhs: Box::new(TokenExpr::value(PropValue::Number(90.0))),
+            })
+        } else {
+            PropValue::Angle(30.0)
+        };
+        b.node(
+            NodeKind::SvgPart,
+            Some(svg),
+            vec![(Prop::Name, text("needle")), (Prop::Rotate, rotate)],
+        );
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(300, 40, Scale::ONE);
+        let mut at = T0;
+        buf.paint_at(&mut r, S, 0, at);
+        assert_eq!(r.wants_frame(S), spin);
+        for _ in 0..100 {
+            at += Duration::from_millis(16);
+            buf.paint_at(&mut r, S, 0, at);
+        }
+        let start = Instant::now();
+        for _ in 0..frames {
+            at += Duration::from_millis(16);
+            buf.paint_at(&mut r, S, 0, at);
+        }
+        start.elapsed().as_secs_f64() * 1e6 / f64::from(frames)
+    };
+    let fixed = run(false);
+    let spin = run(true);
+    println!(
+        "svg_frame_cost: still {fixed:.1} us/frame, spinning {spin:.1} us/frame, svg redraw {:.1} us",
+        spin - fixed
+    );
+}
