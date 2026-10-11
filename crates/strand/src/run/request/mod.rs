@@ -1,13 +1,12 @@
 //! IPC requests on the logic thread: [`Shell::request`] dispatches each
 //! command to its own module, so the streams that serve M5's commands
 //! own disjoint files (docs/m5-plan.md, "Streams": `get`, `set`,
-//! `toggle`, `call`, `clear` S-ipc; `inspect.*` S-inspect; `report`
-//! S-tools). A command no module serves yet does not parse from the
-//! socket (`strand_core::ipc::parse`); from another thread it arrives
-//! as a `Request` and is answered as the socket answers it, M4's answer:
-//! an unknown command as one ([`strand_core::ipc::unknown`]), and
-//! `reset{node}` (`Request::ResetNode`, whose `reset` M4 knew) with
-//! "`reset` needs a `path`" ([`Shell::reset_node_request`]).
+//! `toggle`, `call`, `clear` S-ipc, and in wave 2 `inspect.node`,
+//! `inspect.dump` and `reset{node}` over S-inspect's library; the other
+//! `inspect.*` S-inspect; `report` S-tools). A command no module serves
+//! yet does not parse from the socket (`strand_core::ipc::parse`); from
+//! another thread it arrives as a `Request` and is answered as the
+//! socket answers it, as an unknown command ([`strand_core::ipc::unknown`]).
 //!
 //! A request comes from a socket client or, through
 //! [`strand_core::ipc::IpcRequests`], from another thread (the D-Bus
@@ -48,7 +47,9 @@ impl Shell {
             Request::Reload { hard } => self.reload_request(from, hard),
             Request::Watch => self.watch_request(from),
             Request::Reset { path } => self.reset_request(from, &path),
-            Request::ResetNode { .. } => self.reset_node_request(from),
+            Request::ResetNode { node } => self.reset_node_request(from, &node),
+            Request::InspectNode { id } => self.inspect_node_request(from, &id),
+            Request::InspectDump { surface } => self.inspect_dump_request(from, surface.as_deref()),
             Request::Set { path, value } => self.set_request(from, &path, &value),
             Request::Get { path } => self.get_request(from, &path),
             Request::Toggle { path } => self.toggle_request(from, &path),
@@ -72,7 +73,8 @@ impl Shell {
     }
 
     /// Answer a command this shell does not serve yet as an unknown one
-    /// (the request channel's M5 commands; `reload` and `watch` from it).
+    /// (the request channel's unserved M5 commands, and `watch` from it:
+    /// on D-Bus, watching is the `Changed` signal).
     fn not_served(&mut self, from: Caller, cmd: &str) {
         self.answer(from, proto::unknown(cmd));
     }

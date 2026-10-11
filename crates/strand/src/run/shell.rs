@@ -58,6 +58,11 @@ pub(super) struct Shell {
     /// time ends when its diff is sent), with the clients whose
     /// `strand reload` each answers.
     pub(super) events: Vec<(Json, Instant, Vec<ipc::ClientId>)>,
+    /// (M5) `reload`s from the request channel (the D-Bus front end)
+    /// waiting for their load: each a client id of their own
+    /// (`BUS_RELOAD` set, `run/request/reload.rs`, so no socket client
+    /// has it) with its reply.
+    pub(super) bus_reloads: Vec<(ipc::ClientId, strand_core::ipc::Reply)>,
     /// The newest load attempt's problems: a deferred load replayed after
     /// the unlock reports these, not its own older ones.
     pub(super) latest: Problems,
@@ -593,7 +598,7 @@ impl Shell {
             }
         }
         let now = Instant::now();
-        for (mut ev, since, clients) in self.events.drain(..) {
+        for (mut ev, since, clients) in std::mem::take(&mut self.events) {
             ev["timing"]["total_ms"] = json!(ms(now.saturating_duration_since(since)));
             log::info!("{}", ipc::describe(&ev).trim_end());
             if let Some(sink) = &self.event_sink {
@@ -601,10 +606,10 @@ impl Shell {
             }
             if let Some(s) = &mut self.server {
                 s.broadcast(&ev);
-                // Each `strand reload` gets the event of its own load.
-                for id in clients {
-                    s.answer(id, &json!({"ok": true, "event": ev.clone()}));
-                }
+            }
+            // Each `strand reload` gets the event of its own load.
+            for id in clients {
+                self.reloaded(id, json!({"ok": true, "event": ev.clone()}));
             }
         }
     }

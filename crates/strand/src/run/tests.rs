@@ -354,18 +354,23 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
         (ipc::Request::Report, "report"),
         (ipc::Request::InspectFlash { on: true }, "inspect.flash"),
         (ipc::Request::Watch, "watch"),
-        (ipc::Request::Reload { hard: false }, "reload"),
     ] {
         assert_eq!(
             ask(req),
             json!({"ok": false, "error": format!("unknown command `{cmd}`")})
         );
     }
-    // `reset` is known and its `{node}` form not served yet: M4's answer,
-    // as the socket gives it.
+    // (S-ipc) A bus `reload` is served: this shell has no compiler
+    // worker, so it says so rather than waiting for a load.
+    assert_eq!(
+        ask(ipc::Request::Reload { hard: false }),
+        json!({"ok": false, "error": "this shell does not reload"})
+    );
+    // (S-ipc) `reset{node}` is served, and reads a node ref.
     assert_eq!(
         ask(ipc::Request::ResetNode { node: "1v0".into() }),
-        json!({"ok": false, "error": "`reset` needs a `path`"})
+        json!({"ok": false, "error":
+            "`1v0` is not a node id (`index.generation`, as the inspector spells it)"})
     );
     // An event reaches the sink without a socket.
     to_logic.send(ToLogic::Picked(PickEvent::Ended)).unwrap();
@@ -526,13 +531,16 @@ fn saves_reload_live_with_state_kept() {
     let socket = dir.join("ipc.sock");
     let (wtx, wrx) = calloop::channel::channel();
     let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let (give, take) = std::sync::mpsc::channel();
     let live = Live {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
-        requests_to: None,
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
         events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
@@ -676,11 +684,6 @@ fn saves_reload_live_with_state_kept() {
         (ipc::Request::Report, "report"),
         (ipc::Request::InspectPick { on: true }, "inspect.pick"),
         (
-            ipc::Request::InspectNode { id: "1v0".into() },
-            "inspect.node",
-        ),
-        (ipc::Request::InspectDump { surface: None }, "inspect.dump"),
-        (
             ipc::Request::InspectHighlight { id: None },
             "inspect.highlight",
         ),
@@ -692,18 +695,84 @@ fn saves_reload_live_with_state_kept() {
             json!({"ok": false, "error": format!("unknown command `{cmd}`")})
         );
     }
-    let ans = ipc::request(
-        &mut client,
-        &ipc::Request::ResetNode { node: "1v0".into() },
-        Duration::from_secs(10),
-    )
-    .unwrap();
-    // `reset` is known and its `{node}` form not served yet: M4's answer.
-    assert_eq!(
-        ans,
-        json!({"ok": false, "error": "`reset` needs a `path`"}),
-        "{ans}"
+    // (S-ipc, wave 2) The inspector's `inspect.node`, `inspect.dump` and
+    // `reset{node}` are served: a node they cannot read or find is
+    // refused, and the connection stays.
+    for (req, why) in [
+        (
+            ipc::Request::InspectNode { id: "1v0".into() },
+            "`1v0` is not a node id",
+        ),
+        (
+            ipc::Request::InspectNode {
+                id: "999999.0".into(),
+            },
+            "no node `999999.0`",
+        ),
+        (
+            ipc::Request::InspectDump {
+                surface: Some("999999.0".into()),
+            },
+            "no node `999999.0`",
+        ),
+        (
+            ipc::Request::ResetNode {
+                node: "999999.0".into(),
+            },
+            "no node `999999.0`",
+        ),
+    ] {
+        let ans = ipc::request(&mut client, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(ans["ok"], false, "{req:?}");
+        let said = ans["error"].as_str().unwrap();
+        assert!(said.contains(why), "{req:?}: {said}");
+    }
+    // The dump of every surface: the bar's root first, in tree order.
+    let ask = |req: &ipc::Request| {
+        let mut c =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        ipc::request(&mut c, req, Duration::from_secs(10)).unwrap()
+    };
+    let all = ask(&ipc::Request::InspectDump { surface: None });
+    assert_eq!(all["ok"], true, "{all}");
+    let nodes = all["nodes"].as_array().unwrap();
+    let bar_ref = strand_compiler::instantiate::inspect::node_ref(root);
+    assert_eq!(nodes[0]["id"], bar_ref.as_str(), "{all}");
+    assert_eq!(nodes[0]["parent"], Json::Null, "{all}");
+    let files = all["files"].as_object().unwrap();
+    assert!(
+        files.len() == 1 && files.keys().all(|f| f.ends_with("bar.strand")),
+        "{all}"
     );
+    // One surface's dump is its tree; one node's pane is that node.
+    let one = ask(&ipc::Request::InspectDump {
+        surface: Some(bar_ref.clone()),
+    });
+    assert_eq!(one["nodes"], all["nodes"], "{one}");
+    let pane = ask(&ipc::Request::InspectNode {
+        id: bar_ref.clone(),
+    });
+    assert_eq!(pane["ok"], true, "{pane}");
+    assert_eq!(pane["node"], nodes[0], "{pane}");
+    // Reset subtree: `n`, kept at 1 over its new default, goes to 7.
+    let reset = ask(&ipc::Request::ResetNode {
+        node: bar_ref.clone(),
+    });
+    assert_eq!(reset, json!({"ok": true, "reset": 1}), "{reset}");
+    m.until("the subtree reset", |s| {
+        s.texts().contains(&"n 7".to_string())
+    });
+    // (S-ipc) A reload from the request channel (D-Bus) waits for its
+    // load and is answered with its event, as a socket client's is.
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    assert_eq!(ans["event"]["event"], "reload", "{ans}");
+    assert_eq!(ans["event"]["requested"], true, "{ans}");
     // `--hard`: state dropped, every surface recreated.
     let ans = ipc::request(
         &mut client,

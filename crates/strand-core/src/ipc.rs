@@ -132,10 +132,12 @@ fn text(v: &Json, key: &str) -> Option<String> {
 ///
 /// M4's commands (`reload`, `watch`, `reset{path}`, `set`, `mock`)
 /// parse as they did in M4, field for field (a `reset` naming a `node`
-/// beside its `path` still resets the path). M5's commands parse through
-/// [`parse_m5`] once their stream serves them, by an arm here (S-ipc's
-/// `get`, `toggle`, `call` and `clear` do); until then a client hears
-/// `unknown command`, M4's answer word for word (decisions.md m5-core).
+/// beside its `path` still resets the path; one with neither still needs
+/// a `path`). M5's commands parse through [`parse_m5`] once their stream
+/// serves them, by an arm here (S-ipc's `get`, `toggle`, `call`,
+/// `clear`, `inspect.node`, `inspect.dump` and `reset{node}` do); until
+/// then a client hears `unknown command`, M4's answer word for word
+/// (decisions.md m5-core).
 #[inline]
 pub fn parse(line: &str) -> Result<Request, String> {
     let v: Json = serde_json::from_str(line).map_err(|e| format!("not a JSON request: {e}"))?;
@@ -155,6 +157,8 @@ pub fn parse(line: &str) -> Result<Request, String> {
         "watch" => Request::Watch,
         "reset" => match text(&v, "path") {
             Some(path) => Request::Reset { path },
+            // (M5, S-ipc) Its `{node}` form, "reset subtree".
+            None if v.get("node").is_some() => return parse_m5(cmd, &v),
             None => return Err("`reset` needs a `path`".into()),
         },
         "set" => match (text(&v, "path"), v.get("value").and_then(Json::as_str)) {
@@ -165,8 +169,11 @@ pub fn parse(line: &str) -> Result<Request, String> {
             _ => return Err("`set` needs a `path` and a `value`".into()),
         },
         "mock" => Request::Mock(v),
-        // (M5, S-ipc) `get`, `toggle`, `call`, `clear`.
-        "get" | "toggle" | "call" | "clear" => return parse_m5(cmd, &v),
+        // (M5, S-ipc) `get`, `toggle`, `call`, `clear`, and the
+        // inspector's `inspect.node` and `inspect.dump`.
+        "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" => {
+            return parse_m5(cmd, &v);
+        }
         other => return Err(format!("unknown command `{other}`")),
     })
 }
@@ -634,18 +641,22 @@ mod tests {
     }
 
     /// The commands [`parse`] reads: M4's, and the M5 ones a stream
-    /// serves (S-ipc's `get`, `toggle`, `call` and `clear`).
+    /// serves (S-ipc's `get`, `toggle`, `call`, `clear`, `inspect.node`,
+    /// `inspect.dump` and `reset{node}`).
     fn served(r: &Request) -> bool {
         matches!(
             r,
             Request::Reload { .. }
                 | Request::Watch
                 | Request::Reset { .. }
+                | Request::ResetNode { .. }
                 | Request::Set { .. }
                 | Request::Get { .. }
                 | Request::Toggle { .. }
                 | Request::Call { .. }
                 | Request::Clear { .. }
+                | Request::InspectNode { .. }
+                | Request::InspectDump { .. }
         )
     }
 
@@ -670,12 +681,8 @@ mod tests {
             if served(&r) {
                 assert_eq!(parse(line.trim()), Ok(r));
             } else {
-                // Not served yet: M4's answer, word for word (`reset` is
-                // known, and M4 said what it lacks).
-                let m4_said = match r {
-                    Request::ResetNode { .. } => "`reset` needs a `path`".to_string(),
-                    _ => format!("unknown command `{}`", r.cmd()),
-                };
+                // Not served yet: M4's answer, word for word.
+                let m4_said = format!("unknown command `{}`", r.cmd());
                 assert_eq!(parse(line.trim()), Err(m4_said), "{line}");
             }
         }
@@ -767,7 +774,6 @@ mod tests {
         for (line, why) in [
             (r#"{"cmd":"reset"}"#, "`reset` needs a `path`"),
             (r#"{"cmd":"reset","path":""}"#, "`reset` needs a `path`"),
-            (r#"{"cmd":"reset","node":"1v0"}"#, "`reset` needs a `path`"),
             (
                 r#"{"cmd":"set","path":"a.b"}"#,
                 "`set` needs a `path` and a `value`",
@@ -787,6 +793,11 @@ mod tests {
             (r#"{"cmd":"clear"}"#, "`clear` needs `path`"),
             (r#"{"cmd":"call","args":["1"]}"#, "`call` needs `target`"),
             (
+                r#"{"cmd":"inspect.node","id":""}"#,
+                "`inspect.node` needs `id`",
+            ),
+            (r#"{"cmd":"reset","node":""}"#, "`reset` needs `node`"),
+            (
                 r#"{"cmd":"call","target":"a.b","args":[1]}"#,
                 "`call`'s `args` are a list of strings",
             ),
@@ -800,6 +811,16 @@ mod tests {
                 target: "notifications.clear".into(),
                 args: vec![],
             })
+        );
+        // `reset{node}` and `inspect.dump`, served (an empty surface is
+        // every surface).
+        assert_eq!(
+            parse(r#"{"cmd":"reset","node":"1.0"}"#),
+            Ok(Request::ResetNode { node: "1.0".into() })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"inspect.dump","surface":""}"#),
+            Ok(Request::InspectDump { surface: None })
         );
         // M4 read a `reset` with a `node` beside its `path` as the path.
         assert_eq!(
