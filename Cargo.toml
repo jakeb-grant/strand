@@ -49,18 +49,27 @@ debug = 0
 debug = 0
 
 [profile.release]
-# Fat LTO: with M4 wave 2 merged it keeps the binary's `.text` within
-# its gates (15 MiB CPU core, 18.5 MiB with the GPU backend), which thin
-# LTO did not (decisions.md, m4-integration-w2).
+# Fat LTO: the whole program optimised once more at link time. Chosen
+# for size (decisions.md, m4-integration-w2), and as fast as thin LTO or
+# faster. That last pass runs in the session of the crate that links the
+# binary, `strand`, at `strand`'s opt-level, for every crate in it:
+# `strand` is at 3 so the link-time inliner and vectoriser treat
+# render, text, layout and their dependencies at O3 (decisions.md,
+# m5-speed-strand: at 3 list scrolling, the launcher's animation, SVG
+# and Lottie frames take 19-26% less time than at "s").
 lto = "fat"
 codegen-units = 1
 
-# Code that runs at event rates (D-Bus, sockets, PipeWire's thread,
-# Wayland protocol dispatch, config and document parsing) is optimised
-# for size, the strand crate's loops and glue too; the per-frame and
-# per-glyph paths (render, text, layout, the VM) and the watcher stay at
-# 3. The binary's code is most of the bar's PSS (docs/decisions.md,
-# wave4-exitMemory).
+# Speed first where a person feels it (the owner's policy of
+# 2026-10-10): the binary crate, the render path's dependencies, input
+# and event-loop dispatch, image, SVG and Lottie decoding and the theme's
+# palette solve are at the release default, 3. Only code no one waits on
+# is built for size here: D-Bus (zbus), the services runtime and its
+# glue (strand-services, tokio, swayipc), introspection, config writing
+# (toml), diagnostics (miette), `.desktop` parsing, PipeWire's FFI
+# wrappers, the clock's formatting and font enumeration (decisions.md,
+# m5-speed-profile, which gives each crate's measured speed and size;
+# wave4-exitMemory for the original choice).
 
 [profile.release.package.strand-services]
 opt-level = "z"
@@ -83,17 +92,11 @@ opt-level = "z"
 [profile.release.package.logind-zbus]
 opt-level = "z"
 
-[profile.release.package.strand]
-opt-level = "s"
-
 [profile.release.package.strand-icons]
 opt-level = "s"
 
 [profile.release.package.strand-introspect]
 opt-level = "z"
-
-[profile.release.package.serde_json]
-opt-level = "s"
 
 [profile.release.package.toml_edit]
 opt-level = "s"
@@ -101,33 +104,13 @@ opt-level = "s"
 [profile.release.package.toml_parser]
 opt-level = "s"
 
-[profile.release.package.wayland-client]
-opt-level = "s"
-
-[profile.release.package.wayland-backend]
-opt-level = "s"
-
-[profile.release.package.smithay-client-toolkit]
-opt-level = "s"
-
-[profile.release.package.calloop]
-opt-level = "s"
-
-[profile.release.package.material-colors]
-opt-level = "s"
-
+# Startup and a font change only: opt 3 measured no faster (decisions.md,
+# m5-speed-profile).
 [profile.release.package.fontique]
 opt-level = "s"
 
+# Only wayland-scanner (a build-time macro) uses it.
 [profile.release.package.quick-xml]
-opt-level = "s"
-
-# Stays at "s": fontique parses fontconfig's XML with it, which may sit
-# on the reload path (decisions.md, m5-size).
-[profile.release.package.roxmltree]
-opt-level = "s"
-
-[profile.release.package.xkeysym]
 opt-level = "s"
 
 [profile.release.package.miette]
@@ -145,57 +128,12 @@ opt-level = "z"
 [profile.release.package.libspa]
 opt-level = "z"
 
-# Lottie's scene building, once per animation frame (vello_cpu still
-# rasterises at 3): built for size under the 15 MiB `.text` gate
-# (decisions.md, m4-effects-media-w2).
-[profile.release.package.velato]
-opt-level = "z"
-
-# Image and SVG decoding (once per source and drawn size, on the decode
-# worker; an animated image decodes a frame at most at its own rate):
-# event-rate code, built for size under the `.text` gates
-# (decisions.md, m4-integration-w2).
-[profile.release.package.image-webp]
-opt-level = "z"
-
-[profile.release.package.jpeg-decoder]
-opt-level = "z"
-
-[profile.release.package.png]
-opt-level = "z"
-
-[profile.release.package.gif]
-opt-level = "z"
-
-[profile.release.package.fdeflate]
-opt-level = "z"
-
-[profile.release.package.miniz_oxide]
-opt-level = "z"
-
-[profile.release.package.weezl]
-opt-level = "z"
-
-[profile.release.package.imagesize]
-opt-level = "z"
-
-[profile.release.package.usvg]
-opt-level = "z"
-
-[profile.release.package.svgtypes]
-opt-level = "z"
-
-[profile.release.package.simplecss]
-opt-level = "z"
-
-[profile.release.package.data-url]
-opt-level = "z"
-
-# resvg, tiny-skia and tiny-skia-path stay at the release default
-# (opt 3): a bindable SVG re-parses and redraws on every change of its
-# parts' values, so an animated part rasterises on the render path each
-# frame, and "z" made that redraw about 3.7 times slower (decisions.md,
-# m5-size reclaim 2, withdrawn).
+# resvg, tiny-skia and tiny-skia-path, usvg and the rest of the SVG
+# parse (svgtypes, simplecss, data-url, roxmltree), velato, serde_json,
+# the image decoders, wayland-client, wayland-backend,
+# smithay-client-toolkit, calloop, xkeysym and material-colors are at
+# the release default (opt 3): each is on a path a person waits on
+# (decisions.md, m5-size reclaim 2 withdrawn; m5-speed-profile).
 
 # The timing gates' build (CI's `timing` job: theme_swap_bench and the
 # reload latency bench): the release profile, its per-package opt-levels
@@ -203,6 +141,9 @@ opt-level = "z"
 # them), without the cross-crate link-time optimisation that makes a
 # release build slow. The memory gates (demo, services, budgets) and
 # the acceptance tests keep `release` (docs/decisions.md, laptop-ci).
+# Without LTO it cannot see the link-time pass's opt-level; strand's
+# `speed-bench` feature runs the render benches in the shipped binary's
+# LTO session (crates/strand/src/speed.rs; decisions.md, m5-speed-profile).
 [profile.timing]
 inherits = "release"
 lto = false

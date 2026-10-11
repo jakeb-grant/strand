@@ -2081,12 +2081,13 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     }
 }
 
-/// The release profile's per-package opt-levels the memory budget rests
-/// on (decisions.md, wave4-exitMemory: "the budget rests on the
-/// workspace's release profile"): without them the binary's `.text` was
-/// 19.4 MB and the bar over budget. Checked in every build, debug too,
-/// so a cleanup of `Cargo.toml` fails `cargo test --workspace` locally
-/// rather than only the release budget in CI.
+/// The release profile's per-package size opt-levels the `.text` and
+/// memory budgets rest on (decisions.md, wave4-exitMemory: "the budget
+/// rests on the workspace's release profile"; m5-speed-profile moved
+/// every crate a person waits on back to opt 3 and kept these, on code
+/// no one waits on). Checked in every build, debug too, so a cleanup of
+/// `Cargo.toml` fails `cargo test --workspace` locally rather than only
+/// the release budget in CI.
 const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("strand-services", "z"),
     ("zbus", "z"),
@@ -2095,26 +2096,50 @@ const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("tokio", "z"),
     ("swayipc-types", "z"),
     ("logind-zbus", "z"),
-    ("strand", "s"),
     ("strand-icons", "s"),
     ("strand-introspect", "z"),
-    ("serde_json", "s"),
     ("toml_edit", "s"),
     ("toml_parser", "s"),
-    ("wayland-client", "s"),
-    ("wayland-backend", "s"),
-    ("smithay-client-toolkit", "s"),
-    ("calloop", "s"),
-    ("material-colors", "s"),
     ("fontique", "s"),
     ("quick-xml", "s"),
-    ("roxmltree", "s"),
-    ("xkeysym", "s"),
     ("miette", "z"),
     ("chrono", "s"),
     ("freedesktop-desktop-entry", "z"),
     ("pipewire", "z"),
     ("libspa", "z"),
+];
+
+/// Crates the release profile leaves at the default (opt 3) because a
+/// person waits on them (decisions.md, m5-speed-profile): `strand`
+/// above all, whose level the fat-LTO pass runs the whole binary at.
+/// A size override on any of them fails here, as a dropped one above
+/// does.
+const RELEASE_SPEED_CRATES: &[&str] = &[
+    "strand",
+    "serde_json",
+    "wayland-client",
+    "wayland-backend",
+    "smithay-client-toolkit",
+    "calloop",
+    "material-colors",
+    "roxmltree",
+    "xkeysym",
+    "velato",
+    "image-webp",
+    "jpeg-decoder",
+    "png",
+    "gif",
+    "fdeflate",
+    "miniz_oxide",
+    "weezl",
+    "imagesize",
+    "usvg",
+    "svgtypes",
+    "simplecss",
+    "data-url",
+    "resvg",
+    "tiny-skia",
+    "tiny-skia-path",
 ];
 
 /// `[profile.release.package.<name>]` → its `opt-level`, read from a
@@ -2158,6 +2183,19 @@ fn the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on() {
         changed.is_empty(),
         "the workspace's [profile.release.package] opt-levels changed; the bar's memory budget \
          rests on them (decisions.md, wave4-exitMemory): {changed:#?}"
+    );
+    let sized: Vec<String> = RELEASE_SPEED_CRATES
+        .iter()
+        .filter_map(|name| {
+            levels
+                .get(*name)
+                .map(|level| format!("{name}: opt-level {level}"))
+        })
+        .collect();
+    assert!(
+        sized.is_empty(),
+        "crates a person waits on are built for size; they stay at the release default, 3 \
+         (decisions.md, m5-speed-profile): {sized:#?}"
     );
 }
 
@@ -2309,8 +2347,10 @@ fn the_release_binary_code_stays_within_its_gate() {
     }
     assert!(
         text <= gate,
-        "strand's .text is {text} bytes, over {gate} for {build}: code that runs at event \
-         rates belongs at opt-level \"s\" or \"z\" (Cargo.toml, [profile.release.package])"
+        "strand's .text is {text} bytes, over {gate} for {build}: the gate catches accidental \
+         growth; code no one waits on belongs at opt-level \"s\" or \"z\" (Cargo.toml, \
+         [profile.release.package]), and a deliberate speed choice re-bases the gate with its \
+         measured reason (decisions.md, m5-speed-profile)"
     );
 }
 

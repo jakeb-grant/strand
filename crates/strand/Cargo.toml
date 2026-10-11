@@ -21,6 +21,11 @@ gpu = ["strand-render/gpu", "strand-surface/gpu", "strand-compiler/shaders", "de
 # `the_binary_holds_no_fault_code` checks the binary's bytes.
 faults = ["strand-auth/faults"]
 
+# The speed measurements linked in this crate's session, the shipped
+# binary's link-time optimisation (src/speed.rs; decisions.md,
+# m5-speed-profile). Tests only: never in a default or release build.
+speed-bench = []
+
 # The library holds the module tree; the binary is `main` and the
 # COMMANDS table over it (decisions.md, m5-core). The library is for
 # plugins (`strand::Shell::builder()`), git-only and unstable.
@@ -73,7 +78,14 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
 # A bus monitor's message stream (the 100 reloads' bus check).
 futures-util = { version = "0.3.34", default-features = false }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+# PNG, plus the JPEG and WebP encoders the speed measurements write
+# their images with (strand-theme's `image` has both features already).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# The speed measurements (src/speed.rs): strand-render's test helpers
+# write PNGs with `png`; an animated GIF is written with `gif` (both
+# strand-render's own versions).
+png = "0.18"
+gif = "0.14.2"
 wayland-client = "0.31.15"
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }

@@ -24,6 +24,8 @@ mod system;
 mod bench;
 #[cfg(test)]
 mod fuzz;
+#[cfg(all(test, feature = "speed-bench"))]
+mod speed;
 
 /// What the `strand` binary calls (not an API: it changes with the CLI).
 #[doc(hidden)]
