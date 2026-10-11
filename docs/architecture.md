@@ -4001,6 +4001,27 @@ and workspace edits use versioned `documentChanges` when the client
 supports them. `initializationOptions.configDir` overrides the default
 config directory.
 
+Code actions (M5, S-lsp): every `Diagnostic::suggestions` entry is a
+quick fix titled by its `title` (else "Change to `…`"), applied in the
+suggestion's own file (a missing key on a keyed method is added at the
+`state` declaration, which may be in another file); one suggestion is
+preferred, several are not, except `check::missing_key`, whose first (the
+compiler's guess) is. `refactor::extract` is "extract component"
+(`refactor.extract`, offered for the element whose name the selection
+starts on): the element moves into `NewComponent` (`NewComponent2`, …)
+after the enclosing component or surface, formatted with `fmt::format`;
+what it reads from around it (parameters, `for` bindings, nested `let`
+and `state` it only reads, `screen`) becomes a parameter the call passes
+by name. Writing the parent's state (`=`, `<->`, a list mutation), an
+`id:` element outside it, the `slot`, or a result that would add an error
+(the config is checked again with the edit) refuses it, as a disabled
+action with the reason for clients with `codeAction.disabledSupport` and
+no action otherwise. For a client that resolves an action's `edit`
+(`codeAction/resolve`), the action is offered without one
+(`refactor::offer`, no compile), and the edit is made and checked when
+it is chosen; a result that would not check fails the resolve with the
+reason. `context.only` filters both kinds.
+
 The inspector client, the reference generator and the tree-sitter
 package join it in M5 (see "M5 interfaces (wave 0a)"; tree-sitter was
 not built in M1, `docs/decisions.md`, wave2-lsp).

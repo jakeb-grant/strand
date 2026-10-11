@@ -14,15 +14,16 @@ use std::time::{Duration, Instant};
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
-    CodeActionProviderCapability, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentChanges, DocumentFormattingParams, GotoDefinitionParams,
-    GotoDefinitionResponse, HoverParams, HoverProviderCapability, Location, OneOf,
-    OptionalVersionedTextDocumentIdentifier, PrepareRenameResponse, PublishDiagnosticsParams,
-    RenameOptions, RenameParams, ServerCapabilities, TextDocumentEdit, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
+    CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
+    CodeActionParams, CodeActionProviderCapability, CompletionOptions, CompletionParams,
+    CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChanges,
+    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, HoverParams,
+    HoverProviderCapability, Location, OneOf, OptionalVersionedTextDocumentIdentifier,
+    PrepareRenameResponse, PublishDiagnosticsParams, RenameOptions, RenameParams,
+    ServerCapabilities, TextDocumentEdit, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri,
+    WorkspaceEdit,
 };
 use serde_json::{Value, json};
 use strand_compiler::FileId;
@@ -32,7 +33,7 @@ use strand_compiler::syntax::Span;
 
 use crate::text::uri_to_path;
 use crate::workspace::{Analysis, ConfigKey, Workspace, default_dir};
-use crate::{completion, diag, nav};
+use crate::{completion, diag, nav, refactor};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -69,7 +70,13 @@ pub fn capabilities() -> ServerCapabilities {
             work_done_progress_options: Default::default(),
         })),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            code_action_kinds: Some(vec![
+                CodeActionKind::QUICKFIX,
+                CodeActionKind::REFACTOR_EXTRACT,
+            ]),
+            // "Extract component"'s edit is checked by compiling the
+            // config once more, so it is made when the action is chosen.
+            resolve_provider: Some(true),
             ..CodeActionOptions::default()
         })),
         document_formatting_provider: Some(OneOf::Left(true)),
@@ -146,6 +153,17 @@ pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
     let document_changes = client["workspace"]["workspaceEdit"]["documentChanges"]
         .as_bool()
         .unwrap_or(false);
+    let disabled_actions = client["textDocument"]["codeAction"]["disabledSupport"]
+        .as_bool()
+        .unwrap_or(false);
+    // The deferred edit is rebuilt from the action's `data`, which a client
+    // keeps between the request and its resolve only with `dataSupport`;
+    // a client without it is answered eagerly.
+    let code_action = &client["textDocument"]["codeAction"];
+    let resolve_edits = code_action["dataSupport"].as_bool() == Some(true)
+        && code_action["resolveSupport"]["properties"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p == "edit"));
     // Hear about `.strand` files changed outside the editor.
     if client["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"].as_bool() == Some(true) {
         conn.sender.send(Message::Request(Request::new(
@@ -163,6 +181,8 @@ pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
         ws: Workspace::new(roots, config_dir, schema),
         debounce,
         document_changes,
+        disabled_actions,
+        resolve_edits,
         dirty: HashSet::new(),
         deadline: None,
         published: HashMap::new(),
@@ -178,6 +198,13 @@ struct Server<'c> {
     /// The client applies versioned `documentChanges`, so it can refuse
     /// edits made for text it no longer has.
     document_changes: bool,
+    /// The client shows disabled code actions with their reason (a
+    /// refused "extract component").
+    disabled_actions: bool,
+    /// The client fills in a code action's `edit` with
+    /// `codeAction/resolve`: "extract component" is offered without
+    /// compiling the result, and checked when it is chosen.
+    resolve_edits: bool,
     /// Configs whose diagnostics wait for the debounce.
     dirty: HashSet<ConfigKey>,
     deadline: Option<Instant>,
@@ -522,6 +549,7 @@ impl Server<'_> {
             "textDocument/prepareRename" => self.prepare_rename(req.params),
             "textDocument/rename" => self.rename(req.params),
             "textDocument/codeAction" => self.code_action(req.params),
+            "codeAction/resolve" => self.resolve_code_action(req.params),
             "textDocument/formatting" => self.formatting(req.params),
             m => {
                 return Response::new_err(
@@ -664,22 +692,112 @@ impl Server<'_> {
             return Ok(Value::Null);
         };
         let range = Span::new(an.offset(file, p.range.start), an.offset(file, p.range.end));
-        let actions: Vec<CodeActionOrCommand> = diag::quick_fixes(&an, file, range)
-            .into_iter()
-            .map(|fix| {
+        // Only the kinds asked for (`refactor` asks for `refactor.extract`).
+        let wanted = |kind: &CodeActionKind| {
+            p.context.only.as_ref().is_none_or(|only| {
+                only.iter().any(|o| {
+                    kind.as_str() == o.as_str()
+                        || kind.as_str().starts_with(&format!("{}.", o.as_str()))
+                })
+            })
+        };
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+        if wanted(&CodeActionKind::QUICKFIX) {
+            actions.extend(diag::quick_fixes(&an, file, range).into_iter().map(|fix| {
                 CodeActionOrCommand::CodeAction(CodeAction {
                     title: fix.title,
                     kind: Some(CodeActionKind::QUICKFIX),
                     diagnostics: Some(vec![fix.diagnostic]),
                     edit: Some(
-                        self.workspace_edit(&an, vec![(file, vec![(fix.span, fix.new_text)])]),
+                        self.workspace_edit(&an, vec![(fix.file, vec![(fix.span, fix.new_text)])]),
                     ),
                     is_preferred: Some(fix.preferred),
                     ..CodeAction::default()
                 })
-            })
-            .collect();
+            }));
+        }
+        if wanted(&CodeActionKind::REFACTOR_EXTRACT) {
+            // Clients ask on every cursor move: with resolve, the edit
+            // (and the compile that checks it) waits until it is chosen.
+            let found = match self.resolve_edits {
+                true => refactor::offer(&an, file, range),
+                false => refactor::extract(&an, file, range),
+            };
+            match found {
+                Some(refactor::Extract::Edit { title, .. }) if self.resolve_edits => {
+                    let version = self.ws.docs.get(uri).map(|d| d.version);
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title,
+                        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                        data: Some(json!({ "uri": uri, "version": version, "range": p.range })),
+                        ..CodeAction::default()
+                    }));
+                }
+                Some(refactor::Extract::Edit { title, edits }) => {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title,
+                        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                        edit: Some(self.workspace_edit(&an, vec![(file, edits)])),
+                        ..CodeAction::default()
+                    }));
+                }
+                // A client that cannot show why leaves it out.
+                Some(refactor::Extract::Refused { reason }) if self.disabled_actions => {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: refactor::TITLE.into(),
+                        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                        disabled: Some(CodeActionDisabled { reason }),
+                        ..CodeAction::default()
+                    }));
+                }
+                _ => {}
+            }
+        }
         Ok(serde_json::to_value(actions)?)
+    }
+
+    /// The edit of an "extract component" offered without one: made and
+    /// checked now, against the text it was offered for. A result that
+    /// would not check (or a file changed since) fails with the reason.
+    fn resolve_code_action(&mut self, params: Value) -> Reply {
+        let mut action: CodeAction = serde_json::from_value(params)?;
+        let data = action.data.clone().unwrap_or(Value::Null);
+        let (Some(uri), Ok(range)) = (
+            data["uri"].as_str(),
+            serde_json::from_value::<lsp_types::Range>(data["range"].clone()),
+        ) else {
+            // An action that already carries its edit has nothing to
+            // resolve; one that needs its `data` and lost it cannot be made.
+            if action.edit.is_some() {
+                return Ok(serde_json::to_value(action)?);
+            }
+            return Err(Failed(
+                "the action lost its data (the client keeps it only with \
+                 codeAction.dataSupport); ask for the action again"
+                    .into(),
+            )
+            .into());
+        };
+        let version = self.ws.docs.get(uri).map(|d| d.version);
+        if serde_json::to_value(version)? != data["version"] {
+            return Err(Failed("the file changed since; ask for the action again".into()).into());
+        }
+        let an = self.ws.analysis_of(uri);
+        let file = an
+            .file(uri)
+            .ok_or_else(|| Failed("the file is no longer part of a config".into()))?;
+        let range = Span::new(an.offset(file, range.start), an.offset(file, range.end));
+        match refactor::extract(&an, file, range) {
+            Some(refactor::Extract::Edit { title, edits }) => {
+                action.title = title;
+                action.edit = Some(self.workspace_edit(&an, vec![(file, edits)]));
+                Ok(serde_json::to_value(action)?)
+            }
+            Some(refactor::Extract::Refused { reason }) => {
+                Err(Failed(format!("Cannot extract a component: {reason}")).into())
+            }
+            None => Err(Failed("nothing to extract there any more".into()).into()),
+        }
     }
 
     fn formatting(&mut self, params: Value) -> Reply {

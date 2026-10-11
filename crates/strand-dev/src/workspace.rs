@@ -106,11 +106,18 @@ pub struct Analysis {
     /// analysis (so dropped when the text changes): completion after a
     /// `.` asks for the same one again on every request at that place.
     inserted: Mutex<Option<Inserted>>,
+    /// The last [`Analysis::with_edited`] asked for: a client without
+    /// `codeAction/resolve` asks for "extract component" again on every
+    /// cursor move inside the same element name, with the same edit.
+    edited: Mutex<Option<Edited>>,
 }
 
 /// A memoised [`Analysis::with_inserted`]: file, offset, text inserted,
 /// and the result.
 type Inserted = (FileId, usize, String, Arc<Analysis>);
+
+/// A memoised [`Analysis::with_edited`]: file, its new text, the result.
+type Edited = (FileId, String, Arc<Analysis>);
 
 impl Analysis {
     /// Compiles `files` as one config.
@@ -173,6 +180,7 @@ impl Analysis {
             stamps,
             introspected,
             inserted: Mutex::new(None),
+            edited: Mutex::new(None),
         }
     }
 
@@ -195,6 +203,22 @@ impl Analysis {
         let a = Arc::new(self.with_text(file, &text));
         if let Ok(mut g) = self.inserted.lock() {
             *g = Some((file, offset, insert.to_string(), a.clone()));
+        }
+        a
+    }
+
+    /// [`Analysis::with_text`], compiled once per text and kept until this
+    /// analysis is replaced.
+    pub fn with_edited(&self, file: FileId, text: &str) -> Arc<Analysis> {
+        if let Ok(g) = self.edited.lock()
+            && let Some((f, t, a)) = g.as_ref()
+            && (*f, t.as_str()) == (file, text)
+        {
+            return a.clone();
+        }
+        let a = Arc::new(self.with_text(file, text));
+        if let Ok(mut g) = self.edited.lock() {
+            *g = Some((file, text.to_string(), a.clone()));
         }
         a
     }
@@ -224,6 +248,12 @@ impl Analysis {
     #[cfg(test)]
     pub(crate) fn inserted(&self) -> Option<Arc<Analysis>> {
         self.inserted.lock().ok()?.as_ref().map(|(.., a)| a.clone())
+    }
+
+    /// The memoised [`Analysis::with_edited`], if any.
+    #[cfg(test)]
+    pub(crate) fn edited(&self) -> Option<Arc<Analysis>> {
+        self.edited.lock().ok()?.as_ref().map(|(.., a)| a.clone())
     }
 
     /// Nothing it read from disk has changed since, nor any D-Bus object

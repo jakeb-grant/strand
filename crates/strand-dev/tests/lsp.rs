@@ -398,7 +398,7 @@ fn initialize_advertises_the_features() {
     assert_eq!(caps["documentFormattingProvider"], true);
     assert_eq!(
         caps["codeActionProvider"]["codeActionKinds"],
-        json!(["quickfix"])
+        json!(["quickfix", "refactor.extract"])
     );
     // Unknown requests are errors, not hangs.
     let e = c.request_err("textDocument/frobnicate", json!({}));
@@ -1097,6 +1097,405 @@ fn quick_fix_for_a_renamed_parameter_and_a_misplaced_span() {
         c.applied(&actions[0]["edit"], "a.strand", a),
         "component A {\n  on change a, b { x = 1 }\n}\n"
     );
+}
+
+/// The code actions offered for `range` (`[start, end)` bytes) of `name`,
+/// opened with `text`.
+fn actions_at(c: &mut Client, name: &str, text: &str, start: usize, end: usize) -> Vec<Value> {
+    let lines = Lines::new(text);
+    let r = c.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": c.uri(name) },
+            "range": {
+                "start": lines.position(text, start as u32),
+                "end": lines.position(text, end as u32),
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    r.as_array().unwrap().clone()
+}
+
+const PINS: &str = "type Pin { app: text; label: text; at: int }\nstate pins: [Pin] = []\n";
+
+/// design.md "Developer experience": a quick fix for a missing key. The
+/// compiler's guess (`p.app`) is the preferred fix, and taking it checks
+/// clean.
+#[test]
+fn quick_fix_for_a_missing_key() {
+    let list = format!(
+        "{PINS}component List {{\n  col {{\n    for p in pins {{ text p.label }}\n  }}\n}}\n"
+    );
+    let mut c = Client::start(&[("list.strand", list.clone())]);
+    let actions = fixes_for(&mut c, "list.strand", &list);
+    let first = &actions[0];
+    assert_eq!(first["title"], "Add `key p.app`", "{actions:?}");
+    assert_eq!(first["kind"], "quickfix");
+    assert_eq!(first["isPreferred"], true);
+    assert_eq!(first["diagnostics"][0]["code"], "check::missing_key");
+    let fixed = c.applied(&first["edit"], "list.strand", &list);
+    assert!(
+        fixed.ends_with(
+            "component List {\n  col {\n    for p in pins key p.app { text p.label }\n  }\n}\n"
+        ),
+        "{fixed}"
+    );
+    c.change("list.strand", 2, &fixed);
+    assert_eq!(c.diagnostics("list.strand"), Vec::<Value>::new());
+}
+
+/// Every field that could key the items is a fix, the guess first and
+/// the only one preferred; a keyed method on an unkeyed `state` adds the
+/// key at the declaration, in its own file; a collection keyed by
+/// something other than a field name is offered each field.
+#[test]
+fn missing_key_offers_each_candidate_preferred_first() {
+    // No `app`-like field: the guess is the first text or int one.
+    let list = "type Pin { at: int; label: text; tags: [text]; job: Async<int> }\nstate pins: [Pin] = []\ncomponent List {\n  col {\n    for p in pins { text p.label }\n  }\n}\n";
+    let mut c = Client::start(&[("list.strand", list.into())]);
+    let actions = fixes_for(&mut c, "list.strand", list);
+    let titles: Vec<&str> = actions
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        ["Add `key p.at`", "Add `key p.label`", "Add `key p.tags`"],
+        "a pending load cannot key items"
+    );
+    let preferred: Vec<bool> = actions.iter().map(|a| a["isPreferred"] == true).collect();
+    assert_eq!(preferred, [true, false, false]);
+    for a in &actions {
+        let fixed = c.applied(&a["edit"], "list.strand", list);
+        assert!(fixed.contains(" key p."), "{fixed}");
+    }
+
+    // `notes.remove_key` in another file: the fix keys `notes` where it
+    // is declared.
+    let state = format!("{PINS}export state notes: [Pin] = []\n");
+    let bar = "component B {\n  text \"x\" { on click { store.notes.remove_key(\"a\") } }\n}\n";
+    let mut c = Client::start(&[("store.strand", state.clone()), ("bar.strand", bar.into())]);
+    let actions = fixes_for(&mut c, "bar.strand", bar);
+    let titles: Vec<&str> = actions
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Add `key app`", "Add `key label`", "Add `key at`"]);
+    assert_eq!(actions[0]["isPreferred"], true);
+    assert_eq!(c.applied(&actions[0]["edit"], "bar.strand", bar), bar);
+    let keyed = c.applied(&actions[0]["edit"], "store.strand", &state);
+    assert!(
+        keyed.ends_with("export state notes: [Pin] key app = []\n"),
+        "{keyed}"
+    );
+
+    // `key "app"`: each field, by name.
+    let state = "type Pin { app: text; at: int }\nstate pins: [Pin] key \"app\" = []\n";
+    let mut c = Client::start(&[("state.strand", state.into())]);
+    let actions = fixes_for(&mut c, "state.strand", state);
+    let titles: Vec<&str> = actions
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Use `key app`", "Use `key at`"]);
+    assert_eq!(
+        c.applied(&actions[0]["edit"], "state.strand", state),
+        "type Pin { app: text; at: int }\nstate pins: [Pin] key app = []\n"
+    );
+}
+
+const SIDE: &str = "\
+component Side(label: text) {
+  state open = false
+  col {
+    text \"head\"
+    row {
+      text label { color: open ? $accent : $fg }
+      for n in [1, 2] key n {
+        text join(\"\", n, label)
+      }
+    }
+  }
+}
+bar Top {
+  Side { label: \"x\" }
+}
+";
+
+/// design.md "Developer experience": "extract component" moves the
+/// selected element into `NewComponent` after the enclosing one. What it
+/// reads from around it (a parameter, the parent's state, only read)
+/// becomes a parameter the call passes; names bound inside (`n`) stay
+/// inside; the result is formatted and checks clean; the title says the
+/// subtree's state resets on reload.
+#[test]
+fn extract_component_moves_a_subtree_into_a_new_component() {
+    let mut c = Client::start(&[("side.strand", SIDE.into())]);
+    c.open_text("side.strand", SIDE);
+    assert_eq!(c.diagnostics("side.strand"), Vec::<Value>::new());
+    // The cursor on `row`.
+    let at = SIDE.find("row").unwrap();
+    let actions = actions_at(&mut c, "side.strand", SIDE, at + 1, at + 1);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let a = &actions[0];
+    assert_eq!(a["kind"], "refactor.extract");
+    assert_eq!(
+        a["title"],
+        "Extract component `NewComponent` (state inside it resets on reload)"
+    );
+    let extracted = c.applied(&a["edit"], "side.strand", SIDE);
+    assert_eq!(
+        extracted,
+        "\
+component Side(label: text) {
+  state open = false
+  col {
+    text \"head\"
+    NewComponent { label: label; open: open }
+  }
+}
+
+component NewComponent(label: text, open: bool) {
+  row {
+    text label { color: open ? $accent : $fg }
+    for n in [1, 2] key n {
+      text join(\"\", n, label)
+    }
+  }
+}
+bar Top {
+  Side { label: \"x\" }
+}
+"
+    );
+    c.change("side.strand", 2, &extracted);
+    assert_eq!(c.diagnostics("side.strand"), Vec::<Value>::new());
+
+    // Whole lines selected pick the element on them; a taken name moves
+    // on to `NewComponent2`; a parameter-free subtree is a bare call.
+    let start = extracted.find("    text \"head\"").unwrap();
+    let end = start + "    text \"head\"\n".len();
+    let actions = actions_at(&mut c, "side.strand", &extracted, start, end);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let again = c.applied(&actions[0]["edit"], "side.strand", &extracted);
+    assert!(again.contains("    NewComponent2\n"), "{again}");
+    assert!(
+        again.contains(
+            "}\n\ncomponent NewComponent2 {\n  text \"head\"\n}\n\ncomponent NewComponent("
+        ),
+        "{again}"
+    );
+
+    // A name the surface brings into scope (`screen`) is a parameter too.
+    let bar = "bar Top {\n  row {\n    text screen.name\n  }\n}\n";
+    let mut b = Client::start(&[("bar.strand", bar.into())]);
+    b.open_text("bar.strand", bar);
+    let at = bar.find("row").unwrap();
+    let actions = actions_at(&mut b, "bar.strand", bar, at, at);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(
+        b.applied(&actions[0]["edit"], "bar.strand", bar),
+        "bar Top {\n  NewComponent { screen: screen }\n}\n\ncomponent NewComponent(screen: Screen) {\n  row {\n    text screen.name\n  }\n}\n"
+    );
+
+    // Not offered inside a prop's value, nor on a surface's root, nor
+    // when only quick fixes are asked for.
+    let at = SIDE.find("$accent").unwrap();
+    assert_eq!(
+        actions_at(&mut c, "side.strand", SIDE, at, at),
+        Vec::<Value>::new()
+    );
+    let at = SIDE.find("bar Top").unwrap();
+    assert_eq!(
+        actions_at(&mut c, "side.strand", SIDE, at, at),
+        Vec::<Value>::new()
+    );
+    let at = SIDE.find("row").unwrap();
+    let lines = Lines::new(SIDE);
+    let r = c.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": c.uri("side.strand") },
+            "range": { "start": lines.position(SIDE, at as u32), "end": lines.position(SIDE, at as u32) },
+            "context": { "diagnostics": [], "only": ["quickfix"] },
+        }),
+    );
+    assert_eq!(r, json!([]));
+}
+
+/// The parent's state written inside the selection (`=`, `<->` or a list
+/// mutation) cannot become a parameter: component parameters are
+/// read-only and never bound two-way (`check::two_way_prop`). The action
+/// is offered disabled with the reason to a client that shows one, and
+/// left out for a client that does not; an `id:` element outside the
+/// selection or the component's `slot` is refused the same way.
+#[test]
+fn extract_component_refuses_parent_state_writes() {
+    let cases = [
+        (
+            "row { text \"x\" { on click { open = !open } } }",
+            "`open` (`=`)",
+        ),
+        ("row { slider { value: <-> level } }", "`level` (`<->`)"),
+        (
+            "row { text \"x\" { on click { xs.push(1) } } }",
+            "`xs` (`.push()`)",
+        ),
+        (
+            "row { text \"x\" { opacity: far.hover ? 1 : 0.5 } }",
+            "`far`",
+        ),
+        ("row { slot }", "`slot`"),
+    ];
+    for (row, why) in cases {
+        let text = format!(
+            "component Side {{\n  state open = false\n  state level = 0.5\n  state xs: [int] = []\n  col {{\n    box {{ id: far }}\n    {row}\n  }}\n}}\n"
+        );
+        let mut c = Client::start_with(&[("side.strand", text.clone())], |p| {
+            p["capabilities"]["textDocument"]["codeAction"]["disabledSupport"] = json!(true);
+        });
+        c.open_text("side.strand", &text);
+        let at = text.find("row").unwrap();
+        let actions = actions_at(&mut c, "side.strand", &text, at, at + 3);
+        assert_eq!(actions.len(), 1, "{row}: {actions:?}");
+        assert_eq!(
+            actions[0]["title"], "Extract component",
+            "{row}: {actions:?}"
+        );
+        assert!(actions[0]["edit"].is_null(), "{actions:?}");
+        let reason = actions[0]["disabled"]["reason"].as_str().unwrap();
+        assert!(reason.contains(why), "{row}: {reason}");
+
+        let mut c = Client::start(&[("side.strand", text.clone())]);
+        c.open_text("side.strand", &text);
+        assert_eq!(
+            actions_at(&mut c, "side.strand", &text, at, at + 3),
+            Vec::<Value>::new()
+        );
+    }
+}
+
+/// A config that shadows a schema type: `screen`'s type prints as
+/// `builtin Screen`, which is no type a parameter can be written with, so
+/// only compiling the result finds that the extracted component breaks.
+const SHADOWED: &str = "type Screen { x: int }\nbar Top {\n  row {\n    text screen.name\n  }\n}\n";
+
+/// What the refactor does not model itself is caught by compiling the
+/// result: an edit that would add an error is refused with that error
+/// (here a parameter typed `builtin Screen`). A name whose type is not
+/// known cannot become a parameter either.
+#[test]
+fn extract_component_refuses_what_would_not_check() {
+    let cases = [
+        (
+            SHADOWED,
+            "the result would not check: unknown type `builtin`",
+        ),
+        (
+            "component Side(x: Nope) {\n  col {\n    row { text x }\n  }\n}\n",
+            "the type of `x` is not known",
+        ),
+    ];
+    for (text, why) in cases {
+        let mut c = Client::start_with(&[("t.strand", text.into())], |p| {
+            p["capabilities"]["textDocument"]["codeAction"]["disabledSupport"] = json!(true);
+        });
+        c.open_text("t.strand", text);
+        let at = text.find("row").unwrap();
+        let actions = actions_at(&mut c, "t.strand", text, at, at);
+        assert_eq!(actions.len(), 1, "{text}: {actions:?}");
+        assert!(actions[0]["edit"].is_null(), "{actions:?}");
+        assert_eq!(actions[0]["disabled"]["reason"], why, "{text}");
+    }
+}
+
+/// A client that resolves code actions is offered "extract component"
+/// without its edit, so a cursor moving over element names never compiles
+/// the config again; the edit is made, and checked, when the action is
+/// chosen (`codeAction/resolve`), for the text it was offered for.
+#[test]
+fn extract_component_is_made_when_chosen() {
+    let resolving = |p: &mut Value| {
+        p["capabilities"]["textDocument"]["codeAction"] = json!({
+            "disabledSupport": true,
+            "dataSupport": true,
+            "resolveSupport": { "properties": ["edit"] },
+        });
+    };
+    assert_eq!(
+        serde_json::to_value(strand_dev::capabilities()).unwrap()["codeActionProvider"]["resolveProvider"],
+        true
+    );
+    let mut c = Client::start_with(&[("side.strand", SIDE.into())], resolving);
+    c.open_text("side.strand", SIDE);
+    let at = SIDE.find("row").unwrap();
+    let actions = actions_at(&mut c, "side.strand", SIDE, at + 1, at + 1);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let offered = &actions[0];
+    assert!(offered["edit"].is_null(), "{offered}");
+    assert_eq!(
+        offered["title"],
+        "Extract component `NewComponent` (state inside it resets on reload)"
+    );
+    let resolved = c.request("codeAction/resolve", offered.clone());
+    assert_eq!(resolved["title"], offered["title"]);
+    let mut eager = Client::start(&[("side.strand", SIDE.into())]);
+    eager.open_text("side.strand", SIDE);
+    let expected = &actions_at(&mut eager, "side.strand", SIDE, at + 1, at + 1)[0]["edit"];
+    assert_eq!(
+        c.applied(&resolved["edit"], "side.strand", SIDE),
+        eager.applied(expected, "side.strand", SIDE)
+    );
+
+    // A resolve whose `data` the client dropped fails with the reason
+    // rather than coming back without an edit.
+    let mut dropped = offered.clone();
+    dropped.as_object_mut().unwrap().remove("data");
+    let e = c.request_err("codeAction/resolve", dropped);
+    assert!(e.contains("lost its data"), "{e}");
+
+    // A client that resolves `edit` but does not keep `data`
+    // (no `dataSupport`) is answered eagerly, with the edit.
+    let mut no_data = Client::start_with(&[("side.strand", SIDE.into())], |p| {
+        p["capabilities"]["textDocument"]["codeAction"] = json!({
+            "resolveSupport": { "properties": ["edit"] },
+        });
+    });
+    no_data.open_text("side.strand", SIDE);
+    let got = &actions_at(&mut no_data, "side.strand", SIDE, at + 1, at + 1)[0]["edit"];
+    assert_eq!(
+        no_data.applied(got, "side.strand", SIDE),
+        eager.applied(expected, "side.strand", SIDE)
+    );
+
+    // Offered for text that has changed since: asked again, not applied.
+    let edited = SIDE.replace("\"head\"", "\"top\"");
+    c.change("side.strand", 2, &edited);
+    let e = c.request_err("codeAction/resolve", offered.clone());
+    assert!(e.contains("changed since"), "{e}");
+
+    // What only the compiler finds is refused when chosen, with the
+    // reason; what the refactor finds itself is still offered disabled.
+    let mut c = Client::start_with(&[("t.strand", SHADOWED.into())], resolving);
+    c.open_text("t.strand", SHADOWED);
+    let at = SHADOWED.find("row").unwrap();
+    let actions = actions_at(&mut c, "t.strand", SHADOWED, at, at);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert!(actions[0]["disabled"].is_null(), "{actions:?}");
+    let e = c.request_err("codeAction/resolve", actions[0].clone());
+    assert!(
+        e.contains("the result would not check: unknown type `builtin`"),
+        "{e}"
+    );
+    let text = "component Side {\n  state open = false\n  col {\n    row { text \"x\" { on click { open = !open } } }\n  }\n}\n";
+    let mut c = Client::start_with(&[("w.strand", text.into())], resolving);
+    c.open_text("w.strand", text);
+    let at = text.find("row").unwrap();
+    let actions = actions_at(&mut c, "w.strand", text, at, at);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let reason = actions[0]["disabled"]["reason"].as_str().unwrap();
+    assert!(reason.contains("`open` (`=`)"), "{reason}");
 }
 
 /// A private declaration in another file is a help (the edit is `export`

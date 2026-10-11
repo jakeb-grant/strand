@@ -167,9 +167,11 @@ fn negative_corpus() {
 }
 
 /// The suggestions (quick fixes) of `diags`, one line each, checking that
-/// each lies in its diagnostic's file on whole characters and that a
-/// "did you mean `x`?" help comes with `x` as its one fix (the LSP reads
-/// the fixes, never the help).
+/// each lies on whole characters of one line (in its diagnostic's file, or
+/// for a missing key at the declaration it adds the key to), with a
+/// zero-width span only as an insertion (`+` lines), and that a "did you
+/// mean `x`?" help comes with `x` as its one fix (the LSP reads the fixes,
+/// never the help).
 fn fixes(diags: &[strand_compiler::diagnostic::Diagnostic], map: &SourceMap) -> String {
     let mut out = String::new();
     for d in diags {
@@ -182,15 +184,28 @@ fn fixes(diags: &[strand_compiler::diagnostic::Diagnostic], map: &SourceMap) -> 
             assert_eq!(d.suggestions[0].replacement, m, "{d:?}");
         }
         for f in &d.suggestions {
-            assert_eq!(f.file, d.file(), "{d:?}");
+            if f.file != d.file() {
+                assert_eq!(d.code, "check::missing_key", "{d:?}");
+            }
             let file = map.get(f.file).unwrap();
             let text = file.text.get(f.span.start as usize..f.span.end as usize);
             let text = text.unwrap_or_else(|| panic!("fix span off the text: {d:?}"));
-            assert!(!text.is_empty() && !text.contains('\n'), "{d:?}");
-            out.push_str(&format!(
-                "fix [{}] {}: `{text}` -> `{}`\n",
-                d.code, file.name, f.replacement
-            ));
+            assert!(!text.contains('\n'), "{d:?}");
+            let title = f
+                .title
+                .as_deref()
+                .map_or(String::new(), |t| format!(" ({t})"));
+            if text.is_empty() {
+                out.push_str(&format!(
+                    "fix [{}] {}@{}: + `{}`{title}\n",
+                    d.code, file.name, f.span.start, f.replacement
+                ));
+            } else {
+                out.push_str(&format!(
+                    "fix [{}] {}: `{text}` -> `{}`{title}\n",
+                    d.code, file.name, f.replacement
+                ));
+            }
         }
     }
     out
