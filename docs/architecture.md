@@ -1860,8 +1860,12 @@ table.
     `baseXX`, matugen's non-role keys, W3C colour tokens,
     `source_color` for material).
   - `export::{json(&Palette, &TokenTable) -> String,
-    base24(&Palette) -> String}` are pure writers; `base24` follows
-    the slot table in decisions.md m5-tools ("the CLI").
+    base24(&Palette, &TokenTable) -> String}` are pure writers; the
+    `Palette` gives identity and source, the resolved `TokenTable`
+    (overlays included) every value, so `strand set` reaches both;
+    `base24` follows the slot table in decisions.md m5-tools ("the
+    CLI"), and `json` the value rules in "template expressions and
+    formats".
   - Owner: a wave-2 palette owner beside S-tools.
 - **strand-scene.** `TokenTable` gains the hue roots and reserves
   `palette` as a first segment for extras and identity (read only by
@@ -1882,10 +1886,20 @@ table.
     and an offline export would write `palettes/palette`.
   - `Instance::other_mode(rt) -> Memo<Result<TokenTable, Error>>`: the
     theme's `use palette` and `use tokens` evaluated with every read of
-    `system.dark` answered by its negation, with no fallback. One per
-    instance, made when the first output whose template reads
-    `.light()` or `.dark()` mounts and dropped with the last; it writes
-    no cell, tracks what only the other mode reads (imports, settings
+    `system.dark` answered by its negation, with no fallback. It
+    evaluates in an other-mode child env with fresh slots for every
+    top-level `let` that the theme reaches and that reaches
+    `system.dark` (the static dependency graph, through `fn` bodies),
+    since a `let` is one shared slot already computed with the real
+    `system.dark`; states, settings and `persist` cells stay shared;
+    the env flags the service read (and `default_palette`) to negate
+    `system.dark`. It never calls `ThemeHost::remember_palette`, never
+    reads or sets `last_palette`, and stores no `Quantiser` seed. The
+    runtime token overlays apply to its table as to the current one.
+    One per instance, held (counted) by each mounted output whose
+    template reads `.light()` or `.dark()` and by an IPC `export`
+    request whose template does, for that request; made with the first
+    holder and dropped with the last; it writes no cell, tracks what only the other mode reads (imports, settings
     fields, a pending image's `Async`) as any memo does, and is pulled
     on the logic thread after the tick's diff, once per change for all
     outputs.
@@ -1916,7 +1930,9 @@ table.
     <expr>] [-o <file>]` (`src/export.rs`).
   - An `export` IPC request in the socket's COMMANDS table (S-ipc's
     area; no D-Bus method) that renders against the live table,
-    overlays included; the offline mount is the fallback.
+    overlays included, on the logic thread after the tick's diff,
+    holding `Instance::other_mode` while it builds its reply when its
+    template reads the other mode; the offline mount is the fallback.
   - An output host on the main side renders `Update.outputs` off the
     logic thread and writes through a `FileWriter`. It follows
     symlinks and keeps the file's mode. Strand's own writes are
