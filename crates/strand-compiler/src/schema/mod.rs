@@ -50,6 +50,7 @@
 
 mod members;
 mod parse;
+pub mod plugins;
 
 pub use members::{
     ASYNC_TRANSFORMS, MemberInfo, MemberKind, async_members, builtin_methods, list_members,
