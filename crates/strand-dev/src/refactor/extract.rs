@@ -12,9 +12,11 @@
 //!   two-way"), so the action is offered disabled, with the reason.
 //! - An element outside the selection named with `id:`, or the
 //!   component's `slot`, stays put the same way.
-//! - The new component is `NewComponent` (`NewComponent2`, … when taken),
-//!   formatted with `fmt::format`. The result is checked before it is
-//!   applied: an edit that would add an error is refused with that error.
+//! - The new component is `NewComponent` (`NewComponent2`, … when the
+//!   name is written anywhere in the config, defined or not), formatted
+//!   with `fmt::format`. The result is checked before it is applied: an
+//!   edit whose result has an error the config did not have is refused
+//!   with that error (a swapped error counts, not just a higher count).
 //!   [`offer`] skips that check (one more compile of the whole config),
 //!   for a client that asks for the edit later (`codeAction/resolve`),
 //!   so a cursor moving over element names never compiles the config.
@@ -23,9 +25,8 @@
 //! under another component, so their identity is new (design.md,
 //! "Identity and state"); the title says so.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use strand_compiler::FileId;
 use strand_compiler::fmt::format;
 use strand_compiler::hir::{
     Callee, DefKind, Element, Expr, ExprKind, Item, LambdaBody, LocalKind, Node, Prop, Stmt,
@@ -34,6 +35,7 @@ use strand_compiler::hir::{
 use strand_compiler::schema::list_members;
 use strand_compiler::syntax::{Span, ast};
 use strand_compiler::ty::Ty;
+use strand_compiler::{Compiled, Diagnostic, FileId};
 
 use crate::ctx::word_end;
 use crate::workspace::Analysis;
@@ -179,7 +181,13 @@ fn plan(
         }
     }
 
-    let taken: HashSet<&str> = p.defs.iter().map(|d| d.name.as_str()).collect();
+    // Every name written anywhere in the config is taken, not only the
+    // defined ones: a call to an undefined `NewComponent` would otherwise
+    // bind to the new component.
+    let mut taken: HashSet<&str> = p.defs.iter().map(|d| d.name.as_str()).collect();
+    for (_, s) in an.map.iter() {
+        taken.extend(words(&s.text));
+    }
     let name = (1..)
         .map(|i| match i {
             1 => "NewComponent".to_string(),
@@ -219,30 +227,40 @@ fn plan(
         false => None,
     };
     if let Some(after) = after
-        && after.compiled.errors() > an.compiled.errors()
+        && let Some(new) = added_error(&an.compiled, &after.compiled)
     {
-        let before: HashSet<(&str, &str)> = an
-            .compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.is_error())
-            .map(|d| (d.code, d.message.as_str()))
-            .collect();
-        let new = after
-            .compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.is_error())
-            .find(|d| !before.contains(&(d.code, d.message.as_str())));
-        return Err(format!(
-            "the result would not check: {}",
-            new.map_or("an error", |d| d.message.as_str())
-        ));
+        return Err(format!("the result would not check: {}", new.message));
     }
     Ok((
         format!("Extract component `{name}` (state inside it resets on reload)"),
         vec![(el.span, call), (end, insert)],
     ))
+}
+
+/// The identifiers in `src` (and any other run of identifier
+/// characters: a comment's words only make a name look taken).
+fn words(src: &str) -> impl Iterator<Item = &str> {
+    src.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+}
+
+/// An error in `after` that `before` does not have (by code and message,
+/// counted): an edit that clears one error and adds another still adds
+/// one.
+fn added_error<'a>(before: &Compiled, after: &'a Compiled) -> Option<&'a Diagnostic> {
+    let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
+    for d in before.diagnostics.iter().filter(|d| d.is_error()) {
+        *seen.entry((d.code, d.message.as_str())).or_default() += 1;
+    }
+    after.diagnostics.iter().filter(|d| d.is_error()).find(|d| {
+        match seen.get_mut(&(d.code, d.message.as_str())) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                false
+            }
+            _ => true,
+        }
+    })
 }
 
 fn contains(outer: Span, inner: Span) -> bool {
@@ -489,5 +507,54 @@ mod tests {
             assert!(matches!(again, Some(Extract::Edit { .. })), "{again:?}");
             assert!(Arc::ptr_eq(&memo, &an.edited().unwrap()));
         }
+    }
+
+    fn analysis(src: &str) -> (Analysis, FileId) {
+        let uri = "file:///t.strand".to_string();
+        let an = Analysis::new(
+            ConfigKey::Single(uri.clone()),
+            vec![Input::new(uri.clone(), "t.strand".into(), src.into())],
+            Arc::new(Schema::builtin().clone()),
+        );
+        let file = an.file(&uri).unwrap();
+        (an, file)
+    }
+
+    const PLACEHOLDER: &str = "component Side(label: text) {\n  state open = false\n  col {\n    row { text label { color: open ? $accent : $fg } }\n  }\n}\nbar Top {\n  Side { label: \"x\" }\n}\nbar Other {\n  NewComponent { label: \"x\" }\n}\n";
+
+    /// A name called but never defined is taken: the new component must
+    /// not become what an unresolved `NewComponent` call means.
+    #[test]
+    fn an_undefined_name_in_use_is_not_the_new_components() {
+        let (an, file) = analysis(PLACEHOLDER);
+        assert_eq!(an.compiled.errors(), 1, "{:?}", an.compiled.diagnostics);
+        let at = PLACEHOLDER.find("row").unwrap() as u32;
+        let Some(Extract::Edit { title, edits }) = extract(&an, file, Span::new(at, at)) else {
+            panic!("no edit");
+        };
+        assert!(title.contains("`NewComponent2`"), "{title}");
+        assert!(
+            edits.iter().all(|(_, t)| !t.contains("NewComponent ")),
+            "{edits:?}"
+        );
+    }
+
+    /// An edit that clears one error and adds another adds an error,
+    /// though the count stays the same.
+    #[test]
+    fn a_swapped_error_is_an_added_error() {
+        let (before, _) = analysis(PLACEHOLDER);
+        let defined = format!(
+            "{PLACEHOLDER}component NewComponent(label: text, open: bool) {{\n  text label\n}}\n"
+        );
+        let (after, _) = analysis(&defined);
+        assert_eq!(before.compiled.errors(), after.compiled.errors());
+        let added = added_error(&before.compiled, &after.compiled);
+        assert_eq!(
+            added.map(|d| d.code),
+            Some("check::missing_arg"),
+            "{added:?}"
+        );
+        assert!(added_error(&before.compiled, &before.compiled).is_none());
     }
 }
