@@ -176,13 +176,14 @@ fn check_config(
         &compiled.program,
         Some(dir),
     ));
-    diags.extend(lock_helper(&compiled.parses, helper));
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call
         // site of a parameter whose callers disagree.
         diags.retain(|d| d.labels.iter().any(|l| Some(l.file) == focus_id));
     }
+    // The install's, not a file's: reported whichever file is checked.
+    diags.extend(lock_helper(&compiled.parses, helper));
     for d in &diags {
         if d.is_error() {
             report.errors += 1;
@@ -218,7 +219,8 @@ fn check_config(
 /// helper is installed where strand looks for it. `strand run` warns at
 /// start and still locks (failing closed), so the only way out would be
 /// a TTY; check is where the user hears it before installing the config
-/// (decisions.md, m4-close-helper). One error, on the first `lock`.
+/// (decisions.md, m4-close-helper). One error, on the first `lock`, and
+/// config-wide: checking any one file of the config reports it too.
 fn lock_helper(parses: &[Parse], helper: HelperLookup) -> Option<Diagnostic> {
     let (file, span) = parses.iter().find_map(|p| {
         p.file.items.iter().find_map(|item| match &item.kind {
@@ -253,7 +255,7 @@ const USAGE: &str = "usage: strand check [dir | file]\n\n\
     $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits \
     non-zero on errors. Given a file, checks it with the rest of its config \
     (the default directory if the file is in it, else the file's directory) \
-    and prints the diagnostics in that file.\n";
+    and prints the diagnostics in that file, and a missing lock helper.\n";
 
 /// Runs `strand check` with its arguments (after `check`). Returns the text
 /// for stderr and whether the check passed.
@@ -663,13 +665,16 @@ mod tests {
         let report = check_dir_with(&t.0, Style::Plain, a_helper).unwrap();
         assert!(report.ok(), "{}", report.text);
         assert_eq!(report.warnings, 0, "{}", report.text);
-        // Checking one file: the lock's file has the error, the bar's not.
-        let lock = t.0.join("lock.strand");
-        let report = check_file(&lock, None, Style::Plain, no_helper).unwrap();
-        assert_eq!(report.errors, 1, "{}", report.text);
-        let bar = t.0.join("bar.strand");
-        let report = check_file(&bar, None, Style::Plain, no_helper).unwrap();
-        assert!(report.ok(), "{}", report.text);
+        // Checking one file reports it whichever file it is: the error is
+        // the install's, and its label points at the lock's file.
+        for file in ["lock.strand", "bar.strand"] {
+            let path = t.0.join(file);
+            let report = check_file(&path, None, Style::Plain, no_helper).unwrap();
+            assert_eq!(report.errors, 1, "{file}: {}", report.text);
+            assert!(report.text.contains("lock.strand:1:"), "{}", report.text);
+            let report = check_file(&path, None, Style::Plain, a_helper).unwrap();
+            assert!(report.ok(), "{file}: {}", report.text);
+        }
         // No `lock`, no helper needed: the lookup is not even asked.
         let t = TempDir::new();
         t.write("bar.strand", "bar Top { text \"x\" }\n");
@@ -678,6 +683,23 @@ mod tests {
         }
         let report = check_dir_with(&t.0, Style::Plain, unasked).unwrap();
         assert!(report.ok(), "{}", report.text);
+    }
+
+    /// The public `check_dir` asks the same lookup `strand run` does
+    /// (`strand_auth::default_helper`), so the check is on for real users.
+    #[test]
+    fn check_dir_looks_up_the_real_helper() {
+        let t = TempDir::new();
+        t.write("lock.strand", LOCK);
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        let missing = strand_auth::default_helper().is_none();
+        assert_eq!(report.errors, usize::from(missing), "{}", report.text);
+        assert_eq!(
+            report.text.contains("check::lock_no_helper"),
+            missing,
+            "{}",
+            report.text
+        );
     }
 
     #[test]
