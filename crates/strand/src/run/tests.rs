@@ -2460,3 +2460,125 @@ fn an_unavailable_gpu_is_a_notice_once() {
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// (S-ipc review) A persisted cell kept over a changed default at boot
+/// reaches the event sink (the D-Bus `Changed` signal) once, as the
+/// boot's `notices` event, and not again in the next reload's
+/// `kept_over_default`; a socket watcher that came after the boot still
+/// gets it there.
+#[test]
+fn a_cell_kept_at_boot_reaches_the_event_sink_once() {
+    let dir = temp_dir("boot-kept-sink");
+    let src = "state hits = 0 persist\nbar Top {\n  \
+               text join(\"\", \"h\", hits) { on click { hits += 1 } }\n}\n";
+    let file = dir.join("bar.strand");
+    std::fs::write(&file, src).unwrap();
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    // A first run persists `hits = 1`.
+    {
+        let program = load(&dir);
+        let st = storage();
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(program, st, from_main, tx, Live::default()));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["h0"]);
+        let text = m.scene.of_kind(NodeKind::Text)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: text,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["h1"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+    // The default changes: the persisted 1 is kept over it at boot, with
+    // a socket bound and nobody watching it.
+    std::fs::write(&file, src.replace("hits = 0", "hits = 5")).unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let st = storage();
+    compiler.register_own_writes(&st);
+    let (heard, sunk) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: None,
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the kept value", |s| s.texts() == ["h1"]);
+    let next_sunk = |kind: &str| loop {
+        let ev = sunk.recv_timeout(Duration::from_secs(10)).unwrap();
+        if ev["event"] == kind {
+            break ev;
+        }
+    };
+    let kept_path = |ev: &Json| -> Vec<String> {
+        ev["kept_over_default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["path"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let boot_ev = next_sunk("notices");
+    let paths = kept_path(&boot_ev);
+    assert!(
+        paths.len() == 1 && paths[0].ends_with("hits"),
+        "the sink hears the kept cell at boot: {boot_ev}"
+    );
+    // A socket watcher comes after the boot; a save reloads.
+    let mut events =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+    assert_eq!(ok["ok"], true);
+    std::fs::write(
+        &file,
+        src.replace("hits = 0", "hits = 5")
+            .replace("}\n}\n", "}\n  text \"x\"\n}\n"),
+    )
+    .unwrap();
+    m.until("the new text", |s| s.texts().len() == 2);
+    let socket_ev = loop {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+        let ev: Json = serde_json::from_str(&line).unwrap();
+        if ev["event"] == "reload" {
+            break ev;
+        }
+    };
+    assert_eq!(
+        kept_path(&socket_ev),
+        paths,
+        "the socket watcher missed the boot: its reload names the cell: {socket_ev}"
+    );
+    let sunk_ev = next_sunk("reload");
+    assert_eq!(
+        sunk_ev["kept_over_default"],
+        json!([]),
+        "the sink heard it at boot, not again: {sunk_ev}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
