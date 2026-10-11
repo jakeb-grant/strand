@@ -964,7 +964,8 @@ zero-width span (an insertion) is allowed.
 
 **Plugins: `strand` gains a `[lib]` target (new).** `main.rs`'s module
 tree moves under `lib.rs`, and `main.rs` keeps `main` and the COMMANDS
-table (0b; planned within 1 KB of `.text`, measured at +12,544 B
+table until the wave 1 → 2 boundary, when both move into `src/entry.rs`
+(accepted 2026-10-11; "Plugin builder" below) (0b; planned within 1 KB of `.text`, measured at +12,544 B
 CPU-only and +8,512 B GPU with the request channel, and accepted and
 charged to the ledger: decisions.md m5-core, m5-integration). The library
 exposes `strand::Shell::builder().service::<S>().run()`: a plugin is a
@@ -973,8 +974,9 @@ types beside the builtins (`Builtin::register` is unchanged, and the
 composite host routes the extra names). It is git-only and marked
 unstable. A plugin binary writes its services' schemas as `.schema`
 files into `$XDG_DATA_HOME/strand/schemas/` (`--write-schemas`), outside
-the watched config directory, where `strand check` and the LSP read
-them; no dylib is loaded (m5-owner Q18). A plugin binary must copy the
+the watched config directory, where `strand check`, `strand run` and
+the LSP read them (`strand run` added, accepted 2026-10-11: one schema
+for all three, "Plugin builder" below); no dylib is loaded (m5-owner Q18). A plugin binary must copy the
 workspace's `[profile.release]` and its package overrides, and invoke
 `strand::process_setup!()` once at its crate root (mimalloc as the
 global allocator, and THP off from an `.init_array` constructor before
@@ -989,6 +991,193 @@ points: `check`, `fmt`, the IPC commands, `compositor_rules`, `demo`,
 private. `main.rs` invokes `strand::process_setup!()`, and so do
 `lib.rs` under `cfg(test)` (so the unit tests run as the binary does)
 and `tests/m5/process_setup.rs` (a linking binary, as a plugin is).
+
+**Plugin builder (S-plugins; wave 1 notes, accepted by the integrator
+2026-10-11, built in wave 2).** The reasons are in decisions.md
+`## m5-plugins`. Two parts are interface changes the integrator
+accepted: `main.rs`'s dispatch moving into the library, and the stock
+`strand` reading the plugin schema files.
+- **Public surface, all of it.** `strand::Shell` (a unit struct),
+  `Shell::builder() -> Builder`, `Builder::service::<S:
+  strand_services::Service>(self) -> Self` and `Builder::run(self) ->
+  std::process::ExitCode`, beside the existing `process_setup!` and the
+  hidden `cli` and `__process`. Errors are not public types: `run`
+  prints them and fails. A plugin depends on `strand` and
+  `strand-services` from the same git URL and rev (the `#[service]`
+  and `Store` derives emit `::strand_services` paths); `strand` does not
+  re-export it.
+- **One CLI (accepted).** `Builder::run` is the whole `strand` command
+  line: `main.rs`'s `COMMANDS`, `dispatch` and `main` body (idle hooks
+  included) move into a library module, `src/entry.rs`, and `main.rs`
+  becomes `strand::process_setup!(); fn main() -> ExitCode {
+  strand::Shell::builder().run() }` with its allocator and THP tests. A
+  plugin binary therefore answers `run`, `check`, `fmt`, `call` and the
+  rest exactly as `strand` does, against its own schema. This replaces
+  0a's "`main.rs` keeps `main` and the COMMANDS table". The move is one
+  pure-move commit at the wave 1 → 2 boundary, after S-ipc's CLI arms
+  merge and before S-tools adds `new`, `export` and `report`; S-plugins
+  writes it and the integrator merges it. Ownership after the move:
+  `entry.rs`'s COMMANDS table and dispatch arms are a shared dispatch
+  point, like `Shell::request`'s arms; S-ipc keeps the COMMANDS table
+  (its rows and its D-Bus arms), S-tools adds its three rows, each as
+  one-line entries the integrator merges. S-plugins owns the builder in
+  `src/plugin.rs` (registration, `--write-schemas`, the setup check)
+  and the single call from `entry.rs` into it, not the table.
+- **Registration.** `service::<S>()` appends a private `Registration {
+  name: S::NAME, schema: S::schema, register: fn(&Services, &Runtime) ->
+  Rc<dyn DynService> }` (function pointers, monomorphised only in a
+  plugin binary). `run` checks the list (below), then stores it once in
+  a private process-wide `OnceLock` (`plugin::extras()`, empty in
+  `strand`), before any subcommand, through `plugin::install(slot,
+  list)`, which takes the `OnceLock` as a parameter and refuses one
+  already set. `services::schema()` and `Real::start` read it, each
+  through a pure twin that takes the list instead:
+  `services::schema_with(extras, files) -> Served` builds the served
+  schema and says which services the files declare that no linked
+  store serves: `Served { schema: Schema, unserved: Vec<(String,
+  PathBuf)> }`, each unserved name with the path of the file that
+  declared it. `services::served()` is the process-wide `OnceLock`
+  over it with `plugin::extras()` and the files `plugins::load` found,
+  and `schema()` is `&served().schema` (its signature and callers are
+  unchanged). `Real::start_with(rt, types, buses, fallback, wake,
+  extras, served: &'static Served)` is `Real::start` with both passed
+  in (`Real::start` passes `plugin::extras()` and `served()`; its
+  signature and callers are unchanged), and `Real` keeps `served`:
+  `start_with` adds the `UnservedHost`s from `served.unserved` (below),
+  and `Real::set_text` resolves the service, its fields and their
+  types in `served.schema`, through `services::set_text_with(schema,
+  host, rt, types, path, text)`, the pure twin of the free `set_text`
+  (which is `set_text_with(schema(), …)`, unchanged for its callers).
+  Unit tests use the twins, a local `OnceLock`, and a `Served` built
+  by `schema_with` from a test-defined extra and files in a temporary
+  directory (leaked to `'static`, as a test may), so none of them sets
+  or reads the process-wide lists that the shared lib test binary's
+  other tests already initialised. `Real::start_with` registers the extras after
+  `Builtin::register` (unchanged) and adds each to the `Composite` as a
+  `StoreHost`, as it does the builtins, so reads, writes, events and the
+  D-Bus front end reach them through the existing name routing, and
+  `shutdown` disposes them with the other stores. Two paths look a
+  service up by name to start it and wait for its first read, and both
+  go through one new lookup, `Real::served(name) -> Option<Rc<dyn
+  DynService>>` (the builtins, then the extras): `Real::set_text`
+  (`strand set`) and S-ipc's `Shell::run_action` (`strand call`,
+  `run/request/call.rs`), which today search `builtin.all()` alone and
+  would skip the acquire and the `wait_ready_of(SET_WAIT)` for a plugin
+  service. For `set` the miss is a wrong value: a relative write
+  (`+1`) on a service nobody reads would be computed from the schema
+  default before the first read, and the first read would then
+  overwrite it. For `call` it is not observable from outside: an action
+  is fire-and-forget (`Client::act` answers once `Msg::Action` is
+  queued, and `with_run` starts a stopped service itself, so the body
+  takes the action after its start either way), and the lookup only
+  makes `call` return after the first read, as `set` does. So the
+  regression tests are `Real::served`'s unit test and `set`'s, not a
+  `strand call`. The `run_action` change is one line in S-ipc's file, landed
+  with S-plugins' wave-2 PR as a one-line entry the integrator merges
+  (S-ipc reviews). A plugin service runs on the shared services
+  runtime, or its own thread with `thread`, as a builtin does.
+- **The served schema (accepted: the stock `strand` reads the files)**
+  (`services::schema()`, `strand-dev`'s `schema()`): the builtin texts,
+  then each linked plugin text in `service` order, then the plugin
+  schema files in file-name order, skipping a file whose stem names a
+  linked service (code wins over its file). Each text goes through
+  `Schema::extend`, which is atomic: a file that does not apply is
+  skipped with a warning naming it, never fatal. The fingerprint chains
+  every applied text, so the compile cache follows. `strand` reads the
+  files too, so `strand check`, `strand run` and the LSP check against
+  one schema as before. A service a file declares that no linked store
+  serves answers from the `SchemaHost` fallback at its defaults, behind
+  a thin strand-local `UnservedHost` that `Real::start_with` adds to the
+  `Composite` under that name, one for each entry of the `Served`
+  it is given (`served.unserved`, so the notice's path comes from
+  `schema_with`, never from a second read of the directory). Reads go
+  to the fallback; everything
+  that would reach the service itself (`write`, `write_item`, `call`,
+  `action`) is refused with the notice's text below, so `strand set`
+  and `strand call` on such a name answer with an error naming the
+  file rather than an `ok` that did nothing (`SchemaHost::action`
+  returns `Ok` without acting, and its `write` changes only defaults).
+  Its first `acquire` (the config reads the service) raises one
+  `ServiceDiagnostic { notice: true, resolved: false }` through
+  `Services::report`, which `Shell::service_diagnostics` takes with the
+  services' own, and the last `release` (a reload stops reading it)
+  reports the same diagnostic with `resolved: true`, which takes the
+  overlay rows away; so a leftover file that no config reads raises
+  nothing (only a log line at start). The notice reads: "`hello` is
+  declared by `<path>` but this binary does not serve it; run the
+  plugin binary that wrote it, or remove the file if that plugin is
+  gone". No strand-services change. Like every service notice, it is
+  broadcast to the watchers connected when it is taken: one raised by
+  the boot's mount is in the log and on the overlay, and `watch_request`
+  does not replay it (it replays warnings and host notices only, and
+  that is S-ipc's file), so its test raises it with a reload after
+  `strand watch` connects. A linked
+  service whose file differs from its text logs "stale; run `<binary>
+  --write-schemas`".
+- **Schema files** (`strand_compiler::schema::plugins`, a new file
+  `strand-compiler/src/schema/plugins.rs`, std only, owned by S-plugins
+  in m5-plan's strand-compiler list; strand-dev links it through
+  strand-compiler): `dir()` is `$XDG_DATA_HOME/strand/schemas/`
+  (absolute only, else `$HOME/.local/share/strand/schemas/`; neither: no
+  plugin schemas); `load(dir) -> (Vec<(PathBuf, String)>, Vec<Warning>)`
+  reads `*.schema` but dotfiles, regular files only (symlinks followed;
+  FIFOs and devices refused), at most 1 MiB each, UTF-8; a missing
+  directory is no plugins; `apply(&mut Schema, files, linked: &[&str])
+  -> Vec<Warning>` is the skip-and-warn loop both consumers call; and
+  `writer(text) -> Option<&str>` reads a file's header. Files are read
+  once per process; a running shell or LSP sees new files after a
+  restart.
+- **`--write-schemas`** (a top-level flag, like `--version`): for each
+  registered service, checks that its text applies over the builtin and
+  earlier plugin texts and that the resulting entries are documented,
+  then writes `<name>.schema` (a header line `// strand plugin schema,
+  written by <exe> --write-schemas; do not edit`, then `S::schema()`
+  verbatim) to a temporary `.<name>.schema.tmp` and renames it into
+  `dir()` (created as needed). `<exe>` is the writing binary's
+  identity: `std::env::current_exe()` canonicalised (symlinks resolved),
+  printed in full; never `argv[0]` or a package name, so two projects
+  that both build a `my-shell` do not share one. It then removes the
+  `.schema` files whose header names this exact path and whose service
+  it no longer registers, and lists, without touching, the files another
+  path wrote that declare a name it does not register ("left alone:
+  `<file>` (written by `<exe>`)"), so a dropped service's file from a
+  `target/` build is shown to the user rather than guessed at. If
+  `current_exe()` fails, it writes the header with `unknown` and removes
+  nothing. It prints each path written or removed, and exits. It takes
+  no directory argument (tests set `XDG_DATA_HOME`). `strand
+  --write-schemas` writes nothing and says the binary registers no
+  plugin services.
+- **Errors** (`plugin::PluginError`, private, printed as `<binary>:
+  <error>` with a failing exit): `DuplicateService(name)` (a builtin's
+  name, or registered twice), `BadName(name)` (not `[a-z_][a-z0-9_]*`),
+  `Schema { service, errors }` (its text does not apply),
+  `Undocumented { service, entries }` (`Schema::undocumented()` of its
+  entries; `--write-schemas` only), `NoDataDir`, `Write { path, error }`.
+  The first three fail every subcommand before it runs: `run` checks
+  the names, then that each linked text applies over the builtin and
+  the earlier linked texts (files are not involved, so a bad file
+  never stops a plugin), so a plugin never boots on a text that
+  `services::schema()` would log and fall back from.
+- **Process setup check.** `run` checks, once, that a heap block is
+  mimalloc's and that THP is off for the process; if not it prints a
+  warning naming `strand::process_setup!()` and goes on. The decision
+  is a pure `plugin::setup_warning(mimalloc: bool, thp_off: bool) ->
+  Option<&str>` over the two probes, so its polarity is unit-tested on
+  all four inputs; the binary tests spawn their children with THP
+  turned back on (`PR_SET_THP_DISABLE` is inherited across fork and
+  exec, and the m5 test binary turns it off itself), so a child that
+  reports THP off turned it off itself.
+- **Examples.** `crates/strand/examples/plugin_hello.rs` (`[[example]]
+  plugin_hello`): `strand::process_setup!()` at its root, a `hello`
+  service (`greeting: text`, `count: int`, writable, which the first
+  read sets to 41 as a stand-in for a value a real service reads from
+  its source; `action greet(name: text)` sets `greeting` to `hello,
+  <name>` and bumps `count`; each documented). `fn main()
+  { strand::Shell::builder().service::<Hello>().run() }`.
+  `crates/strand/examples/plugin_bare.rs` is the same `main` without
+  `process_setup!()` and without services, the case the setup check
+  exists for. Both are built by `cargo test` and never linked into the
+  `strand` binary.
 
 **Ownership.** Integrator: this section, the root `Cargo.toml` and
 `Cargo.lock`, CI files, budgets.rs's gate constants and

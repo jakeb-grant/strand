@@ -408,13 +408,13 @@ These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
 | S-core | 0b | the shared-code PR (below); then dissolves | interfaces as code |
 | S-size | 0 | the reclaim edits, `[profile.release.package]` entries (merged by the integrator), budgets.rs's opt-level test | size baseline; lowered gate |
 | S-infra | 0, then on call | `scripts/container/*`, `scripts/size-report.sh`, `scripts/gpu-measure.sh` (owner-run only), `.github/*` until wave 0 ends, the budgets ledger line, the three spikes, deferred CI tests in crates no stream owns | wave-0 tooling; spikes; deferred CI items |
-| S-ipc | 1, 2 | `strand/src/ipc/{query,call,overlay}.rs`, `run/request/{get,set,toggle,call,clear}.rs`, the request channel's arms in `run/request/{reload,watch}.rs` (a bus `reload` and `watch`), the `EventSink` it hands `Live::events_to`, the COMMANDS table, the token overlay layer (strand-compiler `instantiate/overlay.rs`, beside settings' `set_overlay`), `strand-services/src/ipc_bus.rs`, `tests/m5/{cli,dbus_ipc}.rs` | CLI + IPC box |
+| S-ipc | 1, 2 | `strand/src/ipc/{query,call,overlay}.rs`, `run/request/{get,set,toggle,call,clear}.rs`, the request channel's arms in `run/request/{reload,watch}.rs` (a bus `reload` and `watch`), the `EventSink` it hands `Live::events_to`, the COMMANDS table (in `strand/src/entry.rs` after the wave 1 → 2 move, a shared dispatch point; S-tools adds its rows there as one-line entries), the token overlay layer (strand-compiler `instantiate/overlay.rs`, beside settings' `set_overlay`), `strand-services/src/ipc_bus.rs`, `tests/m5/{cli,dbus_ipc}.rs` | CLI + IPC box |
 | S-inspect | 1, 2, 3 | `strand-compiler/src/instantiate/inspect.rs`, `strand-scene/src/provenance.rs`, `strand-render/src/inspect/**` (CPU and GPU paths), `run/request/inspect.rs`, `ipc/inspect.rs`, `strand-dev/src/inspect/**`, `tests/m5/inspect.rs`, its `tests/lock.rs` case | Inspector box |
 | S-lsp | 1, 2 | `strand-dev/src/{diag.rs, refactor/**}`, `server.rs`'s capability block, `check/tree.rs` and `check/expr.rs` key suggestions, `diagnostic.rs`'s `Suggestion` use, `crates/strand-dev/tree-sitter-strand/**` | LSP box; both tree-sitter boxes (M1 line 69, M5) |
 | S-platform | 0 (spike), 2 | `strand-surface/src/activation.rs` and the key serials in `manager/seat.rs`; the activation parts of strand-services' notifications, apps and child; the activation path in `strand/src/services/adapter.rs`; strand-fake-wayland's `xdg_activation_v1`; the handler input context's route (architecture.md): the serial beside `NodeEvent` in strand-render's router (`input.rs`), `ToLogic::Event`'s `input` field and its arm in `run/shell.rs` (and `demo/host.rs`'s `Intent::Event`), `Instance::event`'s `input` parameter and the VM's per-invocation frame in strand-compiler, `DynService::action`'s `ActionCtx`, and the services→main token channel in `strand/src/run/` | xdg-activation box |
 | S-tools | 1 (writing), 2, 3 | `strand-theme/src/export.rs`, `strand/src/{new.rs, export.rs, report.rs}`, `run/request/report.rs`, strand-render `frame_summary`, strand-surface `globals()`/`outputs()`, `tests/m5/{new,export,report}.rs`; optional `check/imports.rs` | `new`/`export`/`report` box |
 | S-docs | 1–3 (wave 0's writing moved to wave 1) | `docs/guide/**` (the `strand new` template included), `docs/spec.md`, `docs/reference/**` (generated), `strand-dev/src/reference.rs`, the ladder test, `tests/m5/newcomer.rs`, the agent-proxy harness, the design.md edits for the ladder and Async | Docs box; the newcomer exit's automated layers |
-| S-plugins | 1 (writing), 2 | the builder API in `strand/src/lib.rs`'s `Shell::builder`, the `[[example]] plugin_hello`, plugin schema loading in `strand/src/services/mod.rs` and `strand-dev/src/server.rs` (a small PR S-lsp reviews), `tests/m5/plugin.rs`, the guide's plugin page | plugins half |
+| S-plugins | 1 (writing), 2 | the builder API (`strand/src/plugin.rs`, `lib.rs`'s `Shell::builder`), the pure-move commit of `main.rs`'s dispatch into `strand/src/entry.rs` (not the COMMANDS table after it), the `[[example]]`s `plugin_hello` and `plugin_bare`, plugin schema loading in `strand/src/services/mod.rs` and `strand-dev/src/server.rs` (a small PR S-lsp reviews), `strand-compiler/src/schema/plugins.rs`, `tests/m5/plugin.rs`, the guide's plugin page | plugins half |
 
 Per-file ownership in shared crates:
 - strand-services: `ipc_bus.rs` belongs to S-ipc; the activation parts of
@@ -427,7 +427,8 @@ Per-file ownership in shared crates:
   S-docs and S-plugins add modules through small PRs that S-lsp reviews.
 - strand-compiler: S-inspect owns `instantiate/inspect.rs`; S-ipc owns
   `instantiate/overlay.rs` and the `toggle`/`call` entry points; S-lsp
-  owns `check/` key suggestions. The handler input context's types
+  owns `check/` key suggestions; S-plugins owns `schema/plugins.rs` (the
+  plugin schema files' reader, a new module beside `schema/mod.rs`). The handler input context's types
   (`ActionCtx`, `InputCtx`, `ServiceHost::action`'s parameter) landed in
   0b, defined in `strand_core::action` since m5-w0-harden so
   strand-services can name them; its route from the seat to the VM and the token channel are
@@ -436,7 +437,9 @@ Per-file ownership in shared crates:
   `parse` arms in strand-core's `ipc.rs`, `Shell::request`'s arms,
   `ToMain`/`ToLogic` and `Shell::handle`'s arms, `Live`'s fields,
   `lib.rs`'s `mod` list and `strand::cli` re-exports, `ipc/mod.rs`'s
-  re-exports — take one-line entries from each stream that needs them
+  re-exports, and, from the wave 1 → 2 boundary, `entry.rs`'s COMMANDS
+  rows and dispatch arms (S-ipc's table) and `Real::served`'s one use in
+  S-ipc's `run/request/call.rs` — take one-line entries from each stream that needs them
   and are merged by the integrator (architecture.md, "Ownership").
 
 ## Wave 0
@@ -948,7 +951,8 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
 - `strand::Shell::builder().service::<MyService>().run()`.
   `Builtin::register` is unchanged, and the composite host routes the
   extra names.
-- Plugin schemas reach `strand check` and the LSP as `.schema` files
+- Plugin schemas reach `strand check`, `strand run` and the LSP as
+  `.schema` files
   written by the plugin binary (`--write-schemas`) into
   `$XDG_DATA_HOME/strand/schemas/`, outside the watched config dir (Q18).
   No dylib loading.
@@ -964,8 +968,20 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
 - Tests:
   - `tests/m5/plugin.rs::an_extra_service_is_checked_and_runs` runs the
     built example binary;
-  - lsp.rs: `plugin_schemas_hover`.
-- Budget: about 0 in `strand` (confirmed by the ledger).
+  - `tests/m5/plugin.rs::the_stock_strand_reads_plugin_schemas` and
+    `::the_setup_warning_shows_without_the_macro`;
+  - lsp.rs: `plugin_schemas_hover` and
+    `the_lsp_binary_reads_plugin_schemas`;
+  - the full list is decisions.md m5-plugins, "`plugin_hello` and the
+    wave-2 tests".
+- Budget: about 0 in `strand` (confirmed by the ledger); the wave-1
+  notes estimate 4–8 KB for the schema-file reader, `--write-schemas`
+  and the checks the stock binary now holds.
+- Design notes (wave 1): decisions.md `## m5-plugins`, and the
+  interface in architecture.md ("Plugin builder"), accepted by the
+  integrator on 2026-10-11, including moving `main.rs`'s dispatch into
+  the library at the wave 1 → 2 boundary and the stock `strand run`
+  reading the plugin schema files.
 - Ticks: the plugins half (Q17's split).
 
 ## Closing (wave 3, integrator)
