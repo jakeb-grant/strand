@@ -133,10 +133,9 @@ fn text(v: &Json, key: &str) -> Option<String> {
 /// M4's commands (`reload`, `watch`, `reset{path}`, `set`, `mock`)
 /// parse as they did in M4, field for field (a `reset` naming a `node`
 /// beside its `path` still resets the path). M5's commands parse through
-/// [`parse_m5`] once their stream serves them, by an arm here
-/// (`"get" | "toggle" => return parse_m5(cmd, &v)`); until then a
-/// client hears `unknown command`, M4's answer word for word
-/// (decisions.md m5-core).
+/// [`parse_m5`] once their stream serves them, by an arm here (S-ipc's
+/// `get`, `toggle`, `call` and `clear` do); until then a client hears
+/// `unknown command`, M4's answer word for word (decisions.md m5-core).
 #[inline]
 pub fn parse(line: &str) -> Result<Request, String> {
     let v: Json = serde_json::from_str(line).map_err(|e| format!("not a JSON request: {e}"))?;
@@ -166,6 +165,8 @@ pub fn parse(line: &str) -> Result<Request, String> {
             _ => return Err("`set` needs a `path` and a `value`".into()),
         },
         "mock" => Request::Mock(v),
+        // (M5, S-ipc) `get`, `toggle`, `call`, `clear`.
+        "get" | "toggle" | "call" | "clear" => return parse_m5(cmd, &v),
         other => return Err(format!("unknown command `{other}`")),
     })
 }
@@ -632,11 +633,19 @@ mod tests {
         ]
     }
 
-    /// M4's commands, which [`parse`] reads.
-    fn m4(r: &Request) -> bool {
+    /// The commands [`parse`] reads: M4's, and the M5 ones a stream
+    /// serves (S-ipc's `get`, `toggle`, `call` and `clear`).
+    fn served(r: &Request) -> bool {
         matches!(
             r,
-            Request::Reload { .. } | Request::Watch | Request::Reset { .. } | Request::Set { .. }
+            Request::Reload { .. }
+                | Request::Watch
+                | Request::Reset { .. }
+                | Request::Set { .. }
+                | Request::Get { .. }
+                | Request::Toggle { .. }
+                | Request::Call { .. }
+                | Request::Clear { .. }
         )
     }
 
@@ -658,7 +667,7 @@ mod tests {
             assert_eq!(v["cmd"], r.cmd(), "{line}");
             assert_eq!(v["v"], VERSION, "{line}");
             assert_eq!(parse_all(line.trim()), Ok(r.clone()));
-            if m4(&r) {
+            if served(&r) {
                 assert_eq!(parse(line.trim()), Ok(r));
             } else {
                 // Not served yet: M4's answer, word for word (`reset` is
@@ -763,7 +772,7 @@ mod tests {
                 r#"{"cmd":"set","path":"a.b"}"#,
                 "`set` needs a `path` and a `value`",
             ),
-            (r#"{"cmd":"get"}"#, "unknown command `get`"),
+            (r#"{"cmd":"report"}"#, "unknown command `report`"),
             (
                 r#"{"cmd":"inspect.pick"}"#,
                 "unknown command `inspect.pick`",
@@ -771,6 +780,27 @@ mod tests {
         ] {
             assert_eq!(parse(line), Err(why.to_string()), "{line}");
         }
+        // S-ipc's commands, served: `parse` reads them with `parse_m5`.
+        for (line, why) in [
+            (r#"{"cmd":"get"}"#, "`get` needs `path`"),
+            (r#"{"cmd":"toggle","path":""}"#, "`toggle` needs `path`"),
+            (r#"{"cmd":"clear"}"#, "`clear` needs `path`"),
+            (r#"{"cmd":"call","args":["1"]}"#, "`call` needs `target`"),
+            (
+                r#"{"cmd":"call","target":"a.b","args":[1]}"#,
+                "`call`'s `args` are a list of strings",
+            ),
+        ] {
+            assert_eq!(parse(line), Err(why.to_string()), "{line}");
+        }
+        // `args` may be left out: a call without arguments.
+        assert_eq!(
+            parse(r#"{"cmd":"call","target":"notifications.clear"}"#),
+            Ok(Request::Call {
+                target: "notifications.clear".into(),
+                args: vec![],
+            })
+        );
         // M4 read a `reset` with a `node` beside its `path` as the path.
         assert_eq!(
             parse(r#"{"cmd":"reset","path":"a.b","node":"1v0"}"#),

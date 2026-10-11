@@ -50,6 +50,10 @@ impl Shell {
             Request::Reset { path } => self.reset_request(from, &path),
             Request::ResetNode { .. } => self.reset_node_request(from),
             Request::Set { path, value } => self.set_request(from, &path, &value),
+            Request::Get { path } => self.get_request(from, &path),
+            Request::Toggle { path } => self.toggle_request(from, &path),
+            Request::Call { target, args } => self.call_request(from, &target, &args),
+            Request::Clear { path } => self.clear_request(from, &path),
             Request::Mock(req) => self.mock_request(from, &req),
             req => self.not_served(from, req.cmd()),
         }

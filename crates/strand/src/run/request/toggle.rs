@@ -1,7 +1,18 @@
-//! `strand toggle <path>` (S-ipc): flip an exported boolean. Not served
-//! yet.
-//!
-//! Empty until its stream serves it: the command does not parse yet
-//! (`strand_core::ipc::parse`), so a client hears `unknown command`, as
-//! from M4. The stream adds its `parse` arm, its handler here and its
-//! arm in `Shell::request` together.
+//! `strand toggle <path>` (S-ipc): flip an exported boolean in one
+//! logic-thread step (`Instance::toggle`); any other type is refused,
+//! naming it.
+
+use serde_json::json;
+use strand_core::ipc as proto;
+
+use super::{Caller, Shell};
+
+impl Shell {
+    pub(super) fn toggle_request(&mut self, from: Caller, path: &str) {
+        let ans = match self.inst.toggle(path) {
+            Ok(on) => json!({"ok": true, "value": on}),
+            Err(e) => proto::refused(e.to_string()),
+        };
+        self.answer(from, ans);
+    }
+}

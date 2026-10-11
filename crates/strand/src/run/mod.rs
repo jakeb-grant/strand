@@ -418,6 +418,8 @@ fn storage_or(dir: &Path, found: Result<Storage, strand_core::PersistError>) -> 
                 persist: None,
                 settings: Some(strand_core::SettingsStore::new(overlays.join("settings"))),
                 config_dir: Some(dir.to_path_buf()),
+                // Token overlays are kept in memory for this run.
+                tokens: Default::default(),
             }
         }
     }
