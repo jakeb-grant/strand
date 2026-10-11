@@ -617,11 +617,14 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
 /// reported, not gated: the swap's work, its full-buffer snapshot
 /// included, against design.md's 5 ms, and each frame's blend of its
 /// 33 MB beside [`BLEND_BUDGET`], which is for the shell's three
-/// surfaces. The laptop measured 3.9–5.9 ms of work (the larger with
-/// two buffers, beside the other benches) and 10–20 ms of blending per
-/// frame, with no headroom for a gate on GitHub's runners; whether a large surface's fade may cost that is the owner's
-/// call (handoff.md). The test checks that each swap crossfades over
-/// more than four frames; a debug build runs one swap per age.
+/// surfaces. With the u16 blend and the snapshot copied into fresh
+/// capacity (m4-close-blend) the laptop measured 2.9–4.4 ms of work,
+/// most of it the snapshot's 33 MB copy, and 3.6–5.1 ms of blending
+/// per frame (before: 4.2–6.0 ms and 10.5–20.5 ms), with no headroom
+/// for a gate on GitHub's runners; whether a large surface's fade may
+/// cost that is the owner's call (handoff.md). The test checks that
+/// each swap crossfades over more than four frames; a debug build runs
+/// one swap per age.
 #[test]
 fn a_4k_surface_crossfade_is_measured() {
     const SCRIM: &[(NodeKind, u32, u32)] = &[(NodeKind::Panel, 3840, 2160)];

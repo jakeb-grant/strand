@@ -945,6 +945,50 @@ fn a_colourless_table_mid_crossfade_keeps_fading() {
     assert_eq!(st.buf.pixels, new);
 }
 
+/// A crossfade on a padded wl_shm buffer (stride past `w * 4`): the
+/// snapshot copies each row from its stride, so every frame matches the
+/// packed buffer's row for row, and the padding stays as it was.
+#[test]
+fn a_crossfade_on_a_padded_buffer_matches_the_packed_one() {
+    const PAD: u8 = 0xA5;
+    let (w, h) = (320u32, 72u32);
+    let (row, stride) = (w as usize * 4, w as usize * 4 + 12);
+    let (a, b) = split_tables();
+    let mut packed = Stage::new(a.clone(), w, h);
+    let (diff, root) = scene(a);
+    let mut r = renderer();
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(S, root);
+    let mut padded = vec![PAD; stride * h as usize];
+    let paint = |r: &mut Renderer, px: &mut Vec<u8>, age: u8, t: Duration| {
+        let target = PaintTarget::new(px, Size::new(w, h), stride as u32, Scale::ONE, age).unwrap();
+        r.paint(S, &mut target.at(t))
+    };
+    assert!(!paint(&mut r, &mut padded, 0, T0).is_empty());
+    let mut d = SceneDiff::new();
+    d.set_tokens(b.clone(), Transition::Default);
+    assert!(r.apply(d).is_empty());
+    packed.swap(b, Transition::Default);
+    assert_eq!(r.swap_crossfades(), 1);
+    let mut k = 1;
+    while packed.r.wants_frame(S) {
+        packed.paint(frame(k));
+        paint(&mut r, &mut padded, 1, frame(k));
+        let rows = padded.chunks(stride).zip(packed.buf.pixels.chunks(row));
+        for (y, (p, q)) in rows.enumerate() {
+            assert!(p[..row] == *q, "frame {k}: row {y} differs");
+            assert!(
+                p[row..].iter().all(|&b| b == PAD),
+                "frame {k}: row {y}'s padding"
+            );
+        }
+        k += 1;
+        assert!(k < 120, "never settled");
+    }
+    assert!(k > 6, "faded over several frames ({k})");
+    assert!(!r.wants_frame(S), "both settle together");
+}
+
 /// The pairs of a `set { }` subtree are played through too: a swap the
 /// global scope could spring, but under whose override `$fg` would have
 /// no readable lightness for a while, crossfades.
