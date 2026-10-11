@@ -2040,8 +2040,8 @@ Palettes, used by the compiler's VM (`material()`, `import()`) and by
 the instance's built-in theme; render reaches it only through the token
 table.
 
-- `Role` (49 Material 3 system roles, the fixed accents included; 62
-  once S-palette adds the hue roles in "The theming hub" below, M5 wave 2),
+- `Role` (49 Material 3 system roles, the fixed accents included, then
+  the 13 hue roles of "The theming hub" below: 62, M5 wave 2),
   `name()` / `m3()`), `Palette` (every role a colour, `is_dark()`,
   `source()` / `with_source()` (provenance, not compared),
   `insert_into(&mut TokenTable)` writes the roots, their origins and
@@ -2087,8 +2087,10 @@ table.
 > **Interface text in force; the code lands in M5 wave 2.** The owner
 > approved the design on 2026-10-11, and the integrator took this text
 > into force at wave 1's integration (decisions.md m5-integration-w1).
-> Nothing below is built yet: the parser still reports a top-level
-> `file` as `syntax::misplaced`, and `Role::COUNT` is 49. Two streams
+> The palette half (S-palette) is built on `laptop/m5-palette`
+> (`Role::COUNT` 62, extras, identity, the reserved names, the `json`
+> and `base24` writers; decisions.md m5-palette); the rest is not yet:
+> the parser still reports a top-level `file` as `syntax::misplaced`. Two streams
 > build it (m5-plan, Streams): **S-palette** owns the strand-theme and
 > strand-scene parts, **S-tools** the strand-compiler, strand-core and
 > binary parts. The design and its reasons are in decisions.md m5-tools
@@ -2098,9 +2100,9 @@ table.
   - `Role` gains 13 hue roles after the 49 Material 3 roles: `Red`,
     `Orange`, `Yellow`, `Green`, `Cyan`, `Blue`, `Magenta`,
     `BrightRed`, `BrightYellow`, `BrightGreen`, `BrightCyan`,
-    `BrightBlue`, `BrightMagenta` (`Role::COUNT` 49 → 62; `m3()` is
-    `None`-like for them, so it becomes `Option<&str>` or a separate
-    table).
+    `BrightBlue`, `BrightMagenta` (`Role::COUNT` 49 → 62; `Role::HUES`,
+    `is_hue()`; `m3()` becomes `Option<&'static str>`, `None` for a hue
+    role).
   - `Partial::fill` derives a missing hue by `blend::harmonize`
     toward the accent (≤ 15°) at tone 80 dark / 40 light; a missing
     bright is its base ± 0.08 OKLCH L. Given hues are never changed,
@@ -2127,7 +2129,15 @@ table.
     writers).
 - **strand-scene** (S-palette). `TokenTable` gains the hue roots and reserves
   `palette` as a first segment for extras and identity (read only by
-  templates for now). No new `TokenMethod`: the template-only methods
+  templates for now). The roots are inserted like every role
+  (`HUE_ROOTS` names them); the identity and extras are held apart from
+  the tokens, in `TokenTable::palette: Vec<(String, PropValue)>`
+  (`name`, `source`, `dark`, then the extras in source order, written by
+  `Palette::insert_into`), read with `palette_value(name)`, so they
+  never spring, are never frozen and no token expression reads them;
+  `PALETTE_SEGMENT` and `is_palette_path` name the reservation, which
+  the checker reports as `check::reserved_token` (decisions.md
+  m5-palette). No new `TokenMethod`: the template-only methods
   (`.red()`, `.green()`, `.blue()`, `.opacity()`, `.light()`,
   `.dark()`) never reach the render thread.
 - **strand-compiler** (S-tools; the parser's `top_file` arm is a small

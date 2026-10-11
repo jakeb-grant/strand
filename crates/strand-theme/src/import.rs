@@ -17,13 +17,19 @@
 //!
 //! Files are relative to the config directory; `~/` is the home
 //! directory.
+//!
+//! Each importer also keeps every colour of its source as the palette's
+//! extras, in source order (`$palette.<name>`, decisions.md m5-tools):
+//! Catppuccin's 26 names, base16/base24's `baseXX` slots, matugen's
+//! colour keys that are not roles, every W3C colour token. Two source
+//! colours whose names become the same are an error naming both.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use strand_scene::Color;
 
-use crate::palette::{Palette, Partial};
+use crate::palette::{Palette, Partial, extra_name};
 use crate::role::Role;
 
 /// Why an import failed.
@@ -274,8 +280,19 @@ fn catppuccin(rest: &str) -> Result<Partial, ImportError> {
     let latte = flavour == "latte";
     let on = if latte { c("base") } else { c("crust") };
     let accent = c(accent);
+    let title = match flavour {
+        "mocha" => "Mocha",
+        "macchiato" => "Macchiato",
+        "frappe" => "Frappé",
+        _ => "Latte",
+    };
     let mut p = Partial {
         dark: Some(!latte),
+        name: Some(format!("Catppuccin {title}")),
+        extras: CATPPUCCIN_NAMES
+            .iter()
+            .map(|n| (n.to_string(), c(n)))
+            .collect(),
         ..Partial::default()
     };
     for (role, color) in [
@@ -308,6 +325,14 @@ fn catppuccin(rest: &str) -> Result<Partial, ImportError> {
         (Role::InverseFg, c("base")),
         (Role::Outline, c("overlay0")),
         (Role::OutlineVariant, c("surface1")),
+        // The hues, as Catppuccin's terminal ports map them.
+        (Role::Red, c("red")),
+        (Role::Orange, c("peach")),
+        (Role::Yellow, c("yellow")),
+        (Role::Green, c("green")),
+        (Role::Cyan, c("teal")),
+        (Role::Blue, c("blue")),
+        (Role::Magenta, c("pink")),
     ] {
         p.set(role, color);
     }
@@ -363,7 +388,10 @@ fn yaml_pairs(text: &str) -> BTreeMap<String, String> {
 /// A base16 or base24 scheme, mapped per tinted-theming's styling guide:
 /// base00 the background, 01/02 lighter backgrounds, 03 comments, 04
 /// dark foreground, 05 the foreground, 08 red, 0C cyan, 0D blue
-/// (functions), 0E magenta; base24's 10/11 darker backgrounds.
+/// (functions), 0E magenta; base24's 10/11 darker backgrounds. `08`–`0E`
+/// are also the seven base hue roles and base24's `12`–`17` the six
+/// brights; every slot present is an extra (`base0d`), and `name:` (or
+/// the legacy `scheme:`) the palette's name.
 pub fn base16(text: &str) -> Result<Partial, String> {
     let pairs = yaml_pairs(text);
     let get = |k: &str| -> Option<Color> {
@@ -380,8 +408,14 @@ pub fn base16(text: &str) -> Result<Partial, String> {
     };
     let mut p = Partial {
         dark,
+        name: pairs.get("name").or_else(|| pairs.get("scheme")).cloned(),
         ..Partial::default()
     };
+    for i in 0..24 {
+        if let Some(c) = b(&format!("{i:02X}")) {
+            p.extras.push((format!("base{i:02x}"), c));
+        }
+    }
     p.set(Role::Bg, bg);
     p.set(Role::Surface, bg);
     p.set(Role::Fg, fg);
@@ -407,6 +441,23 @@ pub fn base16(text: &str) -> Result<Partial, String> {
     put(Role::SurfaceDim, b("10"));
     put(Role::SurfaceLowest, b("11"));
     put(Role::InverseAccent, b("16"));
+    for (role, slot) in [
+        (Role::Red, "08"),
+        (Role::Orange, "09"),
+        (Role::Yellow, "0A"),
+        (Role::Green, "0B"),
+        (Role::Cyan, "0C"),
+        (Role::Blue, "0D"),
+        (Role::Magenta, "0E"),
+        (Role::BrightRed, "12"),
+        (Role::BrightYellow, "13"),
+        (Role::BrightGreen, "14"),
+        (Role::BrightCyan, "15"),
+        (Role::BrightBlue, "16"),
+        (Role::BrightMagenta, "17"),
+    ] {
+        put(role, b(slot));
+    }
     Ok(p)
 }
 
@@ -443,11 +494,94 @@ fn json_color(v: &serde_json::Value) -> Option<Color> {
     }
 }
 
+/// Every object key of the JSON document `text` (already parsed, so
+/// valid), as the path of keys leading to it, mapped to its position in
+/// the document: the source order serde_json's sorted maps lose.
+fn key_order(text: &str) -> std::collections::HashMap<Vec<String>, usize> {
+    let mut order = std::collections::HashMap::new();
+    let mut path: Vec<String> = Vec::new();
+    // Per open bracket: an object (and whether its current key is on
+    // `path`), or an array.
+    let mut open: Vec<Option<bool>> = Vec::new();
+    let mut chars = text.char_indices();
+    while let Some((i, ch)) = chars.next() {
+        match ch {
+            '{' => open.push(Some(false)),
+            '[' => open.push(None),
+            '}' | ']' | ',' => {
+                if let Some(Some(keyed)) = open.last_mut()
+                    && *keyed
+                {
+                    path.pop();
+                    *keyed = false;
+                }
+                if ch != ',' {
+                    open.pop();
+                }
+            }
+            '"' => {
+                let mut end = text.len();
+                while let Some((j, c)) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => {
+                            end = j + 1;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(Some(keyed)) = open.last_mut()
+                    && !*keyed
+                {
+                    let key = serde_json::from_str::<String>(&text[i..end]).unwrap_or_default();
+                    path.push(key);
+                    *keyed = true;
+                    let n = order.len();
+                    order.entry(path.clone()).or_insert(n);
+                }
+            }
+            _ => {}
+        }
+    }
+    order
+}
+
+/// `found` (source path, colour) in source order as extras, each named
+/// by the part of its path `named` picks; two names that become the same
+/// are an error naming both.
+fn extras_in_order(
+    mut found: Vec<(Vec<String>, Color)>,
+    order: &std::collections::HashMap<Vec<String>, usize>,
+    named: impl Fn(&[String]) -> &[String],
+) -> Result<Vec<(String, Color)>, String> {
+    found.sort_by_key(|(path, _)| order.get(path).copied().unwrap_or(usize::MAX));
+    let mut out: Vec<(String, Color)> = Vec::with_capacity(found.len());
+    // Each name taken, and the source path it came from.
+    let mut taken: std::collections::HashMap<String, String> = Default::default();
+    for (path, c) in found {
+        let path = named(&path);
+        let name = extra_name(path);
+        let joined = path.join(".");
+        if let Some(first) = taken.get(&name) {
+            return Err(format!(
+                "`{first}` and `{joined}` are both `$palette.{name}`"
+            ));
+        }
+        taken.insert(name.clone(), joined);
+        out.push((name, c));
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // matugen
 
 /// matugen's JSON (`matugen image wall.jpg --json hex`). Material 3 role
-/// names map 1:1 onto the palette ([`Role::m3`]).
+/// names map 1:1 onto the palette ([`Role::m3`]); its other colour keys
+/// (`source_color`) are extras.
 pub fn matugen(text: &str) -> Result<Partial, String> {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let colors = json
@@ -464,31 +598,40 @@ pub fn matugen(text: &str) -> Result<Partial, String> {
         dark: Some(mode == "dark"),
         ..Partial::default()
     };
+    let mut extras = Vec::new();
+    let mut found = |prefix: &[&str], k: &str, c: Option<Color>| {
+        let Some(c) = c else { return };
+        match Role::from_name(k) {
+            Some(r) => p.set(r, c),
+            None => {
+                let mut path: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
+                path.push(k.to_string());
+                extras.push((path, c));
+            }
+        }
+    };
     // colors.<mode>.<role>
     if let Some(by_mode) = colors.get(mode).and_then(|m| m.as_object())
         && by_mode.values().any(|v| json_color(v).is_some())
     {
         for (k, v) in by_mode {
-            if let (Some(r), Some(c)) = (Role::from_name(k), json_color(v)) {
-                p.set(r, c);
-            }
+            found(&["colors", mode], k, json_color(v));
         }
     } else {
         // colors.<role>.<mode> (matugen 3 and later), or a plain value.
         for (k, v) in colors {
-            let Some(r) = Role::from_name(k) else {
-                continue;
-            };
             let c = v
                 .get(mode)
                 .or_else(|| v.get("default"))
                 .and_then(json_color)
                 .or_else(|| json_color(v));
-            if let Some(c) = c {
-                p.set(r, c);
-            }
+            found(&["colors"], k, c);
         }
     }
+    // An extra is named by its key alone.
+    p.extras = extras_in_order(extras, &key_order(text), |path| {
+        &path[path.len().saturating_sub(1)..]
+    })?;
     if p.roles.is_empty() {
         return Err(format!("no Material 3 roles for the `{mode}` mode"));
     }
@@ -566,7 +709,9 @@ fn role_of_path(path: &[String]) -> Option<Role> {
     (0..words.len()).find_map(|i| Role::from_name(&words[i..].join("_")))
 }
 
-/// W3C design-token JSON (DTCG format).
+/// W3C design-token JSON (DTCG format). Every colour token is also an
+/// extra under its group path (`color.brand-primary` is
+/// `$palette.color.brand_primary`).
 pub fn w3c(text: &str) -> Result<Partial, String> {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let mut tokens = Vec::new();
@@ -589,11 +734,14 @@ pub fn w3c(text: &str) -> Result<Partial, String> {
     };
     let mut p = Partial::default();
     let mut claims: BTreeMap<Role, (usize, usize)> = BTreeMap::new();
+    let mut extras = Vec::new();
     for (path, value, ty) in &tokens {
         if ty.as_deref().is_some_and(|t| t != "color") {
             continue;
         }
-        let (Some((r, rank)), Some(c)) = (ranked_role_of_path(path), resolve(value)) else {
+        let Some(c) = resolve(value) else { continue };
+        extras.push((path.clone(), c));
+        let Some((r, rank)) = ranked_role_of_path(path) else {
             continue;
         };
         // The best-ranked path wins whatever the file's order.
@@ -606,6 +754,7 @@ pub fn w3c(text: &str) -> Result<Partial, String> {
     if p.roles.is_empty() {
         return Err("no colour token names a palette role".into());
     }
+    p.extras = extras_in_order(extras, &key_order(text), |path| path)?;
     Ok(p)
 }
 

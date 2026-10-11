@@ -1,29 +1,77 @@
 //! A full palette (every [`Role`] has a colour) and the one derivation
-//! table that fills the roles an importer lacks.
+//! table that fills the roles an importer lacks; the source's own
+//! colours (its extras) and its name ride along for templates.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use material_colors::blend::harmonize;
+use material_colors::hct::Hct;
 
 use strand_scene::{Color, Oklch, PropValue, TokenTable};
 
 use crate::contrast;
+use crate::material::{from_rgb, to_rgb};
 use crate::role::Role;
 
 /// Every palette role with a colour, and whether it is a dark palette.
-/// Two palettes are equal when their colours and darkness are; the
-/// source label is not compared.
+/// Two palettes are equal when their colours, darkness, extras and name
+/// are; the source label is not compared.
 #[derive(Clone, Debug)]
 pub struct Palette {
     colors: [Color; Role::COUNT],
     dark: bool,
     /// What made it (`material(seed)`, `wallpaper`, `catppuccin:mocha`,
     /// `built-in`), for the inspector's provenance.
-    source: Option<std::sync::Arc<str>>,
+    source: Option<Arc<str>>,
+    /// The scheme's own name (`Catppuccin Mocha`), when the source has one.
+    name: Option<Arc<str>>,
+    /// The source's own colours, in source order, by snake_case name.
+    extras: Arc<[(String, Color)]>,
 }
 
 impl PartialEq for Palette {
     fn eq(&self, other: &Self) -> bool {
-        self.colors == other.colors && self.dark == other.dark
+        self.colors == other.colors
+            && self.dark == other.dark
+            && self.extras == other.extras
+            && self.name == other.name
     }
+}
+
+/// `raw` as an extra's name segment: lower-cased, every character other
+/// than an ASCII letter, digit or `_` made `_` (decisions.md m5-tools).
+pub fn snake_case(raw: &str) -> String {
+    let s: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.is_empty() { "_".into() } else { s }
+}
+
+/// The extras' name for a source colour at `path` (one segment for a
+/// flat source, a W3C group path for nested ones): each segment
+/// [`snake_case`]d, joined by `.`, and a first segment the identity uses
+/// (`name`, `source`, `dark`) given a trailing `_`.
+pub fn extra_name<S: AsRef<str>>(path: &[S]) -> String {
+    let mut out = String::new();
+    for (i, seg) in path.iter().enumerate() {
+        if i > 0 {
+            out.push('.');
+        }
+        let seg = snake_case(seg.as_ref());
+        out.push_str(&seg);
+        if i == 0 && matches!(seg.as_str(), "name" | "source" | "dark") {
+            out.push('_');
+        }
+    }
+    out
 }
 
 impl Palette {
@@ -57,6 +105,34 @@ impl Palette {
         self.dark
     }
 
+    /// The palette's name: the scheme's own (`Catppuccin Mocha`), else
+    /// its source string.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.source())
+    }
+
+    /// The palette named `name` (see [`Palette::name`]).
+    pub fn with_name(mut self, name: &str) -> Palette {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// The source's own colours, in source order (`$palette.<name>`).
+    pub fn extras(&self) -> &[(String, Color)] {
+        &self.extras
+    }
+
+    /// The extra named `name`.
+    pub fn extra(&self, name: &str) -> Option<Color> {
+        self.extras.iter().find(|(n, _)| n == name).map(|e| e.1)
+    }
+
+    /// The palette with `extras` as its source's colours.
+    pub fn with_extras(mut self, extras: Vec<(String, Color)>) -> Palette {
+        self.extras = extras.into();
+        self
+    }
+
     /// `(role, colour)` in schema order.
     pub fn iter(&self) -> impl Iterator<Item = (Role, Color)> + '_ {
         Role::ALL.iter().map(|&r| (r, self.get(r)))
@@ -64,13 +140,29 @@ impl Palette {
 
     /// Writes every role into `table` as a palette root (`$accent`), with
     /// the declared text/background pairs of the contrast guard, so the
-    /// render thread keeps them readable while roots spring.
+    /// render thread keeps them readable while roots spring; and the
+    /// identity and extras as the table's palette entries
+    /// ([`TokenTable::palette`]: `name`, `source`, `dark`, then the
+    /// extras in source order).
     pub fn insert_into(&self, table: &mut TokenTable) {
         let origin = format!("palette:{}", self.source().unwrap_or("?"));
         for (r, c) in self.iter() {
             table.insert(r.name(), PropValue::Color(c));
             table.set_origin(r.name(), origin.clone());
         }
+        let mut entries = Vec::with_capacity(3 + self.extras.len());
+        let text = |s: &str| PropValue::Text(s.to_string());
+        if let Some(n) = self.name() {
+            entries.push(("name".to_string(), text(n)));
+        }
+        if let Some(s) = self.source() {
+            entries.push(("source".to_string(), text(s)));
+        }
+        entries.push(("dark".to_string(), PropValue::Bool(self.dark)));
+        for (n, c) in self.extras.iter() {
+            entries.push((n.clone(), PropValue::Color(*c)));
+        }
+        table.palette = entries;
         for (text, bgs) in contrast::PAIRS {
             table.insert_contrast(
                 text.name(),
@@ -85,16 +177,26 @@ impl Palette {
     }
 
     /// The palette as text, one `role #rrggbb` line per role after a
-    /// `dark true|false` line (what `strand run` persists as the last
-    /// palette).
+    /// `dark true|false` line, its `source` and `name` lines, then one
+    /// `extra <name> #rrggbbaa` line per extra (what `strand run`
+    /// persists as the last palette).
     pub fn to_text(&self) -> String {
+        use std::fmt::Write;
         let mut out = format!("# strand palette\ndark {}\n", self.dark);
-        if let Some(s) = self.source().filter(|s| !s.contains('\n')) {
-            out.push_str(&format!("source {s}\n"));
+        let line = |s: &str| !s.contains(['\n', '\r']);
+        if let Some(s) = self.source().filter(|s| line(s)) {
+            let _ = writeln!(out, "source {s}");
+        }
+        if let Some(n) = self.name.as_deref().filter(|s| line(s)) {
+            let _ = writeln!(out, "name {n}");
         }
         for (r, c) in self.iter() {
             let [x, y, z, _] = c.to_rgba8();
-            out.push_str(&format!("{} #{x:02x}{y:02x}{z:02x}\n", r.name()));
+            let _ = writeln!(out, "{} #{x:02x}{y:02x}{z:02x}", r.name());
+        }
+        for (n, c) in self.extras.iter() {
+            let [x, y, z, a] = c.to_rgba8();
+            let _ = writeln!(out, "extra {n} #{x:02x}{y:02x}{z:02x}{a:02x}");
         }
         out
     }
@@ -111,6 +213,14 @@ impl Palette {
             match (k, Role::from_name(k)) {
                 ("dark", _) => part.dark = v.trim().parse().ok(),
                 ("source", _) => source = Some(v.trim().to_string()),
+                ("name", _) => part.name = Some(v.trim().to_string()),
+                ("extra", _) => {
+                    if let Some((n, c)) = v.trim().split_once(' ')
+                        && let Some(c) = Color::from_hex(c.trim())
+                    {
+                        part.extras.push((n.to_string(), c));
+                    }
+                }
                 (_, Some(r)) => {
                     if let Some(c) = Color::from_hex(v.trim()) {
                         part.set(r, c);
@@ -137,6 +247,8 @@ impl Palette {
             colors,
             dark,
             source: None,
+            name: None,
+            extras: Arc::new([]),
         }
     }
 }
@@ -148,6 +260,58 @@ pub struct Partial {
     /// Light or dark, when the source says; otherwise read from the
     /// surface's lightness.
     pub dark: Option<bool>,
+    /// The scheme's own name, when the source has one.
+    pub name: Option<String>,
+    /// Every colour of the source, in source order, by its extras name
+    /// ([`extra_name`]).
+    pub extras: Vec<(String, Color)>,
+}
+
+/// The seven base hue roles and their canonical colours: the sRGB
+/// primaries and secondaries, with orange between red and yellow.
+const BASE_HUES: [(Role, &str); 7] = [
+    (Role::Red, "#ff0000"),
+    (Role::Orange, "#ff8000"),
+    (Role::Yellow, "#ffff00"),
+    (Role::Green, "#00ff00"),
+    (Role::Cyan, "#00ffff"),
+    (Role::Blue, "#0000ff"),
+    (Role::Magenta, "#ff00ff"),
+];
+
+/// Each bright hue role and its base.
+const BRIGHT_HUES: [(Role, Role); 6] = [
+    (Role::BrightRed, Role::Red),
+    (Role::BrightYellow, Role::Yellow),
+    (Role::BrightGreen, Role::Green),
+    (Role::BrightCyan, Role::Cyan),
+    (Role::BrightBlue, Role::Blue),
+    (Role::BrightMagenta, Role::Magenta),
+];
+
+/// The hue `canonical` harmonised toward `accent` (its HCT hue turned
+/// toward the accent's by half the difference, at most 15°, as
+/// `blend::harmonize` does), at Material tone 80 (dark) or 40 (light).
+pub fn harmonised(canonical: Color, accent: Color, dark: bool) -> Color {
+    let mut h: Hct = harmonize(to_rgb(canonical), to_rgb(accent)).into();
+    h.set_tone(if dark { 80.0 } else { 40.0 });
+    from_rgb(h.into())
+}
+
+/// Fills the hue roles `p` lacks (design.md, "Hue roles"): a base hue is
+/// its canonical colour [`harmonised`] toward `accent`; a bright is its
+/// base with OKLCH lightness +0.08 (dark) or −0.08 (light). Given hues
+/// are kept.
+pub(crate) fn fill_hues(p: &mut BTreeMap<Role, Color>, accent: Color, dark: bool) {
+    for (r, canonical) in BASE_HUES {
+        p.entry(r)
+            .or_insert_with(|| harmonised(hex(canonical), accent, dark));
+    }
+    for (bright, base) in BRIGHT_HUES {
+        let c = p[&base];
+        p.entry(bright)
+            .or_insert_with(|| shifted(c, if dark { 0.08 } else { -0.08 }));
+    }
 }
 
 /// The accent a palette without one gets (design.md's default
@@ -234,9 +398,11 @@ impl Partial {
     /// - For each of accent, secondary, tertiary, in light and dark alike
     ///   (M3's fixed accents): `X_fixed` ← X at lightness 0.9,
     ///   `X_fixed_dim` 0.8, `on_X_fixed` 0.12, `on_X_fixed_variant` 0.32.
+    /// - The hue roles ([`fill_hues`]): never contrast-guarded.
     ///
     /// Given roles are kept, gamut-mapped into sRGB and made opaque (a
-    /// palette role is a colour things are drawn in, not a tint).
+    /// palette role is a colour things are drawn in, not a tint). The
+    /// name and extras pass through, the extras gamut-mapped.
     pub fn fill(self) -> Palette {
         let mut p = self.roles;
         for c in p.values_mut() {
@@ -385,13 +551,20 @@ impl Partial {
             or(&mut p, on, || at_lightness(c, 0.12, 0.6));
             or(&mut p, on_variant, || at_lightness(c, 0.32, 0.8));
         }
+        fill_hues(&mut p, accent, dark);
 
         // Mixes of in-gamut colours can land a hair outside sRGB.
         let mut palette = Palette::from_fn(dark, |r| {
             p.get(&r).map_or(Color::BLACK, |c| c.gamut_mapped())
         });
         contrast::guard(&mut palette);
-        palette
+        palette.name = self.name.map(Into::into);
+        palette.with_extras(
+            self.extras
+                .into_iter()
+                .map(|(n, c)| (n, c.gamut_mapped()))
+                .collect(),
+        )
     }
 }
 

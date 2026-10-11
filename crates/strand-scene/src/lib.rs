@@ -45,5 +45,6 @@ pub use surface::{
     Anchor, CompositorCaps, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec, is_two_way,
 };
 pub use tokens::{
-    BinOp, Channel, MAX_TOKEN_STEPS, TimeContext, TokenExpr, TokenMethod, TokenScope, TokenTable,
+    BinOp, Channel, HUE_ROOTS, MAX_TOKEN_STEPS, PALETTE_SEGMENT, TimeContext, TokenExpr,
+    TokenMethod, TokenScope, TokenTable,
 };

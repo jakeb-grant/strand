@@ -147,13 +147,21 @@ fn matugen_output_fills_the_palette() {
     let mut dark = serde_json::Map::new();
     for (r, c) in seed.iter() {
         let [x, y, z, _] = c.to_rgba8();
-        dark.insert(r.m3().to_string(), format!("#{x:02x}{y:02x}{z:02x}").into());
+        if let Some(m3) = r.m3() {
+            dark.insert(m3.to_string(), format!("#{x:02x}{y:02x}{z:02x}").into());
+        }
     }
+    // matugen writes the seed as `source_color`, the seed palette's one
+    // extra.
+    dark.insert("source_color".into(), "#7aa2f7".into());
     let doc = serde_json::json!({ "colors": { "dark": dark, "light": {} }, "mode": "dark" });
     std::fs::write(dir.join("colors.json"), doc.to_string()).unwrap();
     let p = import("matugen:colors.json", Some(&dir)).unwrap();
     whole(&p);
-    assert_eq!(p, seed, "a full matugen scheme comes back role for role");
+    assert_eq!(
+        p, seed,
+        "a full matugen scheme comes back role for role, hues and extras included"
+    );
     // colors.<role>.<mode>, with `{ "color": … }` values; partial, so the
     // derivation table fills the rest.
     let doc = serde_json::json!({

@@ -1,0 +1,5 @@
+// expect: check::override_needed, check::reserved_token
+// The hue roles are palette roles, and `palette` is reserved for the
+// palette's extras and identity.
+tokens base { red: #ff0000; palette.mauve: #cba6f7; palette { glow: #ffffff } }
+tokens other { override green: #00ff00; override palette.name: "mine" }
