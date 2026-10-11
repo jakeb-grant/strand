@@ -569,3 +569,71 @@ fn a_fixed_overlay_file_applies_at_a_clear_that_clears_nothing() {
     assert_eq!(layer.as_deref(), Some(OVERLAY_ORIGIN));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A tokens.toml edited by hand while the shell runs is read again by
+/// the next `set` (and `clear`) before it is written: an overlay removed
+/// by hand stays gone, an entry and a comment added by hand stay, and a
+/// file recreated by hand after a corrupt one was moved aside is kept.
+#[test]
+fn a_hand_edit_while_running_is_not_written_over() {
+    let dir = temp_dir("hand-edit");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let file = state.join(TOKENS_FILE);
+    std::fs::write(&file, "\"probe.c\" = \"#ff8800\"\n").unwrap();
+    let storage = Storage::in_dirs(&state, &dir);
+    let (mut sh, _) = boot(&[("bar.strand", &shell("#112233"))], storage.clone());
+    assert_eq!(sh.token("probe.c"), Some(hex("#ff8800")));
+
+    // By hand: the colour overlay dropped, a comment and a speed added.
+    std::fs::write(&file, "# my palette tweaks\n\"probe.speed\" = \"300ms\"\n").unwrap();
+    sh.inst.set_token_overlay("probe.gap", "8px").unwrap();
+    sh.flush();
+    assert!(storage.tokens.sync(Duration::from_secs(5)));
+    let held = tokens_toml(&state);
+    assert!(held.contains("# my palette tweaks"), "{held}");
+    assert!(held.contains("\"probe.speed\" = \"300ms\""), "{held}");
+    assert!(held.contains("\"probe.gap\" = \"8px\""), "{held}");
+    assert!(!held.contains("probe.c"), "{held}");
+    assert_eq!(sh.token("probe.c"), Some(hex("#112233")));
+    assert_eq!(sh.origin("probe.c"), Some("tokens base"));
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(8.0)));
+    assert_eq!(sh.origin("probe.speed"), Some(OVERLAY_ORIGIN));
+
+    // By hand again, then a clear of another overlay keeps the edit.
+    std::fs::write(
+        &file,
+        "\"probe.gap\" = \"8px\"\n# kept\n\"probe.c\" = \"#00ff00\"\n",
+    )
+    .unwrap();
+    assert!(sh.inst.clear_token_overlay("probe.gap").unwrap());
+    sh.flush();
+    assert!(storage.tokens.sync(Duration::from_secs(5)));
+    let held = tokens_toml(&state);
+    assert!(held.contains("# kept"), "{held}");
+    assert!(held.contains("\"probe.c\" = \"#00ff00\""), "{held}");
+    assert!(
+        !held.contains("probe.gap") && !held.contains("probe.speed"),
+        "{held}"
+    );
+    assert_eq!(sh.token("probe.c"), Some(hex("#00ff00")));
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(4.0)));
+
+    // A corrupt file is moved aside at a `set`; one recreated by hand
+    // after that is read, not written over, by the next.
+    std::fs::write(&file, "\"probe.c\" = \n").unwrap();
+    sh.inst.set_token_overlay("probe.gap", "6px").unwrap();
+    sh.flush();
+    assert!(storage.tokens.sync(Duration::from_secs(5)));
+    assert!(state.join(".tokens.toml.corrupt").exists());
+    std::fs::write(&file, "# fresh\n\"probe.c\" = \"#0000ff\"\n").unwrap();
+    sh.inst.set_token_overlay("probe.gap", "2px").unwrap();
+    sh.flush();
+    assert!(storage.tokens.sync(Duration::from_secs(5)));
+    let held = tokens_toml(&state);
+    assert!(held.contains("# fresh"), "{held}");
+    assert!(held.contains("\"probe.c\" = \"#0000ff\""), "{held}");
+    assert!(held.contains("\"probe.gap\" = \"2px\""), "{held}");
+    assert_eq!(sh.token("probe.c"), Some(hex("#0000ff")));
+    let _ = std::fs::remove_dir_all(dir);
+}

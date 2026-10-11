@@ -818,7 +818,9 @@ and takes the token swap path (design.md, "Reload"). Clearing an
 unknown token is refused with the closest name, as setting one is; a
 known token without an overlay clears to `false`. A `tokens.toml` that
 cannot be read is never written over: `set` and `clear` on a token are
-refused until it can be. `TokenTable`'s recorded origins stay strings (a tier and its
+refused until it can be. One edited by hand while the shell runs is
+read again by the next `set` or `clear` before it is written, so the
+hand edit stays. `TokenTable`'s recorded origins stay strings (a tier and its
 name: `base`, `tokens compact`, `palette:wallpaper`); the overlay origin
 is the reserved string `overlay`, `strand_scene::tokens::OVERLAY_ORIGIN`
 (landed in the wave-0 hardening, so no stream edits `tokens.rs` for it).

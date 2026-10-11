@@ -84,8 +84,14 @@ struct Shared {
 
 #[derive(Default)]
 struct State {
-    /// The file has been read (once, at the first build).
+    /// The file has been read (at the first build, and again when a
+    /// `set` or `clear` finds it changed by hand: see [`TokenOverlay::writable`]).
     loaded: bool,
+    /// What the file held when last read or last queued to the writer
+    /// (`None`: no file): a `set` or `clear` that finds anything else
+    /// there reads it again before editing, so a hand edit made while
+    /// the shell runs is never written over.
+    known: Option<String>,
     /// The file is there but could not be read (why): it is not written
     /// over, so `set` and `clear` are refused and read it again.
     unreadable: Option<String>,
@@ -333,12 +339,15 @@ impl TokenOverlay {
         st.values.get(path).is_some() || st.doc.contains_key(path)
     }
 
-    /// Loaded, and safe to write: a file that could not be read is read
-    /// again, and while it still cannot be, the change is refused rather
-    /// than writing the overlays it holds away. Whether it was read
-    /// again just now (its overlays are new to the table).
+    /// Loaded, current and safe to write: a file that could not be read,
+    /// or that holds other than what was last read or written (a hand
+    /// edit while the shell runs), is read again, as settings' overlay
+    /// edits read the file they change; while it still cannot be read,
+    /// the change is refused rather than writing the overlays it holds
+    /// away. Whether it was read again just now (its overlays are new to
+    /// the table).
     fn writable(&self, st: &mut State) -> Result<bool, Error> {
-        let reread = st.unreadable.is_some();
+        let reread = st.unreadable.is_some() || (st.loaded && self.edited(st));
         if reread {
             st.loaded = false;
         }
@@ -353,12 +362,33 @@ impl TokenOverlay {
         }
     }
 
+    /// Whether the file holds other than [`State::known`]. Not while a
+    /// write is queued or running (the file is ours until it lands); a
+    /// small file read on a `set` or `clear`, never on a frame.
+    #[cold]
+    #[inline(never)]
+    fn edited(&self, st: &State) -> bool {
+        let Some(file) = &self.0.file else {
+            return false;
+        };
+        if !self.0.writer.idle() {
+            return false;
+        }
+        match std::fs::read_to_string(file) {
+            Ok(t) => st.known.as_deref() != Some(t.as_str()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => st.known.is_some(),
+            Err(_) => true,
+        }
+    }
+
     fn changed(&self, rt: &Runtime, st: &mut State) {
         if let Some(g) = st.generation {
             let _ = g.update(rt, |n| *n += 1);
         }
         if let Some(file) = &self.0.file {
-            self.0.writer.save(file.clone(), st.doc.to_string());
+            let text = st.doc.to_string();
+            st.known = Some(text.clone());
+            self.0.writer.save(file.clone(), text);
         }
     }
 
@@ -370,7 +400,9 @@ impl TokenOverlay {
         }
     }
 
-    /// [`Self::load`]'s read: once per boot, so kept out of the memo.
+    /// [`Self::load`]'s read: once per boot (and per hand edit), so kept
+    /// out of the memo. What an earlier read held is replaced: an overlay
+    /// removed by hand is gone.
     #[cold]
     #[inline(never)]
     fn read_file(&self, st: &mut State) {
@@ -382,6 +414,10 @@ impl TokenOverlay {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 st.unreadable = None;
+                st.known = None;
+                st.doc = DocumentMut::new();
+                st.values.0.clear();
+                st.base.0.clear();
                 return;
             }
             Err(e) => {
@@ -398,9 +434,13 @@ impl TokenOverlay {
             }
         };
         st.unreadable = None;
+        st.values.0.clear();
         let doc: DocumentMut = match text.parse() {
             Ok(d) => d,
             Err(e) => {
+                st.known = None;
+                st.doc = DocumentMut::new();
+                st.base.0.clear();
                 let moved_to = aside(file);
                 st.notices.push(self.0.notice(
                     None,
@@ -429,6 +469,11 @@ impl TokenOverlay {
                 None => st.skipped.push(skipped(&self.0.display(), k, item)),
             }
         }
+        // A path no longer overlaid has no base: overlaid again later,
+        // its first build is not a shadowed save.
+        let values = &st.values;
+        st.base.0.retain(|(p, _)| values.get(p).is_some());
+        st.known = Some(text);
         st.doc = doc;
     }
 }
@@ -549,6 +594,12 @@ impl Writer {
             s.next = None;
             s.failed = Some(format!("no writer thread: {e}"));
         }
+    }
+
+    /// Nothing queued or being written.
+    fn idle(&self) -> bool {
+        let s = self.slot();
+        !s.running && s.next.is_none()
     }
 
     fn take_failure(&self) -> Option<String> {
