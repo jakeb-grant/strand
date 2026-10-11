@@ -246,6 +246,42 @@ fn base16_and_base24_keep_every_slot_and_map_their_hues() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// spec.md 9.5: extras keep the source's order, so a base24 file that
+/// lists its backgrounds (`00`–`07`, `10`–`17`) before its accents
+/// (`08`–`0F`) gives them in that order, not slot order.
+#[test]
+fn base24_extras_follow_the_files_order_not_slot_order() {
+    let dir = temp("base24-order");
+    let lines: Vec<&str> = BASE24.lines().collect();
+    let slot = |l: &&str| {
+        l.trim_start()
+            .strip_prefix("base")
+            .map(|n| n[..2].to_string())
+    };
+    let (head, rest): (Vec<&str>, Vec<&str>) = lines.iter().partition(|l| slot(l).is_none());
+    let (low, high): (Vec<&str>, Vec<&str>) = rest
+        .iter()
+        .partition(|l| matches!(slot(l).as_deref(), Some(n) if !("08".."10").contains(&n)));
+    let text: String = head
+        .iter()
+        .chain(&low)
+        .chain(&high)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(dir.join("s.yaml"), text).unwrap();
+    let p = import("base24:s.yaml", Some(&dir)).unwrap();
+    let names: Vec<&str> = p.extras().iter().map(|(n, _)| n.as_str()).collect();
+    let want: Vec<String> = (0..8)
+        .chain(16..24)
+        .chain(8..16)
+        .map(|i| format!("base{i:02x}"))
+        .collect();
+    assert_eq!(names, want);
+    assert_eq!(p.extra("base0d"), Some(hex("#61afef")));
+    assert_eq!(p.get(Role::BrightBlue), hex("#79c0ff"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn matugen_and_w3c_keep_their_colours_in_source_order() {
     let dir = temp("order");

@@ -344,9 +344,10 @@ fn catppuccin(rest: &str) -> Result<Partial, ImportError> {
 // base16 / base24
 
 /// `key: value` pairs of a flat or once-nested YAML scheme, comments and
-/// quotes removed.
-fn yaml_pairs(text: &str) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
+/// quotes removed, in the file's order (a repeated key appears twice;
+/// [`yaml_get`] reads the last, as YAML loaders do).
+fn yaml_pairs(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
     for line in text.lines() {
         // A `#` after whitespace (or first) and outside quotes starts a
         // comment; inside quotes it is a colour.
@@ -380,10 +381,15 @@ fn yaml_pairs(text: &str) -> BTreeMap<String, String> {
             .or_else(|| v.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
             .unwrap_or(v);
         if !v.is_empty() {
-            out.insert(k.trim().to_string(), v.to_string());
+            out.push((k.trim().to_string(), v.to_string()));
         }
     }
     out
+}
+
+/// The value of `key` in [`yaml_pairs`]' list, the last one when it repeats.
+fn yaml_get<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a String> {
+    pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
 /// A base16 or base24 scheme, mapped per tinted-theming's styling guide:
@@ -391,30 +397,46 @@ fn yaml_pairs(text: &str) -> BTreeMap<String, String> {
 /// dark foreground, 05 the foreground, 08 red, 0C cyan, 0D blue
 /// (functions), 0E magenta; base24's 10/11 darker backgrounds. `08`–`0E`
 /// are also the seven base hue roles and base24's `12`–`17` the six
-/// brights; every slot present is an extra (`base0d`), and `name:` (or
-/// the legacy `scheme:`) the palette's name.
+/// brights; every slot present is an extra (`base0d`), in the file's
+/// order, and `name:` (or the legacy `scheme:`) the palette's name.
 pub fn base16(text: &str) -> Result<Partial, String> {
     let pairs = yaml_pairs(text);
     let get = |k: &str| -> Option<Color> {
-        let v = pairs.get(k).or_else(|| pairs.get(&k.to_lowercase()))?;
+        let v = yaml_get(&pairs, k).or_else(|| yaml_get(&pairs, &k.to_lowercase()))?;
         Color::from_hex(v)
     };
     let need = |k: &str| get(k).ok_or_else(|| format!("missing or bad `{k}`"));
     let b = |n: &str| get(&format!("base{n}"));
     let (bg, fg) = (need("base00")?, need("base05")?);
-    let dark = match pairs.get("variant").map(String::as_str) {
+    let dark = match yaml_get(&pairs, "variant").map(String::as_str) {
         Some("light") => Some(false),
         Some("dark") => Some(true),
         _ => None,
     };
     let mut p = Partial {
         dark,
-        name: pairs.get("name").or_else(|| pairs.get("scheme")).cloned(),
+        name: yaml_get(&pairs, "name")
+            .or_else(|| yaml_get(&pairs, "scheme"))
+            .cloned(),
         ..Partial::default()
     };
-    for i in 0..24 {
+    // Each slot where the file first names it (spec 9.5: source order),
+    // with the colour the roles read.
+    for (k, _) in &pairs {
+        let Some(i) = k
+            .strip_prefix("base")
+            .filter(|n| n.len() == 2)
+            .and_then(|n| u8::from_str_radix(n, 16).ok())
+            .filter(|&i| i < 24)
+        else {
+            continue;
+        };
+        let name = format!("base{i:02x}");
+        if p.extras.iter().any(|(n, _)| *n == name) {
+            continue;
+        }
         if let Some(c) = b(&format!("{i:02X}")) {
-            p.extras.push((format!("base{i:02x}"), c));
+            p.extras.push((name, c));
         }
     }
     p.set(Role::Bg, bg);
@@ -813,8 +835,10 @@ mod tests {
     fn yaml_pairs_strip_quotes_and_comments() {
         let y = "system: \"base16\"\n# a comment\npalette:\n  base00: \"#1e1e2e\" # bg\n  base01: '181825'\n";
         let p = yaml_pairs(y);
-        assert_eq!(p["base00"], "#1e1e2e");
-        assert_eq!(p["base01"], "181825");
-        assert_eq!(p["system"], "base16");
+        assert_eq!(yaml_get(&p, "base00").unwrap(), "#1e1e2e");
+        assert_eq!(yaml_get(&p, "base01").unwrap(), "181825");
+        assert_eq!(yaml_get(&p, "system").unwrap(), "base16");
+        let keys: Vec<&str> = p.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["system", "base00", "base01"]);
     }
 }
