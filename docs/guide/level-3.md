@@ -103,8 +103,9 @@ still wakes only once a minute.
 **Moving nodes into a new component starts them fresh.** The old
 centre `text` is gone and `Clock` is new, so nothing carried over. That
 is fine here, since the text had no state. In general a save keeps every
-node whose source still maps to it, with its state; a node you wrap in a
-new component, or move into another one, is a new node.
+node whose source still maps to it, with its state, and wrapping a node
+in a container such as `row` keeps it too; but a node you move into a
+new component, or into another one, is a new node.
 
 ## Volume
 
