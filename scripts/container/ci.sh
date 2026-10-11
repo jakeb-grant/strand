@@ -156,6 +156,7 @@ step "scripts/container/test-gate-misses.sh" 5 scripts/container/test-gate-misse
 step "scripts/container/test-check-tree-sitter.sh" 5 scripts/container/test-check-tree-sitter.sh
 step "scripts/container/test-ledger.sh" 5 scripts/container/test-ledger.sh
 step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
+step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \

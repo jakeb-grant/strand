@@ -155,7 +155,7 @@ release profile: the root `Cargo.toml`'s `[profile.release.package]`
 opt-levels build event-rate code for size, and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
 build from the workspace (`budgets.rs` holds the release binary's
-`.text` to 18.5 MiB, and a build without the GPU backend to 15,925,248 B,
+`.text` to 18.5 MiB, and a build without the GPU backend to 15,859,712 B,
 M5's provisional re-base of 15 MiB (decisions.md m5-integration); see
 "`strand-gpu`"). Every program strand starts gets back
 the THP setting strand inherited (`strand_services::child`, in each
@@ -504,7 +504,7 @@ blocker). The `strand` binary's default feature `gpu` turns on render's
 on `shaders` so the LSP checks shaders too. Built with
 `--no-default-features`, `strand` links none of wgpu, vello_gpu, naga or
 libwayland-client: that build is the CPU core the CPU-only `.text` gate
-measures (15,925,248 B in M5, provisionally; decisions.md m5-integration).
+measures (15,859,712 B in M5, provisionally; decisions.md m5-integration).
 
 ```
 strand-scene <── strand-gpu (M4: wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -3489,7 +3489,7 @@ inspector (M5) to say why.
   MiB (19,398,656 B: the spike's 17,683,543 B with GPU code linked, plus
   9.7%); `strand --no-default-features` at most 15 MiB (the spike's CPU
   build had 1.14 MiB to spare), re-based in M5 to 15,925,248 B,
-  provisionally, for M5's allocation (decisions.md m5-owner Q6,
+  then 15,859,712 B after wave 0's reclaims, provisionally, for M5's allocation (decisions.md m5-owner Q6,
   m5-integration). The spike measured the GPU build's bar
   PSS at a mean of 33.7 MB, about 0.3 MB under the 34 MB target, all of
   it cold-code mapping and relocations. With the backend landed

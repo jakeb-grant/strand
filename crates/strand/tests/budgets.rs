@@ -40,9 +40,10 @@
 //!   mixed sizes, half naming icons of the machine's themes.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   18.5 MiB with the GPU backend (the default build), 15,925,248 B
+//!   18.5 MiB with the GPU backend (the default build), 15,859,712 B
 //!   for the CPU core (`--no-default-features`; M5's provisional
-//!   re-base, decisions.md m5-integration; docs/architecture.md,
+//!   re-base, lowered after wave 0's reclaims, decisions.md
+//!   m5-integration; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2375,13 +2376,14 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// `.text` of the default (GPU) release build: 18.5 MiB.
 const TEXT_GATE_GPU: u64 = 19_398_656;
 /// `.text` of the CPU-only release build: M5's provisional re-base,
-/// 15,925,248 B (15 MiB + 196,608). It is M4's measured 15,657,671 B
-/// plus M5's 230,000 B allocation (docs/m5-plan.md, "Size strategy"),
-/// rounded up to 64 KiB; the 37,577 B of rounding is not spendable. It
-/// is lowered as reclaims land, never raised in M5 without the owner,
-/// and tightened at M5's close (decisions.md m5-owner Q6,
-/// m5-integration).
-const TEXT_GATE_CPU: u64 = 15_925_248;
+/// 15,859,712 B (15 MiB + 131,072). It is M4's measured 15,657,671 B,
+/// less wave 0's measured reclaims (37,056 B, m5-size), plus M5's
+/// 230,000 B allocation (docs/m5-plan.md, "Size strategy"), rounded up
+/// to 64 KiB; the 9,097 B of rounding is not spendable. It was
+/// 15,925,248 B before the reclaims; it is lowered as reclaims land,
+/// never raised in M5 without the owner, and tightened at M5's close
+/// (decisions.md m5-owner Q6, m5-integration).
+const TEXT_GATE_CPU: u64 = 15_859_712;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

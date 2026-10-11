@@ -18,9 +18,24 @@ below.
   (design.md's four open questions answered and ticked, the ladder's
   `Async` at level 4, the importer box split and ticked) are on
   `laptop/m5-plan`, which also re-bases the CPU-only `.text` gate to
-  15,925,248 B for M5 (decisions.md m5-integration). Wave 0's shared
-  code (0b), size reclaims and tooling follow on `laptop/m5-*`
-  branches.
+  15,925,248 B for M5 (decisions.md m5-integration).
+- **Wave 0 is merged** on `laptop/m5-w0` (decisions.md m5-integration):
+  0b's shared code (`laptop/m5-core`: `strand_core::ipc`, the request
+  channel, the `strand` lib/bin split, `ActionCtx`, the inert render
+  stubs, `Suggestion::title`, `tests/m5.rs`), S-size's reclaims and
+  `scripts/size-report.sh` (`laptop/m5-size`: −37,056 B CPU-only), and
+  S-infra's tooling and spikes (`laptop/m5-infra`: the pinned
+  tree-sitter CLI, the budgets ledger line, `gpu-session.sh` on GLES2
+  or Vulkan, `scripts/gpu-measure.sh`, the deferred CI items). The
+  CPU-only gate is lowered to 15,859,712 B; the merged tree measures
+  `.text` 15,633,095 B CPU-only and 19,013,831 B with the GPU backend
+  (gate 19,398,656). 0b's +12.5 KB is charged to S-ipc's D-Bus
+  allocation (now 37,400 B) and the integrator's reserve (now
+  32,056 B). Spikes: sway renders on renderD128 with GLES2 or Vulkan
+  and offers linux-dmabuf, so Q19 is (A); the tree-sitter CLI 0.27.0
+  generates from `grammar.js` without node; sway 1.9 issues and
+  honours an xdg-activation token from a layer surface (decisions.md
+  m5-infra). Wave 1's streams branch from wave 0's merge.
 - M0–M4 are complete: the last M4 box, the bundled noise field, was
   ticked when the owner accepted reading it as a `.wgsl` shader
   (2026-10-10, decisions.md m4-owner-docs). M4's three exits are
@@ -196,13 +211,12 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### CI
 
-- Two functional tests still bound wall-clock time, with wide margins:
-  `strand-scene/src/tokens.rs::huge_fan_out_fails_fast` (< 500 ms) and
-  `strand-dev/tests/lsp.rs`'s hung-bus case (< 1500 ms). Left to their
-  crates' owners (decisions.md m4-audit).
-- The matrix test helper `compositor_matrix.rs` still drives Hyprland
-  through `hyprctl` with the classic syntax (outside `strand-services`);
-  that is its own check of the compositor, not the adapter's.
+- Done in M5's wave 0 (decisions.md m5-infra): the two functional
+  tests that bounded wall-clock time (`huge_fan_out_fails_fast`,
+  lsp.rs's hung-bus case) now check work done and order, and
+  `compositor_matrix.rs` sends Hyprland's current (Lua) dispatch form
+  first; its classic fallback has never run (no leg uses a hyprlang
+  config).
 - `theme_swap_bench`'s tightest gated case, 8 scopes on
   `spring(1600, 1)` (whole swap), measured 4.46 ms on GitHub against
   5 ms (about 11% headroom, no retry; decisions.md laptop-ci), then
@@ -212,7 +226,9 @@ and the full shell warns above 64 MB and fails above 70 MB
   (2026-10-10): m4-owner-swap cut the case from 1.61 to 1.36 ms on the
   laptop (render's apply 0.78 to 0.55 ms; logic's solve about 0.26 ms
   either way, still timed uncached), so GitHub should measure roughly
-  15% less; no timing job has run on it yet. Consolidating test
+  15% less. GitHub's timing job on `laptop/m5-infra` (run 38106819097)
+  measured 4.31 ms median (p95 4.78 ms), about 14% headroom
+  (decisions.md m5-infra). Consolidating test
   binaries was measured (about 39 s of linking in all) and not done.
 - On the laptop the timing gates warn: `scripts/container/run.sh ci`
   prints WARN for `reload_latency` and `theme_swap_bench` gate misses
