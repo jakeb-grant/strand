@@ -161,7 +161,7 @@ the surveys. "Allocation" is what a stream may spend.
 | `strand report` (snapshot hop, smaps_rollup, frame summary ring) | 10–25 KB | 20 KB |
 | xdg-activation (Dispatch impls, handler input context, ordered action queue, launch env) | 8–20 KB | 20 KB |
 | Inspector runtime half (pick, identity/cells, provenance walk, dump JSON, outline, flash) | 30–80 KB | 55 KB |
-| `strand new` and `strand export` writers (the template is .rodata, which is not gated) | 8–20 KB | 15 KB |
+| `strand new` and `strand export`, grown into the theming hub (owner-approved 2026-10-11, decisions.md m5-tools: hue roles and extras 4–6, template IR and formats 8–12, `file` element and output host 10–14, export 3–4; the `new` template is .rodata, which is not gated) | 25–35 KB | 15 KB, plus 10–20 KB drawn from the reserve when wave 2 measures it |
 | `Suggestion` title, missing-key suggestions | 1–3 KB | 3 KB |
 | Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 29,176 B (42 KB less the rest of 0b, 9,944 B, and the wave-0 hardening, 2,816 + 64 B: decisions.md m5-integration, m5-w0-harden) |
 | 0b's shared code (measured +12,544 B CPU-only; charged as 2,600 B to the D-Bus line and 9,944 B to the reserve) | — | (12,544 B, inside those two lines) |
@@ -876,24 +876,27 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   and a non-empty dir is refused. It writes the level-1 hello bar from
   `docs/guide/template/bar.strand` (owned by S-docs; embedded with
   `include_str!`).
-- **`strand export json | --template <file>`** and declared outputs
-  (owner, 2026-10-11: Strand ships no per-app mappings or templates;
-  the design is decisions.md m5-tools, which supersedes the gtk, kitty
-  and hyprland writers first planned here).
-  - Output goes to stdout, or to `-o <file>` (Q16), written atomically
-    (`write_atomic`); the user's own config files are never edited.
-  - Palettes keep their source's named colours as `$palette.<name>`.
-    `json` writes roles, extras, name and variant. Template holes are
-    token expressions, and errors carry the template's location, with
-    nothing written.
-  - `export template "<file>" to "<file>" [run [argv]]` re-renders on
-    every token-table change, overlays included.
-  - The palette source (confirmed in wave 1): the persisted palette,
-    else an offline solve with the code `strand check` loads, else
-    "run strand once, or fix the theme". A template renders against an
-    offline mount of the config with that palette pinned.
-  - Cross-crate needs: decisions.md m5-tools, last paragraph (proposed
-    architecture.md text).
+- **The theming hub** (owner-approved 2026-10-11; decisions.md m5-tools
+  is the design, superseding the gtk, kitty and hyprland writers first
+  planned here). Strand ships no per-app mappings or templates.
+  - Palette (strand-theme; needs a wave-2 owner of its own besides
+    S-tools): 13 hue roles (62 in all), filled from the source or
+    harmonised toward the accent; extras in source order as
+    `$palette.<name>` (templates and `file` text only); identity `name`,
+    `source`, `dark`.
+  - `strand export json | base24 | --template <file> [--palette <expr>]`,
+    to stdout or `-o <file>` (Q16, atomic). The source is the running
+    shell over IPC, else the offline solve with the persisted palette
+    pinned, else "run strand once, or fix the theme".
+  - Templates: `{{ expr }}` holes over the theme, `hex`/`argb`, channel
+    fields, `.light()`/`.dark()` for the other mode, errors with
+    location, nothing written on error.
+  - The `file` element (`template:` or `text:`, `run:` under
+    `permit exec`): re-rendered on theme changes, written only when
+    changed, boot catch-up, 200 ms `run` debounce and 10 s timeout,
+    never overwriting a file Strand did not write.
+  - Cross-crate interfaces: architecture.md, "Proposed (m5-tools,
+    owner-approved theming design)".
 - **`strand report`**:
   - text, plus `--json`;
   - compositor and globals with versions; outputs and scales; PSS from
@@ -911,14 +914,17 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   - `tests/m5/new.rs`:
     - the new shell checks and runs on two outputs (grim refs);
     - a non-empty dir is refused;
-  - `crates/strand-theme/tests/export.rs`: the JSON golden of
-    catppuccin-mocha (every role and extra); template fixtures of
-    Strand's own, none imitating an application (decisions.md m5-tools);
+  - the theming tests listed in decisions.md m5-tools ("the rest"):
+    importers, hues, extras, template diagnostics and format goldens,
+    `file` behaviour in the container, the `export json` golden from
+    catppuccin-mocha, IPC and offline agreeing, base24 round-trip; no
+    fixture imitates an application;
   - `tests/m5/export.rs`: writes only into a temp `XDG_CONFIG_HOME`, or
     stdout;
   - `tests/m5/report.rs`: every section present; the JSON round-trips;
   - a `frame_summary` percentile unit test.
-- Budget: 15 KB (new and export) + 20 KB (report).
+- Budget: 25–35 KB (new, export and the theming hub: 15 KB allocated, the
+  rest from the reserve) + 20 KB (report).
 - Ticks: the "`strand new`, `export`, `report`" box. (The importer box
   was ticked in 0-freeze from M2's tests and is closed; the optional
   check test, if written, adds evidence to that tick only.)

@@ -1791,7 +1791,7 @@ Palettes, used by the compiler's VM (`material()`, `import()`) and by
 the instance's built-in theme; render reaches it only through the token
 table.
 
-- `Role` (49 Material 3 system roles, the fixed accents included,
+- `Role` (49 Material 3 system roles, the fixed accents included (62 with the proposed hue roles below),
   `name()` / `m3()`), `Palette` (every role a colour, `is_dark()`,
   `source()` / `with_source()` (provenance, not compared),
   `insert_into(&mut TokenTable)` writes the roots, their origins and
@@ -1831,6 +1831,84 @@ table.
   1 MiB (`MAX_IMPORT_BYTES`) (`docs/decisions.md`, wave3-theme).
 - `contrast::{PAIRS, guard, ratio, solve}`, `defaults::base_tokens()`
   (design.md's `tokens base`), `gamut::map`.
+
+#### Proposed: the theming hub (m5-tools, owner-approved 2026-10-11)
+
+> **Proposed text for the integrator; not in force until merged.** The
+> design and its reasons are in decisions.md m5-tools ("the
+> owner-approved theming design" and the paragraphs after it). Each
+> bullet names the crate that would own it.
+
+- **strand-theme.**
+  - `Role` gains 13 hue roles after the 49 Material 3 roles: `Red`,
+    `Orange`, `Yellow`, `Green`, `Cyan`, `Blue`, `Magenta`,
+    `BrightRed`, `BrightYellow`, `BrightGreen`, `BrightCyan`,
+    `BrightBlue`, `BrightMagenta` (`Role::COUNT` 49 → 62; `m3()` is
+    `None`-like for them, so it becomes `Option<&str>` or a separate
+    table).
+  - `Partial::fill` derives a missing hue by `blend::harmonize`
+    toward the accent (≤ 15°) at tone 80 dark / 40 light; a missing
+    bright is its base ± 0.08 OKLCH L. Given hues are never changed,
+    and hue roles are not contrast pairs.
+  - `Palette` gains `extras() -> &[(String, Color)]` (source order,
+    snake_case dotted names; identity names get a trailing `_`) and
+    `name()`, beside `source()` and `is_dark()`.
+  - `to_text`/`from_text` write and read `extra <name> #rrggbbaa`
+    lines; older files derive the hues.
+  - Each importer fills extras (Catppuccin's 26, base16/base24's
+    `baseXX`, matugen's non-role keys, W3C colour tokens,
+    `source_color` for material).
+  - `export::{json(&Palette, &TokenTable) -> String,
+    base24(&Palette) -> String}` are pure writers.
+  - Owner: a wave-2 palette owner beside S-tools.
+- **strand-scene.** `TokenTable` gains the hue roots and reserves
+  `palette` as a first segment for extras and identity (read only by
+  templates for now). No new `TokenMethod`: the template-only methods
+  (`.light()`, `.dark()`) and channel fields never reach the render
+  thread.
+- **strand-compiler.**
+  - `Instance::palette(rt) -> Result<Palette, Error>` evaluates
+    `use palette` with no fallback (built-in only when the program
+    has none); `token_table` swallows a failing palette
+    (`instantiate/mod.rs` 467–494).
+  - Mounting with a pinned palette root (the persisted palette, for
+    the offline solve).
+  - A `pub` path for the persisted palette (today `LAST_PALETTE` is
+    private in `vm/theme.rs`).
+  - `template::Template::compile(file, src, scope) -> Result<Template,
+    Vec<Diagnostic>>` produces a pure IR (text runs and compiled holes;
+    token-only scope; the longest-token-prefix rule for `.r/.g/.b/.a`).
+    `Template::render(&self, current: &TokenTable, other:
+    Option<&TokenTable>) -> Result<Vec<u8>, Vec<Diagnostic>>` is
+    `Send` and runs off the logic thread.
+  - The `file` element in the schema: allowed at the top level, one of
+    `template:`/`text:`, `run:` checked against `permit exec`.
+  - `Update` gains `outputs: Vec<OutputChange>`: a path plus the
+    compiled template or text and the token tables (current, other
+    mode), produced only when an output's memo changes, after the
+    tick's diff.
+- **strand-core.** A read-only `PersistStore` (reads cells, never
+  writes) for the offline mount.
+- **strand (binary).**
+  - `strand export json | base24 | --template <file> [--palette
+    <expr>] [-o <file>]` (`src/export.rs`).
+  - An `export` IPC request in the COMMANDS table (S-ipc's area) that
+    renders against the live table, overlays included; the offline
+    path is the fallback.
+  - An output host on the main side renders `Update.outputs` off the
+    logic thread and writes through a `FileWriter`. It follows
+    symlinks and keeps the file's mode. Strand's own writes are
+    registered with the watcher in advance.
+  - It keeps a manifest of written files and their hashes in
+    `$XDG_STATE_HOME/strand/files`, and refuses unowned and `.strand`
+    targets.
+  - It runs `run:` with a 200 ms trailing debounce, at most one run
+    per file plus one queued, and a 10 s timeout that kills the
+    process group. A failure becomes an overlay notice and a
+    `strand watch` event.
+  - main.rs's `export` help line changes from "write the palette for
+    gtk, kitty or hyprland" to "write the palette as JSON, base24 or
+    through a template".
 
 ### `strand-core`
 
