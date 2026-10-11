@@ -28,7 +28,8 @@ one.
   language. Numbers that change what a program does (the 15 ms
   coalesce, the 250 ms overlay delay, the 250 ms settings write delay,
   30 writes per second, the 30 s monitor retention, the 4 px query
-  hysteresis, the 5 s service stop) are.
+  hysteresis, the 5 s service stop, the 100 ms floor of a polled
+  command) are.
 
 ## 2. Conformance and terms
 
@@ -117,9 +118,21 @@ guide's ladder test use this table as the list of constructs.
   (the name means the service).
 - `export` also makes the value reachable from the command line as
   `file.name` (section 13).
-- **Builtins are a prelude.** A declaration may shadow a builtin
-  function, value or type within its scope. Shadowing a builtin service,
-  or a builtin value such as the time signal `t`, is a warning.
+- **Builtins are a prelude.** A `state`, `let`, parameter, `fn`,
+  `type`, `enum` or component may shadow a builtin function or value,
+  or a service schema's record or enum, within its scope. A `state` or
+  `let` that hides a builtin service, or a builtin value such as the
+  time signal `t`, is a warning; so is an `fn`, `type`, `enum` or
+  component named like a builtin service.
+- **Some builtin names are taken.** Three declarations are load errors
+  rather than shadows: a `type` or `enum` named like one of the
+  language's own types (`bool`, `int`, `float`, `length`, `percent`,
+  `angle`, `duration`, `color`, `paint`, `text`, `path`, `font`,
+  `shadow`, `insets`, `corners`, `any`, `unit`, `Async`); a
+  `component` or surface named like a builtin element (`text`, `row`,
+  `popup`, …), since an element is resolved before a component; and a
+  `service` named like a builtin service, since two services under one
+  name would be ambiguous.
 - **Shadowing is loud.** A name in scope that is also a variant of the
   enum a position expects is a load error (the reading would be
   ambiguous); so is a parameter declared again in its body, a file's
@@ -206,12 +219,20 @@ filling the monitor, the keyboard always).
 - **`let x = expr`** declares a derived, read-only value. It is
   recomputed lazily when what it reads changes. Assigning to a `let` is
   a load error.
-- **Where state lives.** `state` and `let` may be declared at the top
-  level of a file (one cell for the program), in a component or
-  surface's tree, or in a list item's tree (one cell per item, per
-  instance of the enclosing component or bar). State never lives on a
-  leaf element: `text "a" { state s = 0 }` is a load error. `let` may
-  also appear in a handler or `fn` body as a local binding.
+- **Where state lives.** `state` may be declared in four places: at
+  the top level of a file (one cell for the program); directly in a
+  component's body (one cell per instance); directly in a surface's
+  block (one cell per instance of the surface); and directly in a `for`
+  body or in the block of the element written directly in it (one cell
+  per item, per instance of the enclosing component or surface).
+  Anywhere else it is a load error, including any element nested in a
+  component or surface: `component Card { col { state open = false } }`
+  and `text "a" { state s = 0 }` are rejected, and the fix is to move
+  the `state` up to the component, surface or `for` body it belongs to.
+- **Where let lives.** `let` may be declared at the top level of a
+  file, anywhere in a component's or surface's tree (not in a
+  props-only block such as a `when`), and in a handler or `fn` body as
+  a local binding.
 - An untyped `state i = 0` is an `int` until a fraction is written to
   it; then it is a `float`.
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
@@ -249,6 +270,9 @@ filling the monitor, the keyboard always).
   reads the lines a command prints; `from poll command every T` runs a
   command, or reads a file, at an interval. Their fields are checked
   against the schema you declare.
+- A polled command runs at most every 100 ms: an `every` shorter than
+  that is a warning, and the command runs every 100 ms instead. A
+  polled file has no floor and is read every `T`.
 - Running a command (`listen`, or `poll` of a command) needs
   `permit exec`, at the top level or in the service's block, optionally
   listing the programs allowed; without it the service is a load error.
@@ -292,8 +316,9 @@ filling the monitor, the keyboard always).
 - Space-separated groups (`font: "Inter" 13px 500`, a shadow list
   `0 8px 24px $a, 0 1px 2px $b`) are accepted only by font and shadow
   props; elsewhere they are a load error suggesting commas.
-- **Inherited props** (`font`, `color`) set on any node apply to every
-  descendant that does not set its own.
+- **Inherited props** (`font`, `weight`, `color`) set on any node
+  apply to every descendant that does not set its own. These three are
+  the only inherited props.
 
 ### 6.3 Conditional style
 
