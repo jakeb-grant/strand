@@ -4038,6 +4038,18 @@
                 }
               },
               {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_infix_minus"
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              },
+              {
                 "type": "FIELD",
                 "name": "operator",
                 "content": {
@@ -5010,6 +5022,10 @@
     {
       "type": "SYMBOL",
       "name": "_group_term"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_infix_minus"
     }
   ],
   "inline": [],

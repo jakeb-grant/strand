@@ -600,6 +600,93 @@ bar Top {
 }
 
 #[test]
+fn a_spaced_value_after_a_brace_stops_where_the_parsers_does() {
+    // The parser's `starts_term`: a prop name (a word before `:`) and a
+    // tree keyword end a prop value's space-separated terms, so after the
+    // `}` the next item starts on the same line (rule 2).
+    let src = "\
+bar Top {
+  padding: match a { _ => 1 } edge: top
+  padding: match a { _ => 1 } if x { text \"a\" }
+  margin: 1, match a { _ => 1 } when open { text \"b\" }
+  padding: match a { _ => 1 } (2)
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let body = tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("body")
+        .unwrap();
+    assert_eq!(
+        kinds(body),
+        ["prop", "prop", "prop", "if_tree", "prop", "when", "prop"],
+        "{}",
+        body.to_sexp()
+    );
+    // A spaced `(` is still a further term of a value, as in the parser.
+    let last = body.named_child(6).unwrap();
+    assert!(last.to_sexp().contains("(group "), "{}", last.to_sexp());
+}
+
+#[test]
+fn a_brace_is_not_continued_by_what_cannot_continue_its_item() {
+    // A call or an index touches (`touching()`), and a statement block
+    // takes no binary `-`: after such a `}` the parser's `at_item_end`
+    // starts the next item. Where a binary `-` may follow, it continues.
+    let src = "\
+bar Top {
+  on click { match d { 1 => { x = 1 } -1 => { x = 2 } } }
+  on click { x = match a { _ => 1 } (y) }
+  on click { x = match a { _ => 1 } -1 }
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let body = tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("body")
+        .unwrap();
+    let stmts = |i| {
+        let h = body.named_child(i).unwrap();
+        h.child_by_field_name("body").unwrap()
+    };
+    let arms = stmts(0)
+        .named_child(0)
+        .unwrap()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("arms")
+        .unwrap();
+    assert_eq!(
+        kinds(arms),
+        ["match_arm", "match_arm"],
+        "{}",
+        arms.to_sexp()
+    );
+    assert_eq!(
+        kinds(stmts(1)),
+        ["assignment", "expression_statement"],
+        "{}",
+        stmts(1).to_sexp()
+    );
+    let minus = stmts(2);
+    assert_eq!(kinds(minus), ["assignment"], "{}", minus.to_sexp());
+    let right = minus
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("right")
+        .unwrap();
+    assert_eq!(right.kind(), "binary_expression", "{}", minus.to_sexp());
+}
+
+#[test]
 fn strings_hold_slashes_and_escapes() {
     let src = "bar Top { text \"https://example.org \\\"q\\\" \\u{2022}\" // a comment\n}\n";
     assert_eq!(syntax_errors(src), Vec::<&str>::new());

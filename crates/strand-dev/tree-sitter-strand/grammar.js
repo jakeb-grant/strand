@@ -104,6 +104,9 @@ module.exports = grammar({
     // Never produced: valid where a prop value's next space-separated term
     // may follow, so a term after a `}` there continues the value.
     $._group_term,
+    // Never produced: valid before a binary `-`, so a `-` after a `}` where
+    // none can follow (a statement block's) starts the next item.
+    $._infix_minus,
   ],
 
   extras: $ => [/[ \t\r\f\n]/, $.comment],
@@ -576,6 +579,7 @@ module.exports = grammar({
         ['%', PREC.multiplicative],
       ].map(([op, p]) => prec.left(p, seq(
         field('left', $._expression),
+        ...(op === '-' ? [optional($._infix_minus)] : []),
         field('operator', op),
         field('right', $._expression),
       ))),

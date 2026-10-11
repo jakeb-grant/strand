@@ -21,9 +21,21 @@
 // scanner lexes `}` where it is valid and remembers the column after it;
 // asked for a separator right there, with the next token on the same line
 // starting an item rather than continuing this one, it gives a zero-width
-// one. A word that only continues an item (`else`, `persist`, `while`,
-// `key`) is not a new item, nor is a term where a prop value may take
-// another (`margin: match a { _ => 1 } 4`, `_group_term` valid).
+// one. Which tokens continue follows the parser:
+//
+// - A word that only continues an item (`else`, `persist`, `while`,
+//   `key`) is not a new item.
+// - Where a prop value may take another space-separated term
+//   (`_group_term` valid), a word, string, `#`, `$`, digit, `(` or `[`
+//   is the value's next term (`margin: match a { _ => 1 } 4`), except a
+//   tree keyword and a word followed by `:` (the next prop), which end the
+//   value as the parser's `starts_term` says.
+// - A `(` or `[` continues only when it touches the `}` (a call or an
+//   index); spaced, it starts an item.
+// - A `-` continues where a binary `-` may follow (`_infix_minus` valid);
+//   elsewhere (after a statement block's `}`) it starts one (`-1 => …`).
+// - Any other operator, `;` or `}` continues the item or separates it
+//   already.
 
 #include "tree_sitter/parser.h"
 
@@ -38,6 +50,7 @@ enum TokenType {
   ERROR_SENTINEL,
   RBRACE,
   GROUP_TERM,
+  INFIX_MINUS,
 };
 
 // The column just after the last `}` the scanner lexed, plus one (0: none
@@ -129,10 +142,38 @@ static bool is_ident_start(int32_t c) {
   return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
+// The parser's TREE_KEYWORDS (syntax/parser/mod.rs): words that start a
+// tree item, and so end a prop value's space-separated terms.
+static const char *const tree_keywords[] = {
+    "when", "if", "match", "for", "on", "after", "every",
+    "enter", "exit", "state", "let", "slot", "set", "play",
+};
+
+// Whether the next token, past spaces, line breaks and comments, is a `:`
+// (the parser's `nth_kind(1) == Colon`). Advances the lexer.
+static bool colon_follows(TSLexer *lexer) {
+  for (;;) {
+    int32_t c = lexer->lookahead;
+    if (is_space(c) || c == '\n') {
+      lexer->advance(lexer, false);
+      continue;
+    }
+    if (c == '/') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead != '/') return false;
+      while (lexer->lookahead != '\n' && !lexer->eof(lexer)) lexer->advance(lexer, false);
+      continue;
+    }
+    return c == ':';
+  }
+}
+
 // Whether the token at the lexer, on the line of a `}` that may end an
-// item, starts the next item. Advances the lexer (the separator is
-// zero-width, so its end is already marked).
-static bool starts_item(TSLexer *lexer, const bool *valid_symbols) {
+// item, starts the next item. `spaced`: whitespace separates it from the
+// `}`. Advances the lexer (the separator is zero-width, so its end is
+// already marked).
+static bool starts_item(TSLexer *lexer, const bool *valid_symbols, bool spaced) {
+  bool term = valid_symbols[GROUP_TERM];
   int32_t c = lexer->lookahead;
   if (is_ident_start(c)) {
     // Words that only continue an item.
@@ -149,22 +190,30 @@ static bool starts_item(TSLexer *lexer, const bool *valid_symbols) {
       for (unsigned i = 0; i < sizeof continuing / sizeof *continuing; i++) {
         if (strcmp(word, continuing[i]) == 0) return false;
       }
+      for (unsigned i = 0; i < sizeof tree_keywords / sizeof *tree_keywords; i++) {
+        if (strcmp(word, tree_keywords[i]) == 0) return true;
+      }
     }
-    return !valid_symbols[GROUP_TERM];
+    return !term || colon_follows(lexer);
   }
   switch (c) {
     case '@':  // an attribute
     case '#':  // a selector
     case '$':  // a token entry
     case '"':
-      return !valid_symbols[GROUP_TERM];
+      return !term;
+    case '(':  // a call or an index touches; a group term may be spaced
+    case '[':
+      return spaced && !term;
+    case '-':  // a binary `-`, or a sign starting the next item
+      return !valid_symbols[INFIX_MINUS];
     case '!':  // a prefix `!`, not `!=`
       lexer->advance(lexer, false);
-      return lexer->lookahead != '=' && !valid_symbols[GROUP_TERM];
+      return lexer->lookahead != '=' && !term;
     default:
       // Digits (a keyframe offset) too: every other token continues the
       // item or is a separator of its own.
-      return c >= '0' && c <= '9' && !valid_symbols[GROUP_TERM];
+      return c >= '0' && c <= '9' && !term;
   }
 }
 
@@ -176,6 +225,7 @@ bool tree_sitter_strand_external_scanner_scan(void *payload, TSLexer *lexer,
   // moved the column, or been lexed here and cleared it).
   bool after_brace =
       s->brace_end != 0 && valid_symbols[LINE_BREAK] && lexer->get_column(lexer) + 1 == s->brace_end;
+  bool spaced = is_space(lexer->lookahead);
   while (is_space(lexer->lookahead)) lexer->advance(lexer, true);
   if (valid_symbols[LINE_BREAK] && lexer->lookahead == '\n') {
     lexer->advance(lexer, false);
@@ -199,7 +249,7 @@ bool tree_sitter_strand_external_scanner_scan(void *payload, TSLexer *lexer,
     lexer->mark_end(lexer);
     lexer->result_symbol = LINE_BREAK;
     s->brace_end = 0;
-    return starts_item(lexer, valid_symbols);
+    return starts_item(lexer, valid_symbols, spaced);
   }
   return false;
 }
