@@ -57,7 +57,7 @@ impl From<SurfaceError> for DemoError {
 /// (render loop steps 0 and 3).
 pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
     state.host_mut().observe(&diff);
-    for error in state.host_mut().renderer.apply(diff) {
+    for error in state.host_mut().apply_diff(diff) {
         log::error!("scene: {error:?}");
     }
     // A launcher's list refilled: its first row is selected again.

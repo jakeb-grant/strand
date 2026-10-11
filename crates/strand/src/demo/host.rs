@@ -45,7 +45,8 @@ pub struct Host {
     /// sends `Release` for each (`run/gpu.rs`).
     pub gpu_released: Vec<SurfaceId>,
     /// (M4) `strand run`: the producers of the visible fed nodes (a
-    /// `spectrum`'s audio tap), changed after a paint changes them.
+    /// `spectrum`'s audio tap), changed after a paint or a diff changes
+    /// them.
     pub(crate) feeds: Option<crate::run::feeds::Feeds>,
     /// The session lock's content and its built-in fallback (`strand
     /// run`'s `run/lock.rs`).
@@ -462,6 +463,20 @@ impl Host {
         if let Some(f) = &mut self.logic {
             f.router.observe(diff);
         }
+    }
+
+    /// Applies logic's diff to the renderer; returns the ops that failed.
+    /// Fed nodes' producers follow it at once: a diff can change what a
+    /// shown node is fed by with no frame following (a resting
+    /// `spectrum` draws the same dots whichever device its source names,
+    /// so `update` finds nothing to paint and no paint's
+    /// [`Host::painted`] would ever retarget its tap).
+    pub(crate) fn apply_diff(&mut self, diff: SceneDiff) -> Vec<strand_render::SceneError> {
+        let errors = self.renderer.apply(diff);
+        if let Some(feeds) = &mut self.feeds {
+            crate::run::feeds::sync(&mut self.renderer, feeds);
+        }
+        errors
     }
 
     /// After logic's diff is applied: what routing settles on the new
@@ -1771,6 +1786,55 @@ mod tests {
                 if sizes.iter().any(|f| f.0 == child && f.2 == 30.0))),
             "{sent:?}"
         );
+    }
+
+    /// (m5-open-spectrum) A diff naming another device for a shown,
+    /// resting spectrum retargets its tap at once. No frame follows it
+    /// (the dots look the same whichever device), so with taps synced
+    /// only after paints the tap stayed on device 0, `audio.sink` before
+    /// the service knew the default sink, and the tone never showed
+    /// (GitHub runs 38065740030, 38076927579 and 38116737469).
+    #[test]
+    fn a_resting_spectrum_follows_its_device_without_a_frame() {
+        use crate::run::feeds::{Feeds, Want};
+        use std::time::Duration;
+        use strand_scene::{NodeKind, PropValue};
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (tx, _rx) = calloop::channel::channel();
+        host.feeds = Some(Feeds::new(tx));
+        let (panel, spectrum) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let mut d = SceneDiff::new();
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(80.0))
+            .set(panel, Prop::Height, PropValue::Number(40.0))
+            .create(spectrum, NodeKind::Spectrum, Some(panel), 0)
+            .set(spectrum, Prop::Source, PropValue::Text("0".into()))
+            .set(spectrum, Prop::Width, PropValue::Number(64.0))
+            .set(spectrum, Prop::Height, PropValue::Number(32.0));
+        assert!(host.apply_diff(d).is_empty());
+        let s = SurfaceId(1);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, Size::new(80, 40), Scale::ONE);
+        let mut px = vec![0u8; 80 * 40 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(80, 40), 320, Scale::ONE, 0).unwrap();
+        let mut t = t.at(Duration::from_secs(1));
+        assert!(!host.paint(s, &mut t).is_empty());
+        let tapped = |host: &Host| host.feeds.as_ref().unwrap().tapped();
+        assert_eq!(tapped(&host), [(spectrum, Want::Spectrum(0))]);
+        // The default sink is known: logic names its id.
+        let mut d = SceneDiff::new();
+        d.set(spectrum, Prop::Source, PropValue::Text("42".into()));
+        assert!(host.apply_diff(d).is_empty());
+        assert!(
+            !host.wants_frame(s),
+            "the resting dots are unchanged: no frame follows"
+        );
+        assert_eq!(tapped(&host), [(spectrum, Want::Spectrum(42))]);
     }
 
     fn setup_channel() -> (
