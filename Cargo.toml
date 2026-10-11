@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+# `crates/*` does not reach the tree-sitter package inside strand-dev
+# (docs/architecture.md, "tree-sitter layout").
+members = ["crates/*", "crates/strand-dev/tree-sitter-strand"]
 
 [workspace.package]
 version = "0.0.0"

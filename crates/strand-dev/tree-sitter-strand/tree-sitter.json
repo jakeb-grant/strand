@@ -1,0 +1,22 @@
+{
+  "grammars": [
+    {
+      "name": "strand",
+      "camelcase": "Strand",
+      "scope": "source.strand",
+      "path": ".",
+      "file-types": ["strand"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injections": "queries/injections.scm",
+      "external-files": ["src/scanner.c"]
+    }
+  ],
+  "metadata": {
+    "version": "0.0.0",
+    "description": "The .strand language of the Strand Wayland shell toolkit",
+    "links": {
+      "repository": "https://github.com/jakeb-grant/strand"
+    }
+  }
+}

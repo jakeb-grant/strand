@@ -1,0 +1,490 @@
+//! The tree-sitter grammar (`tree-sitter-strand`) against the compiler's
+//! parser, which is the language (m5-plan, S-lsp; Risk 10, "tree-sitter
+//! drifts from the parser"):
+//! - every `.strand` file in the repository the parser accepts (the design
+//!   fixtures, the test configs, the template, the negative fixtures that
+//!   are only checker errors) and every guide block parses without an
+//!   error node;
+//! - the negative syntax fixtures, and a set of syntax errors grammar.md
+//!   names, are errors to both;
+//! - the queries compile, and the highlights capture every keyword in
+//!   grammar.md's table as a keyword where the grammar takes it as one.
+//!
+//! The grammar accepts some lines the parser rejects with a better message
+//! (a misspelt `els`, a `.` that ends a line); editors only highlight
+//! them, and `strand check` and the language server still report them.
+
+mod support;
+
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+
+use strand_compiler::FileId;
+use strand_compiler::syntax::parse;
+use support::guide;
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
+
+fn language() -> Language {
+    tree_sitter_strand::LANGUAGE.into()
+}
+
+fn ts_parse(src: &str) -> Tree {
+    let mut parser = Parser::new();
+    parser.set_language(&language()).unwrap();
+    parser.parse(src, None).unwrap()
+}
+
+/// The first error or missing node, as `line:column kind`, if any.
+fn first_error(tree: &Tree) -> Option<String> {
+    fn walk(n: Node<'_>) -> Option<Node<'_>> {
+        if n.is_error() || n.is_missing() {
+            return Some(n);
+        }
+        if !n.has_error() {
+            return None;
+        }
+        (0..n.child_count()).find_map(|i| n.child(i).and_then(walk))
+    }
+    walk(tree.root_node()).map(|n| {
+        let p = n.start_position();
+        format!(
+            "{}:{} {}{}",
+            p.row + 1,
+            p.column + 1,
+            if n.is_missing() { "missing " } else { "" },
+            n.kind()
+        )
+    })
+}
+
+/// The compiler parser's syntax errors (codes), warnings left out.
+fn syntax_errors(src: &str) -> Vec<&'static str> {
+    parse(FileId::default(), src)
+        .diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.code)
+        .collect()
+}
+
+/// Every `.strand` file under `crates/` and `docs/`, build output left out.
+fn repo_strand_files() -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "target" && !name.starts_with('.') {
+                    walk(&path, out);
+                }
+            } else if name.ends_with(".strand") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for top in ["crates", "docs"] {
+        walk(&guide::root().join(top), &mut out);
+    }
+    out.sort();
+    out
+}
+
+/// A negative fixture's `// expect:` codes.
+fn expected_codes(src: &str) -> Vec<String> {
+    src.lines()
+        .find_map(|l| l.strip_prefix("// expect:"))
+        .map(|codes| codes.split(',').map(|c| c.trim().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn every_accepted_file_and_guide_block_parses_without_errors() {
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for path in repo_strand_files() {
+        let src = std::fs::read_to_string(&path).unwrap();
+        if !syntax_errors(&src).is_empty() {
+            continue;
+        }
+        checked += 1;
+        if let Some(e) = first_error(&ts_parse(&src)) {
+            failures.push(format!("{}:{e}", path.display()));
+        }
+    }
+    let fixtures = guide::root().join("crates/strand-compiler/tests/fixtures");
+    assert!(
+        checked >= 9 + 60,
+        "only {checked} files checked: the fixtures in {} and the negative fixtures should all be found",
+        fixtures.display()
+    );
+    let blocks = guide::blocks();
+    assert!(!blocks.is_empty(), "no guide blocks found");
+    for b in &blocks {
+        assert_eq!(
+            syntax_errors(&b.text),
+            Vec::<&str>::new(),
+            "{}: the compiler's parser rejects the block",
+            b.at
+        );
+        if let Some(e) = first_error(&ts_parse(&b.text)) {
+            failures.push(format!("{} (block {}): {e}", b.at, b.file));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "tree-sitter errors:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Syntax errors grammar.md names, each one the compiler's parser rejects.
+const SYNTAX_ERRORS: &[&str] = &[
+    // A prop's `:` ending a line has no value (rule 5).
+    "bar Top {\n  bg:\n  edge: top\n}\n",
+    // Two props on one line need a `;` (rule 2).
+    "bar Top { edge: top height: 36 }\n",
+    // An optional block's `{` must be on the head's line (rule 6).
+    "bar Top {\n  box\n  {\n  }\n}\n",
+    // A `fn` body is a block.
+    "fn get() = 1\n",
+    // Strings do not span lines.
+    "bar Top { text \"abc }\n",
+    // Outside a prop value two terms in a row are an error.
+    "state x = 1 2\n",
+    "bar Top { text pct (x) }\n",
+    // `persist` follows the value.
+    "state early persist = 2\n",
+    // A transition needs its value.
+    "bar Top { width: 24 ~ }\n",
+    // Elements and statements cannot stand at the top level.
+    "text \"hi\"\n",
+    "x = 1\n",
+    "componnet Foo { }\n",
+    // An item cannot start with a number.
+    "bar Top { 1 + 2 }\n",
+    // There are no tuples.
+    "let x = (1, 2)\n",
+    // An assignment needs its right side.
+    "bar Top { on click { x = } }\n",
+    // Braces must balance.
+    "bar Top { edge: top\n",
+    "bar Top { edge: top } }\n",
+    // A source kind and a bus are one of the listed words; `poll` needs
+    // `every`.
+    "service t from pol \"x\" every 1s { a: text }\n",
+    "service t from dbus systm \"a.b\" { a: text = A }\n",
+    "service t from poll \"/tmp/x\" { a: text }\n",
+];
+
+#[test]
+fn negative_syntax_fixtures_and_named_errors_are_errors() {
+    let mut failures = Vec::new();
+    let mut fixtures = 0;
+    let dir = guide::root().join("crates/strand-compiler/tests/negative");
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "strand"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let src = std::fs::read_to_string(&path).unwrap();
+        if !expected_codes(&src)
+            .iter()
+            .any(|c| c.starts_with("syntax::"))
+        {
+            continue;
+        }
+        fixtures += 1;
+        assert!(
+            !syntax_errors(&src).is_empty(),
+            "{}: expects a syntax error the parser does not report",
+            path.display()
+        );
+        if first_error(&ts_parse(&src)).is_none() {
+            failures.push(path.display().to_string());
+        }
+    }
+    assert!(
+        fixtures >= 5,
+        "only {fixtures} negative syntax fixtures found"
+    );
+    for src in SYNTAX_ERRORS {
+        assert!(
+            !syntax_errors(src).is_empty(),
+            "the compiler's parser accepts {src:?}"
+        );
+        if first_error(&ts_parse(src)).is_none() {
+            failures.push(format!("{src:?}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "tree-sitter accepts what the parser rejects:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The words in grammar.md's "Keywords are contextual" table.
+fn grammar_md_keywords() -> BTreeSet<String> {
+    let text = std::fs::read_to_string(guide::root().join("docs/grammar.md")).unwrap();
+    let section = text
+        .split("#### Keywords are contextual")
+        .nth(1)
+        .expect("grammar.md has its keyword table");
+    let mut words = BTreeSet::new();
+    for line in section.lines().skip_while(|l| !l.starts_with('|')) {
+        if !line.starts_with('|') {
+            break;
+        }
+        let Some(cell) = line.split('|').nth(2) else {
+            continue;
+        };
+        // The words in backticks (not the `{` of "`set` (only before `{`)").
+        for (i, part) in cell.split('`').enumerate() {
+            if i % 2 == 1 && part.chars().all(|c| c.is_ascii_alphabetic()) {
+                words.insert(part.to_string());
+            }
+        }
+    }
+    assert!(
+        words.len() > 40,
+        "grammar.md's keyword table read as {words:?}"
+    );
+    words
+}
+
+/// Every keyword in grammar.md's table, each where the grammar takes it.
+const KEYWORDS: &str = "\
+enum Kind { a, b }
+type Pin { app: text rw = \"\"; label: text = \"\" }
+export state open = false persist
+state pins: [Pin] key app = []
+state prefs from \"p.toml\" { n: int = 1 }
+let dark = match open { true => false, _ => null }
+fn half(x: float) -> float { x / 2 }
+tokens base { space { 1: 4px } }
+tokens compact extends base { override space { 1: 2px } }
+use tokens base, palette material(seed: #7aa2f7)
+service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }
+service user from dbus session \"org.example.X\" { n: int = N }
+permit exec \"sensors\"
+keyframes shake { 0%, 100% { x: 0 }; duration: 300ms }
+on notifications.received(n) { open = true }
+after 1s while open { open = false }
+every 1s { open = !open }
+component Card { col { slot } }
+bar Top {
+  when hover { opacity: 1 }
+  if open { text \"a\" } else { text \"b\" }
+  match open { true => text \"y\", _ => text \"n\" }
+  for p in pins key p.app { text p.label }
+  on change open after 1s { await sleep(1s); play shake; let k = 1; if k > 0 { open = false } }
+  enter { opacity: 0 }
+  exit { opacity: 0 }
+  set { $surface: $surface.alpha(0.5) }
+  play shake
+  state n = 0
+  let m = n
+  Card
+}
+panel P { text \"p\" }
+osd O { text \"o\" }
+lock { text \"l\" }
+";
+
+#[test]
+fn highlights_capture_every_keyword_in_grammar_md() {
+    let lang = language();
+    for (name, q) in [
+        ("highlights", tree_sitter_strand::HIGHLIGHTS_QUERY),
+        ("locals", tree_sitter_strand::LOCALS_QUERY),
+        ("indents", tree_sitter_strand::INDENTS_QUERY),
+        ("injections", tree_sitter_strand::INJECTIONS_QUERY),
+    ] {
+        if let Err(e) = Query::new(&lang, q) {
+            panic!("queries/{name}.scm does not compile: {e}");
+        }
+    }
+
+    assert_eq!(syntax_errors(KEYWORDS), Vec::<&str>::new());
+    let tree = ts_parse(KEYWORDS);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+
+    // Capture names by node, for every capture the highlights make.
+    let query = Query::new(&lang, tree_sitter_strand::HIGHLIGHTS_QUERY).unwrap();
+    let names = query.capture_names();
+    let mut captured: HashMap<usize, Vec<&str>> = HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(&query, tree.root_node(), KEYWORDS.as_bytes());
+    while let Some((m, i)) = captures.next() {
+        let c = m.captures()[*i];
+        captured
+            .entry(c.node.id())
+            .or_default()
+            .push(names[c.index as usize]);
+    }
+
+    // Each keyword's tokens: the leaves whose text is the word and which
+    // the grammar took as that word rather than as a name.
+    let mut tokens: HashMap<String, Vec<Node<'_>>> = HashMap::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        let mut c = n.walk();
+        stack.extend(n.children(&mut c));
+        if n.child_count() == 0 && n.kind() != "identifier" {
+            let text = &KEYWORDS[n.byte_range()];
+            tokens.entry(text.to_string()).or_default().push(n);
+        }
+    }
+    // `true`, `false` and `null` are values, highlighted as such.
+    let keyword_like =
+        |name: &str| name.starts_with("keyword") || name == "boolean" || name == "constant.builtin";
+    let mut failures = Vec::new();
+    for kw in grammar_md_keywords() {
+        let Some(nodes) = tokens.get(&kw) else {
+            failures.push(format!("`{kw}` is not a keyword anywhere in the sample"));
+            continue;
+        };
+        for n in nodes {
+            // The token, or a node that is only the token (`(boolean)`,
+            // `(slot)`).
+            let mut caps = Vec::new();
+            let mut at = Some(*n);
+            while let Some(node) = at.filter(|a| a.byte_range() == n.byte_range()) {
+                caps.extend(captured.get(&node.id()).cloned().unwrap_or_default());
+                at = node.parent();
+            }
+            if !caps.iter().any(|c| keyword_like(c)) {
+                let p = n.start_position();
+                failures.push(format!(
+                    "`{kw}` at {}:{} ({}) is captured as {caps:?}",
+                    p.row + 1,
+                    p.column + 1,
+                    n.parent().map_or("", |p| p.kind()),
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn a_contextual_keyword_is_a_name_elsewhere() {
+    // grammar.md: no reserved words; `IDENT ':'` at an item's start is a
+    // prop, and a keyword outside its position is an identifier.
+    let src = "\
+let dark = match look { auto => system.dark, _ => false }
+component C(key: text) {
+  input { type: password; enter: popin(0.8) }
+  box { on key(k) { propagate() } }
+  box { on change(x) { log(x) } }
+  box { bg: conic(from: 90deg, $accent, $secondary) }
+  text key.in
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let sexp = tree.root_node().to_sexp();
+    for (node, want) in [
+        ("system", "identifier"),
+        ("type", "identifier"),
+        ("enter", "identifier"),
+        ("key", "identifier"),
+        ("change", "identifier"),
+        ("from", "identifier"),
+    ] {
+        let mut stack = vec![tree.root_node()];
+        let mut kinds = BTreeSet::new();
+        while let Some(n) = stack.pop() {
+            let mut c = n.walk();
+            stack.extend(n.children(&mut c));
+            if n.child_count() == 0 && &src[n.byte_range()] == node {
+                kinds.insert(n.kind().to_string());
+            }
+        }
+        assert_eq!(
+            kinds.iter().map(String::as_str).collect::<Vec<_>>(),
+            [want],
+            "`{node}` in {sexp}"
+        );
+    }
+}
+
+#[test]
+fn line_breaks_end_items_unless_the_next_line_continues() {
+    // grammar.md, "Lines and termination", rules 2, 3 and 4.
+    let src = "\
+state a = 1
+state b = a
+  ?? 2
+state c = a +
+  2
+let d = [
+  1,
+  2,
+]
+fn f(x: int) -> int {
+  x
+  - 1
+}
+fn g(x: int) -> int {
+  x
+  -1
+}
+bar Top {
+  edge: top; height: 36
+  box { } text \"x\"
+  text b
+    .format()
+  if a > 0 { text \"a\" }
+  else { text \"b\" }
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let sexp = tree.root_node().to_sexp();
+    // `?? 2`, `+ 2` and `- 1` continue their lines; `.format()` too.
+    assert_eq!(sexp.matches("(state ").count(), 3, "{sexp}");
+    assert!(
+        sexp.contains("(binary_expression left: (identifier) right: (number))"),
+        "{sexp}"
+    );
+    assert!(
+        sexp.contains("(call_expression function: (member_expression"),
+        "{sexp}"
+    );
+    // `else` on its own line belongs to the `if`.
+    assert!(sexp.contains("alternative: (tree_block"), "{sexp}");
+    // A line starting with a touching `-` starts a new statement.
+    let g = tree.root_node().named_child(5).unwrap();
+    let g_body = g.child_by_field_name("body").unwrap();
+    assert_eq!(g_body.named_child_count(), 2, "{}", g_body.to_sexp());
+    // `box { } text "x"`: two elements on one line.
+    let bar = tree.root_node().named_child(6).unwrap();
+    assert_eq!(bar.kind(), "surface");
+    let body = bar.child_by_field_name("body").unwrap();
+    let mut c = body.walk();
+    let kinds: Vec<_> = body.named_children(&mut c).map(|n| n.kind()).collect();
+    assert_eq!(
+        kinds,
+        ["prop", "prop", "element", "element", "element", "if_tree"]
+    );
+}
+
+#[test]
+fn strings_hold_slashes_and_escapes() {
+    let src = "bar Top { text \"https://example.org \\\"q\\\" \\u{2022}\" // a comment\n}\n";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let sexp = tree.root_node().to_sexp();
+    assert!(
+        sexp.contains("(string (escape_sequence) (escape_sequence) (escape_sequence))"),
+        "{sexp}"
+    );
+    assert!(sexp.contains("(comment)"), "{sexp}");
+}

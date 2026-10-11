@@ -1055,7 +1055,9 @@ strand-theme and strand-scene bullets).
   - `crates/strand-dev/tests/ladder.rs`:
     - `no_guide_block_uses_a_construct_above_its_level` (a HIR walk per
       block);
-    - `every_guide_block_checks`;
+  - `crates/strand-dev/tests/guide.rs::every_guide_block_checks` (written
+    by S-lsp in wave 2, decisions.md m5-lsp; the block reader is
+    `tests/support/guide.rs`, for the ladder test too);
   - `reference.rs::the_reference_is_current`;
   - `tests/m5/newcomer.rs`.
 - Budget: 0 (the template is .rodata).

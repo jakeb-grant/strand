@@ -989,10 +989,15 @@ zero-width span (an insertion) is allowed.
   `src/node-types.json` and `src/tree_sitter/`, whose `parser.h`
   `parser.c` includes; `tree-sitter generate` writes all four and
   `scripts/check-tree-sitter.sh` compares all four), an external scanner
-  for SAME_LINE, SEP and TOUCH and the contextual keywords, and
-  `queries/{highlights, locals, indents, injections}.scm`; its own
-  `build.rs` compiles `parser.c` with `cc`, and it exposes the language
-  through the `tree-sitter` crate. strand-dev uses it only as a
+  (`src/scanner.c`) that decides which line breaks are SEP (SAME_LINE
+  follows from it; TOUCH is `token.immediate`, and the contextual
+  keywords are tree-sitter's keyword extraction, aliased to `identifier`
+  where a keyword may be a name: decisions.md m5-lsp),
+  `queries/{highlights, locals, indents, injections}.scm` and
+  `tree-sitter.json`; its own `build.rs` (`bindings/rust/`) compiles
+  `parser.c` and `scanner.c` with `cc`, and it exposes the language as
+  `LANGUAGE` (a `tree_sitter_language::LanguageFn`, which
+  `tree_sitter::Language` takes) and the queries as strings. strand-dev uses it only as a
   dev-dependency (the conformance tests), so neither the runtime binary
   nor `strand-dev lsp` links it. The root `Cargo.toml` lists it in
   `members` explicitly, since `crates/*` does not reach it. A pinned
