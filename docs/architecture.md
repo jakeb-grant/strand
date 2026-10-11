@@ -1028,8 +1028,19 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   Rc<dyn DynService> }` (function pointers, monomorphised only in a
   plugin binary). `run` checks the list (below), then stores it once in
   a private process-wide `OnceLock` (`plugin::extras()`, empty in
-  `strand`), before any subcommand. `services::schema()` and
-  `Real::start` read it: `Real::start` registers the extras after
+  `strand`), before any subcommand, through `plugin::install(slot,
+  list)`, which takes the `OnceLock` as a parameter and refuses one
+  already set. `services::schema()` and `Real::start` read it, each
+  through a pure twin that takes the list instead:
+  `services::schema_with(extras, files)` builds the served schema
+  (`schema()` is the process-wide `OnceLock` over it with
+  `plugin::extras()` and the files `plugins::load` found), and
+  `Real::start_with(rt, types, buses, fallback, wake, extras)` is
+  `Real::start` with its list passed in (`Real::start` passes
+  `plugin::extras()`; its signature and callers are unchanged). Unit
+  tests use the twins and a local `OnceLock`, so none of them sets or
+  reads the process-wide lists that the shared lib test binary's other
+  tests already initialised. `Real::start_with` registers the extras after
   `Builtin::register` (unchanged) and adds each to the `Composite` as a
   `StoreHost`, as it does the builtins, so reads, writes, events and the
   D-Bus front end reach them through the existing name routing, and
@@ -1040,7 +1051,16 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   (`strand set`) and S-ipc's `Shell::run_action` (`strand call`,
   `run/request/call.rs`), which today search `builtin.all()` alone and
   would skip the acquire and the `wait_ready_of(SET_WAIT)` for a plugin
-  service. The `run_action` change is one line in S-ipc's file, landed
+  service. For `set` the miss is a wrong value: a relative write
+  (`+1`) on a service nobody reads would be computed from the schema
+  default before the first read, and the first read would then
+  overwrite it. For `call` it is not observable from outside: an action
+  is fire-and-forget (`Client::act` answers once `Msg::Action` is
+  queued, and `with_run` starts a stopped service itself, so the body
+  takes the action after its start either way), and the lookup only
+  makes `call` return after the first read, as `set` does. So the
+  regression tests are `Real::served`'s unit test and `set`'s, not a
+  `strand call`. The `run_action` change is one line in S-ipc's file, landed
   with S-plugins' wave-2 PR as a one-line entry the integrator merges
   (S-ipc reviews). A plugin service runs on the shared services
   runtime, or its own thread with `thread`, as a builtin does.
@@ -1055,15 +1075,28 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   files too, so `strand check`, `strand run` and the LSP check against
   one schema as before. A service a file declares that no linked store
   serves answers from the `SchemaHost` fallback at its defaults, behind
-  a thin strand-local `UnservedHost` that `Real::start` adds to the
-  `Composite` under that name. Its first `acquire` (the config reads the
-  service) raises one `ServiceDiagnostic { notice: true }` through
-  `Shell::service_diagnostics`, and the last `release` (a reload stops
-  reading it) sends the same diagnostic with `cleared`, so a leftover
-  file that no config reads raises nothing (only a log line at start).
-  The notice reads: "`hello` is declared by `<path>` but this binary
-  does not serve it; run the plugin binary that wrote it, or remove the
-  file if that plugin is gone". No strand-services change. A linked
+  a thin strand-local `UnservedHost` that `Real::start_with` adds to the
+  `Composite` under that name. Reads go to the fallback; everything
+  that would reach the service itself (`write`, `write_item`, `call`,
+  `action`) is refused with the notice's text below, so `strand set`
+  and `strand call` on such a name answer with an error naming the
+  file rather than an `ok` that did nothing (`SchemaHost::action`
+  returns `Ok` without acting, and its `write` changes only defaults).
+  Its first `acquire` (the config reads the service) raises one
+  `ServiceDiagnostic { notice: true, resolved: false }` through
+  `Services::report`, which `Shell::service_diagnostics` takes with the
+  services' own, and the last `release` (a reload stops reading it)
+  reports the same diagnostic with `resolved: true`, which takes the
+  overlay rows away; so a leftover file that no config reads raises
+  nothing (only a log line at start). The notice reads: "`hello` is
+  declared by `<path>` but this binary does not serve it; run the
+  plugin binary that wrote it, or remove the file if that plugin is
+  gone". No strand-services change. Like every service notice, it is
+  broadcast to the watchers connected when it is taken: one raised by
+  the boot's mount is in the log and on the overlay, and `watch_request`
+  does not replay it (it replays warnings and host notices only, and
+  that is S-ipc's file), so its test raises it with a reload after
+  `strand watch` connects. A linked
   service whose file differs from its text logs "stale; run `<binary>
   --write-schemas`".
 - **Schema files** (`strand_compiler::schema::plugins`, a new file
@@ -1117,10 +1150,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   reports THP off turned it off itself.
 - **Examples.** `crates/strand/examples/plugin_hello.rs` (`[[example]]
   plugin_hello`): `strand::process_setup!()` at its root, a `hello`
-  service (`greeting: text`, `count: int`, `ready: bool`, `action
-  greet(name: text)`, each documented). Its start sets `ready` on its
-  first read, and `greet` refuses with "not ready" before it, so a
-  `strand call` that skips the first-read wait fails visibly. `fn main()
+  service (`greeting: text`, `count: int`, writable, which the first
+  read sets to 41 as a stand-in for a value a real service reads from
+  its source; `action greet(name: text)` sets `greeting` to `hello,
+  <name>` and bumps `count`; each documented). `fn main()
   { strand::Shell::builder().service::<Hello>().run() }`.
   `crates/strand/examples/plugin_bare.rs` is the same `main` without
   `process_setup!()` and without services, the case the setup check
