@@ -1032,15 +1032,27 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   list)`, which takes the `OnceLock` as a parameter and refuses one
   already set. `services::schema()` and `Real::start` read it, each
   through a pure twin that takes the list instead:
-  `services::schema_with(extras, files)` builds the served schema
-  (`schema()` is the process-wide `OnceLock` over it with
-  `plugin::extras()` and the files `plugins::load` found), and
-  `Real::start_with(rt, types, buses, fallback, wake, extras)` is
-  `Real::start` with its list passed in (`Real::start` passes
-  `plugin::extras()`; its signature and callers are unchanged). Unit
-  tests use the twins and a local `OnceLock`, so none of them sets or
-  reads the process-wide lists that the shared lib test binary's other
-  tests already initialised. `Real::start_with` registers the extras after
+  `services::schema_with(extras, files) -> Served` builds the served
+  schema and says which services the files declare that no linked
+  store serves: `Served { schema: Schema, unserved: Vec<(String,
+  PathBuf)> }`, each unserved name with the path of the file that
+  declared it. `services::served()` is the process-wide `OnceLock`
+  over it with `plugin::extras()` and the files `plugins::load` found,
+  and `schema()` is `&served().schema` (its signature and callers are
+  unchanged). `Real::start_with(rt, types, buses, fallback, wake,
+  extras, served: &'static Served)` is `Real::start` with both passed
+  in (`Real::start` passes `plugin::extras()` and `served()`; its
+  signature and callers are unchanged), and `Real` keeps `served`:
+  `start_with` adds the `UnservedHost`s from `served.unserved` (below),
+  and `Real::set_text` resolves the service, its fields and their
+  types in `served.schema`, through `services::set_text_with(schema,
+  host, rt, types, path, text)`, the pure twin of the free `set_text`
+  (which is `set_text_with(schema(), …)`, unchanged for its callers).
+  Unit tests use the twins, a local `OnceLock`, and a `Served` built
+  by `schema_with` from a test-defined extra and files in a temporary
+  directory (leaked to `'static`, as a test may), so none of them sets
+  or reads the process-wide lists that the shared lib test binary's
+  other tests already initialised. `Real::start_with` registers the extras after
   `Builtin::register` (unchanged) and adds each to the `Composite` as a
   `StoreHost`, as it does the builtins, so reads, writes, events and the
   D-Bus front end reach them through the existing name routing, and
@@ -1076,7 +1088,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   one schema as before. A service a file declares that no linked store
   serves answers from the `SchemaHost` fallback at its defaults, behind
   a thin strand-local `UnservedHost` that `Real::start_with` adds to the
-  `Composite` under that name. Reads go to the fallback; everything
+  `Composite` under that name, one for each entry of the `Served`
+  it is given (`served.unserved`, so the notice's path comes from
+  `schema_with`, never from a second read of the directory). Reads go
+  to the fallback; everything
   that would reach the service itself (`write`, `write_item`, `call`,
   `action`) is refused with the notice's text below, so `strand set`
   and `strand call` on such a name answer with an error naming the
@@ -1138,7 +1153,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `Schema { service, errors }` (its text does not apply),
   `Undocumented { service, entries }` (`Schema::undocumented()` of its
   entries; `--write-schemas` only), `NoDataDir`, `Write { path, error }`.
-  The first two fail every subcommand before it runs.
+  The first three fail every subcommand before it runs: `run` checks
+  the names, then that each linked text applies over the builtin and
+  the earlier linked texts (files are not involved, so a bad file
+  never stops a plugin), so a plugin never boots on a text that
+  `services::schema()` would log and fall back from.
 - **Process setup check.** `run` checks, once, that a heap block is
   mimalloc's and that THP is off for the process; if not it prints a
   warning naming `strand::process_setup!()` and goes on. The decision
