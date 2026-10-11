@@ -2412,8 +2412,25 @@
               "type": "PREC_LEFT",
               "value": 0,
               "content": {
-                "type": "SYMBOL",
-                "name": "_expression"
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "_group_term"
+                      },
+                      {
+                        "type": "BLANK"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "_expression"
+                  }
+                ]
               }
             }
           }
@@ -4985,6 +5002,14 @@
     {
       "type": "SYMBOL",
       "name": "_error_sentinel"
+    },
+    {
+      "type": "STRING",
+      "value": "}"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_group_term"
     }
   ],
   "inline": [],

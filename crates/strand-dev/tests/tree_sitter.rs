@@ -144,6 +144,12 @@ const SYNTAX_ERRORS: &[&str] = &[
     "bar Top {\n  bg:\n  edge: top\n}\n",
     // Two props on one line need a `;` (rule 2).
     "bar Top { edge: top height: 36 }\n",
+    // Only a `}` ends an item before the next on its line: not a `)`, not
+    // a `}` before tokens the line continued past.
+    "bar Top { on click { x = 1 y = 2 } }\n",
+    "let m = (1) let k = 2\n",
+    "let m = match a { _ => 1 } + 1 let k = 2\n",
+    "let g = f(x => { x }) let k = 2\n",
     // An optional block's `{` must be on the head's line (rule 6).
     "bar Top {\n  box\n  {\n  }\n}\n",
     // A `fn` body is a block.
@@ -370,6 +376,54 @@ fn highlights_capture_every_keyword_in_grammar_md() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The capture tree-sitter-highlight gives each node that the highlights
+/// capture: its first pattern's (the CLI and helix take the first match).
+fn first_captures<'t>(tree: &'t Tree, src: &str) -> HashMap<usize, (Node<'t>, String)> {
+    let query = Query::new(&language(), tree_sitter_strand::HIGHLIGHTS_QUERY).unwrap();
+    let names = query.capture_names();
+    let mut first: HashMap<usize, (usize, Node<'t>, String)> = HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(&query, tree.root_node(), src.as_bytes());
+    while let Some((m, i)) = captures.next() {
+        let c = m.captures()[*i];
+        let name = names[c.index as usize].to_string();
+        first
+            .entry(c.node.id())
+            .and_modify(|e| {
+                if m.pattern_index < e.0 {
+                    *e = (m.pattern_index, c.node, name.clone());
+                }
+            })
+            .or_insert((m.pattern_index, c.node, name));
+    }
+    first
+        .into_iter()
+        .map(|(id, (_, n, name))| (id, (n, name)))
+        .collect()
+}
+
+#[test]
+fn a_ternarys_two_halves_highlight_alike() {
+    let src = "let t = a ? b : c\n";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let mut by_text: Vec<(&str, String)> = first_captures(&tree, src)
+        .into_values()
+        .filter(|(n, _)| n.parent().is_some_and(|p| p.kind() == "ternary_expression"))
+        .filter(|(n, _)| !n.is_named())
+        .map(|(n, name)| (&src[n.byte_range()], name))
+        .collect();
+    by_text.sort();
+    assert_eq!(
+        by_text,
+        [
+            (":", "keyword.conditional.ternary".to_string()),
+            ("?", "keyword.conditional.ternary".to_string()),
+        ]
+    );
+}
+
 #[test]
 fn a_contextual_keyword_is_a_name_elsewhere() {
     // grammar.md: no reserved words; `IDENT ':'` at an item's start is a
@@ -459,6 +513,10 @@ bar Top {
     );
     // `else` on its own line belongs to the `if`.
     assert!(sexp.contains("alternative: (tree_block"), "{sexp}");
+    // A line starting with a spaced `- 1` continues `f`'s body.
+    let f = tree.root_node().named_child(4).unwrap();
+    let f_body = f.child_by_field_name("body").unwrap();
+    assert_eq!(f_body.named_child_count(), 1, "{}", f_body.to_sexp());
     // A line starting with a touching `-` starts a new statement.
     let g = tree.root_node().named_child(5).unwrap();
     let g_body = g.child_by_field_name("body").unwrap();
@@ -472,6 +530,72 @@ bar Top {
     assert_eq!(
         kinds,
         ["prop", "prop", "element", "element", "element", "if_tree"]
+    );
+}
+
+/// The named children's kinds of `node`.
+fn kinds<'t>(node: Node<'t>) -> Vec<&'t str> {
+    let mut c = node.walk();
+    node.named_children(&mut c).map(|n| n.kind()).collect()
+}
+
+#[test]
+fn an_item_ending_in_a_brace_may_be_followed_on_its_line() {
+    // grammar.md rule 2: "An item that ends with a closing `}`" may be
+    // followed by another on its line, whatever kind of item it is: the
+    // parser's test is the previous token (`at_item_end`).
+    let src = "\
+let m = match a { _ => 1 } let k = 2
+let g = x => { x } let h = 3
+state s = match a { _ => 1 } persist
+bar Top {
+  text match open { true => \"a\", _ => \"b\" } Dot
+  padding: match a { _ => 1 } 4
+  on click { x = match a { _ => 1 } y = 2 }
+  if a { text \"a\" } else { text \"b\" }
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let root = tree.root_node();
+    assert_eq!(
+        kinds(root),
+        ["let", "let", "let", "let", "state", "surface"],
+        "{}",
+        root.to_sexp()
+    );
+    let state = root.named_child(4).unwrap();
+    assert!(state.to_sexp().ends_with("))"), "{}", state.to_sexp());
+    assert_eq!(
+        state.child(state.child_count() - 1).unwrap().kind(),
+        "persist"
+    );
+    let body = root
+        .named_child(5)
+        .unwrap()
+        .child_by_field_name("body")
+        .unwrap();
+    assert_eq!(
+        kinds(body),
+        ["element", "element", "prop", "on_handler", "if_tree"],
+        "{}",
+        body.to_sexp()
+    );
+    // `padding: match … 4` keeps both terms, as the parser's group does.
+    let padding = body.named_child(2).unwrap();
+    assert!(
+        padding.to_sexp().contains("(group "),
+        "{}",
+        padding.to_sexp()
+    );
+    let handler = body.named_child(3).unwrap();
+    let stmts = handler.child_by_field_name("body").unwrap();
+    assert_eq!(
+        kinds(stmts),
+        ["assignment", "assignment"],
+        "{}",
+        stmts.to_sexp()
     );
 }
 

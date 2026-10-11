@@ -21,6 +21,11 @@
  *   a name (a prop, a named argument, an event) alias it to `identifier`.
  * - An item that ends with a block needs no separator before the next one
  *   on its line (rule 2), so lists of items come in two kinds of item.
+ *   An item whose production does not end in a block may still end in a
+ *   `}` (a `match` expression, a lambda's block): the scanner lexes `}`
+ *   and, when the next token on the line starts a new item, gives the
+ *   zero-width separator the parser's "the previous token closed a block"
+ *   stands for.
  */
 
 const PREC = {
@@ -93,6 +98,12 @@ module.exports = grammar({
     $._line_break,
     // Never valid: tells the scanner the parser is recovering from an error.
     $._error_sentinel,
+    // A block's closing brace, lexed by the scanner where it is valid so
+    // that it knows when the previous token closed a block (rule 2).
+    '}',
+    // Never produced: valid where a prop value's next space-separated term
+    // may follow, so a term after a `}` there continues the value.
+    $._group_term,
   ],
 
   extras: $ => [/[ \t\r\f\n]/, $.comment],
@@ -381,7 +392,10 @@ module.exports = grammar({
       choice($._expression, $.group),
       repeat(seq(',', choice($._expression, $.group))),
     )),
-    group: $ => prec.left(seq($._expression, repeat1(prec.left($._expression)))),
+    group: $ => prec.left(seq(
+      $._expression,
+      repeat1(prec.left(seq(optional($._group_term), $._expression))),
+    )),
 
     _element_bare: $ => seq(
       field('name', $.identifier),

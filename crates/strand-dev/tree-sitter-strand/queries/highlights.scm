@@ -116,6 +116,11 @@
 
 ; ---- Operators and punctuation --------------------------------------------
 
+; A ternary's `?` and `:` before the operators and delimiters that would
+; take them first.
+(ternary_expression "?" @keyword.conditional.ternary)
+(ternary_expression ":" @keyword.conditional.ternary)
+
 [
   "=" "+=" "-=" "*=" "/="
   "==" "!=" "<" "<=" ">" ">="
@@ -123,9 +128,6 @@
   "+" "-" "*" "/" "%"
   "=>" "->" "<->" "~"
 ] @operator
-
-(ternary_expression ":" @keyword.conditional.ternary)
-(ternary_expression "?" @keyword.conditional.ternary)
 
 [ "(" ")" "[" "]" "{" "}" ] @punctuation.bracket
 [ "," ";" "." ":" ] @punctuation.delimiter

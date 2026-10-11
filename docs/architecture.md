@@ -989,8 +989,9 @@ zero-width span (an insertion) is allowed.
   `src/node-types.json` and `src/tree_sitter/`, whose `parser.h`
   `parser.c` includes; `tree-sitter generate` writes all four and
   `scripts/check-tree-sitter.sh` compares all four), an external scanner
-  (`src/scanner.c`) that decides which line breaks are SEP (SAME_LINE
-  follows from it; TOUCH is `token.immediate`, and the contextual
+  (`src/scanner.c`) that decides where SEP falls: which line breaks are
+  SEP, and the zero-width SEP after an expression's closing `}` (rule 2;
+  SAME_LINE follows from it; TOUCH is `token.immediate`, and the contextual
   keywords are tree-sitter's keyword extraction, aliased to `identifier`
   where a keyword may be a name: decisions.md m5-lsp),
   `queries/{highlights, locals, indents, injections}.scm` and

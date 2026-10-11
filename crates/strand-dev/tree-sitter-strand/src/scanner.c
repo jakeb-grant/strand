@@ -1,5 +1,5 @@
 // The external scanner for `.strand` (docs/grammar.md, "Lines and
-// termination"). It decides one thing: whether a line break ends an item.
+// termination"). It decides one thing: where an item ends without a `;`.
 //
 // The grammar asks for `_line_break` only where an item may end. There a
 // line break is a separator unless the next line (past blank lines and
@@ -13,32 +13,54 @@
 // an item (inside `( … )` and `[ … ]`, after an operator or a `,`), the
 // scanner is not asked and the line break is whitespace (rules 1 and 4).
 // The token is the line break alone, so comments after it stay comments.
+//
+// Rule 2's other half: an item whose last token is a `}` may be followed
+// by the next item on its line. The grammar gives that shape to items
+// that end with a block; an item that ends in an expression may end in a
+// `}` too (`x = match a { _ => 1 } y = 2`, a lambda's block). So the
+// scanner lexes `}` where it is valid and remembers the column after it;
+// asked for a separator right there, with the next token on the same line
+// starting an item rather than continuing this one, it gives a zero-width
+// one. A word that only continues an item (`else`, `persist`, `while`,
+// `key`) is not a new item, nor is a term where a prop value may take
+// another (`margin: match a { _ => 1 } 4`, `_group_term` valid).
 
 #include "tree_sitter/parser.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <stdlib.h>
+#include <string.h>
+
 enum TokenType {
   LINE_BREAK,
   ERROR_SENTINEL,
+  RBRACE,
+  GROUP_TERM,
 };
 
-void *tree_sitter_strand_external_scanner_create(void) { return NULL; }
+// The column just after the last `}` the scanner lexed, plus one (0: none
+// since the last line break or zero-width separator).
+typedef struct {
+  uint32_t brace_end;
+} Scanner;
 
-void tree_sitter_strand_external_scanner_destroy(void *payload) { (void)payload; }
+void *tree_sitter_strand_external_scanner_create(void) { return calloc(1, sizeof(Scanner)); }
+
+void tree_sitter_strand_external_scanner_destroy(void *payload) { free(payload); }
 
 unsigned tree_sitter_strand_external_scanner_serialize(void *payload, char *buffer) {
-  (void)payload;
-  (void)buffer;
-  return 0;
+  Scanner *s = payload;
+  memcpy(buffer, &s->brace_end, sizeof s->brace_end);
+  return sizeof s->brace_end;
 }
 
 void tree_sitter_strand_external_scanner_deserialize(void *payload, const char *buffer,
                                                      unsigned length) {
-  (void)payload;
-  (void)buffer;
-  (void)length;
+  Scanner *s = payload;
+  s->brace_end = 0;
+  if (length == sizeof s->brace_end) memcpy(&s->brace_end, buffer, sizeof s->brace_end);
 }
 
 static bool is_ident_char(int32_t c) {
@@ -103,14 +125,81 @@ static bool continues(TSLexer *lexer) {
   }
 }
 
+static bool is_ident_start(int32_t c) {
+  return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+// Whether the token at the lexer, on the line of a `}` that may end an
+// item, starts the next item. Advances the lexer (the separator is
+// zero-width, so its end is already marked).
+static bool starts_item(TSLexer *lexer, const bool *valid_symbols) {
+  int32_t c = lexer->lookahead;
+  if (is_ident_start(c)) {
+    // Words that only continue an item.
+    static const char *const continuing[] = {"else", "persist", "while", "key"};
+    char word[9];
+    unsigned n = 0;
+    while (is_ident_char(lexer->lookahead)) {
+      if (n < sizeof word - 1) word[n] = (char)lexer->lookahead;
+      n++;
+      lexer->advance(lexer, false);
+    }
+    if (n < sizeof word) {
+      word[n] = 0;
+      for (unsigned i = 0; i < sizeof continuing / sizeof *continuing; i++) {
+        if (strcmp(word, continuing[i]) == 0) return false;
+      }
+    }
+    return !valid_symbols[GROUP_TERM];
+  }
+  switch (c) {
+    case '@':  // an attribute
+    case '#':  // a selector
+    case '$':  // a token entry
+    case '"':
+      return !valid_symbols[GROUP_TERM];
+    case '!':  // a prefix `!`, not `!=`
+      lexer->advance(lexer, false);
+      return lexer->lookahead != '=' && !valid_symbols[GROUP_TERM];
+    default:
+      // Digits (a keyframe offset) too: every other token continues the
+      // item or is a separator of its own.
+      return c >= '0' && c <= '9' && !valid_symbols[GROUP_TERM];
+  }
+}
+
 bool tree_sitter_strand_external_scanner_scan(void *payload, TSLexer *lexer,
                                               const bool *valid_symbols) {
-  (void)payload;
-  if (valid_symbols[ERROR_SENTINEL] || !valid_symbols[LINE_BREAK]) return false;
+  Scanner *s = payload;
+  if (valid_symbols[ERROR_SENTINEL]) return false;
+  // Right after a `}` this scanner lexed: no token since (one would have
+  // moved the column, or been lexed here and cleared it).
+  bool after_brace =
+      s->brace_end != 0 && valid_symbols[LINE_BREAK] && lexer->get_column(lexer) + 1 == s->brace_end;
   while (is_space(lexer->lookahead)) lexer->advance(lexer, true);
-  if (lexer->lookahead != '\n') return false;
-  lexer->advance(lexer, false);
-  lexer->mark_end(lexer);
-  lexer->result_symbol = LINE_BREAK;
-  return !continues(lexer);
+  if (valid_symbols[LINE_BREAK] && lexer->lookahead == '\n') {
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    lexer->result_symbol = LINE_BREAK;
+    s->brace_end = 0;
+    return !continues(lexer);
+  }
+  if (valid_symbols[RBRACE]) {
+    while (is_space(lexer->lookahead) || lexer->lookahead == '\n') lexer->advance(lexer, true);
+    if (lexer->lookahead == '}') {
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+      lexer->result_symbol = RBRACE;
+      s->brace_end = lexer->get_column(lexer) + 1;
+      return true;
+    }
+    // No line break was skipped if one is valid: it was handled above.
+  }
+  if (after_brace) {
+    lexer->mark_end(lexer);
+    lexer->result_symbol = LINE_BREAK;
+    s->brace_end = 0;
+    return starts_item(lexer, valid_symbols);
+  }
+  return false;
 }
