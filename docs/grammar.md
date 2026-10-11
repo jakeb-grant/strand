@@ -4,7 +4,10 @@ This is the complete syntax of `.strand` files. `design.md` is the source of
 truth for what the constructs *mean*; this file fixes how they are *written*.
 `strand-compiler::syntax` implements exactly this grammar, and every code
 block in `design.md` parses under it with zero errors (see
-`crates/strand-compiler/tests/fixtures/`).
+`crates/strand-compiler/tests/fixtures/`). The one exception until M5
+wave 2 is `top_file` (below): it is owner-approved and lands with S-tools'
+parser and schema change; until then the parser reports a top-level `file`
+as a misplaced element.
 
 Semantic restrictions that need names or types (which element kinds exist,
 whether a prop is valid on a node, whether `slot` is inside a component) are
@@ -207,7 +210,7 @@ attribute = AT ( TOUCH '(' args? ')' )?      // @reset
 top_decl  = component | surface | state | let | export | enum_decl | type_decl
           | fn_decl | tokens_decl | use_decl | service | permit | keyframes
           | on_handler | timer | top_file
-top_file  = element                  // only the element named `file`
+top_file  = element                  // only the element named `file` (M5 wave 2)
 ```
 
 There are no imports and no entry file; every `.strand` file in the config
@@ -216,7 +219,8 @@ level are an error ("must be inside a surface or component"); the parser
 reports it and parses them anyway to keep going. The one exception is a
 `file` element (`file "~/.cache/strand/colors.css" { template:
 "colors.css.tmpl" }`), which draws nothing and keeps a file in step with the
-theme (decisions.md m5-tools).
+theme (decisions.md m5-tools; built in M5 wave 2, when the parser starts
+accepting it).
 
 ## Declarations
 
@@ -721,6 +725,7 @@ diagnostic and resynchronises:
 | `service … from dbus system "…" { f: text rw = P }`, `permit exec` | `service`, `permit` |
 | `fn`, `keyframes`, `play` | `fn_decl`, `keyframes`, `play` |
 | `shader "x.wgsl" { … }`, `canvas { draw: (c) => … }` | `element` |
+| `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl" }` (top level or in a tree; M5 wave 2) | `top_file`, `element` |
 | `oklch(from $surface, l: l + 0.12)` | `arg` |
 | `svg "x.svg" { #needle { … } }` | `selector` |
 | `@reset` | `attribute` |

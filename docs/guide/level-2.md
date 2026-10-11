@@ -42,7 +42,8 @@ desktop is set.
   roles. `$fg.muted` is a softer foreground for secondary text.
 - `$surface.alpha(0.72)` is the surface colour at 72% opacity. A name
   followed by `(` is a method: `alpha`, `mix`, `lighten` and `darken`
-  work on any colour token.
+  work on any colour token in a prop. (Level 5's theme templates add a
+  few more that only templates read.)
 
 Tokens are live. When your desktop switches between light and dark, the
 colours glide to the new palette; nothing reloads. Level 5 shows how to

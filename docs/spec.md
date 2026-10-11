@@ -6,7 +6,11 @@ are fixed. The text below is complete for every section but is not yet
 frozen: it is frozen by the last commit of M5's wave 3 (m5-plan,
 "Language spec frozen"). A point marked **(unverified)** is one no
 test or decision was found to pin down; the freeze review settles each
-one.
+one. The theming hub (hue roles, the palette's extras and identity,
+templates, the `file` element and `strand export`; sections 4.1, 9 and
+13) is owner-approved design (decisions.md m5-tools) whose code lands in
+M5 wave 2; this text states it as the language, and the freeze waits on
+that code.
 
 ## 1. Scope and status
 
@@ -87,6 +91,8 @@ guide's ladder test use this table as the list of constructs.
 | literals, units, colours, strings | lexical | 7.1 |
 | `?.`, `??`, ternary, lambdas, calls, named args, `from` args | `expr` | 7.2 |
 | `$token.path`, token methods | `token_path`, `postfix` | 9.2 |
+| `file "path" { template: "t"; run: [argv] }` or `{ text: expr }`, at the top level or in a tree | `top_file`, `element` | 4.1, 9.7 |
+| `{{ expr }}` holes in a template file (not `.strand` syntax) | `expr` | 9.8 |
 
 ## 4. Programs and files
 
@@ -102,7 +108,9 @@ guide's ladder test use this table as the list of constructs.
   that hold `.strand` files, since they are not loaded.
 - There are no imports and no entry file. Every module is loaded.
 - Elements and props at the top level of a file are a load error: they
-  must be inside a surface or a component.
+  must be inside a surface or a component. The one exception is a
+  `file` element (section 9.7), which draws nothing and may stand at the
+  top level as well as in a tree.
 
 ### 4.2 Names across files
 
@@ -132,7 +140,9 @@ guide's ladder test use this table as the list of constructs.
   `component` or surface named like a builtin element (`text`, `row`,
   `popup`, …), since an element is resolved before a component; and a
   `service` named like a builtin service, since two services under one
-  name would be ambiguous.
+  name would be ambiguous. Palette role names, the 13 hue roles
+  included, and the token first segment `palette` are taken too
+  (section 9.3).
 - **Shadowing is loud.** A name in scope that is also a variant of the
   enum a position expects is a load error (the reading would be
   ambiguous); so is a parameter declared again in its body, a file's
@@ -644,7 +654,7 @@ props accept bare numbers. The freeze review confirms the wording.
 
 | Tier | What it holds | Example |
 | --- | --- | --- |
-| Palette | A typed schema of colour roles, mapping one to one onto Material 3 system roles | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline` |
+| Palette | A typed schema of colour roles: Material 3's system roles one to one, plus 13 hue roles; its source's own colours and its identity ride along for templates | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve`, `$palette.name` |
 | Base tokens | Scales and derived roles, written as expressions over the palette | `$space.2`, `$radius.lg`, `$font.ui`, `$motion.spatial`, `$surface.hi` |
 | Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius` |
 
@@ -659,6 +669,14 @@ props accept bare numbers. The freeze review confirms the wording.
   it: `alpha`, `mix`, `lighten`, `darken` (`$surface.alpha(0.72)`,
   `$surface.mix($fg, 8%)`). Adding methods later never breaks a token
   name.
+- **Template-only methods.** In a template hole and in a `file`'s
+  `text:` (the template scope, section 9.8) a token path also has
+  `.light()` and `.dark()` (the token's value in that mode),
+  `.red()`, `.green()` and `.blue()` (integers 0–255 after gamut
+  mapping) and `.opacity()` (0–1). They compose (`$accent.light().red()`).
+  In any other expression they are a load error. `$accent.red` is a
+  token path and `$accent.red()` the channel, so no token name can hide
+  a method.
 - `oklch(from $c, l: l + 0.12)` derives a colour from `$c`'s channels
   (`l`, `c`, `h`, `alpha`).
 - An unknown token is a load error with a did-you-mean.
@@ -674,6 +692,14 @@ props accept bare numbers. The freeze review confirms the wording.
   (`override space { 1: 2px }`), a component token included; a
   misspelt `override` or a misspelt token name is an unknown-name error,
   never a new token.
+- **Palette roots are reserved.** Every palette role is a token root: the
+  Material 3 roles and the 13 hue roles `red`, `orange`, `yellow`,
+  `green`, `cyan`, `blue`, `magenta`, `bright_red`, `bright_yellow`,
+  `bright_green`, `bright_cyan`, `bright_blue`, `bright_magenta`. A
+  token set that defines one without `override` is a load error
+  (palette roles come from `use palette`). The first segment `palette`
+  is reserved for the palette's extras and identity (section 9.5);
+  declaring a token under it is a load error.
 - **`use tokens expr, palette expr`** chooses the active token set and
   palette. Both are expressions, so the choice is live
   (`use tokens prefs.compact ? compact : base, palette scheme`).
@@ -705,6 +731,29 @@ props accept bare numbers. The freeze review confirms the wording.
   Catppuccin, matugen output, W3C design-token JSON). Every importer
   fills the whole palette schema; one table derives any role a source
   lacks.
+- **Hue roles** are palette roles for what has to stay recognisably
+  coloured (terminal colours, success and warning). A source with hues
+  fills them as given and they are never altered: base16 `08`–`0E`
+  (red, orange, yellow, green, cyan, blue, magenta), base24 `12`–`17`
+  (the six brights), Catppuccin's red, peach, yellow, green, teal, blue
+  and pink. A missing hue is the canonical hue harmonised toward the
+  accent (at most 15°), at Material tone 80 in dark and 40 in light; a
+  missing bright is its base hue with OKLCH lightness +0.08 in dark and
+  −0.08 in light. Hue roles are fills, never text/background pairs, so
+  the contrast guard does not touch them. A persisted palette written
+  before the hue roles derives them as it derives any missing role.
+- **Extras and identity.** An importer also keeps every colour of its
+  source, in source order, as `$palette.<name>`: the source's name in
+  snake_case (lower-cased, any other character `_`, a group path's dots
+  kept as segments), so base16's `base0D` is `$palette.base0d`,
+  Catppuccin's `mauve` is `$palette.mauve` and a W3C
+  `color.brand-primary` is `$palette.color.brand_primary`. The palette's
+  identity is read-only: `$palette.name` (the scheme's own name, else
+  the source string), `$palette.source` and `$palette.dark`. A source
+  colour named `name`, `source` or `dark` is kept as `name_`, `source_`
+  or `dark_`. Extras and identity are read only in the template scope
+  (section 9.8), never in a prop; a missing extra without `??` is an
+  error.
 - `system.dark`, `system.accent` and `system.contrast` follow the
   desktop's portal settings live.
 - The last palette is persisted, so boot never shows default colours
@@ -723,6 +772,82 @@ Writing the value a theme reads, a portal change, a new wallpaper,
    swap makes that impossible, the surface snapshots its old frame once
    and crossfades.
 4. What cannot interpolate snaps (section 6.6).
+5. `file` outputs (section 9.7) re-render from the new targets after
+   the tick's diff is sent; they never see a spring's in-between
+   values.
+
+### 9.7 The file element
+
+`file "<path>" { template: "<template path>"; run: [<argv>] }`, or
+`text: <expr>` in place of `template:`, keeps a file outside the config
+in step with the theme.
+
+- **Placement.** It is an element in the one call shape, so it may
+  appear in any tree, where `if`, `match` and `for` gate it and `when`
+  can change its props. It draws nothing, so it may also stand at the
+  top level of a file (grammar.md `top_file`); every other element and
+  every prop at the top level stays a load error (section 4.1).
+- **Props.** Exactly one of `template:` (a path relative to the config
+  directory) and `text:` is given; both or neither is a load error. A
+  `text:` expression has the template scope (section 9.8). The
+  positional path, `template:`, `run:` and any `when` condition are
+  ordinary expressions in the enclosing scope, loop variables included,
+  so a `for` can mount distinct paths. One path mounted from two places
+  (a `file` in a `bar` on every monitor) is an error naming both.
+- **`run`** names a command run after the file is written; its program
+  needs `permit exec` (section 5.6), else it is a load error. `strand
+  check` checks literal template paths, the one-of rule and `run`
+  against `permit exec`.
+- **When it is written.** The content is re-rendered when what it reads
+  changes: dark/light, `use palette`, token and settings edits, a
+  wallpaper once its `Async` palette resolves, `strand set` and `strand
+  clear` overlays, and edits to the template file, which is watched. The
+  file is written only when the rendered bytes differ from what Strand
+  last wrote, and at boot when they differ from the file on disk. The
+  write is atomic, follows symlinks and keeps the file's mode; any error
+  writes nothing and is reported with its location.
+- **`run`** follows 200 ms after that file's last write, at most one
+  run per file with one re-run queued, and is killed with its process
+  group after 10 s. A failure is a notice and a `strand watch` event,
+  and the last good file stays.
+- **Ownership.** Strand never overwrites a file it did not write: an
+  unowned target is a notice offering to replace it, and a `.strand`
+  target is refused. Removing a `file` stops its updates and never
+  deletes the file.
+
+### 9.8 Templates
+
+A template (a `template:` file, or `strand export --template`) is text
+of any format with holes. A `file`'s `text:` is one expression in the
+same scope.
+
+- A hole is `{{ expr }}`: one expression, ending at the first `}}`
+  outside a string literal. A literal `{{` is written `{{ "{{" }}`.
+- **The template scope** is tokens and their methods (the template-only
+  ones of section 9.2 included), the palette's extras and identity
+  (section 9.5), literals, `??`, `join`, and the format functions
+  `hex` and `argb`. Services, `state`, `let` and `fn` are not in scope;
+  naming one is an error saying that a template reads the theme only.
+- **The other mode.** `$x.light()` and `$x.dark()` evaluate the whole
+  theme again with `system.dark` negated, top-level `let`s that reach it
+  included, and read that token there; runtime overlays apply to both
+  modes. When the theme gives the same mode either way, reading the
+  other mode is an error unless `??` replaces it
+  (`{{ $surface.light() ?? $surface }}`).
+- **Values.** `hex(c, alpha: false, hash: true)` writes `#rrggbb`, with
+  `alpha: true` `#rrggbbaa`, with `hash: false` no `#`; a translucent
+  colour given to `hex` without `alpha: true` is an error, never made
+  opaque. `argb(c)` writes `0xaarrggbb`. A bare colour is `hex(c)`. Hex
+  is lowercase. A number is written in shortest form with at most three
+  decimals and no unit (a pixel length is its number, an angle its
+  degrees, a duration its milliseconds); a length that is not pixels is
+  written as Strand writes it (`40%`, `4ch`, `auto`); a string or
+  keyword as is; a bool as `true` or `false`. Any other value (a font,
+  a transition, a shadow list, insets, corners, a paint, a border, a
+  list) is an error naming its type.
+- **Errors** carry the template's file, line and column with a caret,
+  all are reported, and nothing is written on any error. A re-render of
+  the same inputs is byte-identical.
 
 ## 10. Identity, state and reload
 
@@ -873,7 +998,16 @@ people can edit by hand.
   - `strand clear path` removes a runtime overlay;
   - `strand watch [--json]` streams reload events: files, edit class,
     kept and reset cells, timing and diagnostics;
-  - `strand reload [--hard]` rescans now (section 10.4).
+  - `strand reload [--hard]` rescans now (section 10.4);
+  - `strand export json | base24 | --template <file> [--palette
+    <expr>]` writes the theme to stdout, or atomically to `-o <file>`:
+    `json` the palette's identity, its roles, every resolved token and
+    its extras; `base24` a base24 scheme; `--template` a template
+    (section 9.8), against `--palette`'s palette alone when given. It
+    reads the running shell (overlays included), else solves the
+    config's theme offline without writing anything, else fails with
+    "run strand once, or fix the theme". The `export` request is served
+    over the socket only, not D-Bus.
 - Paths use the program's own names: `file.name` for exports
   (`launcher.open`); `file.settings.field` for a settings field, or
   `settings.field` when exactly one file declares settings with that

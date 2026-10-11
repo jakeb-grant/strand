@@ -56,7 +56,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("new", "scaffold a working shell", "M5"),
     (
         "export",
-        "write the palette for gtk, kitty or hyprland",
+        "write the palette: json | base24 | --template <file> (M5 wave 2)",
         "M5",
     ),
     (

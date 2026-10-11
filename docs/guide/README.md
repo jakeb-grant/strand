@@ -15,7 +15,7 @@ any level, everything you have written still works.
 | 2 | `$tokens`, `component`, `for`, `when`, `on click` | Workspace dots, tray | [level-2.md](level-2.md) |
 | 3 | `state`, `<->`, `if`, `popup`, `enter` | Clock with calendar, volume slider | [level-3.md](level-3.md) |
 | 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher, lock screen | [level-4.md](level-4.md) |
-| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders | Control centre, dock, custom services | [level-5.md](level-5.md) |
+| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders, `file` | Control centre, dock, custom services | [level-5.md](level-5.md) |
 
 ## Every construct and its level
 

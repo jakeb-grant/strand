@@ -8,7 +8,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Thread | Crates | Owns | Never does |
 | --- | --- | --- | --- |
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
-| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, M5's `get \| set \| toggle \| watch \| call`) is a source on this loop | Touch Wayland or pixels |
+| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `report`, `inspect.*`, `reset{node}`, and from M5 wave 2 `export`) is a source on this loop, as is the request channel from the D-Bus front end; from M5 wave 2 it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
 | Compiler worker (`strand-compile`) | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker (`strand-text`) | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Image worker (`strand-image`, one per renderer; one that cannot start stops the shell) | `strand-render` (`image.rs`, `media/`) | Image and icon decodes (an animated GIF, APNG or WebP's player kept between its frames), the `svg` and `lottie` file jobs (`ImageStore::load_file`: read through a bounded read and parsed here, a Lottie's assets with it), and `set_idle_hook`'s allocator trim; each result pings the render loop | Block render: a frame draws nothing, or a stand-in of the same image at another size, until the decode arrives; read a file without a size bound |
@@ -19,6 +19,8 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check blocks here in PAM, up to the client's timeout, and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
 | GPU (M4; `strand-gpu`, started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 | Theme quantiser (`strand-quantise`, one per `Quantiser`, started at the first wallpaper palette asked for) | `strand-theme` (`image.rs`), driven from `strand-compiler`'s `vm/theme.rs` | Wallpaper decodes and palette quantisation off the logic thread, with the quantise cache; a short-lived `strand-quantise-grace` sleeper per torn wallpaper wakes the owner when its grace ends | Run on the logic tick: logic polls for results and keeps the last palette meanwhile |
+| Token overlay writer (`strand-tokens`, M5; started on the first write, ends when idle) | `strand-compiler` (`instantiate/overlay.rs`) | Atomic writes of `$XDG_STATE_HOME/strand/tokens.toml` (temp file, `fsync`, rename, directory `fsync`), the newest queued text winning; a bounded wait for the last write at exit | Run on the logic tick or block logic (a failure comes back as settings' `WriteFailed` notice); it is not the persist IO thread |
+| File output writer (`strand-files`, M5 wave 2, S-tools; started with the first mounted `file` output, ends with the shell) | the binary's output host (`run/outputs.rs`) | Writes the bytes logic rendered for each `file` output (atomic temp file and rename, following symlinks, keeping the mode; latest bytes per path win), keeps the manifest under `$XDG_STATE_HOME/strand/files`, runs `run:` with its 200 ms trailing debounce, one run per file plus one queued and the 10 s timeout that kills its process group; each outcome goes back to logic over a channel logic polls, so a failure is a notice and a `strand watch` event through `Shell::broadcast` | Render a template, touch the scene or Wayland, or block logic; it has no channel to the main thread |
 | State writer (`strand-state-write`, one per `FileWriter`: the logic thread's for the portal's last values, the theme VM's for the last palette, each started on first use and idle until a write) | `strand-theme` (`writer.rs`) | Atomic writes of the last palette and the portal's last settings, batched per path | Block logic (a write is queued and returns at once; a failure is a WARN) |
 | Introspection asks (`strand-introspect`, one short-lived thread per uncached ask; in `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`), used by `strand-dev`'s workspace (`strand check` and the loader ask on their own thread and wait) | One D-Bus introspection call, its answer remembered for `TTL`, then `done` | Block the LSP's analysis: it gets the remembered answer, or none, at once |
 | Short-lived waiters | the binary's `overlay.rs` (`strand-editor`), `strand-services`'s `custom.rs` (`strand-kill`) | `strand-editor`: waits on the `$EDITOR` the overlay's click opened, so it is reaped; `strand-kill`: SIGKILLs a dropped `permit exec` process group after its SIGTERM grace | Anything else: each ends with its one wait |
@@ -669,6 +671,14 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     `inspect.flash{on}`;
   - the existing `reset` gains a `{node}` form, "reset subtree"
     (`Instance::reset_subtree`), `Request::ResetNode`.
+  - from M5 wave 2, the theming hub's `export{kind, template?,
+    palette?}` (`Request::Export`; `kind` is `json`, `base24` or
+    `template`; `template` carries the `--template` file and `palette`
+    the `--palette` expression; S-tools fixes their wire spelling and
+    records it, as S-inspect did for node ids), a socket request only: the D-Bus front end has
+    no `Export` method (decisions.md m5-tools, "the CLI"). Its
+    `parse_m5` arm, `Shell::request` arm and handler
+    (`run/request/export.rs`) are S-tools' (m5-plan, Streams).
   - On the wire a node id (`inspect.node{id}`, `inspect.highlight{id}`,
     `reset{node}`) and `inspect.dump`'s `surface` are opaque strings
     the inspector's own answers spell (S-inspect picks the spelling);
@@ -793,16 +803,33 @@ cost `.text` for nothing; the other reuses it.
 
 **`strand-compiler` `Instance` inspection (new; read-only, never read by
 evaluation).**
-- `identity(node) -> Identity { instance_path, key, id, sibling_index,
-  scope }`;
+- `identity(node) -> Option<Identity { instance_path, key, id,
+  sibling_index, scope }>` (`None` for a node the instance does not
+  hold);
 - `cells_of(node) -> Vec<CellInfo { path, kept, persisted, layer }>`,
   where `layer` is the settings layer or the token overlay a value came
   from (the three kept badges: kept over a changed default, persisted,
   from an overlay);
-- `reset_subtree(node)`: `strand reload --hard`'s scope limited to the
-  subtree; settings are untouched;
-- `source_hash(file)`: the hash of the text the running program was
-  compiled from, which write-back compares against.
+- `reset_subtree(node) -> Result<usize, Error>` (the number of cells
+  reset): `strand reload --hard`'s scope limited to the subtree;
+  settings are untouched;
+- `source_hash(file) -> Option<String>`: the hash of the text the
+  running program was compiled from, which write-back compares against;
+- `inspect_node(node) -> Option<Json>` and `dump(root: Option<NodeId>)
+  -> Option<Json>`: the inspector's answers. `dump` takes a node (a
+  surface root) or `None` for every surface, and answers `{"nodes":
+  [...], "files": {name: blake3}}` in tree order, each node with `id`,
+  `kind`, `parent`, `origin` (file, 1-based line and column, byte span),
+  `identity`, `props` (as text), `cells` and `tokens` (each read token's
+  provenance chain); `inspect_node` answers the same shape for one node
+  (decisions.md m5-inspect, "node ids on the wire");
+- the free functions `inspect::node_ref(NodeId) -> String` and
+  `inspect::parse_node_ref(&str) -> Option<NodeId>`: a node on the wire
+  is `index.generation` (`12.0`), which `inspect.node{id}`,
+  `inspect.highlight{id}` and `reset{node}` read back; a bare index
+  would name a reused slot's new node. `inspect.dump{surface}` carries
+  the surface root's node ref, and the wave-2 arm passes that node to
+  `dump`.
 - A dump redacts password inputs (the lock's `Secrets` rule above:
   current and the newest four replaced values, learned from each tick's
   sent props and from every widget write, any 4-byte run, lower-cased).
@@ -816,9 +843,13 @@ off the logic thread by the overlay's own writer thread, `strand-tokens`:
 temp file, `fsync`, rename, directory `fsync`, the newest text queued
 winning; a failed write is settings' `WriteFailed` notice; not the
 persist IO thread, which has no raw-file write; decisions.md m5-ipc),
-and takes the token swap path (design.md, "Reload"). Clearing an
-unknown token is refused with the closest name, as setting one is; a
-known token without an overlay clears to `false`. A `tokens.toml` that
+and takes the token swap path (design.md, "Reload"). Clearing a
+name that is neither a token of the current build nor held by an
+overlay or a `tokens.toml` entry is refused with the closest name, as
+setting one is; an overlay or a `tokens.toml` entry for a name the
+build lacks (a token since removed, or an entry that is not a value) is
+cleared (`cleared: true`); a known token without an overlay answers
+`cleared: false` (decisions.md m5-ipc, `clear` and review round 2). A `tokens.toml` that
 cannot be read is never written over: `set` and `clear` on a token are
 refused until it can be. One edited by hand while the shell runs is
 read again by the next `set` or `clear` before it is written, so the
@@ -1028,12 +1059,15 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   rest exactly as `strand` does, against its own schema. This replaces
   0a's "`main.rs` keeps `main` and the COMMANDS table". The move is one
   pure-move commit at the wave 1 → 2 boundary, after S-ipc's CLI arms
-  merge and before S-tools adds `new`, `export` and `report`; S-plugins
+  merge and before S-tools wires `new`, `export` and `report`; S-plugins
   writes it and the integrator merges it. Ownership after the move:
   `entry.rs`'s COMMANDS table and dispatch arms are a shared dispatch
   point, like `Shell::request`'s arms; S-ipc keeps the COMMANDS table
-  (its rows and its D-Bus arms), S-tools adds its three rows, each as
-  one-line entries the integrator merges. S-plugins owns the builder in
+  and its own rows (the D-Bus front end is `strand-services`'
+  `ipc_bus.rs`, not this table), and S-tools changes the three rows
+  that already name its commands (`new`, `export`, `report`, today
+  answering "not implemented yet (M5)") and adds their dispatch arms,
+  each as one-line entries the integrator merges. S-plugins owns the builder in
   `src/plugin.rs` (registration, `--write-schemas`, the setup check)
   and the single call from `entry.rs` into it, not the table.
 - **Registration.** `service::<S>()` appends a private `Registration {
@@ -1204,17 +1238,24 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   stubs, the `ToMain`/`ToLogic` snapshot and inspector messages,
   `OVERLAY_ORIGIN`, `Suggestion::title` and `tests/m5.rs`.
 - **Landed by their streams, not in 0b:** `Instance::identity`,
-  `cells_of`, `reset_subtree`, `source_hash` and
-  `TokenTable::provenance` (S-inspect), the token overlay layer (S-ipc),
-  `activation_token` and the input context's route (S-platform),
-  `Shell::builder` (S-plugins). Each then belongs to the stream
+  `cells_of`, `reset_subtree`, `source_hash`, `inspect_node`, `dump`,
+  `inspect::node_ref`/`parse_node_ref` and `TokenTable::provenance`
+  (S-inspect, wave 1), the token overlay layer and the `get`,
+  `toggle`, `call` and `clear` commands (S-ipc, wave 1);
+  `activation_token` and the input context's route (S-platform, wave
+  2), `Shell::builder` (S-plugins, wave 2), and the theming hub's
+  pieces (S-palette and S-tools, wave 2; "The theming hub" names each
+  owner). Each then belongs to the stream
   `docs/m5-plan.md`'s "Streams" table names.
 - **Shared dispatch points, merged by the integrator:** each stream adds
-  only its own one-line entries to `strand_core::ipc::parse`'s match,
-  `Shell::request`'s match (`run/request/mod.rs`), `ToMain`/`ToLogic`
-  and `Shell::handle` (`run/mod.rs`, `run/shell.rs`), `Live`'s fields,
-  `lib.rs`'s `mod` list and `strand::cli` re-exports, and
-  `ipc/mod.rs`'s re-exports; the integrator merges them.
+  only its own one-line entries to `strand_core::ipc::parse`'s and
+  `parse_m5`'s matches, `Shell::request`'s match
+  (`run/request/mod.rs`), `ToMain`/`ToLogic` and `Shell::handle`
+  (`run/mod.rs`, `run/shell.rs`), `Live`'s fields, `lib.rs`'s `mod`
+  list and `strand::cli` re-exports, `ipc/mod.rs`'s re-exports, and,
+  after the wave 1 → 2 move, `src/entry.rs`'s COMMANDS rows and
+  dispatch arms (the CLI table; until the move, `main.rs`'s); the
+  integrator merges them.
 
 ## Contracts
 
@@ -1993,7 +2034,8 @@ Palettes, used by the compiler's VM (`material()`, `import()`) and by
 the instance's built-in theme; render reaches it only through the token
 table.
 
-- `Role` (49 Material 3 system roles, the fixed accents included (62 with the proposed hue roles below),
+- `Role` (49 Material 3 system roles, the fixed accents included; 62
+  once S-palette adds the hue roles in "The theming hub" below, M5 wave 2),
   `name()` / `m3()`), `Palette` (every role a colour, `is_dark()`,
   `source()` / `with_source()` (provenance, not compared),
   `insert_into(&mut TokenTable)` writes the roots, their origins and
@@ -2034,12 +2076,17 @@ table.
 - `contrast::{PAIRS, guard, ratio, solve}`, `defaults::base_tokens()`
   (design.md's `tokens base`), `gamut::map`.
 
-#### Proposed: the theming hub (m5-tools, owner-approved 2026-10-11)
+#### The theming hub (m5-tools, owner-approved 2026-10-11; built in M5 wave 2)
 
-> **Proposed text for the integrator; not in force until merged.** The
-> design and its reasons are in decisions.md m5-tools ("the
-> owner-approved theming design" and the paragraphs after it). Each
-> bullet names the crate that would own it.
+> **Interface text in force; the code lands in M5 wave 2.** The owner
+> approved the design on 2026-10-11, and the integrator took this text
+> into force at wave 1's integration (decisions.md m5-integration-w1).
+> Nothing below is built yet: the parser still reports a top-level
+> `file` as `syntax::misplaced`, and `Role::COUNT` is 49. Two streams
+> build it (m5-plan, Streams): **S-palette** owns the strand-theme and
+> strand-scene parts, **S-tools** the strand-compiler, strand-core and
+> binary parts. The design and its reasons are in decisions.md m5-tools
+> ("the owner-approved theming design" and the paragraphs after it).
 
 - **strand-theme.**
   - `Role` gains 13 hue roles after the 49 Material 3 roles: `Red`,
@@ -2068,13 +2115,17 @@ table.
     `base24` follows the slot table in decisions.md m5-tools ("the
     CLI"), and `json` the value rules in "template expressions and
     formats".
-  - Owner: a wave-2 palette owner beside S-tools.
-- **strand-scene.** `TokenTable` gains the hue roots and reserves
+  - Owner: S-palette (hue roles, `Role::COUNT` 62, extras, identity,
+    the persisted file's `name` and `extra` lines, the harmonised
+    derivation, every importer's extras, and the `json` and `base24`
+    writers).
+- **strand-scene** (S-palette). `TokenTable` gains the hue roots and reserves
   `palette` as a first segment for extras and identity (read only by
   templates for now). No new `TokenMethod`: the template-only methods
   (`.red()`, `.green()`, `.blue()`, `.opacity()`, `.light()`,
   `.dark()`) never reach the render thread.
-- **strand-compiler.**
+- **strand-compiler** (S-tools; the parser's `top_file` arm is a small
+  change S-lsp reviews, since the tree-sitter grammar follows it).
   - `Instance::palette(rt) -> Result<Palette, Error>` evaluates
     `use palette` with no fallback (built-in only when the program
     has none); `token_table` swallows a failing palette
@@ -2113,8 +2164,10 @@ table.
     `.blue()`, `.opacity()`, `.light()` and `.dark()`; a flag saying
     whether it reads the other mode).
     `Template::render(&self, current: &TokenTable, other:
-    Option<&TokenTable>) -> Result<Vec<u8>, Vec<Diagnostic>>` is
-    `Send` and runs off the logic thread.
+    Option<&TokenTable>) -> Result<Vec<u8>, Vec<Diagnostic>>` is pure
+    and `Send`; the output host calls it on the logic thread after the
+    tick's diff is sent, over the tick's frozen token tables (decisions.md
+    m5-integration-w1).
   - The `file` element in the schema, and at the top level in the
     parser (grammar.md `top_file`; every other top-level element keeps
     `syntax::misplaced`): one of `template:`/`text:`, `run:` checked
@@ -2125,30 +2178,45 @@ table.
     output's memo changes, after the tick's diff. An output's memo reads
     `other_mode` when its template does, so an edit that changes only
     the other mode re-renders it.
-- **strand-core.** A read-only `PersistStore` (reads cells, never
+- **strand-core** (S-tools). A read-only `PersistStore` (reads cells, never
   writes) for the offline mount.
-- **strand (binary).**
+- **strand (binary)** (S-tools).
   - `strand export json | base24 | --template <file> [--palette
     <expr>] [-o <file>]` (`src/export.rs`).
-  - An `export` IPC request in the socket's COMMANDS table (S-ipc's
-    area; no D-Bus method) that renders against the live table,
-    overlays included, on the logic thread after the tick's diff,
-    holding `Instance::other_mode` while it builds its reply when its
-    template reads the other mode; the offline mount is the fallback.
-  - An output host on the main side renders `Update.outputs` off the
-    logic thread and writes through a `FileWriter`. It follows
-    symlinks and keeps the file's mode. Strand's own writes are
-    registered with the watcher in advance.
-  - It keeps a manifest of written files and their hashes in
+  - The `export` IPC request: `Request::Export` in `strand_core::ipc`
+    with its `parse_m5` arm, its `Shell::request` arm and its handler,
+    `run/request/export.rs` (0a's v1 command list names it). It is a
+    socket request only (no D-Bus method). It renders against the live
+    table, overlays included, on the logic thread after the tick's
+    diff, holding `Instance::other_mode` while it builds its reply when
+    its template reads the other mode; the CLI falls back to the
+    offline mount when no shell answers.
+  - The output host (`run/outputs.rs`) lives on the logic side. After
+    the tick's diff is sent, logic takes `Update.outputs` and renders
+    each changed output from its compiled template IR (or `text:`
+    value) over the tick's frozen token tables, current and, when the
+    template reads it, the other mode; a render error is that output's
+    notice and writes nothing. The rendered bytes go to the file output
+    writer thread (`strand-files`, Threads), so logic never waits on a
+    disk or a child process. No main-side channel is added: main never
+    sees an output.
+  - The writer thread writes atomically (temp file and rename,
+    following symlinks and keeping the file's mode; the latest bytes per
+    path win), and Strand's own writes are registered with the watcher
+    in advance. It keeps a manifest of written files and their hashes in
     `$XDG_STATE_HOME/strand/files`, and refuses unowned and `.strand`
     targets.
   - It runs `run:` with a 200 ms trailing debounce, at most one run
     per file plus one queued, and a 10 s timeout that kills the
-    process group. A failure becomes an overlay notice and a
-    `strand watch` event.
-  - main.rs's `export` help line changes from "write the palette for
-    gtk, kitty or hyprland" to "write the palette as JSON, base24 or
-    through a template".
+    process group. Each outcome goes back to logic over a channel the
+    logic loop polls: a failure (a refused target, a failed write, a
+    failing `run` with the last 4 KiB of its stderr) becomes an overlay
+    notice and a `strand watch` event through `Shell::broadcast`, and
+    the last good file stays.
+  - The CLI's `export` row (in `src/entry.rs` after the wave 1 → 2 move)
+    reads "write the palette: json | base24 | --template <file> (M5 wave
+    2)" since wave 1's integration; S-tools drops the "(M5 wave 2)"
+    note and wires the row when the command lands.
 
 ### `strand-core`
 
