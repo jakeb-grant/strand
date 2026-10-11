@@ -1853,48 +1853,60 @@ table.
   - `Palette` gains `extras() -> &[(String, Color)]` (source order,
     snake_case dotted names; identity names get a trailing `_`) and
     `name()`, beside `source()` and `is_dark()`.
-  - `to_text`/`from_text` write and read `extra <name> #rrggbbaa`
-    lines; older files derive the hues.
+  - `to_text`/`from_text` write and read a `name <text>` line and
+    `extra <name> #rrggbbaa` lines; older files derive the hues and
+    read the name as the source string.
   - Each importer fills extras (Catppuccin's 26, base16/base24's
     `baseXX`, matugen's non-role keys, W3C colour tokens,
     `source_color` for material).
   - `export::{json(&Palette, &TokenTable) -> String,
-    base24(&Palette) -> String}` are pure writers.
+    base24(&Palette) -> String}` are pure writers; `base24` follows
+    the slot table in decisions.md m5-tools ("the CLI").
   - Owner: a wave-2 palette owner beside S-tools.
 - **strand-scene.** `TokenTable` gains the hue roots and reserves
   `palette` as a first segment for extras and identity (read only by
   templates for now). No new `TokenMethod`: the template-only methods
-  (`.light()`, `.dark()`) and channel fields never reach the render
-  thread.
+  (`.red()`, `.green()`, `.blue()`, `.opacity()`, `.light()`,
+  `.dark()`) never reach the render thread.
 - **strand-compiler.**
   - `Instance::palette(rt) -> Result<Palette, Error>` evaluates
     `use palette` with no fallback (built-in only when the program
     has none); `token_table` swallows a failing palette
     (`instantiate/mod.rs` 467–494).
   - Mounting with a pinned palette root (the persisted palette, for
-    the offline solve).
+    the offline mount).
+  - `Instance::token_table_in(rt, dark: bool) -> Result<TokenTable,
+    Error>`: the theme's `use palette` and `use tokens` evaluated with
+    `system.dark` set to `dark`, as a scratch evaluation that writes no
+    cell and keeps no node, with no fallback. It runs on the logic
+    thread, after the tick's diff, only for outputs whose template
+    reads `.light()` or `.dark()`.
   - A `pub` path for the persisted palette (today `LAST_PALETTE` is
     private in `vm/theme.rs`).
   - `template::Template::compile(file, src, scope) -> Result<Template,
     Vec<Diagnostic>>` produces a pure IR (text runs and compiled holes;
-    token-only scope; the longest-token-prefix rule for `.r/.g/.b/.a`).
+    token-only scope; the template-only methods `.red()`, `.green()`,
+    `.blue()`, `.opacity()`, `.light()` and `.dark()`; a flag saying
+    whether it reads the other mode).
     `Template::render(&self, current: &TokenTable, other:
     Option<&TokenTable>) -> Result<Vec<u8>, Vec<Diagnostic>>` is
     `Send` and runs off the logic thread.
-  - The `file` element in the schema: allowed at the top level, one of
-    `template:`/`text:`, `run:` checked against `permit exec`.
+  - The `file` element in the schema, and at the top level in the
+    parser (grammar.md `top_file`; every other top-level element keeps
+    `syntax::misplaced`): one of `template:`/`text:`, `run:` checked
+    against `permit exec`.
   - `Update` gains `outputs: Vec<OutputChange>`: a path plus the
-    compiled template or text and the token tables (current, other
-    mode), produced only when an output's memo changes, after the
-    tick's diff.
+    compiled template or text and the token tables (current, and the
+    other mode only when the template reads it), produced only when an
+    output's memo changes, after the tick's diff.
 - **strand-core.** A read-only `PersistStore` (reads cells, never
   writes) for the offline mount.
 - **strand (binary).**
   - `strand export json | base24 | --template <file> [--palette
     <expr>] [-o <file>]` (`src/export.rs`).
-  - An `export` IPC request in the COMMANDS table (S-ipc's area) that
-    renders against the live table, overlays included; the offline
-    path is the fallback.
+  - An `export` IPC request in the socket's COMMANDS table (S-ipc's
+    area; no D-Bus method) that renders against the live table,
+    overlays included; the offline mount is the fallback.
   - An output host on the main side renders `Update.outputs` off the
     logic thread and writes through a `FileWriter`. It follows
     symlinks and keeps the file's mode. Strand's own writes are

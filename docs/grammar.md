@@ -206,13 +206,17 @@ top_item  = attribute* top_decl
 attribute = AT ( TOUCH '(' args? ')' )?      // @reset
 top_decl  = component | surface | state | let | export | enum_decl | type_decl
           | fn_decl | tokens_decl | use_decl | service | permit | keyframes
-          | on_handler | timer
+          | on_handler | timer | top_file
+top_file  = element                  // only the element named `file`
 ```
 
 There are no imports and no entry file; every `.strand` file in the config
 directory is one module of the same program. Elements and props at the top
 level are an error ("must be inside a surface or component"); the parser
-reports it and parses them anyway to keep going.
+reports it and parses them anyway to keep going. The one exception is a
+`file` element (`file "~/.cache/strand/colors.css" { template:
+"colors.css.tmpl" }`), which draws nothing and keeps a file in step with the
+theme (decisions.md m5-tools).
 
 ## Declarations
 

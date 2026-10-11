@@ -328,7 +328,7 @@ Because `on change` never fires at boot, on a sink switch or on reload, the OSD 
 - **Shaders:** `shader "aurora.wgsl" { u_speed: 0.4; u_tint: $accent }`, checked with naga, hot-reloaded.
 - **Canvas:** `canvas { draw: (c) => … }` for charts and visualisers, with the same paint API the renderer uses.
 - **Custom services:** `service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`, checked against introspection. Or a Rust crate with `#[service]`.
-- **IPC and CLI:** `strand get | set | toggle | watch | call | export` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0).
+- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0). `strand export` asks the running shell over the socket.
 
 ## Reactivity and state model
 
