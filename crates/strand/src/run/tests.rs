@@ -351,7 +351,6 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
             .unwrap()
     };
     for (req, cmd) in [
-        (ipc::Request::Get { path: "a.b".into() }, "get"),
         (ipc::Request::Report, "report"),
         (ipc::Request::InspectFlash { on: true }, "inspect.flash"),
         (ipc::Request::Watch, "watch"),
@@ -390,6 +389,13 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
         json!({"ok": true})
     );
     m.until("the set label", |s| s.texts() == ["yo"]);
+    // (S-ipc) `get` is served from the channel too.
+    assert_eq!(
+        ask(ipc::Request::Get {
+            path: "bar.label".into()
+        }),
+        json!({"ok": true, "value": "yo", "text": "yo", "layer": null})
+    );
     let ans = ask(ipc::Request::Set {
         path: "nowhere.x".into(),
         value: "1".into(),
@@ -642,22 +648,31 @@ fn saves_reload_live_with_state_kept() {
     // (M5 0b) The commands M5 adds are answered as unknown until their
     // streams serve them, M4's answer word for word; the connection
     // stays open (the reload below uses it).
-    for (req, cmd) in [
-        (ipc::Request::Get { path: "a.b".into() }, "get"),
-        (ipc::Request::Toggle { path: "a.b".into() }, "toggle"),
+    // S-ipc serves `get`, `toggle`, `call` and `clear`: a path this
+    // shell lacks is refused on its merits, and the connection stays.
+    for (req, why) in [
+        (ipc::Request::Get { path: "a.b".into() }, "a.b"),
+        (ipc::Request::Toggle { path: "a.b".into() }, "a.b"),
         (
             ipc::Request::Call {
-                target: "notifications.clear".into(),
+                target: "notifications.claer".into(),
                 args: vec![],
             },
-            "call",
+            "did you mean `clear`?",
         ),
         (
             ipc::Request::Clear {
-                path: "$accent".into(),
+                path: "$nothing".into(),
             },
-            "clear",
+            "no token `$nothing`",
         ),
+    ] {
+        let ans = ipc::request(&mut client, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(ans["ok"], false, "{req:?}");
+        let said = ans["error"].as_str().unwrap();
+        assert!(said.contains(why), "{req:?}: {said}");
+    }
+    for (req, cmd) in [
         (ipc::Request::Report, "report"),
         (ipc::Request::InspectPick { on: true }, "inspect.pick"),
         (

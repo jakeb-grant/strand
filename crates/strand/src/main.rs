@@ -32,14 +32,27 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "rescan now (--hard drops non-persisted state)",
         "M1",
     ),
-    ("get", "read an exported value", "M5"),
+    (
+        "get",
+        "read an exported value, a settings field or a token ('$accent') (--json)",
+        "M5",
+    ),
     (
         "set",
-        "write an exported value (strand set theme.look mocha)",
+        "write an exported value (strand set theme.look mocha; '$accent' overlays a token)",
         "M2",
     ),
     ("toggle", "flip an exported boolean", "M5"),
-    ("call", "invoke a service action", "M5"),
+    (
+        "call",
+        "invoke a service action (strand call notifications.clear) (--json)",
+        "M5",
+    ),
+    (
+        "clear",
+        "drop a runtime overlay (strand clear '$accent')",
+        "M5",
+    ),
     ("new", "scaffold a working shell", "M5"),
     (
         "export",
@@ -126,6 +139,27 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         } else {
             ExitCode::FAILURE
+        };
+    }
+    // The socket's one-shot commands: text on stdout, why on stderr.
+    type OneShot = fn(&[String]) -> Result<String, String>;
+    let ipc: Option<OneShot> = match args.first().map(String::as_str) {
+        Some("get") => Some(cli::get_cli),
+        Some("toggle") => Some(cli::toggle_cli),
+        Some("call") => Some(cli::call_cli),
+        Some("clear") => Some(cli::clear_cli),
+        _ => None,
+    };
+    if let Some(command) = ipc {
+        return match command(&args[1..]) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("strand {}: {e}", args[0]);
+                ExitCode::FAILURE
+            }
         };
     }
     match args.first().map(String::as_str) {
@@ -242,8 +276,8 @@ mod tests {
     #[test]
     fn known_commands_name_their_milestone() {
         assert_eq!(
-            run(&["get"]).unwrap_err(),
-            "strand get: not implemented yet (M5)"
+            run(&["new"]).unwrap_err(),
+            "strand new: not implemented yet (M5)"
         );
     }
 

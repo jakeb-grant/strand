@@ -32,20 +32,36 @@
 //! "Threads"): every socket is non-blocking, a client that does not read
 //! its events is dropped once 1 MiB is queued for it.
 //!
+//! - (M5, S-ipc) `{"cmd": "get", "path": …}`, `toggle{path}`,
+//!   `call{target, args}` and `clear{path}`: `strand get`, `toggle`,
+//!   `call` and `clear` ([`query`], [`call`], [`overlay`] say what each
+//!   answers); a path with the token spelling (`$accent`) names the
+//!   token overlay layer for `set`, `get` and `clear`.
+//!
 //! The protocol's types and codec are `strand_core::ipc`'s (shared with
 //! strand-services' D-Bus front end and `strand-dev inspect`), and so is
 //! the socket's path (`strand_core::ipc::socket_path`); here are
-//! the socket's server ([`server`]), the CLI's client ([`cli`]) and the
-//! events as text ([`describe`]).
+//! the socket's server ([`server`]), the CLI's client ([`cli`], and
+//! [`query`], [`call`] and [`overlay`] for M5's commands) and the events
+//! as text ([`describe`]).
 
+mod call;
 mod cli;
 mod describe;
+mod overlay;
+mod query;
 mod server;
 
+pub use call::call_cli;
+pub(crate) use call::resolve as resolve_call;
 #[cfg(test)]
 pub use cli::request;
 pub use cli::{reload_cli, set_cli, watch_cli};
 pub use describe::describe;
+pub use overlay::clear_cli;
+pub(crate) use overlay::token_path;
+pub use query::{get_cli, toggle_cli};
+pub(crate) use query::{layer_name, token_json, token_text, value_json};
 pub use server::{ClientId, HasReady, Ready, Server};
 pub use strand_core::ipc::{
     EventSink, IpcRequests, MAX_LINE, Request, VERSION, channel, encode, parse, socket_path,

@@ -1,16 +1,26 @@
-//! `strand set <path> <value>` (S-ipc extends it to token overlays).
+//! `strand set <path> <value>`: an exported state or settings field, a
+//! service's `rw` field, or (S-ipc, m5-owner Q10) with the token
+//! spelling, `strand set '$accent' '#ff8800'`, the token overlay layer.
 
 use serde_json::json;
 
 use super::{Caller, Shell};
 
 impl Shell {
+    #[cold]
+    #[inline(never)]
     pub(super) fn set_request(&mut self, from: Caller, path: &str, value: &str) {
         // A service's `rw` field (`brightness.level +5%`) goes through the
-        // service host; everything else is state or settings.
+        // service host; a token (`$accent`) to its overlay; everything
+        // else is state or settings.
         let rt = self.inst.runtime();
-        let exported = self.inst.get(path).is_ok();
-        let r = if !exported && crate::services::is_service_path(path) {
+        let token = crate::ipc::token_path(path);
+        let exported = token.is_none() && self.inst.get(path).is_ok();
+        let r = if let Some(token) = token {
+            self.inst
+                .set_token_overlay(token, value)
+                .map_err(|e| e.to_string())
+        } else if !exported && crate::services::is_service_path(path) {
             match &self.real {
                 Some(real) => real.set_text(rt, path, value),
                 None => crate::services::set_text(

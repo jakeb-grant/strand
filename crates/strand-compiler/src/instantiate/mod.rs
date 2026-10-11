@@ -28,6 +28,7 @@ pub mod inspect;
 mod lock;
 mod mirror;
 mod mount;
+mod overlay;
 mod reload;
 
 use std::cell::{Cell, RefCell};
@@ -50,6 +51,7 @@ pub use emit::PropOut;
 pub use lock::{IGNORED_CLOSE, SessionLock};
 pub use mirror::{SceneMirror, show, show_expr};
 pub use mount::{DEFAULT_LIST_WINDOW, MAX_LIST_WINDOW};
+pub use overlay::{TOKENS_FILE, TokenOverlay};
 
 use crate::hir::{DefId, DefKind};
 use crate::lower::{Node, Program};
@@ -537,6 +539,7 @@ impl Ctx {
                 }
             }
         }
+        self.token_overlay(rt, &prog, &mut t);
         Ok(t)
     }
 }
@@ -630,6 +633,9 @@ pub struct Storage {
     pub settings: Option<strand_core::SettingsStore>,
     /// The config directory `from "prefs.toml"` is relative to.
     pub config_dir: Option<PathBuf>,
+    /// (M5) The token overlay (`strand set '$accent' …`), in
+    /// `tokens.toml` beside the persist store's directory.
+    pub tokens: TokenOverlay,
 }
 
 impl Storage {
@@ -644,6 +650,7 @@ impl Storage {
         let persist = strand_core::PersistStore::from_env()?;
         Ok(Self {
             settings: Some(persist.settings()),
+            tokens: tokens_beside(&persist),
             persist: Some(persist),
             config_dir: Some(config_dir.into()),
         })
@@ -656,6 +663,7 @@ impl Storage {
         let persist = strand_core::PersistStore::new(state_dir.into().join("persist"));
         Self {
             settings: Some(persist.settings()),
+            tokens: tokens_beside(&persist),
             persist: Some(persist),
             config_dir: Some(config_dir.into()),
         }
@@ -680,6 +688,13 @@ impl Storage {
         }
         self.config_dir.as_ref().map(|d| d.join(p))
     }
+}
+
+/// The token overlay in `tokens.toml` beside `persist`'s directory
+/// (`$XDG_STATE_HOME/strand/tokens.toml`).
+fn tokens_beside(persist: &strand_core::PersistStore) -> TokenOverlay {
+    let dir = persist.dir();
+    TokenOverlay::at(dir.parent().unwrap_or(dir).join(TOKENS_FILE))
 }
 
 /// A value of type `ty` written as text (`strand set`).
@@ -877,6 +892,7 @@ impl Instance {
         // The token table: the boot diff starts with it (`Instant`, so the
         // first frame never shows default colours).
         let c = ctx.clone();
+        ctx.storage.tokens.prepare(&rt, self.root);
         let memo = rt.memo(move |rt| c.token_table(rt));
         rt.set_name(memo.id(), "tokens");
         let chunks: Vec<_> = prog
@@ -1396,7 +1412,7 @@ impl Instance {
                 ..SceneDiff::default()
             },
             errors,
-            diagnostics: tick.diagnostics,
+            diagnostics: self.ctx.storage.tokens.with_notices(tick.diagnostics),
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
             kept,
         }
@@ -1909,6 +1925,9 @@ impl Instance {
     /// notice names it), so the file's value applies. Returns whether a
     /// mounted file had that field.
     pub fn clear_settings_overlay(&self, file: &str, field: &str) -> bool {
+        if let Some(done) = self.clear_token_notice(file, field) {
+            return done;
+        }
         let slots: Vec<_> = self
             .ctx
             .settings
