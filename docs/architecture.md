@@ -3711,7 +3711,11 @@ by name. Writing the parent's state (`=`, `<->`, a list mutation), an
 `id:` element outside it, the `slot`, or a result that would add an error
 (the config is checked again with the edit) refuses it, as a disabled
 action with the reason for clients with `codeAction.disabledSupport` and
-no action otherwise. `context.only` filters both kinds.
+no action otherwise. For a client that resolves an action's `edit`
+(`codeAction/resolve`), the action is offered without one
+(`refactor::offer`, no compile), and the edit is made and checked when
+it is chosen; a result that would not check fails the resolve with the
+reason. `context.only` filters both kinds.
 
 The inspector client, the reference generator and the tree-sitter
 package join it in M5 (see "M5 interfaces (wave 0a)"; tree-sitter was

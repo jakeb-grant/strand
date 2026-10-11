@@ -3,4 +3,4 @@
 
 mod extract;
 
-pub use extract::{Extract, TITLE, extract};
+pub use extract::{Extract, TITLE, extract, offer};

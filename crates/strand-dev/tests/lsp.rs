@@ -1376,6 +1376,106 @@ fn extract_component_refuses_parent_state_writes() {
     }
 }
 
+/// A config that shadows a schema type: `screen`'s type prints as
+/// `builtin Screen`, which is no type a parameter can be written with, so
+/// only compiling the result finds that the extracted component breaks.
+const SHADOWED: &str = "type Screen { x: int }\nbar Top {\n  row {\n    text screen.name\n  }\n}\n";
+
+/// What the refactor does not model itself is caught by compiling the
+/// result: an edit that would add an error is refused with that error
+/// (here a parameter typed `builtin Screen`). A name whose type is not
+/// known cannot become a parameter either.
+#[test]
+fn extract_component_refuses_what_would_not_check() {
+    let cases = [
+        (
+            SHADOWED,
+            "the result would not check: unknown type `builtin`",
+        ),
+        (
+            "component Side(x: Nope) {\n  col {\n    row { text x }\n  }\n}\n",
+            "the type of `x` is not known",
+        ),
+    ];
+    for (text, why) in cases {
+        let mut c = Client::start_with(&[("t.strand", text.into())], |p| {
+            p["capabilities"]["textDocument"]["codeAction"]["disabledSupport"] = json!(true);
+        });
+        c.open_text("t.strand", text);
+        let at = text.find("row").unwrap();
+        let actions = actions_at(&mut c, "t.strand", text, at, at);
+        assert_eq!(actions.len(), 1, "{text}: {actions:?}");
+        assert!(actions[0]["edit"].is_null(), "{actions:?}");
+        assert_eq!(actions[0]["disabled"]["reason"], why, "{text}");
+    }
+}
+
+/// A client that resolves code actions is offered "extract component"
+/// without its edit, so a cursor moving over element names never compiles
+/// the config again; the edit is made, and checked, when the action is
+/// chosen (`codeAction/resolve`), for the text it was offered for.
+#[test]
+fn extract_component_is_made_when_chosen() {
+    let resolving = |p: &mut Value| {
+        p["capabilities"]["textDocument"]["codeAction"] = json!({
+            "disabledSupport": true,
+            "resolveSupport": { "properties": ["edit"] },
+        });
+    };
+    assert_eq!(
+        serde_json::to_value(strand_dev::capabilities()).unwrap()["codeActionProvider"]["resolveProvider"],
+        true
+    );
+    let mut c = Client::start_with(&[("side.strand", SIDE.into())], resolving);
+    c.open_text("side.strand", SIDE);
+    let at = SIDE.find("row").unwrap();
+    let actions = actions_at(&mut c, "side.strand", SIDE, at + 1, at + 1);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let offered = &actions[0];
+    assert!(offered["edit"].is_null(), "{offered}");
+    assert_eq!(
+        offered["title"],
+        "Extract component `NewComponent` (state inside it resets on reload)"
+    );
+    let resolved = c.request("codeAction/resolve", offered.clone());
+    assert_eq!(resolved["title"], offered["title"]);
+    let mut eager = Client::start(&[("side.strand", SIDE.into())]);
+    eager.open_text("side.strand", SIDE);
+    let expected = &actions_at(&mut eager, "side.strand", SIDE, at + 1, at + 1)[0]["edit"];
+    assert_eq!(
+        c.applied(&resolved["edit"], "side.strand", SIDE),
+        eager.applied(expected, "side.strand", SIDE)
+    );
+
+    // Offered for text that has changed since: asked again, not applied.
+    let edited = SIDE.replace("\"head\"", "\"top\"");
+    c.change("side.strand", 2, &edited);
+    let e = c.request_err("codeAction/resolve", offered.clone());
+    assert!(e.contains("changed since"), "{e}");
+
+    // What only the compiler finds is refused when chosen, with the
+    // reason; what the refactor finds itself is still offered disabled.
+    let mut c = Client::start_with(&[("t.strand", SHADOWED.into())], resolving);
+    c.open_text("t.strand", SHADOWED);
+    let at = SHADOWED.find("row").unwrap();
+    let actions = actions_at(&mut c, "t.strand", SHADOWED, at, at);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert!(actions[0]["disabled"].is_null(), "{actions:?}");
+    let e = c.request_err("codeAction/resolve", actions[0].clone());
+    assert!(
+        e.contains("the result would not check: unknown type `builtin`"),
+        "{e}"
+    );
+    let text = "component Side {\n  state open = false\n  col {\n    row { text \"x\" { on click { open = !open } } }\n  }\n}\n";
+    let mut c = Client::start_with(&[("w.strand", text.into())], resolving);
+    c.open_text("w.strand", text);
+    let at = text.find("row").unwrap();
+    let actions = actions_at(&mut c, "w.strand", text, at, at);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let reason = actions[0]["disabled"]["reason"].as_str().unwrap();
+    assert!(reason.contains("`open` (`=`)"), "{reason}");
+}
+
 /// A private declaration in another file is a help (the edit is `export`
 /// over there), never a replacement for the name read here.
 #[test]

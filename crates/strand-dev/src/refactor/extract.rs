@@ -14,7 +14,10 @@
 //!   component's `slot`, stays put the same way.
 //! - The new component is `NewComponent` (`NewComponent2`, … when taken),
 //!   formatted with `fmt::format`. The result is checked before it is
-//!   offered: an edit that would add an error is refused with that error.
+//!   applied: an edit that would add an error is refused with that error.
+//!   [`offer`] skips that check (one more compile of the whole config),
+//!   for a client that asks for the edit later (`codeAction/resolve`),
+//!   so a cursor moving over element names never compiles the config.
 //!
 //! The subtree's state resets on the next reload: its nodes now live
 //! under another component, so their identity is new (design.md,
@@ -52,8 +55,20 @@ pub enum Extract {
 
 /// "Extract component" for `range` in `file`: offered for the element
 /// whose name the selection starts on (or that it covers whole), inside a
-/// component or surface; `None` anywhere else.
+/// component or surface; `None` anywhere else. An edit is one that checks
+/// (the config is compiled once more with it, memoised per edit).
 pub fn extract(an: &Analysis, file: FileId, range: Span) -> Option<Extract> {
+    run(an, file, range, true)
+}
+
+/// [`extract`] without compiling the result: what a code-action request
+/// answers when the client resolves the edit later. An `Edit` here may
+/// still be refused by [`extract`] (a constraint only the compiler knows).
+pub fn offer(an: &Analysis, file: FileId, range: Span) -> Option<Extract> {
+    run(an, file, range, false)
+}
+
+fn run(an: &Analysis, file: FileId, range: Span, check: bool) -> Option<Extract> {
     let src = an.text(file);
     let range = trim(src, range);
     let item = an.parse(file)?.file.items.iter().find(|i| {
@@ -82,7 +97,7 @@ pub fn extract(an: &Analysis, file: FileId, range: Span) -> Option<Extract> {
     if range.start as usize > word_end(src, el.span.start as usize) {
         return None;
     }
-    Some(match plan(an, file, item.span, &owner, el) {
+    Some(match plan(an, file, item.span, &owner, el, check) {
         Ok((title, edits)) => Extract::Edit { title, edits },
         Err(reason) => Extract::Refused { reason },
     })
@@ -96,6 +111,7 @@ fn plan(
     item: Span,
     owner: &str,
     el: &Element,
+    check: bool,
 ) -> Result<Plan, String> {
     let p = &an.compiled.program;
     let src = an.text(file);
@@ -198,8 +214,13 @@ fn plan(
     let mut text = src.to_string();
     text.replace_range(item.end as usize..item.end as usize, &insert);
     text.replace_range(el.span.start as usize..el.span.end as usize, &call);
-    let after = an.with_text(file, &text);
-    if after.compiled.errors() > an.compiled.errors() {
+    let after = match check {
+        true => Some(an.with_edited(file, &text)),
+        false => None,
+    };
+    if let Some(after) = after
+        && after.compiled.errors() > an.compiled.errors()
+    {
         let before: HashSet<(&str, &str)> = an
             .compiled
             .diagnostics
@@ -431,6 +452,42 @@ impl Found {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use strand_compiler::schema::Schema;
+
+    use super::*;
+    use crate::workspace::{ConfigKey, Input};
+
+    /// [`offer`] never compiles the result; [`extract`] compiles it once
+    /// per edit, however often it is asked from the same element name.
+    #[test]
+    fn the_result_is_compiled_once_per_edit_and_only_when_checked() {
+        let uri = "file:///t.strand".to_string();
+        let src = "component Side(label: text) {\n  col {\n    row { text label }\n  }\n}\n";
+        let an = Analysis::new(
+            ConfigKey::Single(uri.clone()),
+            vec![Input::new(uri.clone(), "t.strand".into(), src.into())],
+            Arc::new(Schema::builtin().clone()),
+        );
+        let file = an.file(&uri).unwrap();
+        let at = src.find("row").unwrap() as u32;
+        let offered = offer(&an, file, Span::new(at, at));
+        assert!(matches!(offered, Some(Extract::Edit { .. })), "{offered:?}");
+        assert!(an.edited().is_none());
+        let first = extract(&an, file, Span::new(at, at));
+        assert!(matches!(first, Some(Extract::Edit { .. })), "{first:?}");
+        let memo = an.edited().unwrap();
+        for d in 1..3 {
+            let again = extract(&an, file, Span::new(at + d, at + d));
+            assert!(matches!(again, Some(Extract::Edit { .. })), "{again:?}");
+            assert!(Arc::ptr_eq(&memo, &an.edited().unwrap()));
         }
     }
 }
