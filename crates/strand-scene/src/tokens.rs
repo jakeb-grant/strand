@@ -20,6 +20,15 @@ use crate::protocol::{Length, Paint, Prop, PropClass, PropValue, Transition};
 /// is a load error on the logic side; this only bounds a bad table).
 pub const MAX_TOKEN_DEPTH: u32 = 32;
 
+/// (M5) The origin ([`TokenTable::origin`]) of a token a runtime overlay
+/// sets (`strand set '$accent' …`): recorded by the overlay layer
+/// (S-ipc) in place of the file's origin while the overlay holds, read
+/// by the inspector's provenance as its overlay step (S-inspect). A
+/// bare word, so no tier's origin (`palette:…`, `tokens …`, `component
+/// …`, `base`) is ever spelled the same (docs/architecture.md, "M5
+/// interfaces").
+pub const OVERLAY_ORIGIN: &str = "overlay";
+
 /// A colour method: a `$` path segment followed by `(` (`$fg.alpha(0.65)`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TokenMethod {
@@ -1045,6 +1054,15 @@ fn gamut_map(c: Color) -> Color {
 mod tests {
     use super::*;
     use crate::protocol::{Border, GradientStop, Shadow};
+
+    #[test]
+    fn the_overlay_origin_is_recorded_and_read_like_any_other() {
+        let mut t = table();
+        t.set_origin("accent", "palette:built-in");
+        t.set_origin("accent", OVERLAY_ORIGIN);
+        assert_eq!(t.origin("accent"), Some("overlay"));
+        assert!(!OVERLAY_ORIGIN.contains([':', ' ']) && OVERLAY_ORIGIN != "base");
+    }
 
     fn table() -> TokenTable {
         let mut t = TokenTable::default();

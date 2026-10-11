@@ -61,7 +61,7 @@ use strand_compiler::vm::clock::{Clock, Zone};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_render::{Renderer, TextBackend};
-use strand_scene::{NodeId, SceneDiff, SceneOp};
+use strand_scene::{NodeId, SceneDiff, SceneOp, SurfaceId};
 use strand_services::Cells as _;
 use strand_surface::{Config, SurfaceManager};
 use strand_text::{FontConfig, TextWorker};
@@ -272,15 +272,20 @@ pub enum ToLogic {
         reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
     )]
     Snapshot(Snapshot),
+    /// (M5) Pick mode, from main (S-inspect): a click picked a node, or
+    /// pick mode ended without logic asking.
+    #[allow(dead_code, reason = "(M5 0b) pick mode is wired by S-inspect")]
+    Picked(PickEvent),
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,
 }
 
-/// (M5) What logic asks the main thread for (docs/architecture.md, "M5
-/// interfaces": the snapshot hop). Logic sends only `SceneDiff`s today;
-/// the channel carrying these is wired by the first stream that sends
-/// one (S-tools' `report`, S-inspect's layouts).
+/// (M5) What logic tells or asks the main thread (docs/architecture.md,
+/// "M5 interfaces": the snapshot hop and the inspector's messages).
+/// Logic sends only `SceneDiff`s today; the channel carrying these is
+/// wired by the first stream that sends one (S-tools' `report`,
+/// S-inspect's layouts and pick mode), and the other reuses it.
 #[allow(
     dead_code,
     reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
@@ -293,6 +298,30 @@ pub enum ToMain {
         kind: SnapshotKind,
         reply: SnapshotId,
     },
+    /// `inspect.highlight{id?}`: outline a node (none: no outline);
+    /// main calls `Renderer::set_highlight`.
+    Highlight(Option<(SurfaceId, NodeId)>),
+    /// `inspect.flash{on}`: main calls `Renderer::set_damage_flash`.
+    DamageFlash(bool),
+    /// `inspect.pick{on}`, and `false` when the asking IPC client goes:
+    /// the router's pick-mode hook on or off. A pick arrives later, on a
+    /// click, as [`ToLogic::Picked`].
+    PickMode(bool),
+}
+
+/// (M5) What main tells logic about pick mode ([`ToLogic::Picked`]).
+#[allow(dead_code, reason = "(M5 0b) pick mode is wired by S-inspect")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickEvent {
+    /// A click in pick mode, on `surface`: the node under it
+    /// (`Renderer::pick`; none: nothing pickable there).
+    Picked {
+        surface: SurfaceId,
+        node: Option<NodeId>,
+    },
+    /// Pick mode ended on main's side (a surface unmapped, a lock
+    /// started), so logic tells the client that asked.
+    Ended,
 }
 
 /// (M5) Which snapshot logic asks main for.
@@ -306,10 +335,9 @@ pub enum SnapshotKind {
     /// and scales, frame summaries, GPU status, its reason and
     /// lost-device count, promotion reasons (S-tools).
     Report,
-    /// The inspector's pick result (S-inspect).
-    Pick,
-    /// The inspector: a node's layout (`Renderer::node_layout`, S-inspect).
-    Layout { node: NodeId },
+    /// The inspector: a node's layout on its surface
+    /// (`Renderer::node_layout(surface, node)`, S-inspect).
+    Layout { surface: SurfaceId, node: NodeId },
 }
 
 /// (M5) Which [`ToMain::Snapshot`] an answer is for (logic's numbering).
@@ -502,6 +530,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         buses: Some(strand_services::Buses::default()),
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();

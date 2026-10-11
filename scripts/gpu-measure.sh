@@ -94,16 +94,28 @@ wait_for() { # SECONDS DESCRIPTION CMD...
   exit 1
 }
 
-{
+# The summary's header. Every line is best-effort: a missing card, no
+# vulkaninfo, a vulkaninfo that fails or prints nothing it matches must
+# not end the run under `set -e` and pipefail (test-gpu-measure.sh runs
+# this function alone with each of those).
+header() {
   echo "strand GPU measurement, $(date -Iseconds)"
   echo "binary: $BIN ($(stat -c %s "$BIN") bytes)"
   echo "kernel: $(uname -r)"
   echo "session: XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-?} WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
   for d in /sys/class/drm/card[0-9]; do
-    [ -e "$d/device/vendor" ] && echo "card: ${d##*/} $(cat "$d/device/vendor"):$(cat "$d/device/device")"
+    if [ -e "$d/device/vendor" ]; then
+      echo "card: ${d##*/} $(cat "$d/device/vendor"):$(cat "$d/device/device")"
+    fi
   done
-  command -v vulkaninfo >/dev/null && vulkaninfo --summary 2>/dev/null | grep -E 'deviceName|driverName|driverInfo' | sed 's/^ */vulkan: /'
-} | tee "$OUT/summary.txt"
+  if command -v vulkaninfo >/dev/null; then
+    vulkaninfo --summary 2>/dev/null | grep -E 'deviceName|driverName|driverInfo' | sed 's/^ */vulkan: /' ||
+      echo "vulkan: vulkaninfo --summary gave nothing"
+  else
+    echo "vulkan: no vulkaninfo"
+  fi
+}
+header | tee "$OUT/summary.txt"
 
 HOME=$TMP XDG_CONFIG_HOME=$TMP/xdg-config XDG_STATE_HOME=$TMP/state XDG_CACHE_HOME=$TMP/cache \
   STRAND_MOCK=acceptance STRAND_SOCKET=$SOCK STRAND_LOG=info STRAND_GPU_IDLE_MS=1500 \

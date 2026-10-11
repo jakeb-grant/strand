@@ -4,8 +4,10 @@
 //! `toggle`, `call`, `clear` S-ipc; `inspect.*` S-inspect; `report`
 //! S-tools). A command no module serves yet does not parse from the
 //! socket (`strand_core::ipc::parse`); from another thread it arrives
-//! as a `Request` and is answered as an unknown one
-//! ([`strand_core::ipc::unknown`]), so both hear M4's answer.
+//! as a `Request` and is answered as the socket answers it, M4's answer:
+//! an unknown command as one ([`strand_core::ipc::unknown`]), and
+//! `reset{node}` (`Request::ResetNode`, whose `reset` M4 knew) with
+//! "`reset` needs a `path`" ([`Shell::reset_node_request`]).
 //!
 //! A request comes from a socket client or, through
 //! [`strand_core::ipc::IpcRequests`], from another thread (the D-Bus
@@ -46,6 +48,7 @@ impl Shell {
             Request::Reload { hard } => self.reload_request(from, hard),
             Request::Watch => self.watch_request(from),
             Request::Reset { path } => self.reset_request(from, &path),
+            Request::ResetNode { .. } => self.reset_node_request(from),
             Request::Set { path, value } => self.set_request(from, &path, &value),
             Request::Mock(req) => self.mock_request(from, &req),
             req => self.not_served(from, req.cmd()),

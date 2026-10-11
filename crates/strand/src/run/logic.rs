@@ -32,6 +32,10 @@ pub struct Live {
     /// the socket ([`ipc::IpcRequests`]): what feeds it from another
     /// thread (tests; S-ipc's D-Bus front end takes its own clone).
     pub requests_to: Option<RequestsTo>,
+    /// (M5) Where every event the socket's watchers get also goes, on the
+    /// logic thread, socket or not (S-ipc's D-Bus `Changed` signal;
+    /// tests).
+    pub events_to: Option<ipc::EventSink>,
 }
 
 /// A callback for [`Live::requests_to`].
@@ -196,6 +200,7 @@ pub fn logic(
         build,
         overlay: Overlay::default(),
         server,
+        event_sink: live.events_to,
         jobs: live.jobs,
         deferred: None,
         deferred_hard: false,

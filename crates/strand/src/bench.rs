@@ -498,6 +498,7 @@ fn measure(rounds: usize) -> Option<Measured> {
             .map(|b| strand_services::Buses::private(&b.address)),
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping().unwrap();
     let font = std::fs::read(strand_text::test_font_path()).unwrap();

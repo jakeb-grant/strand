@@ -4,4 +4,7 @@
 //! Empty until its stream serves it: the command does not parse yet
 //! (`strand_core::ipc::parse`), so a client hears `unknown command`, as
 //! from M4. The stream adds its `parse` arm, its handler here and its
-//! arm in `Shell::request` together.
+//! arm in `Shell::request` together. Main's side is reached through
+//! `ToMain::{Highlight, DamageFlash, PickMode}` and
+//! `SnapshotKind::Layout`, and a click's pick comes back as
+//! `ToLogic::Picked` (`run/mod.rs`).

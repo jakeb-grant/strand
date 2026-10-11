@@ -647,8 +647,16 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
   codec reads `serde_json::Value`, so `serde`'s derives are not needed).
   Answers and events are JSON objects (`ipc::Answer`, with `ok()`,
   `refused(why)`, `unknown(cmd)`, `refusal(answer)` and `line(v)`). The binary (socket server and CLI), strand-services (the
-  D-Bus front end) and strand-dev (`strand-dev inspect`, which reaches
-  strand-core through strand-compiler) all name these types.
+  D-Bus front end) and strand-dev (`strand-dev inspect`) all name these
+  types. strand-dev takes a direct `strand-core` dependency for them
+  (S-inspect adds it to strand-dev's `Cargo.toml` with its client, and
+  the integrator merges `Cargo.lock`): a crate reached only through
+  strand-compiler cannot be named, and strand-compiler does not
+  re-export it. (0a said strand-dev "reaches strand-core through
+  strand-compiler"; decisions.md m5-w0-harden.)
+- The socket's path is `strand_core::ipc::socket_path()`
+  (`$STRAND_SOCKET`, else `$XDG_RUNTIME_DIR/strand-<display>.sock`),
+  so the shell, its CLI and `strand-dev inspect` find it by one rule.
 - `ipc.rs` in the binary becomes `ipc/{mod, server, cli, describe}.rs`
   over them.
 - Protocol version 1 gains commands only, and every rule above holds (an
@@ -666,7 +674,9 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     `call`'s `args` are a list of strings, each read by the action
     parameter's type as `set`'s value is.
   - A command the shell does not serve yet is answered exactly as an
-    unknown one (`unknown command `x``), so 0b changes no answer.
+    unknown one (`unknown command `x``), so 0b changes no answer;
+    `reset{node}` is answered "`reset` needs a `path`", M4's answer,
+    from the socket and from the request channel alike.
     `Request` has every command's variant and `encode` writes each, but
     `ipc::parse` reads only the commands the shell serves: M5's fields
     are read by `ipc::parse_m5(cmd, &v)`, which a stream calls from a
@@ -717,31 +727,58 @@ new).**
   `Live::requests_to` when one is given (tests; S-ipc passes its own
   to `strand_services::ipc_bus`). `reload` and `watch` stay the
   socket's: from the channel they are answered as unknown until S-ipc
-  serves them there.
+  serves them there (S-ipc owns `run/request/{reload, watch}.rs`'s
+  channel arms; a bus `reload`'s answer waits for its load as a socket
+  client's does, so `Job::Reload`'s client becomes a `Caller`-like
+  handle there).
+- **Events the other way (`strand_core::ipc::EventSink`, new in the
+  wave-0 hardening).** The logic loop hands every event the socket's
+  watchers get (`reload`, `fault`, `notices`) to an `EventSink`, a
+  cloneable `Fn(&Answer) + Send + Sync` given through
+  `Live::events_to`, whether or not the socket bound or anyone
+  watches; `Shell::broadcast` is the one fan-out (socket and sink).
+  The sink runs on the logic thread and must not block: the D-Bus
+  front end hands each event to the services thread, which emits
+  `Changed`. Run test:
+  `requests_from_another_thread_are_answered_by_the_logic_loop`.
 - The D-Bus front end (`strand_services::ipc_bus`, new, S-ipc) runs on
   the services thread's tokio runtime, which owns the zbus connection.
   Each method call becomes a `Request`, awaited through `Reply`.
-  `watch` is a `Changed` signal fed by the events the socket's watchers
-  get. The name is owned when `strand run` starts; a second instance
+  `watch` is a `Changed` signal fed by the `EventSink` above. The name is owned when `strand run` starts; a second instance
   that cannot own it runs without D-Bus IPC, as with the socket
   (decisions.md wave2-runtime, the IPC socket). It lives in strand-services
   because that thread owns the async runtime and the bus; the binary has
   no executor of its own.
 
-**Snapshot hop between logic and main (new).** Logic sends main
-`ToMain::Snapshot { kind: SnapshotKind, reply }` (a logic→main channel;
-today logic sends main only `SceneDiff`s) and main answers with
-`ToLogic::Snapshot(Snapshot)`, where `reply` is a `SnapshotId` of
-logic's numbering and `Snapshot { reply, data }` carries the snapshot
-as the JSON its IPC answer holds. 0b lands the types in
-`strand/src/run/mod.rs` (`SnapshotKind::{Report, Pick, Layout { node
-}}`); the channel itself is wired by the first stream that sends one,
-since an unused calloop channel would cost `.text` for nothing. `SnapshotKind` covers `report` (the
-compositor's globals with versions, outputs and scales, frame summaries,
-GPU status, reason and lost-device count, promotion reasons) and the
-inspector (a pick's result, a node's layout). It is one interface for
-both; main answers from its own state between frames and never waits on
-logic.
+**Snapshot hop and the inspector's messages between logic and main
+(new).** Logic sends main `ToMain` messages over a logic→main channel
+(today logic sends main only `SceneDiff`s):
+- `ToMain::Snapshot { kind: SnapshotKind, reply }`, answered with
+  `ToLogic::Snapshot(Snapshot)`, where `reply` is a `SnapshotId` of
+  logic's numbering and `Snapshot { reply, data }` carries the snapshot
+  as the JSON its IPC answer holds. `SnapshotKind::Report` is `report`'s
+  (the compositor's globals with versions, outputs and scales, frame
+  summaries, GPU status, reason and lost-device count, promotion
+  reasons); `SnapshotKind::Layout { surface, node }` is a node's layout
+  (`Renderer::node_layout(surface, node)`). Main answers from its own
+  state between frames and never waits on logic.
+- `ToMain::Highlight(Option<(SurfaceId, NodeId)>)` and
+  `ToMain::DamageFlash(bool)`: main calls `Renderer::set_highlight` and
+  `set_damage_flash` (`inspect.highlight`, `inspect.flash`).
+- `ToMain::PickMode(bool)`: the router's pick-mode hook on or off
+  (`inspect.pick`, and off when the client that asked disconnects).
+  A pick happens later, on a click, so it is not a snapshot: main sends
+  `ToLogic::Picked(PickEvent::Picked { surface, node })` (`node` from
+  `Renderer::pick`, none when nothing pickable is under the click), and
+  `ToLogic::Picked(PickEvent::Ended)` when pick mode ends on main's side
+  (a surface unmapped, a lock started).
+
+0b landed the snapshot types, and the wave-0 hardening the rest
+(decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request and a
+`Layout { node }` without its surface), all in `strand/src/run/mod.rs`.
+The channel itself is wired by the first stream that sends on it
+(S-tools' `report` or S-inspect), since an unused calloop channel would
+cost `.text` for nothing; the other reuses it.
 
 **`strand-compiler` `Instance` inspection (new; read-only, never read by
 evaluation).**
@@ -763,8 +800,15 @@ evaluation).**
 `set_overlay`/`clear_overlay`. A token overlay is global, persisted in
 `$XDG_STATE_HOME/strand/tokens.toml` beside settings' overlay (written
 on the persist IO thread), and takes the token swap path (design.md,
-"Reload"). `TokenTable`'s recorded origin (`origin(path)`) gains an
-overlay origin. A save the overlay shadows raises a notice like
+"Reload"). `TokenTable`'s recorded origins stay strings (a tier and its
+name: `base`, `tokens compact`, `palette:wallpaper`); the overlay origin
+is the reserved string `overlay`, `strand_scene::tokens::OVERLAY_ORIGIN`
+(landed in the wave-0 hardening, so no stream edits `tokens.rs` for it).
+S-ipc's overlay layer records it with `set_origin` for each overlaid
+path, in place of the file's origin while the overlay is set (the next
+build without the overlay records the file's again), and S-inspect's
+provenance walk reads it as the overlay step. There is no `TokenOrigin`
+type (decisions.md m5-w0-harden). A save the overlay shadows raises a notice like
 settings' `SettingsIssue::Shadowed`: `accent: file changed but runtime
 overlay wins [clear]`; `[clear]`, `strand clear '$accent'` and IPC
 `clear{path}` remove it.
@@ -804,7 +848,25 @@ pickable, and `inspect.pick` is refused while locked.
 **Handler input context (`strand-compiler`, cross-crate, new).**
 - The VM records the input event that started a handler, `InputCtx {
   surface, serial }`, available to its actions until the handler's
-  first `await`.
+  first `await`. Its route (S-platform's, wave 2; none of it exists at
+  0b):
+  - strand-render's router returns, with each `NodeEvent` a button or
+    key press makes, the press's compositor serial (strand-surface's
+    seat tracks `button_serial` and, from S-platform, key serials);
+    `ToLogic::Event` gains `input: Option<InputCtx>` (none for scrolls,
+    synthetic events and the demo);
+  - `Instance::event(node, event, args)` gains `input:
+    Option<InputCtx>`; the VM keeps it in the handler invocation's
+    frame until the first `await` and numbers invocations from a
+    per-`Instance` counter (`ActionCtx::invocation`, 0 with no input);
+  - strand-services' `DynService::action` gains the `ActionCtx`, and
+    its ordering queue asks the main thread for a token through a token
+    source the binary hands strand-services when it starts them: a
+    `Fn(SurfaceId, u32)` returning a one-shot future like
+    `strand_core::ipc::Reply`'s, sent over a services→main calloop
+    channel, on which main calls `strand_surface::activation_token` and
+    completes the one-shot (the services thread cannot call
+    `SurfaceHost`, the manager's callback trait on main).
 - `ServiceHost::action` gains an `ActionCtx` argument (the `InputCtx`,
   if any, and the handler invocation's id), as its last parameter:
   `ActionCtx { input: Option<InputCtx>, invocation: u64 }`, `InputCtx {
@@ -814,8 +876,9 @@ pickable, and `inspect.pick` is refused while locked.
   binary's composite, store and custom hosts); strand-services'
   `DynService::action` does not take it yet (S-platform's).
 - `strand_surface::activation_token(surface, serial) -> async
-  Option<String>`, reached through `SurfaceHost`; key-press serials are
-  tracked beside `button_serial` (`manager/seat.rs`).
+  Option<String>`, called on the main thread (the token source above
+  reaches it); key-press serials are tracked beside `button_serial`
+  (`manager/seat.rs`).
 - **Ordering rule.** An action that needs a token (notification
   `invoke`, an app launch) waits up to 200 ms for it, then goes ahead
   without one (m5-owner Q14). Every later action from the same handler
@@ -865,7 +928,9 @@ zero-width span (an insertion) is allowed.
 
 **Plugins: `strand` gains a `[lib]` target (new).** `main.rs`'s module
 tree moves under `lib.rs`, and `main.rs` keeps `main` and the COMMANDS
-table (0b; the release `.text` must stay within 1 KB). The library
+table (0b; planned within 1 KB of `.text`, measured at +12,544 B
+CPU-only and +8,512 B GPU with the request channel, and accepted and
+charged to the ledger: decisions.md m5-core, m5-integration). The library
 exposes `strand::Shell::builder().service::<S>().run()`: a plugin is a
 user binary that links `strand` and registers its own `#[service]`
 types beside the builtins (`Builtin::register` is unchanged, and the
@@ -886,9 +951,27 @@ run as the binary does.
 
 **Ownership.** Integrator: this section, the root `Cargo.toml` and
 `Cargo.lock`, CI files, budgets.rs's gate constants and
-`crates/strand/tests/m5.rs`'s module list. S-core lands all of the
-above as inert code in one PR (0b), then each piece belongs to the
-stream `docs/m5-plan.md`'s "Streams" table names.
+`crates/strand/tests/m5.rs`'s module list.
+- **Landed as inert code in 0b (S-core) and the wave-0 hardening:**
+  `strand_core::ipc` (types, codec, `IpcRequests`, `EventSink`,
+  `socket_path`, `DBUS_NAME`), the `ipc/` split, `Shell::request`'s
+  dispatch with a module per command, the lib/bin split and
+  `strand::cli`, `ActionCtx`/`InputCtx` threaded as
+  `ActionCtx::default()`, the `Renderer` inspect and `frame_summary`
+  stubs, the `ToMain`/`ToLogic` snapshot and inspector messages,
+  `OVERLAY_ORIGIN`, `Suggestion::title` and `tests/m5.rs`.
+- **Landed by their streams, not in 0b:** `Instance::identity`,
+  `cells_of`, `reset_subtree`, `source_hash` and
+  `TokenTable::provenance` (S-inspect), the token overlay layer (S-ipc),
+  `activation_token` and the input context's route (S-platform),
+  `Shell::builder` (S-plugins). Each then belongs to the stream
+  `docs/m5-plan.md`'s "Streams" table names.
+- **Shared dispatch points, merged by the integrator:** each stream adds
+  only its own one-line entries to `strand_core::ipc::parse`'s match,
+  `Shell::request`'s match (`run/request/mod.rs`), `ToMain`/`ToLogic`
+  and `Shell::handle` (`run/mod.rs`, `run/shell.rs`), `Live`'s fields,
+  `lib.rs`'s `mod` list and `strand::cli` re-exports, and
+  `ipc/mod.rs`'s re-exports; the integrator merges them.
 
 ## Contracts
 

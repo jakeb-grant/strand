@@ -176,6 +176,9 @@ jobs:
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
+      # The release binary the gate just measured, kept for the human
+      # trials' artifact below before the CPU-only build replaces it.
+      - run: mkdir -p "$RUNNER_TEMP/trial" && cp target/release/strand "$RUNNER_TEMP/trial/strand-gpu"
       # The CPU core's .text keeps its own gate (15,859,712 B in M5,
       # provisionally: decisions.md m5-integration) behind the GPU
       # backend's 18.5 MiB (docs/architecture.md, "`strand-gpu`").
@@ -188,6 +191,19 @@ jobs:
       - name: Size ledger
         if: always()
         run: scripts/container/ledger.sh "$RUNNER_TEMP/ledger"
+      # M5's human trials (docs/m5-plan.md, "0-infra"; decisions.md
+      # m5-owner Q15, Q20): both release-profile binaries the gates
+      # measured, as a workflow artifact. Not a release: no version, tag
+      # or notes.
+      - run: cp target/release/strand "$RUNNER_TEMP/trial/strand-cpu"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strand-release-binaries
+          path: |
+            ${{ runner.temp }}/trial/strand-cpu
+            ${{ runner.temp }}/trial/strand-gpu
+          if-no-files-found: error
+          retention-days: 30
 
   # M2 exit: design.md's four example shells and theme.strand, byte for
   # byte, in `strand run` on headless sway with two outputs against the

@@ -17,8 +17,9 @@ below.
   in architecture.md, "M5 interfaces (wave 0a)") and 0-freeze
   (design.md's four open questions answered and ticked, the ladder's
   `Async` at level 4, the importer box split and ticked) are on
-  `laptop/m5-plan`, which also re-bases the CPU-only `.text` gate to
-  15,925,248 B for M5 (decisions.md m5-integration).
+  `laptop/m5-plan`, which also re-based the CPU-only `.text` gate to
+  15,925,248 B for M5 (decisions.md m5-integration), lowered to
+  15,859,712 B once wave 0's reclaims landed (next bullet).
 - **Wave 0 is merged** on `laptop/m5-w0` (decisions.md m5-integration):
   0b's shared code (`laptop/m5-core`: `strand_core::ipc`, the request
   channel, the `strand` lib/bin split, `ActionCtx`, the inert render
@@ -31,7 +32,8 @@ below.
   `.text` 15,633,095 B CPU-only and 19,013,831 B with the GPU backend
   (gate 19,398,656). 0b's +12.5 KB is charged to S-ipc's D-Bus
   allocation (now 37,400 B) and the integrator's reserve (now
-  32,056 B). Spikes: sway renders on renderD128 with GLES2 or Vulkan
+  32,056 B; 29,240 B after the wave-0 hardening's +2,816 B,
+  decisions.md m5-w0-harden). Spikes: sway renders on renderD128 with GLES2 or Vulkan
   and offers linux-dmabuf, so Q19 is (A); the tree-sitter CLI 0.27.0
   generates from `grammar.js` without node; sway 1.9 issues and
   honours an xdg-activation token from a layer surface (decisions.md
@@ -63,8 +65,9 @@ below.
 - Budgets at `e765276` (laptop; docs/m4-report.md has CI's): `.text`
   19,006,471 B of 19,398,656 with the GPU backend and 15,634,439 B of
   15,728,640 CPU-only (about 94 KB left: the tightest budget in the
-  tree; M5 re-bases that gate to 15,925,248 B, provisionally, for its
-  230,000 B allocation: decisions.md m5-owner Q6, m5-integration); design.md's bar 34,187 kB against its 34,816 kB target (CI
+  tree; M5 re-based that gate to 15,925,248 B, provisionally, for its
+  230,000 B allocation, and lowered it to 15,859,712 B after wave 0's
+  reclaims: decisions.md m5-owner Q6, m5-integration); design.md's bar 34,187 kB against its 34,816 kB target (CI
   measures it over the target, 35,557 kB at `70af44f` and 35,617 kB at
   `e765276`, which warns; the ceiling is 38,912 kB);
   the full shell 42–50 MB against 64 MB.
@@ -108,10 +111,31 @@ below.
 
 ## Open items for the owner
 
-None. Every M4 item was answered by the owner on 2026-10-10: items 1,
-3, 4 and 5 in decisions.md m4-owner-2, items 2, 6, 7, 8 and 9 in
-decisions.md m4-owner-3. The items keep their numbers so other branches
-merge cleanly.
+Every M4 item was answered by the owner on 2026-10-10: items 1, 3, 4
+and 5 in decisions.md m4-owner-2, items 2, 6, 7, 8 and 9 in decisions.md
+m4-owner-3. The items keep their numbers so other branches merge
+cleanly. M5's wave 0 left these for the owner (none blocks wave 1):
+
+- **The presented GPU leg's after-drop bound** (decisions.md m5-infra,
+  features.md's GPU-cost box): presenting on renderD128 left +6,868 and
+  +7,704 kB after the drop in two runs (+4,662 kB in a third), past the
+  readback leg's 6,144 kB bound. Open: raise the presented leg's bound
+  to about 8 MiB, or chase the retained anonymous memory. The same
+  answer decides whether `scripts/gpu-measure.sh`'s KMS-card run is
+  still wanted. Until then that leg reports the bound (`BOUND MISS`)
+  instead of asserting it.
+- **0b's +12.5 KB charge** (decisions.md m5-integration): the integrator
+  accepted 0b's +12,544 B CPU-only and charged it to S-ipc's D-Bus line
+  (now 37,400 B) and the reserve (now 32,056 B). The owner may overrule
+  it; the lib/bin split or the request-channel drain is what would move.
+- **The duplicated image decoders** (decisions.md m5-size, last
+  paragraph): `jpeg_decoder` and `image_webp` are each built twice
+  (about 44 KB + 45 KB), once for strand-theme and once for
+  strand-render. Removing the copy needs one crate to own the decode, a
+  new dependency between them, or strand-theme reading wallpapers into
+  memory: an architecture change offered to the owner, not taken.
+- Anything the wave-0 hardening left for the owner is in decisions.md
+  m5-w0-harden.
 
 1. **The noise field: answered.** A `.wgsl` shader on the bundled path;
    its box is ticked (m4-owner-2).
@@ -138,9 +162,12 @@ merge cleanly.
 6. **The promoted GPU cost on hardware: moved to M5.** It is measured
    in M5's hardware testing (features.md's M5 box). The advisory leg's
    readback mode passed at `e765276` (PSS 4,723 kB over the pre-GPU
-   baseline after the drop, bound 6 MiB); presenting needs a
-   compositor on a KMS card, which the laptop rules keep out of
-   containers (m4-owner-3).
+   baseline after the drop, bound 6 MiB) (m4-owner-3). Presenting no
+   longer needs a KMS card: M5's spike found that headless sway on
+   renderD128 renders with GLES2 or Vulkan and offers linux-dmabuf, so
+   `STRAND_GPU_PRESENT=1 scripts/container/gpu.sh` presents and Q19 is
+   (A) (decisions.md m5-infra); the presented after-drop bound is open
+   above.
 7. **A process-wide cap on lost devices: 3.** After 3 lost devices
    (`promote::LOST_CAP`; a failed start does not count) the GPU is off
    until strand restarts: no device is asked for, nothing is promoted,

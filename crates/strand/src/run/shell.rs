@@ -44,6 +44,9 @@ pub(super) struct Shell {
     pub(super) build: Build,
     pub(super) overlay: Overlay,
     pub(super) server: Option<ipc::Server>,
+    /// (M5) Where every event the socket's watchers get also goes (the
+    /// D-Bus `Changed` signal, S-ipc): [`Shell::broadcast`].
+    pub(super) event_sink: Option<ipc::EventSink>,
     pub(super) jobs: Option<std::sync::mpsc::Sender<Job>>,
     /// A build that changes a lock while one is shown: committed after
     /// the unlock.
@@ -151,8 +154,8 @@ impl Shell {
                 super::lists::set_window(inst, list, first, count);
             }
             ToLogic::Notice(text) if !self.host_notices.contains(&text) => {
-                if let Some(s) = &mut self.server {
-                    s.broadcast(&json!({
+                if self.listened() {
+                    self.broadcast(&json!({
                         "event": "notices",
                         "kept_over_default": [],
                         "notices": [&text],
@@ -178,8 +181,9 @@ impl Shell {
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => self.lock_state(state),
             ToLogic::Beat(seq) => super::lock::beat(seq),
-            // (M5) Nothing asks main for snapshots yet (S-tools, S-inspect).
-            ToLogic::Snapshot(_) => {}
+            // (M5) Nothing asks main for snapshots or turns pick mode on
+            // yet (S-tools, S-inspect).
+            ToLogic::Snapshot(_) | ToLogic::Picked(_) => {}
             ToLogic::Shutdown => {}
         }
     }
@@ -227,10 +231,8 @@ impl Shell {
         for text in &fresh {
             log::info!("{text}");
         }
-        if !fresh.is_empty()
-            && let Some(s) = &mut self.server
-        {
-            s.broadcast(&json!({
+        if !fresh.is_empty() && self.listened() {
+            self.broadcast(&json!({
                 "event": "notices",
                 "kept_over_default": [],
                 "notices": fresh,
@@ -299,8 +301,8 @@ impl Shell {
                 self.overlay.note(rows, Instant::now(), &self.inst);
             }
         }
-        if let Some(s) = &mut self.server {
-            s.broadcast(&json!({
+        if self.listened() {
+            self.broadcast(&json!({
                 "event": "notices",
                 "kept_over_default": [],
                 "notices": texts,
@@ -520,7 +522,7 @@ impl Shell {
             log::error!("{message}");
             // A runtime fault freezes its component, outlined red.
             let frozen = self.inst.freeze(e);
-            if let Some(s) = &mut self.server {
+            if self.listened() {
                 let at = match (e.file, e.span) {
                     (Some(f), Some(sp)) => self.build.sources.get(f).map(|file| {
                         let (l, c) = overlay::line_col(&file.text, sp.start);
@@ -528,7 +530,7 @@ impl Shell {
                     }),
                     _ => None,
                 };
-                s.broadcast(&json!({
+                self.broadcast(&json!({
                     "event": "fault",
                     "message": message,
                     "at": at,
@@ -556,11 +558,9 @@ impl Shell {
             self.overlay
                 .settings_read(&reread, rows, Instant::now(), &self.inst);
         }
-        if !settings.is_empty()
-            && let Some(s) = &mut self.server
-        {
+        if !settings.is_empty() && self.listened() {
             let texts: Vec<String> = settings.iter().map(|n| n.to_string()).collect();
-            s.broadcast(&json!({
+            self.broadcast(&json!({
                 "event": "notices",
                 "kept_over_default": [],
                 "notices": texts,
@@ -578,20 +578,27 @@ impl Shell {
             let rows = overlay::kept_and_notices(&kept, &notices);
             self.overlay.note(rows, Instant::now(), &self.inst);
             // `strand watch` hears them as they happen; with nobody
-            // watching (at boot), the next reload event carries them.
-            match &mut self.server {
-                Some(s) if s.watchers() > 0 => s.broadcast(&json!({
+            // watching (at boot), the next reload event carries them. The
+            // event sink hears them now either way.
+            let heard = self.server.as_ref().is_some_and(|s| s.watchers() > 0);
+            if heard || self.event_sink.is_some() {
+                self.broadcast(&json!({
                     "event": "notices",
                     "kept_over_default": kept_json(&kept),
                     "notices": notices,
-                })),
-                _ => self.unheard.extend(kept),
+                }));
+            }
+            if !heard {
+                self.unheard.extend(kept);
             }
         }
         let now = Instant::now();
         for (mut ev, since, clients) in self.events.drain(..) {
             ev["timing"]["total_ms"] = json!(ms(now.saturating_duration_since(since)));
             log::info!("{}", ipc::describe(&ev).trim_end());
+            if let Some(sink) = &self.event_sink {
+                sink.send(&ev);
+            }
             if let Some(s) = &mut self.server {
                 s.broadcast(&ev);
                 // Each `strand reload` gets the event of its own load.
@@ -711,4 +718,21 @@ pub(super) fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration
         },
         "diagnostics": diagnostics,
     })
+}
+
+impl Shell {
+    /// Whether an event reaches anyone: a bound socket or the event sink.
+    fn listened(&self) -> bool {
+        self.server.is_some() || self.event_sink.is_some()
+    }
+
+    /// Send `event` to the socket's watchers and the event sink.
+    fn broadcast(&mut self, event: &Json) {
+        if let Some(s) = &mut self.server {
+            s.broadcast(event);
+        }
+        if let Some(sink) = &self.event_sink {
+            sink.send(event);
+        }
+    }
 }

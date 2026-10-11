@@ -105,7 +105,8 @@ Three layers of evidence:
      (sway, Hyprland, niri, labwc, river or similar; not GNOME). Never
      the laptop: a compositor on the host is forbidden.
    - They get a release-profile binary from a CI build artifact (the
-     budgets job's binaries, uploaded by S-infra; not a release) or
+     budgets job's binaries, artifact `strand-release-binaries`; not a
+     release) or
      build it from source, plus the guide. The clock starts once the
      binary is installed and `strand new` has run. It stops when bar
      (a) runs on every monitor.
@@ -155,13 +156,14 @@ the surveys. "Allocation" is what a stream may spend.
 | M5 item | Estimate | Allocation |
 |---|---|---|
 | IPC `get`, `toggle`, `call`, `clear`; the token overlay layer and its notice | 15–40 KB | 35 KB |
-| D-Bus front end (one `#[zbus::interface]`; zbus is already linked) | 15–40 KB | 40 KB |
+| D-Bus front end (one `#[zbus::interface]`; zbus is already linked) | 15–40 KB | 37,400 B (40 KB less 0b's request channel, 2,600 B: decisions.md m5-integration) |
 | `strand report` (snapshot hop, smaps_rollup, frame summary ring) | 10–25 KB | 20 KB |
 | xdg-activation (Dispatch impls, handler input context, ordered action queue, launch env) | 8–20 KB | 20 KB |
 | Inspector runtime half (pick, identity/cells, provenance walk, dump JSON, outline, flash) | 30–80 KB | 55 KB |
 | `strand new` and `strand export` writers (the template is .rodata, which is not gated) | 8–20 KB | 15 KB |
 | `Suggestion` title, missing-key suggestions | 1–3 KB | 3 KB |
-| Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 42 KB |
+| Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 29,240 B (42 KB less the rest of 0b, 9,944 B, and the wave-0 hardening, 2,816 B: decisions.md m5-integration, m5-w0-harden) |
+| 0b's shared code (measured +12,544 B; charged to the two lines above) | — | (12,544 B, inside the lines above) |
 | **Total (CPU-only and GPU builds)** | **87–228 KB** | **230 KB** |
 | GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) |
 
@@ -188,6 +190,10 @@ lowered as reclaims land, tightened at close.**
   15 MiB.
 - At M5 close the integrator proposes to the owner the next 64 KiB above
   the final measured size as the gate from then on.
+- **Now (after wave 0): 15,859,712 B.** Reclaims 1 and 3 measured
+  −37,056 B, and the gate is recomputed from the lowered baseline:
+  15,620,615 + 230,000 = 15,850,615, rounded up to 64 KiB (decisions.md
+  m5-integration; 9,097 B of rounding, not spendable).
 
 Not taken: **(B) keep 15 MiB, as m4-integration-w2 did (decisions.md:9573:
 "the code moved, not the gate").** That would have left 71 KB plus
@@ -214,11 +220,14 @@ only if it saves bytes and every timing step stays green on GitHub's
   conversion glue goes away. Expect tens of KB. The dev-dependency stays.
   Proof: strand-theme's image tests and `image.rs`'s WebP cap test pass
   unchanged.
-- **resvg's raster path at opt "z"** (icons rasterise once per size and
-  are cached). It is kept only if list_scroll_bench and acceptance stay
-  green.
-- **blake3 at opt "z"**, kept only if reload_latency stays green on
-  GitHub.
+- **resvg's raster path at opt "z"**: tried and **withdrawn** (m5-size
+  reclaim 2). Icons rasterise once per size, but bindable SVG redraws on
+  the render path every animation frame, about 3.7 times slower at "z"
+  (210 µs against 56 µs at opt 3 for a 300 × 40 meter); Cargo.toml says
+  why in its place. Do not retry it without a faster bindable-SVG path.
+- **blake3 at opt "z"**: tried and **not taken** (m5-size reclaim 3): it
+  grew both binaries (+2,048 B CPU-only, +2,368 B GPU), since the
+  hashing is its SIMD assembly.
 - **Candidates found by `scripts/size-report.sh`**, the tool written
   below. It finds the top symbols per crate under fat LTO. Each change
   is taken only if it is behaviour-neutral, the owning crate agrees, and
@@ -253,6 +262,18 @@ Expected: 20–80 KB. Recorded as measured, not promised.
   baseline:
 
       .text CPU-only <size> (Δ vs 15,657,671; gate <g>) · GPU <size> (Δ vs 19,041,095; gate <g>)
+
+  **Reading Δ as spend.** Δ is against M4's baseline, so it already nets
+  out wave 0: the reclaims (−37,056 B CPU-only, −37,376 B GPU) and 0b
+  (+12,544 / +8,512, charged to the D-Bus line and the reserve). What
+  M5's allocations have spent is **Δ + 37,056** CPU-only (**Δ + 37,376**
+  GPU), 0b included. "Within allocation" means Δ + 37,056 ≤ 230,000,
+  that is **Δ ≤ +192,944** CPU-only (GPU: Δ + 37,376 ≤ 270,000, Δ ≤
+  +232,624). The gate (15,859,712 B) is hit only at Δ = +202,041, and
+  the 9,097 B between is the gate's rounding, which no stream may spend
+  (decisions.md m5-w0-harden). The wave-0 merged tree read Δ −24,576,
+  so 12,480 B spent (0b, to within 64 B); after the wave-0 hardening it
+  reads Δ −21,760, so 15,296 B spent and 214,704 B left.
 
 - Streams do not build release binaries routinely. The two least
   predictable items (D-Bus, inspector) each take one CPU-only
@@ -344,10 +365,10 @@ These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
 | S-core | 0b | the shared-code PR (below); then dissolves | interfaces as code |
 | S-size | 0 | the reclaim edits, `[profile.release.package]` entries (merged by the integrator), budgets.rs's opt-level test | size baseline; lowered gate |
 | S-infra | 0, then on call | `scripts/container/*`, `scripts/size-report.sh`, `scripts/gpu-measure.sh` (owner-run only), `.github/*` until wave 0 ends, the budgets ledger line, the three spikes, deferred CI tests in crates no stream owns | wave-0 tooling; spikes; deferred CI items |
-| S-ipc | 1, 2 | `strand/src/ipc/{query,call,overlay}.rs`, `run/request/{get,set,toggle,call,clear}.rs`, the COMMANDS table, the token overlay layer (strand-compiler `instantiate/overlay.rs`, beside settings' `set_overlay`), `strand-services/src/ipc_bus.rs`, `tests/m5/{cli,dbus_ipc}.rs` | CLI + IPC box |
+| S-ipc | 1, 2 | `strand/src/ipc/{query,call,overlay}.rs`, `run/request/{get,set,toggle,call,clear}.rs`, the request channel's arms in `run/request/{reload,watch}.rs` (a bus `reload` and `watch`), the `EventSink` it hands `Live::events_to`, the COMMANDS table, the token overlay layer (strand-compiler `instantiate/overlay.rs`, beside settings' `set_overlay`), `strand-services/src/ipc_bus.rs`, `tests/m5/{cli,dbus_ipc}.rs` | CLI + IPC box |
 | S-inspect | 1, 2, 3 | `strand-compiler/src/instantiate/inspect.rs`, `strand-scene/src/provenance.rs`, `strand-render/src/inspect/**` (CPU and GPU paths), `run/request/inspect.rs`, `ipc/inspect.rs`, `strand-dev/src/inspect/**`, `tests/m5/inspect.rs`, its `tests/lock.rs` case | Inspector box |
 | S-lsp | 1, 2 | `strand-dev/src/{diag.rs, refactor/**}`, `server.rs`'s capability block, `check/tree.rs` and `check/expr.rs` key suggestions, `diagnostic.rs`'s `Suggestion` use, `crates/strand-dev/tree-sitter-strand/**` | LSP box; both tree-sitter boxes (M1 line 69, M5) |
-| S-platform | 0 (spike), 2 | `strand-surface/src/activation.rs` and the key serials in `manager/seat.rs`; the activation parts of strand-services' notifications, apps and child; the activation path in `strand/src/services/adapter.rs`; strand-fake-wayland's `xdg_activation_v1` | xdg-activation box |
+| S-platform | 0 (spike), 2 | `strand-surface/src/activation.rs` and the key serials in `manager/seat.rs`; the activation parts of strand-services' notifications, apps and child; the activation path in `strand/src/services/adapter.rs`; strand-fake-wayland's `xdg_activation_v1`; the handler input context's route (architecture.md): the serial beside `NodeEvent` in strand-render's router (`input.rs`), `ToLogic::Event`'s `input` field and its arm in `run/shell.rs` (and `demo/host.rs`'s `Intent::Event`), `Instance::event`'s `input` parameter and the VM's per-invocation frame in strand-compiler, `DynService::action`'s `ActionCtx`, and the services→main token channel in `strand/src/run/` | xdg-activation box |
 | S-tools | 2, 3 | `strand-theme/src/export.rs`, `strand/src/{new.rs, export.rs, report.rs}`, `run/request/report.rs`, strand-render `frame_summary`, strand-surface `globals()`/`outputs()`, `tests/m5/{new,export,report}.rs`; optional `check/imports.rs` | `new`/`export`/`report` box; the importer half |
 | S-docs | 0 (writing), 1–3 | `docs/guide/**` (the `strand new` template included), `docs/spec.md`, `docs/reference/**` (generated), `strand-dev/src/reference.rs`, the ladder test, `tests/m5/newcomer.rs`, the agent-proxy harness, the design.md edits for the ladder and Async | Docs box; the newcomer exit's automated layers |
 | S-plugins | 2 | the builder API in `strand/src/lib.rs`'s `Shell::builder`, the `[[example]] plugin_hello`, plugin schema loading in `strand/src/services/mod.rs` and `strand-dev/src/server.rs` (a small PR S-lsp reviews), `tests/m5/plugin.rs`, the guide's plugin page | plugins half |
@@ -363,7 +384,16 @@ Per-file ownership in shared crates:
   S-docs and S-plugins add modules through small PRs that S-lsp reviews.
 - strand-compiler: S-inspect owns `instantiate/inspect.rs`; S-ipc owns
   `instantiate/overlay.rs` and the `toggle`/`call` entry points; S-lsp
-  owns `check/` key suggestions. The handler input context lands in 0b.
+  owns `check/` key suggestions. The handler input context's types
+  (`ActionCtx`, `InputCtx`, `ServiceHost::action`'s parameter) landed in
+  0b; its route from the seat to the VM and the token channel are
+  S-platform's (wave 2).
+- strand (the binary's crate): the shared dispatch points — the
+  `parse` arms in strand-core's `ipc.rs`, `Shell::request`'s arms,
+  `ToMain`/`ToLogic` and `Shell::handle`'s arms, `Live`'s fields,
+  `lib.rs`'s `mod` list and `strand::cli` re-exports, `ipc/mod.rs`'s
+  re-exports — take one-line entries from each stream that needs them
+  and are merged by the integrator (architecture.md, "Ownership").
 
 ## Wave 0
 
@@ -377,7 +407,10 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
   `strand-core::ipc` (types and JSON-line codec only, no I/O).
   - `strand` (the socket server and CLI), strand-services (the D-Bus
     front end) and strand-dev (`strand-dev inspect`) all name the same
-    types. strand-dev already links strand-core through strand-compiler.
+    types. strand-dev needs a direct strand-core dependency to name them
+    (linking it through strand-compiler is not enough; S-inspect adds
+    it, the integrator merges `Cargo.lock`). The socket's path is
+    `strand_core::ipc::socket_path()`, shared by every client.
   - Protocol v1 gains commands only:
     - `get{path}`, `toggle{path}`, `call{target,args}`, `clear{path}`,
       `report{}`;
@@ -404,14 +437,19 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
     owns the zbus connection) translates each call into a `Request`. It
     awaits the reply without blocking logic.
   - `watch` becomes a `Changed` signal fed by the same events the
-    socket's watchers get.
+    socket's watchers get, through `strand_core::ipc::EventSink`
+    (`Live::events_to`; landed in the wave-0 hardening).
   - It lives in strand-services because that thread owns the async
     runtime and the bus. The binary has no executor of its own.
 - **Snapshot hop between main and logic.** A logic→main request
   `Snapshot(kind, reply)` and its main→logic reply (`ToLogic::Snapshot`).
   It is used by `report` (compositor globals, outputs, frame summaries,
-  GPU status) and by the inspector (pick results, layouts). It is one
-  interface for both.
+  GPU status) and by the inspector (layouts, `Layout { surface, node }`).
+  It is one interface for both. The inspector's other messages share the
+  channel: `ToMain::{Highlight, DamageFlash, PickMode}`, and a click's
+  pick (or pick mode ending on main's side) comes back unasked as
+  `ToLogic::Picked(PickEvent)` (architecture.md; landed in the wave-0
+  hardening).
 - **strand-compiler `Instance` inspection** (read-only, never read by
   evaluation):
   - `identity(node) -> Identity{instance_path, key, id, sibling_index,
@@ -421,7 +459,9 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
   - `source_hash(file)`.
 - **The token overlay layer** (S-ipc): `Instance::set_token_overlay(path,
   value)` and `clear_token_overlay(path)`, mirroring settings'
-  `set_overlay`/`clear_overlay`. `TokenOrigin` gains an `Overlay` origin.
+  `set_overlay`/`clear_overlay`. `TokenTable`'s origin of an overlaid
+  token is the reserved string `strand_scene::tokens::OVERLAY_ORIGIN`
+  (`overlay`; there is no `TokenOrigin` type).
   A save that the overlay shadows raises the existing `Shadowed`-style
   notice: `accent: file changed but runtime overlay wins [clear]`.
   Addressed with the token spelling, `strand set '$accent' '#ff8800'`,
@@ -482,7 +522,9 @@ The interfaces of 0a, landed as code with no behaviour change:
 - **the lib/bin split**: `main.rs`'s module tree moves under `lib.rs`,
   and `main.rs` keeps `main` and the COMMANDS table. Done here, before
   the streams branch, so no later stream rebases across it. budgets.rs
-  confirms `.text` is unchanged (±1 KB);
+  confirms `.text` is unchanged (±1 KB) (measured +12,544 B CPU-only
+  with the request channel; accepted and charged to the ledger:
+  decisions.md m5-core, m5-integration);
 - `ActionCtx` threaded through `ServiceHost::action` and every host, with
   an empty context;
 - the `Renderer` inspect and `frame_summary` fields as inert stubs;
@@ -491,7 +533,9 @@ The interfaces of 0a, landed as code with no behaviour change:
 - `crates/strand/tests/m5.rs` with empty `m5/` modules, and the root
   `Cargo.toml` member for the tree-sitter package (integrator).
 
-Gate: `run.sh ci` green; `.text` unchanged within 1 KB.
+Gate: `run.sh ci` green; `.text` unchanged within 1 KB. (Missed: 0b
+measured +12,544 B; m5-integration accepted it and charged the D-Bus
+line and the reserve.)
 
 ### 0-size: S-size
 
@@ -582,7 +626,7 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
 - **`get`** reads what `set` writes: exported values, settings fields and
   token overlays (the Q10 addressing). Output is text, with `--json` as
   in `watch`. `--json` shows the layer for settings and tokens
-  (`Settings::layer`, `TokenOrigin`).
+  (`Settings::layer`, `TokenTable::origin`, `OVERLAY_ORIGIN`).
 - **`toggle`**: one logic-thread step, bool only. Any other type is an
   error naming the type. The refusal test at ipc.rs:873 is replaced.
 - **`call`**: service-level actions only (Q13). Arguments are text,
@@ -616,7 +660,8 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
     - `Changed` arrives;
   - budgets.rs's design-bar idle window and PSS, with the name owned
     (the strand-services idle tests never start `strand run`).
-- Budget: 35 KB (commands and overlay) + 40 KB (D-Bus).
+- Budget: 35 KB (commands and overlay) + 37,400 B (D-Bus: 40 KB less
+  0b's request channel, decisions.md m5-integration).
 - Ticks: the CLI + IPC box (shared).
 
 ### S-inspect (waves 1–3)
@@ -901,7 +946,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
 1. **The ledger is overrun anyway.** D-Bus and the inspector are the
    least predictable items. Mitigations:
    - measure each in its first week;
-   - the integrator keeps a 42 KB reserve;
+   - the integrator keeps a reserve (42 KB planned, 29,240 B after 0b
+     and the wave-0 hardening: decisions.md m5-integration,
+     m5-w0-harden);
    - cut scope before asking the owner: D-Bus `watch` as a signal only,
      a dump with fewer fields, "says why" dropped.
 2. **Merges collide on the budget** (decisions.md:9573). Every merge's
@@ -960,7 +1007,7 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   exports and settings, plus the Q10 tokens); text output with `--json`;
   `toggle` bool only; `strand clear` is the CLI twin of `[clear]`.
 - **Kept badges**: three kinds (`Report::kept_over_default`, persist,
-  `Settings::layer`/`TokenOrigin`).
+  `Settings::layer`/`TokenTable::origin`'s `OVERLAY_ORIGIN`).
 - **Reset subtree**: the scope of `strand reload --hard`, limited to the
   subtree. Settings are untouched.
 - **Inspector while locked**: refused, and ended on lock. Lock surfaces
@@ -1008,7 +1055,8 @@ answer; this list is the short form.
 6. **The CPU-only `.text` gate: (A).** A provisional re-base to
    15,925,248 B (+196,608) on day one, lowered as reclaims land, back to
    15 MiB if they reach about 159 KB, tightened to the next 64 KiB above
-   the final size at close. The GPU gate stays 18.5 MiB.
+   the final size at close. The GPU gate stays 18.5 MiB. (Lowered to
+   15,859,712 B after wave 0's reclaims: decisions.md m5-integration.)
 7. **Reclaim policy: behaviour-neutral reclaims only**, each kept only
    if GitHub's timing job stays green. No opt-level cuts on gated hot
    paths.

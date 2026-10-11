@@ -1430,6 +1430,7 @@ impl Shell {
             buses: None,
             icon_theme_switched: None,
             requests_to: None,
+            events_to: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();

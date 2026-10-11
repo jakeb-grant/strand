@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests ledger.sh on hand-written ledger files.
+# Tests ledger.sh on hand-written ledger files, and that the budgets
+# job uploads the binaries it measures.
 # Run: scripts/container/test-ledger.sh (no build needed)
 
 set -uo pipefail
@@ -53,6 +54,18 @@ if grep -q '^\.text CPU-only 1 ' "$DIR/summary" 2>/dev/null; then
   echo "ok   the job summary gets the line"
 else
   echo "FAIL the job summary gets the line"; bad=1
+fi
+
+# The budgets job uploads the two release binaries its gates measure,
+# for M5's human trials (docs/m5-plan.md, "0-infra").
+job=$(awk '/^  budgets:$/ {on=1; next} on && /^  [a-z][a-z-]*:$/ {exit} on' \
+  "$HERE/../../.github/workflows/ci.yml")
+if grep -q 'trial/strand-gpu"$' <<<"$job" && grep -q 'trial/strand-cpu"$' <<<"$job" &&
+  grep -q 'actions/upload-artifact@v4' <<<"$job" &&
+  grep -q 'name: strand-release-binaries' <<<"$job"; then
+  echo "ok   the budgets job uploads both release binaries"
+else
+  echo "FAIL the budgets job uploads both release binaries"; bad=1
 fi
 
 [ "$bad" = 0 ] && echo "test-ledger: all passed"

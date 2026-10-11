@@ -299,8 +299,11 @@ fn block_on<F: std::future::Future + Unpin>(mut f: F) -> F::Output {
 
 /// (M5 0b) The request channel from another thread (S-ipc's D-Bus front
 /// end) reaches the same dispatch as the socket: each call is answered
-/// through its reply, M5's commands as unknown until their streams
-/// land; `reload` and `watch` are the socket's.
+/// through its reply, M5's commands as the socket answers them until
+/// their streams land (unknown, and `reset{node}` M4's "`reset` needs a
+/// `path`"); `reload` and `watch` are the socket's. The events the
+/// socket's watchers get reach the event sink with no socket bound (the
+/// D-Bus `Changed` signal's feed), and main's pick events are taken.
 #[test]
 fn requests_from_another_thread_are_answered_by_the_logic_loop() {
     let dir = temp_dir("bus-requests");
@@ -317,10 +320,15 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
         .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
         .unwrap();
     let (give, take) = std::sync::mpsc::channel();
+    let (heard, events) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
     let live = Live {
         requests_to: Some(logic::RequestsTo(Box::new(move |r| {
             let _ = give.send(r);
         }))),
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
         ..Live::default()
     };
     let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
@@ -345,6 +353,25 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
             json!({"ok": false, "error": format!("unknown command `{cmd}`")})
         );
     }
+    // `reset` is known and its `{node}` form not served yet: M4's answer,
+    // as the socket gives it.
+    assert_eq!(
+        ask(ipc::Request::ResetNode { node: "1v0".into() }),
+        json!({"ok": false, "error": "`reset` needs a `path`"})
+    );
+    // An event reaches the sink without a socket.
+    to_logic.send(ToLogic::Picked(PickEvent::Ended)).unwrap();
+    to_logic.send(ToLogic::Notice("from main".into())).unwrap();
+    let ev = loop {
+        let ev = events.recv_timeout(Duration::from_secs(10)).unwrap();
+        if ev["notices"] == json!(["from main"]) {
+            break ev;
+        }
+    };
+    assert_eq!(
+        ev,
+        json!({"event": "notices", "kept_over_default": [], "notices": ["from main"]})
+    );
     // A served command's own answer reaches the caller, and acts.
     assert_eq!(
         ask(ipc::Request::Set {
@@ -414,6 +441,7 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
         buses: None,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -484,6 +512,7 @@ fn saves_reload_live_with_state_kept() {
         buses: None,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -714,6 +743,7 @@ fn spawn_live_quiet(
         buses,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1505,6 +1535,7 @@ fn five_save_styles_land_on_a_cold_boot() {
         buses: None,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2111,6 +2142,7 @@ fn main_thread_notices_reach_watchers_that_come_later() {
         buses: None,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2178,6 +2210,7 @@ fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
         buses: None,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2287,6 +2320,7 @@ fn an_unavailable_gpu_is_a_notice_once() {
         buses: None,
         icon_theme_switched: None,
         requests_to: None,
+        events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();

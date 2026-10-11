@@ -21,10 +21,14 @@
 //! [`IpcRequests`] carries requests from another thread (the services
 //! thread's D-Bus front end) to the logic loop, which answers each
 //! through a [`Reply`] that an async caller awaits without a runtime
-//! here.
+//! here; an [`EventSink`] carries the events the socket's watchers get
+//! the other way (the D-Bus `Changed` signal). [`socket_path`] is where
+//! every client finds the socket.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -468,9 +472,117 @@ impl Drop for IpcReceiver {
     }
 }
 
+/// Where the events the socket's watchers get also go: the D-Bus front
+/// end's `Changed` signal (S-ipc; docs/architecture.md, "M5
+/// interfaces"). The logic loop calls it with every event it streams
+/// (`{"event": "reload" | "fault" | "notices", …}`), whether or not a
+/// socket is bound or watched; it runs on the logic thread and must not
+/// block (hand the event to the services thread and return).
+#[derive(Clone)]
+pub struct EventSink(Arc<dyn Fn(&Answer) + Send + Sync>);
+
+impl EventSink {
+    /// A sink calling `f` with each event.
+    pub fn new(f: impl Fn(&Answer) + Send + Sync + 'static) -> Self {
+        EventSink(Arc::new(f))
+    }
+
+    /// Hand `event` on.
+    #[inline]
+    pub fn send(&self, event: &Answer) {
+        (self.0)(event);
+    }
+}
+
+impl fmt::Debug for EventSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EventSink")
+    }
+}
+
+/// The socket of the shell on this Wayland display: `$STRAND_SOCKET`, or
+/// `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock` (`strand-0.sock`
+/// without a display name). `None` without a runtime directory. Shared
+/// by the shell, its CLI and `strand-dev inspect`, so every client finds
+/// the socket by the same rule.
+#[inline]
+pub fn socket_path() -> Option<PathBuf> {
+    socket_path_from(
+        std::env::var_os("STRAND_SOCKET"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("WAYLAND_DISPLAY"),
+    )
+}
+
+/// [`socket_path`] from the three variables' values.
+#[inline]
+pub fn socket_path_from(
+    explicit: Option<OsString>,
+    runtime: Option<OsString>,
+    display: Option<OsString>,
+) -> Option<PathBuf> {
+    if let Some(p) = explicit.filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    let dir = PathBuf::from(runtime.filter(|d| !d.is_empty())?);
+    if !dir.is_absolute() {
+        return None;
+    }
+    let display = display
+        .map(|d| {
+            // A display given as a path (`/run/user/1000/wayland-1`) is
+            // named by its file name.
+            let p = PathBuf::from(d);
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        })
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "0".into());
+    Some(dir.join(format!("strand-{display}.sock")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_socket_is_per_display() {
+        let os = |s: &str| Some(OsString::from(s));
+        assert_eq!(
+            socket_path_from(None, os("/run/user/1"), os("wayland-1")),
+            Some(PathBuf::from("/run/user/1/strand-wayland-1.sock"))
+        );
+        assert_eq!(
+            socket_path_from(None, os("/run/user/1"), os("/run/user/1/wayland-2")),
+            Some(PathBuf::from("/run/user/1/strand-wayland-2.sock"))
+        );
+        assert_eq!(
+            socket_path_from(None, os("/run/user/1"), None),
+            Some(PathBuf::from("/run/user/1/strand-0.sock"))
+        );
+        assert_eq!(socket_path_from(None, None, os("wayland-1")), None);
+        assert_eq!(socket_path_from(None, os("relative"), None), None);
+        assert_eq!(
+            socket_path_from(os("/tmp/s.sock"), None, None),
+            Some(PathBuf::from("/tmp/s.sock"))
+        );
+    }
+
+    #[test]
+    fn an_event_sink_hands_each_event_on() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&seen);
+        let sink = EventSink::new(move |ev| into.lock().unwrap().push(ev.clone()));
+        let copy = sink.clone();
+        sink.send(&json!({"event": "reload"}));
+        copy.send(&json!({"event": "notices"}));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [json!({"event": "reload"}), json!({"event": "notices"})]
+        );
+        assert_eq!(format!("{sink:?}"), "EventSink");
+    }
 
     fn every_request() -> Vec<Request> {
         vec![
