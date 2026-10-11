@@ -201,8 +201,12 @@ impl Raster {
         let Some(bbox) = damage.bounds() else {
             return;
         };
-        self.prepare(items, &damage, window);
+        // The trim's clock is read before this frame touches its
+        // entries, so none it builds or reuses counts as idle however
+        // long `prepare` takes (a slow runner took over the 20 ms a test
+        // sets, and freed a shadow the frame had just built).
         let now = std::time::Instant::now();
+        self.prepare(items, &damage, window);
         self.cache.trim_idle(now);
         self.offscreen
             .prepare(items, &damage, surface, atlas, &self.cache, scale);

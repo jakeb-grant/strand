@@ -169,9 +169,9 @@ in decisions.md.
    tripwire, asserted again (m5-infra, m5-speed-gpu-bound). The plan
    proposed 8 MiB; the speed review measured 4.6–8.1 MiB left after the
    drop over six presented runs on renderD128, so the merged bound is
-   12 MiB (`PRESENTED_SLACK_KB`), about 4 MiB over that spread. It has
-   not been re-run on the GPU at 12 MiB (`gpu.sh` with
-   `STRAND_GPU_PRESENT=1`; advisory).
+   12 MiB (`PRESENTED_SLACK_KB`), about 4 MiB over that spread. The
+   integrator's `STRAND_GPU_PRESENT=1 gpu.sh` run on the merged tree
+   left 7,128 kB over the baseline after the drop, inside it.
 2. **`scripts/gpu-measure.sh`'s KMS-card run: not needed.** `gpu.sh`
    presents on renderD128 (Q19 (A)), which is what the GPU-cost box
    needed. The script stays, owner-optional; agents never run it.
@@ -347,8 +347,8 @@ only with a measurement and a recorded reason.
     (read before `max_delay`), once in run 37874718084. 0 of 30 failed
     in the container.
 - Recurring and unexplained: `strand/tests/wm_audio_shells.rs::a_test_tone_lifts_a_spectrum_bar`
-  (the tone's bar never lifted) failed twice on GitHub (runs
-  38065740030 and 38076927579); neither commit touched audio or render
+  (the tone's bar never lifted) failed three times on GitHub (runs
+  38065740030, 38076927579 and 38116737469, the last at `27e2660`); neither commit touched audio or render
   code. The meter's start, failure and retry lines are info now, and
   the failure detail says whether strand's capture stream started,
   failed or was never linked (decisions.md m4-audit rounds 6 and 9). It

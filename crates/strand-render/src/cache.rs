@@ -835,6 +835,21 @@ mod tests {
         assert!(c.seen.is_empty());
     }
 
+    /// A paint reads the trim's clock before it touches its entries
+    /// (`Raster::paint`): an entry touched after that instant is never
+    /// idle, however long the frame's preparation took.
+    #[test]
+    fn entries_touched_after_the_trim_clock_stay() {
+        let mut c = PaintCache::default();
+        c.set_idle_free(Duration::from_millis(1));
+        let now = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        c.begin_frame();
+        c.shadow(&shadow()).unwrap();
+        c.trim_idle(now);
+        assert!(c.bytes() > 0, "built after the clock was read");
+    }
+
     #[test]
     fn the_cache_reuses_and_evicts() {
         let mut c = PaintCache::default();
