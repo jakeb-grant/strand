@@ -19,10 +19,13 @@
 //!   rest is held back with the diagnostics of the whole attempt and
 //!   retried with the next save.
 //! - **Keep the last good tree.** Nothing with errors is ever committed.
-//!   Each commit writes its sources to a cache keyed by their hash, the
-//!   compiler version and the schema hash, so a config that is broken at
-//!   boot runs its last good version (with the broken files held back
-//!   on top of it).
+//!   Each commit's sources are written to a cache keyed by their hash,
+//!   the compiler version and the schema hash, so a config that is
+//!   broken at boot runs its last good version (with the broken files
+//!   held back on top of it). The write is [`Loader::store_cache`]'s,
+//!   which the caller makes once the outcome is on its way: it is disk
+//!   I/O (about 0.5 ms on the owner's btrfs `~/.cache`), never on the
+//!   path from a save to its pixels (decisions.md, m5-open-reload).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -101,6 +104,9 @@ pub struct Loader {
     /// files under them are kept, not dropped.
     unlisted: Vec<(PathBuf, String)>,
     cache_error: Option<String>,
+    /// A commit's sources not yet written to the cache
+    /// ([`Loader::store_cache`]).
+    unstored: bool,
     /// The last attempt had errors, held or unreadable files (see
     /// [`Outcome::cleared`]).
     dirty: bool,
@@ -156,6 +162,7 @@ impl Loader {
             dirs: Vec::new(),
             unlisted: Vec::new(),
             cache_error: None,
+            unstored: false,
             dirty: false,
             warned: false,
             compiled: false,
@@ -613,19 +620,34 @@ impl Loader {
             .map(|p| crate::check::shaders::resolve(p, &self.root))
             .collect();
         self.wgsl.get_mut().retain(|p, _| used.contains(p));
-        // Best effort: a cache that cannot be written only loses the
-        // fallback for the next broken boot.
+        // The cache is written by `store_cache`, after the caller has
+        // sent the build on.
+        self.unstored = self.cache.is_some();
+        self.last = Some(build.clone());
+        build
+    }
+
+    /// Writes the last committed sources to the cache, if a commit since
+    /// the last call has not: the caller makes it once the outcome is on
+    /// its way (the compiler worker, after sending the build to the logic
+    /// thread), so the disk write is never on the path from a save to its
+    /// pixels. Best effort: a cache that cannot be written only loses the
+    /// fallback for the next broken boot ([`Loader::cache_error`]). A
+    /// no-op without a cache or a commit to store.
+    pub fn store_cache(&mut self) {
+        if !std::mem::take(&mut self.unstored) {
+            return;
+        }
         if let Some(cache) = &self.cache {
             self.cache_error = cache
                 .store(&self.live, &self.schema)
                 .err()
                 .map(|e| e.to_string());
         }
-        self.last = Some(build.clone());
-        build
     }
 
-    /// Why the last good sources could not be cached, if they could not.
+    /// Why the last good sources could not be cached by the last
+    /// [`Loader::store_cache`], if they could not.
     pub fn cache_error(&self) -> Option<&str> {
         self.cache_error.as_deref()
     }

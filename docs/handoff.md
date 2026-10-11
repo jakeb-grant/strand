@@ -267,7 +267,15 @@ and m4-owner-3; summarised under "M4 owner items" below).
   `theme_swap_bench`, `list_scroll_bench`) print WARN on a miss
   (`gate-misses.sh`); `STRAND_STRICT_TIMING=1` makes them fail. The
   laptop's token p95 is about 20–21 ms headless against a break near
-  19.9 ms; the likely cause, the power state, is unconfirmed.
+  19.9 ms when the machine is otherwise idle. Cause confirmed
+  (decisions.md m5-open-reload): the CPU idles down in the 250 ms
+  between edits, so every stage of work runs about twice as slow
+  (about 4.5 ms against 2.1 ms after the 15 ms coalesce). Pinning to P-,
+  E- or low-power cores changes nothing; one busy loop on a core the
+  test does not use (`taskset -c 15 sh -c 'while :; do :; done' &`,
+  the test on 0–14) makes it pass, 17.9–18.1 ms. The gate is right and
+  stays; the last-good cache write (0.5 ms on btrfs) left the reload
+  path in the same section.
 - The lint job fetches the pinned tree-sitter CLI 0.27.0 (sha256 in
   ci.yml and the Dockerfile; edit both together) and runs
   `check-tree-sitter.sh` (passes until S-lsp writes `grammar.js`) and
