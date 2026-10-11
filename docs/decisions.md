@@ -10209,3 +10209,101 @@ Fixes to wave 0 (`laptop/m5-w0`) from its audit, before wave 1 branches. Code co
 ## m5-w1-owner
 
 **2026-10-11 · m5-w1-owner: the hardening's interface choices kept.** The owner kept all four interface choices m5-w0-harden made and handoff.md listed as open item 6: inspector messages carry a node only (main resolves surfaces with `Renderer::surfaces_of`); invocations are numbered from 1 and kept across `await`, 0 outside any handler and unordered, one queue for all services; an overlaid token's origin is the reserved string `overlay` (`OVERLAY_ORIGIN`), replacing the file's origin while the overlay holds; the input-context route stays architecture.md text and S-platform file ownership until a stream builds it. Wave 1 opens on `main` at `88d4d99`, integrating on `laptop/m5-w1` (m5-w0 was merged and deleted).
+
+## m5-tools
+
+**2026-10-11 · m5-tools: `strand export` writes palette roles only, one table per target, and never invents a colour.** design.md says the export "writes the same palette for the rest of the desktop" (Wallpaper palettes) and that the palette is the Material 3 role schema, 1:1 (Token model). So each target key below takes exactly one of the 49 roles (`strand_theme::Role`, role.rs:40–90), by Strand name, at the role's opaque sRGB value written as `#rrggbb` (the precision of the persisted palette, palette.rs:90–100; `Partial::fill` makes every role opaque, palette.rs:243). No base or component token is exported (`$fg.muted`, `$surface.hi` are Strand's derivations, not the palette), no runtime token overlay either (`strand set $accent …` is a live experiment the overlay says how to `clear`; the export writes what the theme file resolves to), and no key gets a colour the palette lacks: where a target wants a colour Material 3 has no role for (GTK's success and warning, a terminal's 16 ANSI colours), the key is not written and the target's own value stands. Deriving those would add a concept (a second derivation table with hues the theme never chose) and would recolour meaning: programs print errors in ANSI red and successes in green, and a Material palette holds one hue family plus `error`. Keys are written in the tables' order, one per line, under a one-line comment naming the palette's `source` and `dark`/`light`, so the golden files (`crates/strand-theme/tests/export.rs`, catppuccin-mocha) are stable. The writer is pure (`Palette` → `String` in `strand-theme/src/export.rs`); `-o <file>` goes through `strand_theme::writer::write_atomic` (writer.rs:38), not the queued `FileWriter`, since the command exits right after. Each file is meant to be included by the user's own config (kitty `include`, GTK `@import`, Hyprland `require`/`source`), which Strand never edits.
+
+**2026-10-11 · m5-tools: `gtk` writes libadwaita's named colours with `@define-color`.** One file serves GTK 4 with libadwaita and GTK 3 (adw-gtk3 and apps' own CSS read the same names). `@define-color` rather than libadwaita 1.6's `--x-color` variables, because libadwaita still defines its colours that way and binds each variable to the named colour: the stylesheet in the owner's libadwaita 1.10.0 (read from `/usr/lib/libadwaita-1.so`'s strings) has `--window-bg-color: @window_bg_color` and the same for every key below, so a user `gtk.css` (provider priority USER) redefining the name recolours the widgets, while a `:root { --x: … }` block would be a parse error on every GTK 3 start. The surface keys follow Material 3's own component roles (top app bar, navigation drawer, menu, dialog, card), with Adwaita's ordering kept where M3 has no opinion. Material 3 raises containers by darkening in light and lightening in dark; Adwaita's light headerbar and popover are white, lighter than the window. The export keeps M3's direction: it is the palette's system, and the dark and light schemes then agree.
+
+| GTK key | Role | Why |
+| --- | --- | --- |
+| `accent_color` | `accent` | M3 `primary` is already legible as text on surfaces, which is what libadwaita's standalone accent is for |
+| `accent_bg_color` | `accent` | a suggested button is M3's filled button: `primary` |
+| `accent_fg_color` | `on_accent` | |
+| `destructive_color` | `error` | |
+| `destructive_bg_color` | `error` | |
+| `destructive_fg_color` | `on_error` | |
+| `error_color` | `error` | |
+| `error_bg_color` | `error` | |
+| `error_fg_color` | `on_error` | |
+| `window_bg_color` | `surface` | M3's default app background; `bg` (M3's deprecated `background`) equals it in every scheme and importer (palette.rs:268–269, import.rs's Catppuccin table) |
+| `window_fg_color` | `fg` | |
+| `view_bg_color` | `surface_lowest` | Adwaita's view is lighter than the window in light and darker in dark (`#ffffff`/`#fafafb`, `#1d1d20`/`#222226`), exactly `surface_container_lowest`'s place |
+| `view_fg_color` | `fg` | |
+| `headerbar_bg_color` | `surface_container` | M3's top app bar once content scrolls under it |
+| `headerbar_fg_color` | `fg` | |
+| `headerbar_border_color` | `fg` | Adwaita uses the foreground here and applies its own border opacity |
+| `headerbar_backdrop_color` | `surface` | Adwaita's own default is `@window_bg_color`; written so the file stands alone |
+| `sidebar_bg_color` | `surface_container` | M3's navigation drawer; Adwaita draws sidebar and headerbar alike |
+| `sidebar_fg_color` | `fg` | |
+| `sidebar_backdrop_color` | `surface_low` | Adwaita's backdrop is one step back towards the window |
+| `secondary_sidebar_bg_color` | `surface_low` | between the window and the sidebar, as in Adwaita |
+| `secondary_sidebar_fg_color` | `fg` | |
+| `secondary_sidebar_backdrop_color` | `surface` | one step back again |
+| `card_bg_color` | `surface_low` | M3's elevated card |
+| `card_fg_color` | `fg` | |
+| `dialog_bg_color` | `surface_high` | M3's dialog container |
+| `dialog_fg_color` | `fg` | |
+| `popover_bg_color` | `surface_container` | M3's menu container |
+| `popover_fg_color` | `fg` | |
+| `thumbnail_bg_color` | `surface_highest` | Adwaita's highest neutral |
+| `thumbnail_fg_color` | `fg` | |
+
+Not written, so Adwaita's own stand: `success_*` and `warning_*` (no M3 role); every `*_shade_color`, the other `*_border_color`s, `shade_color` and `scrollbar_outline_color` (translucent black or white that shades whatever surface is under it); the named palette `blue_1` … `dark_5`; the GTK 3 `theme_*` names (libadwaita and adw-gtk3 define them as references to the keys above). The file has no `prefers-color-scheme` media query: it holds the one palette the theme resolved, dark or light.
+
+**2026-10-11 · m5-tools: `kitty` writes kitty's UI colours and leaves colours 0–15 to the user.** kitty.conf's `key #rrggbb` lines, for `include strand.conf` at the end of the user's kitty.conf. color0–color15 are not written (first paragraph): a user keeps a terminal scheme for them and lets this file set the rest. Selection uses the accent container pair, since M3 guarantees `on_accent_container` on `accent_container` and the selection must differ from the cursor. URLs take `tertiary`, M3's contrasting accent, so a link stands apart from the cursor and the selection, which are both accent-coloured. The three marks take the other three container pairs.
+
+| kitty key | Role | Why |
+| --- | --- | --- |
+| `foreground` | `fg` | |
+| `background` | `surface` | as GTK's window |
+| `selection_foreground` | `on_accent_container` | |
+| `selection_background` | `accent_container` | |
+| `cursor` | `accent` | |
+| `cursor_text_color` | `on_accent` | |
+| `url_color` | `tertiary` | |
+| `active_border_color` | `accent` | |
+| `inactive_border_color` | `outline_variant` | M3's low-emphasis divider |
+| `bell_border_color` | `error` | |
+| `active_tab_foreground` | `on_accent` | |
+| `active_tab_background` | `accent` | |
+| `inactive_tab_foreground` | `fg_variant` | M3's medium-emphasis text |
+| `inactive_tab_background` | `surface_container` | |
+| `tab_bar_background` | `surface_low` | one step behind the inactive tabs, so they read as tabs |
+| `mark1_foreground` | `on_secondary_container` | |
+| `mark1_background` | `secondary_container` | |
+| `mark2_foreground` | `on_tertiary_container` | |
+| `mark2_background` | `tertiary_container` | |
+| `mark3_foreground` | `on_error_container` | |
+| `mark3_background` | `error_container` | |
+
+Not written: color0–color15, `visual_bell_color`, `tab_bar_margin_color`, `wayland_titlebar_color` (kitty's defaults follow `background`).
+
+**2026-10-11 · m5-tools: `hyprland` writes Lua by default and hyprlang with `--classic`, as `strand compositor-rules` does.** Hyprland 0.55 moved its configuration to Lua and deprecated hyprlang (wave4-exit-ci, laptop-resilience; the owner runs 0.56.2, `hyprctl -j version`), while older releases read only hyprlang, and one file cannot be both. m4-surface-w1 already settled this for `strand compositor-rules`: Lua by default, `--classic` for hyprlang (rules.rs:277–282). The export takes the same flag rather than a new target name or version detection (a pure writer does not ask the running compositor). Lua form: one `hl.config({ … })` call with nested tables (`general = { col = { active_border = "rgb(rrggbb)", … } }`, the shape of `/usr/share/hypr/hyprland.lua`), for `require("strand")` from the user's config. Classic form: `general { col.active_border = rgb(rrggbb) … }` blocks, for `source =`. Window and group borders map onto M3's colour families. Plain windows take the accent. Groups are a second kind of active window, so they take the secondary family. A locked group, or a window that refuses grouping, is a third state, so it takes the tertiary family (locked groups the strong roles, the refusing windows' borders the container ones). The groupbar's text sits on the groupbar's fill, so it takes each fill's `on_` role. The shadow keeps Hyprland's default opacity (`0xee`) in the palette's `shadow` colour, since an opaque shadow would be harsher than the default, and the palette's alpha is always 1.
+
+| Hyprland key | Role | Why |
+| --- | --- | --- |
+| `general.col.active_border` | `accent` | |
+| `general.col.inactive_border` | `outline_variant` | M3's low-emphasis divider |
+| `general.col.nogroup_border_active` | `tertiary` | |
+| `general.col.nogroup_border` | `tertiary_container` | |
+| `group.col.border_active` | `secondary` | |
+| `group.col.border_inactive` | `secondary_container` | |
+| `group.col.border_locked_active` | `tertiary` | |
+| `group.col.border_locked_inactive` | `tertiary_container` | |
+| `group.groupbar.col.active` | `secondary` | |
+| `group.groupbar.col.inactive` | `secondary_container` | |
+| `group.groupbar.col.locked_active` | `tertiary` | |
+| `group.groupbar.col.locked_inactive` | `tertiary_container` | |
+| `group.groupbar.text_color` | `on_secondary` | |
+| `group.groupbar.text_color_inactive` | `on_secondary_container` | |
+| `group.groupbar.text_color_locked_active` | `on_tertiary` | |
+| `group.groupbar.text_color_locked_inactive` | `on_tertiary_container` | |
+| `decoration.shadow.color` | `shadow` | at alpha `0xee` (`rgba(rrggbbee)`) |
+| `misc.background_color` | `bg` | M3's `background`, behind everything when no wallpaper is drawn |
+| `misc.col.splash` | `on_bg` | the splash is text on that background |
+
+Not written: `decoration.shadow.color_inactive` (it falls back to `color`), gradients (one colour per key), and every non-colour option. Open for wave 2: whether a second `hl.config` call sets only the keys it names, so that the user's own later `hl.config` keeps its other options, needs checking against Hyprland 0.56.2 (the matrix leg's `hyprctl eval`, which needs the `--` comment lines stripped, m4-integration-w1). `--classic` must also be checked against the oldest hyprlang Hyprland the matrix runs: the `text_color_*` variants and the `decoration { shadow { } }` block are not in every hyprlang release, and a key an old Hyprland does not know is a config error there, so drop such keys from the classic table rather than break an older config.
+
+**2026-10-11 · m5-tools: the palette source, confirmed against the code: the persisted palette, else an offline solve that must not fall back, else the error.** (1) **Persisted.** `strand run` keeps the last palette the token table was built with. `Instance::token_table` evaluates `use palette` (instantiate/mod.rs:467), takes an `Async`'s usable value (:477) and, on a `Palette`, calls `ThemeHost::remember_palette` (:485). That writes `Palette::to_text` (palette.rs:90) off the logic thread when the palette changed (vm/theme.rs:296–313), to `<palette_dir>/palette` (`LAST_PALETTE`, vm/theme.rs:81). `palette_dir` is the persist store's sibling `palettes` (`Storage::palette_dir`, instantiate/mod.rs:665–668), and the persist store is `$XDG_STATE_HOME/strand/persist`, else `$HOME/.local/state/strand/persist` (persist.rs:780–794). So the file is **`$XDG_STATE_HOME/strand/palettes/palette`**, beside the portal's kept values (`palettes/system`, run/logic.rs:178). A failed or still-pending palette is never written (instantiate/mod.rs:491 falls back to the last one or the built-in one without remembering it), so the file always holds a palette the theme resolved, the target and not a mid-swap frame. A config with no `use palette` writes the built-in palette (`default_palette`, instantiate/mod.rs:437–458, source `built-in`), which is that config's real theme. `STRAND_NO_CACHE` does not touch it: that switches off the last-good cache (`live::cache_dir`), not the palette. A run with no state directory keeps none (`storage_or`, run/mod.rs:406–423, `persist: None` so `palette_dir` is `None`). The export reads the file with `Palette::from_text` (palette.rs:104), which derives roles an older schema lacks and returns `None` for a file naming no role; `None` and a missing or unreadable file both mean "not persisted". The file is per user, not per config directory: it is the palette last on screen, whichever config showed it, and that is what the rest of the desktop should match, so it wins even when the theme file has changed since (running strand once refreshes it). (2) **Offline solve.** "The code `strand check` loads" is `find_files` (check.rs:112) and `strand_compiler::compile_with(&map, services::schema())` (check.rs:161). Check stops there and never evaluates anything, so the solve adds a mount: an `Instance` over the compiled program with the deterministic `SchemaHost` (vm/schema_host.rs), `system.dark`, `.accent` and `.contrast` seeded from `palettes/system` when it exists (`system::Last::load`, crates/strand/src/system.rs) and otherwise left at the schema's defaults (light, no accent, contrast 0). It never contacts the portal or any bus: "offline" means no running shell and no services. Settings files (`prefs.toml`) are read, since they are the user's config, but nothing is written. Its storage is therefore the no-state-directory shape (`persist: None`, settings overlays in a temporary directory, run/mod.rs:416–420), so `palette_dir` is `None` and `ThemeHost` neither reads nor writes `palettes/palette` (vm/theme.rs:108–114, :302). `persist` cells start from their defaults, which is right when no palette was ever persisted, since nothing was. A `material(image:)` palette is waited for (`ThemeHost::wait_images`, vm/theme.rs:277, a few seconds) and flushed before reading, so the wallpaper palette is exported rather than its `??` seed fallback; on a timeout the usable value is taken. (3) **The error.** Compile errors, an evaluation error, or no usable value after the wait end in `strand export: no palette: run strand once, or fix the theme`, followed by the cause (check's rendered diagnostics, or the evaluation error). The solve cannot read the solved palette from the token table: `token_table` swallows a failing palette (`self.error(…)`, then the built-in palette, instantiate/mod.rs:467–494), so an offline solve that read the table would export the built-in colours for a broken theme instead of erroring. Wave 2 needs a strand-compiler accessor that evaluates `prog.use_palette` and returns the error (with `default_palette` only when the program has no `use palette`), through architecture.md since instantiate is not S-tools' file.
