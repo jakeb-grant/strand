@@ -157,10 +157,16 @@ cargo install --locked --path crates/strand
 cargo install --locked --path crates/strand-auth   # the lock's PAM helper
 ```
 
-The lock screen checks passwords in a separate helper, the `strand-auth`
-binary of its own package: `cargo install --path crates/strand` alone
-does not install it, and without it no password can unlock a `lock`
-(`strand run` warns at start, in its log and to `strand watch`).
+A config with a `lock` needs `strand-auth`: run both install commands.
+The lock screen checks passwords in that separate helper, the binary of
+its own package, so `cargo install --path crates/strand` alone does not
+install it (cargo takes one `--path` per install). Installing from the
+repository takes both in one command:
+`cargo install --locked --git https://github.com/jakeb-grant/strand strand strand-auth`.
+Without the helper no password can unlock a `lock`:
+`strand check` reports an error (`check::lock_no_helper`), and
+`strand run` warns at start, in its log and to `strand watch`, and still
+locks when asked (failing closed), leaving a TTY as the only way out.
 strand looks for it beside its own executable (`~/.cargo/bin` after the
 commands above, `target/release` in the build tree), then in
 `/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`.
