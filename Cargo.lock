@@ -2816,11 +2816,13 @@ dependencies = [
  "calloop",
  "chrono",
  "futures-util",
+ "gif",
  "image",
  "libc",
  "libmimalloc-sys",
  "log",
  "mimalloc",
+ "png",
  "rustix",
  "serde",
  "serde_json",
@@ -2843,6 +2845,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "xkeysym",
  "zbus",
 ]
 

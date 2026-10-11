@@ -196,6 +196,14 @@ lowered as reclaims land, tightened at close.**
   −37,056 B, and the gate is recomputed from the lowered baseline:
   15,620,615 + 230,000 = 15,850,615, rounded up to 64 KiB (decisions.md
   m5-integration; 9,097 B of rounding, not spendable).
+- **Speed-profile re-base (proposed, decisions.md m5-speed-gates).**
+  `laptop/m5-speed-profile` moves the release profile to speed (the
+  owner's policy of 2026-10-10). `strand` at opt 3 runs the whole
+  binary's fat-LTO pass at 3. That adds 2,322,960 B CPU-only and
+  2,839,120 B GPU, a re-base rather than M5 spend; the allocations
+  below are unchanged. The proposed gates are **18,219,008 B** CPU-only
+  (the rule above with the re-base added, 45,433 B of rounding) and
+  **22,282,240 B** GPU. The integrator sets them when the branch merges.
 
 Not taken: **(B) keep 15 MiB, as m4-integration-w2 did (decisions.md:9573:
 "the code moved, not the gate").** That would have left 71 KB plus
@@ -208,7 +216,9 @@ the CLI + IPC box open), the inspector's outline and flash, and
 
 Keep 18.5 MiB. The GPU build pays the 230 KB plus its own 40 KB, or
 270 KB of its 357 KB, before reclaims, which also apply to it. That
-leaves at least 87 KB.
+leaves at least 87 KB. With the speed profile (proposed, decisions.md
+m5-speed-gates), the gate is 18.5 MiB plus the GPU re-base of
+2,839,120 B, rounded up to 64 KiB: 22,282,240 B, the same structure.
 
 ### Reclaims (S-size, wave 0, behaviour-neutral, measured)
 
@@ -277,6 +287,13 @@ Expected: 20–80 KB. Recorded as measured, not promised.
   so 12,480 B spent (0b, to within 64 B); after the wave-0 hardening it
   read Δ −21,760 after its first round and Δ −21,696 after its second
   (15,635,975 B), so 15,360 B spent and 214,640 B left.
+  **With the speed profile** (decisions.md m5-speed-gates), Δ also
+  carries its re-base, +2,322,960 B CPU-only and +2,839,120 B GPU, which
+  no allocation pays. Spend is then **Δ − 2,285,904** CPU-only (Δ +
+  37,056 − 2,322,960) and **Δ − 2,801,744** GPU. "Within allocation" is
+  Δ ≤ +2,515,904 CPU-only (GPU Δ ≤ +3,071,744), and the proposed CPU-only
+  gate is hit at Δ = +2,561,337. The profile's tree reads Δ +2,301,264
+  (15,360 B spent, unchanged) and GPU Δ +2,813,712 (11,968 B).
 
 - Streams do not build release binaries routinely. The two least
   predictable items (D-Bus, inspector) each take one CPU-only

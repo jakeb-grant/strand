@@ -2081,12 +2081,13 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     }
 }
 
-/// The release profile's per-package opt-levels the memory budget rests
-/// on (decisions.md, wave4-exitMemory: "the budget rests on the
-/// workspace's release profile"): without them the binary's `.text` was
-/// 19.4 MB and the bar over budget. Checked in every build, debug too,
-/// so a cleanup of `Cargo.toml` fails `cargo test --workspace` locally
-/// rather than only the release budget in CI.
+/// The release profile's per-package size opt-levels the `.text` and
+/// memory budgets rest on (decisions.md, wave4-exitMemory: "the budget
+/// rests on the workspace's release profile"; m5-speed-profile moved
+/// every crate a person waits on back to opt 3 and kept these, on code
+/// no one waits on). Checked in every build, debug too, so a cleanup of
+/// `Cargo.toml` fails `cargo test --workspace` locally rather than only
+/// the release budget in CI.
 const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("strand-services", "z"),
     ("zbus", "z"),
@@ -2095,20 +2096,13 @@ const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("tokio", "z"),
     ("swayipc-types", "z"),
     ("logind-zbus", "z"),
-    ("strand", "s"),
     ("strand-icons", "s"),
     ("strand-introspect", "z"),
-    ("serde_json", "s"),
     ("toml_edit", "s"),
     ("toml_parser", "s"),
-    ("wayland-client", "s"),
-    ("wayland-backend", "s"),
-    ("smithay-client-toolkit", "s"),
-    ("calloop", "s"),
-    ("material-colors", "s"),
     ("fontique", "s"),
     ("quick-xml", "s"),
-    ("roxmltree", "s"),
+    ("calloop", "s"),
     ("xkeysym", "s"),
     ("miette", "z"),
     ("chrono", "s"),
@@ -2117,8 +2111,45 @@ const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("libspa", "z"),
 ];
 
+/// Crates the release profile leaves at the default (opt 3) because a
+/// person waits on them (decisions.md, m5-speed-profile): `strand`
+/// above all, whose level the fat-LTO pass runs the whole binary at.
+/// A size override on any of them fails here, as a dropped one above
+/// does.
+const RELEASE_SPEED_CRATES: &[&str] = &[
+    "strand",
+    "serde_json",
+    "wayland-client",
+    "wayland-backend",
+    "smithay-client-toolkit",
+    "material-colors",
+    "roxmltree",
+    "velato",
+    "image-webp",
+    "jpeg-decoder",
+    "png",
+    "gif",
+    "fdeflate",
+    "miniz_oxide",
+    "weezl",
+    "imagesize",
+    "usvg",
+    "svgtypes",
+    "simplecss",
+    "data-url",
+    "resvg",
+    "tiny-skia",
+    "tiny-skia-path",
+];
+
+/// The key [`release_opt_levels`] gives `[profile.release]`'s own
+/// `opt-level`, the level of every crate without an override.
+const RELEASE_WIDE: &str = "[profile.release]";
+
 /// `[profile.release.package.<name>]` → its `opt-level`, read from a
-/// Cargo.toml's text (section headers and `key = value` lines only).
+/// Cargo.toml's text (section headers and `key = value` lines only);
+/// `[profile.release]`'s own is under [`RELEASE_WIDE`] and the wildcard
+/// `[profile.release.package."*"]`'s under `*`.
 fn release_opt_levels(manifest: &str) -> std::collections::BTreeMap<String, String> {
     let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
     let mut levels = std::collections::BTreeMap::new();
@@ -2126,10 +2157,13 @@ fn release_opt_levels(manifest: &str) -> std::collections::BTreeMap<String, Stri
     for line in manifest.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.starts_with('[') {
-            package = line
-                .strip_prefix("[profile.release.package.")
-                .and_then(|rest| rest.strip_suffix(']'))
-                .map(unquote);
+            package = if line == RELEASE_WIDE {
+                Some(RELEASE_WIDE.to_string())
+            } else {
+                line.strip_prefix("[profile.release.package.")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                    .map(unquote)
+            };
         } else if let (Some(name), Some((key, value))) = (&package, line.split_once('='))
             && key.trim() == "opt-level"
         {
@@ -2159,6 +2193,59 @@ fn the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on() {
         "the workspace's [profile.release.package] opt-levels changed; the bar's memory budget \
          rests on them (decisions.md, wave4-exitMemory): {changed:#?}"
     );
+    let sized = sized_speed_crates(&levels);
+    assert!(
+        sized.is_empty(),
+        "crates a person waits on are built for size; they stay at the release default, 3 \
+         (decisions.md, m5-speed-profile): {sized:#?}"
+    );
+}
+
+/// What builds a speed crate for size: an override of its own, a
+/// wildcard (`"*"`) level other than 3, which reaches every dependency
+/// without an override, or a profile-wide one, which reaches `strand`
+/// too and so the whole binary's fat-LTO pass (decisions.md,
+/// m5-speed-strand).
+fn sized_speed_crates(levels: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    let mut sized: Vec<String> = [RELEASE_WIDE, "*"]
+        .iter()
+        .filter_map(|key| {
+            levels
+                .get(*key)
+                .filter(|level| level.as_str() != "3")
+                .map(|level| format!("{key}: opt-level {level}"))
+        })
+        .collect();
+    sized.extend(RELEASE_SPEED_CRATES.iter().filter_map(|name| {
+        levels
+            .get(*name)
+            .filter(|level| level.as_str() != "3")
+            .map(|level| format!("{name}: opt-level {level}"))
+    }));
+    sized
+}
+
+#[test]
+fn a_size_level_reaching_a_speed_crate_is_caught() {
+    let clean =
+        "[profile.release]\nlto = \"fat\"\n[profile.release.package.zbus]\nopt-level = \"z\"\n";
+    assert!(sized_speed_crates(&release_opt_levels(clean)).is_empty());
+    for manifest in [
+        "[profile.release]\nopt-level = \"s\"\n",
+        "[profile.release]\nopt-level = 2 # a comment\n",
+        "[profile.release.package.\"*\"]\nopt-level = \"z\"\n",
+        "[profile.release.package.strand]\nopt-level = \"s\"\n",
+        "[profile.release.package.velato]\nopt-level = 'z'\n",
+    ] {
+        assert_eq!(
+            sized_speed_crates(&release_opt_levels(manifest)).len(),
+            1,
+            "{manifest}"
+        );
+    }
+    let three =
+        "[profile.release]\nopt-level = 3\n[profile.release.package.strand]\nopt-level = 3\n";
+    assert!(sized_speed_crates(&release_opt_levels(three)).is_empty());
 }
 
 #[test]
@@ -2309,8 +2396,10 @@ fn the_release_binary_code_stays_within_its_gate() {
     }
     assert!(
         text <= gate,
-        "strand's .text is {text} bytes, over {gate} for {build}: code that runs at event \
-         rates belongs at opt-level \"s\" or \"z\" (Cargo.toml, [profile.release.package])"
+        "strand's .text is {text} bytes, over {gate} for {build}: the gate catches accidental \
+         growth; code no one waits on belongs at opt-level \"s\" or \"z\" (Cargo.toml, \
+         [profile.release.package]), and a deliberate speed choice re-bases the gate with its \
+         measured reason (decisions.md, m5-speed-profile)"
     );
 }
 

@@ -184,6 +184,15 @@ and m4-owner-3; summarised under "M4 owner items" below).
 
 ## Budgets now
 
+- **The speed profile** (`laptop/m5-speed-profile`, decisions.md
+  m5-speed-profile and m5-speed-gates; not yet merged) re-bases both
+  builds. `.text` goes to 17,958,935 B CPU-only (+2,322,960) and
+  21,854,807 B GPU (+2,839,120), and the design bar's PSS rises by
+  about 2 MB (37,817 kB on GitHub). Its proposed gates are 18,219,008 B
+  CPU-only, 22,282,240 B GPU, and a 36,864 kB target with a 40,960 kB
+  ceiling for the bar. The ledger reads spend as Δ − 2,285,904
+  CPU-only and Δ − 2,801,744 GPU (m5-plan). Until the integrator merges
+  it and sets those gates, the figures below are wave 0's.
 - **`.text`**, from budgets.rs's gate test (the ledger line; Δ is
   against M4's merged figures 15,657,671 / 19,041,095 B):
   - container, after the third hardening round (`b0aee20`): CPU-only
@@ -290,6 +299,9 @@ Settled, do not reopen: the memory gates are owner-confirmed. The
 two-monitor bar warns above a 34 MB target and fails above a 38 MB ceiling,
 and the full shell warns above 64 MB and fails above 70 MB
 (decisions.md wave4-core, commit 607bd10). Agents must not change them.
+The owner's policy of 2026-10-10 lets agents set binary and memory gates
+by judgement with recorded reasons; decisions.md m5-speed-gates proposes
+the bar's re-base under it, for the integrator.
 
 ## Deferred work
 
