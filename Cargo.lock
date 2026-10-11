@@ -3055,6 +3055,7 @@ dependencies = [
  "crc32fast",
  "fdeflate",
  "image",
+ "image-webp",
  "jpeg-decoder",
  "libc",
  "log",

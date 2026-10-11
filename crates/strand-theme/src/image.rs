@@ -97,6 +97,17 @@ fn decode_err(e: impl std::fmt::Display) -> ImageError {
     ImageError::Decode(e.to_string())
 }
 
+/// An image-webp error worded as `image`'s wrapper worded it before
+/// strand-theme decoded WebP directly (decisions.md, m5-size reclaim 1):
+/// an IO error as itself, anything else after "Format error decoding
+/// WebP: ".
+fn webp_err(e: image_webp::DecodingError) -> ImageError {
+    match e {
+        image_webp::DecodingError::IoError(e) => decode_err(e),
+        e => decode_err(format_args!("Format error decoding WebP: {e}")),
+    }
+}
+
 fn too_large(w: u64, h: u64) -> ImageError {
     ImageError::Decode(format!("{w}×{h} is too large"))
 }
@@ -365,8 +376,7 @@ fn jpeg_decode(
 /// A WebP decoded whole (no decoder can do less), refused from its
 /// header when that would pass [`FULL_FRAME_BYTES`].
 fn webp_boxes(r: impl BufRead + Seek) -> Result<Boxes, ImageError> {
-    use image::ImageDecoder;
-    let mut dec = image::codecs::webp::WebPDecoder::new(r).map_err(decode_err)?;
+    let mut dec = image_webp::WebPDecoder::new(r).map_err(webp_err)?;
     let (w, h) = dec.dimensions();
     let (w64, h64) = (w as u64, h as u64);
     if w64 * h64 > MAX_PIXELS {
@@ -377,28 +387,26 @@ fn webp_boxes(r: impl BufRead + Seek) -> Result<Boxes, ImageError> {
             "{w}×{h} is too large for a WebP; save it as a JPEG or PNG"
         )));
     }
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(FULL_FRAME_BYTES);
-    dec.set_limits(limits).map_err(decode_err)?;
-    let boxes = image::DynamicImage::from_decoder(dec)
-        .map_err(decode_err)
-        .and_then(|img| {
-            let mut boxes = Boxes::new(img.width(), img.height())?;
-            match img {
-                image::DynamicImage::ImageRgb8(i) => {
-                    for (x, y, p) in i.enumerate_pixels() {
-                        boxes.add(x, y, [p.0[0], p.0[1], p.0[2], 255]);
-                    }
-                }
-                image::DynamicImage::ImageRgba8(i) => {
-                    for (x, y, p) in i.enumerate_pixels() {
-                        boxes.add(x, y, p.0);
-                    }
-                }
-                _ => return Err(decode_err("an unexpected WebP pixel format")),
+    let bpp = if dec.has_alpha() { 4 } else { 3 };
+    // Within FULL_FRAME_BYTES by the check above (bpp < WEBP_BYTES_PER_PIXEL).
+    let len = dec
+        .output_buffer_size()
+        .filter(|&n| n as u64 == w64 * h64 * bpp as u64)
+        .ok_or_else(|| decode_err("an unexpected WebP frame size"))?;
+    let mut frame = vec![0u8; len];
+    let boxes = dec.read_image(&mut frame).map_err(webp_err).and_then(|()| {
+        let mut boxes = Boxes::new(w, h)?;
+        for (i, p) in frame.chunks_exact(bpp).enumerate() {
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            match *p {
+                [r, g, b] => boxes.add(x, y, [r, g, b, 255]),
+                [r, g, b, a] => boxes.add(x, y, [r, g, b, a]),
+                _ => {}
             }
-            Ok(boxes)
-        });
+        }
+        Ok(boxes)
+    });
+    drop(frame);
     give_back_memory();
     boxes
 }

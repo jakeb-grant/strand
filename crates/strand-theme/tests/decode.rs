@@ -205,3 +205,64 @@ fn oversized_frames_are_refused_before_they_allocate() {
     assert!(e.contains("too large"), "{e}");
     assert!(peak < MB, "peak {peak}");
 }
+
+/// A lossless WebP, opaque (RGB) or with alpha (RGBA), seeds exactly as
+/// the same pixels in a PNG do: the WebP path (image-webp directly,
+/// decisions.md m5-size) hands the quantiser the same pixels.
+#[test]
+fn a_lossless_webp_seeds_as_the_same_png_does() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let rgb = wallpaper(320, 180);
+    // A translucent band on the left (its cells are left out of the
+    // seed), opaque elsewhere.
+    let rgba = image::RgbaImage::from_fn(320, 180, |x, y| {
+        let p = rgb.get_pixel(x, y).0;
+        image::Rgba([
+            p[0],
+            p[1],
+            p[2],
+            if x < 80 && y % 2 == 0 { 128 } else { 255 },
+        ])
+    });
+    let encode_rgba = |f| {
+        let mut out = Vec::new();
+        rgba.write_to(&mut std::io::Cursor::new(&mut out), f)
+            .unwrap();
+        out
+    };
+    let cases = [
+        (
+            encode(&rgb, image::ImageFormat::WebP),
+            encode(&rgb, image::ImageFormat::Png),
+        ),
+        (
+            encode_rgba(image::ImageFormat::WebP),
+            encode_rgba(image::ImageFormat::Png),
+        ),
+    ];
+    for (i, (webp, png)) in cases.iter().enumerate() {
+        assert_eq!(&webp[8..12], b"WEBP");
+        let from_webp = seed_from_bytes(webp).unwrap();
+        let from_png = seed_from_bytes(png).unwrap();
+        assert_eq!(from_webp, from_png, "case {i}");
+    }
+}
+
+/// A corrupt WebP reads as it did through `image`'s wrapper: "Format
+/// error decoding WebP: " and image-webp's cause (decisions.md, m5-size
+/// reclaim 1).
+#[test]
+fn a_corrupt_webp_keeps_its_error_wording() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // A RIFF/WEBP file whose chunk is neither VP8, VP8L nor VP8X.
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&(4 + 8 + 16u32).to_le_bytes());
+    webp.extend_from_slice(b"WEBPJUNK");
+    webp.extend_from_slice(&16u32.to_le_bytes());
+    webp.extend_from_slice(&[0u8; 16]);
+    let e = seed_from_bytes(&webp).unwrap_err().to_string();
+    assert!(
+        e.starts_with("cannot decode the image: Format error decoding WebP: "),
+        "{e}"
+    );
+}
