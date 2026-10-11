@@ -498,3 +498,74 @@ fn an_entry_that_is_not_a_value_is_said() {
     assert!(sh.flush().notices.is_empty(), "said once");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The notice's advice works: `strand clear` drops an entry that is not
+/// a token's value (an array), for a token of the build and for a key
+/// that is none, so the notice does not come back at the next boot.
+#[test]
+fn clear_drops_an_entry_that_is_not_a_value() {
+    let dir = temp_dir("clear-skipped");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join(TOKENS_FILE),
+        "\"probe.c\" = [1, 2]\nlist = [1, 2]\n\"probe.gap\" = \"6px\"\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(&state, &dir);
+    let (mut sh, u) = boot(&[("bar.strand", &shell("#112233"))], storage.clone());
+    assert_eq!(u.notices.len(), 2, "{:?}", u.notices);
+    assert!(
+        u.notices[0].contains("(strand clear '$probe.c')"),
+        "{:?}",
+        u.notices
+    );
+    assert!(sh.inst.clear_token_overlay("probe.c").unwrap());
+    assert!(sh.inst.clear_token_overlay("list").unwrap());
+    // Gone: a known token has nothing to clear, an unknown name is
+    // refused again.
+    assert!(!sh.inst.clear_token_overlay("probe.c").unwrap());
+    assert!(sh.inst.clear_token_overlay("list").is_err());
+    sh.flush();
+    assert_eq!(sh.token("probe.c"), Some(hex("#112233")));
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(6.0)));
+    assert!(storage.tokens.sync(Duration::from_secs(10)));
+    let text = tokens_toml(&state);
+    assert_eq!(text, "\"probe.gap\" = \"6px\"\n");
+    drop(sh);
+
+    let (_sh, u) = boot(
+        &[("bar.strand", &shell("#112233"))],
+        Storage::in_dirs(&state, &dir),
+    );
+    assert!(u.notices.is_empty(), "{:?}", u.notices);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A tokens.toml fixed by hand is applied by the `clear` that reads it
+/// again, even one that clears nothing: no restart, no unrelated build.
+#[test]
+fn a_fixed_overlay_file_applies_at_a_clear_that_clears_nothing() {
+    let dir = temp_dir("reread-clear");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let file = state.join(TOKENS_FILE);
+    let mut held = b"\"probe.gap\" = \"6px\"\n# \xff\n".to_vec();
+    std::fs::write(&file, &held).unwrap();
+    let (mut sh, _) = boot(
+        &[("bar.strand", &shell("#112233"))],
+        Storage::in_dirs(&state, &dir),
+    );
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(4.0)));
+
+    held.truncate(held.len() - 4);
+    std::fs::write(&file, &held).unwrap();
+    assert!(!sh.inst.clear_token_overlay("probe.c").unwrap());
+    sh.flush();
+    assert_eq!(sh.token("probe.gap"), Some(PropValue::Number(6.0)));
+    assert_eq!(sh.origin("probe.gap"), Some(OVERLAY_ORIGIN));
+    let (v, layer) = sh.inst.token("probe.gap").unwrap();
+    assert_eq!(v, PropValue::Number(6.0));
+    assert_eq!(layer.as_deref(), Some(OVERLAY_ORIGIN));
+    let _ = std::fs::remove_dir_all(dir);
+}

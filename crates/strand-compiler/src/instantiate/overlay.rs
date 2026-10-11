@@ -304,35 +304,47 @@ impl TokenOverlay {
 
     /// Drop `path`'s overlay; whether it had one. Refused while the file
     /// cannot be read.
+    /// An entry of the file that is not a token's value (an array, a
+    /// table: said at load, never in `values`) is cleared too, as its
+    /// notice advises.
     fn clear(&self, rt: &Runtime, path: &str) -> Result<bool, Error> {
         let mut st = self.0.state();
-        self.writable(&mut st)?;
-        if st.values.remove(path).is_none() {
+        let reread = self.writable(&mut st)?;
+        let had = st.values.remove(path).is_some();
+        let entry = st.doc.as_table_mut().remove(path).is_some();
+        if !had && !entry {
+            // A file read again for the first time holds overlays the
+            // table does not have yet: build it again.
+            if reread && let Some(g) = st.generation {
+                let _ = g.update(rt, |n| *n += 1);
+            }
             return Ok(false);
         }
-        st.doc.as_table_mut().remove(path);
         st.base.remove(path);
         self.changed(rt, &mut st);
         Ok(true)
     }
 
-    /// Whether `path` has an overlay.
+    /// Whether `path` has an overlay, or an entry in the file that is
+    /// not one (which `clear` drops).
     fn has(&self, path: &str) -> bool {
         let mut st = self.0.state();
         self.load(&mut st);
-        st.values.get(path).is_some()
+        st.values.get(path).is_some() || st.doc.contains_key(path)
     }
 
     /// Loaded, and safe to write: a file that could not be read is read
     /// again, and while it still cannot be, the change is refused rather
-    /// than writing the overlays it holds away.
-    fn writable(&self, st: &mut State) -> Result<(), Error> {
-        if st.unreadable.is_some() {
+    /// than writing the overlays it holds away. Whether it was read
+    /// again just now (its overlays are new to the table).
+    fn writable(&self, st: &mut State) -> Result<bool, Error> {
+        let reread = st.unreadable.is_some();
+        if reread {
             st.loaded = false;
         }
         self.load(st);
         match &st.unreadable {
-            None => Ok(()),
+            None => Ok(reread),
             Some(why) => Err(Error::failed(format!(
                 "{} could not be read ({why}); it is not written over, so the token \
                  overlay is unchanged",
