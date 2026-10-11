@@ -157,6 +157,7 @@ step "scripts/container/test-check-tree-sitter.sh" 5 scripts/container/test-chec
 step "scripts/container/test-ledger.sh" 5 scripts/container/test-ledger.sh
 step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
+step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
@@ -168,7 +169,7 @@ step "cargo test -p strand-auth --features faults" 30 \
 step "cargo test -p strand --test reloads" 10 \
   cargo test -p strand --test reloads -- --nocapture
 step "random_edits_through_five_save_styles (STRAND_FUZZ_MAX_GAP_MS=20)" 60 \
-  env STRAND_FUZZ_MAX_GAP_MS=20 cargo test -p strand --bin strand random_edits_through_five_save_styles -- --nocapture --test-threads=1
+  env STRAND_FUZZ_MAX_GAP_MS=20 scripts/container/tests-ran.sh cargo test -p strand --lib random_edits_through_five_save_styles -- --nocapture --test-threads=1
 
 job=budgets
 # M5's size ledger: the .text gate test adds each build's half here, and
@@ -192,7 +193,7 @@ job=timing
 timing_step "cargo test --profile timing -p strand-render --test theme_swap_bench" 60 \
   cargo test --profile timing -p strand-render --test theme_swap_bench -- --nocapture
 timing_step "reload_latency (--profile timing, STRAND_LATENCY_ROUNDS=50)" 60 \
-  env STRAND_LATENCY_ROUNDS=50 cargo test --profile timing -p strand --bin strand reload_latency -- --nocapture --test-threads=1
+  env STRAND_LATENCY_ROUNDS=50 scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
 timing_step "cargo test --profile timing -p strand-render --test list_scroll_bench" 30 \
   cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test motion (frame time)" 30 \

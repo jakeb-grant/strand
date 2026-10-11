@@ -37,7 +37,8 @@ language promises:
   a self-contained `docs/spec.md` with a compatibility policy next to
   `docs/grammar.md`, and stop changing them.
 - **Close what M4 handed over**: the promoted GPU cost on hardware,
-  plugins, the importer box, and handoff.md's deferred CI items.
+  plugins (the importer box was ticked in 0-freeze), and handoff.md's
+  deferred CI items.
 
 No release: M5 ends without a version bump, a tag, release notes or a
 release artifact (Q20).
@@ -162,7 +163,7 @@ the surveys. "Allocation" is what a stream may spend.
 | Inspector runtime half (pick, identity/cells, provenance walk, dump JSON, outline, flash) | 30–80 KB | 55 KB |
 | `strand new` and `strand export` writers (the template is .rodata, which is not gated) | 8–20 KB | 15 KB |
 | `Suggestion` title, missing-key suggestions | 1–3 KB | 3 KB |
-| Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 29,240 B (42 KB less the rest of 0b, 9,944 B, and the wave-0 hardening, 2,816 B: decisions.md m5-integration, m5-w0-harden) |
+| Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 29,176 B (42 KB less the rest of 0b, 9,944 B, and the wave-0 hardening, 2,816 + 64 B: decisions.md m5-integration, m5-w0-harden) |
 | 0b's shared code (measured +12,544 B; charged to the two lines above) | — | (12,544 B, inside the lines above) |
 | **Total (CPU-only and GPU builds)** | **87–228 KB** | **230 KB** |
 | GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) |
@@ -306,10 +307,15 @@ far below the ceiling.
 These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
 
 - **Branches.** Each stream works in `../strand-wt/<name>` on
-  `laptop/m5-<name>`, created from `main` after 0b. The integrator merges
-  into `laptop/integration-m5`, then into `main` under the standing FF
-  rule (local `ci`, `matrix.sh` and GitHub CI green on the exact
-  commit). Push only your own branch; never force-push.
+  `laptop/m5-<name>`, created from wave 0's merge, `laptop/m5-w0` (0b,
+  the reclaims and the wave-0 hardening; `main` stays at M4's close
+  until the owner fast-forwards it), not from `main`. The integrator
+  merges finished streams into `laptop/m5-w0`, then into `main` under
+  the standing FF rule (local `ci`, `matrix.sh` and GitHub CI green on
+  the exact commit). Push only your own branch; never force-push.
+  (Changed in m5-w0-harden from "created from `main` after 0b" and
+  "`laptop/integration-m5`", which wave 0 did not use; decisions.md
+  m5-w0-harden.)
 - **Builds (changed).** At most three worktrees hold a build slot at once
   (`CARGO_BUILD_JOBS=6` each). **The integrator's worktree counts as one
   slot whenever it builds or runs `run.sh ci`, `matrix.sh`, `gpu.sh` or
@@ -329,10 +335,11 @@ These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
   `call` and `report`; `strand clear`; `export -o`; plugin
   `--write-schemas`; the schemas directory; and the `inspect.*` command
   names.
-- **Shared boxes.** Three features.md boxes span streams: CLI + IPC;
-  "`strand new`, `export`, `report`"; and the importer/plugins box, split
-  per Q17. Streams append evidence inside the parenthetical. Only the
-  integrator ticks.
+- **Shared boxes.** Two features.md boxes span streams: CLI + IPC; and
+  "`strand new`, `export`, `report`". Streams append evidence inside the
+  parenthetical. Only the integrator ticks. (The importer/plugins box
+  was split per Q17: its importer half was ticked in 0-freeze from M2's
+  tests and is closed; the plugins box is S-plugins' alone.)
 - **Test binaries (new).** New integration tests in `crates/strand/tests`
   go into one binary, `m5.rs`, with a module file per stream under
   `tests/m5/`, or into an existing binary (`reloads.rs`,
@@ -369,7 +376,7 @@ These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
 | S-inspect | 1, 2, 3 | `strand-compiler/src/instantiate/inspect.rs`, `strand-scene/src/provenance.rs`, `strand-render/src/inspect/**` (CPU and GPU paths), `run/request/inspect.rs`, `ipc/inspect.rs`, `strand-dev/src/inspect/**`, `tests/m5/inspect.rs`, its `tests/lock.rs` case | Inspector box |
 | S-lsp | 1, 2 | `strand-dev/src/{diag.rs, refactor/**}`, `server.rs`'s capability block, `check/tree.rs` and `check/expr.rs` key suggestions, `diagnostic.rs`'s `Suggestion` use, `crates/strand-dev/tree-sitter-strand/**` | LSP box; both tree-sitter boxes (M1 line 69, M5) |
 | S-platform | 0 (spike), 2 | `strand-surface/src/activation.rs` and the key serials in `manager/seat.rs`; the activation parts of strand-services' notifications, apps and child; the activation path in `strand/src/services/adapter.rs`; strand-fake-wayland's `xdg_activation_v1`; the handler input context's route (architecture.md): the serial beside `NodeEvent` in strand-render's router (`input.rs`), `ToLogic::Event`'s `input` field and its arm in `run/shell.rs` (and `demo/host.rs`'s `Intent::Event`), `Instance::event`'s `input` parameter and the VM's per-invocation frame in strand-compiler, `DynService::action`'s `ActionCtx`, and the services→main token channel in `strand/src/run/` | xdg-activation box |
-| S-tools | 2, 3 | `strand-theme/src/export.rs`, `strand/src/{new.rs, export.rs, report.rs}`, `run/request/report.rs`, strand-render `frame_summary`, strand-surface `globals()`/`outputs()`, `tests/m5/{new,export,report}.rs`; optional `check/imports.rs` | `new`/`export`/`report` box; the importer half |
+| S-tools | 2, 3 | `strand-theme/src/export.rs`, `strand/src/{new.rs, export.rs, report.rs}`, `run/request/report.rs`, strand-render `frame_summary`, strand-surface `globals()`/`outputs()`, `tests/m5/{new,export,report}.rs`; optional `check/imports.rs` | `new`/`export`/`report` box |
 | S-docs | 0 (writing), 1–3 | `docs/guide/**` (the `strand new` template included), `docs/spec.md`, `docs/reference/**` (generated), `strand-dev/src/reference.rs`, the ladder test, `tests/m5/newcomer.rs`, the agent-proxy harness, the design.md edits for the ladder and Async | Docs box; the newcomer exit's automated layers |
 | S-plugins | 2 | the builder API in `strand/src/lib.rs`'s `Shell::builder`, the `[[example]] plugin_hello`, plugin schema loading in `strand/src/services/mod.rs` and `strand-dev/src/server.rs` (a small PR S-lsp reviews), `tests/m5/plugin.rs`, the guide's plugin page | plugins half |
 
@@ -386,7 +393,8 @@ Per-file ownership in shared crates:
   `instantiate/overlay.rs` and the `toggle`/`call` entry points; S-lsp
   owns `check/` key suggestions. The handler input context's types
   (`ActionCtx`, `InputCtx`, `ServiceHost::action`'s parameter) landed in
-  0b; its route from the seat to the VM and the token channel are
+  0b, defined in `strand_core::action` since m5-w0-harden so
+  strand-services can name them; its route from the seat to the VM and the token channel are
   S-platform's (wave 2).
 - strand (the binary's crate): the shared dispatch points — the
   `parse` arms in strand-core's `ipc.rs`, `Shell::request`'s arms,
@@ -490,8 +498,11 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
   - `ServiceHost::action` gains an `ActionCtx` argument that carries the
     context and the handler invocation's id.
   - `strand-surface::activation_token(surface, serial) -> async
-    Option<String>` (through `SurfaceHost`). Key-press serials are
-    tracked beside `button_serial`.
+    Option<String>`, called on the main thread; the services thread
+    reaches it through the token channel (a services→main calloop
+    channel and a one-shot), not through `SurfaceHost`, which it cannot
+    call (architecture.md, "Handler input context", is the route).
+    Key-press serials are tracked beside `button_serial`.
   - **Ordering rule.** An action that needs a token (notification
     `invoke`, app launch) waits up to 200 ms for it. Every later action
     from the same handler invocation queues behind it, so
@@ -593,7 +604,10 @@ commit, and GitHub's `timing` job green for each opt-level change.
 Q1–Q5 are answered. The integrator ticks design.md:778–781 on
 `laptop/m5-plan`, each tick with its decisions.md paragraph, and S-docs
 creates the spec.md skeleton. This must land before S-lsp's tree-sitter grammar and before
-the guide's code blocks are final.
+the guide's code blocks are final. (The ticks landed in wave 0; the
+spec.md skeleton did not and moves to wave 1, opened by S-docs before
+any other S-docs writing; S-lsp starts the grammar only once it is on
+`laptop/m5-w0`. decisions.md m5-w0-harden.)
 
 ## Waves
 
@@ -601,8 +615,8 @@ The integrator's worktree counts as a slot whenever it builds.
 
 | Wave | Building (three slots, integrator included) | Writing (no slot) | Gate |
 |---|---|---|---|
-| 0 | S-core (0b) → then S-size; S-infra (image, spikes, ledger line); integrator for 0b's `run.sh ci` | 0a text; 0-freeze docs; S-docs guide outline, ladder placements, the template; S-tools export mapping table | 0b merged, `run.sh ci` green, `.text` unchanged; provisional gate set; spikes recorded |
-| 1 | S-ipc (commands, token overlay), S-inspect (compiler and scene half), S-lsp (missing key, extract component); the integrator rotates in for merges | S-docs levels 1–3 and spec.md; S-plugins design notes | merge per finished item; ledger within allocation on the merged tree |
+| 0 | S-core (0b) → then S-size; S-infra (image, spikes, ledger line); integrator for 0b's `run.sh ci` | 0a text; 0-freeze docs (S-docs' and S-tools' wave-0 writing did not happen and moved to wave 1, next row) | 0b merged, `run.sh ci` green, `.text` unchanged; provisional gate set; spikes recorded |
+| 1 | S-ipc (commands, token overlay), S-inspect (compiler and scene half), S-lsp (missing key, extract component); the integrator rotates in for merges | carried from wave 0 (decisions.md m5-w0-harden): S-docs' spec.md skeleton first, then the guide outline, ladder placements and the template; S-tools' export mapping table; then S-docs levels 1–3 and spec.md; S-plugins design notes | merge per finished item; ledger within allocation on the merged tree |
 | 2 | S-inspect (render and binary half), S-platform, S-tools; S-ipc (D-Bus), S-lsp (tree-sitter) and S-plugins rotate in when a holder is writing or waiting on review; the integrator rotates in | S-docs levels 4–5, reference text | `matrix.sh` for activation and IPC; PNG tests (CPU and lavapipe) green |
 | 3 | S-inspect (strand-dev client, write-back), S-docs (ladder, newcomer, reference generator, agent proxy), integrator | freeze text, m5-report, handoff | see "Closing" |
 
@@ -759,8 +773,10 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
     action's description says so.
 - **tree-sitter** (after 0-freeze): `grammar.js`, an external scanner
   for SAME_LINE, SEP and TOUCH plus contextual keywords, and
-  `queries/{highlights, locals, indents, injections}.scm`. `parser.c`
-  and `grammar.json` are committed. It is linked only into strand-dev's
+  `queries/{highlights, locals, indents, injections}.scm`. The generated
+  `src/` is committed whole: `parser.c`, `grammar.json`,
+  `node-types.json` and `tree_sitter/` (`parser.c` includes its
+  `parser.h`), the four files `scripts/check-tree-sitter.sh` compares. It is linked only into strand-dev's
   tests.
 - Tests:
   - lsp.rs:
@@ -847,8 +863,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   - `tests/m5/report.rs`: every section present; the JSON round-trips;
   - a `frame_summary` percentile unit test.
 - Budget: 15 KB (new and export) + 20 KB (report).
-- Ticks: the "`strand new`, `export`, `report`" box. The importer half
-  cites M2's tests (features.md:129), plus the optional check test.
+- Ticks: the "`strand new`, `export`, `report`" box. (The importer box
+  was ticked in 0-freeze from M2's tests and is closed; the optional
+  check test, if written, adds evidence to that tick only.)
 
 ### S-docs (waves 0–3)
 
@@ -946,7 +963,7 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
 1. **The ledger is overrun anyway.** D-Bus and the inspector are the
    least predictable items. Mitigations:
    - measure each in its first week;
-   - the integrator keeps a reserve (42 KB planned, 29,240 B after 0b
+   - the integrator keeps a reserve (42 KB planned, 29,176 B after 0b
      and the wave-0 hardening: decisions.md m5-integration,
      m5-w0-harden);
    - cut scope before asking the owner: D-Bus `watch` as a signal only,
@@ -1015,8 +1032,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   lock rules and architecture.md:1381–1384; design.md:659 defers anything
   inside `lock` on reload.
 - **tree-sitter home**: the package `crates/strand-dev/tree-sitter-strand/`
-  (features.md puts it in strand-dev), with committed `parser.c` and
-  `grammar.json`, a pinned prebuilt CLI in lint only, and no runtime
+  (features.md puts it in strand-dev), with the generated `src/`
+  committed (`parser.c`, `grammar.json`, `node-types.json` and
+  `tree_sitter/`), a pinned prebuilt CLI in lint only, and no runtime
   linking.
 - **LSP quick-fixes**: all candidates, preferred first; extract to
   `NewComponent` after the enclosing item; refuse parent-state writes

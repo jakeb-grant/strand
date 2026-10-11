@@ -38,6 +38,15 @@ pub struct Live {
     pub events_to: Option<ipc::EventSink>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Run on the logic thread as the unmount starts, once the request
+    /// channel is closed and before the instance and services shut down
+    /// (set from [`Live::requests_to`]'s callback, which runs there).
+    pub(super) static UNMOUNTING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// A callback for [`Live::requests_to`].
 pub struct RequestsTo(pub Box<dyn FnOnce(ipc::IpcRequests) + Send>);
 
@@ -372,7 +381,18 @@ pub fn logic(
         real,
         ..
     } = shell;
+    // The loop has ended: dropping the receiver (not a sender clone)
+    // closes the request channel, so a call made from here on, through
+    // the services' shutdown below, is refused at once with `IpcClosed`
+    // and one queued after the last drain is refused now.
     drop(bus_requests);
+    drop(bus_inbox);
+    #[cfg(test)]
+    UNMOUNTING.with(|h| {
+        if let Some(f) = h.borrow_mut().take() {
+            f();
+        }
+    });
     inst.shutdown();
     drop(inst);
     if let Some(r) = &real {

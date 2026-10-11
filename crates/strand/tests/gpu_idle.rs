@@ -184,9 +184,10 @@ fn until(what: &str, limit: Duration, mut ok: impl FnMut() -> bool, log: &dyn Fn
 /// `scripts/container/gpu-session.sh`). ANV's WSI presents only to a
 /// compositor offering linux-dmabuf, which a pixman sway does not
 /// (decisions.md m5-infra, spike 1). Opt-in: on the presented path the
-/// laptop's ANV leaves 6.9-7.7 MiB after the drop, past the 6 MiB the
-/// readback leg is held to, which is the owner's to settle (decisions.md
-/// m5-infra), so that leg reports the bound and does not assert it; the
+/// laptop's ANV left 4.6-7.5 MiB after the drop (6,868 and 7,704 kB
+/// in two runs, past the 6 MiB the readback leg is held to, and 4,662
+/// kB, within it, in a third), which is the owner's to settle
+/// (decisions.md m5-infra), so that leg reports the bound and does not assert it; the
 /// default leg stays the readback one it was.
 fn sway_renderer() -> Option<String> {
     let on = |v: &str| std::env::var(v).as_deref() == Ok("1");
@@ -768,8 +769,9 @@ fn gpu_is_released_when_idle() {
         growth(&baseline_maps, &maps[0])
     );
     // The presented leg (`STRAND_GPU_PRESENT=1` on a GPU sway) reports
-    // the bound instead: ANV's presented path leaves 6.9-7.7 MiB, the
-    // bound is the owner's to settle, and memory budgets are benchmark
+    // the bound instead: ANV's presented path left 4.6-7.5 MiB (6,868
+    // and 7,704 kB in two runs, 4,662 kB in a third), the bound is the
+    // owner's to settle, and memory budgets are benchmark
     // targets (decisions.md m5-infra).
     if hardware && !cfg!(debug_assertions) && gpu_sway.is_some() {
         let over = first.saturating_sub(baseline);

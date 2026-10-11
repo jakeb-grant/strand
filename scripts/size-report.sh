@@ -11,12 +11,15 @@
 #        scripts/size-report.sh --attribute   reads demangled symbol
 #        names on stdin, prints "<crate>\t<name>" (the attribution rule,
 #        tested by scripts/test-size-report.sh)
+#        scripts/size-report.sh --crate-delta BASE_TSV NEW_TSV TEXT TOP
+#        prints the baseline crate table's rows (tested there too)
 # Env:   SIZE_REPORT_BUILDS="cpu gpu" (default both; one of them to save
 #        a build)
 #        SIZE_REPORT_TOP=200 symbols listed per build
 #        SIZE_REPORT_CRATES=40 crates listed per build
 #        SIZE_REPORT_BASELINE=<dir> a previous run's output directory:
-#        each crate row and `.text` also show the delta against it
+#        each crate row and `.text` also show the delta against it, and
+#        a baseline top crate the binary no longer has gets a 0-byte row
 #        SIZE_REPORT_NOBUILD=1 reports on the binaries a previous run left
 #        in SIZE_REPORT_OUT instead of building
 #        SIZE_REPORT_OUT=<dir> where the binaries, per-crate TSVs and
@@ -105,8 +108,31 @@ attribute() {
     }'
 }
 
+# crate_delta BASE_TSV NEW_TSV TEXT TOP: the crate table's rows against a
+# baseline: the current run's top TOP crates with their Δ, then each of
+# the baseline's top TOP crates the current binary no longer has at all,
+# as a 0-byte row with its whole negative Δ (a reclaim that drops a
+# crate shows it).
+crate_delta() {
+  awk -F'\t' -v text="$3" -v top="$4" '
+    NR == FNR { base[$2] = $1; if (FNR <= top) order[++nb] = $2; next }
+    { now[$2] = 1 }
+    FNR <= top { printf "| %d | %+d | %.2f | %d | %s |\n", $1, $1 - base[$2], 100 * $1 / text, $3, $2 }
+    END {
+      for (i = 1; i <= nb; i++) {
+        c = order[i]
+        if (!(c in now)) printf "| 0 | %+d | 0.00 | 0 | %s (gone) |\n", -base[c], c
+      }
+    }' "$1" "$2"
+}
+
 if [ "${1:-}" = --attribute ]; then
   attribute
+  exit 0
+fi
+if [ "${1:-}" = --crate-delta ]; then
+  shift
+  crate_delta "$@"
   exit 0
 fi
 
@@ -189,10 +215,7 @@ report() {
   if [ -n "$BASE" ] && [ -f "$BASE/$build/crates.tsv" ]; then
     echo "| bytes | Δ | % | symbols | crate |"
     echo "|---:|---:|---:|---:|---|"
-    awk -F'\t' -v text="$text" -v top="$CRATES" '
-      NR == FNR { base[$2] = $1; next }
-      FNR <= top { printf "| %d | %+d | %.2f | %d | %s |\n", $1, $1 - base[$2], 100 * $1 / text, $3, $2 }
-    ' "$BASE/$build/crates.tsv" "$dir/crates.tsv"
+    crate_delta "$BASE/$build/crates.tsv" "$dir/crates.tsv" "$text" "$CRATES"
   else
     echo "| bytes | % | symbols | crate |"
     echo "|---:|---:|---:|---|"

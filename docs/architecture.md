@@ -859,10 +859,12 @@ pickable, and `inspect.pick` is refused while locked.
     Option<InputCtx>`; the VM keeps it in the handler invocation's
     frame until the first `await` and numbers invocations from a
     per-`Instance` counter (`ActionCtx::invocation`, 0 with no input);
-  - strand-services' `DynService::action` gains the `ActionCtx`, and
-    its ordering queue asks the main thread for a token through a token
-    source the binary hands strand-services when it starts them: a
-    `Fn(SurfaceId, u32)` returning a one-shot future like
+  - strand-services' `DynService::action` gains the `ActionCtx`
+    (`strand_core::ActionCtx`, which strand-services, depending only on
+    strand-core, can name), and its ordering queue asks the main thread
+    for a token through a token source the binary hands strand-services
+    when it starts them: a `Fn(u32, u32)` (the surface's number, as in
+    `InputCtx::surface`, and the serial) returning a one-shot future like
     `strand_core::ipc::Reply`'s, sent over a services→main calloop
     channel, on which main calls `strand_surface::activation_token` and
     completes the one-shot (the services thread cannot call
@@ -870,7 +872,13 @@ pickable, and `inspect.pick` is refused while locked.
 - `ServiceHost::action` gains an `ActionCtx` argument (the `InputCtx`,
   if any, and the handler invocation's id), as its last parameter:
   `ActionCtx { input: Option<InputCtx>, invocation: u64 }`, `InputCtx {
-  surface: SurfaceId, serial: u32 }` in `strand_compiler::vm::host`. 0b
+  surface: u32, serial: u32 }` (`surface` is the `strand_scene::SurfaceId`'s
+  number), defined in `strand_core::action` and re-exported from
+  `strand_compiler::vm::host`, so the VM and strand-services name one
+  type without strand-services depending on strand-compiler or
+  strand-scene (changed in m5-w0-harden from "in
+  `strand_compiler::vm::host`" with a `SurfaceId`, which strand-services
+  could not name; decisions.md m5-w0-harden). 0b
   threads the empty `ActionCtx::default()` through every host
   (`SchemaHost`, which records it in `ActionCall::ctx`, and the
   binary's composite, store and custom hosts); strand-services'
@@ -908,7 +916,10 @@ zero-width span (an insertion) is allowed.
   and service schemas.
 - **tree-sitter layout.** `crates/strand-dev/tree-sitter-strand/` is a
   separate package (`publish = false`): `grammar.js`, the committed
-  generated `src/grammar.json` and `src/parser.c`, an external scanner
+  generated `src/` (`src/grammar.json`, `src/parser.c`,
+  `src/node-types.json` and `src/tree_sitter/`, whose `parser.h`
+  `parser.c` includes; `tree-sitter generate` writes all four and
+  `scripts/check-tree-sitter.sh` compares all four), an external scanner
   for SAME_LINE, SEP and TOUCH and the contextual keywords, and
   `queries/{highlights, locals, indents, injections}.scm`; its own
   `build.rs` compiles `parser.c` with `cc`, and it exposes the language

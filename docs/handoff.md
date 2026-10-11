@@ -32,12 +32,17 @@ below.
   `.text` 15,633,095 B CPU-only and 19,013,831 B with the GPU backend
   (gate 19,398,656). 0b's +12.5 KB is charged to S-ipc's D-Bus
   allocation (now 37,400 B) and the integrator's reserve (now
-  32,056 B; 29,240 B after the wave-0 hardening's +2,816 B,
+  32,056 B; 29,176 B after the wave-0 hardening's +2,816 and +64 B,
   decisions.md m5-w0-harden). Spikes: sway renders on renderD128 with GLES2 or Vulkan
   and offers linux-dmabuf, so Q19 is (A); the tree-sitter CLI 0.27.0
   generates from `grammar.js` without node; sway 1.9 issues and
   honours an xdg-activation token from a layer surface (decisions.md
-  m5-infra). Wave 1's streams branch from wave 0's merge.
+  m5-infra). Wave 1's streams branch from wave 0's merge
+  (`laptop/m5-w0`), not from `main`. Wave 0's writing column did not
+  happen: S-docs' spec.md skeleton, guide outline, ladder placements and
+  `strand new` template, and S-tools' export mapping table move to wave
+  1, the spec.md skeleton first and before S-lsp's tree-sitter grammar
+  (decisions.md m5-w0-harden).
 - M0–M4 are complete: the last M4 box, the bundled noise field, was
   ticked when the owner accepted reading it as a `.wgsl` shader
   (2026-10-10, decisions.md m4-owner-docs). M4's three exits are
@@ -126,7 +131,8 @@ cleanly. M5's wave 0 left these for the owner (none blocks wave 1):
   instead of asserting it.
 - **0b's +12.5 KB charge** (decisions.md m5-integration): the integrator
   accepted 0b's +12,544 B CPU-only and charged it to S-ipc's D-Bus line
-  (now 37,400 B) and the reserve (now 32,056 B). The owner may overrule
+  (now 37,400 B) and the reserve (32,056 B after it; now 29,176 B after
+  the wave-0 hardening's +2,880 B). The owner may overrule
   it; the lib/bin split or the request-channel drain is what would move.
 - **The duplicated image decoders** (decisions.md m5-size, last
   paragraph): `jpeg_decoder` and `image_webp` are each built twice

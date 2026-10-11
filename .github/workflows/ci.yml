@@ -98,13 +98,15 @@ jobs:
       - run: scripts/check-tree-sitter.sh
       # The CI scripts' own tests: gate-misses.sh (the advisory timing
       # gates), check-tree-sitter.sh, the budgets ledger line and the static
-      # checks of the owner-only gpu-measure.sh (never run here), and
-      # size-report.sh's crate attribution.
+      # checks of the owner-only gpu-measure.sh (never run here),
+      # size-report.sh's crate attribution, and tests-ran.sh (a filtered
+      # test step that runs no test fails).
       - run: scripts/container/test-gate-misses.sh
       - run: scripts/container/test-check-tree-sitter.sh
       - run: scripts/container/test-ledger.sh
       - run: scripts/container/test-gpu-measure.sh
       - run: scripts/test-size-report.sh
+      - run: scripts/container/test-tests-ran.sh
 
   # The debug test build: the workspace's tests, the 100 reloads and the
   # reload fuzzer's short run.
@@ -141,7 +143,7 @@ jobs:
       # thread splits a delete-and-create save; a gap of at most 20 ms,
       # still past the 15 ms coalescing, leaves it 30 ms of the watcher's
       # 50 ms grace).
-      - run: cargo test -p strand --bin strand random_edits_through_five_save_styles -- --nocapture --test-threads=1
+      - run: scripts/container/tests-ran.sh cargo test -p strand --lib random_edits_through_five_save_styles -- --nocapture --test-threads=1
         env:
           STRAND_FUZZ_MAX_GAP_MS: "20"
 
@@ -253,7 +255,7 @@ jobs:
       # 50 edits each so p95 is not the worst of 20 samples (the token
       # gate's headroom is thin: 1.6 ms at p95 in GitHub run 37647946808,
       # 0.5 ms in a reviewer's local run; see docs/m1-report.md).
-      - run: cargo test --profile timing -p strand --bin strand reload_latency -- --nocapture --test-threads=1
+      - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "50"
       # M4 exit "smooth 2,000-row scrolling": a 2,000-row list's render
@@ -457,7 +459,7 @@ jobs:
       # editor styles into a live pipeline on tmpfs (/dev/shm), and in
       # place into the pipeline on headless sway. On the `timing`
       # profile, the latency run's build below.
-      - run: cargo test --profile timing -p strand --bin strand random_edits_through_five_save_styles -- --nocapture
+      - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib random_edits_through_five_save_styles -- --nocapture
         env:
           STRAND_FUZZ_EDITS: "10000"
           # A new sequence each night; the seed is printed to replay it.
@@ -469,6 +471,6 @@ jobs:
           STRAND_RELOAD_FUZZ: "10000"
           STRAND_STATE_FUZZ: "2000"
       # The timing job's latency gate with 200 edits each.
-      - run: cargo test --profile timing -p strand --bin strand reload_latency -- --nocapture --test-threads=1
+      - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "200"

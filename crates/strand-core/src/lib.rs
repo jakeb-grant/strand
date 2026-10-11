@@ -36,6 +36,7 @@
 //!
 //! See `docs/design.md`, "Reactivity and state model".
 
+pub mod action;
 mod async_value;
 mod echo;
 mod error;
@@ -51,6 +52,7 @@ mod signal;
 mod task;
 mod timer;
 
+pub use action::{ActionCtx, InputCtx};
 pub use async_value::{Async, AsyncMemo, RequestId};
 pub use echo::{Generation, MAX_PENDING_ECHOES, Received};
 pub use error::{CyclePath, Error};

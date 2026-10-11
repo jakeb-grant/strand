@@ -1518,6 +1518,14 @@ fn actions_know_whether_input_called_them() {
         ctxs.iter()
             .all(|c| *c == strand_compiler::vm::ActionCtx::default() && c.input.is_none())
     );
+    // The context the VM passes is strand-core's, the type strand-services
+    // (which depends only on strand-core) takes at the other end.
+    let core: strand_core::ActionCtx = ctxs[0];
+    let _: strand_compiler::vm::host::InputCtx = strand_core::InputCtx {
+        surface: 1,
+        serial: 2,
+    };
+    assert_eq!(core, strand_core::ActionCtx::default());
 }
 
 /// (M4) Only the events a press just set the tray's click point for run

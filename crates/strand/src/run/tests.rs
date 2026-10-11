@@ -322,8 +322,17 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
     let (give, take) = std::sync::mpsc::channel();
     let (heard, events) = std::sync::mpsc::channel();
     let heard = std::sync::Mutex::new(heard);
+    let (unmount_tx, unmount_rx) = std::sync::mpsc::channel();
     let live = Live {
         requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            // Runs on the logic thread: as the unmount starts, a call is
+            // already refused, before the services shut down.
+            let late = r.clone();
+            logic::UNMOUNTING.with(|h| {
+                *h.borrow_mut() = Some(Box::new(move || {
+                    let _ = unmount_tx.send(late.call(ipc::Request::Report).is_err());
+                }));
+            });
             let _ = give.send(r);
         }))),
         events_to: Some(ipc::EventSink::new(move |ev| {
@@ -393,6 +402,12 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
     );
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
+    // The channel closed as the loop ended, not when `logic` returned.
+    assert_eq!(
+        unmount_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(true),
+        "a call during the unmount is refused with IpcClosed"
+    );
     // The loop is gone: nothing answers.
     assert!(requests.call(ipc::Request::Report).is_err());
     let _ = std::fs::remove_dir_all(dir);
@@ -1336,7 +1351,7 @@ fn reload_latency(rounds: usize) -> (Vec<f64>, Vec<f64>) {
 /// buffer through the real watcher, compiler worker, logic thread
 /// and renderer (the compositor's present is not in it). Checked on
 /// an optimised build only, against the budget itself: CI runs
-/// `cargo test --profile timing -p strand --bin strand reload_latency`
+/// `cargo test --profile timing -p strand --lib reload_latency`
 /// (an unoptimised repaint alone takes about half the token budget,
 /// so a debug run would measure the build, not the design).
 /// `STRAND_LATENCY_ROUNDS` sets the edits per kind (20).

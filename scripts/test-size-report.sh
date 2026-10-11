@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests size-report.sh's attribution rule (`--attribute`): each
-# demangled symbol name is charged to the crate it names.
+# demangled symbol name is charged to the crate it names; and its
+# baseline crate table (`--crate-delta`).
 # Run: scripts/test-size-report.sh (host or container; needs only awk).
 
 set -uo pipefail
@@ -46,6 +47,26 @@ if [ "$out" = "a [c] b " ]; then
   echo "ok   one line per symbol"
 else
   echo "FAIL one line per symbol: got '$out'"
+  fails=$((fails + 1))
+fi
+
+# The baseline table (`--crate-delta`): the current rows with their Δ,
+# then a baseline top crate the binary no longer has, as a 0-byte row
+# with its whole negative Δ; one past the baseline's top N is not listed.
+DIR=$(mktemp -d)
+trap 'rm -rf "$DIR"' EXIT
+printf '500\tstrand_render\t5\n300\timage\t3\n100\tzbus\t1\n50\tgone_far\t1\n' >"$DIR/base.tsv"
+printf '520\tstrand_render\t5\n90\tzbus\t1\n10\tnew_crate\t1\n' >"$DIR/new.tsv"
+got=$("$HERE/size-report.sh" --crate-delta "$DIR/base.tsv" "$DIR/new.tsv" 1000 3)
+want='| 520 | +20 | 52.00 | 5 | strand_render |
+| 90 | -10 | 9.00 | 1 | zbus |
+| 10 | +10 | 1.00 | 1 | new_crate |
+| 0 | -300 | 0.00 | 0 | image (gone) |'
+if [ "$got" = "$want" ]; then
+  echo "ok   a crate gone from the binary keeps its row and Δ"
+else
+  echo "FAIL a crate gone from the binary keeps its row and Δ: got"
+  echo "$got"
   fails=$((fails + 1))
 fi
 
