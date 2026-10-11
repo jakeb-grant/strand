@@ -26,8 +26,9 @@ faults = ["strand-auth/faults"]
 # m5-speed-profile). Tests only: never in a default or release build.
 speed-bench = []
 
-# The library holds the module tree; the binary is `main` and the
-# COMMANDS table over it (decisions.md, m5-core). The library is for
+# The library holds the module tree and the command line (`entry.rs`);
+# the binary is the process setup and `main` over it (decisions.md,
+# m5-core, m5-integration-w2). The library is for
 # plugins (`strand::Shell::builder()`), git-only and unstable.
 [lib]
 path = "src/lib.rs"

@@ -1007,9 +1007,9 @@ zero-width span (an insertion) is allowed.
   catches a stale `grammar.json`; decisions.md m5-infra.)
 
 **Plugins: `strand` gains a `[lib]` target (new).** `main.rs`'s module
-tree moves under `lib.rs`, and `main.rs` keeps `main` and the COMMANDS
-table until the wave 1 → 2 boundary, when both move into `src/entry.rs`
-(accepted 2026-10-11; "Plugin builder" below) (0b; planned within 1 KB of `.text`, measured at +12,544 B
+tree moves under `lib.rs`, and `main.rs` kept `main` and the COMMANDS
+table until the wave 1 → 2 boundary, when both moved into `src/entry.rs`
+(accepted 2026-10-11, moved in m5-integration-w2; "Plugin builder" below) (0b; planned within 1 KB of `.text`, measured at +12,544 B
 CPU-only and +8,512 B GPU with the request channel, and accepted and
 charged to the ledger: decisions.md m5-core, m5-integration). The library
 exposes `strand::Shell::builder().service::<S>().run()`: a plugin is a
@@ -1031,7 +1031,9 @@ m5-w0-harden). The example is `[[example]] plugin_hello`
 in the strand crate, never in the release binary's `.text`. The binary
 reaches the library through a hidden `strand::cli` module (its entry
 points: `check`, `fmt`, the IPC commands, `compositor_rules`, `demo`,
-`run`, `trim`, `LogConfig`, `default_dir`); the module tree stays
+`run`, `trim`, `LogConfig`, `default_dir`, and `main`, `entry.rs`'s
+command line, which `main.rs` calls until `Shell::builder().run()`
+replaces the call); the module tree stays
 private. `main.rs` invokes `strand::process_setup!()`, and so do
 `lib.rs` under `cfg(test)` (so the unit tests run as the binary does)
 and `tests/m5/process_setup.rs` (a linking binary, as a plugin is).
@@ -1054,7 +1056,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   line: `main.rs`'s `COMMANDS`, `dispatch` and `main` body (idle hooks
   included) move into a library module, `src/entry.rs`, and `main.rs`
   becomes `strand::process_setup!(); fn main() -> ExitCode {
-  strand::Shell::builder().run() }` with its allocator and THP tests. A
+  strand::Shell::builder().run() }` with its allocator and THP tests.
+  (Moved in m5-integration-w2, before the builder exists: `main.rs`
+  calls `strand::cli::main()`, `entry.rs`'s `main` re-exported in the
+  hidden `cli` module, and S-plugins replaces that one call with the
+  builder's `run`, which calls `entry::main`.) A
   plugin binary therefore answers `run`, `check`, `fmt`, `call` and the
   rest exactly as `strand` does, against its own schema. This replaces
   0a's "`main.rs` keeps `main` and the COMMANDS table". The move is one
@@ -1253,8 +1259,8 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   (`run/request/mod.rs`), `ToMain`/`ToLogic` and `Shell::handle`
   (`run/mod.rs`, `run/shell.rs`), `Live`'s fields, `lib.rs`'s `mod`
   list and `strand::cli` re-exports, `ipc/mod.rs`'s re-exports, and,
-  after the wave 1 → 2 move, `src/entry.rs`'s COMMANDS rows and
-  dispatch arms (the CLI table; until the move, `main.rs`'s); the
+  `src/entry.rs`'s COMMANDS rows and dispatch arms (the CLI table,
+  moved there from `main.rs` at the wave 1 → 2 boundary); the
   integrator merges them.
 
 ## Contracts
