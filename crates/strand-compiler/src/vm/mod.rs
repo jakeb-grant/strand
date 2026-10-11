@@ -216,6 +216,12 @@ impl Env {
         *self.instance.borrow_mut() = Some(id.into());
     }
 
+    /// (M5) This scope's own instance qualifier, if it is one of several
+    /// (a `for` item's key, a per-monitor bar's monitor).
+    pub fn instance(&self) -> Option<Rc<str>> {
+        self.instance.borrow().clone()
+    }
+
     /// The instance qualifiers from the outermost scope in: `[DP-1][3]`.
     pub fn instance_path(&self) -> String {
         let mut parts = Vec::new();

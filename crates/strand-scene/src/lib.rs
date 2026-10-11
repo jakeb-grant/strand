@@ -14,6 +14,7 @@ pub mod input;
 pub mod motion;
 pub mod paint;
 pub mod protocol;
+pub mod provenance;
 pub mod shader;
 pub mod surface;
 pub mod tokens;
@@ -38,6 +39,7 @@ pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Keyframes, Length, NodeKind, Paint, Prop,
     PropClass, PropValue, SceneDiff, SceneOp, Shadow, Transition,
 };
+pub use provenance::{ProvenanceStep, StepKind};
 pub use shader::{PRELUDE, ShaderCode, UniformSlot, UniformType};
 pub use surface::{
     Anchor, CompositorCaps, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec, is_two_way,

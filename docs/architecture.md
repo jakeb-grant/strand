@@ -803,7 +803,9 @@ evaluation).**
   subtree; settings are untouched;
 - `source_hash(file)`: the hash of the text the running program was
   compiled from, which write-back compares against.
-- A dump redacts password inputs (the lock's `Secrets` rule above).
+- A dump redacts password inputs (the lock's `Secrets` rule above:
+  current and the newest four replaced values, learned from each tick's
+  sent props and from every widget write, any 4-byte run, lower-cased).
 
 **The token overlay layer (`strand-compiler`, new, S-ipc).**
 `Instance::set_token_overlay(path, value)` and
@@ -826,9 +828,11 @@ overlay wins [clear]`; `[clear]`, `strand clear '$accent'` and IPC
 
 **`strand-scene`: `TokenTable::provenance(path, scope) ->
 Vec<ProvenanceStep>` (new).** It walks `TokenExpr::Ref` through the
-`TokenScope` chain (subtree `set { }` and component `tokens { }`
-levels), reads each step's `origin`, and adds an overlay step and a
-contrast-guard step where they apply.
+`TokenScope` chain: `self` is the global table (component `tokens { }`
+blocks are part of it, as `Toast.*` entries with origin `component
+Toast`) and `scope` the subtree `set { }` override levels, outermost
+first (decisions.md m5-inspect). It reads each step's `origin`, and adds
+an overlay step and a contrast-guard step where they apply.
 
 **`strand-render` (new).**
 - `Renderer::pick(surface, point) -> Option<NodeId>`;
