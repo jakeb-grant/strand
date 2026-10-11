@@ -330,7 +330,7 @@ Because `on change` never fires at boot, on a sink switch or on reload, the OSD 
 - **Shaders:** `shader "aurora.wgsl" { u_speed: 0.4; u_tint: $accent }`, checked with naga, hot-reloaded.
 - **Canvas:** `canvas { draw: (c) => … }` for charts and visualisers, with the same paint API the renderer uses.
 - **Custom services:** `service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`, checked against introspection. Or a Rust crate with `#[service]`.
-- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0). `strand export` asks the running shell over the socket.
+- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0). `strand export` (M5 wave 2) asks the running shell over the socket.
 
 ## Reactivity and state model
 
@@ -345,7 +345,7 @@ A fine-grained push-pull signal graph (the Leptos/Solid model, glitch-free) runs
 - **Handlers** are coroutines that return errors as values. On unmount they are cancelled at their next `await`. `fn`s are pure.
 - **Feedback loops.** A static cycle is a load error that names the path. Writes to a service carry a generation tag, so a service echoing your own pending write back is ignored. More than 30 writes per second to one cell from one handler warns and throttles.
 - **Persistence and settings.** `persist` stores the value with a hash of its default, so a changed default can be noticed. Settings files are covered under live reload.
-- **Who wins.** `strand set` on a `state` is an ordinary write. For tokens and settings fields the order is runtime overlay > file > default. When a save is shadowed by an overlay, the reload overlay says so: `accent: file changed but runtime overlay wins [clear]`. Overlays reach `file` outputs and `strand export` too, since they read the same token table.
+- **Who wins.** `strand set` on a `state` is an ordinary write. For tokens and settings fields the order is runtime overlay > file > default. When a save is shadowed by an overlay, the reload overlay says so: `accent: file changed but runtime overlay wins [clear]`. Overlays reach `file` outputs and `strand export` too (M5 wave 2), since they read the same token table.
 
 ## Styling, tokens and theming
 
@@ -619,7 +619,7 @@ Every source ends up as a write into the same reactive graph.
 | `.strand`, `.wgsl` files | inotify on config directories, depth 3 | Reload pipeline |
 | Symlinked files | The link's directory plus the target's directory | Reload; a link swap counts as an edit |
 | Settings TOML, wallpaper | Same watcher | Per-field writes; palette re-quantised |
-| Template files (`file { template: }`) | Same watcher | That `file` re-rendered |
+| Template files (`file { template: }`, M5 wave 2) | Same watcher | That `file` re-rendered |
 | Colour scheme, accent, contrast | Portal `SettingChanged(namespace, key, value)`; `ReadOne` at boot | `system.dark`, `system.accent`, `system.contrast` |
 | Monitors | `wl_registry` global add/remove; `wl_output` v4 `done`; layer-surface `closed` | `screens` |
 | Compositor reload | Hyprland socket2 `configreloaded`; niri `ConfigLoaded { failed }` | `wm.config_reloaded` |

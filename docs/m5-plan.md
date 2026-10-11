@@ -864,9 +864,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   code against 55 KB; the integrator accepted it inside the merged
   wave-1 charge (decisions.md m5-integration-w1), so "cut scope before
   wave 2 if it is over" is waived for wave 1's code under the owner's
-  speed-first policy. Wave 2: 20 KB for pick, outline and flash, 3 KB
-  for the IPC arms (2,186 B measured), plus its part of the GPU-only
-  40 KB.
+  speed-first policy. Wave 2: 20 KB for pick, outline and flash, plus
+  its part of the GPU-only 40 KB; the IPC arms' 3 KB (2,186 B measured)
+  is S-ipc's line.
 - Ticks: the Inspector box, citing each of its seven parts.
 
 ### S-lsp (waves 1–2)
@@ -987,11 +987,10 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   - `tests/m5/new.rs`:
     - the new shell checks and runs on two outputs (grim refs);
     - a non-empty dir is refused;
-  - the theming tests listed in decisions.md m5-tools ("the rest"):
-    importers, hues, extras, template diagnostics and format goldens,
-    `file` behaviour in the container, the `export json` golden from
-    catppuccin-mocha, IPC and offline agreeing, base24 round-trip; no
-    fixture imitates an application;
+  - S-tools' share of the theming tests in decisions.md m5-tools ("the
+    rest"): template diagnostics and format goldens, `file` behaviour in
+    the container, and IPC and offline agreeing; no fixture imitates an
+    application (the palette's tests are S-palette's, below);
   - `tests/m5/export.rs`: writes only into a temp `XDG_CONFIG_HOME`, or
     stdout;
   - `tests/m5/report.rs`: every section present; the JSON round-trips;

@@ -289,7 +289,7 @@ and m4-owner-3; summarised under "M4 owner items" below).
 5. **xdg-activation**: scheduled for M5 (features.md's M5 box).
 6. **The promoted GPU cost on hardware**: moved to M5 (features.md's M5
    box); presenting works on renderD128 (Q19 (A)), its after-drop bound
-   is open item 1 above.
+   is open item 4 above.
 7. **Lost devices**: the GPU is off after 3 (`promote::LOST_CAP`)
    (m4-owner-3).
 8. **A 4K crossfade**: resolved by a cheaper blend (m4-owner-3).
