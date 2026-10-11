@@ -876,16 +876,24 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   and a non-empty dir is refused. It writes the level-1 hello bar from
   `docs/guide/template/bar.strand` (owned by S-docs; embedded with
   `include_str!`).
-- **`strand export gtk|kitty|hyprland`**: pure writers in strand-theme.
-  - Output goes to stdout, or to `-o <file>` (Q16). Strand never writes
-    into another program's directory unless asked.
-  - Writes are atomic (FileWriter), and the user's own config files are
-    never edited.
-  - The role→key mapping table goes in decisions.md.
-  - The palette source is confirmed in wave 1: the resolved palette if
-    one is persisted. If none is, export solves the config's theme
-    offline with the code `strand check` loads. If that fails too, it
-    errors with "run strand once, or fix the theme".
+- **`strand export json | --template <file>`** and declared outputs
+  (owner, 2026-10-11: Strand ships no per-app mappings or templates;
+  the design is decisions.md m5-tools, which supersedes the gtk, kitty
+  and hyprland writers first planned here).
+  - Output goes to stdout, or to `-o <file>` (Q16), written atomically
+    (`write_atomic`); the user's own config files are never edited.
+  - Palettes keep their source's named colours as `$palette.<name>`.
+    `json` writes roles, extras, name and variant. Template holes are
+    token expressions, and errors carry the template's location, with
+    nothing written.
+  - `export template "<file>" to "<file>" [run [argv]]` re-renders on
+    every token-table change, overlays included.
+  - The palette source (confirmed in wave 1): the persisted palette,
+    else an offline solve with the code `strand check` loads, else
+    "run strand once, or fix the theme". A template renders against an
+    offline mount of the config with that palette pinned.
+  - Cross-crate needs: decisions.md m5-tools, last paragraph (proposed
+    architecture.md text).
 - **`strand report`**:
   - text, plus `--json`;
   - compositor and globals with versions; outputs and scales; PSS from
@@ -903,8 +911,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   - `tests/m5/new.rs`:
     - the new shell checks and runs on two outputs (grim refs);
     - a non-empty dir is refused;
-  - `crates/strand-theme/tests/export.rs`: golden files per format from
-    catppuccin-mocha, with every key written;
+  - `crates/strand-theme/tests/export.rs`: the JSON golden of
+    catppuccin-mocha (every role and extra); template fixtures of
+    Strand's own, none imitating an application (decisions.md m5-tools);
   - `tests/m5/export.rs`: writes only into a temp `XDG_CONFIG_HOME`, or
     stdout;
   - `tests/m5/report.rs`: every section present; the JSON round-trips;

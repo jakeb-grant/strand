@@ -359,7 +359,8 @@ Tokens are live values in the reactive graph, not constants. Swapping a theme, a
 
 - **Derived tokens stay derived.** `$fg.muted: $fg.alpha(0.65)` re-evaluates when `$fg` changes. This fixes pleamar's stale-copy problem. Derived tokens form a graph; a cycle is a load error. Results are gamut-mapped.
 - **Methods are calls.** A `$` path segment followed by `(` is a method (`alpha`, `mix`, `lighten`, `darken`), so adding methods later never breaks token names.
-- **Importers** for Material seed or image, base16/base24, Catppuccin, matugen output and W3C design-token JSON must fill the whole palette schema. One table derives any role they lack.
+- **Importers** for Material seed or image, base16/base24, Catppuccin, matugen output and W3C design-token JSON must fill the whole palette schema. One table derives any role they lack. They also keep every named colour of their source beside the roles, as `$palette.<name>` (`$palette.mauve`, `$palette.base0D`); an extra the current palette lacks is null, so `$palette.green ?? $tertiary` covers a swap.
+- **Harmonised hues.** `$hue.green.harmonize($accent)` turns a fixed hue toward the accent (HCT, up to 15°), so a palette with one hue family can still give a template a green that belongs with it; success, warning and terminal hues are the user's tokens, not palette roles.
 - **Loud overrides.** Redefining a token needs `override`. A misspelt override is an unknown-name error, not a new token. A raw hex colour in a prop is a lint; defaults in settings are exempt.
 
 ### Theme file
@@ -415,7 +416,8 @@ Writing `look`, a portal dark-mode change, a new wallpaper, `strand set` and sav
 - `material(image:)` quantises a 128 px downscale off-thread with the [`material-colors`](https://github.com/Aiving/material-colors) crate, cached by content hash.
 - Both the wallpaper path and its symlink target are watched, so `swww` or a script replacing the file re-themes live.
 - The old palette holds until the new one is ready. The last palette is persisted, so boot never flashes default colours.
-- `strand export gtk | kitty | hyprland` writes the same palette for the rest of the desktop, to stdout or to `-o <file>`; Strand never writes into another program's config directory unless asked.
+- The rest of the desktop gets the same palette through two generic outputs, never per-app mappings (Strand ships no app themes or templates): `strand export json` writes the whole palette as data (roles, extras, name, dark or light), and `strand export --template <file>` fills a text file of any format whose holes are token expressions (`--accent: {{ $accent }}; --glow: {{ $accent.alpha(0.4) }};`). A literal `{{` is `{{ "{{" }}`. An unknown token or a bad expression is an error with the template's file, line and caret, and nothing is written. Both write to stdout or atomically to `-o <file>`.
+- To keep other programs in step with theme switches, a config declares its outputs: `export template "colors.tmpl" to "~/.cache/colors.css" run ["reload-colors"]` (the command needs `permit exec`). Each is re-rendered whenever the token table changes (a theme edit, `look`, dark or light, a new wallpaper, `strand set` overlays included), written only when its text changed, and the command runs after the write. Strand never writes into another program's config directory unless asked: every file it writes is one the config names.
 
 ### Overrides
 
