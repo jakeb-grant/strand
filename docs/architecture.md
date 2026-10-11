@@ -152,12 +152,13 @@ threads' delayed trim (`run::trim::Trimmer`, armed by a structural diff) is
 pushed back by each wake while armed, but no further than 5 s after it
 was armed, so a surface that never settles still trims. The memory budget also rests on the workspace's
 release profile: the root `Cargo.toml`'s `[profile.release.package]`
-opt-levels build event-rate code for size, and neither `cargo install`
+opt-levels build the code users wait on for speed and event-rate
+glue for size (decisions.md m5-speed-profile), and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
 build from the workspace (`budgets.rs` holds the release binary's
-`.text` to 18.5 MiB, and a build without the GPU backend to 15,859,712 B,
-M5's provisional re-base of 15 MiB (decisions.md m5-integration); see
-"`strand-gpu`"). Every program strand starts gets back
+`.text` to 22,282,240 B, and a build without the GPU backend to
+18,350,080 B, both re-based in M5 for the speed profile (decisions.md
+m5-speed); see "`strand-gpu`"). Every program strand starts gets back
 the THP setting strand inherited (`strand_services::child`, in each
 `pre_exec`). SIGINT, SIGTERM (a
 `signalfd` on the main loop, the signals blocked in every thread) and
@@ -504,7 +505,7 @@ blocker). The `strand` binary's default feature `gpu` turns on render's
 on `shaders` so the LSP checks shaders too. Built with
 `--no-default-features`, `strand` links none of wgpu, vello_gpu, naga or
 libwayland-client: that build is the CPU core the CPU-only `.text` gate
-measures (15,859,712 B in M5, provisionally; decisions.md m5-integration).
+measures (18,350,080 B since M5's speed re-base; decisions.md m5-speed).
 
 ```
 strand-scene <── strand-gpu (M4: wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -3612,12 +3613,15 @@ a `strand watch` notice, and keeps it for `strand report` and the
 inspector (M5) to say why.
 
 **Budgets and tests.**
-- `.text` (`strand/tests/budgets.rs`): the default build at most 18.5
-  MiB (19,398,656 B: the spike's 17,683,543 B with GPU code linked, plus
-  9.7%); `strand --no-default-features` at most 15 MiB (the spike's CPU
-  build had 1.14 MiB to spare), re-based in M5 to 15,925,248 B,
-  then 15,859,712 B after wave 0's reclaims, provisionally, for M5's allocation (decisions.md m5-owner Q6,
-  m5-integration). The spike measured the GPU build's bar
+- `.text` (`strand/tests/budgets.rs`): the default build at most
+  22,282,240 B and `strand --no-default-features` at most 18,350,080 B
+  (decisions.md m5-speed: the speed profile's measured 21,857,111 and
+  17,961,687 B, plus M5's unspent allocation and a 64 KiB reserve,
+  rounded up to 256 KiB). Before the speed profile they were 18.5 MiB
+  (19,398,656 B: the spike's 17,683,543 B with GPU code linked, plus
+  9.7%) and 15 MiB (the spike's CPU build had 1.14 MiB to spare),
+  re-based in M5 to 15,925,248 B, then 15,859,712 B after wave 0's
+  reclaims (decisions.md m5-owner Q6, m5-integration). The spike measured the GPU build's bar
   PSS at a mean of 33.7 MB, about 0.3 MB under the 34 MB target, all of
   it cold-code mapping and relocations. With the backend landed
   (m4-gpu-w2): `.text` 18,456,983 B (default) and 15,118,167 B

@@ -196,14 +196,18 @@ lowered as reclaims land, tightened at close.**
   −37,056 B, and the gate is recomputed from the lowered baseline:
   15,620,615 + 230,000 = 15,850,615, rounded up to 64 KiB (decisions.md
   m5-integration; 9,097 B of rounding, not spendable).
-- **Speed-profile re-base (proposed, decisions.md m5-speed-gates).**
-  `laptop/m5-speed-profile` moves the release profile to speed (the
-  owner's policy of 2026-10-10). `strand` at opt 3 runs the whole
-  binary's fat-LTO pass at 3. That adds 2,322,960 B CPU-only and
-  2,839,120 B GPU, a re-base rather than M5 spend; the allocations
-  below are unchanged. The proposed gates are **18,219,008 B** CPU-only
-  (the rule above with the re-base added, 45,433 B of rounding) and
-  **22,282,240 B** GPU. The integrator sets them when the branch merges.
+- **Now (after the speed review): 18,350,080 B** (decisions.md
+  m5-speed). The owner's policy of 2026-10-10 puts speed first where the
+  trade is sensible and has agents set gates by judgement. The speed
+  profile (`strand` at opt 3 runs the whole binary's fat-LTO pass at 3)
+  and the speed-code reverts measured 17,961,687 B on the merged tree,
+  +2,325,712 B over the pre-speed 15,635,975 B, a re-base rather than M5
+  spend. The gate is that size plus M5's unspent allocation (214,640 B)
+  plus a 64 KiB reserve, rounded up to 256 KiB (108,217 B of rounding,
+  not spendable). "Lowered as reclaims land" and "never raised without
+  the owner" are superseded by that policy: a deliberate speed choice
+  re-bases the gate with its measured reason (decisions.md
+  m5-speed-policy).
 
 Not taken: **(B) keep 15 MiB, as m4-integration-w2 did (decisions.md:9573:
 "the code moved, not the gate").** That would have left 71 KB plus
@@ -214,11 +218,11 @@ the CLI + IPC box open), the inspector's outline and flash, and
 
 ### GPU gate (Q6, second part)
 
-Keep 18.5 MiB. The GPU build pays the 230 KB plus its own 40 KB, or
-270 KB of its 357 KB, before reclaims, which also apply to it. That
-leaves at least 87 KB. With the speed profile (proposed, decisions.md
-m5-speed-gates), the gate is 18.5 MiB plus the GPU re-base of
-2,839,120 B, rounded up to 64 KiB: 22,282,240 B, the same structure.
+Kept at 18.5 MiB until the speed review. The GPU build pays the 230 KB
+plus its own 40 KB. **Now: 22,282,240 B** (decisions.md m5-speed): the
+merged tree's 21,857,111 B (+2,841,424 B over the pre-speed 19,015,687
+B) plus M5's unspent GPU allocation (258,032 B of 270,000) plus a 64 KiB
+reserve, rounded up to 256 KiB (101,561 B of rounding).
 
 ### Reclaims (S-size, wave 0, behaviour-neutral, measured)
 
@@ -287,13 +291,17 @@ Expected: 20–80 KB. Recorded as measured, not promised.
   so 12,480 B spent (0b, to within 64 B); after the wave-0 hardening it
   read Δ −21,760 after its first round and Δ −21,696 after its second
   (15,635,975 B), so 15,360 B spent and 214,640 B left.
-  **With the speed profile** (decisions.md m5-speed-gates), Δ also
-  carries its re-base, +2,322,960 B CPU-only and +2,839,120 B GPU, which
-  no allocation pays. Spend is then **Δ − 2,285,904** CPU-only (Δ +
-  37,056 − 2,322,960) and **Δ − 2,801,744** GPU. "Within allocation" is
-  Δ ≤ +2,515,904 CPU-only (GPU Δ ≤ +3,071,744), and the proposed CPU-only
-  gate is hit at Δ = +2,561,337. The profile's tree reads Δ +2,301,264
-  (15,360 B spent, unchanged) and GPU Δ +2,813,712 (11,968 B).
+  **With the speed re-base** (decisions.md m5-speed), Δ also carries
+  the speed profile and the speed-code reverts, +2,325,712 B CPU-only and
+  +2,841,424 B GPU on the merged tree, which no allocation pays. Spend
+  is then **Δ − 2,288,656** CPU-only (Δ + 37,056 − 2,325,712) and **Δ −
+  2,804,048** GPU. "Within allocation" is Δ ≤ +2,518,656 CPU-only (GPU Δ
+  ≤ +3,074,048); the gates (18,350,080 / 22,282,240 B) are hit at Δ =
+  +2,692,409 and +3,241,145, the 64 KiB reserve and the rounding
+  between. The merged tree reads Δ +2,304,016 CPU-only (17,961,687 B;
+  15,360 B spent, 214,640 B left) and GPU Δ +2,816,016 (21,857,111 B;
+  11,968 B spent, 258,032 B left). A later deliberate speed revert adds
+  its measured cost to the re-base and the gate, recorded.
 
 - Streams do not build release binaries routinely. The two least
   predictable items (D-Bus, inspector) each take one CPU-only
@@ -1116,7 +1124,10 @@ answer; this list is the short form.
    15,925,248 B (+196,608) on day one, lowered as reclaims land, back to
    15 MiB if they reach about 159 KB, tightened to the next 64 KiB above
    the final size at close. The GPU gate stays 18.5 MiB. (Lowered to
-   15,859,712 B after wave 0's reclaims: decisions.md m5-integration.)
+   15,859,712 B after wave 0's reclaims: decisions.md m5-integration.
+   Superseded by the owner's speed policy of 2026-10-10: 18,350,080 B
+   CPU-only and 22,282,240 B GPU after the speed review, decisions.md
+   m5-speed.)
 7. **Reclaim policy: behaviour-neutral reclaims only**, each kept only
    if GitHub's timing job stays green. No opt-level cuts on gated hot
    paths.

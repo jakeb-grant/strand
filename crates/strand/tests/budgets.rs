@@ -1,6 +1,6 @@
 //! M3 exit, "memory verified", and the idle budget on the real services
 //! (design.md, "Memory budget" and "Testing": the two-monitor bar aims at
-//! 34 MB, a warning above it, and the build fails above 38 MB; a running
+//! 39 MB, a warning above it, and the build fails above 44 MB; a running
 //! service with nothing changing wakes nothing).
 //!
 //! `strand run` without `STRAND_MOCK` on a headless sway with two
@@ -18,7 +18,7 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 38 MB ceiling (fails above it; above the 34 MB target
+//!   within the 44 MB ceiling (fails above it; above the 39 MB target
 //!   it warns) in release (a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
 //!   minute ticks no thread of strand's wakes (or comes or goes) and no
@@ -27,23 +27,21 @@
 //!   files (bar, launcher, toasts, OSD, theme) with the machine's own
 //!   desktop entries and icons (`/usr/share`) and three of the test's,
 //!   `HEADLESS-1` at scale 2 (design.md budgets the launcher's buffers
-//!   at 2×), measured against design.md's 59–64 MB estimate for the full
+//!   at 2×), measured against design.md's estimate for the full
 //!   shell with the launcher open: the bar alone, then the launcher open
 //!   (the test's apps' icons found on screen), two notifications from an
 //!   app as toasts (on screen), the OSD up too (a `wpctl` volume change;
 //!   on screen), then the launcher closed. The larger of the settled
-//!   launcher-and-toasts figure and the OSD's aims at the estimate's top,
-//!   64 MB (a warning above it), and fails above the 70 MB ceiling, in
-//!   release.
+//!   launcher-and-toasts figure and the OSD's aims at the 67 MB target (a
+//!   warning above it), and fails above the 74 MB ceiling, in release.
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   18.5 MiB with the GPU backend (the default build), 15,859,712 B
-//!   for the CPU core (`--no-default-features`; M5's provisional
-//!   re-base, lowered after wave 0's reclaims, decisions.md
-//!   m5-integration; docs/architecture.md,
+//!   22,282,240 B with the GPU backend (the default build), 18,350,080 B
+//!   for the CPU core (`--no-default-features`); both re-based for the
+//!   speed profile (decisions.md m5-speed; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -76,19 +74,31 @@ use strand_services::testing::{DbusMock, PrivateBus};
 use window::TestWindow;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
-/// design.md: the two-monitor bar aims at 34 MB (CI warns above it) and
-/// the build fails above 38 MB.
-const PSS_TARGET_KB: u64 = 34 * 1024;
-const PSS_GATE_KB: u64 = 38 * 1024;
+/// design.md: the two-monitor bar aims at 39 MB (CI warns above it) and
+/// the build fails above 44 MB. Re-based from the owner-confirmed 34 / 38
+/// MB for the speed profile's larger resident code (GitHub measured
+/// 37,817 kB; the target is that plus about 5%, the ceiling keeps the old
+/// 38/34 margin, rounded up: decisions.md m5-speed).
+const PSS_TARGET_KB: u64 = 39 * 1024;
+const PSS_GATE_KB: u64 = 44 * 1024;
 /// A debug build's code is about three times release's (65 MB against
 /// 32 MB here): a ceiling of its own that only catches gross growth; the
 /// gate is checked in release (CI).
 const DEBUG_PSS_CEILING_KB: u64 = 96 * 1024;
-/// design.md's estimate for the full shell with the launcher open:
-/// 59–64 MB, the target (CI warns above it); the build fails above 70 MB,
-/// held in release.
-const FULL_SHELL_TARGET_KB: u64 = 64 * 1024;
-const FULL_SHELL_KB: u64 = 70 * 1024;
+/// The full shell with the launcher open: the target (CI warns above it)
+/// is 67 MB and the build fails above 74 MB, held in release. Re-based
+/// from the owner-confirmed 64 / 70 MB for the speed profile's resident
+/// code and caches (the highest release run, 64,480 kB with 161 entries,
+/// plus about 5%; the ceiling keeps the old 70/64 margin: decisions.md
+/// m5-speed).
+const FULL_SHELL_TARGET_KB: u64 = 67 * 1024;
+const FULL_SHELL_KB: u64 = 74 * 1024;
+/// The gates the owner confirmed in M3 (decisions.md wave4-core), which
+/// docs/m3-report.md records; the ones in force are above.
+const M3_PSS_TARGET_KB: u64 = 34 * 1024;
+const M3_PSS_GATE_KB: u64 = 38 * 1024;
+const M3_FULL_SHELL_TARGET_KB: u64 = 64 * 1024;
+const M3_FULL_SHELL_KB: u64 = 70 * 1024;
 /// The idle window: no wakeup, no frame.
 const IDLE: Duration = Duration::from_secs(10);
 /// How long a child command or a D-Bus call of the test's may take.
@@ -1442,7 +1452,7 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "38 MB ceiling")
+        (PSS_GATE_KB, "44 MB ceiling")
     }
 }
 
@@ -1459,8 +1469,8 @@ fn warn_over_target(what: &str, pss: u64, target: u64) {
     }
 }
 
-/// The two-monitor design bar on the real services: within the 38 MB
-/// ceiling (a warning above the 34 MB target), no huge page, and 10 s between minute ticks without a wakeup or
+/// The two-monitor design bar on the real services: within the 44 MB
+/// ceiling (a warning above the 39 MB target), no huge page, and 10 s between minute ticks without a wakeup or
 /// a frame.
 #[test]
 fn the_design_bar_on_the_real_services_keeps_the_budget() {
@@ -2249,13 +2259,17 @@ fn a_size_level_reaching_a_speed_crate_is_caught() {
 }
 
 #[test]
-fn release_opt_levels_reads_package_sections_only() {
+fn release_opt_levels_reads_release_sections_only() {
+    // `[profile.release]`'s own level is read too (under RELEASE_WIDE,
+    // for the speed-crate guard); other sections are not.
     let manifest = "[profile.release]\nopt-level = 3\n\
                     [profile.release.package.zbus]\nopt-level = \"z\" # size\n\
                     [profile.release.package.\"quoted\"]\nopt-level = 's'\n\
+                    [profile.dev]\nopt-level = 1\n\
                     [dependencies]\nopt-level = \"z\"\n";
     let levels = release_opt_levels(manifest);
-    assert_eq!(levels.len(), 2, "{levels:?}");
+    assert_eq!(levels.len(), 3, "{levels:?}");
+    assert_eq!(levels[RELEASE_WIDE], "3");
     assert_eq!(levels["zbus"], "z");
     assert_eq!(levels["quoted"], "s");
 }
@@ -2270,7 +2284,7 @@ fn report_section<'a>(report: &'a str, name: &str) -> &'a str {
     &body[..body.find("\n## ").unwrap_or(body.len())]
 }
 
-/// docs/m3-report.md states the memory gates this binary holds, as the
+/// docs/m3-report.md states the memory gates M3 closed with, as the
 /// owner confirmed them (decisions.md wave4-core, commit 607bd10): the
 /// bar's 34 MB target and 38 MB ceiling and the full shell's 64 / 70 MB
 /// are named in the result table, the Memory section cites the
@@ -2290,23 +2304,23 @@ fn the_report_states_the_owner_confirmed_memory_gates() {
     let bar = row("| Memory: design.md's bar");
     let bar_gate = format!(
         "{} MB target (warns), {} MB ceiling (fails), owner-confirmed",
-        mb(PSS_TARGET_KB),
-        mb(PSS_GATE_KB)
+        mb(M3_PSS_TARGET_KB),
+        mb(M3_PSS_GATE_KB)
     );
     assert!(bar.contains(&bar_gate), "{bar}\nlacks {bar_gate:?}");
     let full = row("| Memory: full shell");
     let full_gate = format!(
         "{} MB target, {} MB ceiling, owner-confirmed",
-        mb(FULL_SHELL_TARGET_KB),
-        mb(FULL_SHELL_KB)
+        mb(M3_FULL_SHELL_TARGET_KB),
+        mb(M3_FULL_SHELL_KB)
     );
     assert!(full.contains(&full_gate), "{full}\nlacks {full_gate:?}");
 
     let numbers = [
-        mb(PSS_TARGET_KB),
-        mb(PSS_GATE_KB),
-        mb(FULL_SHELL_TARGET_KB),
-        mb(FULL_SHELL_KB),
+        mb(M3_PSS_TARGET_KB),
+        mb(M3_PSS_GATE_KB),
+        mb(M3_FULL_SHELL_TARGET_KB),
+        mb(M3_FULL_SHELL_KB),
     ];
     let names_a_gate = |text: &str| {
         text.contains("targets and ceilings")
@@ -2366,9 +2380,8 @@ fn the_release_binary_code_stays_within_its_gate() {
     }
     let elf = std::fs::read(env!("CARGO_BIN_EXE_strand")).unwrap();
     let text = text_size(&elf).expect("an ELF64 binary with a .text");
-    // The GPU backend's build: the spike's 17,683,543 B plus 9.7%
-    // (decisions.md, m4-gpu-spike); the CPU core's gate is M5's
-    // provisional re-base (`TEXT_GATE_CPU`).
+    // Both gates are the speed profile's measured size plus M5's unspent
+    // allocation and a reserve (decisions.md m5-speed; `TEXT_GATE_*`).
     let (gate, build) = if cfg!(feature = "gpu") {
         (TEXT_GATE_GPU, "the default build (GPU backend)")
     } else {
@@ -2462,17 +2475,21 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 18.5 MiB.
-const TEXT_GATE_GPU: u64 = 19_398_656;
-/// `.text` of the CPU-only release build: M5's provisional re-base,
-/// 15,859,712 B (15 MiB + 131,072). It is M4's measured 15,657,671 B,
-/// less wave 0's measured reclaims (37,056 B, m5-size), plus M5's
-/// 230,000 B allocation (docs/m5-plan.md, "Size strategy"), rounded up
-/// to 64 KiB; the 9,097 B of rounding is not spendable. It was
-/// 15,925,248 B before the reclaims; it is lowered as reclaims land,
-/// never raised in M5 without the owner, and tightened at M5's close
-/// (decisions.md m5-owner Q6, m5-integration).
-const TEXT_GATE_CPU: u64 = 15_859_712;
+/// `.text` of the default (GPU) release build: 22,282,240 B (85 × 256
+/// KiB). The speed profile's merged tree measured 21,857,111 B; the gate
+/// adds M5's unspent GPU allocation (258,032 B of 270,000) and a 64 KiB
+/// reserve, rounded up to 256 KiB (decisions.md m5-speed). It was 18.5
+/// MiB (the spike's size plus 9.7%) before the speed profile.
+const TEXT_GATE_GPU: u64 = 22_282_240;
+/// `.text` of the CPU-only release build: 18,350,080 B (70 × 256 KiB).
+/// The speed profile's merged tree measured 17,961,687 B; the gate adds
+/// M5's unspent allocation (214,640 B of 230,000, docs/m5-plan.md,
+/// "Size strategy") and a 64 KiB reserve, rounded up to 256 KiB; the
+/// rounding is not spendable (decisions.md m5-speed). It was 15,859,712 B
+/// (M5's provisional re-base after wave 0's reclaims, m5-integration)
+/// before the speed profile. The gate catches accidental growth; a
+/// deliberate speed choice re-bases it with its measured reason.
+const TEXT_GATE_CPU: u64 = 18_350_080;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

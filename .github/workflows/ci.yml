@@ -160,7 +160,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: release
-      # The bar's PSS budget (34 MB target warns, 38 MB ceiling fails) is checked on a release build (design.md, "Testing": budgets).
+      # The bar's PSS budget (39 MB target warns, 44 MB ceiling fails) is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private
       # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
@@ -170,20 +170,20 @@ jobs:
       # tray and notifications on the real backends (python-dbusmock's
       # UPower, NetworkManager and logind and a mock portal on a private
       # bus, the shell's own notifications server and tray host, sway's
-      # IPC, a private PipeWire) within the PSS budget (34 MB target
-      # warns, 38 MB ceiling fails) with no huge
+      # IPC, a private PipeWire) within the PSS budget (39 MB target
+      # warns, 44 MB ceiling fails) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
-      # design.md's 59-64 MB (64 MB target warns, 70 MB ceiling fails).
+      # a 67 MB target (warns) and 74 MB ceiling (fails), decisions.md m5-speed.
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
       # The release binary the gate just measured, kept for the human
       # trials' artifact below before the CPU-only build replaces it.
       - run: mkdir -p "$RUNNER_TEMP/trial" && cp target/release/strand "$RUNNER_TEMP/trial/strand-gpu"
-      # The CPU core's .text keeps its own gate (15,859,712 B in M5,
-      # provisionally: decisions.md m5-integration) behind the GPU
-      # backend's 18.5 MiB (docs/architecture.md, "`strand-gpu`").
+      # The CPU core's .text keeps its own gate (18,350,080 B; the GPU
+      # backend's is 22,282,240 B), both re-based for the speed profile
+      # (decisions.md m5-speed; docs/architecture.md, "`strand-gpu`").
       - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger

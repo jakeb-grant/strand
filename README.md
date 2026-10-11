@@ -56,8 +56,11 @@ design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
 job, which also checks the stores and window actions on labwc, a
 compositor with no IPC), takes 100 live reloads without a service
 reconnecting, and on
-two 2560×1440 monitors with the real services uses about 34 MB in
-today's default build, which links the GPU backend (33,731–34,016 kB
+two 2560×1440 monitors with the real services uses about 36–38 MB in
+today's default build, built for speed and linking the GPU backend
+(36,465 kB in the container and 37,817 kB on GitHub after M5's speed
+profile; target 39 MB, ceiling 44 MB, decisions.md m5-speed; before it
+33,731–34,016 kB
 when it landed, 34.1–34.5 MB in the M4 integration's laptop budget
 runs and 34,187 kB at M4's close; 35,557 and 35,617 kB in CI's runs at `70af44f` and `e765276`,
 over the target, which warned; target 34,816 kB, ceiling 38 MiB; docs/m4-report.md, "Budgets";
@@ -205,15 +208,15 @@ would otherwise stop restarting a strand that keeps dying and leave
 the lock with no password field.
 
 Release builds use the workspace's `[profile.release]` in the root
-`Cargo.toml`: fat LTO, one codegen unit, and 40 per-package `opt-level`
-overrides that build the event-rate crates (D-Bus, sockets, parsing,
-image decoders) for size and keep the per-frame paths at 3
-(`docs/decisions.md`, wave4-exitMemory, laptop-decisions and
-m4-integration-w2, which moved to fat LTO because thin LTO no longer kept
-`.text` within its gates, and built the image and SVG decoders for
-size). Copy the
+`Cargo.toml`: fat LTO, one codegen unit, `strand` and the code people
+wait on (rendering, image and SVG decoding, Wayland dispatch) at
+opt-level 3, and 20 per-package `opt-level` overrides that build the
+event-rate glue (D-Bus, services, settings parsing) for size
+(`docs/decisions.md`, wave4-exitMemory, m4-integration-w2, which moved
+to fat LTO, and m5-speed-profile, which re-chose the levels for
+speed). Copy the
 tables from `Cargo.toml` itself, not from this paragraph. The memory figures in the docs
-(the bar's 34 MB target, the full shell's 64 MB) are measured with
+(the bar's 39 MB target, the full shell's 67 MB) are measured with
 exactly these settings and hold for our builds only. Both commands above,
 and `cargo install --git` of this repository, read them. A build that
 does not read the root manifest's profile tables does not get them: a
@@ -247,7 +250,7 @@ matches CI (`CI_JOB=NAME` for one job). The steps:
   (the workspace tests, offline render tests included, without the
   reload fuzzer; the acceptance tests run here in debug too, but for the
   OSD's, whose 1.2 s window is release-only);
-- `cargo test --release -p strand --test demo` for the 34 MB PSS budget
+- `cargo test --release -p strand --test demo` for the 39 MB PSS budget
   (the M0 demo and design.md's bar);
 - `cargo test --release -p strand --test acceptance -- --test-threads=1`:
   the four design shells, unchanged, on sway with two outputs against
