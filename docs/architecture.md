@@ -804,8 +804,8 @@ evaluation).**
 - `source_hash(file)`: the hash of the text the running program was
   compiled from, which write-back compares against.
 - A dump redacts password inputs (the lock's `Secrets` rule above:
-  current and the newest four replaced values, any 4-byte run,
-  lower-cased).
+  current and the newest four replaced values, learned from each tick's
+  sent props and from every widget write, any 4-byte run, lower-cased).
 
 **The token overlay layer (`strand-compiler`, new, S-ipc).**
 `Instance::set_token_overlay(path, value)` and

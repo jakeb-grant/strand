@@ -90,9 +90,12 @@ pub(crate) struct Track {
 }
 
 /// The password values a dump redacts, as the lock's `lock::Secrets`
-/// keeps them: each password input's sent `text` and `value`, and the
-/// newest [`REMEMBERED`] replaced by a value they do not start
-/// (submitted and emptied, edited, their input removed).
+/// keeps them: each password input's sent or written `text` and `value`,
+/// and the newest [`REMEMBERED`] replaced by a value they do not start
+/// (submitted and emptied, edited, their input removed). A widget's write
+/// is noted as it happens ([`Secrets::see_write`]), so a value written and
+/// cleared before the next tick (a paste and Return in one wake) is still
+/// remembered.
 #[derive(Default)]
 struct Secrets {
     inputs: HashMap<NodeId, [Option<String>; 2]>,
@@ -104,6 +107,31 @@ struct Secrets {
 const REMEMBERED: usize = 4;
 
 impl Secrets {
+    /// A widget wrote `value` to password input `node`'s `prop` (the
+    /// lock's `see_write`): the written value replaces the slot, and the
+    /// old one is remembered unless the new one starts with it.
+    fn see_write(&mut self, em: &Emitter, node: NodeId, prop: Prop, value: &PropValue) {
+        let i = match prop {
+            Prop::Text => 0,
+            Prop::Value => 1,
+            _ => return,
+        };
+        if !is_password(em, node) {
+            return;
+        }
+        let PropValue::Text(t) = value else {
+            return;
+        };
+        let slot = &mut self.inputs.entry(node).or_default()[i];
+        let new = (!t.is_empty()).then(|| t.to_string());
+        let old = std::mem::replace(slot, new);
+        if let Some(old) = old
+            && !t.starts_with(&old)
+        {
+            remember(&mut self.remembered, old);
+        }
+    }
+
     /// A tick's `ops` went out, and `em` holds what was sent.
     fn see(&mut self, em: &Emitter, ops: &[SceneOp]) {
         for op in ops {
@@ -189,6 +217,15 @@ fn cell_value<'a>(
 }
 
 impl Instance {
+    /// A widget writes `value` to `node`'s `prop`: a password input's
+    /// value is noted before it reaches the bound place.
+    pub(crate) fn inspect_write(&self, node: NodeId, prop: Prop, value: &PropValue) {
+        self.inspect
+            .secrets
+            .borrow_mut()
+            .see_write(&self.ctx.em.borrow(), node, prop, value);
+    }
+
     /// `build` was committed by a reload that did `report`.
     pub(crate) fn inspect_reloaded(&self, build: &Build, report: &Report) {
         self.inspect.compiled(build, false);
@@ -670,7 +707,11 @@ impl Instance {
                 }
             }
         }
-        for t in &self.inspect.secrets.borrow().remembered {
+        let secrets = self.inspect.secrets.borrow();
+        for t in secrets.inputs.values().flatten().flatten() {
+            add(t);
+        }
+        for t in &secrets.remembered {
             add(t);
         }
         out

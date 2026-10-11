@@ -525,3 +525,27 @@ text join(\"\", \"tried \", tried)\n  text tried.upper()\n  text \"plain\"\n}\n"
     }
     assert!(text.contains("plain"), "other text is shown");
 }
+
+/// A password written by the widget and submitted in the same wake (a
+/// paste and Return: the logic loop drains both before the next tick)
+/// never reaches the sent props, and the dump still redacts its copy.
+#[test]
+fn a_dump_redacts_a_password_written_and_submitted_before_a_tick() {
+    let src = "state pw = \"\"\nstate tried = \"\"\nbar B {\n  \
+input { type: password; text: <-> pw; on activate { tried = pw; pw = \"\" } }\n  \
+text tried\n  text \"plain\"\n}\n";
+    let mut shell = boot(&[("t.strand", src)], Storage::none(), &["DP-1"]);
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    shell
+        .inst
+        .write(input, Prop::Text, PropValue::Text("hunter22".into()))
+        .unwrap();
+    assert!(shell.inst.event(input, "activate", Vec::new()));
+    shell.flush();
+    assert!(shell.scene.find_text("hunter22").is_some());
+    let text = shell.inst.dump(None).unwrap().to_string();
+    for shown in ["hunter22", "hunt"] {
+        assert!(!text.contains(shown), "{shown} in {text}");
+    }
+    assert!(text.contains("plain"), "other text is shown");
+}

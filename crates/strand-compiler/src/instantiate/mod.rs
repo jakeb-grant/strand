@@ -1540,6 +1540,7 @@ impl Instance {
                 prop.name()
             )));
         };
+        self.inspect_write(node, prop, &value);
         let vm = self.ctx.vm.clone();
         let v = convert::from_prop(&vm.prog.types, &tw.ty, &value)
             .ok_or_else(|| Error::failed("the written value does not fit the binding"))?;
