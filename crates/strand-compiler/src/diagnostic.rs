@@ -35,11 +35,15 @@ pub struct Label {
 /// A replacement a diagnostic proposes: `replacement` for the text at
 /// `span` in `file`, such as `critical` for a misspelt `critcal`. Editors
 /// offer each one as a quick fix, so tools never parse the help text.
+/// A zero-width `span` is an insertion at its offset.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
     pub file: FileId,
     pub span: Span,
     pub replacement: String,
+    /// (M5) The code action's title; `None` keeps the editor's default
+    /// ("Change to `replacement`").
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +182,7 @@ impl Diagnostic {
             file,
             span,
             replacement: replacement.into(),
+            title: None,
         });
         self
     }
@@ -613,6 +618,20 @@ fn plain_quotes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (M5 0b) A suggestion carries no title of its own until a check
+    /// gives one (the editor's default then applies), and a zero-width
+    /// span (an insertion) is kept as given.
+    #[test]
+    fn suggestions_have_no_title_by_default_and_may_insert() {
+        let d = Diagnostic::error("x::y", "m")
+            .with_label(Span::new(3, 7), "here")
+            .with_suggestion(Span::new(5, 5), "z");
+        assert_eq!(d.suggestions.len(), 1);
+        assert_eq!(d.suggestions[0].title, None);
+        assert_eq!(d.suggestions[0].span, Span::new(5, 5));
+        assert_eq!(d.suggestions[0].replacement, "z");
+    }
 
     #[test]
     fn suggests_close_keywords() {

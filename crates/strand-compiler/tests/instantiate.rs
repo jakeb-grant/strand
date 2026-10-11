@@ -1508,6 +1508,16 @@ fn actions_know_whether_input_called_them() {
         "the call after the await"
     );
     assert!(!strand_compiler::vm::in_input_handler());
+    // (M5 0b) Every action gets the empty context until the VM records
+    // handler input (S-platform).
+    shell.inst.event(target, "click", Vec::new());
+    shell.flush();
+    let ctxs: Vec<_> = shell.host.take_actions().iter().map(|a| a.ctx).collect();
+    assert!(!ctxs.is_empty());
+    assert!(
+        ctxs.iter()
+            .all(|c| *c == strand_compiler::vm::ActionCtx::default() && c.input.is_none())
+    );
 }
 
 /// (M4) Only the events a press just set the tray's click point for run

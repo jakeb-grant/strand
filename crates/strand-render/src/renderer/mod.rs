@@ -27,6 +27,7 @@ mod layout_pass;
 mod lists;
 mod pose;
 mod specs;
+mod summary;
 mod surfaces;
 mod swap;
 mod text;
@@ -38,6 +39,7 @@ pub use backend::GPU_WAIT;
 
 pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
+pub use summary::FrameSummary;
 pub use text::TextBackend;
 use text::{TextSlot, TextState};
 use tooltip::Tooltip;
@@ -325,6 +327,11 @@ pub struct Renderer {
     timer_due: Option<Instant>,
     /// (M4) Per-surface clocks: nodes reading time each surface drew.
     clocks: crate::clock::Clocks,
+    /// (M5, S-inspect) The highlight and damage flash asked for
+    /// (`crate::inspect`).
+    pub(crate) inspect: crate::inspect::Inspect,
+    /// (M5, S-tools) Frame timing for `frame_summary` (`summary.rs`).
+    frame_stats: summary::FrameStats,
     /// (M4) The GPU backend: promotion, the device, lowering, passes.
     #[cfg(feature = "gpu")]
     gpu: backend::GpuState,
@@ -434,6 +441,8 @@ impl Renderer {
             timer_due: None,
             waker,
             clocks: crate::clock::Clocks::default(),
+            inspect: Default::default(),
+            frame_stats: Default::default(),
             #[cfg(feature = "gpu")]
             gpu: backend::GpuState::default(),
         }

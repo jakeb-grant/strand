@@ -15,7 +15,7 @@
 use std::rc::Rc;
 
 use strand_compiler::ty::{Ty, TypeTable};
-use strand_compiler::vm::host::{ActionTarget, Fetch, PathSeg, ServiceHost};
+use strand_compiler::vm::host::{ActionCtx, ActionTarget, Fetch, PathSeg, ServiceHost};
 use strand_compiler::vm::value::{keyed_vec, list_of};
 use strand_compiler::vm::{Value, ValueKey};
 use strand_core::{Error, EventQueue, KeyedSignal, Memo, NodeId, Runtime, Scope, VecDiff};
@@ -446,6 +446,9 @@ impl ServiceHost for StoreHost {
         target: ActionTarget<'_>,
         name: &str,
         args: &[Value],
+        // (M5) S-platform passes its input context on for activation
+        // tokens; the services take none yet.
+        _ctx: ActionCtx,
     ) -> Result<(), Error> {
         let args = self.data_args(args);
         match target {

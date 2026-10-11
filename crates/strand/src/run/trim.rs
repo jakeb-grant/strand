@@ -34,7 +34,7 @@ pub(super) const TRIM_TAIL: Duration = Duration::from_millis(250);
 /// 2.4 MB of the design bar's PSS on the real services. A forced collect
 /// purges every arena's pending spans and this thread's free pages (only
 /// this thread's: the text worker runs it too, `strand_text::set_idle_hook`).
-pub(crate) fn trim() {
+pub fn trim() {
     // SAFETY: `mi_collect` takes no pointers; it runs on a live thread
     // with mimalloc as the global allocator.
     unsafe { libmimalloc_sys::mi_collect(true) };

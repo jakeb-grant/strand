@@ -276,6 +276,83 @@ fn the_logic_thread_follows_the_monitors() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Waits for `f` on this thread (10 s at most), woken by its `Waker`.
+fn block_on<F: std::future::Future + Unpin>(mut f: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let std::task::Poll::Ready(v) = std::pin::Pin::new(&mut f).poll(&mut cx) {
+            return v;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "no answer in 10 s");
+        std::thread::park_timeout(left);
+    }
+}
+
+/// (M5 0b) The request channel from another thread (S-ipc's D-Bus front
+/// end) reaches the same dispatch as the socket: each call is answered
+/// through its reply, M5's commands as unknown until their streams
+/// land; `reload` and `watch` are the socket's.
+#[test]
+fn requests_from_another_thread_are_answered_by_the_logic_loop() {
+    let dir = temp_dir("bus-requests");
+    std::fs::write(dir.join("bar.strand"), "bar Top {\n  text \"hi\"\n}\n").unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["hi"]);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ask = |req: ipc::Request| {
+        let requests = requests.clone();
+        std::thread::spawn(move || block_on(requests.call(req).unwrap()))
+            .join()
+            .unwrap()
+    };
+    for (req, cmd) in [
+        (ipc::Request::Get { path: "a.b".into() }, "get"),
+        (ipc::Request::Report, "report"),
+        (ipc::Request::InspectFlash { on: true }, "inspect.flash"),
+        (ipc::Request::Watch, "watch"),
+        (ipc::Request::Reload { hard: false }, "reload"),
+    ] {
+        assert_eq!(
+            ask(req),
+            json!({"ok": false, "error": format!("unknown command `{cmd}`")})
+        );
+    }
+    let ans = ask(ipc::Request::Set {
+        path: "nowhere.x".into(),
+        value: "1".into(),
+    });
+    assert_eq!(ans["ok"], false, "{ans}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    // The loop is gone: nothing answers.
+    assert!(requests.call(ipc::Request::Report).is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Live reload without Wayland: the watcher and the compiler worker
 /// feed the logic thread. A prop edit and an added node keep the
 /// bar's state; a broken save keeps the last good tree and, after
@@ -318,6 +395,7 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -387,6 +465,7 @@ fn saves_reload_live_with_state_kept() {
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -498,6 +577,51 @@ fn saves_reload_live_with_state_kept() {
         let ans: Json = serde_json::from_str(answer.trim()).unwrap();
         assert_eq!(ans["ok"], true, "{ans}");
     }
+    // (M5 0b) The commands M5 adds parse and reach their modules, which
+    // answer them as unknown until their streams land, as before they
+    // parsed; the connection stays open (the reload below uses it).
+    for (req, cmd) in [
+        (ipc::Request::Get { path: "a.b".into() }, "get"),
+        (ipc::Request::Toggle { path: "a.b".into() }, "toggle"),
+        (
+            ipc::Request::Call {
+                target: "notifications.clear".into(),
+                args: vec![],
+            },
+            "call",
+        ),
+        (
+            ipc::Request::Clear {
+                path: "$accent".into(),
+            },
+            "clear",
+        ),
+        (ipc::Request::Report, "report"),
+        (ipc::Request::InspectPick { on: true }, "inspect.pick"),
+        (
+            ipc::Request::InspectNode { id: "1v0".into() },
+            "inspect.node",
+        ),
+        (ipc::Request::InspectDump { surface: None }, "inspect.dump"),
+        (
+            ipc::Request::InspectHighlight { id: None },
+            "inspect.highlight",
+        ),
+        (ipc::Request::InspectFlash { on: false }, "inspect.flash"),
+    ] {
+        let ans = ipc::request(&mut client, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            ans,
+            json!({"ok": false, "error": format!("unknown command `{cmd}`")})
+        );
+    }
+    let ans = ipc::request(
+        &mut client,
+        &ipc::Request::ResetNode { node: "1v0".into() },
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(ans["ok"], false, "{ans}");
     // `--hard`: state dropped, every surface recreated.
     let ans = ipc::request(
         &mut client,
@@ -566,6 +690,7 @@ fn spawn_live_quiet(
         socket,
         buses,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1356,6 +1481,7 @@ fn five_save_styles_land_on_a_cold_boot() {
         socket: None,
         buses: None,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1961,6 +2087,7 @@ fn main_thread_notices_reach_watchers_that_come_later() {
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2027,6 +2154,7 @@ fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2135,6 +2263,7 @@ fn an_unavailable_gpu_is_a_notice_once() {
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();

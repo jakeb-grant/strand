@@ -1,5 +1,6 @@
 //! The logic thread: the instance, the services and the step loop.
 
+use super::request::Caller;
 use super::shell::{Problems, Shell, diagnostics_json};
 use super::sleep::{Inbox, Sleeper};
 use super::*;
@@ -27,6 +28,19 @@ pub struct Live {
     /// services runtime with the real services): the renderer's icons
     /// are looked up again. `None`: the theme is not followed.
     pub icon_theme_switched: Option<Switched>,
+    /// (M5) Called once with the request channel the loop drains beside
+    /// the socket ([`ipc::IpcRequests`]): what feeds it from another
+    /// thread (tests; S-ipc's D-Bus front end takes its own clone).
+    pub requests_to: Option<RequestsTo>,
+}
+
+/// A callback for [`Live::requests_to`].
+pub struct RequestsTo(pub Box<dyn FnOnce(ipc::IpcRequests) + Send>);
+
+impl std::fmt::Debug for RequestsTo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RequestsTo")
+    }
 }
 
 /// A callback for [`Live::icon_theme_switched`].
@@ -68,6 +82,16 @@ pub fn logic(
         });
     let rt = Runtime::new();
     let services_ping = ping.clone();
+    // (M5) The request channel from the services thread, drained beside
+    // the socket after each sleep; a call's send pings the loop awake.
+    // S-ipc gives `bus_requests` to the D-Bus front end
+    // (`strand_services::ipc_bus`); until then only `Live::requests_to`
+    // (tests) feeds it.
+    let bus_ping = ping.clone();
+    let (bus_requests, bus_inbox) = ipc::channel(move || bus_ping.ping());
+    if let Some(to) = live.requests_to {
+        (to.0)(bus_requests.clone());
+    }
     rt.set_wake_hook(move || ping.ping());
     // With nothing to run yet (broken at boot, no last good version),
     // the host still serves the builtin services (`screens`, the clock):
@@ -323,8 +347,13 @@ pub fn logic(
                 }
             }
             for (id, r) in reqs {
-                shell.request(id, r);
+                shell.request(Caller::Socket(id), r);
             }
+        }
+        // Requests from another thread (the D-Bus front end), beside the
+        // socket's.
+        for call in bus_inbox.drain() {
+            shell.request(Caller::Bus(call.reply), call.request);
         }
         shell.overlay.tick(Instant::now(), &shell.inst);
     }
@@ -338,6 +367,7 @@ pub fn logic(
         real,
         ..
     } = shell;
+    drop(bus_requests);
     inst.shutdown();
     drop(inst);
     if let Some(r) = &real {

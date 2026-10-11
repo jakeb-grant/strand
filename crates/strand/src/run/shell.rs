@@ -178,6 +178,8 @@ impl Shell {
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => self.lock_state(state),
             ToLogic::Beat(seq) => super::lock::beat(seq),
+            // (M5) Nothing asks main for snapshots yet (S-tools, S-inspect).
+            ToLogic::Snapshot(_) => {}
             ToLogic::Shutdown => {}
         }
     }
@@ -503,103 +505,6 @@ impl Shell {
                     files,
                     settings: self.inst.settings_sources(),
                 });
-            }
-        }
-    }
-
-    /// A request from an IPC client.
-    pub(super) fn request(&mut self, id: ipc::ClientId, req: ipc::Request) {
-        match req {
-            ipc::Request::Reload { hard } => match &self.jobs {
-                Some(j)
-                    if j.send(Job::Reload {
-                        hard,
-                        client: Some(id),
-                    })
-                    .is_ok() => {}
-                _ => {
-                    if let Some(s) = &mut self.server {
-                        s.answer(
-                            id,
-                            &json!({"ok": false, "error": "this shell does not reload"}),
-                        );
-                    }
-                }
-            },
-            ipc::Request::Reset { path } => {
-                let ans = match self.inst.reset(&path) {
-                    Ok(()) => {
-                        self.overlay.forget_cell(&path, &self.inst);
-                        json!({"ok": true})
-                    }
-                    Err(e) => json!({"ok": false, "error": e.to_string()}),
-                };
-                if let Some(s) = &mut self.server {
-                    s.answer(id, &ans);
-                }
-            }
-            ipc::Request::Set { path, value } => {
-                // A service's `rw` field (`brightness.level +5%`) goes
-                // through the service host; everything else is state or
-                // settings.
-                let rt = self.inst.runtime();
-                let exported = self.inst.get(&path).is_ok();
-                let r = if !exported && crate::services::is_service_path(&path) {
-                    match &self.real {
-                        Some(real) => real.set_text(rt, &path, &value),
-                        None => crate::services::set_text(
-                            &*self.host,
-                            rt,
-                            &crate::services::schema().types,
-                            &path,
-                            &value,
-                        ),
-                    }
-                } else {
-                    self.inst.set_text(&path, &value).map_err(|e| e.to_string())
-                };
-                let ans = match r {
-                    Ok(()) => json!({"ok": true}),
-                    Err(e) => json!({"ok": false, "error": e}),
-                };
-                if let Some(s) = &mut self.server {
-                    s.answer(id, &ans);
-                }
-            }
-            ipc::Request::Mock(req) => {
-                let ans = if crate::mock::requested().is_none() {
-                    json!({"ok": false, "error": "`mock` needs a shell run with STRAND_MOCK"})
-                } else {
-                    match crate::mock::command(self.inst.runtime(), &self.host, &req) {
-                        Ok(()) => json!({"ok": true}),
-                        Err(e) => json!({"ok": false, "error": e}),
-                    }
-                };
-                if let Some(s) = &mut self.server {
-                    s.answer(id, &ans);
-                }
-            }
-            // Answered by the server itself; the running config's
-            // warnings and the main thread's notices follow (the boot's
-            // were made before anyone watched).
-            ipc::Request::Watch => {
-                if !(self.warnings.is_empty()
-                    && self.host_notices.is_empty()
-                    && self.blur_notices.is_empty())
-                    && let Some(s) = &mut self.server
-                {
-                    let notices: Vec<&String> =
-                        self.host_notices.iter().chain(&self.blur_notices).collect();
-                    s.send(
-                        id,
-                        &json!({
-                            "event": "notices",
-                            "kept_over_default": [],
-                            "notices": notices,
-                            "diagnostics": self.warnings,
-                        }),
-                    );
-                }
             }
         }
     }

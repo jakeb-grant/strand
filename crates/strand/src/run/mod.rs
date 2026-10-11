@@ -81,12 +81,13 @@ mod gpu;
 mod lists;
 pub(crate) mod lock;
 mod logic;
+mod request;
 mod shell;
 mod sleep;
 mod trim;
 
 pub use logic::{Live, Switched, logic};
-pub(crate) use trim::trim;
+pub use trim::trim;
 use trim::{Trimmer, structural};
 
 /// (M4) How long the run's exit waits for the GPU thread to end before
@@ -265,9 +266,70 @@ pub enum ToLogic {
     LockState(strand_compiler::instantiate::SessionLock),
     /// The lock's watchdog: logic answers by taking it (`lock.rs`).
     Beat(u64),
+    /// (M5) Main's answer to a [`ToMain::Snapshot`].
+    #[allow(
+        dead_code,
+        reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
+    )]
+    Snapshot(Snapshot),
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,
+}
+
+/// (M5) What logic asks the main thread for (docs/architecture.md, "M5
+/// interfaces": the snapshot hop). Logic sends only `SceneDiff`s today;
+/// the channel carrying these is wired by the first stream that sends
+/// one (S-tools' `report`, S-inspect's layouts).
+#[allow(
+    dead_code,
+    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToMain {
+    /// Main answers from its own state between frames with
+    /// [`ToLogic::Snapshot`] carrying `reply`, and never waits on logic.
+    Snapshot {
+        kind: SnapshotKind,
+        reply: SnapshotId,
+    },
+}
+
+/// (M5) Which snapshot logic asks main for.
+#[allow(
+    dead_code,
+    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SnapshotKind {
+    /// `strand report`: the compositor's globals with versions, outputs
+    /// and scales, frame summaries, GPU status, its reason and
+    /// lost-device count, promotion reasons (S-tools).
+    Report,
+    /// The inspector's pick result (S-inspect).
+    Pick,
+    /// The inspector: a node's layout (`Renderer::node_layout`, S-inspect).
+    Layout { node: NodeId },
+}
+
+/// (M5) Which [`ToMain::Snapshot`] an answer is for (logic's numbering).
+#[allow(
+    dead_code,
+    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SnapshotId(pub u64);
+
+/// (M5) Main's answer to a [`ToMain::Snapshot`]: the snapshot as the
+/// JSON its IPC answer carries.
+#[allow(
+    dead_code,
+    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snapshot {
+    pub reply: SnapshotId,
+    pub data: Json,
 }
 
 /// The `screens` service fields for `screens`.
@@ -439,6 +501,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         socket: ipc::socket_path(),
         buses: Some(strand_services::Buses::default()),
         icon_theme_switched: None,
+        requests_to: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();

@@ -1040,7 +1040,7 @@ mod tests {
         use std::future::Future;
         use std::task::{Context, Poll, Wake, Waker};
 
-        use strand_compiler::vm::host::{ActionTarget, PathSeg};
+        use strand_compiler::vm::host::{ActionCtx, ActionTarget, PathSeg};
         use strand_core::Runtime;
         use strand_services::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
@@ -1836,6 +1836,7 @@ service shelf {
                     ActionTarget::Service("tally"),
                     "add",
                     &[Value::text(name)],
+                    ActionCtx::default(),
                 )
                 .unwrap();
             }
@@ -1856,8 +1857,14 @@ service shelf {
             assert_eq!(names, ["a", "b", "c"]);
             // An item's action goes to the member whose actions take it.
             let b = list.as_list().unwrap()[1].clone();
-            host.action(&rt, ActionTarget::Item(&b), "remove", &[])
-                .unwrap();
+            host.action(
+                &rt,
+                ActionTarget::Item(&b),
+                "remove",
+                &[],
+                ActionCtx::default(),
+            )
+            .unwrap();
             until(&rt, &services, "b removed", || len(&rt) == 2);
             until(&rt, &services, "the event", || !heard.borrow().is_empty());
             assert_eq!(heard.borrow()[0], vec![b.clone()]);

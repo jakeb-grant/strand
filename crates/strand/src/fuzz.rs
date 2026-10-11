@@ -1429,6 +1429,7 @@ impl Shell {
             socket: Some(socket.clone()),
             buses: None,
             icon_theme_switched: None,
+            requests_to: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();

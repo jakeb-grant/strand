@@ -19,7 +19,7 @@ use strand_core::{Error, EventQueue, KeyedSignal, Memo, NodeId, Runtime, Signal}
 
 use super::builtins::default_of;
 use super::clock::{Clock, Zone};
-use super::host::{ActionTarget, Fetch, PathSeg, ServiceHost};
+use super::host::{ActionCtx, ActionTarget, Fetch, PathSeg, ServiceHost};
 use super::value::{AsyncValue, Value, ValueKey, keyed_vec, list_of};
 use crate::ty::{RecordId, Ty, TypeTable};
 
@@ -37,6 +37,9 @@ pub struct ActionCall {
     /// (M4) Called by a handler of an input event
     /// ([`crate::vm::in_input_handler`]).
     pub input: bool,
+    /// (M5) The context the VM gave it (empty until the VM records
+    /// handler input).
+    pub ctx: ActionCtx,
 }
 
 impl std::fmt::Display for ActionCall {
@@ -850,6 +853,7 @@ impl ServiceHost for SchemaHost {
         target: ActionTarget<'_>,
         name: &str,
         args: &[Value],
+        ctx: ActionCtx,
     ) -> Result<(), Error> {
         let label = match target {
             ActionTarget::Service(s) => s.to_string(),
@@ -862,6 +866,7 @@ impl ServiceHost for SchemaHost {
                 name: name.to_string(),
                 args: args.to_vec(),
                 input: crate::vm::in_input_handler(),
+                ctx,
             });
         }
         if let ActionTarget::Item(v) = target {

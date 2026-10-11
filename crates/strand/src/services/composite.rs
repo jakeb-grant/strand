@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 use strand_compiler::lower::CustomService;
 use strand_compiler::ty::TypeTable;
-use strand_compiler::vm::host::{ActionTarget, Fetch, PathSeg, ServiceHost};
+use strand_compiler::vm::host::{ActionCtx, ActionTarget, Fetch, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::vm::{Value, ValueKey};
 use strand_core::{Error, EventQueue, KeyedSignal, NodeId, Runtime};
@@ -202,10 +202,11 @@ impl ServiceHost for Composite {
         target: ActionTarget<'_>,
         name: &str,
         args: &[Value],
+        ctx: ActionCtx,
     ) -> Result<(), Error> {
         match target {
-            ActionTarget::Service(s) => self.route(s).action(rt, target, name, args),
-            ActionTarget::Item(v) => self.route_item(v).action(rt, target, name, args),
+            ActionTarget::Service(s) => self.route(s).action(rt, target, name, args, ctx),
+            ActionTarget::Item(v) => self.route_item(v).action(rt, target, name, args, ctx),
         }
     }
 
