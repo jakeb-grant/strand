@@ -1874,13 +1874,21 @@ table.
     has none); `token_table` swallows a failing palette
     (`instantiate/mod.rs` 467–494).
   - Mounting with a pinned palette root (the persisted palette, for
-    the offline mount).
-  - `Instance::token_table_in(rt, dark: bool) -> Result<TokenTable,
-    Error>`: the theme's `use palette` and `use tokens` evaluated with
-    `system.dark` set to `dark`, as a scratch evaluation that writes no
-    cell and keeps no node, with no fallback. It runs on the logic
-    thread, after the tick's diff, only for outputs whose template
-    reads `.light()` or `.dark()`.
+    the offline mount), and with a read-only `ThemeHost`: it reads
+    `palettes/palette` and the `Quantiser`'s seed index from the
+    `palettes` directory but writes neither (`remember_palette` keeps
+    the palette in memory only; the `Quantiser` stores no seed), since
+    `Storage::palette_dir` would otherwise give it the real directory
+    and an offline export would write `palettes/palette`.
+  - `Instance::other_mode(rt) -> Memo<Result<TokenTable, Error>>`: the
+    theme's `use palette` and `use tokens` evaluated with every read of
+    `system.dark` answered by its negation, with no fallback. One per
+    instance, made when the first output whose template reads
+    `.light()` or `.dark()` mounts and dropped with the last; it writes
+    no cell, tracks what only the other mode reads (imports, settings
+    fields, a pending image's `Async`) as any memo does, and is pulled
+    on the logic thread after the tick's diff, once per change for all
+    outputs.
   - A `pub` path for the persisted palette (today `LAST_PALETTE` is
     private in `vm/theme.rs`).
   - `template::Template::compile(file, src, scope) -> Result<Template,
@@ -1898,7 +1906,9 @@ table.
   - `Update` gains `outputs: Vec<OutputChange>`: a path plus the
     compiled template or text and the token tables (current, and the
     other mode only when the template reads it), produced only when an
-    output's memo changes, after the tick's diff.
+    output's memo changes, after the tick's diff. An output's memo reads
+    `other_mode` when its template does, so an edit that changes only
+    the other mode re-renders it.
 - **strand-core.** A read-only `PersistStore` (reads cells, never
   writes) for the offline mount.
 - **strand (binary).**

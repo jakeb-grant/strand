@@ -399,7 +399,6 @@ tokens base {
 }
 tokens compact extends base { override space { 1: 2px; 2: 4px; 3: 8px; 4: 12px } }
 use tokens prefs.compact ? compact : base, palette scheme
-file "~/.cache/strand/colors.css" { template: "colors.css.tmpl" }
 ```
 
 A theme switcher anywhere in your shell is one line: `segmented { options: Look; value: <-> theme.look }`. From a terminal or keybind: `strand set theme.look mocha`.
