@@ -164,7 +164,8 @@ the surveys. "Allocation" is what a stream may spend.
 | `strand new` and `strand export` writers (the template is .rodata, which is not gated) | 8–20 KB | 15 KB |
 | `Suggestion` title, missing-key suggestions | 1–3 KB | 3 KB |
 | Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 29,176 B (42 KB less the rest of 0b, 9,944 B, and the wave-0 hardening, 2,816 + 64 B: decisions.md m5-integration, m5-w0-harden) |
-| 0b's shared code (measured +12,544 B; charged to the two lines above) | — | (12,544 B, inside the lines above) |
+| 0b's shared code (measured +12,544 B CPU-only; charged as 2,600 B to the D-Bus line and 9,944 B to the reserve) | — | (12,544 B, inside those two lines) |
+| Wave-0 hardening (m5-w0-harden, three rounds; +2,816 and +64 B CPU-only) | — | (2,880 B, inside the reserve) |
 | **Total (CPU-only and GPU builds)** | **87–228 KB** | **230 KB** |
 | GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) |
 
@@ -309,14 +310,18 @@ These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
 
 - **Branches.** Each stream works in `../strand-wt/<name>` on
   `laptop/m5-<name>`, created from wave 0's merge, `laptop/m5-w0` (0b,
-  the reclaims and the wave-0 hardening; `main` stays at M4's close
-  until the owner fast-forwards it), not from `main`. The integrator
-  merges finished streams into `laptop/m5-w0`, then into `main` under
-  the standing FF rule (local `ci`, `matrix.sh` and GitHub CI green on
-  the exact commit). Push only your own branch; never force-push.
-  (Changed in m5-w0-harden from "created from `main` after 0b" and
-  "`laptop/integration-m5`", which wave 0 did not use; decisions.md
-  m5-w0-harden.)
+  the reclaims and the wave-0 hardening). Once the owner has
+  fast-forwarded `main` to `laptop/m5-w0`'s head the two are the same
+  commit and a stream may branch from `main`; until then it branches
+  from `laptop/m5-w0`, never from an older `main`. `laptop/m5-w0` stays
+  M5's integration branch: the integrator merges finished streams into
+  it, and `main` moves by fast-forward when local `ci`, `matrix.sh`
+  and GitHub CI are green on the exact commit (the owner runs the
+  ff+push; agents never push `main`). Push only your own branch; never
+  force-push. (Changed in m5-w0-harden from "created from `main` after
+  0b" and "`laptop/integration-m5`", which wave 0 did not use, and at
+  the wave-0 handoff for the branch point after the fast-forward;
+  decisions.md m5-w0-harden, m5-integration.)
 - **Builds (changed).** At most three worktrees hold a build slot at once
   (`CARGO_BUILD_JOBS=6` each). **The integrator's worktree counts as one
   slot whenever it builds or runs `run.sh ci`, `matrix.sh`, `gpu.sh` or
@@ -596,7 +601,7 @@ commit, and GitHub's `timing` job green for each opt-level change.
   job uploads the release-profile binaries it already builds (CPU-only
   and GPU) as a workflow artifact. It is not a release: no version, tag
   or notes.
-- **Deferred CI** (handoff.md:185–248):
+- **Deferred CI** (handoff.md's deferred CI list at `70cdc56`):
   - `tokens.rs::huge_fan_out_fails_fast` and lsp.rs's hung-bus case
     assert on work done or a step count, or move the time bound to a
     `GATE_MISS` check;
@@ -924,7 +929,7 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   copy the workspace's `[profile.release]` and its package overrides,
   and invoke `strand::process_setup!()` at its crate root (mimalloc and
   THP off before the first allocation; `plugin_hello` does). Otherwise
-  the size and PSS figures do not hold (handoff.md:155–159; decisions.md
+  the size and PSS figures do not hold (handoff.md, "Owner decisions already answered", item 1; decisions.md
   m5-w0-harden).
 - Tests:
   - `tests/m5/plugin.rs::an_extra_service_is_checked_and_runs` runs the
