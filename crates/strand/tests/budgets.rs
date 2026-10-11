@@ -2290,11 +2290,86 @@ fn the_release_binary_code_stays_within_its_gate() {
     notice(&format!(
         "strand's .text: {text} bytes (gate {gate}, {build})"
     ));
+    // The M5 ledger (docs/m5-plan.md, "How size is measured"): each build
+    // adds its half to STRAND_LEDGER_FILE, and scripts/container/ledger.sh
+    // prints the line once both builds ran (CI's budgets job, run.sh ci).
+    let gpu = cfg!(feature = "gpu");
+    let half = ledger_half(gpu, text, gate);
+    eprintln!("ledger: {half}");
+    if let Some(file) = std::env::var_os("STRAND_LEDGER_FILE") {
+        use std::io::Write;
+        let key = if gpu { "gpu" } else { "cpu" };
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(f, "{key} {half}").unwrap();
+    }
     assert!(
         text <= gate,
         "strand's .text is {text} bytes, over {gate} for {build}: code that runs at event \
          rates belongs at opt-level \"s\" or \"z\" (Cargo.toml, [profile.release.package])"
     );
+}
+
+/// The M5 ledger's baselines: M4's merged release `.text`
+/// (decisions.md m4-owner-3), CPU-only and GPU builds. Every M5 merge
+/// is read against them (docs/m5-plan.md, "Ledger and allocations").
+const LEDGER_BASELINE_CPU: u64 = 15_657_671;
+const LEDGER_BASELINE_GPU: u64 = 19_041_095;
+
+/// One build's half of the ledger line, e.g. `CPU-only 15,700,000 (Δ
+/// +42,329 vs 15,657,671; gate 15,925,248)`.
+fn ledger_half(gpu: bool, text: u64, gate: u64) -> String {
+    let (name, base) = if gpu {
+        ("GPU", LEDGER_BASELINE_GPU)
+    } else {
+        ("CPU-only", LEDGER_BASELINE_CPU)
+    };
+    let delta = text as i128 - base as i128;
+    let sign = if delta < 0 { "-" } else { "+" };
+    format!(
+        "{name} {} (Δ {sign}{} vs {}; gate {})",
+        grouped(text as u128),
+        grouped(delta.unsigned_abs()),
+        grouped(base as u128),
+        grouped(gate as u128)
+    )
+}
+
+/// `n` with thousands separators: 15657671 → "15,657,671".
+fn grouped(n: u128) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[test]
+fn the_ledger_half_reads_size_delta_baseline_and_gate() {
+    // Literal gates, not TEXT_GATE_*: the integrator lowers the gates as
+    // M5's reclaims land, and that must not break this formatter test.
+    assert_eq!(
+        ledger_half(false, 15_700_000, 15_925_248),
+        "CPU-only 15,700,000 (Δ +42,329 vs 15,657,671; gate 15,925,248)"
+    );
+    assert_eq!(
+        ledger_half(true, 19_000_000, 19_398_656),
+        "GPU 19,000,000 (Δ -41,095 vs 19,041,095; gate 19,398,656)"
+    );
+    assert_eq!(
+        ledger_half(false, LEDGER_BASELINE_CPU, 15_400_000),
+        "CPU-only 15,657,671 (Δ +0 vs 15,657,671; gate 15,400,000)"
+    );
+    assert_eq!(grouped(0), "0");
+    assert_eq!(grouped(999), "999");
+    assert_eq!(grouped(1_000), "1,000");
 }
 
 /// `.text` of the default (GPU) release build: 18.5 MiB.

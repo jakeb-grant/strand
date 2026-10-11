@@ -213,6 +213,101 @@ fn run(program: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// `hyprctl dispatch ARGS…`, its reply whatever its exit status (a
+/// refused dispatch is read from the reply).
+fn hyprctl_dispatch(args: &[String]) -> String {
+    let out = Command::new("hyprctl")
+        .arg("dispatch")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("hyprctl: {e}"));
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// The `hyprctl dispatch` arguments that switch to workspace `name`.
+/// Hyprland's current syntax (`lua`): with a Lua config (0.55 on) the
+/// argument is evaluated as `return hl.dispatch(<argument>)`, so it is a
+/// dispatcher object, `hl.dsp.focus({ workspace = "…" })`
+/// (`dispatchRequest` in `src/debug/HyprCtl.cpp` and `hlFocus` in
+/// `src/config/lua/bindings/LuaBindingsDispatchers.cpp`, 0.56.2).
+/// Otherwise the classic dispatcher and argument (`workspace 3`), which a
+/// hyprlang config still takes.
+fn hypr_focus_workspace(name: &str, lua: bool) -> Vec<String> {
+    if lua {
+        vec![format!(
+            "hl.dsp.focus({{ workspace = {} }})",
+            lua_string(name)
+        )]
+    } else {
+        vec!["workspace".into(), name.into()]
+    }
+}
+
+/// A Lua string literal.
+fn lua_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Whether Hyprland refused a Lua-form dispatch because its config is
+/// hyprlang: it read `hl.dsp.focus({` as a dispatcher name it does not
+/// have (HyprCtl.cpp `dispatchRequest`). Unverified: the exact reply
+/// comes from reading 0.56.2's source only; no matrix leg runs a
+/// hyprlang-config Hyprland (GitHub's runs a Lua config), so the
+/// fallback in `Live::switch` has never run (decisions.md m5-infra).
+fn hypr_wants_classic(reply: &str) -> bool {
+    reply.trim() == "Invalid dispatcher"
+}
+
+/// Whether a dispatch reply is a success: Hyprland answers `ok`, a Lua
+/// error (`error: [string "return hl.dispatch(…)"]…`, with a note when the
+/// form was classic) or `Invalid dispatcher`.
+fn hypr_dispatch_ok(reply: &str) -> bool {
+    let r = reply.trim();
+    !(r.is_empty()
+        || hypr_wants_classic(r)
+        || r.starts_with("error")
+        || r.contains("dispatch in lua is a shorthand"))
+}
+
+/// Not a compositor test: the Hyprland dispatch forms the matrix sends.
+#[test]
+fn hyprland_dispatch_forms_use_the_current_syntax_first() {
+    assert_eq!(
+        hypr_focus_workspace("2", true),
+        ["hl.dsp.focus({ workspace = \"2\" })"]
+    );
+    assert_eq!(
+        hypr_focus_workspace("a \"b\"", true),
+        ["hl.dsp.focus({ workspace = \"a \\\"b\\\"\" })"]
+    );
+    assert_eq!(hypr_focus_workspace("2", false), ["workspace", "2"]);
+    assert!(hypr_wants_classic("Invalid dispatcher\n"));
+    assert!(!hypr_wants_classic("ok"));
+    assert!(hypr_dispatch_ok("ok"));
+    assert!(!hypr_dispatch_ok("Invalid dispatcher"));
+    assert!(!hypr_dispatch_ok(
+        "error: [string \"return hl.dispatch(workspace 2)\"]:1: ')' expected near '2'\n\n \
+         → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might need to \
+         be updated."
+    ));
+    assert!(!hypr_dispatch_ok(""));
+}
+
 fn json(program: &str, args: &[&str]) -> Value {
     let text = run(program, args);
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{program} {args:?}: {e}: {text}"))
@@ -457,18 +552,18 @@ impl Live {
         match self.kind {
             Kind::Sway => drop(run("swaymsg", &["workspace", name])),
             Kind::Hyprland => {
-                // Classic first; with a Lua config (0.55 on) a dispatch is
-                // a dispatcher object.
-                let classic = Command::new("hyprctl")
-                    .args(["dispatch", "workspace", name])
-                    .output()
-                    .unwrap_or_else(|e| panic!("hyprctl: {e}"));
-                let reply = String::from_utf8_lossy(&classic.stdout);
-                if !classic.status.success() || reply.trim_start().starts_with("error") {
-                    let lua = format!("hl.dsp.focus({{ workspace = \"{name}\" }})");
-                    let out = run("hyprctl", &["dispatch", &lua]);
-                    assert!(!out.trim_start().starts_with("error"), "{out}");
+                // Hyprland's current syntax first (a Lua config, 0.55 on),
+                // the classic one only when a hyprlang Hyprland refuses it
+                // (`hypr_wants_classic`; that branch is unverified: no leg
+                // runs a hyprlang config).
+                let mut reply = hyprctl_dispatch(&hypr_focus_workspace(name, true));
+                if hypr_wants_classic(&reply) {
+                    reply = hyprctl_dispatch(&hypr_focus_workspace(name, false));
                 }
+                assert!(
+                    hypr_dispatch_ok(&reply),
+                    "hyprctl dispatch to workspace {name}: {reply}"
+                );
             }
             Kind::Niri => drop(run("niri", &["msg", "action", "focus-workspace", name])),
         }

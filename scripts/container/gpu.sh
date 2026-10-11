@@ -20,9 +20,12 @@
 # Only /dev/dri/renderD128 is passed in, never a /dev/dri/card* and
 # never the host's Wayland socket. Inside, gpu-session.sh starts a
 # private headless sway (its own XDG_RUNTIME_DIR, rendering with GLES2
-# on the render node, pixman if that fails) and runs CMD with
+# on the render node, else Vulkan, else pixman) and runs CMD with
 # WAYLAND_DISPLAY set to it; the tests that start their own sway still
-# do. STRAND_GPU_HARDWARE=1 and STRAND_REQUIRE_GPU=1 are set in there.
+# do (pixman; gpu_idle.rs follows the session's renderer under
+# STRAND_GPU_PRESENT=1, so the promoted panel presents instead of reading
+# back: decisions.md m5-infra). STRAND_GPU_HARDWARE=1 and
+# STRAND_REQUIRE_GPU=1 are set in there.
 
 set -uo pipefail
 

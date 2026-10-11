@@ -1739,12 +1739,19 @@ fn dbus_services_are_checked_off_the_analysis_path() {
     let mut c = Client::start(&[("a.strand", src)]);
     let t = Instant::now();
     c.open("a.strand");
-    assert_eq!(c.diagnostics("a.strand"), Vec::<Value>::new());
-    assert!(
-        t.elapsed() < Duration::from_millis(1500),
-        "the analysis waited on the bus: {:?}",
-        t.elapsed()
+    // The order proves the analysis did not wait: the check skips a
+    // service whose introspection has not come back
+    // (strand-compiler's check/dbus.rs), so a first publish without the
+    // "not checked" warning was made before the question gave up, and
+    // the warning arrives only in a later publish. An analysis that
+    // waited on the bus would publish once, warning included. No wall
+    // clock is asserted (decisions.md m5-infra; it was < 1500 ms).
+    assert_eq!(
+        c.diagnostics("a.strand"),
+        Vec::<Value>::new(),
+        "the first publish already carries the bus's answer: the analysis waited on it"
     );
+    eprintln!("first publish after {:?}", t.elapsed());
     let diags = c
         .diagnostics_within("a.strand", Duration::from_secs(10))
         .expect("published again once the bus gave up");

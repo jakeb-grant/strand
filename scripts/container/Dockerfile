@@ -42,3 +42,21 @@ ENV LANG=C.UTF-8
 ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
     VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
     LP_NATIVE_VECTOR_WIDTH=256
+
+# The tree-sitter CLI (M5; docs/architecture.md, "tree-sitter layout"):
+# a pinned prebuilt release checked by its sha256, for the lint job's
+# check that the committed parser.c and grammar.json match grammar.js
+# (scripts/check-tree-sitter.sh). `generate --js-runtime native`
+# evaluates grammar.js with the CLI's built-in QuickJS, so no node
+# (decisions.md m5-infra, spike 2). The same version and sha256 are in
+# .github/workflows/ci.yml's lint job; edit both together
+# (scripts/container/test-check-tree-sitter.sh compares them).
+ARG TREE_SITTER_VERSION=0.27.0
+ARG TREE_SITTER_SHA256=20a1f39ec1c45f2211492dcb8881c802b643b554bb196869a29ac3778277fa77
+RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/tree-sitter.gz \
+      "https://github.com/tree-sitter/tree-sitter/releases/download/v${TREE_SITTER_VERSION}/tree-sitter-linux-x64.gz" \
+ && echo "${TREE_SITTER_SHA256}  /tmp/tree-sitter.gz" | sha256sum -c - \
+ && gunzip -c /tmp/tree-sitter.gz >/usr/local/bin/tree-sitter \
+ && chmod 0755 /usr/local/bin/tree-sitter \
+ && rm /tmp/tree-sitter.gz \
+ && tree-sitter --version

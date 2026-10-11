@@ -151,6 +151,11 @@ step "cargo build -p strand --no-default-features" 60 \
   cargo build -p strand --no-default-features
 step "cargo clippy --workspace --all-targets --all-features" 60 \
   cargo clippy --workspace --all-targets --all-features
+step "scripts/check-tree-sitter.sh" 10 scripts/check-tree-sitter.sh
+step "scripts/container/test-gate-misses.sh" 5 scripts/container/test-gate-misses.sh
+step "scripts/container/test-check-tree-sitter.sh" 5 scripts/container/test-check-tree-sitter.sh
+step "scripts/container/test-ledger.sh" 5 scripts/container/test-ledger.sh
+step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
@@ -165,6 +170,9 @@ step "random_edits_through_five_save_styles (STRAND_FUZZ_MAX_GAP_MS=20)" 60 \
   env STRAND_FUZZ_MAX_GAP_MS=20 cargo test -p strand --bin strand random_edits_through_five_save_styles -- --nocapture --test-threads=1
 
 job=budgets
+# M5's size ledger: the .text gate test adds each build's half here, and
+# ledger.sh prints the line after the job (docs/m5-plan.md).
+export STRAND_LEDGER_FILE=$LOGS/ledger
 step "cargo test --release -p strand --test demo" 60 \
   cargo test --release -p strand --test demo
 step "cargo test --release -p strand --test services" 60 \
@@ -173,6 +181,7 @@ step "cargo test --release -p strand --test budgets" 60 \
   cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
 step "cargo test --release -p strand --no-default-features --test budgets (.text gate)" 60 \
   cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
+step "size ledger" 1 scripts/container/ledger.sh "$STRAND_LEDGER_FILE"
 
 job=acceptance
 step "cargo test --release -p strand --test acceptance" 60 \
