@@ -965,7 +965,14 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   - `tests/m5/plugin.rs::an_extra_service_is_checked_and_runs` runs the
     built example binary;
   - lsp.rs: `plugin_schemas_hover`.
-- Budget: about 0 in `strand` (confirmed by the ledger).
+- Budget: about 0 in `strand` (confirmed by the ledger); the wave-1
+  notes estimate 4–8 KB for the schema-file reader, `--write-schemas`
+  and the checks the stock binary now holds.
+- Design notes (wave 1): decisions.md `## m5-plugins`, and the proposed
+  interface in architecture.md ("Plugin builder: proposed interface"),
+  which the integrator accepts before wave 2 builds it; it includes
+  moving `main.rs`'s dispatch into the library at the wave 1 → 2
+  boundary.
 - Ticks: the plugins half (Q17's split).
 
 ## Closing (wave 3, integrator)
