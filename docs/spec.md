@@ -424,8 +424,8 @@ filling the monitor, the keyboard always).
 
 - A `T?` value must be unwrapped (`?.`, `??`) before it is used where a
   `T` is expected; using it directly is a load error.
-- Using an `Async<T>` where a `T` is expected is a load error (section
-  8.6).
+- Using an `Async<T>` where a `T` is expected is a load error, except
+  for the reads through an `Async` list that section 8.6 lists.
 
 **(unverified)** "a bare number is px" for lengths: design.md writes
 `height: 36` and `width: 90` for logical pixels; the schema's length
@@ -438,8 +438,11 @@ props accept bare numbers. The freeze review confirms the wording.
   angles, durations). `&&` and `||` short-circuit. **(unverified)**:
   which mixed-unit comparisons are accepted.
 - `a ?. f` is `null` when `a` is `null`, else `a.f`. `a ?? b` is `b`
-  when `a` is `null`, or an `Async` that is pending or failed; else `a`'s
-  value. Its type is the inner type of `T?` or `Async<T>`.
+  when `a` is `null`, or an `Async` that has no value: its first load
+  still pending, or a failure with no earlier value kept. An `Async`
+  that has a value gives that value, the kept one included while a newer
+  load is pending or after a newer load failed. Its type is the inner
+  type of `T?` or `Async<T>`.
 - `c ? a : b` evaluates only the chosen branch.
 - Calls name their arguments by position or by name
   (`month.add(months: -1)`). Builtin functions that take nullable input
@@ -552,9 +555,22 @@ props accept bare numbers. The freeze review confirms the wording.
 - Some calls return `Async<T>` (`apps.search(q)`, `material(image: …)`).
   An `Async` keeps its previous value while a new one loads, and exposes
   `.pending` (a load is in flight) and `.error` (the last load failed).
-- `x ?? fallback` covers a pending or failed `Async` (section 7.2).
-  Using an `Async<T>` where `T` is expected is a load error, so the
-  loading state cannot be forgotten.
+- `.value` (`T?`) is the value it holds, `null` before the first load
+  finishes or after a failure with nothing kept; `.error` is `text?`.
+- `x ?? fallback` gives the value it holds, and `fallback` only while it
+  has none (section 7.2): a search keeps its last results while the next
+  one loads, a theme its last palette while a wallpaper is quantised.
+- Using an `Async<T>` where `T` is expected is a load error, so the
+  loading state cannot be forgotten. An `Async<[T]>` list is read
+  through in two ways, and only these:
+  - `.len` and `for x in a` read its last list (empty before the first
+    load).
+  - `filter`, `map`, `sort_by`, `take`, `skip` and `reverse` on it give
+    an `Async<[U]>` that keeps its `.pending` and `.error`; a plain list
+    still needs `??` (`hits.take(3) ?? []`).
+  - Any other read of it is a load error: element reads (`.first`,
+    `.last`), other list methods (`join`, `find`, `contains`, …) and an
+    `Async` passed where any value is accepted (`join(", ", hits)`).
 - When what an `Async` binding reads changes, the new load supersedes
   the one in flight. A load a handler starts outlives the handler.
 
