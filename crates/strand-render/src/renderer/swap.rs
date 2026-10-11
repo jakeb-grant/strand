@@ -980,16 +980,17 @@ fn check_swap<'a>(
 /// translucent surfaces fade too).
 fn blend(target: &mut PaintTarget<'_>, old: &[u8], size: Size, w: f32) {
     let a = (w.clamp(0.0, 1.0) * 256.0).round() as u32;
-    if a >= 256 || old.len() != size.w as usize * size.h as usize * 4 {
+    if a >= 256 || size.w == 0 || old.len() != size.w as usize * size.h as usize * 4 {
         return;
     }
     let row = size.w as usize * 4;
     let stride = target.stride as usize;
-    for y in 0..size.h as usize {
-        let dst = &mut target.pixels[y * stride..y * stride + row];
-        let src = &old[y * row..(y + 1) * row];
-        for (d, s) in dst.iter_mut().zip(src) {
-            *d = ((*d as u32 * a + *s as u32 * (256 - a) + 128) >> 8) as u8;
+    // u16 lanes: d * a + s * (256 - a) + 128 <= 255 * 256 + 128 fits,
+    // so the compiler blends eight or more channels per instruction.
+    let (x, y) = (a as u16, (256 - a) as u16);
+    for (dst, src) in target.pixels.chunks_mut(stride).zip(old.chunks_exact(row)) {
+        for (d, s) in dst[..row].iter_mut().zip(src) {
+            *d = ((*d as u16 * x + *s as u16 * y + 128) >> 8) as u8;
         }
     }
 }
@@ -1253,7 +1254,7 @@ impl Renderer {
         let started = Instant::now();
         let age = target.age as usize;
         let row = snap.size.w as usize * 4;
-        let mut pixels = vec![0u8; snap.bytes()];
+        let mut pixels = Vec::new();
         // The buffer holds the frame shown but for the last `age - 1`
         // frames' damage. (Under a replaced crossfade every frame was
         // painted in full: only age 1 holds it.)
@@ -1264,9 +1265,11 @@ impl Renderer {
             && target.size == snap.size
             && target.scale == snap.scale;
         let missed = same.then(|| {
-            let stride = target.stride as usize;
-            for (y, dst) in pixels.chunks_exact_mut(row).enumerate() {
-                dst.copy_from_slice(&target.pixels[y * stride..y * stride + row]);
+            // Copied into fresh capacity: no zeroed buffer written over.
+            pixels.reserve_exact(snap.bytes());
+            let rows = target.pixels.chunks(target.stride.max(1) as usize);
+            for src in rows.take(snap.size.h as usize) {
+                pixels.extend_from_slice(&src[..row]);
             }
             let mut missed = Damage::new();
             for d in s.history.iter().take(age - 1) {
@@ -1275,6 +1278,9 @@ impl Renderer {
             missed.clip(target.bounds());
             missed
         });
+        if missed.is_none() {
+            pixels = vec![0u8; snap.bytes()];
+        }
         let under = snap.under.take();
         let prev = std::mem::take(&mut snap.pixels);
         let draw = match &missed {
@@ -1760,6 +1766,51 @@ mod tests {
                 let c = channels_color(pos).gamut_mapped();
                 assert_eq!(p.color, c);
                 assert_eq!(p.lum.to_bits(), c.relative_luminance().to_bits());
+            }
+        }
+    }
+
+    /// The u16 blend gives exactly the u32 formula it replaced, for
+    /// every weight and every pair of channel values, and leaves a
+    /// strided buffer's padding alone.
+    #[test]
+    fn the_blend_matches_the_wide_formula_exactly() {
+        let size = Size { w: 256, h: 256 };
+        let (row, stride) = (256 * 4, 256 * 4 + 12);
+        // Pixel (x, y): new channels x, y, 255 - x, x ^ y over old
+        // channels y, x, y ^ 0x55, 255 - y; every (new, old) pair occurs.
+        let new: Vec<u8> = (0..256 * stride)
+            .map(|i| {
+                let (y, o) = (i / stride, i % stride);
+                let (x, c) = (o / 4, o % 4);
+                match (o < row, c) {
+                    (false, _) => 0xAB,
+                    (_, 0) => x as u8,
+                    (_, 1) => y as u8,
+                    (_, 2) => 255 - x as u8,
+                    _ => (x ^ y) as u8,
+                }
+            })
+            .collect();
+        let old: Vec<u8> = (0..256 * row)
+            .map(|i| {
+                let (y, x, c) = (i / row, i % row / 4, i % 4);
+                [y as u8, x as u8, y as u8 ^ 0x55, 255 - y as u8][c]
+            })
+            .collect();
+        for a in 0..=256u32 {
+            let mut px = new.clone();
+            let mut t = PaintTarget::new(&mut px, size, stride as u32, Scale::ONE, 1).unwrap();
+            blend(&mut t, &old, size, a as f32 / 256.0);
+            for (i, (&got, &n)) in px.iter().zip(&new).enumerate() {
+                let (y, o) = (i / stride, i % stride);
+                let want = if o >= row || a == 256 {
+                    n
+                } else {
+                    let s = old[y * row + o] as u32;
+                    ((n as u32 * a + s * (256 - a) + 128) >> 8) as u8
+                };
+                assert_eq!(got, want, "weight {a}/256, byte {i}");
             }
         }
     }
