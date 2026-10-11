@@ -175,7 +175,7 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
                 None => return Err(fail(format!("`{}` has no field `{name}`", def.name))),
             }
         }
-        Value::Service(s) => vm.host.read(rt, s, name)?,
+        Value::Service(s) => vm.read_field(rt, s, name)?,
         Value::Node(n) => match name {
             "hover" => Value::Bool(n.hover.get(rt)?),
             "pressed" => Value::Bool(n.pressed.get(rt)?),

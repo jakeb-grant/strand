@@ -30,6 +30,7 @@ mod mirror;
 mod mount;
 mod overlay;
 mod reload;
+pub mod theme;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -258,6 +259,8 @@ pub(crate) struct Ctx {
     /// (M4) Each mounted `drag:` source's current value, by node: what a
     /// drop of that node delivers ([`Instance::drag_value`]).
     pub drags: RefCell<HashMap<NodeId, Value>>,
+    /// (M5) The other-mode memo while something holds it (`theme.rs`).
+    pub(crate) other: RefCell<Option<theme::OtherHold>>,
 }
 
 impl VmHooks for Ctx {
@@ -436,10 +439,11 @@ impl Ctx {
     }
 
     /// The built-in palette: `material(seed: system.accent ?? #7aa2f7,
-    /// dark: system.dark, contrast: system.contrast)`.
-    fn default_palette(&self, rt: &Runtime) -> Result<strand_theme::Palette, Error> {
+    /// dark: system.dark, contrast: system.contrast)`; in the other mode
+    /// (M5) `system.dark` reads negated.
+    pub(crate) fn default_palette(&self, rt: &Runtime) -> Result<strand_theme::Palette, Error> {
         let host = &self.vm.host;
-        let dark = host.read(rt, "system", "dark")?.truthy();
+        let dark = host.read(rt, "system", "dark")?.truthy() != self.vm.other_mode_active();
         let seed = match host.read(rt, "system", "accent")? {
             Value::Color(c) => c,
             _ => Color::from_hex(DEFAULT_SEED).unwrap_or(Color::BLACK),
@@ -461,12 +465,13 @@ impl Ctx {
 
     fn token_table(self: &Rc<Self>, rt: &Runtime) -> Result<TokenTable, Error> {
         let prog = self.vm.prog.clone();
-        let types = &prog.types;
         let root = self.vm.root.clone();
-        // The built-in theme's base tokens under everything: a config
-        // with no theme file (the hello bar) is themed, and a theme that
-        // defines only some base tokens keeps the rest.
-        let mut t = strand_theme::defaults::base_tokens();
+        let theme = self.vm.theme();
+        // (M5) The offline mount pins the palette root to the persisted
+        // palette (decisions.md m5-tools, "the CLI", step 2).
+        if let Some(p) = theme.as_ref().and_then(|t| t.pinned().cloned()) {
+            return self.table_with(rt, &p);
+        }
         let palette = match prog.use_palette {
             // A palette that fails (an imported file with a syntax error)
             // is reported, and the last good one holds.
@@ -480,22 +485,41 @@ impl Ctx {
             Value::Async(a) => a.usable().cloned().unwrap_or(Value::Null),
             v => v,
         };
-        let theme = self.vm.theme();
         match &palette {
             Value::Palette(p) => {
-                p.insert_into(&mut t);
                 if let Some(theme) = &theme {
                     theme.remember_palette(p);
                 }
+                self.table_with(rt, p)
             }
             // Failed, or still loading with no fallback: the last good
             // palette (this run's, or persisted by the last), else the
             // built-in one, rather than no colours at all.
             _ => match theme.and_then(|t| t.last_palette()) {
-                Some(p) => p.insert_into(&mut t),
-                None => self.default_palette(rt)?.insert_into(&mut t),
+                Some(p) => self.table_with(rt, &p),
+                None => self.table_with(rt, &self.default_palette(rt)?),
             },
         }
+    }
+
+    /// The token table over `palette`: the built-in base tokens, the
+    /// palette, component token defaults, the active set's chain and the
+    /// runtime overlays. (M5) The other mode builds its table here too,
+    /// so its failing entries are not reported a second time.
+    pub(crate) fn table_with(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        palette: &strand_theme::Palette,
+    ) -> Result<TokenTable, Error> {
+        let prog = self.vm.prog.clone();
+        let types = &prog.types;
+        let root = self.vm.root.clone();
+        let report = !self.vm.other_mode_active();
+        // The built-in theme's base tokens under everything: a config
+        // with no theme file (the hello bar) is themed, and a theme that
+        // defines only some base tokens keeps the rest.
+        let mut t = strand_theme::defaults::base_tokens();
+        palette.insert_into(&mut t);
         // Component token defaults (`$Toast.radius`) before the sets, so
         // a set's `override Toast.radius` replaces them.
         for c in prog.components.values() {
@@ -505,7 +529,8 @@ impl Ctx {
                         convert::token_entry(types, &mut t, &e.path, &e.ty, &v);
                         t.set_origin(e.path.clone(), format!("component {}", c.name));
                     }
-                    Err(err) => self.error(format!("token `${}`", e.path), err),
+                    Err(err) if report => self.error(format!("token `${}`", e.path), err),
+                    Err(_) => {}
                 }
             }
         }
@@ -535,11 +560,16 @@ impl Ctx {
                         convert::token_entry(types, &mut t, &e.path, &e.ty, &v);
                         t.set_origin(e.path.clone(), format!("tokens {}", s.name));
                     }
-                    Err(err) => self.error(format!("token `${}`", e.path), err),
+                    Err(err) if report => self.error(format!("token `${}`", e.path), err),
+                    Err(_) => {}
                 }
             }
         }
-        self.token_overlay(rt, &prog, &mut t);
+        if report {
+            self.token_overlay(rt, &prog, &mut t);
+        } else {
+            self.storage.tokens.apply_quietly(rt, types, &mut t);
+        }
         Ok(t)
     }
 }
@@ -592,6 +622,7 @@ impl Ctx {
             list_windows: RefCell::default(),
             drags: RefCell::default(),
             pages: RefCell::default(),
+            other: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -667,6 +698,30 @@ impl Storage {
             persist: Some(persist),
             config_dir: Some(config_dir.into()),
         }
+    }
+
+    /// (M5) The offline mount's storage (decisions.md m5-tools, "the
+    /// CLI", step 2): `persist` cells read from `state_dir/persist`
+    /// through a read-only store, settings files read (their overlays
+    /// from `state_dir/settings`), the token overlay file applied, and
+    /// the persisted palette pinned; nothing is ever written.
+    pub fn read_only(state_dir: impl Into<PathBuf>, config_dir: impl Into<PathBuf>) -> Self {
+        let persist = strand_core::PersistStore::read_only(state_dir.into().join("persist"));
+        let dir = persist.dir();
+        let tokens = TokenOverlay::read_only(dir.parent().unwrap_or(dir).join(TOKENS_FILE));
+        Self {
+            settings: Some(persist.settings()),
+            tokens,
+            persist: Some(persist),
+            config_dir: Some(config_dir.into()),
+        }
+    }
+
+    /// Whether this is [`Storage::read_only`]'s.
+    pub fn is_read_only(&self) -> bool {
+        self.persist
+            .as_ref()
+            .is_some_and(strand_core::PersistStore::is_read_only)
     }
 
     /// Where wallpaper seeds are cached: `palettes` beside the persist
@@ -822,11 +877,11 @@ impl Instance {
         }
         let warnings = program.warnings.clone();
         let vm = Vm::new(program, host);
-        vm.set_theme(crate::vm::theme::ThemeHost::new(
-            rt,
-            storage.palette_dir(),
-            storage.config_dir.clone(),
-        ));
+        let theme = match storage.is_read_only() {
+            true => crate::vm::theme::ThemeHost::read_only,
+            false => crate::vm::theme::ThemeHost::new,
+        };
+        vm.set_theme(theme(rt, storage.palette_dir(), storage.config_dir.clone()));
         let ctx = Ctx::create(vm, Emitter::default(), storage, identity, hashes);
         *ctx.lock.borrow_mut() = Some(Rc::new(lock::LockTrack::new(rt)));
         // Lowering's warnings (a frozen time signal), once, in the boot

@@ -25,6 +25,8 @@
 //! - [`instantiate`]: mounts a program on a `strand-core` runtime and
 //!   emits one `strand_scene::SceneDiff` per tick.
 //! - [`fmt`]: the formatter behind `strand fmt` and LSP formatting.
+//! - [`template`]: (M5) `{{ expr }}` templates over the theme, for
+//!   `strand export --template` and the `file` element.
 //!
 //! [`compile`] runs the front end over every file of a config.
 
@@ -38,6 +40,7 @@ pub mod reconcile;
 pub mod schema;
 pub mod source;
 pub mod syntax;
+pub mod template;
 pub mod ty;
 pub mod vm;
 

@@ -1,0 +1,63 @@
+---
+source: crates/strand-compiler/tests/template.rs
+expression: out
+---
+template::not_theme
+
+  × a template reads the theme only: a field is not in its scope
+   ╭─[theme.css.tmpl:2:6]
+ 1 │ a {{ $acent }}
+ 2 │ b {{ state.x }}
+   ·      ───┬───
+   ·         ╰── not a token, a palette entry or a template function
+ 3 │ c {{ $fg.muted }}
+   ╰────
+  help: a hole reads tokens (`$accent`, `$fg.muted.light()`), `$palette.<name>`, literals, `??`,
+        `join`, `hex` and `argb`
+
+template::not_theme
+
+  × a template reads the theme only: `+` is not in its scope
+   ╭─[theme.css.tmpl:5:6]
+ 4 │ d {{ $palette.nope }}
+ 5 │ e {{ $accent + 1 }}
+   ·      ─────┬─────
+   ·           ╰── not a token, a palette entry or a template function
+ 6 │ f {{ $accent. }}
+   ╰────
+  help: a hole reads tokens (`$accent`, `$fg.muted.light()`), `$palette.<name>`, literals, `??`,
+        `join`, `hex` and `argb`
+
+syntax::expected
+
+  × expected a field name, found end of file
+   ╭─[theme.css.tmpl:6:14]
+ 5 │ e {{ $accent + 1 }}
+ 6 │ f {{ $accent. }}
+   ·              ▲
+   ·              ╰── expected a field name
+ 7 │ g {{ }}
+   ╰────
+
+template::empty_hole
+
+  × this hole is empty
+   ╭─[theme.css.tmpl:7:3]
+ 6 │ f {{ $accent. }}
+ 7 │ g {{ }}
+   ·   ──┬──
+   ·     ╰── `{{` needs an expression
+ 8 │ h {{ $accent
+   ╰────
+  help: a literal `{{` is written `{{ "{{" }}`
+
+template::unclosed
+
+  × this `{{` is never closed
+   ╭─[theme.css.tmpl:8:3]
+ 7 │ g {{ }}
+ 8 │ h {{ $accent
+   ·   ─┬
+   ·    ╰── no `}}` after it
+   ╰────
+  help: a literal `{{` is written `{{ "{{" }}`

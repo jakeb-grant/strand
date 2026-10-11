@@ -1,0 +1,330 @@
+//! `strand export json | base24 | --template <file>` (S-tools; design.md,
+//! "Wallpaper palettes"; decisions.md m5-tools, "the CLI"): the palette
+//! and the resolved token table as data, a base24 scheme, or a text file
+//! of any format filled from the theme. Each goes to stdout, or
+//! atomically to `-o <file>`.
+//!
+//! Where the theme comes from, in order: the running shell over its
+//! socket (the live table, overlays included), else an offline mount of
+//! the config that writes nothing, else "no palette: run strand once, or
+//! fix the theme" with the cause. `--palette '<expr>'` mounts no config.
+
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
+
+use strand_compiler::diagnostic::{Style, render};
+use strand_compiler::instantiate::theme::is_pending;
+use strand_compiler::instantiate::{Instance, Storage};
+use strand_compiler::reconcile::Build;
+use strand_compiler::source::SourceMap;
+use strand_compiler::template::Template;
+use strand_compiler::vm::schema_host::SchemaHost;
+use strand_compiler::vm::{Num, Value};
+use strand_core::Runtime;
+use strand_scene::{Color, TokenTable};
+
+const USAGE: &str = "usage: strand export json | base24 | --template <file> \
+                     [--palette '<expr>'] [-o <file>]";
+
+/// How long the offline mount waits for a wallpaper to be quantised.
+const IMAGE_WAIT: Duration = Duration::from_secs(10);
+
+/// The cause the offline mount gives when no palette can be had.
+const NO_PALETTE: &str = "no palette: run strand once, or fix the theme";
+
+/// What is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Format {
+    Json,
+    Base24,
+    /// A template file, read by the CLI (its path as diagnostics name it,
+    /// and its text).
+    Template(PathBuf),
+}
+
+/// `strand export`'s arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ask {
+    pub format: Format,
+    /// `--palette '<expr>'`: no config, this palette (offline only).
+    pub palette: Option<String>,
+    /// `-o <file>`.
+    pub out: Option<PathBuf>,
+}
+
+/// Parses the arguments after `export`.
+pub fn parse(args: &[String]) -> Result<Ask, String> {
+    let mut format = None;
+    let mut palette = None;
+    let mut out = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut value = |what: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{a} needs {what}\n{USAGE}"))
+        };
+        let next = match a.as_str() {
+            "json" => Format::Json,
+            "base24" => Format::Base24,
+            "--template" => Format::Template(value("a file")?.into()),
+            "--palette" if palette.is_none() => {
+                palette = Some(value("an expression")?);
+                continue;
+            }
+            "-o" if out.is_none() => {
+                out = Some(PathBuf::from(value("a file")?));
+                continue;
+            }
+            "-h" | "--help" => return Err(USAGE.into()),
+            other => return Err(format!("unexpected `{other}`\n{USAGE}")),
+        };
+        if format.replace(next).is_some() {
+            return Err(format!("one format at a time\n{USAGE}"));
+        }
+    }
+    let format = format.ok_or_else(|| USAGE.to_string())?;
+    Ok(Ask {
+        format,
+        palette,
+        out,
+    })
+}
+
+/// `strand export …`: the text for stdout (empty with `-o`).
+pub fn export_cli(args: &[String]) -> Result<String, String> {
+    let ask = parse(args)?;
+    let template = match &ask.format {
+        Format::Template(path) => Some(read_template(path)?),
+        _ => None,
+    };
+    let bytes = match ask.palette.as_deref() {
+        Some(expr) => {
+            let mount = Mount::palette(expr)?;
+            mount.produce(&ask.format, template.as_ref())?
+        }
+        None => match from_shell(&ask.format, template.as_ref())? {
+            Some(bytes) => bytes,
+            None => {
+                let mount = Mount::config()?;
+                mount.produce(&ask.format, template.as_ref())?
+            }
+        },
+    };
+    match &ask.out {
+        Some(path) => {
+            strand_theme::writer::write_atomic(path, &bytes)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(String::new())
+        }
+        None => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+    }
+}
+
+/// The running shell's answer, or `None` to mount offline.
+fn from_shell(_format: &Format, _template: Option<&Source>) -> Result<Option<Vec<u8>>, String> {
+    Ok(None)
+}
+
+/// A template file as read: its name for diagnostics and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub name: String,
+    pub text: String,
+}
+
+fn read_template(path: &Path) -> Result<Source, String> {
+    let text = std::fs::read(path)
+        .map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|b| {
+            String::from_utf8(b).map_err(|_| format!("{}: not valid UTF-8", path.display()))
+        })?;
+    Ok(Source {
+        name: path.display().to_string(),
+        text,
+    })
+}
+
+/// Compiles `source`, its errors rendered with their location.
+pub(crate) fn compile_template(source: &Source) -> Result<Template, String> {
+    let (map, file) = SourceMap::single(source.name.clone(), source.text.clone());
+    Template::compile(file, &source.text).map_err(|d| render(&d, &map, Style::Plain))
+}
+
+/// The output of `format` from `inst`'s theme: the shell's handler and
+/// the offline mount share it, so IPC and offline agree. `other` is the
+/// other mode's table when the template reads it (`None`: absent).
+pub(crate) fn produce(
+    inst: &Instance,
+    format: &Format,
+    template: Option<(&Source, &Template)>,
+    other: Option<&TokenTable>,
+) -> Result<Vec<u8>, String> {
+    let table = inst
+        .tokens_now()
+        .map_err(|e| format!("{NO_PALETTE} ({e})"))?;
+    match (format, template) {
+        (Format::Template(_), Some((source, t))) => {
+            let (map, _) = SourceMap::single(source.name.clone(), source.text.clone());
+            t.render(&table, other)
+                .map_err(|d| render(&d, &map, Style::Plain))
+        }
+        (Format::Template(_), None) => Err("no template".into()),
+        (f, _) => {
+            let palette = inst.palette().map_err(|e| format!("{NO_PALETTE} ({e})"))?;
+            Ok(match f {
+                Format::Base24 => strand_theme::export::base24(&palette, &table),
+                _ => strand_theme::export::json(&palette, &table),
+            }
+            .into_bytes())
+        }
+    }
+}
+
+/// The offline mount (decisions.md m5-tools, "the CLI", step 2).
+struct Mount {
+    // Dropped before the runtime it lives in.
+    inst: Instance,
+    _rt: Runtime,
+}
+
+impl Mount {
+    /// The config in `$XDG_CONFIG_HOME/strand`, mounted on read-only
+    /// storage: persisted cells, settings and the token overlays read,
+    /// the persisted palette pinned, nothing written.
+    fn config() -> Result<Mount, String> {
+        let dir = crate::check::default_dir(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        )
+        .ok_or_else(|| {
+            format!("{NO_PALETTE} (no config directory: set XDG_CONFIG_HOME or HOME)")
+        })?;
+        let build = crate::rules::load(&dir).map_err(|e| format!("{NO_PALETTE}:\n{e}"))?;
+        let state = state_dir().ok_or_else(|| {
+            format!("{NO_PALETTE} (no state directory: set XDG_STATE_HOME or HOME)")
+        })?;
+        Ok(Mount::boot(
+            &build,
+            Storage::read_only(&state, &dir),
+            Some(&state),
+        ))
+    }
+
+    /// `--palette '<expr>'`: the base tokens and that palette, no config
+    /// (relative imports read from the working directory).
+    fn palette(expr: &str) -> Result<Mount, String> {
+        let mut map = SourceMap::new();
+        map.add("--palette", format!("use palette {expr}\n"));
+        let shown = map.clone();
+        let build = Build::compile_with(None, map, crate::services::schema())
+            .map_err(|d| render(&d, &shown, Style::Plain))?;
+        let storage = Storage {
+            persist: None,
+            settings: None,
+            config_dir: std::env::current_dir().ok(),
+            tokens: Default::default(),
+        };
+        Ok(Mount::boot(&build, storage, state_dir().as_deref()))
+    }
+
+    fn boot(build: &Build, storage: Storage, state: Option<&Path>) -> Mount {
+        let rt = Runtime::new();
+        let host = Rc::new(SchemaHost::real(&rt, &build.program.types));
+        // `system` as the last run kept it (`palettes/system`).
+        let last = crate::system::Last::file(state.map(|s| s.join("palettes")))
+            .map(|f| crate::system::Last::load(&f))
+            .unwrap_or_default();
+        let mut sys = strand_services::system::System::default();
+        last.seed(&mut sys);
+        let accent = sys.accent.map_or(Value::Null, |c| {
+            Value::Color(Color::new(c.r, c.g, c.b, c.a))
+        });
+        for (field, v) in [
+            ("system.dark", Value::Bool(sys.dark)),
+            ("system.accent", accent),
+            ("system.contrast", Value::Num(sys.contrast, Num::Float)),
+            ("system.reduced_motion", Value::Bool(sys.reduced_motion)),
+        ] {
+            let _ = host.set_initial(&rt, field, v);
+        }
+        let inst = Instance::from_build(&rt, build, host, storage);
+        let _ = inst.flush();
+        inst.wait_images(IMAGE_WAIT);
+        Mount { inst, _rt: rt }
+    }
+
+    fn produce(&self, format: &Format, template: Option<&Source>) -> Result<Vec<u8>, String> {
+        let template = match template {
+            Some(s) => Some((s, compile_template(s)?)),
+            None => None,
+        };
+        let other = match &template {
+            Some((_, t)) if t.reads_other_mode() => match self.inst.other_table() {
+                Ok(o) => o,
+                Err(e) if is_pending(&e) => {
+                    return Err(format!("the other mode's palette is still loading ({e})"));
+                }
+                Err(e) => return Err(format!("the other mode has no palette: {e}")),
+            },
+            _ => None,
+        };
+        produce(
+            &self.inst,
+            format,
+            template.as_ref().map(|(s, t)| (*s, t)),
+            other.as_ref(),
+        )
+    }
+}
+
+/// `$XDG_STATE_HOME/strand` (else `~/.local/state/strand`), as the
+/// persist store finds it.
+fn state_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .map(|h| h.join(".local/state"))
+        })
+        .map(|s| s.join("strand"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn arguments() {
+        assert_eq!(
+            parse(&args("json")).unwrap(),
+            Ask {
+                format: Format::Json,
+                palette: None,
+                out: None
+            }
+        );
+        let a = parse(&args("--template t.css -o out.css --palette x")).unwrap();
+        assert_eq!(a.format, Format::Template("t.css".into()));
+        assert_eq!(a.out, Some("out.css".into()));
+        assert_eq!(a.palette.as_deref(), Some("x"));
+        for bad in [
+            "",
+            "json base24",
+            "yaml",
+            "--template",
+            "json -o",
+            "json -o a -o b",
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad}");
+        }
+    }
+}

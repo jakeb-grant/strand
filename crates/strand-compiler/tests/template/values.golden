@@ -1,0 +1,13 @@
+number 0.65 1.235 -2
+pixels 8px
+percent 40% ch 4ch
+angle 90 duration 120 1500
+string bar {{ bool true true
+name Catppuccin Mocha source catppuccin:mocha
+extra #cba6f7 #cba6f7
+hex #cba6f7 cba6f7 #cba6f7ff
+argb 0x80cba6f7
+channels rgb(205, 214, 244) 0.65
+methods #2a2a3c #e8caff #ab87d5
+join #cba6f7, 4
+spans #cba6f7 and }} stays text

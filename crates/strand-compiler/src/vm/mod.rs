@@ -386,6 +386,34 @@ pub struct Vm {
     /// ([`Vm::record_canvas`]); `None` outside one, where canvas methods
     /// do nothing.
     canvas: RefCell<Option<Vec<strand_scene::canvas::DrawOp>>>,
+    /// (M5) The other mode's slots while an evaluation runs in it
+    /// ([`Vm::in_other_mode`]): `system.dark` reads negated and the
+    /// `let`s that reach it read from these slots.
+    other: RefCell<Option<Rc<OtherEnv>>>,
+}
+
+/// (M5) The other mode's env (decisions.md m5-tools, "a template reads
+/// the other mode"): a fresh slot, the same expression, for every
+/// top-level `let` that reaches `system.dark`, so the theme evaluated in
+/// it sees the negated mode through its `let`s too; every other name
+/// keeps the instance's slot. Made and dropped with the other-mode memo.
+#[derive(Default)]
+pub(crate) struct OtherEnv {
+    slots: RefCell<Vec<(DefId, Slot)>>,
+}
+
+impl OtherEnv {
+    pub(crate) fn bind(&self, d: DefId, slot: Slot) {
+        self.slots.borrow_mut().push((d, slot));
+    }
+
+    fn slot(&self, d: DefId) -> Option<Slot> {
+        self.slots
+            .borrow()
+            .iter()
+            .find(|(x, _)| *x == d)
+            .map(|(_, s)| *s)
+    }
 }
 
 /// Faults remembered between two [`Vm::clear_faults`] (a tick's worth).
@@ -420,7 +448,38 @@ impl Vm {
             faults: RefCell::default(),
             watched: RefCell::default(),
             canvas: RefCell::default(),
+            other: RefCell::default(),
         })
+    }
+
+    /// (M5) Runs `f` in the other mode: `system.dark` reads negated (the
+    /// service read and the built-in palette) and the `let`s `env` holds
+    /// read from its slots. Nests and restores, so a slot's own memo,
+    /// whenever core runs it, sets it again.
+    pub(crate) fn in_other_mode<T>(&self, env: &Rc<OtherEnv>, f: impl FnOnce() -> T) -> T {
+        let saved = self.other.replace(Some(env.clone()));
+        let out = f();
+        *self.other.borrow_mut() = saved;
+        out
+    }
+
+    /// (M5) Whether an evaluation runs in the other mode.
+    pub(crate) fn other_mode_active(&self) -> bool {
+        self.other.borrow().is_some()
+    }
+
+    /// `service.field`, with `system.dark` negated in the other mode.
+    pub(crate) fn read_field(
+        &self,
+        rt: &Runtime,
+        service: &str,
+        field: &str,
+    ) -> Result<Value, Error> {
+        let v = self.host.read(rt, service, field)?;
+        if service == "system" && field == "dark" && self.other_mode_active() {
+            return Ok(Value::Bool(!v.truthy()));
+        }
+        Ok(v)
     }
 
     /// Note where `e` was raised (the innermost chunk wins: a binding
@@ -654,6 +713,12 @@ impl Vm {
         env: &Rc<Env>,
     ) -> Result<Value, Error> {
         let info = self.prog.def(d);
+        if matches!(info.kind, DefKind::Let) {
+            let other = self.other.borrow().as_ref().and_then(|o| o.slot(d));
+            if let Some(slot) = other {
+                return slot.get(rt);
+            }
+        }
         match &info.kind {
             DefKind::State | DefKind::Settings | DefKind::Let => match env.def(d) {
                 Some(slot) => slot.get(rt),

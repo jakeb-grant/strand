@@ -75,10 +75,26 @@ pub struct ThemeHost {
     writer: std::cell::OnceCell<Option<strand_theme::FileWriter>>,
     /// The runtime `generation` lives in (disposed with the host).
     rt: strand_core::WeakRuntime,
+    /// (M5) [`ThemeHost::read_only`]: the palette is remembered in memory
+    /// only and the quantiser caches no seed.
+    read_only: bool,
+    /// (M5) The palette root pinned by the offline mount: the persisted
+    /// palette, used in place of evaluating `use palette` for the current
+    /// mode (the other mode is still evaluated).
+    pinned: Option<Palette>,
 }
 
-/// The persisted last palette, in [`ThemeHost`]'s cache directory.
-const LAST_PALETTE: &str = "palette";
+/// (M5) The persisted last palette's file name, in [`ThemeHost`]'s cache
+/// directory (`$XDG_STATE_HOME/strand/palettes/palette`): `strand export`
+/// pins the palette root to it offline.
+pub const LAST_PALETTE: &str = "palette";
+
+/// (M5) The persisted last palette in `palettes` (the persist store's
+/// sibling, `Storage::palette_dir`), if there is a readable one.
+pub fn persisted_palette(palettes: &Path) -> Option<Palette> {
+    let text = std::fs::read_to_string(palettes.join(LAST_PALETTE)).ok()?;
+    Palette::from_text(&text)
+}
 
 impl std::fmt::Debug for ThemeHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -92,6 +108,30 @@ impl ThemeHost {
     /// `cache_dir`: where wallpaper seeds are kept (`None`: memory only);
     /// `config_dir`: what relative paths are read against.
     pub fn new(rt: &Runtime, cache_dir: Option<PathBuf>, config_dir: Option<PathBuf>) -> Rc<Self> {
+        Self::make(rt, cache_dir, config_dir, false)
+    }
+
+    /// (M5) A host for the offline mount (decisions.md m5-tools, "the
+    /// CLI", step 2): it reads the persisted palette from `palettes` and
+    /// pins the palette root to it, but writes nothing there:
+    /// [`ThemeHost::remember_palette`] keeps the palette in memory only,
+    /// and the quantiser (only started when nothing is persisted) keeps
+    /// no seed cache.
+    pub fn read_only(
+        rt: &Runtime,
+        palettes: Option<PathBuf>,
+        config_dir: Option<PathBuf>,
+    ) -> Rc<Self> {
+        Self::make(rt, palettes, config_dir, true)
+    }
+
+    fn make(
+        rt: &Runtime,
+        cache_dir: Option<PathBuf>,
+        config_dir: Option<PathBuf>,
+        read_only: bool,
+    ) -> Rc<Self> {
+        let last = cache_dir.as_deref().and_then(persisted_palette);
         let host = Rc::new(ThemeHost {
             quantiser: RefCell::new(None),
             cache_dir,
@@ -104,14 +144,10 @@ impl ThemeHost {
             last_palette: RefCell::new(None),
             writer: std::cell::OnceCell::new(),
             rt: rt.downgrade(),
+            read_only,
+            pinned: if read_only { last.clone() } else { None },
         });
-        if let Some(text) = host
-            .cache_dir
-            .as_ref()
-            .and_then(|d| std::fs::read_to_string(d.join(LAST_PALETTE)).ok())
-        {
-            *host.last_palette.borrow_mut() = Palette::from_text(&text);
-        }
+        *host.last_palette.borrow_mut() = last;
         // The task that takes finished quantiser jobs: idle (no wakeups)
         // until the worker fires `notify`. Spawned here, outside any
         // scope, so no reload or re-evaluation cancels it.
@@ -200,7 +236,8 @@ impl ThemeHost {
         self.hold(rt, |h| &h.images, path.clone());
         let mut q = self.quantiser.borrow_mut();
         if q.is_none() {
-            match Quantiser::new(self.cache_dir.clone()) {
+            let cache = self.cache_dir.clone().filter(|_| !self.read_only);
+            match Quantiser::new(cache) {
                 Ok(new) => {
                     let notify = self.notify.clone();
                     new.set_waker(move || {
@@ -299,7 +336,7 @@ impl ThemeHost {
             return;
         }
         *self.last_palette.borrow_mut() = Some(palette.clone());
-        if let Some(dir) = &self.cache_dir {
+        if let Some(dir) = self.cache_dir.as_ref().filter(|_| !self.read_only) {
             // Best effort, off the logic thread (a slow home directory
             // must not stall a frame): the palette in memory still holds
             // this run.
@@ -324,6 +361,12 @@ impl ThemeHost {
     /// The last good palette ([`ThemeHost::remember_palette`]).
     pub fn last_palette(&self) -> Option<Palette> {
         self.last_palette.borrow().clone()
+    }
+
+    /// (M5) The palette root the offline mount pins
+    /// ([`ThemeHost::read_only`]): the persisted palette, if any.
+    pub fn pinned(&self) -> Option<&Palette> {
+        self.pinned.as_ref()
     }
 
     /// The config directory relative paths are read against.

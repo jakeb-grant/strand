@@ -1,0 +1,72 @@
+---
+source: crates/strand-compiler/tests/template.rs
+expression: out
+---
+template::unknown_token
+
+  × there is no token `$acent`
+   ╭─[theme.css.tmpl:1:6]
+ 1 │ a {{ $acent }}
+   ·      ───┬──
+   ·         ╰── unknown token
+ 2 │ c {{ $fg.muted }}
+   ╰────
+  help: did you mean `$accent`?
+
+template::translucent
+
+  × this colour is translucent, and `hex` writes it opaque only when asked
+   ╭─[theme.css.tmpl:2:6]
+ 1 │ a {{ $acent }}
+ 2 │ c {{ $fg.muted }}
+   ·      ────┬────
+   ·          ╰── its alpha is under 1
+ 3 │ d {{ $palette.nope }}
+   ╰────
+  help: write `hex(c, alpha: true)` for `#rrggbbaa`, or `argb(c)`
+
+template::no_extra
+
+  × this palette (Catppuccin Mocha) has no `$palette.nope`
+   ╭─[theme.css.tmpl:3:6]
+ 2 │ c {{ $fg.muted }}
+ 3 │ d {{ $palette.nope }}
+   ·      ──────┬──────
+   ·            ╰── not in this palette
+ 4 │ x {{ hex($accent, alpha: 1) }}
+   ╰────
+  help: did you mean `$palette.name`? Extras depend on the palette; `??` gives a fallback
+
+template::args
+
+  × `alpha:` is a bool, not a number
+   ╭─[theme.css.tmpl:4:26]
+ 3 │ d {{ $palette.nope }}
+ 4 │ x {{ hex($accent, alpha: 1) }}
+   ·                          ┬
+   ·                          ╰── true or false
+ 5 │ y {{ argb("x") }}
+   ╰────
+
+template::not_colour
+
+  × `argb` needs a colour, not a string
+   ╭─[theme.css.tmpl:5:11]
+ 4 │ x {{ hex($accent, alpha: 1) }}
+ 5 │ y {{ argb("x") }}
+   ·           ─┬─
+   ·            ╰── this is a string
+ 6 │ z {{ $surface.light() }}
+   ╰────
+
+template::no_mode
+
+  × the theme has no light mode
+   ╭─[theme.css.tmpl:6:6]
+ 5 │ y {{ argb("x") }}
+ 6 │ z {{ $surface.light() }}
+   ·      ────┬───
+   ·          ╰── reads the light mode
+   ╰────
+  help: the theme gives the same palette whichever way `system.dark` is set; `??` gives a
+        fallback: `{{ $surface.light() ?? $surface }}`

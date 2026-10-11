@@ -11,6 +11,7 @@
 mod check;
 mod demo;
 mod entry;
+mod export;
 mod fmt;
 mod ipc;
 mod live;
@@ -35,6 +36,7 @@ pub mod cli {
     pub use crate::check::{default_dir, run as check};
     pub use crate::demo::run as demo;
     pub use crate::entry::main;
+    pub use crate::export::export_cli;
     pub use crate::fmt::run as fmt;
     pub use crate::ipc::{
         call_cli, clear_cli, get_cli, reload_cli, set_cli, toggle_cli, watch_cli,
