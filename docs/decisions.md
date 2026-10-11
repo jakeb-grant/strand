@@ -10209,3 +10209,51 @@ Fixes to wave 0 (`laptop/m5-w0`) from its audit, before wave 1 branches. Code co
 ## m5-w1-owner
 
 **2026-10-11 · m5-w1-owner: the hardening's interface choices kept.** The owner kept all four interface choices m5-w0-harden made and handoff.md listed as open item 6: inspector messages carry a node only (main resolves surfaces with `Renderer::surfaces_of`); invocations are numbered from 1 and kept across `await`, 0 outside any handler and unordered, one queue for all services; an overlaid token's origin is the reserved string `overlay` (`OVERLAY_ORIGIN`), replacing the file's origin while the overlay holds; the input-context route stays architecture.md text and S-platform file ownership until a stream builds it. Wave 1 opens on `main` at `88d4d99`, integrating on `laptop/m5-w1` (m5-w0 was merged and deleted).
+
+## m5-docs
+
+**2026-10-11 · m5-docs: how the ladder places what design.md's table does not name.** design.md's ladder (design.md, "Learning ladder") names the constructs each level teaches and says nothing at level N+1 appears in a level-N example, but twenty constructs are in no row. Each is placed at the first level whose build needs it, by design.md's test, "does it remove a concept, or add one?": a construct that is another face of one a level already teaches goes there, and one that adds a concept no build of that level needs waits for the level that does. Levels 1–3 build design.md's bar (a) exactly (m5-owner Q15), so everything bar (a) writes is at level 3 or below. The guide's README carries the placements as a table; design.md's ladder table gets them before the freeze (m5-plan, S-docs). One paragraph each follows.
+
+**2026-10-11 · m5-docs ladder: `split` is level 1.** The hello bar, level 1's build (design.md's summary, and `strand new`'s template), is a `split` with `start`, `center` and `end`. It is a container like `row`, so it adds no concept beyond "nodes".
+
+**2026-10-11 · m5-docs ladder: `on secondary` is level 2.** The tray (level 2) opens an item's menu with it. It is `on click` for the other button, the same concept as level 2's `on click`.
+
+**2026-10-11 · m5-docs ladder: `hit:` is level 2.** Bar (a)'s `Dot` (level 2) writes `hit: grow(6)`. It is a prop, so it adds no construct; it is placed where it is first written.
+
+**2026-10-11 · m5-docs ladder: assignment and compound assignment are level 3.** A handler that writes needs something writable, and `state` is level 3; level 2's handlers only call actions (`ws.focus()`, `item.activate()`). `=` arrives with `state` (`open = !open`), and `+=`, `-=`, `*=`, `/=` with it, since `x -= d` is `x = x - d` and adds no concept; bar (a)'s `Volume` (level 3) writes `audio.sink.volume -= dy * 0.05`.
+
+**2026-10-11 · m5-docs ladder: `else` is level 3.** It is part of `if` (level 3) and adds nothing on its own.
+
+**2026-10-11 · m5-docs ladder: `exit` is level 3.** `exit` mirrors `enter` unless given (design.md, "The rules"), so it is the same concept as level 3's `enter`: a pose. Bar (a) writes no `exit`; level 3 teaches it in prose and names the default. Level 4's toasts are the first build to write one.
+
+**2026-10-11 · m5-docs ladder: `on scroll(dy)` is level 3.** Bar (a)'s `Volume` (level 3) uses it to write the sink's volume, which needs level 3's assignment. Its parameter is the one new idea, and it is taught there.
+
+**2026-10-11 · m5-docs ladder: `let` is level 4.** Bar (a) declares no `let`. Level 4's builds each derive a value (the launcher's `hits`, the toasts' `shown`, the OSD's `level`), and a read-only derived value is a new concept beside level 3's `state`.
+
+**2026-10-11 · m5-docs ladder: `enum` is level 4.** The OSD (level 4) declares `enum Kind { volume, brightness }`. Level 3's builds name only builtin variants (`edge: top`, `ellipsis: end`), which need no declaration.
+
+**2026-10-11 · m5-docs ladder: `match` is level 4.** It goes with `enum`, whose variants it names and checks exhaustively. Level 3's `if` covers bar (a). The OSD's `level` can be written with `match` instead of nested ternaries, and level 5's theme file (`let dark = match look { … }`) uses it.
+
+**2026-10-11 · m5-docs ladder: `every … while` is level 4.** It is the repeating twin of `after … while`, which design.md puts at level 4; one timer concept.
+
+**2026-10-11 · m5-docs ladder: `on show` is level 4.** The launcher (level 4) clears its query with it. It is an event of a surface that opens and closes, and level 4 is where surfaces other than `bar` (`panel`, `osd`) are built.
+
+**2026-10-11 · m5-docs ladder: `id:` is level 4.** Bar (a) reads only the enclosing node's booleans (`hover`, `pressed`). The launcher (level 4) gives its list `id: results` for `nav: results`, the first build that names another node.
+
+**2026-10-11 · m5-docs ladder: `@reset` is level 4.** It is an escape hatch for a kept state cell, taught beside `persist` (level 4), the other rule about what a value keeps across reloads and restarts. Levels 1–3 never need it: a changed `state` default is adopted when the value was never changed (design.md, "What each edit does").
+
+**2026-10-11 · m5-docs ladder: `set { }` is level 5.** It overrides tokens for a subtree, which belongs with level 5's `tokens` declarations and `override`. Levels 2–4 read tokens only.
+
+**2026-10-11 · m5-docs ladder: `keyframes` and `play` are level 5.** They are motion tuning, beside level 5's spring overrides `~`. Every build below level 5 animates through the default springs and poses alone.
+
+**2026-10-11 · m5-docs ladder: `canvas` is level 5.** It is an escape hatch (design.md, "Escape hatches for complex work") beside level 5's shaders; no build below level 5 draws its own paint.
+
+**2026-10-11 · m5-docs ladder: `type` and `key` are level 5; `enum` stays at 4.** m5-plan lists "enum/type" as one item; the two are split by need. A record type is first needed by level 5's dock (`type Pin { app: AppId; label: text }` with `state pins: [Pin] key app = []`, reordered by drag and drop), and `key` is needed only when a loop or a collection holds your own data: every loop at levels 2–4 walks service items, which bring their own keys (design.md, "The rules"). `key` therefore arrives with `type`.
+
+**2026-10-11 · m5-docs ladder: `slot` is level 5.** A component that wraps children is first needed by level 5's control centre (a tile around its content). Bar (a), the OSD, the toasts and the launcher call components only with props, so `slot` would add a concept no lower build uses.
+
+**2026-10-11 · m5-docs ladder: `fn` is level 5.** No build below level 5 needs a helper of its own; the builtin functions (`pct`, `join`, `dur`) and level 4's `let` cover them. A pure `fn` is a new concept and goes with the power-user level.
+
+**2026-10-11 · m5-docs: the guide's code blocks are whole files tagged with their level and file.** The newcomer test applies "each step of the guide's levels 1–3, in order, as a live save" with "the guide's code blocks the test's inputs byte for byte" (m5-plan, "Newcomer builds a multi-monitor bar"), so a block must name the file it replaces and be all of it: the tag is ` ```strand level=N file=NAME `, the block is the file's whole content after that step, steps run in page order, and a file a step does not show is unchanged. A merged fragment would make a newcomer edit by hand and the test guess. Syntax inside a sentence is inline code and never a step. Levels 1–3 put each component in its own file (`dot.strand`, `clock.strand`, `volume.strand`, `battery.strand`) beside `bar.strand`: it teaches that every file loads with no imports (design.md, headline decision 2) and keeps each step's blocks short. The finished files are design.md's bar (a), split by component, comments aside.
+
+**2026-10-11 · m5-docs: the `strand new` template is the hello bar plus three comment lines.** `docs/guide/template/bar.strand` is design.md's hello bar byte for byte after three `//` lines: what the file is, that every `.strand` file in the directory loads and a save is live, and the guide's URL on GitHub (`jakeb-grant/strand`, `main`). Level 1's first block is the same bytes, so the newcomer test's first step is a no-op save and the guide shows the newcomer exactly what `strand new` wrote.
