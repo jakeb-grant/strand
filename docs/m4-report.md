@@ -307,47 +307,66 @@ Release `.text` on the merged tree (laptop): 15,656,519 B CPU-only
 (358,777 B under 18.5 MiB), each about 3 KB smaller than at `73eabe7`.
 No budget, gate or target was raised.
 
+On 2026-10-10 too (decisions.md m4-owner-3, merged on `laptop/m4-close`
+from `laptop/m4-close-gpucap`, `-helper` and `-blend`):
+
+- After 3 lost GPU devices in one process (`promote::LOST_CAP`; a
+  failed start does not count) the GPU is off until strand restarts: no
+  device is asked for, nothing is promoted, `shader` nodes draw
+  nothing, the CPU draws the rest, and the status
+  `Unavailable { reason: GPU_OFF }` is told once as a WARN and a
+  `strand watch` notice (`gpu.rs::the_gpu_is_off_after_three_lost_devices`).
+- A missing `strand-auth` keeps warn-and-lock: `strand run` warns and
+  still locks (fail closed), and `strand check` reports
+  `check::lock_no_helper` as an error for a config with a `lock` when
+  no helper is found, naming the install command; README gives both
+  installs (`check.rs::tests::a_lock_without_the_helper_is_an_error`).
+- A hung frame on a presented (`GpuPresent`) surface stays bounded by
+  the WSI's acquire timeout; the lock is never on the GPU.
+- The promoted GPU cost on hardware moves to M5's hardware testing
+  (features.md's M5 box).
+- The 4K crossfade's blend is cheaper: u16 lanes (exactly the old
+  formula) and a snapshot copied into fresh capacity. On the laptop a
+  3840×2160 fade frame's blend went from 10.5–20.5 ms to 3.6–5.1 ms,
+  inside a 60 Hz frame (16.7 ms), its swap work from 4.2–6.0 ms to
+  2.9–4.4 ms, and the shell's three surfaces' blend from 1.8–3.5 ms to
+  0.45–0.82 ms (`theme_swap_bench.rs::a_4k_surface_crossfade_is_measured`,
+  reported, not gated; the branch's runs). On the merged tree, run
+  alone: 3.38–3.42 ms of blending per fade frame (p95 4.0 ms) and
+  2.53–2.79 ms of swap work. The open item is resolved.
+
+Release `.text` on that merged tree (laptop): 15,657,671 B CPU-only
+(70,969 B under 15 MiB; 15,656,519 B on `laptop/m4-owner`) and
+19,041,095 B with the GPU backend (357,561 B under 18.5 MiB; 19,039,879 B
+on `laptop/m4-owner`). No budget, gate or target was raised.
+
 M3's release-profile sign-off (laptop-decisions, owner decision 1)
 predates the switch to fat LTO and 40 overrides (m4-integration-w2);
 handoff.md notes it.
 
 ## Open
 
-Waiting on the owner (decisions.md m4-gpu-effects, m4-audit, m4-owner-docs, m4-owner-2):
-
-- **A hung frame on a presented surface that is not a lock** is bounded
-  only by the WSI's acquire timeout. A lock is not affected (GPU).
-- **A process-wide cap on hung devices** (decisions.md m4-audit round
-  5): each edit of a shader file that still loops forever leaks one
-  more lavapipe device, a spinning CPU thread, at most once per 30 s,
-  without bound. Capping it needs a rule design.md does not have (no
-  GPU for the rest of the process after N lost devices, say); the
-  owner accepts the per-edit cost or names a cap.
-- **A 4K surface's crossfade** (decisions.md m4-owner-docs): with the
-  snapshot caps gone it fades instead of snapping, at 3.9–5.9 ms of
-  swap work and 10–20 ms of blending per fade frame on the laptop
-  (`theme_swap_bench.rs::a_4k_surface_crossfade_is_measured`, reported,
-  not gated); the owner accepts it or picks a cheaper blend or a size
-  past which it snaps for time.
-- **The promoted GPU cost on hardware** is unmeasured (below, "Not
-  measured").
-- **A lock with no `strand-auth` helper**: strand warns at start, but a
-  lock asked for then still holds the session with no way out but a
-  TTY (decisions.md m4-audit round 9).
-
-Answered by the owner on 2026-10-10 (decisions.md m4-owner-2, and
-"Decisions the owner made in M4" above): the bundled noise field is a
+Waiting on the owner: nothing. Every M4 item was answered on
+2026-10-10. In decisions.md m4-owner-2: the bundled noise field is a
 `.wgsl` shader on a `shader` node (its box is ticked); the theme swap
 is cheaper and its 5 ms gate kept (GitHub had shown 2.53–5.06 ms over
 fifteen timing jobs before, one failure; no GitHub timing job had run
 on the cheaper swap when this was written); the 13 shapes stay; and
 xdg-activation (the notification ActivationToken and the launch
-token) is scheduled for M5 (features.md's M5 box).
+token) is scheduled for M5 (features.md's M5 box). In decisions.md
+m4-owner-3: a hung frame on a presented surface stays bounded by the
+WSI's acquire timeout (the lock is never on the GPU); the promoted GPU
+cost on hardware moves to M5 (features.md's M5 box); 3 lost devices
+turn the GPU off until strand restarts; a 4K fade frame's blend is now
+3.6–5.1 ms, inside 16.7 ms; and a missing `strand-auth` keeps
+warn-and-lock while `strand check` reports it as an error (all in
+"Decisions the owner made in M4" above).
 
 Not measured, and why:
 
 - **The promoted GPU cost on hardware**: ANV cannot present on the
-  advisory leg's sway (GPU).
+  advisory leg's sway (GPU); moved to M5's hardware testing
+  (decisions.md m4-owner-3).
 - **Reload latency on the laptop** misses its gate in the container
   (token p95 22.2 ms headless against a break at 20.1 ms), as it has
   since laptop-open; GitHub's timing job, which enforces it, passes.

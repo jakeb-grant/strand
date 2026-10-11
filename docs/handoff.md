@@ -24,11 +24,12 @@ below.
   fourth to ninth m4 audit rounds' fixes reached `main` too
   (`laptop/m4-audit` fast-forwarded to `73eabe7`; decisions.md
   m4-audit): 67 confirmed findings, all fixed, one of them partly left
-  to the owner (item 7 below). They change runtime
+  to the owner (item 7 below, since answered). They change runtime
   code as well as docs and tests (docs/m4-report.md, "Audit", has each
   round's count and fixes).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 18/18,
-  M5 0/10 (boxes and exit criteria, counted 2026-10-10). The open M1
+  M5 0/11 (boxes and exit criteria, counted 2026-10-10; the eleventh,
+  the promoted GPU cost on hardware, came from open item 6). The open M1
   box is the tree-sitter grammar, which M5 owns.
 - Budgets at `e765276` (laptop; docs/m4-report.md has CI's): `.text`
   19,006,471 B of 19,398,656 with the GPU backend and 15,634,439 B of
@@ -55,6 +56,15 @@ below.
   backend (358,777 B left), and the gated 8-scope theme swap 1.35 ms
   against 5 ms (1.61 ms at `73eabe7`). It is not on `main` until the
   owner merges it.
+- The owner's last M4 decisions of 2026-10-10 (the lost-device cap,
+  `strand check`'s missing-helper error, the cheaper 4K blend, and
+  open items 2 and 6) are merged on `laptop/m4-close`, based on
+  `laptop/m4-owner`, from `laptop/m4-close-gpucap`, `-helper` and
+  `-blend` (decisions.md m4-owner-3). On it the laptop measures `.text`
+  15,657,671 B CPU-only (70,969 B left) and 19,041,095 B with the GPU
+  backend (357,561 B left), and a 4K fade frame's blend 3.6–5.1 ms
+  (was 10.5–20.5 ms). It answers every open item below, and is not on
+  `main` until the owner merges it.
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
@@ -62,30 +72,30 @@ below.
   on lavapipe (`run.sh`, CI) and advisorily on the laptop's GPU
   (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
   (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
-- Remote branches: `origin/main`, and `origin/laptop/m4-owner` with
-  the three owner-decision branches it merges (`laptop/m4-owner-docs`,
-  `-swap`, `-shapes`). The integration branch and
+- Remote branches: `origin/main`; `origin/laptop/m4-owner` with the
+  three owner-decision branches it merges (`laptop/m4-owner-docs`,
+  `-swap`, `-shapes`); and `origin/laptop/m4-close` (on
+  `laptop/m4-owner`) with the three it merges (`laptop/m4-close-gpucap`,
+  `-helper`, `-blend`). The integration branch and
   the wave-3 branches it merged are deleted.
 
 ## Open items for the owner
 
-From M4 (docs/m4-report.md, "Open"; decisions.md m4-gpu-effects and
-m4-audit). Items 1, 3, 4 and 5 were answered on 2026-10-10
-(decisions.md m4-owner-2): the noise field is a `.wgsl` shader (its
-box is ticked), the theme swap is cheaper with its gate unchanged, the
-13 shapes stay, and xdg-activation is scheduled for M5 (its box is in
-M5's list). Items 2, 6, 7, 8 and 9 still wait on the owner. The rest
-keep their numbers so other branches merge cleanly.
+None. Every M4 item was answered by the owner on 2026-10-10: items 1,
+3, 4 and 5 in decisions.md m4-owner-2, items 2, 6, 7, 8 and 9 in
+decisions.md m4-owner-3. The items keep their numbers so other branches
+merge cleanly.
 
-2. **A hung frame on a presented (`GpuPresent`) surface** is bounded
-   only by the WSI's acquire timeout. This does not reach the lock: a
-   lock surface is never lent or handed to the GPU thread
+1. **The noise field: answered.** A `.wgsl` shader on the bundled path;
+   its box is ticked (m4-owner-2).
+2. **A hung frame on a presented (`GpuPresent`) surface: accepted.** It
+   stays bounded by the WSI's acquire timeout. It never reaches the
+   lock: a lock surface is never handed to the GPU thread
    (`strand-surface/tests/session_lock.rs::a_lock_surface_is_never_handed_to_the_gpu`),
-   each of its frames holds for the GPU at most `GPU_WAIT` (8 ms)
-   before the CPU draws it
+   each lock frame waits at most `GPU_WAIT` (8 ms) for the GPU
    (`strand-render/tests/gpu.rs::a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait`),
    and a readback that never ends loses the device after `HUNG_AFTER`
-   (10 s).
+   (10 s) (m4-owner-3).
 3. **`theme_swap_bench`'s 8-scope `spring(1600, 1)` gate: answered.**
    The owner chose (2026-10-10) to make the swap cheaper and keep the
    5 ms gate (decisions.md m4-owner-swap). On the laptop the gated
@@ -94,40 +104,38 @@ keep their numbers so other branches merge cleanly.
    palette (about 0.26 ms, unchanged), not the memo's kept palette
    (0.07 ms). Whether GitHub's 2.53–5.06 ms spread now clears 5 ms is
    for the next timing jobs to show.
-4. **The shape list: answered.** The owner asked (2026-10-10) to
-   remove only a shape the others express exactly and keep any that
-   adds capability. None qualifies, so all 13 stay and design.md lists
-   them (decisions.md m4-owner-2;
-   `strand-render/tests/effects.rs::no_shape_duplicates_another`,
+4. **The shape list: answered.** All 13 stay; design.md lists them
+   (m4-owner-2; `strand-render/tests/effects.rs::no_shape_duplicates_another`,
    `::only_named_shapes_morph`).
-6. **The promoted GPU cost on hardware** is unmeasured: ANV cannot
-   present on the advisory leg's pixman sway, and presenting needs a
+5. **xdg-activation: answered.** Scheduled for M5 (features.md's M5 box).
+6. **The promoted GPU cost on hardware: moved to M5.** It is measured
+   in M5's hardware testing (features.md's M5 box). The advisory leg's
+   readback mode passed at `e765276` (PSS 4,723 kB over the pre-GPU
+   baseline after the drop, bound 6 MiB); presenting needs a
    compositor on a KMS card, which the laptop rules keep out of
-   containers. The leg's readback mode passed at `e765276` (PSS 4,723
-   kB over the pre-GPU baseline after the drop, bound 6 MiB).
-7. **A process-wide cap on hung devices.** A shader file whose pass or
-   frame loses the device is never run again in that process (m4-audit
-   round 5), but every *edit* of a file that still loops forever is new
-   code, and each hangs and leaks one more lavapipe device (a spinning
-   CPU thread) after the 30 s retry. Bounding that needs a rule the
-   design does not have: for example, no GPU for the rest of the
-   process after N lost devices, the CPU drawing everything and
-   `shader` nodes nothing. Accept the per-edit cost (a developer's
-   loop, one device per save at most every 30 s) or name a cap.
-8. **A 4K surface's crossfade costs frame time.** Since the snapshot
-   caps went (memory budgets are test targets; decisions.md
-   m4-owner-docs), a 3840×2160 scrim or overlay crossfades instead of
-   snapping. `theme_swap_bench.rs::a_4k_surface_crossfade_is_measured`
-   reports it without a gate: on the laptop 3.9–5.9 ms of swap work
-   (against the 5 ms; no headroom for a gate on GitHub's runners) and
-   10–20 ms blending each fade frame (the shell's three surfaces are
-   held to 4 ms). Accept it, make the blend cheaper, or let a large
-   surface snap for time rather than memory.
-9. **A lock with no `strand-auth` helper installed.** Since m4-audit
-   round 9, `strand run` warns at start when it finds no helper, but a
-   lock asked for then still takes the session with no way to unlock
-   it but a TTY (decisions.md m4-audit round 9, "a missing helper is
-   said when strand starts"). Whether that stays is the owner's call.
+   containers (m4-owner-3).
+7. **A process-wide cap on lost devices: 3.** After 3 lost devices
+   (`promote::LOST_CAP`; a failed start does not count) the GPU is off
+   until strand restarts: no device is asked for, nothing is promoted,
+   `shader` nodes draw nothing, the CPU draws the rest, and the status
+   `Unavailable { reason: GPU_OFF }` is told once as a WARN and a
+   `strand watch` notice
+   (`strand-render/tests/gpu.rs::the_gpu_is_off_after_three_lost_devices`;
+   m4-owner-3).
+8. **A 4K surface's crossfade: resolved by a cheaper blend.** The blend
+   works in u16 lanes (exactly the old formula) and a snapshot copies
+   into fresh capacity: on the laptop a 3840×2160 fade frame's blend
+   went from 10.5–20.5 ms to 3.6–5.1 ms, well inside a 60 Hz frame
+   (16.7 ms), and its swap work from 4.2–6.0 ms to 2.9–4.4 ms
+   (`theme_swap_bench.rs::a_4k_surface_crossfade_is_measured`, still
+   reported, not gated; m4-owner-3).
+9. **A lock with no `strand-auth` helper: warn and lock, fail closed.**
+   `strand run` is unchanged (it warns at start and still locks), and
+   `strand check` reports `check::lock_no_helper` as an error for any
+   config with a `lock` when no helper is found, naming the install
+   command; README gives both installs
+   (`strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error`;
+   m4-owner-3).
 
 ## Owner decisions already answered
 
