@@ -122,13 +122,15 @@ A markup-plus-Luau split recreates pleamar's string seam. A restricted language 
 
 Nothing at level N+1 appears in a level-N example.
 
-| Level | You learn | You can build |
-| --- | --- | --- |
-| 1 | Surfaces, nodes, props, services as live values | The hello bar in the summary |
-| 2 | `$tokens`, `component`, `for`, `when`, `on click` | Workspace dots, tray |
-| 3 | `state`, `<->`, `if`, `popup`, `enter` | Clock with calendar, volume slider |
-| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher |
-| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders | Control centre, dock, custom services |
+| Level | You learn | Also taught there | You can build |
+| --- | --- | --- | --- |
+| 1 | Surfaces, nodes, props, services as live values | `split`, comma shorthands, expressions (`?.`, `??`, operators, calls) | The hello bar in the summary |
+| 2 | `$tokens`, `component`, `for`, `when`, `on click` | `on secondary`, `hit:`, `hover` and `pressed` | Workspace dots, tray |
+| 3 | `state`, `<->`, `if`, `popup`, `enter` | `=` and `+=`-style assignment, `else`, `exit`, `on scroll(dy)` | Clock with calendar, volume slider |
+| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | `let`, `enum`, `match`, `every … while`, `on show`, `id:`, `@reset`, lambdas, `await`, `lock` | OSD, notifications, launcher, lock screen |
+| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders | `set { }`, `keyframes`/`play`, `canvas`, `type` and `key`, `slot`, `fn`, settings files, SVG `#name { }` selectors, `service from file \| listen \| poll`, `permit exec` | Control centre, dock, custom services |
+
+"Also taught there" places every construct "You learn" does not name, each at the first level whose build needs it (decisions.md, m5-docs).
 
 ### (a) Bar on every monitor, with calendar popup: 83 lines
 

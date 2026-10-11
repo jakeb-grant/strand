@@ -5,8 +5,9 @@ the level teaches and in which section.
 
 You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders; also `set { }`, `keyframes` and
-`play`, `canvas`, `type` and `key`, `slot` and `fn` (README, "Every
-construct and its level").
+`play`, `canvas`, `type` and `key`, `slot`, `fn`, settings files,
+SVG layer selectors, and `service … from file | listen | poll` with
+`permit exec` (README, "Every construct and its level").
 You build: a theme file, a control centre, a dock and a custom service.
 
 ## Sections
@@ -14,7 +15,9 @@ You build: a theme file, a control centre, a dock and a custom service.
 1. **A theme file** (`theme.strand`): the three token tiers; `tokens
    base { … }`, `extends` and `override`; `use tokens …, palette …`;
    palettes from a seed colour, a wallpaper (`material(image:)`) or an
-   import (Catppuccin, base16); a theme switcher with `enum` and
+   import (Catppuccin, base16); a settings file
+   (`state prefs from "prefs.toml" { … }`) for the accent and the
+   wallpaper, edited by hand or by `<->`; a theme switcher with `enum` and
    `match`; `strand set theme.look mocha`; `strand export gtk | kitty |
    hyprland`.
 2. **Overrides for a subtree**: `set { $surface: … }`; component tokens
@@ -28,6 +31,7 @@ You build: a theme file, a control centre, a dock and a custom service.
 6. **A custom service**: `service … from dbus`, checked against the
    bus's introspection; `from file`, `from listen`, `from poll` and
    `permit exec`.
-7. **Escape hatches**: `shader "x.wgsl" { … }`; `canvas { draw: … }`.
+7. **Escape hatches**: `shader "x.wgsl" { … }`; `canvas { draw: … }`;
+   an SVG with bindable layers (`svg "icon.svg" { #needle { … } }`).
 8. **Plugins**: a Rust service built into your own `strand` binary
    (written by S-plugins, M5 wave 2).

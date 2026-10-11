@@ -14,22 +14,23 @@ any level, everything you have written still works.
 | 1 | Surfaces, nodes, props, services as live values | The hello bar | [level-1.md](level-1.md) |
 | 2 | `$tokens`, `component`, `for`, `when`, `on click` | Workspace dots, tray | [level-2.md](level-2.md) |
 | 3 | `state`, `<->`, `if`, `popup`, `enter` | Clock with calendar, volume slider | [level-3.md](level-3.md) |
-| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher | [level-4.md](level-4.md) |
+| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher, lock screen | [level-4.md](level-4.md) |
 | 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders | Control centre, dock, custom services | [level-5.md](level-5.md) |
 
 ## Every construct and its level
 
-The table above is design.md's learning ladder. Some constructs it does
-not name; this is where each one is taught (decisions.md, m5-docs, one
-paragraph each).
+The table above is design.md's learning ladder. The constructs its "You
+learn" column does not name are taught at these levels, as the ladder's
+"Also taught there" column says (decisions.md, m5-docs, one paragraph
+each).
 
 | Level | Also taught here |
 | --- | --- |
 | 1 | `split` (with `start`, `center`, `end`); comma shorthands; expressions (`?.`, `??`, operators, calls such as `pct` and `join`) |
 | 2 | `on secondary`; `hit:`; the node booleans `hover` and `pressed` |
 | 3 | assignment and compound assignment (`=`, `+=`, `-=`, `*=`, `/=`); `else`; `exit`; `on scroll(dy)` |
-| 4 | `let`; `enum`; `match`; `every … while`; `on show`; `id:`; `@reset` |
-| 5 | `set { }`; `keyframes` and `play`; `canvas`; `type` and `key`; `slot`; `fn` |
+| 4 | `let`; `enum`; `match`; `every … while`; `on show`; `id:`; `@reset`; lambdas (`n => …`); `await`; the `lock` surface |
+| 5 | `set { }`; `keyframes` and `play`; `canvas`; `type` and `key`; `slot`; `fn`; settings files (`state x from "file.toml" { … }`); SVG layer selectors (`#name { … }`); `service … from file`, `from listen`, `from poll` and `permit exec` |
 
 ## How to read the code blocks
 
@@ -44,10 +45,11 @@ component Dot(ws: Workspace) { … }
 ````
 
 Steps run in page order, level 1 first. A file a step does not show
-stays as it was. The guide's test applies the blocks in the same order
-to a running shell on two monitors and checks each step's frame
-(`crates/strand/tests/m5/newcomer.rs`), so a block that is wrong fails
-the build.
+stays as it was. The guide's test, still to come (M5 wave 3,
+`crates/strand/tests/m5/newcomer.rs`), will apply the blocks in the
+same order to a running shell on two monitors and check each step's
+frame, so that a block that is wrong fails the build. Until it lands,
+nothing checks the blocks automatically.
 
 Short pieces of syntax inside a sentence (`when hover { … }`) are not
 steps.

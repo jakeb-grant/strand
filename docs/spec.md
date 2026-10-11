@@ -26,8 +26,9 @@ one.
   fixes the rules every schema entry obeys.
 - Numbers given as targets (latencies, memory) are not part of the
   language. Numbers that change what a program does (the 15 ms
-  coalesce, the 250 ms overlay delay, 30 writes per second, the 30 s
-  monitor retention, the 4 px query hysteresis) are.
+  coalesce, the 250 ms overlay delay, the 250 ms settings write delay,
+  30 writes per second, the 30 s monitor retention, the 4 px query
+  hysteresis, the 5 s service stop) are.
 
 ## 2. Conformance and terms
 
@@ -135,8 +136,12 @@ guide's ladder test use this table as the list of constructs.
 
 A surface is something the compositor shows. Its body is a tree
 (section 6). Every surface accepts `screens:`, `layer:`, `open:`,
-`keyboard:`, `anchor:`, `attach:` and `scrim:`, and the events `on show`
-and `on hide`.
+`keyboard:` and `anchor:`, and the events `on show` and `on hide`.
+`attach:` and `scrim:` are accepted only on a `panel` (and on a
+`popup`); on a `bar`, `osd` or `lock` either one is a load error. On a
+`lock`, `screens:`, `layer:`, `anchor:` and `keyboard:` are warnings:
+`ext-session-lock` decides all four (every monitor, above everything,
+filling the monitor, the keyboard always).
 
 - **`bar Name { … }`** is on every monitor that its `screens:` picks
   (all of them by default). Each monitor gets its own instance, with the
@@ -455,8 +460,9 @@ props accept bare numbers. The freeze review confirms the wording.
 - `match value { pattern => result, … }` selects the first arm whose
   pattern matches. A pattern is a variant, a literal or `_`
   (any value).
-- A `match` must be exhaustive: an enum match must cover every variant
-  or end with `_`; any other match must end with `_`. A non-exhaustive
+- A `match` must be exhaustive: an enum match must cover every variant,
+  a `bool` match both `true` and `false`, or either may end with `_`;
+  any other match must end with `_`. A non-exhaustive
   match is a load error, and so is an arm that can never be reached.
 
 ## 8. Reactivity
@@ -522,9 +528,12 @@ props accept bare numbers. The freeze review confirms the wording.
 - **`after T while c { … }`** runs once, after `c` has held for a total
   of `T`; it counts only time during which `c` holds, and schedules
   nothing while `c` is false. **`every T while c { … }`** runs every `T`
-  while `c` holds. Without `while`, the condition is always true. After a
-  gap longer than its period, `every` runs once and keeps its phase; it
-  never replays missed runs. A zero period pauses it with a warning.
+  while `c` holds. Without `while`, the condition is always true.
+  `every` keeps its phase: host latency does not accumulate. After a
+  gap longer than its period it runs once and re-phases, so its next
+  run is one period after that one; it never replays missed runs. A
+  zero `every` period is an error value naming the timer, reported as a
+  runtime fault (section 12), not a silent pause.
 
 ### 8.5 Two-way binding
 
@@ -556,9 +565,27 @@ props accept bare numbers. The freeze review confirms the wording.
 - **Echoes.** A write to a service carries a generation tag; a service
   reporting back the value of a write still pending is ignored.
 - **Runaway writers.** More than 30 writes per second to one cell from
-  one handler warns and throttles that handler's writes to 30 per
-  second, without losing the last value. Writes made by input handlers
-  before their first `await`, and writes through `<->`, are exempt.
+  one writer warns (naming the handler) and throttles that writer's
+  writes to 30 per second, without losing the last value: in between,
+  only the latest value is held, and a compound assignment starts from
+  the held value. A writer is a handler, or one run of an input
+  handler (below).
+- **What is not counted.** Writes from `strand set` and the other
+  command-line writes, values a service reports, and writes through
+  `<->` are never counted. An input handler (`on click`,
+  `on scroll(dy)`, and the other events of a node the user acts on)
+  is not counted until its first `await` that suspends; after it, the
+  run's writes count against that run alone, not against the handler.
+  So `on scroll(dy) { await x; v -= dy * 0.05 }` at 60 Hz, sixty runs
+  that each write once, is never throttled, while one run that keeps
+  writing more than 30 times a second is. Several runs each below the
+  limit are not added up. A handler started by a service event or a timer is
+  one writer however many runs it has.
+- **Keyed collections.** A throttled writer to a keyed collection
+  keeps a held copy of its changes, which lands as one keyed diff when
+  its window has room, so items keep their identity; a write that goes
+  through in between is merged under it by key, and a change that no
+  longer applies is skipped and reported.
 
 ### 8.8 Who wins
 
@@ -757,8 +784,9 @@ people can edit by hand.
 - **Each field is checked on its own.** A bad value keeps that field's
   last good value with a diagnostic; the other fields still apply. A
   TOML syntax error keeps every last good value. A deleted key springs
-  back to its default. **(unverified)**: a file that does not exist yet
-  gives every default, and the first write creates it.
+  back to its default. The first write creates a file that does not
+  exist yet, and its missing directories. **(unverified)**: a file that
+  does not exist yet gives every field its default.
 - Edits to the file apply live, as per-field writes.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,
