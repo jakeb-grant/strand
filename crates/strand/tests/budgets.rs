@@ -40,8 +40,9 @@
 //!   mixed sizes, half naming icons of the machine's themes.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   18.5 MiB with the GPU backend (the default build), 15 MiB for the
-//!   CPU core (`--no-default-features`; docs/architecture.md,
+//!   18.5 MiB with the GPU backend (the default build), 15,925,248 B
+//!   for the CPU core (`--no-default-features`; M5's provisional
+//!   re-base, decisions.md m5-integration; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2265,7 +2266,7 @@ fn the_report_states_the_owner_confirmed_memory_gates() {
 /// design.md budgets 10–14 MB for "code and libraries touched", and the
 /// two-monitor bar's code is resident close to its whole `.text` where
 /// the page cache maps large folios (decisions.md, wave4-exitMemory):
-/// the release binary's `.text` stays at most 15 MiB whatever the
+/// the release binary's `.text` stays within its gate whatever the
 /// runner's page cache does. It rests on the workspace's release
 /// profile (`[profile.release.package]`: services and glue built for
 /// size).
@@ -2278,7 +2279,8 @@ fn the_release_binary_code_stays_within_its_gate() {
     let elf = std::fs::read(env!("CARGO_BIN_EXE_strand")).unwrap();
     let text = text_size(&elf).expect("an ELF64 binary with a .text");
     // The GPU backend's build: the spike's 17,683,543 B plus 9.7%
-    // (decisions.md, m4-gpu-spike); the CPU core keeps 15 MiB.
+    // (decisions.md, m4-gpu-spike); the CPU core's gate is M5's
+    // provisional re-base (`TEXT_GATE_CPU`).
     let (gate, build) = if cfg!(feature = "gpu") {
         (TEXT_GATE_GPU, "the default build (GPU backend)")
     } else {
@@ -2297,8 +2299,14 @@ fn the_release_binary_code_stays_within_its_gate() {
 
 /// `.text` of the default (GPU) release build: 18.5 MiB.
 const TEXT_GATE_GPU: u64 = 19_398_656;
-/// `.text` of the CPU-only release build: 15 MiB.
-const TEXT_GATE_CPU: u64 = 15 << 20;
+/// `.text` of the CPU-only release build: M5's provisional re-base,
+/// 15,925,248 B (15 MiB + 196,608). It is M4's measured 15,657,671 B
+/// plus M5's 230,000 B allocation (docs/m5-plan.md, "Size strategy"),
+/// rounded up to 64 KiB; the 37,577 B of rounding is not spendable. It
+/// is lowered as reclaims land, never raised in M5 without the owner,
+/// and tightened at M5's close (decisions.md m5-owner Q6,
+/// m5-integration).
+const TEXT_GATE_CPU: u64 = 15_925_248;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's
