@@ -1,7 +1,7 @@
 //! Cached paint: dithered gradients and blurred shadows rendered once
 //! into pixmaps and drawn from there (design.md, "Paint and light":
 //! banding removed by automatic dithering; "Runtime changes": cached
-//! offscreen groups, about 4 MB).
+//! offscreen groups, about 32 MB).
 //!
 //! Every entry is a pure function of its key, and whether a key is
 //! cached at all depends only on the key (its size), so a partial
@@ -23,18 +23,23 @@ use vello_cpu::{
 };
 
 /// Bytes of cached pixmaps kept, least recently used dropped first.
-pub const PAINT_CACHE_BYTES: usize = 4 << 20;
+pub const PAINT_CACHE_BYTES: usize = 32 << 20;
 
-/// Largest single cached pixmap; larger gradients are dithered cell by
-/// cell, uncached, and larger shadows draw directly (decided by size
-/// alone).
-pub const MAX_ENTRY_BYTES: usize = 2 << 20;
+/// Largest single cached pixmap (16 MB: a 2× launcher's gradient and
+/// shadow, a full-height panel at 2×, a 1440p overlay); larger gradients
+/// are dithered cell by cell, uncached, and larger shadows draw directly
+/// (decided by size alone). At 2 MB a 2× launcher's gradient and shadow
+/// were drawn again on every full repaint: 39 ms a frame against 6.5 ms
+/// (decisions.md, m5-speed-caches).
+pub const MAX_ENTRY_BYTES: usize = 16 << 20;
 
 /// Entries no frame has used for this long are freed (design.md: the
 /// cached offscreen groups are "freed when idle") at the next paint or
-/// wake of the render loop; when the frame loop stops, what its frames
-/// did not use goes at once ([`PaintCache::trim_unused_since`]).
-pub const IDLE_FREE: Duration = Duration::from_secs(10);
+/// wake of the render loop, never at a wake of their own. A surface
+/// shown again within it (a launcher reopened) draws from what its last
+/// showing cached: 7 ms against 52 ms for a 2× launcher's first frame
+/// (decisions.md, m5-speed-caches).
+pub const IDLE_FREE: Duration = Duration::from_secs(30);
 
 /// Most gradient keys remembered as drawn once, uncached (see
 /// [`PaintCache::gradient`]); past it the record starts over.
@@ -214,18 +219,6 @@ impl PaintCache {
         }
         self.seen
             .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
-    }
-
-    /// Frees the entries no frame has used since `since`: the frame loop
-    /// stopped (nothing animates, nothing waits for a frame), and what
-    /// its frames did not draw is idle until something wakes the shell.
-    pub fn trim_unused_since(&mut self, since: Instant) {
-        let before = self.entries.len();
-        self.entries.retain(|_, e| e.at >= since);
-        if self.entries.len() != before {
-            self.bytes = self.entries.values().map(|e| e.bytes).sum();
-        }
-        self.seen.retain(|_, (_, at)| *at >= since);
     }
 
     /// How long an unused entry lives.
@@ -450,6 +443,7 @@ pub fn render_gradient_part(
     let opaque = stops.iter().all(|s| s.color.clamped().a >= 1.0);
     let mut pm = Pixmap::new(pw as u16, ph as u16);
     let data = pm.data_mut();
+    crate::hugepage::advise(data.as_ptr().cast(), data.len() * 4);
     for py in 0..ph {
         for px in 0..pw {
             let (x, y) = (x0 + px, y0 + py);
@@ -545,6 +539,7 @@ fn render_shadow(s: &ShadowShape, w: u16, h: u16) -> Pixmap {
     draw_shadow(&mut ctx, s);
     ctx.flush();
     let mut bytes = vec![0u8; w as usize * h as usize * 4];
+    crate::hugepage::advise(bytes.as_ptr(), bytes.len());
     let mut resources = Resources::new();
     if let Some(pm) = PixmapMut::new(w, h, &mut bytes) {
         ctx.render_with(
@@ -558,7 +553,9 @@ fn render_shadow(s: &ShadowShape, w: u16, h: u16) -> Pixmap {
         );
     }
     let mut pm = Pixmap::new(w, h);
-    for (d, s) in pm.data_mut().iter_mut().zip(bytes.chunks_exact(4)) {
+    let data = pm.data_mut();
+    crate::hugepage::advise(data.as_ptr().cast(), data.len() * 4);
+    for (d, s) in data.iter_mut().zip(bytes.chunks_exact(4)) {
         *d = PremulRgba8 {
             r: s[0],
             g: s[1],

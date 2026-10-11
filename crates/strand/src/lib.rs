@@ -40,7 +40,8 @@ pub mod cli {
 /// Declares the process setup the `strand` binary runs with, at the
 /// crate root of the binary that invokes it: mimalloc as the global
 /// allocator (`docs/design.md`, "Stack") and no transparent huge pages
-/// from before the first allocation. A plugin binary
+/// from before the first allocation, but for the large pixel buffers
+/// render advises on kernels that allow it (decisions.md m5-speed-thp). A plugin binary
 /// (`strand::Shell::builder()`) invokes it once, beside copying the
 /// workspace's `[profile.release]`, or the PSS figures do not hold
 /// (docs/architecture.md, "Plugins"; decisions.md m5-w0-harden).
@@ -57,7 +58,7 @@ pub mod cli {
 /// constructor in the executable but std's argv capture (priority 99,
 /// which does not allocate): mimalloc's own included (checked in the
 /// release binary's `.init_array`: argv, this, then the unprioritised
-/// rest). The call makes two `prctl`s and does not allocate. A failure
+/// rest). The call makes at most three `prctl`s and does not allocate. A failure
 /// (an old kernel) leaves the default. The kernel keeps the flag across
 /// `fork` and `exec`: every program strand starts gets back what strand
 /// inherited (`strand_services::child::restore_in_child`, in each

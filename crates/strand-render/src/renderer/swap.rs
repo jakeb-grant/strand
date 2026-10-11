@@ -1267,6 +1267,7 @@ impl Renderer {
         let missed = same.then(|| {
             // Copied into fresh capacity: no zeroed buffer written over.
             pixels.reserve_exact(snap.bytes());
+            crate::hugepage::advise(pixels.as_ptr(), pixels.capacity());
             let rows = target.pixels.chunks(target.stride.max(1) as usize);
             for src in rows.take(snap.size.h as usize) {
                 pixels.extend_from_slice(&src[..row]);
@@ -1279,7 +1280,10 @@ impl Renderer {
             missed
         });
         if missed.is_none() {
+            // Zeroed memory fresh from the system is not touched yet, so
+            // the advice still applies before the paint writes it.
             pixels = vec![0u8; snap.bytes()];
+            crate::hugepage::advise(pixels.as_ptr(), pixels.len());
         }
         let under = snap.under.take();
         let prev = std::mem::take(&mut snap.pixels);

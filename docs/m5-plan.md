@@ -285,7 +285,11 @@ Expected: 20–80 KB. Recorded as measured, not promised.
   merged tree, not the branch. M4's wave 2 passed per branch and failed
   merged.
 - A stream that would overrun its allocation stops and asks the
-  integrator. It never raises an opt-level on a hot path to make room.
+  integrator. It never cuts an opt-level on a hot path to make room. A
+  deliberate speed revert (a cache sized back up, a size-kept algorithm
+  replaced, a hot path's opt-level raised) is not spend: it lands with
+  its measured gain and `.text` cost, and the integrator raises the gate
+  by that recorded amount (decisions.md m5-speed-policy).
 
 ### Memory (reported, never a runtime cap)
 

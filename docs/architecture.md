@@ -1418,15 +1418,17 @@ and `tests/m5/process_setup.rs` (a linking binary, as a plugin is).
   two-way writes (`value` of a slider or `segmented`, `text` of an
   `input`). A node may shape several texts (`TextSpec::part`: a
   `segmented`'s labels). `icon`/`image` sources decode at the box's
-  physical size into a 6 MB LRU (`strand_render::image`, freedesktop icon
+  physical size into a 32 MB LRU (`strand_render::image`, freedesktop icon
   theme, PNG/JPEG/SVG; JPEG IDCT-scaled and PNG reduced row by row so a
   decode holds about the drawn size), on a worker with a text worker,
   inline offline; while a size springs the latest decode draws placed
   by its fit (`Decoded::placed_in`, `Item::Image::dest`). Gradients draw
-  from dithered pixmaps and shadows from cached ones (a 4 MB paint
-  cache, entries unused for `IDLE_FREE` (10 s) freed at the next paint
-  or the next `Renderer::update`, whatever woke the loop: nothing wakes
-  just to free them, so an idle shell does zero work between ticks); a
+  from dithered pixmaps and shadows from cached ones (a 32 MB paint
+  cache of entries up to 16 MB, entries unused for `IDLE_FREE` (30 s)
+  freed at the next paint or the next `Renderer::update`, whatever woke
+  the loop: nothing wakes just to free them, so an idle shell does zero
+  work between ticks; a frame loop that stops keeps them, so a surface
+  shown again within `IDLE_FREE` draws from them); a
   text node's record keeps its glyph cells (`NodeRecord::glyphs`), so a
   change that only swaps glyphs damages those glyphs (a clock tick
   repaints its last digit), and a node's border along its box keeps
@@ -1557,7 +1559,7 @@ and `tests/m5/process_setup.rs` (a linking binary, as a plugin is).
     frames) drawn into a cached pixmap at its clock's rate (its fields
     below). Cached offscreen groups (glows,
     filtered subtrees, glass sources) redraw only when their children
-    change, in a second 4 MB budget freed when idle. Built (m4-runtime
+    change, in a second 32 MB budget freed when idle. Built (m4-runtime
     F4, `strand-render`'s `offscreen.rs`):
     - A layer with `Blur` or `ColorMatrix` (`Layer::cell_local` false) is
       drawn whole into a pixmap of its bounds, filtered there, and drawn
@@ -3641,8 +3643,9 @@ inspector (M5) to say why.
   cycle).
 - Hardware leg (`gpu.sh`, advisory): the same tests on
   `/dev/dri/renderD128`, plus PSS after the drop within about 6 MiB of
-  the pre-GPU baseline (the spike's ANV left 5.2–6.3 MiB, all libraries
-  unmapped), and the promoted cost checked against design.md's +20–40 MB
+  the pre-GPU baseline in readback mode (the spike's ANV left 5.2–6.3
+  MiB, all libraries unmapped) and 8 MiB presenting (`STRAND_GPU_PRESENT=1`:
+  4.6–7.5 MiB measured; a leak tripwire, decisions.md m5-speed-gpu-bound), and the promoted cost checked against design.md's +20–40 MB
 (the spike's ANV: about 15 MiB with the device up, 19–24 MiB
 presenting).
 - GPU frames are compared with the CPU frame under their own documented

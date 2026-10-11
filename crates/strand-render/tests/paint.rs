@@ -309,13 +309,14 @@ fn shadows_scene() -> SceneDiff {
 }
 
 /// design.md: cached offscreen groups are "freed when idle". When the
-/// frame loop stops, the entries none of its frames used go at once,
-/// without a wake of their own (a shell with no clock, after its last
-/// animation, keeps none it does not draw): a small change far from the
-/// shadows paints, and their pixmaps are freed; a later repaint over
-/// them rebuilds them, pixel for pixel.
+/// frame loop stops, the entries none of its frames used stay for
+/// `IDLE_FREE` (a surface shown again draws from them: decisions.md,
+/// m5-speed-caches); a paint after that frees them, without a wake of
+/// its own: a small change far from the shadows paints, and their
+/// pixmaps are freed; a later repaint over them rebuilds them, pixel for
+/// pixel.
 #[test]
-fn shadows_no_frame_used_go_when_the_frame_loop_stops() {
+fn shadows_no_frame_used_go_once_idle() {
     let mut r = renderer();
     let mut diff = shadows_scene();
     // A dot in the far corner, away from every shadow.
@@ -346,9 +347,17 @@ fn shadows_no_frame_used_go_when_the_frame_loop_stops() {
     assert!(r.apply(d).is_empty());
     buf.paint(&mut r, SurfaceId(1), 1);
     assert!(!r.wants_frame(SurfaceId(1)));
+    assert_eq!(r.paint_cache().0, bytes, "kept when the loop stops");
+    // Idle: the next paint frees what it does not draw.
+    r.set_paint_cache_idle(std::time::Duration::from_millis(20));
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    let mut d = SceneDiff::new();
+    d.set(dot, Prop::Bg, color("#00ff00"));
+    assert!(r.apply(d).is_empty());
+    buf.paint(&mut r, SurfaceId(1), 1);
     // (The `xl` shadow reaches under the dot: that frame used it.)
     let kept = r.paint_cache().0;
-    eprintln!("cache {bytes} B before, {kept} B after the loop stopped");
+    eprintln!("cache {bytes} B before, {kept} B once idle");
     assert!(
         kept > 0 && kept < bytes,
         "unused shadows kept: {kept} of {bytes} B"
@@ -528,12 +537,12 @@ fn wide_slow_gradients_are_dithered() {
     );
 }
 
-/// A gradient too large to cache (over `MAX_ENTRY_BYTES`: a launcher at
-/// 2×, a full-height panel) is dithered too, cell by cell, and a partial
-/// repaint draws the same pixels as a full one.
+/// A gradient too large to cache (over `MAX_ENTRY_BYTES`: a full-screen
+/// 4K overlay) is dithered too, cell by cell, and a partial repaint draws
+/// the same pixels as a full one.
 #[test]
 fn large_gradients_are_dithered_too() {
-    let (w, h) = (1024u32, 600u32);
+    let (w, h) = (2700u32, 1600u32);
     assert!((w * h * 4) as usize > strand_render::MAX_ENTRY_BYTES);
     let scene = |dot: &str| {
         let mut b = Builder::default();
@@ -568,16 +577,17 @@ fn large_gradients_are_dithered_too() {
     let mut r = renderer();
     let mut buf = render_with(&mut r, diff, Scale::ONE);
     assert_eq!(r.paint_cache().1, 0, "too large to cache");
-    for y in [7, 300, 599] {
+    for y in [7, 800, 1599] {
         let row: Vec<u8> = (0..w).map(|x| buf.px(x, y)[1]).collect();
         let longest = row
             .chunk_by(|a, b| a == b)
             .map(|run| run.len())
             .max()
             .unwrap();
-        // 1024 px over 8 levels would band at 128 px.
-        assert!(longest <= 64, "row {y}: longest band {longest} px");
-        assert!(row[0] <= 0x25 && row[1023] >= 0x2b);
+        // 2,700 px over 8 levels would band at 337 px; dithered, no run
+        // is half of that.
+        assert!(longest <= 168, "row {y}: longest band {longest} px");
+        assert!(row[0] <= 0x25 && row[w as usize - 1] >= 0x2b);
     }
     // A repaint of part of it (the dot changes colour) matches a full
     // paint of the same scene.

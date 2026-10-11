@@ -279,11 +279,15 @@ mod tests {
                 .and_then(|s| strand_services::child::thp_enabled(&s))
         };
         let parent = format!("/proc/{}/status", std::os::unix::process::parent_id());
-        let (Some(inherited), Some(own)) = (thp(&parent), thp("/proc/self/status")) else {
+        let (Some(inherited), Some(_)) = (thp(&parent), thp("/proc/self/status")) else {
             eprintln!("skipped: no THP_enabled in /proc/<pid>/status");
             return;
         };
-        assert!(!own, "THP is on for the process");
+        // (`THP_enabled:` reads 1 when THP is off but for advised regions,
+        // decisions.md m5-speed-thp: the prctl's own answer is checked.)
+        if let Ok(off) = rustix::thread::transparent_huge_pages_are_disabled() {
+            assert!(off, "THP is on for the process");
+        }
         let out = std::env::temp_dir().join(format!("strand-main-thp-{}", std::process::id()));
         let _ = std::fs::remove_file(&out);
         let part = out.with_extension("part");
@@ -301,6 +305,51 @@ mod tests {
         let got = thp(&out.display().to_string());
         let _ = std::fs::remove_file(&out);
         assert_eq!(got, Some(inherited), "the child kept strand's THP off");
+    }
+
+    /// On a kernel with `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18 on) THP stays
+    /// off but for the regions strand advises, its largest pixel buffers:
+    /// one advised before it is written is backed by huge pages, while the
+    /// heap around it is not (decisions.md, m5-speed-thp). Elsewhere THP
+    /// is off altogether.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn thp_stays_on_only_for_advised_buffers() {
+        // SAFETY: `prctl` with integer arguments only.
+        let got = unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) };
+        if !strand_services::child::thp_on_for_advised() {
+            assert!(got != 0, "THP is on for the process: {got}");
+            return;
+        }
+        assert_eq!(got, 3, "off except advised regions");
+        let mode = std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+            .unwrap_or_default();
+        if mode.contains("[never]") || mode.is_empty() {
+            eprintln!("skipped: THP is never on here ({mode:?})");
+            return;
+        }
+        let huge = || {
+            std::fs::read_to_string("/proc/self/smaps_rollup")
+                .ok()
+                .and_then(|r| {
+                    r.lines()
+                        .find_map(|l| l.strip_prefix("AnonHugePages:"))
+                        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+                })
+                .unwrap_or(0)
+        };
+        let before = huge();
+        let len = 32 << 20;
+        let mut big: Vec<u8> = Vec::with_capacity(len);
+        strand_render::hugepage::advise(big.as_ptr(), big.capacity());
+        big.resize(len, 1);
+        let after = huge();
+        assert!(
+            after >= before + 4096,
+            "an advised 32 MB buffer has {} kB of huge pages",
+            after.saturating_sub(before)
+        );
+        drop(big);
     }
 
     #[test]

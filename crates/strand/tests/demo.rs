@@ -297,14 +297,12 @@ fn memory_report(pid: u32) -> String {
 }
 
 /// strand turns transparent huge pages off for itself (`main`): THP in
-/// `always` mode otherwise fills mimalloc's arenas with 2 MiB pages.
+/// `always` mode otherwise fills mimalloc's arenas with 2 MiB pages. On a
+/// kernel with `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18 on) only the
+/// regions strand advises may use them, its largest pixel buffers, which
+/// the bar has none of; `THP_enabled:` then reads 1, so the resident huge
+/// pages are what is checked (decisions.md, m5-speed-thp).
 fn assert_thp_off(pid: u32) {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-    let line = status.lines().find(|l| l.starts_with("THP_enabled:"));
-    // Kernels before 6.x have no such line; nothing to check there.
-    if let Some(l) = line {
-        assert_eq!(l.split_whitespace().nth(1), Some("0"), "THP is on: {l}");
-    }
     // Off from before the first allocation (`strand::process_setup!`): with
     // THP `always`, pages the runtime touched before `main` were huge.
     let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();

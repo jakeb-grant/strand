@@ -176,7 +176,6 @@ pub(super) fn diff_records(
 
 impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
-        let burst = *self.burst.get_or_insert_with(Instant::now);
         let damage = self.paint_frame(surface, target);
         // Exits the frame finished: ghosts unmount (their siblings glide
         // into the gap from the next frame), closing surfaces close, and
@@ -185,17 +184,12 @@ impl Painter for Renderer {
         self.process_finished();
         self.release_holds();
         self.arm_timer();
-        // The frame loop stops (no surface wants another frame, and no
-        // capped clock waits on a wake for its next tick): the paint
-        // cache's entries none of its frames used are idle, and go now
-        // rather than at a wake of their own (design.md: "freed when
-        // idle"; the M0 gate: no wakeup between ticks). Between a capped
-        // clock's ticks the loop has not stopped, so nothing the tick
-        // left alone is freed (`IDLE_FREE` still applies).
-        if !self.surfaces.keys().any(|s| self.wants(*s)) && self.clocks.next_wake().is_none() {
-            self.raster.trim_unused_since(burst);
-            self.burst = None;
-        }
+        // When the frame loop stops, the paint cache and the offscreen
+        // groups keep what its frames did not use: a surface shown again
+        // within `IDLE_FREE` (a launcher or popup reopened) draws its
+        // first frame from them. They go at the first paint or wake
+        // after `IDLE_FREE` (design.md: "freed when idle"), never at a
+        // wake of their own (decisions.md, m5-speed-caches).
         damage
     }
 

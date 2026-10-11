@@ -105,13 +105,6 @@ impl Raster {
         self.offscreen.trim_idle(now);
     }
 
-    /// Frees the paint cache's entries and offscreen groups no frame has
-    /// used since `since`.
-    pub fn trim_unused_since(&mut self, since: std::time::Instant) {
-        self.cache.trim_unused_since(since);
-        self.offscreen.trim_unused_since(since);
-    }
-
     /// Shortens (tests) how long an unused paint cache entry or
     /// offscreen group lives.
     pub fn set_idle_free(&mut self, idle: std::time::Duration) {
