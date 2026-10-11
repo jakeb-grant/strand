@@ -20,7 +20,7 @@ pub mod convert;
 pub mod custom;
 mod unserved;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -128,6 +128,55 @@ pub fn schema_with(extras: &[Registration], files: &[(PathBuf, String)]) -> Serv
         schema,
         unserved,
         warnings,
+    }
+}
+
+/// Gives `host` cells at their defaults for `name`, a service `schema`
+/// declares that the builtin schema does not (`SchemaHost` holds only
+/// the builtin schema's names until told).
+fn declare_at_defaults(
+    rt: &Runtime,
+    host: &SchemaHost,
+    types: &TypeTable,
+    schema: &Schema,
+    name: &str,
+    path: &Path,
+) {
+    use strand_compiler::vm::ServiceHost as _;
+    if let Some(&record) = schema.services.get(name) {
+        let at_defaults = strand_compiler::lower::CustomService {
+            name: name.to_string(),
+            record,
+            source: strand_compiler::hir::SourceSpec::File {
+                path: path.display().to_string(),
+            },
+            fields: Vec::new(),
+        };
+        host.declare(rt, &at_defaults, types);
+    }
+}
+
+/// Under `STRAND_MOCK` the schema host stands in for every service and
+/// no [`Real`] starts, so the services `served` adds to the builtin
+/// schema (a plugin's own, a file's) get its cells here, read at their
+/// defaults as the mock reads every service it does not fill. A file's
+/// service is logged as [`Real::start_with`] logs it; the mock raises no
+/// service notices (decisions.md m5-plugins, review round 2).
+pub fn mock_served(rt: &Runtime, host: &SchemaHost, types: &TypeTable, served: &Served) {
+    let builtin = &Schema::builtin().services;
+    for name in served.schema.services.keys() {
+        if builtin.contains_key(name) {
+            continue;
+        }
+        let file = served.unserved.iter().find(|(n, _)| n == name);
+        if let Some((_, path)) = file {
+            log::info!(
+                "{} declares service `{name}`, which this binary does not serve",
+                path.display()
+            );
+        }
+        let path = file.map_or(Path::new(""), |(_, p)| p.as_path());
+        declare_at_defaults(rt, host, types, &served.schema, name, path);
     }
 }
 
@@ -337,18 +386,7 @@ impl Real {
             );
             // The fallback answers its reads at the schema's defaults
             // (it holds only the builtin schema's names until told).
-            if let Some(&record) = served.schema.services.get(name) {
-                use strand_compiler::vm::ServiceHost as _;
-                let at_defaults = strand_compiler::lower::CustomService {
-                    name: name.clone(),
-                    record,
-                    source: strand_compiler::hir::SourceSpec::File {
-                        path: path.display().to_string(),
-                    },
-                    fields: Vec::new(),
-                };
-                fallback.declare(rt, &at_defaults, &types);
-            }
+            declare_at_defaults(rt, &fallback, &types, &served.schema, name, path);
             let unserved = UnservedHost::new(name, path, fallback.clone(), services.clone());
             host.add(Rc::new(unserved), &[name], &[]);
         }
@@ -3032,6 +3070,47 @@ service counter {
                 "{d:?}"
             );
             real.shutdown(&rt);
+        }
+
+        /// Under `STRAND_MOCK` (no `Real`), a config reading a file's
+        /// service and a plugin's own mounts on the schema host alone and
+        /// reads both at their defaults (review round 2: it failed with
+        /// "`hello` has no field `greeting`").
+        #[test]
+        fn the_mock_reads_plugin_services_at_their_defaults() {
+            let t = Temp::new("mock");
+            let hello = t.file("hello.schema", HELLO);
+            let extras = [Registration::of::<Counter>()];
+            let served = schema_with(&extras, &[hello]);
+            let src = "export let g = hello.greeting\n\
+                       export let c = counter.count\n\
+                       bar B { text g }\n";
+            let mut map = SourceMap::new();
+            map.add("svc.strand", src.to_string());
+            let compiled = strand_compiler::compile_with(&map, &served.schema);
+            assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+            let program = Arc::new(lower::lower(&compiled.program, &served.schema));
+            let rt = Runtime::new();
+            let host = Rc::new(SchemaHost::new(&rt, &program.types, None));
+            let screen = host.record(
+                "Screen",
+                &[
+                    ("id", Value::text("Mock | DP-1 | Display")),
+                    ("name", Value::text("DP-1")),
+                ],
+            );
+            host.set(&rt, "screens.all", Value::list(vec![screen]))
+                .unwrap();
+            mock_served(&rt, &host, &program.types, &served);
+            let mut inst = Instance::new(&rt, program, host.clone(), Storage::none());
+            let u = inst.tick(Duration::ZERO);
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            assert_eq!(
+                host.read(&rt, "hello", "greeting").unwrap(),
+                Value::text("")
+            );
+            assert_eq!(host.read(&rt, "counter", "count").unwrap(), Value::int(0));
+            inst.shutdown();
         }
 
         /// A file nobody reads raises nothing.

@@ -128,6 +128,7 @@ pub fn logic(
     });
     if let Some(m) = &mock {
         crate::mock::desktop(&rt, &host, m);
+        crate::services::mock_served(&rt, &host, &host_types, crate::services::served());
     }
     // The real services (none under the mock): registered now, each
     // started by its first reader.

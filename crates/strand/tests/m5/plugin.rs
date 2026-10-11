@@ -93,6 +93,8 @@ struct Desk {
     sway: Option<Proc>,
     dir: PathBuf,
     display: String,
+    /// `STRAND_MOCK` for the shell `start` runs (none by default).
+    mock: Option<&'static str>,
 }
 
 impl Drop for Desk {
@@ -115,6 +117,7 @@ impl Desk {
             sway: None,
             dir,
             display: String::new(),
+            mock: None,
         }
     }
 
@@ -265,6 +268,9 @@ impl Desk {
             .arg(self.config())
             .env("STRAND_LOG", "info")
             .stderr(std::fs::File::create(self.log()).unwrap());
+        if let Some(m) = self.mock {
+            cmd.env("STRAND_MOCK", m);
+        }
         self.shell = Some(Proc(cmd.spawn().unwrap()));
         let deadline = Instant::now() + Duration::from_secs(30);
         while !self.strand(&["get", ready]).status.success() {
@@ -441,6 +447,32 @@ fn the_stock_strand_reads_plugin_schemas() {
     let log = d.log_text();
     assert!(
         log.contains("does not serve it") && log.contains(&file),
+        "{log}"
+    );
+}
+
+/// The stock `strand run` under `STRAND_MOCK=desktop` with
+/// `hello.schema` present: a config reading `hello` boots and reads its
+/// defaults (decisions.md m5-plugins, review round 2: the mock host had
+/// no cells for it and the mount failed).
+#[test]
+fn the_mock_reads_plugin_schemas() {
+    if !sway_tools() {
+        return;
+    }
+    let mut d = Desk::new("mock");
+    d.write_schemas();
+    d.save(READS_HELLO);
+    d.sway();
+    d.mock = Some("desktop");
+    d.start(Path::new(env!("CARGO_BIN_EXE_strand")), "bar.count");
+    d.until("bar.count", "0");
+    d.until("bar.greeting", "");
+    let log = d.log_text();
+    assert!(!log.contains("has no field"), "{log}");
+    let file = d.schema_file().display().to_string();
+    assert!(
+        log.contains(&format!("{file} declares service `hello`")),
         "{log}"
     );
 }
