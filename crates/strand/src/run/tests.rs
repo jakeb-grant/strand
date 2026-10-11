@@ -354,18 +354,23 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
         (ipc::Request::Report, "report"),
         (ipc::Request::InspectFlash { on: true }, "inspect.flash"),
         (ipc::Request::Watch, "watch"),
-        (ipc::Request::Reload { hard: false }, "reload"),
     ] {
         assert_eq!(
             ask(req),
             json!({"ok": false, "error": format!("unknown command `{cmd}`")})
         );
     }
-    // `reset` is known and its `{node}` form not served yet: M4's answer,
-    // as the socket gives it.
+    // (S-ipc) A bus `reload` is served: this shell has no compiler
+    // worker, so it says so rather than waiting for a load.
+    assert_eq!(
+        ask(ipc::Request::Reload { hard: false }),
+        json!({"ok": false, "error": "this shell does not reload"})
+    );
+    // (S-ipc) `reset{node}` is served, and reads a node ref.
     assert_eq!(
         ask(ipc::Request::ResetNode { node: "1v0".into() }),
-        json!({"ok": false, "error": "`reset` needs a `path`"})
+        json!({"ok": false, "error":
+            "`1v0` is not a node id (`index.generation`, as the inspector spells it)"})
     );
     // An event reaches the sink without a socket.
     to_logic.send(ToLogic::Picked(PickEvent::Ended)).unwrap();
@@ -526,13 +531,16 @@ fn saves_reload_live_with_state_kept() {
     let socket = dir.join("ipc.sock");
     let (wtx, wrx) = calloop::channel::channel();
     let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let (give, take) = std::sync::mpsc::channel();
     let live = Live {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
-        requests_to: None,
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
         events_to: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
@@ -676,11 +684,6 @@ fn saves_reload_live_with_state_kept() {
         (ipc::Request::Report, "report"),
         (ipc::Request::InspectPick { on: true }, "inspect.pick"),
         (
-            ipc::Request::InspectNode { id: "1v0".into() },
-            "inspect.node",
-        ),
-        (ipc::Request::InspectDump { surface: None }, "inspect.dump"),
-        (
             ipc::Request::InspectHighlight { id: None },
             "inspect.highlight",
         ),
@@ -692,18 +695,98 @@ fn saves_reload_live_with_state_kept() {
             json!({"ok": false, "error": format!("unknown command `{cmd}`")})
         );
     }
-    let ans = ipc::request(
-        &mut client,
-        &ipc::Request::ResetNode { node: "1v0".into() },
-        Duration::from_secs(10),
-    )
-    .unwrap();
-    // `reset` is known and its `{node}` form not served yet: M4's answer.
-    assert_eq!(
-        ans,
-        json!({"ok": false, "error": "`reset` needs a `path`"}),
-        "{ans}"
+    // (S-ipc, wave 2) The inspector's `inspect.node`, `inspect.dump` and
+    // `reset{node}` are served: a node they cannot read or find is
+    // refused, and the connection stays.
+    for (req, why) in [
+        (
+            ipc::Request::InspectNode { id: "1v0".into() },
+            "`1v0` is not a node id",
+        ),
+        (
+            ipc::Request::InspectNode {
+                id: "999999.0".into(),
+            },
+            "no node `999999.0`",
+        ),
+        (
+            ipc::Request::InspectDump {
+                surface: Some("999999.0".into()),
+            },
+            "no node `999999.0`",
+        ),
+        (
+            ipc::Request::ResetNode {
+                node: "999999.0".into(),
+            },
+            "no node `999999.0`",
+        ),
+    ] {
+        let ans = ipc::request(&mut client, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(ans["ok"], false, "{req:?}");
+        let said = ans["error"].as_str().unwrap();
+        assert!(said.contains(why), "{req:?}: {said}");
+    }
+    // The dump of every surface: the bar's root first, in tree order.
+    let ask = |req: &ipc::Request| {
+        let mut c =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        ipc::request(&mut c, req, Duration::from_secs(10)).unwrap()
+    };
+    let all = ask(&ipc::Request::InspectDump { surface: None });
+    assert_eq!(all["ok"], true, "{all}");
+    let nodes = all["nodes"].as_array().unwrap();
+    let bar_ref = strand_compiler::instantiate::inspect::node_ref(root);
+    assert_eq!(nodes[0]["id"], bar_ref.as_str(), "{all}");
+    assert_eq!(nodes[0]["parent"], Json::Null, "{all}");
+    let files = all["files"].as_object().unwrap();
+    assert!(
+        files.len() == 1 && files.keys().all(|f| f.ends_with("bar.strand")),
+        "{all}"
     );
+    // One surface's dump is its tree; one node's pane is that node.
+    let one = ask(&ipc::Request::InspectDump {
+        surface: Some(bar_ref.clone()),
+    });
+    assert_eq!(one["nodes"], all["nodes"], "{one}");
+    let pane = ask(&ipc::Request::InspectNode {
+        id: bar_ref.clone(),
+    });
+    assert_eq!(pane["ok"], true, "{pane}");
+    assert_eq!(pane["node"], nodes[0], "{pane}");
+    // Reset subtree: `n`, kept at 1 over its new default, then clicked
+    // to 2 (no longer the kept value, so no `kept` badge, but its row
+    // stays), goes to 7, and the reload overlay's kept row for it goes,
+    // as `reset{path}`'s does.
+    let kept_row = |s: &SceneMirror| s.texts().iter().any(|t| t.contains("(default changed)"));
+    m.until("the kept row", |s| kept_row(s));
+    to_logic
+        .send(ToLogic::Event {
+            node: root,
+            event: NodeEvent::Click,
+        })
+        .unwrap();
+    m.until("a click past the kept value, its row kept", |s| {
+        s.texts().contains(&"n 2".to_string()) && kept_row(s)
+    });
+    let reset = ask(&ipc::Request::ResetNode {
+        node: bar_ref.clone(),
+    });
+    assert_eq!(reset, json!({"ok": true, "reset": 1}), "{reset}");
+    m.until("the subtree reset, its kept row gone", |s| {
+        s.texts().contains(&"n 7".to_string()) && !kept_row(s)
+    });
+    // (S-ipc) A reload from the request channel (D-Bus) waits for its
+    // load and is answered with its event, as a socket client's is.
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    assert_eq!(ans["event"]["event"], "reload", "{ans}");
+    assert_eq!(ans["event"]["requested"], true, "{ans}");
     // `--hard`: state dropped, every surface recreated.
     let ans = ipc::request(
         &mut client,
@@ -2389,5 +2472,246 @@ fn an_unavailable_gpu_is_a_notice_once() {
     );
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (S-ipc review) A persisted cell kept over a changed default at boot
+/// reaches the event sink (the D-Bus `Changed` signal) where it reaches a
+/// `strand watch` client that came after the boot: once, in the next
+/// reload event, and not in a boot `notices` signal nobody subscribed in
+/// time to hear. A bus `reload` is answered with that event as a socket
+/// `strand reload` is, the cell named.
+/// Cells kept over a changed default at boot, with nobody watching, and
+/// then reset or set over IPC: the next reload event (the sink's
+/// D-Bus `Changed`, a bus `Reload`'s answer) no longer lists them, as the
+/// overlay no longer does (S-ipc review round 3).
+#[test]
+fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
+    let dir = temp_dir("boot-kept-reset");
+    let src = "export state hits = 0 persist\nexport state level = 0 persist\n\
+               bar Top {\n  text join(\" \", hits, level) {\n    \
+               on click {\n      hits += 1\n      level = 3\n    }\n  }\n}\n";
+    let file = dir.join("bar.strand");
+    std::fs::write(&file, src).unwrap();
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    // A first run persists `hits = 1` and `level = 3`.
+    {
+        let program = load(&dir);
+        let st = storage();
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(program, st, from_main, tx, Live::default()));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["0 0"]);
+        let text = m.scene.of_kind(NodeKind::Text)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: text,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["1 3"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+    // Every default changes: the persisted values are kept over them at
+    // boot, with nobody watching.
+    std::fs::write(
+        &file,
+        src.replace("hits = 0", "hits = 5")
+            .replace("level = 0", "level = 9"),
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let st = storage();
+    compiler.register_own_writes(&st);
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        events_to: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the kept values", |s| s.texts() == ["1 3"]);
+    // Each put back to its default over IPC: one reset, one set.
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    for req in [
+        ipc::Request::Reset {
+            path: "bar.hits".into(),
+        },
+        ipc::Request::Set {
+            path: "bar.level".into(),
+            value: "9".into(),
+        },
+    ] {
+        let mut c =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ans = ipc::request(&mut c, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(ans["ok"], true, "{req:?}: {ans}");
+    }
+    m.until("the defaults", |s| s.texts() == ["5 9"]);
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    assert_eq!(
+        ans["event"]["kept_over_default"],
+        json!([]),
+        "cells back at their defaults are not kept: {ans}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
+    let dir = temp_dir("boot-kept-sink");
+    let src = "state hits = 0 persist\nbar Top {\n  \
+               text join(\"\", \"h\", hits) { on click { hits += 1 } }\n}\n";
+    let file = dir.join("bar.strand");
+    std::fs::write(&file, src).unwrap();
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    // A first run persists `hits = 1`.
+    {
+        let program = load(&dir);
+        let st = storage();
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(program, st, from_main, tx, Live::default()));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["h0"]);
+        let text = m.scene.of_kind(NodeKind::Text)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: text,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["h1"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+    // The default changes: the persisted 1 is kept over it at boot, with
+    // a socket bound and nobody watching it.
+    std::fs::write(&file, src.replace("hits = 0", "hits = 5")).unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let st = storage();
+    compiler.register_own_writes(&st);
+    let (heard, sunk) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the kept value", |s| s.texts() == ["h1"]);
+    let kept_paths = |ev: &Json| -> Vec<String> {
+        ev["kept_over_default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["path"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    // A socket watcher and a D-Bus client come after the boot; the D-Bus
+    // client asks for a reload.
+    let mut events =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+    assert_eq!(ok["ok"], true);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    let paths = kept_paths(&ans["event"]);
+    assert!(
+        paths.len() == 1 && paths[0].ends_with("hits"),
+        "the bus reload's answer names the kept cell: {ans}"
+    );
+    let socket_ev = loop {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+        let ev: Json = serde_json::from_str(&line).unwrap();
+        if ev["event"] == "reload" {
+            break ev;
+        }
+    };
+    assert_eq!(
+        kept_paths(&socket_ev),
+        paths,
+        "the late watcher's reload names the cell: {socket_ev}"
+    );
+    // Everything the sink was sent up to that reload: the cell once, in
+    // the reload event, as the late watcher heard it.
+    let mut before = Vec::new();
+    let sunk_ev = loop {
+        let ev = sunk.recv_timeout(Duration::from_secs(10)).unwrap();
+        if ev["event"] == "reload" {
+            break ev;
+        }
+        before.push(ev);
+    };
+    assert_eq!(
+        kept_paths(&sunk_ev),
+        paths,
+        "the sink's reload names the cell: {sunk_ev}"
+    );
+    for ev in &before {
+        assert!(
+            ev["kept_over_default"]
+                .as_array()
+                .is_none_or(|k| k.is_empty())
+                && !ev.to_string().contains("hits"),
+            "the cell is not sent to the sink before the reload: {ev}"
+        );
+    }
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
     let _ = std::fs::remove_dir_all(&dir);
 }

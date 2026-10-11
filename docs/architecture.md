@@ -698,6 +698,13 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     (0a had `parse` read every command; 0b measured that at about 5 KB
     of `.text` for commands nothing serves, and it changed what M4
     clients heard for malformed requests: decisions.md, m5-core.)
+    Served since M5 wave 2 (S-ipc, over S-inspect's library): `parse`
+    sends `inspect.node`, `inspect.dump` and a `reset` with a `node`
+    and no `path` to `parse_m5` (a `reset` with neither still hears
+    "`reset` needs a `path`", and one with both still resets the path);
+    their answers are `{"ok": true, …}` with the library's fields
+    (`node`/`files`, `nodes`/`files`, `reset`: the cells changed), and
+    a node ref that does not read or names no node is refused.
   - `get` reads what `set` writes: exported values, settings fields and
     token overlays (decisions.md wave3-theme, `strand set`; service field
     reads are out of scope). `call` reaches service-level actions only
@@ -736,12 +743,13 @@ new).**
   never waits on the services thread. The loop makes the channel (its
   wake is the sleeper's ping) and hands a clone of the sender to
   `Live::requests_to` when one is given (tests; S-ipc passes its own
-  to `strand_services::ipc_bus`). `reload` and `watch` stay the
-  socket's: from the channel they are answered as unknown until S-ipc
-  serves them there (S-ipc owns `run/request/{reload, watch}.rs`'s
-  channel arms; a bus `reload`'s answer waits for its load as a socket
-  client's does, so `Job::Reload`'s client becomes a `Caller`-like
-  handle there).
+  to `strand_services::ipc_bus`). A `reload` from the channel waits
+  for its load as a socket client's does: `Job::Reload`'s client stays a
+  client id, and a bus reload gets one of its own with the top bit set
+  (`BUS_RELOAD`; the socket numbers its clients up from 1), kept with
+  its `Reply` until that load's event answers it (decisions.md m5-ipc).
+  `watch` from the channel is answered as unknown: on D-Bus, watching
+  is the `Changed` signal.
 - **Events the other way (`strand_core::ipc::EventSink`, new in the
   wave-0 hardening).** The logic loop hands every event the socket's
   watchers get (`reload`, `fault`, `notices`) to an `EventSink`, a
@@ -759,7 +767,21 @@ new).**
   that cannot own it runs without D-Bus IPC, as with the socket
   (decisions.md wave2-runtime, the IPC socket). It lives in strand-services
   because that thread owns the async runtime and the bus; the binary has
-  no executor of its own.
+  no executor of its own. As built (decisions.md m5-ipc):
+  - `ipc_bus::spawn(&Services, IpcRequests) -> (FrontEnd, EventSink)`:
+    a task on the shared services runtime (`Services::spawn_task`), on
+    a session-bus connection of its own (so the name goes with it),
+    serving until the `FrontEnd` is dropped; the logic loop calls it
+    once the real services exist (not under `STRAND_MOCK`) and hands
+    the sink, beside `Live::events_to`'s, to `Shell::broadcast`. The
+    object is served before the name is asked for (`DoNotQueue`).
+  - Methods, each answering the socket's answer object as JSON text, a
+    refusal being `org.freedesktop.DBus.Error.Failed` with the socket's
+    `error`: `Get(s) → s`, `Set(s, s) → s`, `Toggle(s) → s`, `Clear(s)
+    → s`, `Reset(s) → s`, `Call(s, as) → s`, `Reload(b) → s`. The signal
+    is `Changed(s event, s data)`: the event's kind and the whole event
+    as JSON. The inspector's commands, `report` and `export` are the
+    socket's only.
 
 **Snapshot hop and the inspector's messages between logic and main
 (new).** Logic sends main `ToMain` messages over a logic→main channel

@@ -58,13 +58,19 @@ pub(super) struct Shell {
     /// time ends when its diff is sent), with the clients whose
     /// `strand reload` each answers.
     pub(super) events: Vec<(Json, Instant, Vec<ipc::ClientId>)>,
+    /// (M5) `reload`s from the request channel (the D-Bus front end)
+    /// waiting for their load: each a client id of their own
+    /// (`BUS_RELOAD` set, `run/request/reload.rs`, so no socket client
+    /// has it) with its reply.
+    pub(super) bus_reloads: Vec<(ipc::ClientId, strand_core::ipc::Reply)>,
     /// The newest load attempt's problems: a deferred load replayed after
     /// the unlock reports these, not its own older ones.
     pub(super) latest: Problems,
     /// The referenced files last given to the watcher.
     pub(super) watched: Vec<(PathBuf, Role)>,
-    /// Cells kept over a changed default outside a reload while nobody
-    /// watched (at boot): the next reload event lists them.
+    /// Cells kept over a changed default outside a reload while no socket
+    /// watcher was there (at boot): the next reload event lists them, to
+    /// the socket's watchers and the event sink alike.
     pub(super) unheard: Vec<strand_compiler::reconcile::KeptCell>,
     /// The running config's check warnings (`check::dbus_unchecked`: a
     /// bus that did not answer), as `strand watch` events list them: a
@@ -473,10 +479,11 @@ impl Shell {
         if !self.unheard.is_empty()
             && let Some(k) = ev["kept_over_default"].as_array_mut()
         {
-            // Kept when nobody was watching (the boot's persisted cells).
-            let earlier = kept_json(&std::mem::take(&mut self.unheard));
-            if let Json::Array(earlier) = earlier {
-                k.splice(0..0, earlier);
+            // Kept when no socket watcher was there (the boot's persisted
+            // cells): the socket's watchers and the event sink hear them
+            // here.
+            if let Json::Array(cells) = kept_json(&std::mem::take(&mut self.unheard)) {
+                k.splice(0..0, cells);
             }
         }
         let clients = std::mem::take(&mut l.clients);
@@ -577,23 +584,38 @@ impl Shell {
             // `[reset]` from the structured record), lowering's warnings.
             let rows = overlay::kept_and_notices(&kept, &notices);
             self.overlay.note(rows, Instant::now(), &self.inst);
-            // `strand watch` hears them as they happen; with nobody
-            // watching (at boot), the next reload event carries them. The
-            // event sink hears them now either way.
+            // `strand watch` hears them as they happen; with no socket
+            // watcher (at boot), the next reload event carries the kept
+            // cells instead, to the socket and the event sink alike, so a
+            // D-Bus client that subscribes after the boot hears them where
+            // a late `strand watch` does, and each once. The sink still
+            // hears the notices now (its `kept_over_default` empty then).
             let heard = self.server.as_ref().is_some_and(|s| s.watchers() > 0);
-            if heard || self.event_sink.is_some() {
+            if heard {
                 self.broadcast(&json!({
                     "event": "notices",
                     "kept_over_default": kept_json(&kept),
                     "notices": notices,
                 }));
-            }
-            if !heard {
+            } else {
+                // Without the kept cells' own prose: the reload event
+                // names them.
+                let texts: Vec<&String> = notices
+                    .iter()
+                    .filter(|n| !kept.iter().any(|k| k.notice() == **n))
+                    .collect();
+                if let Some(sink) = self.event_sink.as_ref().filter(|_| !texts.is_empty()) {
+                    sink.send(&json!({
+                        "event": "notices",
+                        "kept_over_default": [],
+                        "notices": texts,
+                    }));
+                }
                 self.unheard.extend(kept);
             }
         }
         let now = Instant::now();
-        for (mut ev, since, clients) in self.events.drain(..) {
+        for (mut ev, since, clients) in std::mem::take(&mut self.events) {
             ev["timing"]["total_ms"] = json!(ms(now.saturating_duration_since(since)));
             log::info!("{}", ipc::describe(&ev).trim_end());
             if let Some(sink) = &self.event_sink {
@@ -601,10 +623,11 @@ impl Shell {
             }
             if let Some(s) = &mut self.server {
                 s.broadcast(&ev);
-                // Each `strand reload` gets the event of its own load.
-                for id in clients {
-                    s.answer(id, &json!({"ok": true, "event": ev.clone()}));
-                }
+            }
+            // Each `strand reload` (socket or bus) gets the event of its
+            // own load.
+            for id in clients {
+                self.reloaded(id, json!({"ok": true, "event": ev.clone()}));
             }
         }
     }
@@ -642,6 +665,24 @@ pub(super) fn absorb(l: &mut Loaded, old: &Loaded) {
 }
 
 /// Cells kept over a changed default, as `strand watch` lists them.
+impl Shell {
+    /// The cell at `path` (or a field of it) was reset or set over IPC:
+    /// it no longer holds the value it kept at boot, so the next reload
+    /// event does not list it in `kept_over_default`, as the overlay no
+    /// longer does.
+    pub(super) fn forget_unheard(&mut self, path: &str) {
+        if self.unheard.is_empty() {
+            return;
+        }
+        self.unheard.retain(|k| {
+            !(path == k.path
+                || path
+                    .strip_prefix(k.path.as_str())
+                    .is_some_and(|f| f.starts_with('.')))
+        });
+    }
+}
+
 pub(super) fn kept_json(kept: &[strand_compiler::reconcile::KeptCell]) -> Json {
     kept.iter()
         .map(|k| json!({"path": k.path, "shown": k.shown}))

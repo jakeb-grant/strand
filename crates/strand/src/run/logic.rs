@@ -97,9 +97,8 @@ pub fn logic(
     let services_ping = ping.clone();
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
-    // S-ipc gives `bus_requests` to the D-Bus front end
-    // (`strand_services::ipc_bus`); until then only `Live::requests_to`
-    // (tests) feeds it.
+    // The D-Bus front end (`strand_services::ipc_bus`, below) and
+    // `Live::requests_to` (tests) feed it.
     let bus_ping = ping.clone();
     let (bus_requests, bus_inbox) = ipc::channel(move || bus_ping.ping());
     if let Some(to) = live.requests_to {
@@ -142,6 +141,22 @@ pub fn logic(
         real.custom.set_config_dir(storage.config_dir.clone());
         real
     });
+    // (M5) The D-Bus front end, on the services' runtime: it owns
+    // `io.github.jakeb_grant.Strand` now, as `strand run` starts (a second
+    // instance runs without it), sends its calls through the request
+    // channel and hears every event the socket's watchers get (its
+    // `Changed` signal). Not under the mock, which runs no services.
+    let (bus_front, bus_events) = real
+        .as_ref()
+        .map(|r| strand_services::ipc_bus::spawn(&r.services, bus_requests.clone()))
+        .unzip();
+    let event_sink = match (live.events_to, bus_events) {
+        (Some(a), Some(b)) => Some(ipc::EventSink::new(move |ev| {
+            a.send(ev);
+            b.send(ev);
+        })),
+        (a, b) => a.or(b),
+    };
     // GNOME (and any portal backend exposing GSettings) names the icon
     // theme in `org.gnome.desktop.interface`, not GTK's settings files:
     // followed for the whole run as a task of the services' shared
@@ -209,7 +224,8 @@ pub fn logic(
         build,
         overlay: Overlay::default(),
         server,
-        event_sink: live.events_to,
+        event_sink,
+        bus_reloads: Vec::new(),
         jobs: live.jobs,
         deferred: None,
         deferred_hard: false,
@@ -387,6 +403,8 @@ pub fn logic(
     // and one queued after the last drain is refused now.
     drop(bus_requests);
     drop(bus_inbox);
+    // The front end stops serving (its pending calls were just refused).
+    drop(bus_front);
     #[cfg(test)]
     UNMOUNTING.with(|h| {
         if let Some(f) = h.borrow_mut().take() {

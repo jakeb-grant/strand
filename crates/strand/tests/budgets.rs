@@ -7,7 +7,8 @@
 //! 2560×1440 outputs (scale 1 and 1.25), beside python-dbusmock's UPower
 //! (a battery at 42 %), NetworkManager (a Wi-Fi network joined) and
 //! logind and a mock portal (dark) on a private `dbus-daemon`; the shell's
-//! own notifications server and tray host there; sway's IPC (workspaces,
+//! own notifications server, tray host and (M5) D-Bus front end
+//! (`io.github.jakeb_grant.Strand`) there; sway's IPC (workspaces,
 //! windows, a window open); a private PipeWire with WirePlumber (audio,
 //! the sink at 50 %); a backlight directory (brightness).
 //!
@@ -504,10 +505,12 @@ impl Desktop {
             home,
         };
         // The shell's tray is the watcher; its notifications server owns
-        // the name.
+        // the name; (M5) its D-Bus front end owns the shell's own, so
+        // every PSS and idle window below is measured with it served.
         for name in [
             "org.kde.StatusNotifierWatcher",
             "org.freedesktop.Notifications",
+            strand_core::ipc::DBUS_NAME,
         ] {
             assert!(
                 desktop.bus.wait_for_name(name, Duration::from_secs(30)),
