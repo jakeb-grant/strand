@@ -9,6 +9,18 @@ below.
 
 ## State
 
+- **M5 has started** (2026-10-10). Its plan is `docs/m5-plan.md`: the
+  streams, waves, size ledger and closing checks, and the owner's
+  answers to its twenty questions (decisions.md m5-owner). M5 is not the
+  1.0 release: it closes as a normal milestone, with no version bump,
+  tag, release notes or release artifact (Q20). Wave 0a (the interfaces
+  in architecture.md, "M5 interfaces (wave 0a)") and 0-freeze
+  (design.md's four open questions answered and ticked, the ladder's
+  `Async` at level 4, the importer box split and ticked) are on
+  `laptop/m5-plan`, which also re-bases the CPU-only `.text` gate to
+  15,925,248 B for M5 (decisions.md m5-integration). Wave 0's shared
+  code (0b), size reclaims and tooling follow on `laptop/m5-*`
+  branches.
 - M0–M4 are complete: the last M4 box, the bundled noise field, was
   ticked when the owner accepted reading it as a `.wgsl` shader
   (2026-10-10, decisions.md m4-owner-docs). M4's three exits are
@@ -28,13 +40,16 @@ below.
   code as well as docs and tests (docs/m4-report.md, "Audit", has each
   round's count and fixes).
 - `docs/features.md`: M0 20/20, M1 58/59, M2 30/30, M3 14/14, M4 18/18,
-  M5 0/11 (boxes and exit criteria, counted 2026-10-10; the eleventh,
-  the promoted GPU cost on hardware, came from open item 6). The open M1
+  M5 1/12 (boxes and exit criteria, counted 2026-10-10; the eleventh,
+  the promoted GPU cost on hardware, came from open item 6; the twelfth
+  is the plugins half of the importer box, split by the owner's Q17,
+  whose importers half is ticked from M2's tests). The open M1
   box is the tree-sitter grammar, which M5 owns.
 - Budgets at `e765276` (laptop; docs/m4-report.md has CI's): `.text`
   19,006,471 B of 19,398,656 with the GPU backend and 15,634,439 B of
   15,728,640 CPU-only (about 94 KB left: the tightest budget in the
-  tree); design.md's bar 34,187 kB against its 34,816 kB target (CI
+  tree; M5 re-bases that gate to 15,925,248 B, provisionally, for its
+  230,000 B allocation: decisions.md m5-owner Q6, m5-integration); design.md's bar 34,187 kB against its 34,816 kB target (CI
   measures it over the target, 35,557 kB at `70af44f` and 35,617 kB at
   `e765276`, which warns; the ceiling is 38,912 kB);
   the full shell 42–50 MB against 64 MB.
@@ -54,8 +69,7 @@ below.
   (decisions.md m4-owner-2). On it the laptop measures `.text`
   15,656,519 B CPU-only (72,121 B left) and 19,039,879 B with the GPU
   backend (358,777 B left), and the gated 8-scope theme swap 1.35 ms
-  against 5 ms (1.61 ms at `73eabe7`). It is not on `main` until the
-  owner merges it.
+  against 5 ms (1.61 ms at `73eabe7`).
 - The owner's last M4 decisions of 2026-10-10 (the lost-device cap,
   `strand check`'s missing-helper error, the cheaper 4K blend, and
   open items 2 and 6) are merged on `laptop/m4-close`, based on
@@ -63,8 +77,9 @@ below.
   `-blend` (decisions.md m4-owner-3). On it the laptop measures `.text`
   15,657,671 B CPU-only (70,969 B left) and 19,041,095 B with the GPU
   backend (357,561 B left), and a 4K fade frame's blend 3.6–5.1 ms
-  (was 10.5–20.5 ms). It answers every open item below, and is not on
-  `main` until the owner merges it.
+  (was 10.5–20.5 ms). It answers every open item below. Both
+  `laptop/m4-owner` and `laptop/m4-close` are merged to `main`
+  (`70cdc56`).
 - Every build and test runs on the owner's laptop through the container
   suite (`scripts/container/`, CLAUDE.md; decisions.md laptop-container).
   Its wall-clock timing steps are advisory there; GitHub's `timing` job
@@ -72,12 +87,9 @@ below.
   on lavapipe (`run.sh`, CI) and advisorily on the laptop's GPU
   (`scripts/container/gpu.sh`); the lock tier runs in a KVM guest
   (`scripts/container/lockvm.sh`, CI's `lock-vm` job).
-- Remote branches: `origin/main`; `origin/laptop/m4-owner` with the
-  three owner-decision branches it merges (`laptop/m4-owner-docs`,
-  `-swap`, `-shapes`); and `origin/laptop/m4-close` (on
-  `laptop/m4-owner`) with the three it merges (`laptop/m4-close-gpucap`,
-  `-helper`, `-blend`). The integration branch and
-  the wave-3 branches it merged are deleted.
+- Remote branches: `origin/main` (M4's owner and close branches merged
+  and deleted) and M5's `origin/laptop/m5-*` branches as they are
+  pushed, starting with `laptop/m5-plan`.
 
 ## Open items for the owner
 

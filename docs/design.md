@@ -127,8 +127,8 @@ Nothing at level N+1 appears in a level-N example.
 | 1 | Surfaces, nodes, props, services as live values | The hello bar in the summary |
 | 2 | `$tokens`, `component`, `for`, `when`, `on click` | Workspace dots, tray |
 | 3 | `state`, `<->`, `if`, `popup`, `enter` | Clock with calendar, volume slider |
-| 4 | `on change … after`, `after … while`, `persist`, `export`, `list` | OSD, notifications, launcher |
-| 5 | `tokens`, spring overrides `~`, `service from dbus`, `Async`, `pages`, drag and drop, shaders | Control centre, dock, custom services |
+| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher |
+| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders | Control centre, dock, custom services |
 
 ### (a) Bar on every monitor, with calendar popup: 83 lines
 
@@ -328,7 +328,7 @@ Because `on change` never fires at boot, on a sink switch or on reload, the OSD 
 - **Shaders:** `shader "aurora.wgsl" { u_speed: 0.4; u_tint: $accent }`, checked with naga, hot-reloaded.
 - **Canvas:** `canvas { draw: (c) => … }` for charts and visualisers, with the same paint API the renderer uses.
 - **Custom services:** `service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`, checked against introspection. Or a Rust crate with `#[service]`.
-- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus.
+- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0).
 
 ## Reactivity and state model
 
@@ -415,7 +415,7 @@ Writing `look`, a portal dark-mode change, a new wallpaper, `strand set` and sav
 - `material(image:)` quantises a 128 px downscale off-thread with the [`material-colors`](https://github.com/Aiving/material-colors) crate, cached by content hash.
 - Both the wallpaper path and its symlink target are watched, so `swww` or a script replacing the file re-themes live.
 - The old palette holds until the new one is ready. The last palette is persisted, so boot never flashes default colours.
-- `strand export gtk | kitty | hyprland` writes the same palette for the rest of the desktop.
+- `strand export gtk | kitty | hyprland` writes the same palette for the rest of the desktop, to stdout or to `-o <file>`; Strand never writes into another program's config directory unless asked.
 
 ### Overrides
 
@@ -694,7 +694,7 @@ Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/in
 ### Developer experience
 
 - `strand new` scaffolds a working shell. `strand-dev lsp` gives completion after `$`, `.` and `<->`, hovers generated from service schemas, rename, and quick-fixes for "extract component" and missing keys.
-- The inspector picks elements across surfaces and shows identity, layout, token provenance, kept-state badges and repaint flashing. It writes edits back only if the file hasn't changed underneath.
+- The inspector picks elements across surfaces and shows identity, layout, token provenance, kept-state badges and repaint flashing. The shell draws only the pick outline and the repaint flash; `strand-dev inspect` is the inspector's terminal client, so its panel never weighs on the shell. It writes edits back only if the file hasn't changed underneath, and refuses a read-only target (a Nix store file) with the reason and an offer to open it in `$EDITOR`.
 
 ### How reload is tested
 
@@ -775,10 +775,12 @@ TSX lost on every lens for the same reasons: a JS runtime's memory and startup c
 
 **Open questions**
 
-- [ ] Should pure helper functions get an optional embedded JS (QuickJS) escape hatch, or stay in-language only?
-- [ ] Is a WASM tier for third-party plugins worth it, or are `from dbus` services and Rust crates enough?
-- [ ] How deep should AccessKit accessibility go in v1?
-- [ ] Do we keep `.strand` as a new language, or use KDL syntax with Strand semantics to borrow its existing tooling?
+Answered by the owner on 2026-10-10, before the language freeze:
+
+- [x] Should pure helper functions get an optional embedded JS (QuickJS) escape hatch, or stay in-language only? **In-language only**: a JS runtime adds a second language and a concept, and the code budget cannot hold it (decisions.md m5-owner, Q1).
+- [x] Is a WASM tier for third-party plugins worth it, or are `from dbus` services and Rust crates enough? **They are enough**: no WASM tier; `from dbus | file | listen | poll` services and Rust plugin crates built through `strand`'s library builder cover it (decisions.md m5-owner, Q2, Q18).
+- [x] How deep should AccessKit accessibility go in v1? **None in v1, recorded**: inferred AT-SPI roles and names, and an accessible-name prop, can arrive in 1.x as schema additions under the compatibility policy (decisions.md m5-owner, Q3).
+- [x] Do we keep `.strand` as a new language, or use KDL syntax with Strand semantics to borrow its existing tooling? **Keep `.strand`**: the parser, checker, LSP, formatter and fuzzer are built on it, and KDL has no expression grammar (decisions.md m5-owner, Q4).
 
 ## Testing
 
@@ -808,7 +810,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 
 ## Roadmap
 
-Six milestones take Strand to a usable v0.1 at week 24 and 1.0 at week 52. Each milestone ends on measurable exit criteria, not a feature list.
+Six milestones take Strand to a usable v0.1 at week 24 and, at week 52, to M5's close: the developer tooling and a frozen language. The roadmap below drew 1.0 there; M5 closes as a normal milestone instead, and the owner releases 1.0 after using it for a while (decisions.md m5-owner, Q20). Each milestone ends on measurable exit criteria, not a feature list.
 
 ![Roadmap: usable v0.1 after 24 weeks, 1.0 after 52](images/roadmap.png)
 

@@ -155,7 +155,8 @@ release profile: the root `Cargo.toml`'s `[profile.release.package]`
 opt-levels build event-rate code for size, and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
 build from the workspace (`budgets.rs` holds the release binary's
-`.text` to 18.5 MiB, and a build without the GPU backend to 15 MiB; see
+`.text` to 18.5 MiB, and a build without the GPU backend to 15,925,248 B,
+M5's provisional re-base of 15 MiB (decisions.md m5-integration); see
 "`strand-gpu`"). Every program strand starts gets back
 the THP setting strand inherited (`strand_services::child`, in each
 `pre_exec`). SIGINT, SIGTERM (a
@@ -216,7 +217,8 @@ JSON. Requests are `{"v": 1, "cmd": …}`; each is answered with one line
 `{"ok": true, …}` or `{"ok": false, "error": …}`, and an unknown `cmd`
 or a newer `v` is refused without closing the connection, so M5's `get`,
 `toggle` and `call` are new `cmd`s on the same socket (`set` is one
-already). Version 1: `set` (`"path"`, `"value"` as text: `strand set
+already; M5 moves the protocol's types into `strand_core::ipc`, see "M5
+interfaces (wave 0a)"). Version 1: `set` (`"path"`, `"value"` as text: `strand set
 theme.look mocha`, answered `{"ok": true}` or with the error),
 `reload` (`"hard"`; answered once the reload is committed or held, with
 its event; at once with `"deferred": true` in the event while a lock is
@@ -406,7 +408,12 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
           ├── strand-icons (apps' icons, the renderer's lookup)
           └── strand-introspect (D-Bus introspection; zbus only)
 strand (binary) wires everything; its ServiceHost adapters join
-strand-services' stores to strand-compiler's VM.
+strand-services' stores to strand-compiler's VM. M5: strand-core gains
+`ipc` (the protocol types, serde_json), which strand, strand-services
+(the D-Bus front end) and strand-dev share; strand gains a [lib] target
+beside its [[bin]] for plugin binaries; strand-dev gains the
+tree-sitter-strand package as a dev-dependency (see "M5 interfaces
+(wave 0a)").
 
 strand-auth  (M4) lib: wire protocol, Client, UnlockToken (libc, zeroize)
              bin: the PAM helper, the only code that links libpam
@@ -496,7 +503,8 @@ blocker). The `strand` binary's default feature `gpu` turns on render's
 `gpu`, surface's `gpu` and the compiler's `shaders`; `strand-dev` turns
 on `shaders` so the LSP checks shaders too. Built with
 `--no-default-features`, `strand` links none of wgpu, vello_gpu, naga or
-libwayland-client: that build is the CPU core the 15 MiB gate measures.
+libwayland-client: that build is the CPU core the CPU-only `.text` gate
+measures (15,925,248 B in M5, provisionally; decisions.md m5-integration).
 
 ```
 strand-scene <── strand-gpu (M4: wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -622,6 +630,201 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).
+
+## M5 interfaces (wave 0a)
+
+The cross-crate interfaces M5's streams build against, fixed before any
+stream branches (`docs/m5-plan.md`, "0a: interface text", with the
+owner's answers of 2026-10-10, decisions.md m5-owner). Wave 0b lands
+them as code with no behaviour change; after that each stream edits only
+its own crate's text here. Names marked "new" do not exist at `70cdc56`.
+
+**IPC protocol in `strand-core` (`strand_core::ipc`, new).**
+- The request, answer and event types and their JSON-line codec move
+  from `crates/strand/src/ipc.rs` into `strand_core::ipc`: types and
+  codec only, no I/O and no threads. `strand-core` gains `serde` and
+  `serde_json` (both already in the graph through strand-services and
+  the binary). The binary (socket server and CLI), strand-services (the
+  D-Bus front end) and strand-dev (`strand-dev inspect`, which reaches
+  strand-core through strand-compiler) all name these types.
+- `ipc.rs` in the binary becomes `ipc/{mod, server, cli, describe}.rs`
+  over them.
+- Protocol version 1 gains commands only, and every rule above holds (an
+  unknown `cmd` is refused without closing the connection):
+  - `get{path}`, `toggle{path}`, `call{target, args}`, `clear{path}`,
+    `report{}`;
+  - the inspector's `inspect.pick{on}`, `inspect.node{id}`,
+    `inspect.dump{surface?}`, `inspect.highlight{id?}`,
+    `inspect.flash{on}`;
+  - the existing `reset` gains a `{node}` form, "reset subtree"
+    (`Instance::reset_subtree`).
+  - `get` reads what `set` writes: exported values, settings fields and
+    token overlays (decisions.md wave3-theme, `strand set`; service field
+    reads are out of scope). `call` reaches service-level actions only
+    (m5-owner Q13). `toggle` is bool only. Paths that name a token use
+    the token spelling, `$accent` (m5-owner Q10).
+- No paging: `MAX_LINE` (64 KiB) bounds only incoming requests, and an
+  answer is bounded by the connection's 1 MiB queue.
+- **The D-Bus name** (m5-owner Q12): `pub const DBUS_NAME: &str =
+  "io.github.jakeb_grant.Strand";` in `strand_core::ipc`, the bus name
+  and the interface name, at object path `/`. It is the only spelling of
+  the name: if zbus's `#[interface(name = …)]` needs a literal, that
+  literal is the one other occurrence, and a strand-services unit test
+  fails unless it equals `DBUS_NAME`. The owner may rename it before 1.0
+  (spec.md says so).
+
+**Request channel from the services thread to logic (`IpcRequests`,
+new).**
+- `strand_core::ipc::IpcRequests` sends `IpcCall { request: Request,
+  reply: Reply }` to the logic loop. It is a `std::sync::mpsc` sender
+  plus a wake function the binary supplies (the logic loop's sleeper
+  ping), so strand-core depends on neither calloop nor tokio. `Reply` is
+  a one-shot that completes once and wakes a `std::task::Waker`, so an
+  async caller awaits it without a runtime in strand-core.
+- The logic loop drains it as a non-blocking source beside the socket
+  and answers each call through the same `Shell::request` dispatch the
+  socket uses; logic never waits on the services thread.
+- The D-Bus front end (`strand_services::ipc_bus`, new, S-ipc) runs on
+  the services thread's tokio runtime, which owns the zbus connection.
+  Each method call becomes a `Request`, awaited through `Reply`.
+  `watch` is a `Changed` signal fed by the events the socket's watchers
+  get. The name is owned when `strand run` starts; a second instance
+  that cannot own it runs without D-Bus IPC, as with the socket
+  (decisions.md wave2-runtime, the IPC socket). It lives in strand-services
+  because that thread owns the async runtime and the bus; the binary has
+  no executor of its own.
+
+**Snapshot hop between logic and main (new).** Logic sends main
+`ToMain::Snapshot { kind: SnapshotKind, reply }` (a logic→main channel;
+today logic sends main only `SceneDiff`s) and main answers with
+`ToLogic::Snapshot(Snapshot)`. `SnapshotKind` covers `report` (the
+compositor's globals with versions, outputs and scales, frame summaries,
+GPU status, reason and lost-device count, promotion reasons) and the
+inspector (a pick's result, a node's layout). It is one interface for
+both; main answers from its own state between frames and never waits on
+logic.
+
+**`strand-compiler` `Instance` inspection (new; read-only, never read by
+evaluation).**
+- `identity(node) -> Identity { instance_path, key, id, sibling_index,
+  scope }`;
+- `cells_of(node) -> Vec<CellInfo { path, kept, persisted, layer }>`,
+  where `layer` is the settings layer or the token overlay a value came
+  from (the three kept badges: kept over a changed default, persisted,
+  from an overlay);
+- `reset_subtree(node)`: `strand reload --hard`'s scope limited to the
+  subtree; settings are untouched;
+- `source_hash(file)`: the hash of the text the running program was
+  compiled from, which write-back compares against.
+- A dump redacts password inputs (the lock's `Secrets` rule above).
+
+**The token overlay layer (`strand-compiler`, new, S-ipc).**
+`Instance::set_token_overlay(path, value)` and
+`clear_token_overlay(path)` mirror `strand_core::settings`'
+`set_overlay`/`clear_overlay`. A token overlay is global, persisted in
+`$XDG_STATE_HOME/strand/tokens.toml` beside settings' overlay (written
+on the persist IO thread), and takes the token swap path (design.md,
+"Reload"). `TokenTable`'s recorded origin (`origin(path)`) gains an
+overlay origin. A save the overlay shadows raises a notice like
+settings' `SettingsIssue::Shadowed`: `accent: file changed but runtime
+overlay wins [clear]`; `[clear]`, `strand clear '$accent'` and IPC
+`clear{path}` remove it.
+
+**`strand-scene`: `TokenTable::provenance(path, scope) ->
+Vec<ProvenanceStep>` (new).** It walks `TokenExpr::Ref` through the
+`TokenScope` chain (subtree `set { }` and component `tokens { }`
+levels), reads each step's `origin`, and adds an overlay step and a
+contrast-guard step where they apply.
+
+**`strand-render` (new).**
+- `Renderer::pick(surface, point) -> Option<NodeId>`;
+- `Renderer::node_layout(surface, node) -> LayoutInfo`;
+- `Renderer::set_highlight(Option<(SurfaceId, NodeId)>)`;
+- `Renderer::set_damage_flash(bool)`: each frame's damage tinted for
+  300 ms, the flash's own repaint excluded; off means no clock and no
+  allocation;
+- `Renderer::frame_summary(surface)`: p50/p95/p99 over the last 600
+  frames, presented and discarded.
+
+Highlight and flash draw on CPU and `GpuPresent` surfaces alike; they
+are the only inspector UI the shell draws (m5-owner Q9: the panel is
+`strand-dev inspect`'s, in a terminal). The router gains a pick-mode
+hook that captures pointer events while picking. Pick mode needs no
+keyboard and no surface changes its keyboard interactivity: the terminal
+client ends it (Escape or Ctrl-C there sends `inspect.pick{on:false}`),
+a click picks, and pick mode also ends on the IPC client's disconnect,
+on surface unmap and when a lock starts. Lock surfaces are never
+pickable, and `inspect.pick` is refused while locked.
+
+**Handler input context (`strand-compiler`, cross-crate, new).**
+- The VM records the input event that started a handler, `InputCtx {
+  surface, serial }`, available to its actions until the handler's
+  first `await`.
+- `ServiceHost::action` gains an `ActionCtx` argument (the `InputCtx`,
+  if any, and the handler invocation's id); 0b threads an empty one
+  through every host.
+- `strand_surface::activation_token(surface, serial) -> async
+  Option<String>`, reached through `SurfaceHost`; key-press serials are
+  tracked beside `button_serial` (`manager/seat.rs`).
+- **Ordering rule.** An action that needs a token (notification
+  `invoke`, an app launch) waits up to 200 ms for it, then goes ahead
+  without one (m5-owner Q14). Every later action from the same handler
+  invocation queues behind it, so `n.invoke("default"); n.dismiss()`
+  still sends `ActivationToken`, `ActionInvoked`, then the close. The
+  queue lives on the services side; logic never blocks. A compositor
+  without `xdg_activation_v1`, or one that never answers, means no
+  token: never a wait beyond 200 ms, never a dropped or reordered
+  action.
+
+**`strand-compiler` `Suggestion`** gains `title: Option<String>` (the
+code action's title; `None` keeps today's "Replace with …"), and a
+zero-width span (an insertion) is allowed.
+
+**`strand-dev` (M5).**
+- `strand-dev inspect`: a terminal client over the socket, using the
+  `strand_core::ipc` types. It runs pick mode and prints the node pane
+  (identity, layout, the provenance chain, badges). It offers reset
+  subtree (`reset{node}`), open in `$EDITOR`, and write-back: only a
+  literal prop value at the node's own `origin()` span or a token's
+  literal value at its definition, written only if the file's bytes
+  still hash to `source_hash`, atomically, following symlinks; a
+  read-only target is refused with the reason and an offer to open it
+  in `$EDITOR` (m5-owner Q11).
+- `strand-dev reference`: generates `docs/reference/` from the builtin
+  and service schemas.
+- **tree-sitter layout.** `crates/strand-dev/tree-sitter-strand/` is a
+  separate package (`publish = false`): `grammar.js`, the committed
+  generated `src/grammar.json` and `src/parser.c`, an external scanner
+  for SAME_LINE, SEP and TOUCH and the contextual keywords, and
+  `queries/{highlights, locals, indents, injections}.scm`; its own
+  `build.rs` compiles `parser.c` with `cc`, and it exposes the language
+  through the `tree-sitter` crate. strand-dev uses it only as a
+  dev-dependency (the conformance tests), so neither the runtime binary
+  nor `strand-dev lsp` links it. The root `Cargo.toml` lists it in
+  `members` explicitly, since `crates/*` does not reach it. A pinned
+  prebuilt tree-sitter CLI (with its sha256) runs only in CI's lint job
+  and the container image, to check `parser.c` against `grammar.json`.
+
+**Plugins: `strand` gains a `[lib]` target (new).** `main.rs`'s module
+tree moves under `lib.rs`, and `main.rs` keeps `main` and the COMMANDS
+table (0b; the release `.text` must stay within 1 KB). The library
+exposes `strand::Shell::builder().service::<S>().run()`: a plugin is a
+user binary that links `strand` and registers its own `#[service]`
+types beside the builtins (`Builtin::register` is unchanged, and the
+composite host routes the extra names). It is git-only and marked
+unstable. A plugin binary writes its services' schemas as `.schema`
+files into `$XDG_DATA_HOME/strand/schemas/` (`--write-schemas`), outside
+the watched config directory, where `strand check` and the LSP read
+them; no dylib is loaded (m5-owner Q18). A plugin binary must copy the
+workspace's `[profile.release]` and its package overrides, or the size
+and PSS figures do not hold. The example is `[[example]] plugin_hello`
+in the strand crate, never in the release binary's `.text`.
+
+**Ownership.** Integrator: this section, the root `Cargo.toml` and
+`Cargo.lock`, CI files, budgets.rs's gate constants and
+`crates/strand/tests/m5.rs`'s module list. S-core lands all of the
+above as inert code in one PR (0b), then each piece belongs to the
+stream `docs/m5-plan.md`'s "Streams" table names.
 
 ## Contracts
 
@@ -3221,7 +3424,9 @@ inspector (M5) to say why.
 - `.text` (`strand/tests/budgets.rs`): the default build at most 18.5
   MiB (19,398,656 B: the spike's 17,683,543 B with GPU code linked, plus
   9.7%); `strand --no-default-features` at most 15 MiB (the spike's CPU
-  build had 1.14 MiB to spare). The spike measured the GPU build's bar
+  build had 1.14 MiB to spare), re-based in M5 to 15,925,248 B,
+  provisionally, for M5's allocation (decisions.md m5-owner Q6,
+  m5-integration). The spike measured the GPU build's bar
   PSS at a mean of 33.7 MB, about 0.3 MB under the 34 MB target, all of
   it cold-code mapping and relocations. With the backend landed
   (m4-gpu-w2): `.text` 18,456,983 B (default) and 15,118,167 B
@@ -3286,8 +3491,9 @@ and workspace edits use versioned `documentChanges` when the client
 supports them. `initializationOptions.configDir` overrides the default
 config directory.
 
-The inspector joins it in M5; tree-sitter highlighting is not built yet
-(see `docs/decisions.md`, wave2-lsp).
+The inspector client, the reference generator and the tree-sitter
+package join it in M5 (see "M5 interfaces (wave 0a)"; tree-sitter was
+not built in M1, `docs/decisions.md`, wave2-lsp).
 
 ### `strand-services`
 

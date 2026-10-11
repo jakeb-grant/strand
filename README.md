@@ -19,8 +19,8 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status: v0.1, M4 (power features) exits met; M5 (developer experience
-and 1.0) next.** Where the project stands and what is still open are in
+**Status: v0.1, M4 (power features) exits met; M5 (developer
+experience) started, plan in [`docs/m5-plan.md`](docs/m5-plan.md).** Where the project stands and what is still open are in
 [`docs/handoff.md`](docs/handoff.md); M4's measured exit is in
 [`docs/m4-report.md`](docs/m4-report.md), and its boxes and the tests
 behind them in [`docs/features.md`](docs/features.md). M4 landed GPU
@@ -146,8 +146,9 @@ Each crate is one box in the runtime architecture:
 
 ![Roadmap](docs/images/roadmap.png)
 
-Every milestone ends on measurable exit criteria. Usable v0.1 comes at week 24
-and 1.0 at week 52.
+Every milestone ends on measurable exit criteria. Usable v0.1 comes at week 24.
+M5 closes at week 52 with the language frozen, but it is not the 1.0
+release: the owner releases 1.0 after using Strand for a while.
 
 ## Building and installing
 
