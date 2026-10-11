@@ -710,6 +710,14 @@ impl Renderer {
         self.gpu.device.set_idle(idle);
     }
 
+    /// (M4) How long a failed or lost device waits before it is asked
+    /// for again (30 s; tests shorten it, so a retry-and-lose cycle runs
+    /// without the wait hiding what the GPU-off cap does).
+    #[doc(hidden)]
+    pub fn set_gpu_retry(&mut self, retry: Duration) {
+        self.gpu.device.set_retry(retry);
+    }
+
     /// (M4) What draws `surface`.
     pub fn backend(&self, surface: SurfaceId) -> Backend {
         self.gpu

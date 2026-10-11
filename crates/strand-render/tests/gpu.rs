@@ -1533,18 +1533,18 @@ fn off_scene() -> (SceneDiff, NodeId) {
 /// nothing and everything else is drawn as the CPU draws it with no GPU
 /// at all, the bundled bloom's glow included (ref `gpu_off.png`). Needs
 /// no device: replies are delivered by hand.
+///
+/// The retry wait is zero here (`set_gpu_retry`), so the whole
+/// retry-and-lose cycle runs at renderer level: after the first and
+/// second loss the device is asked for again at once (a promotion),
+/// comes up and is lost again. With `RETRY_AFTER`'s 30 s the checks
+/// after the third loss would pass during the wait without any cap;
+/// with no wait only the cap keeps the device off.
 #[test]
 fn the_gpu_is_off_after_three_lost_devices() {
     use strand_render::promote::{GPU_OFF, LOST_CAP};
-    let lose = |r: &mut Renderer, n: u32| {
-        up_without_a_device(r);
-        r.deliver_gpu(GpuReply::Lost(strand_gpu::GpuError {
-            kind: GpuErrorKind::Lost,
-            message: format!("the GPU device was lost (test {n})"),
-        }));
-        r.deliver_gpu(GpuReply::Exited);
-    };
     let mut r = renderer();
+    r.set_gpu_retry(Duration::ZERO);
     let (diff, shader) = off_scene();
     assert!(r.apply(diff.clone()).is_empty());
     let root = r.tree().roots()[0];
@@ -1557,17 +1557,34 @@ fn the_gpu_is_off_after_three_lost_devices() {
             .any(|q| matches!(q, GpuRequest::Pass(_))),
         "the shader asks for a device"
     );
-    for n in 1..LOST_CAP {
-        lose(&mut r, n);
-        assert!(!r.gpu_off(), "not off after loss {n}");
-        assert_eq!(
-            r.gpu_status(),
-            GpuStatus::Unavailable {
-                reason: format!("the GPU device was lost (test {n})")
-            }
-        );
+    let promoted = |r: &mut Renderer| {
+        r.take_backend_changes()
+            .iter()
+            .any(|c| matches!(c, BackendChange::Promote(_)))
+    };
+    for n in 1..=LOST_CAP {
+        if n > 1 {
+            // Retried at once: the device is asked for again.
+            r.promote_now(S);
+            assert!(promoted(&mut r), "asked for again after loss {}", n - 1);
+            assert_eq!(r.gpu_status(), GpuStatus::Starting);
+        }
+        up_without_a_device(&mut r);
+        r.deliver_gpu(GpuReply::Lost(strand_gpu::GpuError {
+            kind: GpuErrorKind::Lost,
+            message: format!("the GPU device was lost (test {n})"),
+        }));
+        r.deliver_gpu(GpuReply::Exited);
+        if n < LOST_CAP {
+            assert!(!r.gpu_off(), "not off after loss {n}");
+            assert_eq!(
+                r.gpu_status(),
+                GpuStatus::Unavailable {
+                    reason: format!("the GPU device was lost (test {n})")
+                }
+            );
+        }
     }
-    lose(&mut r, LOST_CAP);
     assert!(r.gpu_off(), "off at loss {LOST_CAP}");
     assert_eq!(
         r.gpu_status(),
@@ -1588,12 +1605,7 @@ fn the_gpu_is_off_after_three_lost_devices() {
     buf.paint(&mut r, S, 0);
     assert!(r.take_gpu_requests().is_empty(), "no device asked for");
     r.promote_now(S);
-    assert!(
-        !r.take_backend_changes()
-            .iter()
-            .any(|c| matches!(c, BackendChange::Promote(_))),
-        "never promoted"
-    );
+    assert!(!promoted(&mut r), "never promoted");
     assert_eq!(r.backend(S), Backend::Cpu);
     // Drawn as with no GPU at all.
     let mut cpu = renderer();

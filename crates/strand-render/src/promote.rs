@@ -204,6 +204,8 @@ pub struct Device {
     last_use: Option<Instant>,
     /// [`DROP_AFTER`] unless a test shortens it.
     idle: Option<Duration>,
+    /// [`RETRY_AFTER`] unless a test shortens it.
+    retry: Option<Duration>,
     /// Devices lost so far in this process.
     lost: u32,
 }
@@ -227,7 +229,11 @@ impl Device {
     pub fn want(&mut self, now: Instant) -> bool {
         match self.state {
             State::Off => false,
-            State::Failed(at) if now.saturating_duration_since(at) < RETRY_AFTER => false,
+            State::Failed(at)
+                if now.saturating_duration_since(at) < self.retry.unwrap_or(RETRY_AFTER) =>
+            {
+                false
+            }
             State::Unused | State::Failed(_) => {
                 self.state = State::Starting;
                 self.last_use = Some(now);
@@ -318,6 +324,11 @@ impl Device {
     /// shorten it).
     pub fn set_idle(&mut self, idle: Duration) {
         self.idle = Some(idle);
+    }
+
+    /// Shortens [`RETRY_AFTER`] (tests).
+    pub fn set_retry(&mut self, retry: Duration) {
+        self.retry = Some(retry);
     }
 
     /// A GPU frame, readback or pass at `now`.
