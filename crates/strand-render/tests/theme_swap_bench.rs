@@ -622,8 +622,9 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
 /// most of it the snapshot's 33 MB copy, and 3.6–5.1 ms of blending
 /// per frame (before: 4.2–6.0 ms and 10.5–20.5 ms), with no headroom
 /// for a gate on GitHub's runners; whether a large surface's fade may
-/// cost that is the owner's call (handoff.md). The test checks that each swap crossfades over
-/// more than four frames; a debug build runs one swap per age.
+/// cost that is the owner's call (handoff.md). The test checks that
+/// each swap crossfades over more than four frames; a debug build runs
+/// one swap per age.
 #[test]
 fn a_4k_surface_crossfade_is_measured() {
     const SCRIM: &[(NodeKind, u32, u32)] = &[(NodeKind::Panel, 3840, 2160)];
