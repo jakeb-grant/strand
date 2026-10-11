@@ -251,3 +251,93 @@ fn a_broken_theme_has_no_palette() {
     let err = home.err(&["yaml"]);
     assert!(err.contains("usage: strand export"), "{err}");
 }
+
+/// A bar that reads the theme, with the `bar.label` the desk waits for.
+const BAR: &str = "export state label = \"hi\"\n\
+                   bar Top {\n  edge: top; height: 40\n  bg: $surface\n  text label\n}\n";
+
+/// The running shell answers over the socket, overlays included, and
+/// agrees with the offline mount of the same config and state for every
+/// format, both modes included; a template error is located the same
+/// way; with the shell gone the CLI mounts offline.
+#[test]
+fn the_running_shell_answers_and_agrees_with_offline() {
+    if !super::cli::tools() {
+        return;
+    }
+    let prefs = "accent = \"#7aa2f7\"\n";
+    let mut desk = super::cli::Desk::start(
+        "export",
+        &[
+            ("bar.strand", BAR),
+            ("theme.strand", &theme()),
+            ("prefs.toml", prefs),
+        ],
+        &[],
+    );
+    let root = desk.root().to_path_buf();
+    // `$XDG_CONFIG_HOME/strand` is the desk's config, for offline.
+    std::fs::create_dir_all(root.join("xdg")).unwrap();
+    std::os::unix::fs::symlink(root.join("config"), root.join("xdg/strand")).unwrap();
+    std::fs::write(root.join("t.css.tmpl"), TEMPLATE).unwrap();
+    std::fs::write(root.join("bad.tmpl"), "ok\n{{ $acent }}\n").unwrap();
+    desk.ok(&["set", "$accent", "#ff0000"]);
+    let offline = |args: &[&str]| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("export")
+            .args(args)
+            .current_dir(&root)
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("STRAND_SOCKET", root.join("nobody.sock"))
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap()
+    };
+    let live = |args: &[&str]| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("export")
+            .args(args)
+            .current_dir(&root)
+            .env("XDG_CONFIG_HOME", root.join("nowhere"))
+            .env("XDG_STATE_HOME", root.join("nowhere"))
+            .env("STRAND_SOCKET", root.join("s.sock"))
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap()
+    };
+    let text = |o: Output| {
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    // The overlay is in the live table: the shell has it at once.
+    let j = json(&text(live(&["json"])));
+    assert_eq!(j["roles"]["accent"], "#ff0000", "{j}");
+    // Offline reads the overlay file once its writer has written it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::fs::read_to_string(root.join("state/strand/tokens.toml"))
+        .is_ok_and(|t| t.contains("ff0000"))
+    {
+        assert!(std::time::Instant::now() < deadline, "tokens.toml");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    for args in [&["json"][..], &["base24"], &["--template", "t.css.tmpl"]] {
+        let (a, b) = (text(live(args)), text(offline(args)));
+        assert_eq!(a, b, "strand export {args:?}: IPC and offline disagree");
+    }
+    let css = text(live(&["--template", "t.css.tmpl"]));
+    assert!(css.contains("--accent: #ff0000"), "{css}");
+    // Errors are the template's, located, from the shell too.
+    let err = live(&["--template", "bad.tmpl"]);
+    assert!(!err.status.success());
+    let err = String::from_utf8(err.stderr).unwrap();
+    assert!(err.contains("bad.tmpl:2:4"), "{err}");
+    // With the shell gone, the CLI mounts offline.
+    let before = text(live(&["json"]));
+    desk.stop();
+    let after = live(&["json"]);
+    // `nowhere` has no config: offline says why.
+    assert!(!after.status.success());
+    assert!(String::from_utf8_lossy(&after.stderr).contains("no palette"));
+    assert_eq!(text(offline(&["json"])), before);
+}

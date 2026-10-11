@@ -81,6 +81,7 @@ mod gpu;
 mod lists;
 pub(crate) mod lock;
 mod logic;
+mod outputs;
 mod request;
 mod shell;
 mod sleep;

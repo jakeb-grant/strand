@@ -104,6 +104,7 @@ pub fn export_cli(args: &[String]) -> Result<String, String> {
             let mount = Mount::palette(expr)?;
             mount.produce(&ask.format, template.as_ref())?
         }
+        None if template.as_ref().is_some_and(|t| t.text.is_empty()) => Vec::new(),
         None => match from_shell(&ask.format, template.as_ref())? {
             Some(bytes) => bytes,
             None => {
@@ -122,9 +123,45 @@ pub fn export_cli(args: &[String]) -> Result<String, String> {
     }
 }
 
-/// The running shell's answer, or `None` to mount offline.
-fn from_shell(_format: &Format, _template: Option<&Source>) -> Result<Option<Vec<u8>>, String> {
-    Ok(None)
+/// How long the CLI waits for the shell's answer (a pending other-mode
+/// palette is waited for there, up to 30 s).
+const SHELL_WAIT: Duration = Duration::from_secs(40);
+
+/// The running shell's answer (step 1), or `None` to mount offline: no
+/// shell on the socket, a shell from before `export` (it answers
+/// "unknown command"), or a template too large for one request line.
+fn from_shell(format: &Format, template: Option<&Source>) -> Result<Option<Vec<u8>>, String> {
+    use crate::ipc::{MAX_LINE, Request, encode, request, socket_path};
+    let req = Request::Export {
+        kind: match format {
+            Format::Json => "json",
+            Format::Base24 => "base24",
+            Format::Template(_) => "template",
+        }
+        .into(),
+        template: template.map(|t| t.text.clone()),
+        name: template.map(|t| t.name.clone()),
+    };
+    if encode(&req).len() > MAX_LINE {
+        return Ok(None);
+    }
+    let Some(conn) = socket_path().and_then(|p| std::os::unix::net::UnixStream::connect(p).ok())
+    else {
+        return Ok(None);
+    };
+    let answer = request(&mut std::io::BufReader::new(conn), &req, SHELL_WAIT)?;
+    match strand_core::ipc::refusal(&answer) {
+        None => Ok(Some(
+            answer
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec(),
+        )),
+        Some(why) if why == "unknown command `export`" => Ok(None),
+        Some(why) => Err(why),
+    }
 }
 
 /// A template file as read: its name for diagnostics and its text.

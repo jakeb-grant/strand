@@ -241,6 +241,7 @@ pub fn logic(
         layout_seen: None,
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
+        exports: Vec::new(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -297,6 +298,9 @@ pub fn logic(
             break;
         }
         shell.after_step(&update);
+        // (M5) The theming hub's work after the diff: `file` outputs and
+        // waiting `export` requests (`outputs.rs`).
+        shell.after_diff();
         // Output a client's socket cannot take yet waits for its write
         // source to wake the loop (no polling).
         if let Some(s) = shell.server.as_mut() {

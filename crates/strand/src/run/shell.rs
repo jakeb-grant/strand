@@ -98,6 +98,9 @@ pub(super) struct Shell {
     /// The password inputs' values, redacted from fault messages
     /// (`lock.rs`).
     pub(super) secrets: super::lock::Secrets,
+    /// (M5, S-tools) `export` requests waiting for their other mode's
+    /// palette (`request/export.rs`).
+    pub(super) exports: Vec<super::request::Waiting>,
 }
 
 /// A surface's `blur` nodes as `ToLogic::BlurFallback` carries them.
