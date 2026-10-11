@@ -56,10 +56,8 @@ pub(super) struct Shell {
     pub(super) deferred_hard: bool,
     /// Reload events waiting for the step that draws them (their total
     /// time ends when its diff is sent), with the clients whose
-    /// `strand reload` each answers and how many of its
-    /// `kept_over_default` entries lead it from [`Shell::unheard`] (the
-    /// socket's watchers missed them; the event sink heard them).
-    pub(super) events: Vec<(Json, Instant, Vec<ipc::ClientId>, usize)>,
+    /// `strand reload` each answers.
+    pub(super) events: Vec<(Json, Instant, Vec<ipc::ClientId>)>,
     /// (M5) `reload`s from the request channel (the D-Bus front end)
     /// waiting for their load: each a client id of their own
     /// (`BUS_RELOAD` set, `run/request/reload.rs`, so no socket client
@@ -70,8 +68,9 @@ pub(super) struct Shell {
     pub(super) latest: Problems,
     /// The referenced files last given to the watcher.
     pub(super) watched: Vec<(PathBuf, Role)>,
-    /// Cells kept over a changed default outside a reload while nobody
-    /// watched (at boot): the next reload event lists them.
+    /// Cells kept over a changed default outside a reload while no socket
+    /// watcher was there (at boot): the next reload event lists them, to
+    /// the socket's watchers and the event sink alike.
     pub(super) unheard: Vec<strand_compiler::reconcile::KeptCell>,
     /// The running config's check warnings (`check::dbus_unchecked`: a
     /// bus that did not answer), as `strand watch` events list them: a
@@ -477,20 +476,19 @@ impl Shell {
             self.warnings = ev["diagnostics"].as_array().cloned().unwrap_or_default();
         }
         ev["deferred"] = json!(deferred);
-        let mut earlier = 0;
         if !self.unheard.is_empty()
             && let Some(k) = ev["kept_over_default"].as_array_mut()
         {
             // Kept when no socket watcher was there (the boot's persisted
-            // cells).
+            // cells): the socket's watchers and the event sink hear them
+            // here.
             if let Json::Array(cells) = kept_json(&std::mem::take(&mut self.unheard)) {
-                earlier = cells.len();
                 k.splice(0..0, cells);
             }
         }
         let clients = std::mem::take(&mut l.clients);
         self.events
-            .push((ev, l.saved.unwrap_or(l.started), clients, earlier));
+            .push((ev, l.saved.unwrap_or(l.started), clients));
         if deferred {
             self.deferred = Some(l);
         }
@@ -587,51 +585,48 @@ impl Shell {
             let rows = overlay::kept_and_notices(&kept, &notices);
             self.overlay.note(rows, Instant::now(), &self.inst);
             // `strand watch` hears them as they happen; with no socket
-            // watcher (at boot), the next reload event carries them for
-            // the socket. The event sink hears them now either way, and
-            // that reload event reaches it without them (`after_step`'s
-            // loop below).
+            // watcher (at boot), the next reload event carries the kept
+            // cells instead, to the socket and the event sink alike, so a
+            // D-Bus client that subscribes after the boot hears them where
+            // a late `strand watch` does, and each once. The sink still
+            // hears the notices now (its `kept_over_default` empty then).
             let heard = self.server.as_ref().is_some_and(|s| s.watchers() > 0);
-            if heard || self.event_sink.is_some() {
+            if heard {
                 self.broadcast(&json!({
                     "event": "notices",
                     "kept_over_default": kept_json(&kept),
                     "notices": notices,
                 }));
-            }
-            if !heard {
+            } else {
+                // Without the kept cells' own prose: the reload event
+                // names them.
+                let texts: Vec<&String> = notices
+                    .iter()
+                    .filter(|n| !kept.iter().any(|k| k.notice() == **n))
+                    .collect();
+                if let Some(sink) = self.event_sink.as_ref().filter(|_| !texts.is_empty()) {
+                    sink.send(&json!({
+                        "event": "notices",
+                        "kept_over_default": [],
+                        "notices": texts,
+                    }));
+                }
                 self.unheard.extend(kept);
             }
         }
         let now = Instant::now();
-        for (mut ev, since, clients, earlier) in std::mem::take(&mut self.events) {
+        for (mut ev, since, clients) in std::mem::take(&mut self.events) {
             ev["timing"]["total_ms"] = json!(ms(now.saturating_duration_since(since)));
             log::info!("{}", ipc::describe(&ev).trim_end());
-            // The event sink heard the cells kept before this load as they
-            // happened (their `notices` event): it gets the event without
-            // them, as does a bus `reload`, so a D-Bus client hears each
-            // kept cell once.
-            let heard = (earlier > 0 && self.event_sink.is_some()).then(|| {
-                let mut h = ev.clone();
-                if let Some(k) = h["kept_over_default"].as_array_mut() {
-                    k.drain(..earlier.min(k.len()));
-                }
-                h
-            });
-            let heard = heard.as_ref().unwrap_or(&ev);
             if let Some(sink) = &self.event_sink {
-                sink.send(heard);
+                sink.send(&ev);
             }
             if let Some(s) = &mut self.server {
                 s.broadcast(&ev);
             }
-            // Each `strand reload` gets the event of its own load.
+            // Each `strand reload` (socket or bus) gets the event of its
+            // own load.
             for id in clients {
-                let ev = if id & super::request::BUS_RELOAD == 0 {
-                    &ev
-                } else {
-                    heard
-                };
                 self.reloaded(id, json!({"ok": true, "event": ev.clone()}));
             }
         }

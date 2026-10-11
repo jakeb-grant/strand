@@ -76,11 +76,55 @@ impl Shell {
     /// n}` with how many cells changed.
     #[cold]
     #[inline(never)]
+    ///
+    /// The reload overlay's kept-over-default rows of the cells it reset
+    /// go, as `reset{path}`'s do (`Overlay::forget_cell`): a cell kept
+    /// under the node before and not after was reset by it, since the
+    /// reset changes no cell outside the subtree.
     pub(super) fn reset_node_request(&mut self, from: Caller, id: &str) {
-        let ans = node(id).and_then(|n| match self.inst.reset_subtree(n) {
-            Ok(count) => Ok(serde_json::json!({"ok": true, "reset": count})),
-            Err(_) => Err(gone(n)),
+        let ans = node(id).and_then(|n| {
+            let before = self.overlay.has_resets().then(|| kept_under(&self.inst, n));
+            match self.inst.reset_subtree(n) {
+                Ok(count) => {
+                    if let Some(before) = before {
+                        let after = kept_under(&self.inst, n);
+                        let reset: Vec<String> =
+                            before.into_iter().filter(|p| !after.contains(p)).collect();
+                        if !reset.is_empty() {
+                            self.overlay.forget_cells(&reset, &self.inst);
+                        }
+                    }
+                    Ok(serde_json::json!({"ok": true, "reset": count}))
+                }
+                Err(_) => Err(gone(n)),
+            }
         });
         self.answer(from, ans.unwrap_or_else(|e| e));
     }
+}
+
+/// The paths of the cells kept over a changed default that the nodes
+/// under `n` show (the inspector's `kept` badge), each once.
+fn kept_under(inst: &strand_compiler::instantiate::Instance, n: NodeId) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Some(dump) = inst.dump(Some(n)) else {
+        return out;
+    };
+    let nodes = dump["nodes"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    for cell in nodes
+        .iter()
+        .filter_map(|node| node["cells"].as_array())
+        .flatten()
+    {
+        if cell["kept"] == true
+            && let Some(p) = cell["path"].as_str()
+            && !out.iter().any(|o| o == p)
+        {
+            out.push(p.to_string());
+        }
+    }
+    out
 }

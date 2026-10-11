@@ -422,6 +422,23 @@ impl Overlay {
         }
     }
 
+    /// Whether a row offers a `[reset]` (a cell kept over a changed
+    /// default).
+    pub fn has_resets(&self) -> bool {
+        self.notes.iter().any(|n| n.reset.is_some())
+    }
+
+    /// The cells at `paths` were reset together (IPC `reset{node}`, the
+    /// inspector's "reset subtree"): their rows no longer apply.
+    pub fn forget_cells(&mut self, paths: &[String], inst: &Instance) {
+        let before = self.notes.len();
+        self.notes
+            .retain(|n| n.cell.as_ref().is_none_or(|c| !paths.contains(c)));
+        if self.notes.len() != before {
+            self.refresh(inst);
+        }
+    }
+
     /// Service `service`'s notice was resolved (the notification server
     /// took the name over): its rows go.
     pub fn forget_service(&mut self, service: &str, inst: &Instance) {

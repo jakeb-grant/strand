@@ -31,8 +31,6 @@ mod set;
 mod toggle;
 mod watch;
 
-pub(in crate::run) use reload::BUS_RELOAD;
-
 /// Who asked, and where the answer goes.
 #[derive(Debug)]
 pub(in crate::run) enum Caller {

@@ -754,13 +754,16 @@ fn saves_reload_live_with_state_kept() {
     });
     assert_eq!(pane["ok"], true, "{pane}");
     assert_eq!(pane["node"], nodes[0], "{pane}");
-    // Reset subtree: `n`, kept at 1 over its new default, goes to 7.
+    // Reset subtree: `n`, kept at 1 over its new default, goes to 7, and
+    // the reload overlay's kept row for it goes, as `reset{path}`'s does.
+    let kept_row = |s: &SceneMirror| s.texts().iter().any(|t| t.contains("(default changed)"));
+    m.until("the kept row", |s| kept_row(s));
     let reset = ask(&ipc::Request::ResetNode {
         node: bar_ref.clone(),
     });
     assert_eq!(reset, json!({"ok": true, "reset": 1}), "{reset}");
-    m.until("the subtree reset", |s| {
-        s.texts().contains(&"n 7".to_string())
+    m.until("the subtree reset, its kept row gone", |s| {
+        s.texts().contains(&"n 7".to_string()) && !kept_row(s)
     });
     // (S-ipc) A reload from the request channel (D-Bus) waits for its
     // load and is answered with its event, as a socket client's is.
@@ -2462,12 +2465,13 @@ fn an_unavailable_gpu_is_a_notice_once() {
 }
 
 /// (S-ipc review) A persisted cell kept over a changed default at boot
-/// reaches the event sink (the D-Bus `Changed` signal) once, as the
-/// boot's `notices` event, and not again in the next reload's
-/// `kept_over_default`; a socket watcher that came after the boot still
-/// gets it there.
+/// reaches the event sink (the D-Bus `Changed` signal) where it reaches a
+/// `strand watch` client that came after the boot: once, in the next
+/// reload event, and not in a boot `notices` signal nobody subscribed in
+/// time to hear. A bus `reload` is answered with that event as a socket
+/// `strand reload` is, the cell named.
 #[test]
-fn a_cell_kept_at_boot_reaches_the_event_sink_once() {
+fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
     let dir = temp_dir("boot-kept-sink");
     let src = "state hits = 0 persist\nbar Top {\n  \
                text join(\"\", \"h\", hits) { on click { hits += 1 } }\n}\n";
@@ -2507,13 +2511,16 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_once() {
     compiler.register_own_writes(&st);
     let (heard, sunk) = std::sync::mpsc::channel();
     let heard = std::sync::Mutex::new(heard);
+    let (give, take) = std::sync::mpsc::channel();
     let live = Live {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
         socket: Some(socket.clone()),
         buses: None,
         icon_theme_switched: None,
-        requests_to: None,
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
         events_to: Some(ipc::EventSink::new(move |ev| {
             let _ = heard.lock().unwrap().send(ev.clone());
         })),
@@ -2526,13 +2533,7 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_once() {
     let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
     let mut m = Mirror::new(rx);
     m.until("the kept value", |s| s.texts() == ["h1"]);
-    let next_sunk = |kind: &str| loop {
-        let ev = sunk.recv_timeout(Duration::from_secs(10)).unwrap();
-        if ev["event"] == kind {
-            break ev;
-        }
-    };
-    let kept_path = |ev: &Json| -> Vec<String> {
+    let kept_paths = |ev: &Json| -> Vec<String> {
         ev["kept_over_default"]
             .as_array()
             .unwrap()
@@ -2540,24 +2541,24 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_once() {
             .map(|k| k["path"].as_str().unwrap_or_default().to_string())
             .collect()
     };
-    let boot_ev = next_sunk("notices");
-    let paths = kept_path(&boot_ev);
-    assert!(
-        paths.len() == 1 && paths[0].ends_with("hits"),
-        "the sink hears the kept cell at boot: {boot_ev}"
-    );
-    // A socket watcher comes after the boot; a save reloads.
+    // A socket watcher and a D-Bus client come after the boot; the D-Bus
+    // client asks for a reload.
     let mut events =
         std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
     let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
     assert_eq!(ok["ok"], true);
-    std::fs::write(
-        &file,
-        src.replace("hits = 0", "hits = 5")
-            .replace("}\n}\n", "}\n  text \"x\"\n}\n"),
-    )
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
     .unwrap();
-    m.until("the new text", |s| s.texts().len() == 2);
+    assert_eq!(ans["ok"], true, "{ans}");
+    let paths = kept_paths(&ans["event"]);
+    assert!(
+        paths.len() == 1 && paths[0].ends_with("hits"),
+        "the bus reload's answer names the kept cell: {ans}"
+    );
     let socket_ev = loop {
         let mut line = String::new();
         std::io::BufRead::read_line(&mut events, &mut line).unwrap();
@@ -2567,16 +2568,34 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_once() {
         }
     };
     assert_eq!(
-        kept_path(&socket_ev),
+        kept_paths(&socket_ev),
         paths,
-        "the socket watcher missed the boot: its reload names the cell: {socket_ev}"
+        "the late watcher's reload names the cell: {socket_ev}"
     );
-    let sunk_ev = next_sunk("reload");
+    // Everything the sink was sent up to that reload: the cell once, in
+    // the reload event, as the late watcher heard it.
+    let mut before = Vec::new();
+    let sunk_ev = loop {
+        let ev = sunk.recv_timeout(Duration::from_secs(10)).unwrap();
+        if ev["event"] == "reload" {
+            break ev;
+        }
+        before.push(ev);
+    };
     assert_eq!(
-        sunk_ev["kept_over_default"],
-        json!([]),
-        "the sink heard it at boot, not again: {sunk_ev}"
+        kept_paths(&sunk_ev),
+        paths,
+        "the sink's reload names the cell: {sunk_ev}"
     );
+    for ev in &before {
+        assert!(
+            ev["kept_over_default"]
+                .as_array()
+                .is_none_or(|k| k.is_empty())
+                && !ev.to_string().contains("hits"),
+            "the cell is not sent to the sink before the reload: {ev}"
+        );
+    }
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     drop(compiler);
