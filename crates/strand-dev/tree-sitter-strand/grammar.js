@@ -107,6 +107,10 @@ module.exports = grammar({
     // Never produced: valid before a binary `-`, so a `-` after a `}` where
     // none can follow (a statement block's) starts the next item.
     $._infix_minus,
+    // Never produced: valid before a call's `(` and an index's `[`, so a
+    // touching bracket after a `}` that takes no postfix (a lambda's or a
+    // statement block's) starts the next item.
+    $._postfix,
   ],
 
   extras: $ => [/[ \t\r\f\n]/, $.comment],
@@ -515,16 +519,7 @@ module.exports = grammar({
 
     // ---- Expressions -----------------------------------------------------
 
-    _expression: $ => choice(
-      $.lambda,
-      $.ternary_expression,
-      $.binary_expression,
-      $.unary_expression,
-      $.member_expression,
-      $.call_expression,
-      $.index_expression,
-      $._primary,
-    ),
+    _expression: $ => choice($.lambda, $._postfix_operand),
 
     _primary: $ => choice(
       $.number,
@@ -537,6 +532,21 @@ module.exports = grammar({
       $.parenthesized_expression,
       $.array,
       $.match_expression,
+    ),
+
+    // What a member access, a call or an index applies to: any expression
+    // but a lambda. The parser's `postfix` applies them to a primary only;
+    // precedence already keeps the operators' operands out, and a lambda
+    // whose body is a block would otherwise take a touching `(` or `[`
+    // after its `}`, where the parser starts the next item.
+    _postfix_operand: $ => choice(
+      $.ternary_expression,
+      $.binary_expression,
+      $.unary_expression,
+      $.member_expression,
+      $.call_expression,
+      $.index_expression,
+      $._primary,
     ),
 
     lambda: $ => prec.right(PREC.lambda, seq(
@@ -591,13 +601,14 @@ module.exports = grammar({
     )),
 
     member_expression: $ => prec(PREC.postfix, seq(
-      field('object', $._expression),
+      field('object', $._postfix_operand),
       choice('.', '?.'),
       field('field', choice(alias($.identifier, $.field_name), alias($._int, $.field_name))),
     )),
 
     call_expression: $ => prec(PREC.postfix, seq(
-      field('function', $._expression),
+      field('function', $._postfix_operand),
+      optional($._postfix),
       field('arguments', $.arguments),
     )),
     arguments: $ => seq(token.immediate('('), optional(commaSep1($._argument)), ')'),
@@ -610,7 +621,8 @@ module.exports = grammar({
     from_argument: $ => seq('from', field('value', $._expression)),
 
     index_expression: $ => prec(PREC.postfix, seq(
-      field('object', $._expression),
+      field('object', $._postfix_operand),
+      optional($._postfix),
       token.immediate('['),
       field('index', $._expression),
       ']',

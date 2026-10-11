@@ -23,15 +23,17 @@
 // starting an item rather than continuing this one, it gives a zero-width
 // one. Which tokens continue follows the parser:
 //
-// - A word that only continues an item (`else`, `persist`, `while`,
-//   `key`) is not a new item.
+// - A word that only continues an item (`else`, and `persist`, `while`,
+//   `key` where no value term may follow) is not a new item.
 // - Where a prop value may take another space-separated term
 //   (`_group_term` valid), a word, string, `#`, `$`, digit, `(` or `[`
 //   is the value's next term (`margin: match a { _ => 1 } 4`), except a
-//   tree keyword and a word followed by `:` (the next prop), which end the
-//   value as the parser's `starts_term` says.
-// - A `(` or `[` continues only when it touches the `}` (a call or an
-//   index); spaced, it starts an item.
+//   tree keyword, `else` and a word followed by `:` (the next prop, `key:`
+//   included), which end the value as the parser's `starts_term` says.
+// - A `(` or `[` continues only when it touches the `}` of a `match` (a
+//   call or an index, which the grammar marks with `_postfix`); spaced, or
+//   after a lambda's or a statement block's `}`, it starts an item.
+// - An `@` (an attribute) always starts an item.
 // - A `-` continues where a binary `-` may follow (`_infix_minus` valid);
 //   elsewhere (after a statement block's `}`) it starts one (`-1 => …`).
 // - Any other operator, `;` or `}` continues the item or separates it
@@ -51,6 +53,7 @@ enum TokenType {
   RBRACE,
   GROUP_TERM,
   INFIX_MINUS,
+  POSTFIX,
 };
 
 // The column just after the last `}` the scanner lexed, plus one (0: none
@@ -177,7 +180,7 @@ static bool starts_item(TSLexer *lexer, const bool *valid_symbols, bool spaced) 
   int32_t c = lexer->lookahead;
   if (is_ident_start(c)) {
     // Words that only continue an item.
-    static const char *const continuing[] = {"else", "persist", "while", "key"};
+    static const char *const continuing[] = {"persist", "while", "key"};
     char word[9];
     unsigned n = 0;
     while (is_ident_char(lexer->lookahead)) {
@@ -187,24 +190,31 @@ static bool starts_item(TSLexer *lexer, const bool *valid_symbols, bool spaced) 
     }
     if (n < sizeof word) {
       word[n] = 0;
-      for (unsigned i = 0; i < sizeof continuing / sizeof *continuing; i++) {
-        if (strcmp(word, continuing[i]) == 0) return false;
-      }
+      if (strcmp(word, "else") == 0) return false;
       for (unsigned i = 0; i < sizeof tree_keywords / sizeof *tree_keywords; i++) {
         if (strcmp(word, tree_keywords[i]) == 0) return true;
+      }
+      // Where a value may take another term, `key`, `persist` and `while`
+      // are names like any other (the parser's `starts_term`): a term, or
+      // with a `:` after them the next prop.
+      if (!term) {
+        for (unsigned i = 0; i < sizeof continuing / sizeof *continuing; i++) {
+          if (strcmp(word, continuing[i]) == 0) return false;
+        }
       }
     }
     return !term || colon_follows(lexer);
   }
   switch (c) {
-    case '@':  // an attribute
+    case '@':  // an attribute, never a term
+      return true;
     case '#':  // a selector
     case '$':  // a token entry
     case '"':
       return !term;
     case '(':  // a call or an index touches; a group term may be spaced
     case '[':
-      return spaced && !term;
+      return !term && (spaced || !valid_symbols[POSTFIX]);
     case '-':  // a binary `-`, or a sign starting the next item
       return !valid_symbols[INFIX_MINUS];
     case '!':  // a prefix `!`, not `!=`

@@ -150,6 +150,9 @@ const SYNTAX_ERRORS: &[&str] = &[
     "let m = (1) let k = 2\n",
     "let m = match a { _ => 1 } + 1 let k = 2\n",
     "let g = f(x => { x }) let k = 2\n",
+    // A lambda takes no member access (the parser's `postfix` wraps a
+    // primary only).
+    "bar Top { on click { f = x => { x }.y } }\n",
     // An optional block's `{` must be on the head's line (rule 6).
     "bar Top {\n  box\n  {\n  }\n}\n",
     // A `fn` body is a block.
@@ -684,6 +687,96 @@ bar Top {
         .child_by_field_name("right")
         .unwrap();
     assert_eq!(right.kind(), "binary_expression", "{}", minus.to_sexp());
+}
+
+#[test]
+fn an_attribute_or_a_clause_word_prop_after_a_value_brace_starts_an_item() {
+    // The parser's `starts_term` takes no `@` and no word followed by `:`,
+    // `key:`, `persist:` and `while:` included, so a value ends there and
+    // `at_item_end` starts the next item after the `}` (rule 2).
+    let src = "\
+bar Top {
+  padding: match a { _ => 1 } @reset state q = \"\"
+  box { padding: match a { _ => 1 } key: 2 }
+  padding: match a { _ => 1 } persist: 1
+  padding: match a { _ => 1 } while: 2
+  padding: match a { _ => 1 } key 2
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let body = tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("body")
+        .unwrap();
+    let sexp = body.to_sexp();
+    let ks = kinds(body);
+    assert_eq!(ks.iter().filter(|k| **k == "prop").count(), 6, "{sexp}");
+    assert_eq!(ks.iter().filter(|k| **k == "state").count(), 1, "{sexp}");
+    let boxed = body
+        .named_children(&mut body.walk())
+        .find(|n| n.kind() == "element")
+        .unwrap();
+    let inner = boxed.child_by_field_name("body").unwrap();
+    assert_eq!(kinds(inner), ["prop", "prop"], "{}", inner.to_sexp());
+    // Without a `:`, `key` is the value's next term, as in the parser.
+    let last = body
+        .named_child(body.named_child_count() as u32 - 1)
+        .unwrap();
+    assert!(last.to_sexp().contains("(group "), "{}", last.to_sexp());
+}
+
+#[test]
+fn a_touching_bracket_after_a_block_that_takes_no_postfix_starts_an_item() {
+    // The parser applies a call or an index only to a primary (`postfix`),
+    // and `match` is the only primary that ends in `}`: a lambda's block
+    // body takes none, so after it `at_item_end` starts the next item.
+    let src = "\
+bar Top {
+  on click { f = x => { x }(1) }
+  on click { f = x => { x }[0] }
+  on click { g = match a { _ => [h] }[0](1) }
+}
+";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let body = tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("body")
+        .unwrap();
+    let stmts = |i| {
+        let h = body.named_child(i).unwrap();
+        h.child_by_field_name("body").unwrap()
+    };
+    for i in 0..2 {
+        assert_eq!(
+            kinds(stmts(i)),
+            ["assignment", "expression_statement"],
+            "{}",
+            stmts(i).to_sexp()
+        );
+        let right = stmts(i)
+            .named_child(0)
+            .unwrap()
+            .child_by_field_name("right")
+            .unwrap();
+        assert_eq!(right.kind(), "lambda", "{}", stmts(i).to_sexp());
+    }
+    // A `match` is a primary: a touching index and call continue it.
+    let m = stmts(2);
+    assert_eq!(kinds(m), ["assignment"], "{}", m.to_sexp());
+    let right = m
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("right")
+        .unwrap();
+    assert_eq!(right.kind(), "call_expression", "{}", m.to_sexp());
 }
 
 #[test]
