@@ -25,7 +25,9 @@
 //!   device.
 //! - The device ([`Device`]) is dropped [`DROP_AFTER`] after its last use
 //!   once no surface is promoted; a failed start or a lost device is not
-//!   asked for again for [`RETRY_AFTER`].
+//!   asked for again for [`RETRY_AFTER`]. After [`LOST_CAP`] lost devices
+//!   the GPU is off for the rest of the process (owner, m4-close-gpucap):
+//!   no device is asked for again, and nothing is promoted.
 
 use std::time::{Duration, Instant};
 
@@ -46,6 +48,15 @@ pub const DROP_AFTER: Duration = Duration::from_secs(30);
 /// How long after a failed start or a lost device the device is asked
 /// for again.
 pub const RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Lost devices (a hang, a reset, a panic: `GpuReply::Lost`) after which
+/// the GPU stays off until strand restarts.
+pub const LOST_CAP: u32 = 3;
+
+/// Why the GPU is off once [`LOST_CAP`] devices were lost (the status's
+/// reason, and so the inspector's, `strand report`'s and the notice's).
+pub const GPU_OFF: &str =
+    "the GPU was turned off after 3 lost devices; restarting strand brings it back";
 
 /// A switch [`Promotion`] decided.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -193,6 +204,8 @@ pub struct Device {
     last_use: Option<Instant>,
     /// [`DROP_AFTER`] unless a test shortens it.
     idle: Option<Duration>,
+    /// Devices lost so far in this process.
+    lost: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -203,6 +216,8 @@ enum State {
     Up,
     /// A failed start or a lost device, at that instant.
     Failed(Instant),
+    /// [`LOST_CAP`] devices were lost: never asked for again.
+    Off,
 }
 
 impl Device {
@@ -211,6 +226,7 @@ impl Device {
     /// less than [`RETRY_AFTER`] old.
     pub fn want(&mut self, now: Instant) -> bool {
         match self.state {
+            State::Off => false,
             State::Failed(at) if now.saturating_duration_since(at) < RETRY_AFTER => false,
             State::Unused | State::Failed(_) => {
                 self.state = State::Starting;
@@ -248,7 +264,30 @@ impl Device {
 
     /// The start failed or the device was lost at `now`.
     pub fn failed(&mut self, now: Instant) {
-        self.state = State::Failed(now);
+        if self.state != State::Off {
+            self.state = State::Failed(now);
+        }
+    }
+
+    /// The device was lost at `now` (a hang, a reset, a panic). True if
+    /// this loss turned the GPU off (the [`LOST_CAP`]th): it says so once.
+    pub fn lost(&mut self, now: Instant) -> bool {
+        self.lost = self.lost.saturating_add(1);
+        if self.state == State::Off {
+            return false;
+        }
+        if self.lost >= LOST_CAP {
+            self.state = State::Off;
+            self.last_use = None;
+            return true;
+        }
+        self.failed(now);
+        false
+    }
+
+    /// True once the GPU is off for the rest of the process.
+    pub fn is_off(&self) -> bool {
+        self.state == State::Off
     }
 
     /// The `Gpu` was dropped.
@@ -510,6 +549,40 @@ mod tests {
         d.up();
         d.failed(t0 + Duration::from_secs(40));
         assert!(!d.want(t0 + Duration::from_secs(41)));
+    }
+
+    /// (m4-close-gpucap) The third lost device turns the GPU off, not the
+    /// first two: each of those is retried after `RETRY_AFTER` as any
+    /// failure is; after the third nothing is asked for again, however
+    /// long the wait, a failed start does not undo it, and it is said
+    /// once.
+    #[test]
+    fn the_third_lost_device_turns_the_gpu_off() {
+        let mut d = Device::default();
+        let mut t = Instant::now();
+        for loss in 1..LOST_CAP {
+            assert!(d.want(t), "loss {loss}: asked for");
+            d.up();
+            assert!(!d.lost(t), "loss {loss} does not turn it off");
+            assert!(!d.is_off());
+            assert!(!d.want(t + Duration::from_secs(1)), "within RETRY_AFTER");
+            t += RETRY_AFTER + Duration::from_millis(1);
+        }
+        assert!(d.want(t), "asked for after the second loss's wait");
+        d.up();
+        assert!(d.lost(t), "the third loss turns it off");
+        assert!(d.is_off());
+        assert!(!d.idle(), "no start to ask for");
+        assert_eq!(d.drop_at(), None);
+        for later in [RETRY_AFTER * 2, Duration::from_secs(86_400)] {
+            assert!(!d.want(t + later), "never asked for again");
+        }
+        d.failed(t);
+        d.dropped();
+        assert!(d.is_off(), "off for the process");
+        assert!(!d.lost(t), "said once");
+        assert!(!d.want(t + Duration::from_secs(86_400)));
+        assert!(GPU_OFF.contains(&LOST_CAP.to_string()));
     }
 
     #[test]

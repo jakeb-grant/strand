@@ -823,6 +823,12 @@ impl Renderer {
         }
     }
 
+    /// (M4) The GPU is never turned off in a build without it.
+    #[cfg(not(feature = "gpu"))]
+    pub fn gpu_off(&self) -> bool {
+        false
+    }
+
     /// (M4) True while a surface shows a `shader` node (logic hears the
     /// status only then).
     #[cfg(not(feature = "gpu"))]
