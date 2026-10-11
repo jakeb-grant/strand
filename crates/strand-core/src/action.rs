@@ -25,7 +25,10 @@ pub struct InputCtx {
 /// keeps one invocation's actions in order behind a token wait
 /// (docs/architecture.md, "Handler input context"). The default, empty
 /// context (no input, invocation 0) is what every action gets until the
-/// VM records them.
+/// VM records them, and stays an action outside any handler's: 0 is
+/// unordered. A handler invocation is numbered from 1 with or without
+/// input and keeps its number across every `await`; only `input` is
+/// cleared at the first one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActionCtx {
     pub input: Option<InputCtx>,

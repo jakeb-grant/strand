@@ -42,7 +42,9 @@ below.
   happen: S-docs' spec.md skeleton, guide outline, ladder placements and
   `strand new` template, and S-tools' export mapping table move to wave
   1, the spec.md skeleton first and before S-lsp's tree-sitter grammar
-  (decisions.md m5-w0-harden).
+  (decisions.md m5-w0-harden). The move waits on the owner's
+  confirmation (open items below); the owner may want them written
+  before wave 1 opens.
 - M0–M4 are complete: the last M4 box, the bundled noise field, was
   ticked when the owner accepted reading it as a `.wgsl` shader
   (2026-10-10, decisions.md m4-owner-docs). M4's three exits are
@@ -140,8 +142,15 @@ cleanly. M5's wave 0 left these for the owner (none blocks wave 1):
   strand-render. Removing the copy needs one crate to own the decode, a
   new dependency between them, or strand-theme reading wallpapers into
   memory: an architecture change offered to the owner, not taken.
-- Anything the wave-0 hardening left for the owner is in decisions.md
-  m5-w0-harden.
+- **Wave 0's unwritten writing column** (decisions.md m5-w0-harden,
+  second round): S-docs' spec.md skeleton, guide outline, ladder
+  placements and `strand new` template, and S-tools' export mapping
+  table, were not written in wave 0 and are placed at the start of wave
+  1's writing column. Open: confirm the move, or have them written
+  before wave 1 opens. It does not block wave 1's building streams;
+  S-lsp's grammar (wave 2) waits on the spec.md skeleton either way.
+- Anything else the wave-0 hardening left for the owner is in
+  decisions.md m5-w0-harden ("left for the owner").
 
 1. **The noise field: answered.** A `.wgsl` shader on the bundled path;
    its box is ticked (m4-owner-2).

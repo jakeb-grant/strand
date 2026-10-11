@@ -10,5 +10,6 @@ mod m5 {
     mod new;
     mod newcomer;
     mod plugin;
+    mod process_setup;
     mod report;
 }

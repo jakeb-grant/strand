@@ -256,11 +256,11 @@ matches CI (`CI_JOB=NAME` for one job). The steps:
   them; a mismatch is uploaded from `target/acceptance`);
 - `cargo test --profile timing -p strand-render --test theme_swap_bench`
   for the 5 ms theme swap;
-- `cargo test --profile timing -p strand --bin strand reload_latency --
+- `cargo test --profile timing -p strand --lib reload_latency --
   --test-threads=1` with `STRAND_LATENCY_ROUNDS=50` for the save-to-pixels
   budget;
 - the reload fuzzer's short run in a step of its own: `cargo test -p
-  strand --bin strand random_edits_through_five_save_styles --
+  strand --lib random_edits_through_five_save_styles --
   --test-threads=1` (60 edits through the five save styles and the sway
   pipeline, on tmpfs) with `STRAND_FUZZ_MAX_GAP_MS=20`, a delete-to-create
   gap of at most 20 ms.

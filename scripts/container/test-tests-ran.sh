@@ -42,4 +42,16 @@ expect 3 "a failing run keeps its status" bash -c '
 expect 101 "a failing run with no summary keeps its status" bash -c 'exit 101'
 expect 2 "no command"
 
+# The live docs cite the strand lib's tests with --lib: since the lib/bin
+# split, `-p strand --bin strand <filter>` runs 0 tests and passes.
+ROOT=$(cd "$HERE/../.." && pwd)
+for doc in README.md docs/features.md; do
+  if tr '\n' ' ' <"$ROOT/$doc" | grep -Eq -- '-p +strand +--bin +strand +[a-z_]'; then
+    echo "FAIL $doc cites a strand test with --bin strand (runs 0 tests); use --lib"
+    bad=1
+  else
+    echo "ok   $doc cites no hollow --bin strand test command"
+  fi
+done
+
 exit "$bad"

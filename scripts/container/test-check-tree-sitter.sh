@@ -71,6 +71,14 @@ expect 1 "a missing grammar.json is caught" "$CHECK" "$PKG"
 mv "$DIR/grammar.json" "$PKG/src/grammar.json"
 expect 0 "restored files match again" "$CHECK" "$PKG"
 
+echo "/* stale */" >"$PKG/src/tree_sitter/stale.h"
+expect 1 "a committed header generate no longer writes is caught" "$CHECK" "$PKG"
+rm "$PKG/src/tree_sitter/stale.h"
+
+echo "/* scanner */" >"$PKG/src/scanner.c"
+expect 0 "a hand-written src/scanner.c beside the generated files is kept" "$CHECK" "$PKG"
+rm "$PKG/src/scanner.c"
+
 mkdir -p "$DIR/fake"
 printf '#!/bin/sh\necho "tree-sitter 0.0.1"\n' >"$DIR/fake/tree-sitter"
 chmod +x "$DIR/fake/tree-sitter"

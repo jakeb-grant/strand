@@ -305,7 +305,7 @@ fn assert_thp_off(pid: u32) {
     if let Some(l) = line {
         assert_eq!(l.split_whitespace().nth(1), Some("0"), "THP is on: {l}");
     }
-    // Off from before the first allocation (`main.rs`, `NO_THP`): with
+    // Off from before the first allocation (`strand::process_setup!`): with
     // THP `always`, pages the runtime touched before `main` were huge.
     let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
     let huge = rollup

@@ -36,6 +36,13 @@ got=$(tree-sitter --version | awk '{print $2}')
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 cp -r "$PKG" "$tmp/pkg"
+# Generate into a clean output: drop the four generated paths first, so a
+# committed file the CLI no longer writes (a header a newer CLI renamed,
+# say) is compared against nothing and caught, instead of against its own
+# copy. The rest of src/ (an external scanner.c) stays for generate.
+for f in parser.c grammar.json node-types.json tree_sitter; do
+  rm -rf "$tmp/pkg/src/$f"
+done
 (cd "$tmp/pkg" && tree-sitter generate --js-runtime native) >"$tmp/generate.log" 2>&1 || {
   cat "$tmp/generate.log" >&2
   echo "check-tree-sitter: tree-sitter generate failed on $PKG/grammar.js" >&2

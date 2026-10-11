@@ -759,12 +759,21 @@ new).**
   as the JSON its IPC answer holds. `SnapshotKind::Report` is `report`'s
   (the compositor's globals with versions, outputs and scales, frame
   summaries, GPU status, reason and lost-device count, promotion
-  reasons); `SnapshotKind::Layout { surface, node }` is a node's layout
-  (`Renderer::node_layout(surface, node)`). Main answers from its own
-  state between frames and never waits on logic.
-- `ToMain::Highlight(Option<(SurfaceId, NodeId)>)` and
-  `ToMain::DamageFlash(bool)`: main calls `Renderer::set_highlight` and
-  `set_damage_flash` (`inspect.highlight`, `inspect.flash`).
+  reasons); `SnapshotKind::Layout { node }` is a node's layout on each
+  surface showing it (main resolves them with
+  `Renderer::surfaces_of(node)` and answers
+  `Renderer::node_layout(surface, node)` for each). Main answers from its
+  own state between frames and never waits on logic.
+- `ToMain::Highlight(Option<NodeId>)` and `ToMain::DamageFlash(bool)`:
+  main calls `Renderer::set_highlight`, which outlines the node on every
+  surface showing it, and `set_damage_flash` (`inspect.highlight`,
+  `inspect.flash`).
+- Logic names nodes, never surfaces: a `SurfaceId` is main's (assigned
+  at `attach_surface`), only a pick and an input context carry one to
+  logic, and only for the surface clicked,
+  and one root shows on several surfaces (a bar per output). So no
+  logic→main message carries a `SurfaceId`; a node chosen from a dump or
+  typed into the terminal client is resolved on main.
 - `ToMain::PickMode(bool)`: the router's pick-mode hook on or off
   (`inspect.pick`, and off when the client that asked disconnects).
   A pick happens later, on a click, so it is not a snapshot: main sends
@@ -774,8 +783,9 @@ new).**
   (a surface unmapped, a lock started).
 
 0b landed the snapshot types, and the wave-0 hardening the rest
-(decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request and a
-`Layout { node }` without its surface), all in `strand/src/run/mod.rs`.
+(decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request, and
+the first hardening round's `SurfaceId` in `Layout` and `Highlight` went
+in the second, since logic cannot name one), all in `strand/src/run/mod.rs`.
 The channel itself is wired by the first stream that sends on it
 (S-tools' `report` or S-inspect), since an unused calloop channel would
 cost `.text` for nothing; the other reuses it.
@@ -822,7 +832,12 @@ contrast-guard step where they apply.
 **`strand-render` (new).**
 - `Renderer::pick(surface, point) -> Option<NodeId>`;
 - `Renderer::node_layout(surface, node) -> LayoutInfo`;
-- `Renderer::set_highlight(Option<(SurfaceId, NodeId)>)`;
+- `Renderer::surfaces_of(node) -> Vec<SurfaceId>`: the surfaces
+  attached at the nearest surface root at or above the node (every
+  output's for a bar, a popup's own for a node in it; landed, not inert,
+  in the wave-0 hardening);
+- `Renderer::set_highlight(Option<NodeId>)`, drawn on every surface
+  `surfaces_of` names;
 - `Renderer::set_damage_flash(bool)`: each frame's damage tinted for
   300 ms, the flash's own repaint excluded; off means no clock and no
   allocation;
@@ -857,11 +872,18 @@ pickable, and `inspect.pick` is refused while locked.
     synthetic events and the demo);
   - `Instance::event(node, event, args)` gains `input:
     Option<InputCtx>`; the VM keeps it in the handler invocation's
-    frame until the first `await` and numbers invocations from a
-    per-`Instance` counter (`ActionCtx::invocation`, 0 with no input);
+    frame until the first `await` and numbers every handler invocation,
+    with input or without, from a per-`Instance` counter starting at 1
+    (`ActionCtx::invocation`). The number stays in the frame for the
+    invocation's whole run, across every `await`; only `input` is
+    cleared at the first one. Invocation 0 is `ActionCtx::default()`,
+    an action outside any handler (an IPC `call`, a test): it is
+    unordered, queued behind nothing and nothing behind it;
   - strand-services' `DynService::action` gains the `ActionCtx`
     (`strand_core::ActionCtx`, which strand-services, depending only on
-    strand-core, can name), and its ordering queue asks the main thread
+    strand-core, can name), and the ordering queue (one queue on the
+    services thread shared by every service, keyed by invocation, since
+    one invocation's actions may span services) asks the main thread
     for a token through a token source the binary hands strand-services
     when it starts them: a `Fn(u32, u32)` (the surface's number, as in
     `InputCtx::surface`, and the serial) returning a one-shot future like
@@ -890,9 +912,11 @@ pickable, and `inspect.pick` is refused while locked.
 - **Ordering rule.** An action that needs a token (notification
   `invoke`, an app launch) waits up to 200 ms for it, then goes ahead
   without one (m5-owner Q14). Every later action from the same handler
-  invocation queues behind it, so `n.invoke("default"); n.dismiss()`
-  still sends `ActivationToken`, `ActionInvoked`, then the close. The
-  queue lives on the services side; logic never blocks. A compositor
+  invocation queues behind it, whichever service it goes to and whether
+  or not an `await` came between, so `n.invoke("default"); n.dismiss()`
+  and `n.invoke("default"); await x; n.dismiss()` both send
+  `ActivationToken`, `ActionInvoked`, then the close. The queue lives on
+  the services side, one for all services; logic never blocks. A compositor
   without `xdg_activation_v1`, or one that never answers, means no
   token: never a wait beyond 200 ms, never a dropped or reordered
   action.
@@ -950,15 +974,20 @@ unstable. A plugin binary writes its services' schemas as `.schema`
 files into `$XDG_DATA_HOME/strand/schemas/` (`--write-schemas`), outside
 the watched config directory, where `strand check` and the LSP read
 them; no dylib is loaded (m5-owner Q18). A plugin binary must copy the
-workspace's `[profile.release]` and its package overrides, or the size
-and PSS figures do not hold. The example is `[[example]] plugin_hello`
+workspace's `[profile.release]` and its package overrides, and invoke
+`strand::process_setup!()` once at its crate root (mimalloc as the
+global allocator, and THP off from an `.init_array` constructor before
+the first allocation), or the size and PSS figures do not hold: a
+library's `#[used]` constructor is not guaranteed to reach the binary
+that links it, so the library cannot do it alone (decisions.md
+m5-w0-harden). The example is `[[example]] plugin_hello`
 in the strand crate, never in the release binary's `.text`. The binary
 reaches the library through a hidden `strand::cli` module (its entry
 points: `check`, `fmt`, the IPC commands, `compositor_rules`, `demo`,
 `run`, `trim`, `LogConfig`, `default_dir`); the module tree stays
-private. `main.rs` keeps `#[global_allocator]` and the `NO_THP`
-constructor; `lib.rs` repeats both under `cfg(test)` so the unit tests
-run as the binary does.
+private. `main.rs` invokes `strand::process_setup!()`, and so do
+`lib.rs` under `cfg(test)` (so the unit tests run as the binary does)
+and `tests/m5/process_setup.rs` (a linking binary, as a plugin is).
 
 **Ownership.** Integrator: this section, the root `Cargo.toml` and
 `Cargo.lock`, CI files, budgets.rs's gate constants and

@@ -119,7 +119,7 @@ Three layers of evidence:
 
 ### Language spec frozen
 
-- design.md's open questions (design.md:778–781) are answered (Q1–Q4)
+- design.md's open questions (design.md:780–783) are answered (Q1–Q4)
   and ticked, with one decisions.md paragraph each (done in 0-freeze,
   `laptop/m5-plan`).
 - **`docs/spec.md` is self-contained normative text (Q5)**, written by
@@ -274,7 +274,8 @@ Expected: 20–80 KB. Recorded as measured, not promised.
   the 9,097 B between is the gate's rounding, which no stream may spend
   (decisions.md m5-w0-harden). The wave-0 merged tree read Δ −24,576,
   so 12,480 B spent (0b, to within 64 B); after the wave-0 hardening it
-  reads Δ −21,760, so 15,296 B spent and 214,704 B left.
+  read Δ −21,760 after its first round and Δ −21,696 after its second
+  (15,635,975 B), so 15,360 B spent and 214,640 B left.
 
 - Streams do not build release binaries routinely. The two least
   predictable items (D-Bus, inspector) each take one CPU-only
@@ -376,9 +377,9 @@ These are M4's rules (m4-plan.md "Ground rules"), with the changes noted.
 | S-inspect | 1, 2, 3 | `strand-compiler/src/instantiate/inspect.rs`, `strand-scene/src/provenance.rs`, `strand-render/src/inspect/**` (CPU and GPU paths), `run/request/inspect.rs`, `ipc/inspect.rs`, `strand-dev/src/inspect/**`, `tests/m5/inspect.rs`, its `tests/lock.rs` case | Inspector box |
 | S-lsp | 1, 2 | `strand-dev/src/{diag.rs, refactor/**}`, `server.rs`'s capability block, `check/tree.rs` and `check/expr.rs` key suggestions, `diagnostic.rs`'s `Suggestion` use, `crates/strand-dev/tree-sitter-strand/**` | LSP box; both tree-sitter boxes (M1 line 69, M5) |
 | S-platform | 0 (spike), 2 | `strand-surface/src/activation.rs` and the key serials in `manager/seat.rs`; the activation parts of strand-services' notifications, apps and child; the activation path in `strand/src/services/adapter.rs`; strand-fake-wayland's `xdg_activation_v1`; the handler input context's route (architecture.md): the serial beside `NodeEvent` in strand-render's router (`input.rs`), `ToLogic::Event`'s `input` field and its arm in `run/shell.rs` (and `demo/host.rs`'s `Intent::Event`), `Instance::event`'s `input` parameter and the VM's per-invocation frame in strand-compiler, `DynService::action`'s `ActionCtx`, and the services→main token channel in `strand/src/run/` | xdg-activation box |
-| S-tools | 2, 3 | `strand-theme/src/export.rs`, `strand/src/{new.rs, export.rs, report.rs}`, `run/request/report.rs`, strand-render `frame_summary`, strand-surface `globals()`/`outputs()`, `tests/m5/{new,export,report}.rs`; optional `check/imports.rs` | `new`/`export`/`report` box |
-| S-docs | 0 (writing), 1–3 | `docs/guide/**` (the `strand new` template included), `docs/spec.md`, `docs/reference/**` (generated), `strand-dev/src/reference.rs`, the ladder test, `tests/m5/newcomer.rs`, the agent-proxy harness, the design.md edits for the ladder and Async | Docs box; the newcomer exit's automated layers |
-| S-plugins | 2 | the builder API in `strand/src/lib.rs`'s `Shell::builder`, the `[[example]] plugin_hello`, plugin schema loading in `strand/src/services/mod.rs` and `strand-dev/src/server.rs` (a small PR S-lsp reviews), `tests/m5/plugin.rs`, the guide's plugin page | plugins half |
+| S-tools | 1 (writing), 2, 3 | `strand-theme/src/export.rs`, `strand/src/{new.rs, export.rs, report.rs}`, `run/request/report.rs`, strand-render `frame_summary`, strand-surface `globals()`/`outputs()`, `tests/m5/{new,export,report}.rs`; optional `check/imports.rs` | `new`/`export`/`report` box |
+| S-docs | 1–3 (wave 0's writing moved to wave 1) | `docs/guide/**` (the `strand new` template included), `docs/spec.md`, `docs/reference/**` (generated), `strand-dev/src/reference.rs`, the ladder test, `tests/m5/newcomer.rs`, the agent-proxy harness, the design.md edits for the ladder and Async | Docs box; the newcomer exit's automated layers |
+| S-plugins | 1 (writing), 2 | the builder API in `strand/src/lib.rs`'s `Shell::builder`, the `[[example]] plugin_hello`, plugin schema loading in `strand/src/services/mod.rs` and `strand-dev/src/server.rs` (a small PR S-lsp reviews), `tests/m5/plugin.rs`, the guide's plugin page | plugins half |
 
 Per-file ownership in shared crates:
 - strand-services: `ipc_bus.rs` belongs to S-ipc; the activation parts of
@@ -452,7 +453,8 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
 - **Snapshot hop between main and logic.** A logic→main request
   `Snapshot(kind, reply)` and its main→logic reply (`ToLogic::Snapshot`).
   It is used by `report` (compositor globals, outputs, frame summaries,
-  GPU status) and by the inspector (layouts, `Layout { surface, node }`).
+  GPU status) and by the inspector (layouts, `Layout { node }`, answered for each surface showing the
+  node: logic names nodes only, never a `SurfaceId`).
   It is one interface for both. The inspector's other messages share the
   channel: `ToMain::{Highlight, DamageFlash, PickMode}`, and a click's
   pick (or pick mode ending on main's side) comes back unasked as
@@ -481,7 +483,9 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
 - **strand-render**:
   - `Renderer::pick(surface, point) -> Option<NodeId>`;
   - `node_layout(surface, node) -> LayoutInfo`;
-  - `set_highlight(Option<(SurfaceId, NodeId)>)`;
+  - `surfaces_of(node) -> Vec<SurfaceId>` (landed in the wave-0
+    hardening; main resolves the inspector's node-only requests with it);
+  - `set_highlight(Option<NodeId>)`, on every surface showing the node;
   - `set_damage_flash(bool)`;
   - `frame_summary(surface)`.
 
@@ -505,10 +509,13 @@ owner. 0a and 0-freeze land together on `laptop/m5-plan`.
     Key-press serials are tracked beside `button_serial`.
   - **Ordering rule.** An action that needs a token (notification
     `invoke`, app launch) waits up to 200 ms for it. Every later action
-    from the same handler invocation queues behind it, so
-    `n.invoke("default"); n.dismiss()` still sends `ActivationToken`,
-    `ActionInvoked`, then the close. Logic never blocks: the queue lives
-    on the services side.
+    from the same handler invocation queues behind it, across services
+    and across `await`s (the invocation's number lives for its whole
+    run; only the input is cleared at the first `await`; invocation 0,
+    outside any handler, is unordered), so `n.invoke("default");
+    n.dismiss()` still sends `ActivationToken`, `ActionInvoked`, then
+    the close. Logic never blocks: the queue lives on the services side,
+    one for all services (architecture.md, "Handler input context").
 - **strand-compiler `Suggestion`** gains `title: Option<String>`.
   Zero-width (insertion) spans are allowed.
 - **strand-dev**: the inspector client, the reference generator, and the
@@ -601,13 +608,14 @@ commit, and GitHub's `timing` job green for each opt-level change.
 
 ### 0-freeze: owner docs (no build)
 
-Q1–Q5 are answered. The integrator ticks design.md:778–781 on
+Q1–Q5 are answered. The integrator ticks design.md:780–783 on
 `laptop/m5-plan`, each tick with its decisions.md paragraph, and S-docs
 creates the spec.md skeleton. This must land before S-lsp's tree-sitter grammar and before
 the guide's code blocks are final. (The ticks landed in wave 0; the
 spec.md skeleton did not and moves to wave 1, opened by S-docs before
 any other S-docs writing; S-lsp starts the grammar only once it is on
-`laptop/m5-w0`. decisions.md m5-w0-harden.)
+`laptop/m5-w0`. The move waits on the owner's confirmation: handoff.md's
+open items, decisions.md m5-w0-harden.)
 
 ## Waves
 
@@ -642,7 +650,10 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   in `watch`. `--json` shows the layer for settings and tokens
   (`Settings::layer`, `TokenTable::origin`, `OVERLAY_ORIGIN`).
 - **`toggle`**: one logic-thread step, bool only. Any other type is an
-  error naming the type. The refusal test at ipc.rs:873 is replaced.
+  error naming the type. The refusals it replaces live in strand-core since 0b's split:
+  `crates/strand-core/src/ipc.rs`'s
+  `requests_round_trip_and_unknown_ones_are_refused` (parse) and
+  `answers_read_back` (the answer).
 - **`call`**: service-level actions only (Q13). Arguments are text,
   parsed by the schema's parameter types as `parse_text` does. The
   return value is printed, or JSON with `--json`.
@@ -790,7 +801,8 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
       without errors;
     - the negative syntax fixtures produce errors;
     - the highlights cover every keyword in grammar.md;
-  - the lint job's `parser.c` regeneration diff.
+  - the lint job's regeneration diff (`scripts/check-tree-sitter.sh`:
+    `parser.c`, `grammar.json`, `node-types.json` and `tree_sitter/`).
 - Budget: 3 KB in `strand`.
 - Ticks: the LSP box and both tree-sitter boxes.
 
@@ -823,7 +835,7 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
 - Budget: 20 KB.
 - Ticks: the xdg-activation box.
 
-### S-tools (waves 2–3)
+### S-tools (wave 1 writing, waves 2–3)
 
 - **`strand new [dir]`**: the default dir is `$XDG_CONFIG_HOME/strand`,
   and a non-empty dir is refused. It writes the level-1 hello bar from
@@ -867,7 +879,7 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   was ticked in 0-freeze from M2's tests and is closed; the optional
   check test, if written, adds evidence to that tick only.)
 
-### S-docs (waves 0–3)
+### S-docs (waves 1–3)
 
 - **`docs/guide/`**: levels 1–5 in plain Markdown, with code blocks
   tagged by level (` ```strand level=2 `), and the `strand new`
@@ -909,8 +921,11 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   test` builds it, and it never enters the release binary's `.text`.
   There is no nested cargo run and no out-of-workspace package.
 - The guide's plugin page and D-plugins state that a plugin binary must
-  copy the workspace's `[profile.release]` and its package overrides.
-  Otherwise the size and PSS figures do not hold (handoff.md:155–159).
+  copy the workspace's `[profile.release]` and its package overrides,
+  and invoke `strand::process_setup!()` at its crate root (mimalloc and
+  THP off before the first allocation; `plugin_hello` does). Otherwise
+  the size and PSS figures do not hold (handoff.md:155–159; decisions.md
+  m5-w0-harden).
 - Tests:
   - `tests/m5/plugin.rs::an_extra_service_is_checked_and_runs` runs the
     built example binary;
@@ -955,8 +970,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   clock, and one lavapipe case for `GpuPresent`.
 - **Newcomer test**: pixel-strict at both scales, STRAND_MOCK, and a
   120 s budget.
-- **tree-sitter conformance**: runs in the test job. Only the `parser.c`
-  diff needs the CLI, in lint.
+- **tree-sitter conformance**: runs in the test job. Only the regeneration
+  diff of the four generated files (`scripts/check-tree-sitter.sh`)
+  needs the CLI, in lint.
 
 ## Risks
 

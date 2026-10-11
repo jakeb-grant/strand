@@ -9,36 +9,9 @@ use std::process::ExitCode;
 use strand::cli;
 use strand_compiler::diagnostic::Style;
 
-/// mimalloc for the whole runtime (`docs/design.md`, "Stack").
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-/// No transparent huge pages, from before the first allocation. On a
-/// system with THP `always` (GitHub's runners) the kernel backs a
-/// 2 MiB-aligned anonymous range with a huge page on its first touch:
-/// mimalloc's arenas filled 2 MiB pages for a few KiB of heap (55 MB PSS
-/// for design.md's bar instead of about 25). mimalloc's `no_thp` only
-/// stops it asking for them, and turning THP off in `main` came after
-/// the runtime's first allocations (the thread handle, the arguments)
-/// had already faulted two huge pages in (4 MB of `AnonHugePages`, the
-/// M0 gate missed by 265 kB in CI run 37644817292). An ELF constructor
-/// at priority 100 runs before `main` and every other constructor in the
-/// executable but std's argv capture (priority 99, which does not
-/// allocate): mimalloc's own included (checked in the release binary's
-/// `.init_array`: argv, this, then the unprioritised rest). The call
-/// makes two `prctl`s and does not allocate. A failure (an old kernel)
-/// leaves the default. The kernel keeps the flag across `fork` and
-/// `exec`: every program strand starts gets back what strand inherited
-/// (`strand_services::child::restore_in_child`, in each `pre_exec`).
-#[cfg(target_os = "linux")]
-#[used]
-#[unsafe(link_section = ".init_array.00100")]
-static NO_THP: extern "C" fn() = {
-    extern "C" fn no_thp() {
-        strand_services::child::thp_off();
-    }
-    no_thp
-};
+// mimalloc and no transparent huge pages before the first allocation
+// (`strand::process_setup!`, which documents both).
+strand::process_setup!();
 
 /// Subcommands the design commits to, with the milestone that delivers each.
 const COMMANDS: &[(&str, &str, &str)] = &[
@@ -286,7 +259,7 @@ mod tests {
         assert!(run(&["run", "a", "b"]).is_err());
     }
 
-    /// `NO_THP` ran before the test harness's `main`.
+    /// `process_setup!`'s constructor ran before the test harness's `main`.
     #[test]
     #[cfg(target_os = "linux")]
     fn transparent_huge_pages_are_off_before_main() {
@@ -296,7 +269,7 @@ mod tests {
     }
 
     /// A program strand starts gets back the THP setting strand inherited
-    /// (its parent's): `NO_THP` turned it off for this process only.
+    /// (its parent's): `process_setup!` turned it off for this process only.
     #[test]
     #[cfg(target_os = "linux")]
     fn programs_strand_starts_get_back_the_inherited_thp_setting() {

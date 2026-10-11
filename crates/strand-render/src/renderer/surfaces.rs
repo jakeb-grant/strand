@@ -95,6 +95,29 @@ impl Renderer {
         })
     }
 
+    /// (M5, the inspector) The surfaces that show `node`: those attached at the nearest
+    /// surface root at or above it (one per output for a bar on several;
+    /// a popup's own surface, not its anchor's, for a node inside a
+    /// popup). Empty when no attached surface shows it. Logic names
+    /// nodes, never surfaces, so main resolves the inspector's highlight
+    /// and layout requests through this (decisions.md m5-w0-harden).
+    pub fn surfaces_of(&self, node: NodeId) -> Vec<SurfaceId> {
+        let mut at = Some(node);
+        while let Some(id) = at {
+            let shown: Vec<SurfaceId> = self
+                .surfaces
+                .iter()
+                .filter(|(_, s)| s.root == id)
+                .map(|(sid, _)| *sid)
+                .collect();
+            if !shown.is_empty() {
+                return shown;
+            }
+            at = self.tree.get(id).and_then(|n| n.parent);
+        }
+        Vec::new()
+    }
+
     /// Paints the subtree under `root` (a surface node) into `surface`.
     pub fn attach_surface(&mut self, surface: SurfaceId, root: NodeId) {
         self.surfaces.insert(

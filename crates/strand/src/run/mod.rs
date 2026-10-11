@@ -299,8 +299,10 @@ pub enum ToMain {
         reply: SnapshotId,
     },
     /// `inspect.highlight{id?}`: outline a node (none: no outline);
-    /// main calls `Renderer::set_highlight`.
-    Highlight(Option<(SurfaceId, NodeId)>),
+    /// main calls `Renderer::set_highlight`, which outlines it on every
+    /// surface showing it. Logic names nodes only: it never learns a
+    /// `SurfaceId` (decisions.md m5-w0-harden).
+    Highlight(Option<NodeId>),
     /// `inspect.flash{on}`: main calls `Renderer::set_damage_flash`.
     DamageFlash(bool),
     /// `inspect.pick{on}`, and `false` when the asking IPC client goes:
@@ -335,9 +337,11 @@ pub enum SnapshotKind {
     /// and scales, frame summaries, GPU status, its reason and
     /// lost-device count, promotion reasons (S-tools).
     Report,
-    /// The inspector: a node's layout on its surface
-    /// (`Renderer::node_layout(surface, node)`, S-inspect).
-    Layout { surface: SurfaceId, node: NodeId },
+    /// The inspector: a node's layout on each surface showing it (main
+    /// resolves them with `Renderer::surfaces_of(node)` and answers with
+    /// `Renderer::node_layout(surface, node)` for each; none when no
+    /// surface shows it; S-inspect).
+    Layout { node: NodeId },
 }
 
 /// (M5) Which [`ToMain::Snapshot`] an answer is for (logic's numbering).
