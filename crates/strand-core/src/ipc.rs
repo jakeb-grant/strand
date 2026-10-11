@@ -14,8 +14,9 @@
 //!
 //! Version 1 gains commands only. M5's (`get`, `toggle`, `call`,
 //! `clear`, `report`, the inspector's `inspect.*` and `reset{node}`)
-//! parse here; a shell that does not serve one yet answers it as an
-//! unknown command.
+//! have their variants and their encoding here, and their fields are
+//! read by [`parse_m5`]; [`parse`] reads one only once the shell serves
+//! it, so a shell that does not answers it as an unknown command.
 //!
 //! [`IpcRequests`] carries requests from another thread (the services
 //! thread's D-Bus front end) to the logic loop, which answers each
@@ -45,6 +46,10 @@ pub const MAX_LINE: usize = 64 * 1024;
 pub const DBUS_NAME: &str = "io.github.jakeb_grant.Strand";
 
 /// What a client asked for.
+///
+/// Every string field but `Set::value` and `Call::args`' items holds a
+/// non-empty string: an empty one encodes, but does not parse back (a
+/// field a command needs is refused, an optional one reads as absent).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     /// `strand reload [--hard]`.
@@ -119,7 +124,15 @@ fn text(v: &Json, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Parse one request line.
+/// Parse one request line: the commands this shell serves.
+///
+/// M4's commands (`reload`, `watch`, `reset{path}`, `set`, `mock`)
+/// parse as they did in M4, field for field (a `reset` naming a `node`
+/// beside its `path` still resets the path). M5's commands parse through
+/// [`parse_m5`] once their stream serves them, by an arm here
+/// (`"get" | "toggle" => return parse_m5(cmd, &v)`); until then a
+/// client hears `unknown command`, M4's answer word for word
+/// (decisions.md m5-core).
 #[inline]
 pub fn parse(line: &str) -> Result<Request, String> {
     let v: Json = serde_json::from_str(line).map_err(|e| format!("not a JSON request: {e}"))?;
@@ -132,23 +145,14 @@ pub fn parse(line: &str) -> Result<Request, String> {
     let Some(cmd) = v.get("cmd").and_then(Json::as_str) else {
         return Err("a request needs a `cmd`".into());
     };
-    // A field M5's commands need, and what a request without it hears.
-    let need = |key: &str| text(&v, key).ok_or_else(|| format!("`{cmd}` needs `{key}`"));
-    let on = || {
-        v.get("on")
-            .and_then(Json::as_bool)
-            .ok_or_else(|| format!("`{cmd}` needs `on` (true or false)"))
-    };
     Ok(match cmd {
         "reload" => Request::Reload {
             hard: v.get("hard").and_then(Json::as_bool).unwrap_or(false),
         },
         "watch" => Request::Watch,
-        "reset" => match (text(&v, "node"), text(&v, "path")) {
-            (Some(node), None) => Request::ResetNode { node },
-            (None, Some(path)) => Request::Reset { path },
-            (Some(_), Some(_)) => return Err("`reset` takes a `path` or a `node`, not both".into()),
-            (None, None) => return Err("`reset` needs a `path`".into()),
+        "reset" => match text(&v, "path") {
+            Some(path) => Request::Reset { path },
+            None => return Err("`reset` needs a `path`".into()),
         },
         "set" => match (text(&v, "path"), v.get("value").and_then(Json::as_str)) {
             (Some(path), Some(value)) => Request::Set {
@@ -156,6 +160,30 @@ pub fn parse(line: &str) -> Result<Request, String> {
                 value: value.into(),
             },
             _ => return Err("`set` needs a `path` and a `value`".into()),
+        },
+        "mock" => Request::Mock(v),
+        other => return Err(format!("unknown command `{other}`")),
+    })
+}
+
+/// The fields of M5's command `cmd` (`get`, `toggle`, `call`, `clear`,
+/// `report`, `inspect.*`, and `reset` in its `{node}` form), read from
+/// the request object `v`; [`parse`] calls it for each command a stream
+/// serves. Shared so the streams never write a codec of their own, and
+/// unused by [`parse`] until then, so an unserved command costs the
+/// binary no code (decisions.md m5-core).
+#[inline]
+pub fn parse_m5(cmd: &str, v: &Json) -> Result<Request, String> {
+    // A field M5's commands need, and what a request without it hears.
+    let need = |key: &str| text(v, key).ok_or_else(|| format!("`{cmd}` needs `{key}`"));
+    let on = || {
+        v.get("on")
+            .and_then(Json::as_bool)
+            .ok_or_else(|| format!("`{cmd}` needs `on` (true or false)"))
+    };
+    Ok(match cmd {
+        "reset" => Request::ResetNode {
+            node: need("node")?,
         },
         "get" => Request::Get {
             path: need("path")?,
@@ -180,11 +208,10 @@ pub fn parse(line: &str) -> Result<Request, String> {
         "inspect.pick" => Request::InspectPick { on: on()? },
         "inspect.node" => Request::InspectNode { id: need("id")? },
         "inspect.dump" => Request::InspectDump {
-            surface: text(&v, "surface"),
+            surface: text(v, "surface"),
         },
-        "inspect.highlight" => Request::InspectHighlight { id: text(&v, "id") },
+        "inspect.highlight" => Request::InspectHighlight { id: text(v, "id") },
         "inspect.flash" => Request::InspectFlash { on: on()? },
-        "mock" => Request::Mock(v),
         other => return Err(format!("unknown command `{other}`")),
     })
 }
@@ -493,6 +520,23 @@ mod tests {
         ]
     }
 
+    /// M4's commands, which [`parse`] reads.
+    fn m4(r: &Request) -> bool {
+        matches!(
+            r,
+            Request::Reload { .. } | Request::Watch | Request::Reset { .. } | Request::Set { .. }
+        )
+    }
+
+    /// A line read as a shell that serves every command reads it.
+    fn parse_all(line: &str) -> Result<Request, String> {
+        let v: Json = serde_json::from_str(line).unwrap();
+        match parse(line) {
+            Err(_) => parse_m5(v["cmd"].as_str().unwrap(), &v),
+            r => r,
+        }
+    }
+
     #[test]
     fn requests_round_trip_and_unknown_ones_are_refused() {
         for r in every_request() {
@@ -501,7 +545,18 @@ mod tests {
             let v: Json = serde_json::from_str(&line).unwrap();
             assert_eq!(v["cmd"], r.cmd(), "{line}");
             assert_eq!(v["v"], VERSION, "{line}");
-            assert_eq!(parse(line.trim()), Ok(r));
+            assert_eq!(parse_all(line.trim()), Ok(r.clone()));
+            if m4(&r) {
+                assert_eq!(parse(line.trim()), Ok(r));
+            } else {
+                // Not served yet: M4's answer, word for word (`reset` is
+                // known, and M4 said what it lacks).
+                let m4_said = match r {
+                    Request::ResetNode { .. } => "`reset` needs a `path`".to_string(),
+                    _ => format!("unknown command `{}`", r.cmd()),
+                };
+                assert_eq!(parse(line.trim()), Err(m4_said), "{line}");
+            }
         }
         let mock = parse(r#"{"cmd":"mock","service":"battery"}"#).unwrap();
         assert_eq!(parse(encode(&mock).trim()), Ok(mock));
@@ -515,6 +570,11 @@ mod tests {
                 .contains("unknown command `frobnicate`")
         );
         assert!(
+            parse_m5("frobnicate", &json!({}))
+                .unwrap_err()
+                .contains("unknown command `frobnicate`")
+        );
+        assert!(
             parse(r#"{"v":2,"cmd":"watch"}"#)
                 .unwrap_err()
                 .contains("newer")
@@ -523,16 +583,90 @@ mod tests {
         assert!(parse(r#"{"v":1}"#).unwrap_err().contains("needs a `cmd`"));
     }
 
+    /// Empty strings are not values (`Request`'s doc): they encode, and
+    /// read back refused or absent; `set`'s value is the exception.
+    #[test]
+    fn empty_strings_do_not_round_trip_except_set_values() {
+        let set = Request::Set {
+            path: "a.b".into(),
+            value: String::new(),
+        };
+        assert_eq!(parse(encode(&set).trim()), Ok(set));
+        let call = Request::Call {
+            target: "a.b".into(),
+            args: vec![String::new()],
+        };
+        assert_eq!(parse_all(encode(&call).trim()), Ok(call));
+        for r in [
+            Request::Reset {
+                path: String::new(),
+            },
+            Request::Set {
+                path: String::new(),
+                value: "x".into(),
+            },
+            Request::ResetNode {
+                node: String::new(),
+            },
+            Request::Get {
+                path: String::new(),
+            },
+            Request::Call {
+                target: String::new(),
+                args: vec![],
+            },
+            Request::InspectNode { id: String::new() },
+        ] {
+            let line = encode(&r);
+            assert!(parse_all(line.trim()).is_err(), "{line}");
+        }
+        assert_eq!(
+            parse_all(
+                encode(&Request::InspectDump {
+                    surface: Some(String::new())
+                })
+                .trim()
+            ),
+            Ok(Request::InspectDump { surface: None })
+        );
+        assert_eq!(
+            parse_all(
+                encode(&Request::InspectHighlight {
+                    id: Some(String::new())
+                })
+                .trim()
+            ),
+            Ok(Request::InspectHighlight { id: None })
+        );
+    }
+
     #[test]
     fn malformed_requests_say_what_they_lack() {
+        // M4's commands, refused as M4 refused them.
         for (line, why) in [
             (r#"{"cmd":"reset"}"#, "`reset` needs a `path`"),
             (r#"{"cmd":"reset","path":""}"#, "`reset` needs a `path`"),
-            (r#"{"cmd":"reset","path":"a.b","node":"1v0"}"#, "not both"),
+            (r#"{"cmd":"reset","node":"1v0"}"#, "`reset` needs a `path`"),
             (
                 r#"{"cmd":"set","path":"a.b"}"#,
-                "needs a `path` and a `value`",
+                "`set` needs a `path` and a `value`",
             ),
+            (r#"{"cmd":"get"}"#, "unknown command `get`"),
+            (
+                r#"{"cmd":"inspect.pick"}"#,
+                "unknown command `inspect.pick`",
+            ),
+        ] {
+            assert_eq!(parse(line), Err(why.to_string()), "{line}");
+        }
+        // M4 read a `reset` with a `node` beside its `path` as the path.
+        assert_eq!(
+            parse(r#"{"cmd":"reset","path":"a.b","node":"1v0"}"#),
+            Ok(Request::Reset { path: "a.b".into() })
+        );
+        // M5's, once served.
+        for (line, why) in [
+            (r#"{"cmd":"reset"}"#, "`reset` needs `node`"),
             (r#"{"cmd":"get"}"#, "`get` needs `path`"),
             (r#"{"cmd":"toggle","path":""}"#, "`toggle` needs `path`"),
             (r#"{"cmd":"clear"}"#, "`clear` needs `path`"),
@@ -549,7 +683,8 @@ mod tests {
             (r#"{"cmd":"inspect.flash","on":"yes"}"#, "needs `on`"),
             (r#"{"cmd":"inspect.node"}"#, "`inspect.node` needs `id`"),
         ] {
-            let e = parse(line).unwrap_err();
+            let v: Json = serde_json::from_str(line).unwrap();
+            let e = parse_m5(v["cmd"].as_str().unwrap(), &v).unwrap_err();
             assert!(e.contains(why), "{line}: {e}");
         }
     }

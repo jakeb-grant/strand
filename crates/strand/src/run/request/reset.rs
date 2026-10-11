@@ -1,4 +1,5 @@
-//! `[reset]` from the command line, and (S-inspect) `reset{node}`.
+//! `[reset]` from the command line. (S-inspect adds `reset{node}`,
+//! `Request::ResetNode`, here.)
 
 use serde_json::json;
 
@@ -16,15 +17,5 @@ impl Shell {
             Err(e) => json!({"ok": false, "error": e.to_string()}),
         };
         self.answer(from, ans);
-    }
-
-    /// (S-inspect) Reset subtree (`Instance::reset_subtree`). Not served
-    /// yet.
-    pub(super) fn reset_node_request(&mut self, from: Caller, node: &str) {
-        let _ = node;
-        self.answer(
-            from,
-            strand_core::ipc::refused("`reset` of a node is not served by this shell yet"),
-        );
     }
 }

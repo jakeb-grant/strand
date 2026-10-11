@@ -1,12 +1,7 @@
 //! The inspector's commands (S-inspect): `inspect.pick`, `inspect.node`,
 //! `inspect.dump`, `inspect.highlight`, `inspect.flash`. Not served yet.
-
-use strand_core::ipc::Request;
-
-use super::{Caller, Shell};
-
-impl Shell {
-    pub(super) fn inspect_request(&mut self, from: Caller, req: Request) {
-        self.not_served(from, req.cmd());
-    }
-}
+//!
+//! Empty until its stream serves it: the command does not parse yet
+//! (`strand_core::ipc::parse`), so a client hears `unknown command`, as
+//! from M4. The stream adds its `parse` arm, its handler here and its
+//! arm in `Shell::request` together.

@@ -1,11 +1,7 @@
 //! `strand clear <path>` (S-ipc): drop a runtime overlay (`$accent`).
 //! Not served yet.
-
-use super::{Caller, Shell};
-
-impl Shell {
-    pub(super) fn clear_request(&mut self, from: Caller, path: &str) {
-        let _ = path;
-        self.not_served(from, "clear");
-    }
-}
+//!
+//! Empty until its stream serves it: the command does not parse yet
+//! (`strand_core::ipc::parse`), so a client hears `unknown command`, as
+//! from M4. The stream adds its `parse` arm, its handler here and its
+//! arm in `Shell::request` together.

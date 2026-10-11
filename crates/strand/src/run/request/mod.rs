@@ -2,8 +2,10 @@
 //! command to its own module, so the streams that serve M5's commands
 //! own disjoint files (docs/m5-plan.md, "Streams": `get`, `set`,
 //! `toggle`, `call`, `clear` S-ipc; `inspect.*` S-inspect; `report`
-//! S-tools). A command no module serves yet is answered as an unknown
-//! one, as before it parsed ([`strand_core::ipc::unknown`]).
+//! S-tools). A command no module serves yet does not parse from the
+//! socket (`strand_core::ipc::parse`); from another thread it arrives
+//! as a `Request` and is answered as an unknown one
+//! ([`strand_core::ipc::unknown`]), so both hear M4's answer.
 //!
 //! A request comes from a socket client or, through
 //! [`strand_core::ipc::IpcRequests`], from another thread (the D-Bus
@@ -44,19 +46,9 @@ impl Shell {
             Request::Reload { hard } => self.reload_request(from, hard),
             Request::Watch => self.watch_request(from),
             Request::Reset { path } => self.reset_request(from, &path),
-            Request::ResetNode { node } => self.reset_node_request(from, &node),
             Request::Set { path, value } => self.set_request(from, &path, &value),
-            Request::Get { path } => self.get_request(from, &path),
-            Request::Toggle { path } => self.toggle_request(from, &path),
-            Request::Call { target, args } => self.call_request(from, &target, &args),
-            Request::Clear { path } => self.clear_request(from, &path),
-            Request::Report => self.report_request(from),
             Request::Mock(req) => self.mock_request(from, &req),
-            req @ (Request::InspectPick { .. }
-            | Request::InspectNode { .. }
-            | Request::InspectDump { .. }
-            | Request::InspectHighlight { .. }
-            | Request::InspectFlash { .. }) => self.inspect_request(from, req),
+            req => self.not_served(from, req.cmd()),
         }
     }
 
@@ -72,7 +64,8 @@ impl Shell {
         }
     }
 
-    /// Answer a command this shell does not serve yet as an unknown one.
+    /// Answer a command this shell does not serve yet as an unknown one
+    /// (the request channel's M5 commands; `reload` and `watch` from it).
     fn not_served(&mut self, from: Caller, cmd: &str) {
         self.answer(from, proto::unknown(cmd));
     }

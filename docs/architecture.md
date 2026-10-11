@@ -667,6 +667,16 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     parameter's type as `set`'s value is.
   - A command the shell does not serve yet is answered exactly as an
     unknown one (`unknown command `x``), so 0b changes no answer.
+    `Request` has every command's variant and `encode` writes each, but
+    `ipc::parse` reads only the commands the shell serves: M5's fields
+    are read by `ipc::parse_m5(cmd, &v)`, which a stream calls from a
+    `parse` arm when it serves its command (S-inspect's arm sends a
+    `reset` with a `node` to it). Until then `parse` answers as M4 did,
+    field for field: a `reset` naming a `node` beside its `path` resets
+    the path, and one with only a `node` hears "`reset` needs a `path`".
+    (0a had `parse` read every command; 0b measured that at about 5 KB
+    of `.text` for commands nothing serves, and it changed what M4
+    clients heard for malformed requests: decisions.md, m5-core.)
   - `get` reads what `set` writes: exported values, settings fields and
     token overlays (decisions.md wave3-theme, `strand set`; service field
     reads are out of scope). `call` reaches service-level actions only

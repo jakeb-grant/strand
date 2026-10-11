@@ -304,7 +304,11 @@ fn block_on<F: std::future::Future + Unpin>(mut f: F) -> F::Output {
 #[test]
 fn requests_from_another_thread_are_answered_by_the_logic_loop() {
     let dir = temp_dir("bus-requests");
-    std::fs::write(dir.join("bar.strand"), "bar Top {\n  text \"hi\"\n}\n").unwrap();
+    std::fs::write(
+        dir.join("bar.strand"),
+        "export state label = \"hi\"\nbar Top {\n  text label\n}\n",
+    )
+    .unwrap();
     let program = load(&dir);
     let storage = Storage::in_dirs(dir.join("state"), &dir);
     let (to_logic, from_main) = calloop::channel::channel();
@@ -341,11 +345,25 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
             json!({"ok": false, "error": format!("unknown command `{cmd}`")})
         );
     }
+    // A served command's own answer reaches the caller, and acts.
+    assert_eq!(
+        ask(ipc::Request::Set {
+            path: "bar.label".into(),
+            value: "yo".into(),
+        }),
+        json!({"ok": true})
+    );
+    m.until("the set label", |s| s.texts() == ["yo"]);
     let ans = ask(ipc::Request::Set {
         path: "nowhere.x".into(),
         value: "1".into(),
     });
+    let why = ans["error"].as_str().unwrap_or_default();
     assert_eq!(ans["ok"], false, "{ans}");
+    assert!(
+        why.contains("nowhere") && !why.contains("dropped"),
+        "the set's own refusal: {ans}"
+    );
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     // The loop is gone: nothing answers.
@@ -577,9 +595,9 @@ fn saves_reload_live_with_state_kept() {
         let ans: Json = serde_json::from_str(answer.trim()).unwrap();
         assert_eq!(ans["ok"], true, "{ans}");
     }
-    // (M5 0b) The commands M5 adds parse and reach their modules, which
-    // answer them as unknown until their streams land, as before they
-    // parsed; the connection stays open (the reload below uses it).
+    // (M5 0b) The commands M5 adds are answered as unknown until their
+    // streams serve them, M4's answer word for word; the connection
+    // stays open (the reload below uses it).
     for (req, cmd) in [
         (ipc::Request::Get { path: "a.b".into() }, "get"),
         (ipc::Request::Toggle { path: "a.b".into() }, "toggle"),
@@ -621,7 +639,12 @@ fn saves_reload_live_with_state_kept() {
         Duration::from_secs(10),
     )
     .unwrap();
-    assert_eq!(ans["ok"], false, "{ans}");
+    // `reset` is known and its `{node}` form not served yet: M4's answer.
+    assert_eq!(
+        ans,
+        json!({"ok": false, "error": "`reset` needs a `path`"}),
+        "{ans}"
+    );
     // `--hard`: state dropped, every surface recreated.
     let ans = ipc::request(
         &mut client,

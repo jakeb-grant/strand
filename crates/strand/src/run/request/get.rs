@@ -1,10 +1,6 @@
 //! `strand get <path>` (S-ipc): what `set` writes. Not served yet.
-
-use super::{Caller, Shell};
-
-impl Shell {
-    pub(super) fn get_request(&mut self, from: Caller, path: &str) {
-        let _ = path;
-        self.not_served(from, "get");
-    }
-}
+//!
+//! Empty until its stream serves it: the command does not parse yet
+//! (`strand_core::ipc::parse`), so a client hears `unknown command`, as
+//! from M4. The stream adds its `parse` arm, its handler here and its
+//! arm in `Shell::request` together.
