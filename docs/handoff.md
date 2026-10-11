@@ -199,7 +199,7 @@ in decisions.md.
    before S-lsp's grammar (wave 2) starts; then the guide outline,
    ladder placements and template, and S-tools' export mapping table
    (m5-w0-harden, second round).
-6. **Still open: interface choices the hardening made**
+6. **Interface choices the hardening made: kept by the owner** (decisions.md m5-w1-owner, 2026-10-11)
    (m5-w0-harden), which the owner may overrule: inspector messages
    carry a node only (main resolves surfaces with
    `Renderer::surfaces_of`); the ordering rule (invocations numbered
