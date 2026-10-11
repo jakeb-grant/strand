@@ -1685,14 +1685,19 @@ mod tests {
         // 33 steps today).
         assert!(t.lookup("n4").is_none());
         assert_eq!(last_token_steps(), MAX_TOKEN_STEPS, "lookup");
+        // A sentinel no budget can leave, so a resolve that stopped
+        // counting (or never finished a Budget) cannot pass on the
+        // lookup's figure.
+        LAST_STEPS.with(|s| s.set(u32::MAX));
         assert!(
             t.resolve(&PropValue::Token(TokenExpr::path("n4")))
                 .is_none()
         );
+        let steps = last_token_steps();
+        assert_ne!(steps, u32::MAX, "resolve recorded no budget");
         assert!(
-            last_token_steps() <= MAX_TOKEN_STEPS,
-            "resolve: {} steps",
-            last_token_steps()
+            steps < MAX_TOKEN_STEPS,
+            "resolve: {steps} steps, expected the depth limit well before the step budget"
         );
         // A small fan-out still resolves.
         assert_eq!(t.lookup("n1"), Some(PropValue::Number(64.0)));

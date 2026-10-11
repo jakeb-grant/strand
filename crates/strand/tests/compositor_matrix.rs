@@ -265,7 +265,10 @@ fn lua_string(s: &str) -> String {
 
 /// Whether Hyprland refused a Lua-form dispatch because its config is
 /// hyprlang: it read `hl.dsp.focus({` as a dispatcher name it does not
-/// have (HyprCtl.cpp `dispatchRequest`).
+/// have (HyprCtl.cpp `dispatchRequest`). Unverified: the exact reply
+/// comes from reading 0.56.2's source only; no matrix leg runs a
+/// hyprlang-config Hyprland (GitHub's runs a Lua config), so the
+/// fallback in `Live::switch` has never run (decisions.md m5-infra).
 fn hypr_wants_classic(reply: &str) -> bool {
     reply.trim() == "Invalid dispatcher"
 }
@@ -551,7 +554,8 @@ impl Live {
             Kind::Hyprland => {
                 // Hyprland's current syntax first (a Lua config, 0.55 on),
                 // the classic one only when a hyprlang Hyprland refuses it
-                // (`hypr_dispatch`).
+                // (`hypr_wants_classic`; that branch is unverified: no leg
+                // runs a hyprlang config).
                 let mut reply = hyprctl_dispatch(&hypr_focus_workspace(name, true));
                 if hypr_wants_classic(&reply) {
                     reply = hyprctl_dispatch(&hypr_focus_workspace(name, false));

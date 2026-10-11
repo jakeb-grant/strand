@@ -2353,17 +2353,19 @@ fn grouped(n: u128) -> String {
 
 #[test]
 fn the_ledger_half_reads_size_delta_baseline_and_gate() {
+    // Literal gates, not TEXT_GATE_*: the integrator lowers the gates as
+    // M5's reclaims land, and that must not break this formatter test.
     assert_eq!(
-        ledger_half(false, 15_700_000, TEXT_GATE_CPU),
+        ledger_half(false, 15_700_000, 15_925_248),
         "CPU-only 15,700,000 (Δ +42,329 vs 15,657,671; gate 15,925,248)"
     );
     assert_eq!(
-        ledger_half(true, 19_000_000, TEXT_GATE_GPU),
+        ledger_half(true, 19_000_000, 19_398_656),
         "GPU 19,000,000 (Δ -41,095 vs 19,041,095; gate 19,398,656)"
     );
     assert_eq!(
-        ledger_half(false, LEDGER_BASELINE_CPU, TEXT_GATE_CPU),
-        "CPU-only 15,657,671 (Δ +0 vs 15,657,671; gate 15,925,248)"
+        ledger_half(false, LEDGER_BASELINE_CPU, 15_400_000),
+        "CPU-only 15,657,671 (Δ +0 vs 15,657,671; gate 15,400,000)"
     );
     assert_eq!(grouped(0), "0");
     assert_eq!(grouped(999), "999");
