@@ -90,7 +90,7 @@ opt-level = "s"
 opt-level = "s"
 
 [profile.release.package.strand-introspect]
-opt-level = "s"
+opt-level = "z"
 
 [profile.release.package.serde_json]
 opt-level = "s"
@@ -122,6 +122,8 @@ opt-level = "s"
 [profile.release.package.quick-xml]
 opt-level = "s"
 
+# Stays at "s": fontique parses fontconfig's XML with it, which may sit
+# on the reload path (decisions.md, m5-size).
 [profile.release.package.roxmltree]
 opt-level = "s"
 
@@ -129,19 +131,19 @@ opt-level = "s"
 opt-level = "s"
 
 [profile.release.package.miette]
-opt-level = "s"
+opt-level = "z"
 
 [profile.release.package.chrono]
 opt-level = "s"
 
 [profile.release.package.freedesktop-desktop-entry]
-opt-level = "s"
+opt-level = "z"
 
 [profile.release.package.pipewire]
-opt-level = "s"
+opt-level = "z"
 
 [profile.release.package.libspa]
-opt-level = "s"
+opt-level = "z"
 
 # Lottie's scene building, once per animation frame (vello_cpu still
 # rasterises at 3): built for size under the 15 MiB `.text` gate
