@@ -2114,6 +2114,10 @@ const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("freedesktop-desktop-entry", "s"),
     ("pipewire", "s"),
     ("libspa", "s"),
+    // SVG rasterisation, off every timing gate (decisions.md, m5-size).
+    ("resvg", "z"),
+    ("tiny-skia", "z"),
+    ("tiny-skia-path", "z"),
 ];
 
 /// `[profile.release.package.<name>]` → its `opt-level`, read from a

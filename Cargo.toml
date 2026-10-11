@@ -189,6 +189,19 @@ opt-level = "z"
 [profile.release.package.data-url]
 opt-level = "z"
 
+# SVG rasterisation (resvg and the tiny-skia it paints with): an SVG is
+# rasterised once per source and drawn size, on the decode worker, and
+# icons are cached per size; no timing gate draws one (decisions.md,
+# m5-size).
+[profile.release.package.resvg]
+opt-level = "z"
+
+[profile.release.package.tiny-skia]
+opt-level = "z"
+
+[profile.release.package.tiny-skia-path]
+opt-level = "z"
+
 # The timing gates' build (CI's `timing` job: theme_swap_bench and the
 # reload latency bench): the release profile, its per-package opt-levels
 # above and its single codegen unit included (a custom profile inherits
