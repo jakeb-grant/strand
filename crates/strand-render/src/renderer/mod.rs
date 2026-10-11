@@ -444,7 +444,7 @@ impl Renderer {
     }
 
     /// How long a cached shadow or gradient nothing draws lives
-    /// (10 s; tests shorten it).
+    /// (30 s; tests shorten it).
     pub fn set_paint_cache_idle(&mut self, idle: Duration) {
         self.raster.set_idle_free(idle);
     }

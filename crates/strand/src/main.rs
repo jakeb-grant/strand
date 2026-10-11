@@ -308,17 +308,20 @@ mod tests {
     }
 
     /// On a kernel with `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18 on) THP stays
-    /// off but for the regions strand advises, its largest pixel buffers:
-    /// one advised before it is written is backed by huge pages, while the
-    /// heap around it is not (decisions.md, m5-speed-thp). Elsewhere THP
-    /// is off altogether.
+    /// off but for the regions strand advises, its crossfade snapshots
+    /// (`strand_render::hugepage::HugeBuf`): such a buffer, written once,
+    /// is backed by huge pages (its own mapping is read in
+    /// `/proc/self/smaps`, so the allocator's state does not matter), and
+    /// its mapping is gone once the spare it becomes is trimmed
+    /// (decisions.md, m5-speed-thp). Elsewhere THP is off altogether.
     #[test]
     #[cfg(target_os = "linux")]
     fn thp_stays_on_only_for_advised_buffers() {
+        use strand_render::hugepage::HugeBuf;
         // SAFETY: `prctl` with integer arguments only.
         let got = unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) };
         if !strand_services::child::thp_on_for_advised() {
-            assert!(got != 0, "THP is on for the process: {got}");
+            assert_eq!(got, 1, "THP is off for the process");
             return;
         }
         assert_eq!(got, 3, "off except advised regions");
@@ -328,28 +331,61 @@ mod tests {
             eprintln!("skipped: THP is never on here ({mode:?})");
             return;
         }
-        let huge = || {
-            std::fs::read_to_string("/proc/self/smaps_rollup")
-                .ok()
-                .and_then(|r| {
-                    r.lines()
-                        .find_map(|l| l.strip_prefix("AnonHugePages:"))
-                        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
-                })
-                .unwrap_or(0)
+        // The `AnonHugePages` of the mapping holding `addr`, if any does.
+        let huge_at = |addr: usize| -> Option<u64> {
+            let smaps = std::fs::read_to_string("/proc/self/smaps").ok()?;
+            let mut inside = false;
+            for l in smaps.lines() {
+                let range = l.split_whitespace().next().and_then(|r| {
+                    let (a, b) = r.split_once('-')?;
+                    Some((
+                        usize::from_str_radix(a, 16).ok()?,
+                        usize::from_str_radix(b, 16).ok()?,
+                    ))
+                });
+                if let Some((a, b)) = range {
+                    inside = (a..b).contains(&addr);
+                } else if inside && let Some(v) = l.strip_prefix("AnonHugePages:") {
+                    return v.trim().trim_end_matches("kB").trim().parse().ok();
+                }
+            }
+            None
         };
-        let before = huge();
         let len = 32 << 20;
-        let mut big: Vec<u8> = Vec::with_capacity(len);
-        strand_render::hugepage::advise(big.as_ptr(), big.capacity());
-        big.resize(len, 1);
-        let after = huge();
+        let mut big = HugeBuf::zeroed(len);
+        assert!(big.is_mapped());
+        big.fill(1);
+        let addr = big.as_ptr() as usize;
+        let huge = huge_at(addr).unwrap_or(0);
+        // All of it, short of pages a fragmented host could not serve.
         assert!(
-            after >= before + 4096,
-            "an advised 32 MB buffer has {} kB of huge pages",
-            after.saturating_sub(before)
+            huge >= 16 << 10,
+            "an advised 32 MB buffer has {huge} kB of huge pages"
         );
+        // Dropped, it is kept as the spare until the idle trim unmaps it,
+        // advice and all (a later mapping there is THP-off heap).
         drop(big);
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        strand_render::hugepage::trim_idle(later, std::time::Duration::ZERO);
+        assert_eq!(
+            huge_at(addr).unwrap_or(0),
+            0,
+            "the advised mapping outlived its buffer"
+        );
+        // Normal use after it: 32 MB of small heap blocks, written, get no
+        // huge page anywhere in the process.
+        let blocks: Vec<Vec<u8>> = (0..512).map(|i| vec![i as u8 | 1; 64 << 10]).collect();
+        let rollup = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
+        let huge_now = rollup
+            .lines()
+            .find_map(|l| l.strip_prefix("AnonHugePages:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok());
+        assert_eq!(
+            huge_now.unwrap_or(0),
+            0,
+            "huge pages in the heap after a crossfade"
+        );
+        drop(blocks);
     }
 
     #[test]

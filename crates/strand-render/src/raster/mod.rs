@@ -103,6 +103,7 @@ impl Raster {
     pub fn trim_idle(&mut self, now: std::time::Instant) {
         self.cache.trim_idle(now);
         self.offscreen.trim_idle(now);
+        crate::hugepage::trim_idle(now, self.cache.idle_free());
     }
 
     /// Shortens (tests) how long an unused paint cache entry or
@@ -200,12 +201,13 @@ impl Raster {
         let Some(bbox) = damage.bounds() else {
             return;
         };
-        self.prepare(items, &damage);
+        self.prepare(items, &damage, window);
         let now = std::time::Instant::now();
         self.cache.trim_idle(now);
         self.offscreen
             .prepare(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen.trim_idle(now);
+        crate::hugepage::trim_idle(now, self.cache.idle_free());
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
         // composite through it.
@@ -284,10 +286,12 @@ impl Raster {
 
 impl Raster {
     /// Builds the cached pixmaps of the gradients and shadows that touch
-    /// `damage` (see [`crate::cache`]).
-    fn prepare(&mut self, items: &[DisplayItem], damage: &Damage) {
+    /// `damage` (see [`crate::cache`]), telling the cache which ones this
+    /// frame repaints whole (all of their part inside `window`).
+    fn prepare(&mut self, items: &[DisplayItem], damage: &Damage, window: Rect) {
         self.cache.begin_frame();
         let touches = |b: &Rect| damage.rects().iter().any(|r| r.intersects(*b));
+        let whole = |b: &Rect| b.intersect(window).is_some_and(|b| damage.covers(b));
         for d in items {
             if !touches(&d.bounds) {
                 continue;
@@ -295,7 +299,7 @@ impl Raster {
             match &d.item {
                 Item::Fill { paint, frame, .. } | Item::Border { paint, frame, .. } => {
                     if let Some((w, h)) = frame_px(*frame) {
-                        self.cache.gradient(paint, w, h);
+                        self.cache.gradient_in(paint, w, h, whole(&d.bounds));
                     }
                 }
                 Item::Shadow {
@@ -306,13 +310,16 @@ impl Raster {
                     extent,
                     ..
                 } => {
-                    self.cache.shadow(&ShadowShape {
-                        rect: *rect,
-                        radii: *radii,
-                        std_dev: *std_dev,
-                        color: *color,
-                        extent: *extent,
-                    });
+                    self.cache.shadow_in(
+                        &ShadowShape {
+                            rect: *rect,
+                            radii: *radii,
+                            std_dev: *std_dev,
+                            color: *color,
+                            extent: *extent,
+                        },
+                        whole(&d.bounds),
+                    );
                 }
                 _ => {}
             }

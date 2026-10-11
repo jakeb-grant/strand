@@ -50,6 +50,7 @@ use strand_scene::{
 };
 
 use super::{Flattened, Renderer};
+use crate::hugepage::HugeBuf;
 
 /// Settling tolerance of a palette root, in OKLab channels.
 const ROOT_EPS: f32 = 0.0005;
@@ -132,8 +133,9 @@ pub(super) struct Snapshot {
     size: Size,
     scale: Scale,
     /// Empty until taken; while `under` is set, the snapshot of the fade
-    /// this one replaces.
-    pixels: Vec<u8>,
+    /// this one replaces. Its own huge-page mapping when large
+    /// (`crate::hugepage`).
+    pixels: HugeBuf,
     old: Option<Flattened>,
     /// A crossfade landing mid-crossfade: the surface shows `old`'s frame
     /// weighted this much over `pixels`, and that blend is the snapshot.
@@ -1213,7 +1215,7 @@ impl Renderer {
                     continue;
                 }
                 Some(p) if p.size == size && p.scale == scale => (p.pixels, Some(p.last_w)),
-                _ => (Vec::new(), None),
+                _ => (HugeBuf::default(), None),
             };
             // The old frame's scene, for what its buffer no longer holds.
             let f = match s.cache.take() {
@@ -1254,7 +1256,7 @@ impl Renderer {
         let started = Instant::now();
         let age = target.age as usize;
         let row = snap.size.w as usize * 4;
-        let mut pixels = Vec::new();
+        let mut pixels = HugeBuf::default();
         // The buffer holds the frame shown but for the last `age - 1`
         // frames' damage. (Under a replaced crossfade every frame was
         // painted in full: only age 1 holds it.)
@@ -1265,12 +1267,16 @@ impl Renderer {
             && target.size == snap.size
             && target.scale == snap.scale;
         let missed = same.then(|| {
-            // Copied into fresh capacity: no zeroed buffer written over.
-            pixels.reserve_exact(snap.bytes());
-            crate::hugepage::advise(pixels.as_ptr(), pixels.capacity());
+            // Every byte is copied over (a fresh large buffer's pages are
+            // faulted in by the copy itself, as huge pages where allowed;
+            // a reused one's are in already).
+            pixels = HugeBuf::for_overwrite(snap.bytes());
             let rows = target.pixels.chunks(target.stride.max(1) as usize);
-            for src in rows.take(snap.size.h as usize) {
-                pixels.extend_from_slice(&src[..row]);
+            for (dst, src) in pixels
+                .chunks_exact_mut(row.max(1))
+                .zip(rows.take(snap.size.h as usize))
+            {
+                dst.copy_from_slice(&src[..row]);
             }
             let mut missed = Damage::new();
             for d in s.history.iter().take(age - 1) {
@@ -1280,10 +1286,7 @@ impl Renderer {
             missed
         });
         if missed.is_none() {
-            // Zeroed memory fresh from the system is not touched yet, so
-            // the advice still applies before the paint writes it.
-            pixels = vec![0u8; snap.bytes()];
-            crate::hugepage::advise(pixels.as_ptr(), pixels.len());
+            pixels = HugeBuf::zeroed(snap.bytes());
         }
         let under = snap.under.take();
         let prev = std::mem::take(&mut snap.pixels);
@@ -1607,7 +1610,7 @@ impl Renderer {
             .fade
             .get(&surface)
             .filter(|s| s.size == size && s.old.is_none() && s.pixels.len() == s.bytes())
-            .map(|s| s.pixels.as_slice())
+            .map(|s| &s.pixels[..])
     }
 
     /// Forgets a detached surface's crossfade.

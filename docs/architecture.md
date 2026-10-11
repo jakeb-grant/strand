@@ -1424,7 +1424,9 @@ and `tests/m5/process_setup.rs` (a linking binary, as a plugin is).
   inline offline; while a size springs the latest decode draws placed
   by its fit (`Decoded::placed_in`, `Item::Image::dest`). Gradients draw
   from dithered pixmaps and shadows from cached ones (a 32 MB paint
-  cache of entries up to 16 MB, entries unused for `IDLE_FREE` (30 s)
+  cache of entries up to 16 MB, one over 2 MB built only when a second
+  frame repaints all of it, so a first frame and partial frames draw it
+  directly; entries unused for `IDLE_FREE` (30 s)
   freed at the next paint or the next `Renderer::update`, whatever woke
   the loop: nothing wakes just to free them, so an idle shell does zero
   work between ticks; a frame loop that stops keeps them, so a surface
@@ -3644,8 +3646,9 @@ inspector (M5) to say why.
 - Hardware leg (`gpu.sh`, advisory): the same tests on
   `/dev/dri/renderD128`, plus PSS after the drop within about 6 MiB of
   the pre-GPU baseline in readback mode (the spike's ANV left 5.2–6.3
-  MiB, all libraries unmapped) and 8 MiB presenting (`STRAND_GPU_PRESENT=1`:
-  4.6–7.5 MiB measured; a leak tripwire, decisions.md m5-speed-gpu-bound), and the promoted cost checked against design.md's +20–40 MB
+  MiB, all libraries unmapped) and 12 MiB presenting (`STRAND_GPU_PRESENT=1`:
+  4.6–8.1 MiB measured in six runs; a leak tripwire with headroom over
+  that spread, decisions.md m5-speed-gpu-bound), and the promoted cost checked against design.md's +20–40 MB
 (the spike's ANV: about 15 MiB with the device up, 19–24 MiB
 presenting).
 - GPU frames are compared with the CPU frame under their own documented

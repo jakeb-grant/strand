@@ -139,8 +139,9 @@ decisions.md.
 
 1. **The presented GPU leg's after-drop bound** (m5-infra; features.md's
    GPU-cost box): settled (owner, 2026-10-10: memory is not sacred).
-   Presenting on renderD128 left 4.6–7.5 MiB after the drop; that leg
-   is now held to 8 MiB, asserted again, a leak tripwire
+   Presenting on renderD128 left 4.6–8.1 MiB after the drop in six
+   runs; that leg is now held to 12 MiB, asserted again, a leak
+   tripwire with headroom over that spread
    (decisions.md m5-speed-gpu-bound). Whether `scripts/gpu-measure.sh`'s
    KMS-card run is still wanted stays the owner's call.
 2. **The duplicated image decoders** (m5-size, last paragraph).

@@ -299,10 +299,17 @@ fn memory_report(pid: u32) -> String {
 /// strand turns transparent huge pages off for itself (`main`): THP in
 /// `always` mode otherwise fills mimalloc's arenas with 2 MiB pages. On a
 /// kernel with `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18 on) only the
-/// regions strand advises may use them, its largest pixel buffers, which
-/// the bar has none of; `THP_enabled:` then reads 1, so the resident huge
-/// pages are what is checked (decisions.md, m5-speed-thp).
+/// regions strand advises may use them, its crossfade snapshots, which
+/// the bar has none of; `THP_enabled:` then reads 1, so it must read 0
+/// only where the kernel lacks that flag (CI's), and the resident huge
+/// pages are checked on every kernel (decisions.md, m5-speed-thp).
 fn assert_thp_off(pid: u32) {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    // Kernels before 6.x have no such line; nothing to check there.
+    if let Some(l) = status.lines().find(|l| l.starts_with("THP_enabled:")) {
+        let want = if except_advised_supported() { "1" } else { "0" };
+        assert_eq!(l.split_whitespace().nth(1), Some(want), "THP is on: {l}");
+    }
     // Off from before the first allocation (`strand::process_setup!`): with
     // THP `always`, pages the runtime touched before `main` were huge.
     let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
@@ -315,6 +322,32 @@ fn assert_thp_off(pid: u32) {
         "huge pages resident: {huge:?}\n{}",
         memory_report(pid)
     );
+}
+
+/// Whether this kernel takes `PR_SET_THP_DISABLE` with
+/// `PR_THP_DISABLE_EXCEPT_ADVISED` (Linux 6.18): asked in a throwaway
+/// child, so the test process keeps its own setting.
+fn except_advised_supported() -> bool {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new("true");
+    // SAFETY: `prctl` with integer arguments only, async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            let r = libc::prctl(
+                libc::PR_SET_THP_DISABLE,
+                1 as libc::c_ulong,
+                (1 << 1) as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            );
+            if r == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    cmd.status().is_ok_and(|s| s.success())
 }
 
 fn pss_kb(pid: u32) -> u64 {

@@ -411,8 +411,6 @@ pub(crate) fn rasterise(
     // bounds the groups at about 32 MB; a group over the budget is drawn on
     // every damaged frame).
     let mut pm = Pixmap::new(w, h);
-    let data = pm.data_mut();
-    crate::hugepage::advise(data.as_ptr().cast(), data.len() * 4);
     let mut resources = Resources::new();
     ctx.render_with(
         pm.as_mut(),
