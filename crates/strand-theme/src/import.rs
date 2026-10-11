@@ -20,8 +20,8 @@
 //!
 //! Each importer also keeps every colour of its source as the palette's
 //! extras, in source order (`$palette.<name>`, decisions.md m5-tools):
-//! Catppuccin's 26 names, base16/base24's `baseXX` slots, matugen's
-//! colour keys that are not roles, every W3C colour token. Two source
+//! Catppuccin's 26 names, base16/base24's `baseXX` slots, every matugen
+//! colour key of the mode (a role's included), every W3C colour token. Two source
 //! colours whose names become the same are an error naming both.
 
 use std::collections::BTreeMap;
@@ -620,8 +620,8 @@ fn extras_in_order(
 // matugen
 
 /// matugen's JSON (`matugen image wall.jpg --json hex`). Material 3 role
-/// names map 1:1 onto the palette ([`Role::m3`]); its other colour keys
-/// (`source_color`) are extras.
+/// names map 1:1 onto the palette ([`Role::m3`]); every colour key of the
+/// mode, a role's included (`primary`, `source_color`), is an extra.
 pub fn matugen(text: &str) -> Result<Partial, String> {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let colors = json
@@ -641,14 +641,15 @@ pub fn matugen(text: &str) -> Result<Partial, String> {
     let mut extras = Vec::new();
     let mut found = |prefix: &[&str], k: &str, c: Option<Color>| {
         let Some(c) = c else { return };
-        match Role::from_name(k) {
-            Some(r) => p.set(r, c),
-            None => {
-                let mut path: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
-                path.push(k.to_string());
-                extras.push((path, c));
-            }
+        // A role's key fills the role and is kept as an extra too, as
+        // W3C's `color.accent` is (spec.md 9.5: every colour of the
+        // source).
+        if let Some(r) = Role::from_name(k) {
+            p.set(r, c);
         }
+        let mut path: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
+        path.push(k.to_string());
+        extras.push((path, c));
     };
     // colors.<mode>.<role>
     if let Some(by_mode) = colors.get(mode).and_then(|m| m.as_object())

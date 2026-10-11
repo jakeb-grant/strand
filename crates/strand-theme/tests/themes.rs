@@ -158,9 +158,21 @@ fn matugen_output_fills_the_palette() {
     std::fs::write(dir.join("colors.json"), doc.to_string()).unwrap();
     let p = import("matugen:colors.json", Some(&dir)).unwrap();
     whole(&p);
+    // Every key is kept as an extra (spec.md 9.5), so the extras are the
+    // seed's `source_color` plus the 49 M3 names, in the file's order
+    // (serde_json writes the map sorted).
+    let mut want: Vec<(String, Color)> = dark
+        .iter()
+        .map(|(k, v)| (k.clone(), hex(v.as_str().unwrap())))
+        .collect();
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(p.extras(), &want[..]);
+    assert_eq!(p.extra("source_color"), Some(hex("#7aa2f7")));
+    assert_eq!(p.extra("primary"), Some(seed.get(Role::Accent)));
     assert_eq!(
-        p, seed,
-        "a full matugen scheme comes back role for role, hues and extras included"
+        p,
+        seed.clone().with_extras(want),
+        "a full matugen scheme comes back role for role, hues included"
     );
     // colors.<role>.<mode>, with `{ "color": … }` values; partial, so the
     // derivation table fills the rest.

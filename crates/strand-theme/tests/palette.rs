@@ -296,6 +296,7 @@ fn matugen_and_w3c_keep_their_colours_in_source_order() {
       "zeta": "#112233",
       "surface": "#111318",
       "alpha": "#445566",
+      "green": "#3fb950",
       "on_surface": "#e1e2e8"
     }
   }
@@ -303,16 +304,54 @@ fn matugen_and_w3c_keep_their_colours_in_source_order() {
     std::fs::write(dir.join("m.json"), doc).unwrap();
     let p = import("matugen:m.json", Some(&dir)).unwrap();
     whole(&p);
+    // Every colour of the source is kept, a role's included (spec.md 9.5):
+    // `primary` is both `$accent` and `$palette.primary`, and a custom
+    // colour named for a hue fills that hue and is `$palette.green`.
+    let extras: Vec<(&str, Color)> = p.extras().iter().map(|(n, c)| (n.as_str(), *c)).collect();
+    assert_eq!(
+        extras,
+        [
+            ("source_color", hex("#7aa2f7")),
+            ("primary", hex("#a4c9fe")),
+            ("zeta", hex("#112233")),
+            ("surface", hex("#111318")),
+            ("alpha", hex("#445566")),
+            ("green", hex("#3fb950")),
+            ("on_surface", hex("#e1e2e8")),
+        ]
+    );
+    assert_eq!(p.get(Role::Accent), hex("#a4c9fe"));
+    assert_eq!(p.get(Role::Green), hex("#3fb950"));
+    assert_eq!(p.name(), Some("matugen:m.json"), "no name: the source");
+
+    // matugen 3's `colors.<role>.<mode>` layout, `{ "color": … }` values:
+    // the extras are the role keys, in the file's order, each with the
+    // mode's colour.
+    let doc = r##"{
+  "mode": "dark",
+  "colors": {
+    "source_color": { "dark": { "color": "#7aa2f7" }, "light": { "color": "#7aa2f7" } },
+    "zeta": { "light": { "color": "#000000" }, "dark": { "color": "#112233" } },
+    "primary": { "light": { "color": "#3a5f8f" }, "dark": { "color": "#a4c9fe" } },
+    "alpha": { "default": { "color": "#445566" } },
+    "surface": { "light": { "color": "#f9f9ff" }, "dark": { "color": "#111318" } }
+  }
+}"##;
+    std::fs::write(dir.join("v3.json"), doc).unwrap();
+    let p = import("matugen:v3.json", Some(&dir)).unwrap();
+    whole(&p);
     let extras: Vec<(&str, Color)> = p.extras().iter().map(|(n, c)| (n.as_str(), *c)).collect();
     assert_eq!(
         extras,
         [
             ("source_color", hex("#7aa2f7")),
             ("zeta", hex("#112233")),
+            ("primary", hex("#a4c9fe")),
             ("alpha", hex("#445566")),
+            ("surface", hex("#111318")),
         ]
     );
-    assert_eq!(p.name(), Some("matugen:m.json"), "no name: the source");
+    assert_eq!(p.get(Role::Accent), hex("#a4c9fe"));
 
     let doc = r##"{
   "color": {
@@ -457,7 +496,10 @@ fn insert_into_writes_the_identity_then_the_extras_in_order() {
     let mut t = TokenTable::default();
     p.insert_into(&mut t);
     assert_eq!(t.palette_value("name"), Some(&text("matugen:m.json")));
-    assert_eq!(names(&t), ["name", "source", "dark", "zeta", "alpha"]);
+    assert_eq!(
+        names(&t),
+        ["name", "source", "dark", "zeta", "primary", "alpha"]
+    );
     let _ = std::fs::remove_dir_all(dir);
 
     // No source and no name: neither entry, `dark` alone, the extras after.
