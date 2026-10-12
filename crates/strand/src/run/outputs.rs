@@ -17,17 +17,17 @@
 //! runs `run:` 200 ms after a file's last write, one run per file with
 //! one queued, killing its process group after 10 s; a run's stderr is
 //! read only while it runs (and a moment after), so a process it leaves
-//! in the background never holds the writer. Failures come back over a
-//! channel (the loop is pinged awake) and become an overlay notice and a
+//! in the background never holds the writer. Failures come back in a
+//! shared list (the loop is pinged awake) and become an overlay notice and a
 //! `strand watch` notice; the last good file stays.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Read as _;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -87,24 +87,78 @@ pub(super) enum Outcome {
     Unowned(PathBuf, String),
 }
 
+/// The writer's job queue and what it tells logic, shared by logic, the
+/// writer and its runs' threads (one lock each, no channel: the writer
+/// waits on the condvar, logic is pinged and drains the outcomes).
+#[derive(Default)]
+struct Shared {
+    jobs: Mutex<VecDeque<Job>>,
+    wake: Condvar,
+    outcomes: Mutex<Vec<Outcome>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Shared {
+    fn push(&self, job: Job) {
+        lock(&self.jobs).push_back(job);
+        self.wake.notify_one();
+    }
+
+    /// The next job, waiting for one until `until` (`None`: as long as
+    /// it takes); `None` once `until` passes.
+    fn pop(&self, until: Option<Instant>) -> Option<Job> {
+        let mut q = lock(&self.jobs);
+        loop {
+            if let Some(j) = q.pop_front() {
+                return Some(j);
+            }
+            q = match until {
+                None => self.wake.wait(q).unwrap_or_else(PoisonError::into_inner),
+                Some(at) => {
+                    let left = at.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return None;
+                    }
+                    match self.wake.wait_timeout(q, left) {
+                        Ok((q, _)) => q,
+                        Err(e) => e.into_inner().0,
+                    }
+                }
+            };
+        }
+    }
+}
+
+/// The value kept for `path` in a writer's small per-path lists.
+fn entry<'a, T>(v: &'a mut [(PathBuf, T)], path: &Path) -> Option<&'a mut T> {
+    v.iter_mut().find(|(p, _)| p == path).map(|(_, t)| t)
+}
+
+/// Takes `path`'s value out of the list.
+fn take<T>(v: &mut Vec<(PathBuf, T)>, path: &Path) -> Option<T> {
+    let i = v.iter().position(|(p, _)| p == path)?;
+    Some(v.swap_remove(i).1)
+}
+
 /// The writer thread, started with the first output, ended when this
 /// is dropped (with the shell).
 pub(super) struct Files {
     ping: calloop::ping::Ping,
     manifest: Option<PathBuf>,
     own_writes: Option<OwnWrites>,
-    tx: Option<Sender<Job>>,
-    rx: Option<Receiver<Outcome>>,
+    /// The writer's queue and outcomes, once it is started.
+    shared: Option<Arc<Shared>>,
     /// The targets last sent as [`Job::Keep`].
     targets: Vec<PathBuf>,
 }
 
 impl Drop for Files {
     fn drop(&mut self) {
-        // The writer holds a sender of its own job channel (for its
-        // runs' endings), so dropping ours would never end it.
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Job::Stop);
+        if let Some(s) = &self.shared {
+            s.push(Job::Stop);
         }
     }
 }
@@ -122,8 +176,7 @@ impl Files {
             ping,
             manifest,
             own_writes,
-            tx: None,
-            rx: None,
+            shared: None,
             targets: Vec::new(),
         }
     }
@@ -131,7 +184,7 @@ impl Files {
     /// Tells the writer the paths `inst`'s outputs write now, when they
     /// changed since last told.
     fn keep(&mut self, inst: &strand_compiler::instantiate::Instance) {
-        if self.tx.is_none() {
+        if self.shared.is_none() {
             return;
         }
         let (mut count, mut same) = (0, true);
@@ -149,41 +202,37 @@ impl Files {
     }
 
     fn send(&mut self, job: Job) -> bool {
-        if self.tx.is_none() {
-            let (tx, jobs) = mpsc::channel();
-            let (out, rx) = mpsc::channel();
-            let ping = self.ping.clone();
-            let manifest = self.manifest.clone();
-            let back = tx.clone();
-            let hook = self.own_writes.take();
-            let spawned = std::thread::Builder::new()
-                .name("strand-files".into())
-                .spawn(move || {
-                    let mut w = Writer::new(manifest, out, ping, back);
-                    w.own_writes = hook;
-                    w.run(jobs)
-                });
-            if let Err(e) = spawned {
-                log::warn!("file outputs are not written: no writer thread: {e}");
-                return false;
+        let shared = match &self.shared {
+            Some(s) => s,
+            None => {
+                let shared = Arc::new(Shared::default());
+                let mut w = Writer::new(self.manifest.clone(), shared.clone(), self.ping.clone());
+                w.own_writes = self.own_writes.take();
+                let spawned = std::thread::Builder::new()
+                    .name("strand-files".into())
+                    .spawn(move || w.run());
+                if let Err(e) = spawned {
+                    log::warn!("file outputs are not written: no writer thread: {e}");
+                    return false;
+                }
+                self.shared.insert(shared)
             }
-            self.tx = Some(tx);
-            self.rx = Some(rx);
-        }
-        self.tx.as_ref().is_some_and(|tx| tx.send(job).is_ok())
+        };
+        shared.push(job);
+        true
     }
 
     /// A notice's `[replace]`: `path` becomes Strand's and is written.
     pub(super) fn replace(&mut self, path: PathBuf) {
-        if self.tx.is_none() || !self.send(Job::Replace(path)) {
+        if self.shared.is_none() || !self.send(Job::Replace(path)) {
             log::warn!("file outputs: nothing to replace (no writer)");
         }
     }
 
     fn outcomes(&self) -> Vec<Outcome> {
-        self.rx
+        self.shared
             .as_ref()
-            .map(|rx| rx.try_iter().collect())
+            .map(|s| std::mem::take(&mut *lock(&s.outcomes)))
             .unwrap_or_default()
     }
 }
@@ -294,11 +343,11 @@ struct Writer {
     manifest_file: Option<PathBuf>,
     /// Path → FNV-1a hash of what Strand last wrote there.
     owned: BTreeMap<PathBuf, u64>,
-    out: Sender<Outcome>,
+    shared: Arc<Shared>,
     ping: calloop::ping::Ping,
-    back: Sender<Job>,
-    runs: HashMap<PathBuf, RunState>,
-    retries: HashMap<PathBuf, Retry>,
+    /// Per path (a handful of files: lists, not maps).
+    runs: Vec<(PathBuf, RunState)>,
+    retries: Vec<(PathBuf, Retry)>,
     /// How long `run:` may take ([`RUN_TIMEOUT`]; tests shorten it).
     timeout: Duration,
     /// Registers a write with the config watcher before it lands.
@@ -308,9 +357,8 @@ struct Writer {
 impl Writer {
     fn new(
         manifest_file: Option<PathBuf>,
-        out: Sender<Outcome>,
+        shared: Arc<Shared>,
         ping: calloop::ping::Ping,
-        back: Sender<Job>,
     ) -> Writer {
         let owned = manifest_file
             .as_deref()
@@ -320,45 +368,32 @@ impl Writer {
         Writer {
             manifest_file,
             owned,
-            out,
+            shared,
             ping,
-            back,
-            runs: HashMap::new(),
-            retries: HashMap::new(),
+            runs: Vec::new(),
+            retries: Vec::new(),
             timeout: RUN_TIMEOUT,
             own_writes: None,
         }
     }
 
     fn tell(&self, o: Outcome) {
-        if self.out.send(o).is_ok() {
-            self.ping.ping();
-        }
+        lock(&self.shared.outcomes).push(o);
+        self.ping.ping();
     }
 
-    fn run(mut self, jobs: Receiver<Job>) {
+    fn run(mut self) {
         loop {
             let next = self
                 .runs
-                .values()
-                .filter_map(|r| r.due)
-                .chain(self.retries.values().map(|r| r.at))
+                .iter()
+                .filter_map(|(_, r)| r.due)
+                .chain(self.retries.iter().map(|(_, r)| r.at))
                 .min();
-            let job = match next {
-                Some(at) => match jobs.recv_timeout(at.saturating_duration_since(Instant::now())) {
-                    Ok(j) => Some(j),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => return,
-                },
-                None => match jobs.recv() {
-                    Ok(j) => Some(j),
-                    Err(_) => return,
-                },
-            };
-            match job {
+            match self.shared.pop(next) {
                 Some(Job::Write { path, bytes, run }) => {
                     // Newer content replaces a write still being retried.
-                    let last = self.retries.remove(&path).map(|r| r.why);
+                    let last = take(&mut self.retries, &path).map(|r| r.why);
                     self.write(path, bytes, run, last);
                 }
                 Some(Job::Replace(path)) => {
@@ -368,7 +403,7 @@ impl Writer {
                         Ok(target) => self.own(&target, 0),
                         Err(why) => log::warn!("file {}: {why}", path.display()),
                     }
-                    if let Some(r) = self.retries.get_mut(&path) {
+                    if let Some(r) = entry(&mut self.retries, &path) {
                         r.at = Instant::now();
                     }
                 }
@@ -378,7 +413,7 @@ impl Writer {
                     if let Some(why) = failed {
                         self.tell(Outcome::Failed(path.clone(), why));
                     }
-                    if let Some(r) = self.runs.get_mut(&path) {
+                    if let Some(r) = entry(&mut self.runs, &path) {
                         r.running = false;
                         if std::mem::take(&mut r.queued) {
                             r.due = Some(Instant::now());
@@ -407,9 +442,21 @@ impl Writer {
             Ok(changed) => {
                 self.tell(Outcome::Written(path.clone()));
                 if changed && let Some(argv) = run.filter(|a| !a.is_empty()) {
-                    let r = self.runs.entry(path).or_default();
-                    r.argv = argv;
-                    r.due = Some(Instant::now() + RUN_DEBOUNCE);
+                    let due = Some(Instant::now() + RUN_DEBOUNCE);
+                    match entry(&mut self.runs, &path) {
+                        Some(r) => {
+                            r.argv = argv;
+                            r.due = due;
+                        }
+                        None => self.runs.push((
+                            path,
+                            RunState {
+                                argv,
+                                due,
+                                ..RunState::default()
+                            },
+                        )),
+                    }
                 }
                 None
             }
@@ -424,7 +471,8 @@ impl Writer {
                 if why.starts_with(STRAND_REFUSED) {
                     return None;
                 }
-                self.retries.insert(
+                let _ = take(&mut self.retries, &path);
+                self.retries.push((
                     path,
                     Retry {
                         bytes,
@@ -433,7 +481,7 @@ impl Writer {
                         wait: RETRY_FIRST,
                         why,
                     },
-                );
+                ));
                 Some(RETRY_FIRST)
             }
         }
@@ -442,8 +490,8 @@ impl Writer {
     /// Lets go of the writes and `run:`s of paths no `file` writes now;
     /// a run already going ends on its own.
     fn keep(&mut self, paths: &[PathBuf]) {
-        self.retries.retain(|p, _| paths.contains(p));
-        self.runs.retain(|p, r| {
+        self.retries.retain(|(p, _)| paths.contains(p));
+        self.runs.retain_mut(|(p, r)| {
             if paths.contains(p) {
                 return true;
             }
@@ -464,14 +512,14 @@ impl Writer {
             .map(|(p, _)| p.clone())
             .collect();
         for path in due {
-            let Some(r) = self.retries.remove(&path) else {
+            let Some(r) = take(&mut self.retries, &path) else {
                 continue;
             };
             let wait = (r.wait * 2).min(RETRY_MAX);
             if self
                 .write(path.clone(), r.bytes, r.run, Some(r.why))
                 .is_some()
-                && let Some(again) = self.retries.get_mut(&path)
+                && let Some(again) = entry(&mut self.retries, &path)
             {
                 again.wait = wait;
                 again.at = Instant::now() + wait;
@@ -555,7 +603,7 @@ impl Writer {
             .map(|(p, _)| p.clone())
             .collect();
         for path in due {
-            let Some(r) = self.runs.get_mut(&path) else {
+            let Some(r) = entry(&mut self.runs, &path) else {
                 continue;
             };
             r.due = None;
@@ -565,14 +613,14 @@ impl Writer {
             }
             r.running = true;
             let argv = r.argv.clone();
-            let back = self.back.clone();
+            let back = self.shared.clone();
             let timeout = self.timeout;
             let ran = path.clone();
             let spawned = std::thread::Builder::new()
                 .name("strand-files-run".into())
                 .spawn(move || {
                     let failed = run_once(&argv, timeout);
-                    let _ = back.send(Job::Ran { path: ran, failed });
+                    back.push(Job::Ran { path: ran, failed });
                 });
             if let Err(e) = spawned {
                 log::warn!("file outputs: no thread for `run:`: {e}");
@@ -770,26 +818,63 @@ fn manifest_text(owned: &BTreeMap<PathBuf, u64>) -> String {
 }
 
 fn parse_manifest(text: &str) -> BTreeMap<PathBuf, u64> {
-    text.lines()
-        .filter(|l| !l.starts_with('#'))
-        .filter_map(|l| {
-            let (h, p) = l.split_once(' ')?;
-            Some((PathBuf::from(p), u64::from_str_radix(h, 16).ok()?))
-        })
-        .collect()
+    // Inserted one by one: collecting would sort, a sort compiled for
+    // this one pair type.
+    let mut owned = BTreeMap::new();
+    for l in text.lines().filter(|l| !l.starts_with('#')) {
+        if let Some((h, p)) = l.split_once(' ')
+            && let Ok(h) = u64::from_str_radix(h, 16)
+        {
+            owned.insert(PathBuf::from(p), h);
+        }
+    }
+    owned
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn writer(dir: &Path) -> (Writer, Receiver<Outcome>) {
+    /// A test's ends of the queue: send as logic does, receive the
+    /// outcomes in order.
+    impl Shared {
+        fn send(&self, job: Job) -> Result<(), ()> {
+            self.push(job);
+            Ok(())
+        }
+
+        fn try_recv(&self) -> Result<Outcome, ()> {
+            let mut o = lock(&self.outcomes);
+            match o.is_empty() {
+                true => Err(()),
+                false => Ok(o.remove(0)),
+            }
+        }
+
+        fn recv_timeout(&self, wait: Duration) -> Result<Outcome, ()> {
+            let until = Instant::now() + wait;
+            loop {
+                if let Ok(o) = self.try_recv() {
+                    return Ok(o);
+                }
+                if Instant::now() >= until {
+                    return Err(());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn drain(&self) -> Vec<Outcome> {
+            std::mem::take(&mut *lock(&self.outcomes))
+        }
+    }
+
+    fn writer(dir: &Path) -> (Writer, Arc<Shared>) {
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let (out, rx) = mpsc::channel();
-        let (back, _jobs) = mpsc::channel();
+        let shared = Arc::new(Shared::default());
         (
-            Writer::new(Some(dir.join("state/files")), out, ping, back),
-            rx,
+            Writer::new(Some(dir.join("state/files")), shared.clone(), ping),
+            shared,
         )
     }
 
@@ -943,14 +1028,13 @@ mod tests {
     }
 
     /// A writer on its own thread, as `Files` starts it: (jobs, outcomes).
-    fn spawned(dir: &Path, timeout: Duration) -> (Sender<Job>, Receiver<Outcome>) {
+    fn spawned(dir: &Path, timeout: Duration) -> (Arc<Shared>, Arc<Shared>) {
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let (out, rx) = mpsc::channel();
-        let (tx, jobs) = mpsc::channel();
-        let mut w = Writer::new(Some(dir.join("state/files")), out, ping, tx.clone());
+        let shared = Arc::new(Shared::default());
+        let mut w = Writer::new(Some(dir.join("state/files")), shared.clone(), ping);
         w.timeout = timeout;
-        std::thread::spawn(move || w.run(jobs));
-        (tx, rx)
+        std::thread::spawn(move || w.run());
+        (shared.clone(), shared)
     }
 
     fn lines(p: &Path) -> usize {
@@ -1157,7 +1241,7 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(300));
         assert!(
-            rx.try_iter().all(|o| !matches!(o, Outcome::Written(_))),
+            rx.drain().iter().all(|o| !matches!(o, Outcome::Written(_))),
             "written through the link"
         );
         assert_eq!(std::fs::read_to_string(&theme).unwrap(), "use palette p\n");
@@ -1177,17 +1261,18 @@ mod tests {
             bytes: b"strand's".to_vec(),
             run: None,
         }));
-        let rx = files.rx.take().unwrap();
+        let shared = files.shared.clone().unwrap();
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            shared.recv_timeout(Duration::from_secs(5)).unwrap(),
             Outcome::Unowned(..)
         ));
         drop(files);
-        // The thread's end drops its outcome sender.
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)),
-            Err(RecvTimeoutError::Disconnected)
-        );
+        // The thread's end drops its handle on the queue.
+        let until = Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&shared) > 1 {
+            assert!(Instant::now() < until, "the writer lives on");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// (Review round 2, item 6) Each write is registered with the
@@ -1195,7 +1280,6 @@ mod tests {
     /// a write that does not happen registers nothing.
     #[test]
     fn writes_are_registered_before_they_land() {
-        use std::sync::{Arc, Mutex};
         let dir = temp("own-writes");
         let out = dir.join("a.css");
         type Seen = Vec<(PathBuf, Vec<u8>, bool)>;
