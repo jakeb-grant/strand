@@ -330,7 +330,7 @@ Because `on change` never fires at boot, on a sink switch or on reload, the OSD 
 - **Shaders:** `shader "aurora.wgsl" { u_speed: 0.4; u_tint: $accent }`, checked with naga, hot-reloaded.
 - **Canvas:** `canvas { draw: (c) => … }` for charts and visualisers, with the same paint API the renderer uses.
 - **Custom services:** `service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`, checked against introspection. Or a Rust crate with `#[service]`.
-- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0). `strand export` (M5 wave 2) asks the running shell over the socket.
+- **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0). `strand export` asks the running shell over the socket.
 
 ## Reactivity and state model
 
@@ -345,7 +345,7 @@ A fine-grained push-pull signal graph (the Leptos/Solid model, glitch-free) runs
 - **Handlers** are coroutines that return errors as values. On unmount they are cancelled at their next `await`. `fn`s are pure.
 - **Feedback loops.** A static cycle is a load error that names the path. Writes to a service carry a generation tag, so a service echoing your own pending write back is ignored. More than 30 writes per second to one cell from one handler warns and throttles.
 - **Persistence and settings.** `persist` stores the value with a hash of its default, so a changed default can be noticed. Settings files are covered under live reload.
-- **Who wins.** `strand set` on a `state` is an ordinary write. For tokens and settings fields the order is runtime overlay > file > default. When a save is shadowed by an overlay, the reload overlay says so: `accent: file changed but runtime overlay wins [clear]`. Overlays reach `file` outputs and `strand export` too (M5 wave 2), since they read the same token table.
+- **Who wins.** `strand set` on a `state` is an ordinary write. For tokens and settings fields the order is runtime overlay > file > default. When a save is shadowed by an overlay, the reload overlay says so: `accent: file changed but runtime overlay wins [clear]`. Overlays reach `file` outputs and `strand export` too, since they read the same token table.
 
 ## Styling, tokens and theming
 
@@ -355,15 +355,15 @@ Tokens are live values in the reactive graph, not constants. Swapping a theme, a
 
 | Tier | What it holds | Example |
 | --- | --- | --- |
-| Palette | A typed schema of colour roles: Material 3's system roles 1:1, plus 13 hue roles (M5 wave 2); its source's own colours ride along for templates (M5 wave 2) | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve` |
+| Palette | A typed schema of colour roles: Material 3's system roles 1:1, plus 13 hue roles; its source's own colours ride along for templates | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve` |
 | Base tokens | Scales and derived roles, written as expressions over the palette | `$space.2`, `$radius.lg`, `$font.ui`, `$motion.spatial`, `$surface.hi: $surface.mix($fg, 8%)` |
 | Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius` |
 
 - **Derived tokens stay derived.** `$fg.muted: $fg.alpha(0.65)` re-evaluates when `$fg` changes. This fixes pleamar's stale-copy problem. Derived tokens form a graph; a cycle is a load error. Results are gamut-mapped.
-- **Methods are calls.** A `$` path segment followed by `(` is a method (`alpha`, `mix`, `lighten`, `darken`), so adding methods later never breaks token names. Templates and a `file`'s `text:` also have `.light()` and `.dark()` (the token in that mode), `.red()`, `.green()` and `.blue()` (0–255) and `.opacity()` (0–1), and the format functions `hex()` and `argb()` (M5 wave 2); in a prop these are a load error.
+- **Methods are calls.** A `$` path segment followed by `(` is a method (`alpha`, `mix`, `lighten`, `darken`), so adding methods later never breaks token names. Templates and a `file`'s `text:` also have `.light()` and `.dark()` (the token in that mode), `.red()`, `.green()` and `.blue()` (0–255) and `.opacity()` (0–1), and the format functions `hex()` and `argb()`; in a prop these are a load error.
 - **Importers** for Material seed or image, base16/base24, Catppuccin, matugen output and W3C design-token JSON must fill the whole palette schema. One table derives any role they lack.
-- **Hue roles** (M5 wave 2). `$red`, `$orange`, `$yellow`, `$green`, `$cyan`, `$blue`, `$magenta` and `$bright_red`, `$bright_yellow`, `$bright_green`, `$bright_cyan`, `$bright_blue`, `$bright_magenta` are palette roles for what has to stay recognisably coloured (terminal colours, success and warning). A source with hues fills them as given (base16 `08`–`0E`, base24 `12`–`17`, Catppuccin's own red, peach, yellow, green, teal, blue and pink); a source without them (a seed or a wallpaper) gets each canonical hue harmonised toward the accent (at most 15°), at Material tone 80 in dark and 40 in light, brights a step lighter in dark and darker in light. They are fills, not text/background pairs. Their names are palette roots, so a user token named `red` needs `override` like any role.
-- **Nothing is lost** (M5 wave 2). An importer also keeps every colour of its source, under the source's own name and in its order (`$palette.mauve`, `$palette.base0d`), with the palette's name, source and dark flag (`$palette.name`). For now these are read only in templates and `file` text, never in props.
+- **Hue roles.** `$red`, `$orange`, `$yellow`, `$green`, `$cyan`, `$blue`, `$magenta` and `$bright_red`, `$bright_yellow`, `$bright_green`, `$bright_cyan`, `$bright_blue`, `$bright_magenta` are palette roles for what has to stay recognisably coloured (terminal colours, success and warning). A source with hues fills them as given (base16 `08`–`0E`, base24 `12`–`17`, Catppuccin's own red, peach, yellow, green, teal, blue and pink); a source without them (a seed or a wallpaper) gets each canonical hue harmonised toward the accent (at most 15°), at Material tone 80 in dark and 40 in light, brights a step lighter in dark and darker in light. They are fills, not text/background pairs. Their names are palette roots, so a user token named `red` needs `override` like any role.
+- **Nothing is lost.** An importer also keeps every colour of its source, under the source's own name and in its order (`$palette.mauve`, `$palette.base0d`), with the palette's name, source and dark flag (`$palette.name`). For now these are read only in templates and `file` text, never in props.
 - **Loud overrides.** Redefining a token needs `override`. A misspelt override is an unknown-name error, not a new token. A raw hex colour in a prop is a lint; defaults in settings are exempt.
 
 ### Theme file
@@ -414,15 +414,15 @@ Writing `look`, a portal dark-mode change, a new wallpaper, `strand set` and sav
 2. Only the palette roots spring, in OKLab. Each frame the render thread re-evaluates the small token graph (about 100 operations), so every derived token stays exact mid-animation.
 3. **Contrast guard.** Text lightness is solved to keep declared text/background pairs at 3:1 or better throughout. Where a light↔dark swap makes that impossible, the surface snapshots its old frame once and crossfades.
 4. **What can't interpolate** snaps: fonts snap, shadow lists are padded to equal length, layout lengths snap while paint offsets spring. `reduced_motion` snaps everything.
-5. **`file` outputs** (M5 wave 2) re-render from the new targets on the logic thread after the tick's diff is sent, and a writer thread of their own writes them; they never see a spring's in-between values.
+5. **`file` outputs** re-render from the new targets on the logic thread after the tick's diff is sent, and a writer thread of their own writes them; they never see a spring's in-between values.
 
 ### Wallpaper palettes
 
 - `material(image:)` quantises a 128 px downscale off-thread with the [`material-colors`](https://github.com/Aiving/material-colors) crate, cached by content hash.
 - Both the wallpaper path and its symlink target are watched, so `swww` or a script replacing the file re-themes live.
 - The old palette holds until the new one is ready. The last palette is persisted, so boot never flashes default colours.
-- The rest of the desktop gets the same palette through generic outputs (M5 wave 2); Strand ships no per-app themes or templates. `strand export json` writes the palette as data (name, source, dark, the 62 roles, every resolved token, the source's colours). `strand export base24` writes a base24 scheme, so the community's base16/base24 templates work with no Strand-side upkeep. `strand export --template <file>` fills a text file of any format whose holes are Strand expressions over the theme: `--accent: {{ $accent }};`, `--glow: {{ hex($accent.alpha(0.4), alpha: true) }};`, the light value from a dark theme with `{{ $surface.light() }}`. A literal `{{` is `{{ "{{" }}`; an error carries the template's file, line and caret, and nothing is written. Each writes to stdout, or atomically to `-o <file>`. The CLI reads the running shell over its socket (overlays included), else solves the theme offline, else says "run strand once, or fix the theme".
-- A config keeps files in step with every theme switch with the `file` element (M5 wave 2), allowed at the top level as well as in trees, as the theme file's last line shows: `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl"; run: ["reload-colors"] }` fills a template file beside the config (the command needs `permit exec`), and `text:` takes one template expression in place of `template:`. A file is re-rendered when its text would change, written atomically and only then, and caught up at boot; `run` follows 200 ms after the last write. Strand never writes into another program's config directory unless asked, and never overwrites a file it did not write.
+- The rest of the desktop gets the same palette through generic outputs; Strand ships no per-app themes or templates. `strand export json` writes the palette as data (name, source, dark, the 62 roles, every resolved token, the source's colours). `strand export base24` writes a base24 scheme, so the community's base16/base24 templates work with no Strand-side upkeep. `strand export --template <file>` fills a text file of any format whose holes are Strand expressions over the theme: `--accent: {{ $accent }};`, `--glow: {{ hex($accent.alpha(0.4), alpha: true) }};`, the light value from a dark theme with `{{ $surface.light() }}`. A literal `{{` is `{{ "{{" }}`; an error carries the template's file, line and caret, and nothing is written. Each writes to stdout, or atomically to `-o <file>`. The CLI reads the running shell over its socket (overlays included), else solves the theme offline, else says "run strand once, or fix the theme".
+- A config keeps files in step with every theme switch with the `file` element, allowed at the top level as well as in trees, as the theme file's last line shows: `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl"; run: ["reload-colors"] }` fills a template file beside the config (the command needs `permit exec`), and `text:` takes one template expression in place of `template:`. A file is re-rendered when its text would change, written atomically and only then, and caught up at boot; `run` follows 200 ms after the last write. Strand never writes into another program's config directory unless asked, and never overwrites a file it did not write.
 
 ### Overrides
 
@@ -620,7 +620,7 @@ Every source ends up as a write into the same reactive graph.
 | `.strand`, `.wgsl` files | inotify on config directories, depth 3 | Reload pipeline |
 | Symlinked files | The link's directory plus the target's directory | Reload; a link swap counts as an edit |
 | Settings TOML, wallpaper | Same watcher | Per-field writes; palette re-quantised |
-| Template files (`file { template: }`, M5 wave 2) | Same watcher | That `file` re-rendered |
+| Template files (`file { template: }`) | Same watcher | That `file` re-rendered |
 | Colour scheme, accent, contrast | Portal `SettingChanged(namespace, key, value)`; `ReadOne` at boot | `system.dark`, `system.accent`, `system.contrast` |
 | Monitors | `wl_registry` global add/remove; `wl_output` v4 `done`; layer-surface `closed` | `screens` |
 | Compositor reload | Hyprland socket2 `configreloaded`; niri `ConfigLoaded { failed }` | `wm.config_reloaded` |

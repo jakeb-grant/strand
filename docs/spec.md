@@ -1,6 +1,7 @@
 # The Strand language specification
 
-Status: **draft text** (M5 wave 1, S-docs). The section list, the
+Status: **draft text** (M5 wave 1, S-docs; brought in line with what
+M5 wave 2 built). The section list, the
 construct index (section 3) and the compatibility policy (section 14)
 are fixed. The text below is complete for every section but is not yet
 frozen: it is frozen by the last commit of M5's wave 3 (m5-plan,
@@ -8,9 +9,9 @@ frozen: it is frozen by the last commit of M5's wave 3 (m5-plan,
 test or decision was found to pin down; the freeze review settles each
 one. The theming hub (hue roles, the palette's extras and identity,
 templates, the `file` element and `strand export`; sections 4.1, 9 and
-13) is owner-approved design (decisions.md m5-tools) whose code lands in
-M5 wave 2; this text states it as the language, and the freeze waits on
-that code.
+13) is owner-approved design (decisions.md m5-tools), built in M5 wave 2
+(decisions.md m5-palette, m5-tools); the text here follows the code as
+built.
 
 ## 1. Scope and status
 
@@ -295,6 +296,18 @@ filling the monitor, the keyboard always).
 - A custom service starts when the program first reads it and stops
   5 s after its last reader leaves, as builtin services do (section
   8.1). Changing its declaration restarts only that service.
+- **Plugin services.** A service may also come from a plugin: a binary
+  built from `strand`'s library with services of its own (git-only and
+  marked unstable). Its schema is a
+  `.schema` file in `$XDG_DATA_HOME/strand/schemas/` (written by the
+  plugin binary's `--write-schemas`), which `strand check`, `strand run`
+  and the language server all read, so a program that reads a plugin
+  service checks the same way everywhere. A file that is not a regular
+  UTF-8 file under 1 MiB, does not apply, or declares a builtin service
+  is skipped with a warning. A text declares only its own service. When
+  the running binary does not serve a service a file declares, reads
+  give its schema defaults and writes, calls and actions are refused,
+  with a notice naming the file while the program reads it.
 
 ## 6. Trees
 
@@ -737,7 +750,9 @@ props accept bare numbers. The freeze review confirms the wording.
   (red, orange, yellow, green, cyan, blue, magenta), base24 `12`–`17`
   (the six brights), Catppuccin's red, peach, yellow, green, teal, blue
   and pink. A missing hue is the canonical hue harmonised toward the
-  accent (at most 15°), at Material tone 80 in dark and 40 in light; a
+  accent (at most 15°), at Material tone 80 in dark and 40 in light (the
+  canonical hues are the sRGB primaries and secondaries, with orange
+  `#ff8000` between red and yellow); a
   missing bright is its base hue with OKLCH lightness +0.08 in dark and
   −0.08 in light. Hue roles are fills, never text/background pairs, so
   the contrast guard does not touch them. A persisted palette written
@@ -753,9 +768,13 @@ props accept bare numbers. The freeze review confirms the wording.
   colour or W3C group named `name`, `source` or `dark` is kept as
   `name_`, `source_` or `dark_` (a group `dark` holding `surface` is
   `$palette.dark_.surface`, since `$palette.dark` is the identity's
-  bool); a later segment is never renamed. Extras and identity are read only in the template scope
-  (section 9.8), never in a prop; a missing extra without `??` is an
-  error.
+  bool); a later segment is never renamed. Two source colours that come
+  to the same name are an import error naming both. A role's own colour
+  is kept as an extra too (matugen's `primary` is both `$accent` and
+  `$palette.primary`). `material()` and the built-in palette keep one
+  extra, `source_color`, the seed. Extras and identity are read only in
+  the template scope (section 9.8), never in a prop; a missing extra
+  without `??` is an error.
 - `system.dark`, `system.accent` and `system.contrast` follow the
   desktop's portal settings live.
 - The last palette is persisted, so boot never shows default colours
@@ -786,7 +805,8 @@ in step with the theme.
 
 - **Placement.** It is an element in the one call shape, so it may
   appear in any tree, where `if`, `match` and `for` gate it and `when`
-  can change its props. It draws nothing, so it may also stand at the
+  can change its props (never switching it between `template:` and
+  `text:`: a `when` holds props only). It draws nothing, so it may also stand at the
   top level of a file (grammar.md `top_file`); every other element and
   every prop at the top level stays a load error (section 4.1).
 - **Props.** Exactly one of `template:` (a path relative to the config
@@ -807,15 +827,24 @@ in step with the theme.
   file is written only when the rendered bytes differ from what Strand
   last wrote, and at boot when they differ from the file on disk. The
   write is atomic, follows symlinks and keeps the file's mode; any error
-  writes nothing and is reported with its location.
+  writes nothing and is reported with its location, and the last good
+  file stays. A refused or failed write is tried again after 1 s,
+  doubling to 10 s, until it lands or newer content replaces it, with
+  one notice per reason.
 - **`run`** follows 200 ms after that file's last write, at most one
   run per file with one re-run queued, and is killed with its process
   group after 10 s. A failure is a notice and a `strand watch` event,
-  and the last good file stays.
+  and the last good file stays. A file's standing notice (an unowned
+  target, a failing `run`) lasts until its next write lands, and a
+  `strand watch` started later hears it.
 - **Ownership.** Strand never overwrites a file it did not write: an
-  unowned target is a notice offering to replace it, and a `.strand`
-  target is refused. Removing a `file` stops its updates and never
-  deletes the file.
+  unowned target is a notice offering `[replace]`, and a `.strand`
+  target is refused. Both are judged on the file actually written, links
+  followed: a link to a missing file is refused rather than replaced,
+  and a link to a `.strand` file is refused like one. Removing a `file`,
+  changing its path or its render failing stops its updates (the
+  retries of bytes not yet written); a `run` due for a write that landed
+  still runs. Removing a `file` never deletes the file.
 
 ### 9.8 Templates
 
@@ -827,7 +856,9 @@ same scope.
   outside a string literal. A literal `{{` is written `{{ "{{" }}`.
 - **The template scope** is tokens and their methods (the template-only
   ones of section 9.2 included), the palette's extras and identity
-  (section 9.5), literals, `??`, `join`, and the format functions
+  (section 9.5), literals, `??`, `join` (which skips `null` parts
+  only: an absent extra or other mode inside it is the same error as
+  outside, and `?? null` skips one), and the format functions
   `hex` and `argb`. Services, `state`, `let` and `fn` are not in scope;
   naming one is an error saying that a template reads the theme only.
 - **The other mode.** `$x.light()` and `$x.dark()` evaluate the whole
@@ -1005,11 +1036,13 @@ people can edit by hand.
     <expr>]` writes the theme to stdout, or atomically to `-o <file>`:
     `json` the palette's identity, its roles, every resolved token and
     its extras; `base24` a base24 scheme; `--template` a template
-    (section 9.8), against `--palette`'s palette alone when given. It
-    reads the running shell (overlays included), else solves the
-    config's theme offline without writing anything, else fails with
-    "run strand once, or fix the theme". The `export` request is served
-    over the socket only, not D-Bus.
+    (section 9.8). Without `--palette` it asks the running shell
+    (overlays included), else solves the config's theme offline without
+    writing anything, else fails with "no palette: run strand once, or
+    fix the theme" and the cause. `--palette` is always offline: the
+    base tokens and that palette, no config. A broken theme or `--palette`
+    is an error, never the built-in palette. The `export` request is
+    served over the socket only, not D-Bus.
 - Paths use the program's own names: `file.name` for exports
   (`launcher.open`); `file.settings.field` for a settings field, or
   `settings.field` when exactly one file declares settings with that
@@ -1019,6 +1052,19 @@ people can edit by hand.
   name and the interface name, at object path `/`, owned when
   `strand run` starts; a second running instance runs without D-Bus IPC.
   **The name may change before 1.0** (decisions.md m5-owner, Q12).
+- **Over D-Bus**, the interface's methods are the scripting commands:
+  `Get(s path)`, `Set(s path, s value)`, `Toggle(s path)`, `Clear(s
+  path)`, `Reset(s path)`, `Call(s target, as args)` and `Reload(b
+  hard)`. Each returns the socket's answer as JSON text (`{"ok": true,
+  …}`); a refusal is the error `org.freedesktop.DBus.Error.Failed` whose
+  message is the socket's `error`. `Reload` returns once its load is
+  committed, with its event. Watching is the signal `Changed(s event, s
+  data)`: every event `strand watch --json` prints, `event` its kind
+  (`reload`, `fault`, `notices`) and `data` the event as JSON. `export`
+  and the inspector's commands are served over the socket only
+  (decisions.md m5-ipc).
+- A plugin binary (section 5.6) answers every command above as
+  `strand` does, against its own schema, and adds `--write-schemas`.
 - `strand help` lists every command. Commands, their flags and their
   output formats are covered by the compatibility policy only where this
   section names them.

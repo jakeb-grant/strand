@@ -14,6 +14,10 @@ This writes one file, `bar.strand`, into `~/.config/strand` (or
 `$XDG_CONFIG_HOME/strand` if you set it). It refuses a directory that
 already has files in it. Here is what it wrote:
 
+> `strand new` is not built yet (it was left out of M5 wave 2). Until
+> it lands, make the directory and save the file below as
+> `bar.strand` in it yourself; everything after this step is the same.
+
 ```strand level=1 file=bar.strand
 // bar.strand: a bar on every monitor. Every .strand file in this
 // directory is part of your shell; save one and the change is live.

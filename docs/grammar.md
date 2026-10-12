@@ -4,9 +4,10 @@ This is the complete syntax of `.strand` files. `design.md` is the source of
 truth for what the constructs *mean*; this file fixes how they are *written*.
 `strand-compiler::syntax` implements exactly this grammar, and every code
 block in `design.md` parses under it with zero errors (see
-`crates/strand-compiler/tests/fixtures/`). The one exception until M5
-wave 2 was `top_file` (below), which landed with S-tools' parser and schema
-change (M5 wave 2); the parser now accepts a top-level `file`.
+`crates/strand-compiler/tests/fixtures/`), the top-level `file` element
+(`top_file`, below) included since M5 wave 2. The tree-sitter grammar in
+`crates/strand-dev/tree-sitter-strand/` follows this file production by
+production for editors (see "The tree-sitter grammar" at the end).
 
 Semantic restrictions that need names or types (which element kinds exist,
 whether a prop is valid on a node, whether `slot` is inside a component) are
@@ -209,7 +210,7 @@ attribute = AT ( TOUCH '(' args? ')' )?      // @reset
 top_decl  = component | surface | state | let | export | enum_decl | type_decl
           | fn_decl | tokens_decl | use_decl | service | permit | keyframes
           | on_handler | timer | top_file
-top_file  = element                  // only the element named `file` (M5 wave 2)
+top_file  = element                  // only the element named `file`
 ```
 
 There are no imports and no entry file; every `.strand` file in the config
@@ -218,7 +219,7 @@ level are an error ("must be inside a surface or component"); the parser
 reports it and parses them anyway to keep going. The one exception is a
 `file` element (`file "~/.cache/strand/colors.css" { template:
 "colors.css.tmpl" }`), which draws nothing and keeps a file in step with the
-theme (decisions.md m5-tools; M5 wave 2).
+theme (decisions.md m5-tools).
 
 ## Declarations
 
@@ -723,7 +724,43 @@ diagnostic and resynchronises:
 | `service … from dbus system "…" { f: text rw = P }`, `permit exec` | `service`, `permit` |
 | `fn`, `keyframes`, `play` | `fn_decl`, `keyframes`, `play` |
 | `shader "x.wgsl" { … }`, `canvas { draw: (c) => … }` | `element` |
-| `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl" }` (top level or in a tree; M5 wave 2) | `top_file`, `element` |
+| `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl" }` (top level or in a tree) | `top_file`, `element` |
 | `oklch(from $surface, l: l + 0.12)` | `arg` |
 | `svg "x.svg" { #needle { … } }` | `selector` |
 | `@reset` | `attribute` |
+
+## The tree-sitter grammar
+
+`crates/strand-dev/tree-sitter-strand/grammar.js` writes this grammar for
+editors (highlighting, indents, locals; decisions.md m5-lsp). It is not a
+second definition of the language: where the two differ, this file and
+`strand-compiler::syntax` win, and `crates/strand-dev/tests/tree_sitter.rs`
+holds the tree-sitter grammar to them (every file and guide block the
+parser accepts parses with no error node; the negative syntax fixtures and
+named syntax errors are errors; every keyword in the "Keywords are
+contextual" table is highlighted as one). How it writes the pseudo-tokens:
+
+- **SEP** is the one external token (`src/scanner.c`): a line break is
+  asked for only where an item may end, and it is a separator unless the
+  next line, past blank lines and comments, starts with a continuation
+  token (rule 3; `-` continues only when a space follows it). Elsewhere a
+  line break is whitespace (rules 1 and 4).
+- **SAME_LINE** follows from SEP: where an item may end, a line break ends
+  it.
+- **TOUCH** is `token.immediate` (a call's `(`, an index's `[`, a nullable
+  type's `?`).
+- **Contextual keywords** use tree-sitter's keyword extraction: a keyword
+  is lexed only where the parse state takes it, and is aliased to an
+  identifier where a name is also possible there.
+- Rule 2 (an item ending in `}` may be followed by another on its line) is
+  written as two kinds of item, those that end in a block and the rest.
+
+It is deliberately looser than the parser in a few places the parser
+reports with a better message and an editor only colours: a misspelt
+keyword reads as an element, a `.` ending a line takes the next line's
+name, one `match` form serves expressions and statements, a lone `\r` is
+whitespace, and a unit-like suffix that is not a unit (`12pz`) is a number
+then a name. A `$a.b` path is a `token` node followed by member accesses,
+so a token method is an ordinary call. The generated `src/` is committed
+and held to `grammar.js` by `scripts/check-tree-sitter.sh` in CI's lint
+job; nothing in the `strand` binary links it.

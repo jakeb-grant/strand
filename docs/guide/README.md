@@ -88,4 +88,5 @@ Then start at [level 1](level-1.md).
   each construct means, [`docs/grammar.md`](../grammar.md) for how it
   is written.
 - Still to come: every element, prop and service field in
-  `docs/reference/`, generated from the schemas (M5 wave 2).
+  `docs/reference/`, generated from the schemas (M5 wave 3; not built
+  yet).
