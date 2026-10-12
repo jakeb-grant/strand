@@ -96,7 +96,7 @@ fn every_value_kind_has_its_format() {
                {{ $fg.muted.opacity() }}\n\
                methods {{ $surface.mix($fg, 8%) }} {{ $accent.lighten(0.1) }} \
                {{ $accent.darken(0.1) }}\n\
-               join {{ join(\", \", $accent, $palette.missing, 4) }}\n\
+               join {{ join(\", \", $accent, null, $palette.missing ?? null, 4) }}\n\
                spans {{\n  $accent\n}} and }} stays text\n";
     let got = rendered(src, &t, None);
     golden("values.golden", &got);
@@ -173,6 +173,28 @@ fn the_other_mode_reads_the_other_table() {
     assert_eq!(
         rendered("{{ $surface.light() ?? $surface }}", &dark, None),
         hexed(&dark)
+    );
+}
+
+/// `join` skips nulls only: a missing extra or an absent other mode is
+/// not null, so inside `join` it is the same located error as outside
+/// (spec.md 9.5, 9.8; review round 3 item 1).
+#[test]
+fn join_skips_nulls_but_not_absent_values() {
+    let dark = table("mocha");
+    let out = errors("{{ join(\" \", $palette.mauvee, $accent) }}", &dark, None);
+    assert!(out.contains("has no `$palette.mauvee`"), "{out}");
+    assert!(out.contains("theme.css.tmpl:1:14"), "{out}");
+    let out = errors("{{ join(\",\", $surface.light()) }}", &dark, None);
+    assert!(out.contains("the theme has no light mode"), "{out}");
+    // `??` turns either into a null `join` skips.
+    assert_eq!(
+        rendered(
+            "{{ join(\",\", $surface.light() ?? null, $palette.mauvee ?? null, 1) }}",
+            &dark,
+            None
+        ),
+        "1"
     );
 }
 

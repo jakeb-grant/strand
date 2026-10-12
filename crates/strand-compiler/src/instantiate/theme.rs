@@ -224,12 +224,21 @@ impl Instance {
     /// the last good or the built-in one. A pending wallpaper gives its
     /// last value if it has one, else [`PALETTE_PENDING`]. The offline
     /// mount's pinned palette (the persisted one) when it has one.
+    ///
+    /// Evaluated in a scope of its own, disposed before it returns: an
+    /// inline `material(image: …)` or `import(…)` holds its file only
+    /// while it is read, so a request leaves no cleanup and no hold
+    /// behind (review round 3, item 3).
     pub fn palette(&self) -> Result<Palette, Error> {
         if let Some(p) = self.ctx.vm.theme().and_then(|t| t.pinned().cloned()) {
             return Ok(p);
         }
         let ctx = self.ctx.clone();
-        self.rt.untrack(|rt| ctx.palette_strict(rt, true))
+        let (scope, p) = self
+            .rt
+            .untrack(|rt| rt.scope(|rt| ctx.palette_strict(rt, true)));
+        scope.dispose(&self.rt);
+        p
     }
 
     /// (M5) The current token table, overlays included, as the last tick

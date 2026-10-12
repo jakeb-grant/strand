@@ -2295,9 +2295,10 @@ table.
     the file output writer thread (`strand-files`, Threads), so logic
     never waits on a disk or a child process. After the changes, logic
     sends the writer the outputs' targets when they changed
-    (`Instance::output_targets`), and the writer drops the retries and
-    due `run:`s of every other path (spec.md 9.7, "Removing a `file`
-    stops its updates"). No main-side channel is added: main never sees
+    (`Instance::output_targets`), and the writer drops the retries of
+    every other path (spec.md 9.7, "Removing a `file` stops its
+    updates"); a `run:` due for bytes already written there still runs,
+    so its consumer hears of the file it holds. No main-side channel is added: main never sees
     an output.
   - The writer thread writes atomically (temp file and rename,
     following symlinks and keeping the file's mode; the latest bytes per

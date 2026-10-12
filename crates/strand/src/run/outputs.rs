@@ -68,8 +68,9 @@ enum Job {
     /// The user's `[replace]`: `path` is Strand's now, written at once.
     Replace(PathBuf),
     /// The paths the mounted `file`s write now: a write still being
-    /// tried, or a `run:` still due, anywhere else is dropped (a removed
-    /// `file`, a changed path, a failing render).
+    /// tried anywhere else is dropped (a removed `file`, a changed path,
+    /// a failing render); a `run:` due for bytes already written still
+    /// runs.
     Keep(Vec<PathBuf>),
     /// The shell is gone: the thread ends.
     Stop,
@@ -153,6 +154,9 @@ pub(super) struct Files {
     shared: Option<Arc<Shared>>,
     /// The targets last sent as [`Job::Keep`].
     targets: Vec<PathBuf>,
+    /// Each output's standing notice (until its next write lands), so a
+    /// `strand watch` started after it still hears it.
+    notices: Vec<(PathBuf, String)>,
 }
 
 impl Drop for Files {
@@ -178,6 +182,7 @@ impl Files {
             own_writes,
             shared: None,
             targets: Vec::new(),
+            notices: Vec::new(),
         }
     }
 
@@ -227,6 +232,11 @@ impl Files {
         if self.shared.is_none() || !self.send(Job::Replace(path)) {
             log::warn!("file outputs: nothing to replace (no writer)");
         }
+    }
+
+    /// The outputs' standing notices, for a new `strand watch`.
+    pub(super) fn notices(&self) -> impl Iterator<Item = &String> {
+        self.notices.iter().map(|(_, n)| n)
     }
 
     fn outcomes(&self) -> Vec<Outcome> {
@@ -286,6 +296,7 @@ impl Shell {
     /// A write landed: its earlier notices go.
     fn output_ok(&mut self, path: &Path) {
         self.overlay.forget_service(&cell(path), &self.inst);
+        let _ = take(&mut self.files.notices, path);
     }
 
     /// `path` was not written (or its `run:` failed): an overlay notice
@@ -294,6 +305,8 @@ impl Shell {
     fn output_notice(&mut self, path: &Path, why: &str, replace: bool) {
         let text = format!("file {}: {why}", path.display());
         log::warn!("{text}");
+        let _ = take(&mut self.files.notices, path);
+        self.files.notices.push((path.to_path_buf(), text.clone()));
         self.overlay.forget_service(&cell(path), &self.inst);
         let rows = match replace {
             true => overlay::replace_lines(&cell(path), &text, path),
@@ -487,18 +500,15 @@ impl Writer {
         }
     }
 
-    /// Lets go of the writes and `run:`s of paths no `file` writes now;
-    /// a run already going ends on its own.
+    /// Lets go of the unwritten bytes of paths no `file` writes now (a
+    /// retry is never written behind the output's notice). A `run:` due
+    /// or queued there still runs: it follows bytes already on disk, and
+    /// the consumer would otherwise stay out of step with the file
+    /// (review round 3, item 2). Only idle run state is dropped.
     fn keep(&mut self, paths: &[PathBuf]) {
         self.retries.retain(|(p, _)| paths.contains(p));
-        self.runs.retain_mut(|(p, r)| {
-            if paths.contains(p) {
-                return true;
-            }
-            r.due = None;
-            r.queued = false;
-            r.running
-        });
+        self.runs
+            .retain(|(p, r)| paths.contains(p) || r.due.is_some() || r.running || r.queued);
     }
 
     /// Tries again the writes whose time has come, waiting twice as
@@ -1166,7 +1176,8 @@ mod tests {
 
     /// (Review round 2, item 1) A `file` no longer mounted (or moved,
     /// or failing) stops its updates: its refused write is not tried
-    /// again and its `run:` never runs, even once the target frees up.
+    /// again and its `run:` (for bytes that never landed) never runs, even
+    /// once the target frees up.
     #[test]
     fn a_removed_file_stops_its_retries() {
         let dir = temp("keep");
@@ -1195,6 +1206,45 @@ mod tests {
         assert!(!mine.exists(), "the removed `file` was written");
         assert!(!log.exists(), "the removed `file`'s `run:` ran");
         assert!(rx.try_recv().is_err());
+    }
+
+    /// (Review round 3, item 2) A `run:` due for bytes already written
+    /// still runs when the `file` stops being a target within the
+    /// debounce (its render starts failing, it is removed or re-pathed):
+    /// the file holds the new bytes, so the consumer must hear of them.
+    #[test]
+    fn a_landed_writes_run_survives_its_file_going() {
+        let dir = temp("keep-run");
+        let out = dir.join("colors.css");
+        let log = dir.join("runs.log");
+        let (jobs, rx) = spawned(&dir, RUN_TIMEOUT);
+        jobs.send(Job::Write {
+            path: out.clone(),
+            bytes: b"new".to_vec(),
+            run: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                format!("echo x >> {}", log.display()),
+            ]),
+        })
+        .unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Outcome::Written(out.clone())
+        );
+        // Within the debounce the render fails: no target is left.
+        jobs.send(Job::Keep(Vec::new())).unwrap();
+        let started = Instant::now();
+        while lines(&log) == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the landed write's `run:` never ran"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(lines(&log), 1);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "new");
     }
 
     /// (Review round 2, item 2) Ownership is the written file's: a path

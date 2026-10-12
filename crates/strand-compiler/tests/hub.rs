@@ -468,3 +468,50 @@ fn the_offline_mount_reads_the_seed_index() {
     drop(shell);
     assert_eq!(snapshot(&state), before);
 }
+
+/// (Review round 3, item 3) `Instance::palette` (each IPC `export`)
+/// evaluates an inline `use palette import(…)` in a scope it disposes:
+/// its file holds are let go, so after the config stops reading the
+/// file it is no longer watched, however many exports came before.
+#[test]
+fn an_export_leaves_no_hold_on_the_palette_file() {
+    let dir = temp_dir("export-holds");
+    let mut s = String::from("system: \"base16\"\nname: \"Day\"\nvariant: \"light\"\npalette:\n");
+    for i in 0..16 {
+        s.push_str(&format!(
+            "  base{i:02X}: \"#{:02x}{:02x}{:02x}\"\n",
+            200 - i * 9,
+            180,
+            120 + i * 7
+        ));
+    }
+    let file = dir.join("day.yaml");
+    std::fs::write(&file, s).unwrap();
+    let mut shell = boot(
+        &[(
+            "theme.strand",
+            format!("use palette import(\"base16:{}\")\n", file.display()),
+        )],
+        Storage::in_dirs(dir.join("state"), &dir),
+        false,
+    );
+    let theme = shell.inst.theme().unwrap();
+    assert!(theme.files().1.contains(&file));
+    for _ in 0..3 {
+        assert_eq!(shell.inst.palette().unwrap().name(), Some("Day"));
+    }
+    let mut map = SourceMap::new();
+    map.add(
+        "theme.strand",
+        "use palette import(\"catppuccin:mocha\")\n".to_string(),
+    );
+    let build = Build::compile(None, map).unwrap_or_else(|d| panic!("{d:#?}"));
+    shell.inst.reload(&build);
+    shell.flush();
+    let theme = shell.inst.theme().unwrap();
+    assert!(
+        !theme.files().1.contains(&file),
+        "the exports kept a file the config no longer reads: {:?}",
+        theme.files()
+    );
+}

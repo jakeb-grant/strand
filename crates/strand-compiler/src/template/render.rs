@@ -16,9 +16,12 @@ use crate::syntax::Span;
 
 /// Why a hole has no value.
 enum Fault {
-    /// Absent (a missing extra, the other mode a theme lacks, `null`):
-    /// `??` replaces it; otherwise it is this error.
+    /// Absent (a missing extra, the other mode a theme lacks): `??`
+    /// replaces it; otherwise it is this error, `join` included.
     Absent(Diagnostic),
+    /// A `null` literal: `??` replaces it and `join` skips it, as the
+    /// shell's `join` skips nulls; otherwise it is this error.
+    Null(Diagnostic),
     /// An error `??` does not catch.
     Error(Diagnostic),
 }
@@ -62,7 +65,7 @@ impl Template {
                         .and_then(|v| write(&v, span).map_err(Fault::Error));
                     match r {
                         Ok(s) => out.push_str(&s),
-                        Err(Fault::Absent(d) | Fault::Error(d)) => {
+                        Err(Fault::Absent(d) | Fault::Null(d) | Fault::Error(d)) => {
                             errors.push(d.in_file(self.file));
                         }
                     }
@@ -223,7 +226,7 @@ impl Ctx<'_> {
     fn eval(&self, n: &Node) -> Eval {
         match n {
             Node::Lit(v, _) => Ok(v.clone()),
-            Node::Null(span) => Err(Fault::Absent(
+            Node::Null(span) => Err(Fault::Null(
                 Diagnostic::error("template::null", "this hole has no value")
                     .with_label(*span, "null")
                     .with_help("`??` gives a fallback"),
@@ -282,7 +285,7 @@ impl Ctx<'_> {
                 Err(Fault::Absent(d))
             }
             Node::Coalesce(a, b) => match self.eval(a) {
-                Err(Fault::Absent(_)) => self.eval(b),
+                Err(Fault::Absent(_) | Fault::Null(_)) => self.eval(b),
                 r => r,
             },
             Node::Method {
@@ -363,11 +366,12 @@ impl Ctx<'_> {
                 let sep = self.text(sep)?;
                 let mut out = Vec::with_capacity(parts.len());
                 for p in parts {
-                    // `join` drops absent values, as it drops nulls in the
-                    // shell.
+                    // `join` skips nulls, as in the shell; an absent
+                    // extra or mode is not null and stays an error
+                    // unless `??` replaces it (spec.md 9.5, 9.8).
                     match self.eval(p) {
                         Ok(v) => out.push(write(&v, p.span()).map_err(Fault::Error)?),
-                        Err(Fault::Absent(_)) => {}
+                        Err(Fault::Null(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
