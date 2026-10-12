@@ -271,6 +271,20 @@ against 20 KB is pick mode, the outline and the flash, cold until
 plus wave 3's), and the gates are hit at Δ +3,216,697 and +3,765,433
 (Δ now +3,053,456 and +3,589,200 against M4's merged figures).
 
+**Confirmed at close (2026-10-12, decisions.md m5-integration-w3,
+close).** `scripts/size-report.sh` on `laptop/m5-w3` at `672b114` (the
+freeze; nothing but docs after `9e3a91d`) measures the same CPU-only
+**18,711,127 B** and GPU **22,630,295 B**; GitHub's budgets job at
+`672b114` reads 18,709,202 B and 22,628,370 B (run 38220728825). Both
+are inside their gates, so the gates stay: the speed rule (measured +
+unspent lines + 64 KiB, rounded up to 256 KiB) with no line left
+unspent gives 18,776,663 → 18,874,368 B and 22,695,831 → 22,806,528 B,
+today's values. Wave 3's measured shares stand as charged in the rows
+above: S-fixups +4,992 B (GPU +4,736), S-inspect +35,008 B (+34,176),
+S-platform +94,272 B (+96,832), S-docs 0 B, the merges and the sweep
+the remaining 21,504 B (GPU 21,440). M5's ledger closes at 764,800 B
+CPU-only and 785,152 B GPU; m5-report.md has the per-wave table.
+
 Optional items, paid from the reserve only if the reserve allows:
 check-time `import()` validation (2–4 KB) and the "says why" lines in the
 node pane (2–5 KB).

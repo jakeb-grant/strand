@@ -1,141 +1,71 @@
-# Handoff: M5 after wave 3 (updated 2026-10-12)
+# Handoff: M5 closing (updated 2026-10-12)
 
-A pausing point before M5 closes: every wave-3 stream is merged on the
-integration branch `laptop/m5-w3`, the integrator's sweep has closed
-the stragglers wave 2 and wave 3 left, all ten of M5's boxes are
-ticked, the language is frozen (the sweep's last commit), and what is
-left is the laptop's full local set on the closing head and the owner's
-two items (the newcomer trials, the fast-forward of `main`). Read this first when picking the repo up cold,
-then `docs/m5-plan.md` (streams, waves, ledger, closing checks),
-`docs/decisions.md` (`## m5-owner`, `## m5-integration`,
-`## m5-w0-harden`, the `## m5-speed*` and `## m5-open-*` sections,
-`## m5-w1-owner`, the streams' `## m5-docs`, `## m5-docs3`,
-`## m5-plugins`, `## m5-tools`, `## m5-lsp`, `## m5-inspect`,
-`## m5-ipc`, `## m5-palette`, `## m5-fixups`, `## m5-platform`, and the
-integrator's `## m5-integration-w1`, `## m5-integration-w2` and
-`## m5-integration-w3`) for the reasons, and `docs/features.md` for
-M5's boxes. `docs/m4-report.md` has M4's measured numbers.
+M5's work is done on the integration branch `laptop/m5-w3`: every
+stream of waves 0–3 is merged, the integrator's sweep closed what the
+waves left, all ten of M5's feature boxes are ticked, the language is
+frozen, and GitHub CI is green on every job at the head. What is left
+is the owner's: the newcomer trials (or Q15's fallback), the close gate,
+one proposed interface field, and the fast-forward of `main`. Read this
+first when picking the repo up cold, then `docs/m5-report.md` (what M5
+delivered, sizes, memory, timing, rulings, what remains),
+`docs/m5-plan.md` (streams, ledger, closing checks), `docs/decisions.md`
+(the `## m5-*` sections; the integrator's `## m5-integration`,
+`-w1`, `-w2` and `-w3` hold the merges and the sweep) and
+`docs/features.md`. `docs/m4-report.md` has M4's numbers.
 
-## State
+## State after M5
 
-- **M0–M4 are complete**, and **M5's wave 1 is on `main`** (`6cee276`);
-  wave 2 is on `main` too (`aa3053c`, the owner's fast-forward of
-  `laptop/m5-w2`). features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14,
-  M4 18/18, **M5 10/10 boxes on `laptop/m5-w3`**, and of the two exit
-  criteria the language freeze is ticked; the newcomer one waits on the
-  owner (below, and features.md's Exit line says why).
-- **Wave 3 is merged on `laptop/m5-w3`** (branched from `main` at
-  `aa3053c`). Four streams, each reviewed and fixed in up to three
-  rounds before its merge, merged in this order (decisions.md
-  m5-integration-w3 records each merge and the crate tests run in the
-  container for it):
-  - **S-fixups** (`1368898`, fast-forward, `787b5fa`): wave 2's
-    stragglers. `drop_index` leaves out one row per list, the dragged
-    item's own row in its own list and another list's first copy of it
-    (`strand_scene::drag_identity`, `Prop::Drag`'s identity,
-    `Prop::DropRows`, `Prop::NotRow`), so a dock drop on another
-    monitor's dock lands where it is let go; the checker and lowering
-    write a config service's `rw` field; `Document::parse` skips `#`
-    comment lines and strips single quotes; `strand report`'s
-    percentiles are over drawn frames (`drawn`/`unchanged`); spec.md 13
-    names `new`, `report` and `compositor-rules`; `strand export -o`
-    writes as a `file` element does; `strand report`'s grim reference
-    PNGs, made deterministic on the frozen-clock acceptance mock (owner
-    item 6). Size: +4,992 B CPU-only, +4,736 B GPU.
-  - **S-inspect, render and binary half** (`9809d9a`, merged by
-    `6e00b74`/`05f38c4`): pick across surfaces (the router holds pointer
-    input from handlers while picking; never a lock surface), the
-    outline and the 300 ms repaint flash on CPU and `GpuPresent`
-    surfaces, `inspect.pick`, `inspect.highlight` and `inspect.flash`
-    (owned by the socket client that asked), and `strand-dev inspect`
-    (a line-mode session: pick, pane, reset, flash, `set`/`token`
-    write-back that is atomic, hash-guarded, symlink-following and
-    refuses a file this user cannot replace, with an `$EDITOR` offer).
-    Tests: `crates/strand-render/tests/inspect.rs` (PNG refs),
-    `crates/strand/tests/m5/inspect.rs` (sway, two outputs),
-    `crates/strand-dev/tests/{inspect,inspect_session}.rs`,
-    `crates/strand/tests/lock.rs::the_inspector_cannot_pick_while_locked`
-    (lock VM). The Inspector box is ticked. Size: +35,008 B CPU-only,
-    +34,176 B GPU on its branch.
-  - **S-platform** (`3511f16`, merged by `e1fa1e8`): xdg-activation. The
-    notification server sends spec 1.2's `ActivationToken` before
-    `ActionInvoked`; app launches pass the click's token as
-    `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID` and never strand's own;
-    the press serial rides the events it causes; held actions wait at
-    most 200 ms for their token, in order across services. Tests: the
-    xdg-activation box's list in features.md, with the compositor
-    matrix's `a_launched_app_is_activated_with_its_token` on sway, niri
-    and (since the sweep) Hyprland. The box is ticked. Size: +94,272 B
-    CPU-only, +96,832 B GPU on its branch.
-  - **S-docs, wave 3** (`afa6749`, merged by `1697c94`): the ladder test
-    (`crates/strand-dev/tests/ladder.rs`), `docs/reference/` generated by
-    `strand-dev reference` and checked current, spec.md reviewed for
-    the freeze, `crates/strand/tests/m5/newcomer.rs` (levels 1–3 build
-    bar (a) live on two outputs, 27 reference PNGs), and the agent
-    proxy's harness (`scripts/agent-proxy/`, advisory). The Docs box is
-    ticked. Size: 0 B in `strand` (strand-dev and tests).
-- **The integrator's sweep** (decisions.md m5-integration-w3, the
-  "integrator sweep" paragraphs; one commit each after `1697c94`):
-  - the Hyprland leg of the activation matrix test sets
-    `misc:focus_on_activate` through `hyprctl eval` (Hyprland's Lua
-    config refuses `keyword` with exit status 0, which failed the leg on
-    every S-platform CI run), checked with `getoption`; the compositors
-    job is green again;
-  - a `file` element's `run:` command gets back strand's inherited THP
-    setting;
-  - the equality checker change landed: `==` and `!=` take numbers by
-    the ordering rule (spec.md 7.2's last open point);
-  - canvas paint order pinned by a PNG test and stated in the guide;
-    spec.md 6.7 states the windowed-list drop limit as one of 1.0's
-    implementation;
-  - the inspector's node pane says why a `shader` node draws nothing
-    (design.md, Paint), its `why` field proposed in architecture.md;
-  - the promoted GPU cost measured on hardware and its box ticked;
-  - a strand-auth test flake (ETXTBSY) fixed;
-  - the size ledger and gates read on the merged tree (below);
-  - the records corrected (architecture.md's strand-dev section, the
-    merge paragraphs' commits, features.md's Exit line, this file).
+- **M0–M4 are complete; M5 is complete but for its newcomer exit.**
+  features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14, M4 18/18, **M5
+  11/12** (ten boxes and the freeze exit ticked; the newcomer exit
+  waits on the owner).
+- **Branches.** `main` is at `aa3053c` (waves 0–2). `laptop/m5-w3`
+  (from `aa3053c`) holds wave 3, the sweep, the freeze and the closing
+  paperwork; it is what the owner fast-forwards `main` to.
+- **Wave 3** (decisions.md m5-integration-w3): S-fixups (wave 2's
+  stragglers, `strand report`'s grim reference PNGs), S-inspect's render
+  and binary half (pick, outline, flash, `strand-dev inspect` with
+  write-back), S-platform (xdg-activation), S-docs (ladder test,
+  generated reference, newcomer test, agent-proxy harness, spec review),
+  each reviewed in up to three rounds before its merge; then the
+  integrator's sweep (Hyprland's activation policy through `hyprctl
+  eval`, the `run:` THP restore, the equality rule, canvas paint order,
+  the shader "why" line, the GPU box on hardware, a strand-auth flake)
+  and the freeze commit (`672b114`). m5-report.md lists every wave.
+- **No stragglers.** Every item handoff.md deferred from wave 2 (the
+  inspector's render half, S-platform, S-docs' wave-3 work, and the
+  five proposed fixes for other owners: `drop_index`, `rw_root`,
+  `Document::parse`, the tray `open()` doc, the plugins' leftover-file
+  log level, kept at `info` with its reason) is built or ruled on
+  (m5-fixups, m5-integration-w3). Nothing wave 3 left is unowned:
+  S-inspect's deferred shader "why" was built in the sweep and S-docs'
+  proposed equality change landed.
+- **Checks on the head.** GitHub CI run 38220728825 at `672b114`: lint,
+  test, budgets, acceptance, timing, compositors (Hyprland 0.56.2
+  included) and lock-vm all green. Locally in the sweep: the lock VM's
+  `scenarios/all.sh`, the hardware `gpu.sh` leg, the
+  `--no-default-features` clippy and build; at close,
+  `scripts/size-report.sh` and the release budgets test (11 passed).
+  **Not yet run on the head**: the laptop's `run.sh ci` and `matrix.sh`
+  (the closing tasks were held to crate-scoped tests); the standing
+  fast-forward approval needs both.
 
-## Deferred from wave 3
+## Next
 
-- **Nothing a stream left is unowned.** S-inspect's inspect-r2-6 (the
-  node pane's "why" for a `shader` node) was built in the sweep; the
-  equality change S-docs proposed landed; S-platform's `run:` THP
-  restore was made.
-- **Known limits wave 3 recorded** (also under "Known limits" below):
-  a drop's `at` does not see a copy outside a windowed `list`'s mounted
-  rows (spec.md 6.7, m5-fixups); write-back's rename window (POSIX has
-  no compare-and-rename, m5-inspect); an answer to `inspect.pick` means
-  logic told main, not that main turned pick mode on (architecture.md).
-- **The compositor matrix**: the activation test runs on sway, niri and
-  Hyprland (CI's vkms; `matrix.sh` skips Hyprland on the laptop, no KMS
-  card); labwc skips it as it skips every IPC test (`live()`), since it
-  reads the focus from the compositor's IPC and labwc has none.
-
-## Next: M5 close
-
-From m5-plan.md's "Closing (wave 3, integrator)":
-
-1. Done: **the freeze commit** (spec.md and grammar.md frozen,
-   decisions.md m5-integration-w3 "the language freeze"), the last of
-   wave 3.
-2. **Full checks on the exact closing head**: GitHub CI green on it
-   (lint with the `--no-default-features` steps, test, budgets,
-   acceptance, timing, compositors with Hyprland, lock-vm with
-   `scenarios/all.sh`), plus the laptop's `run.sh ci` and `matrix.sh`
-   one at a time. The sweep was held to crate tests, so it did not run
-   those two; it ran the lock VM's `scenarios/all.sh` (passed, the
-   inspector's lock test included), the hardware `gpu.sh` leg (passed)
-   and the `--no-default-features` clippy and build steps (passed)
-   locally, and GitHub CI was green on every job at `4b39471`
-   (decisions.md m5-integration-w3, sweep-2).
-3. Done in the sweep: **the GPU box** (frame time and PSS on hardware).
-4. **Human trials** (Q15, the owner's), recorded in m5-report.md.
-5. **Paperwork**: m5-report.md (ledger, PSS, the resident split, trial
-   times), the tightened `.text` gate proposal (below, under Budgets),
-   worktree `target/` directories, then the owner's fast-forward of
-   `main`. No version bump, tag, release notes or release artifact
-   (Q20).
+1. **The laptop's full set on the closing head**, one at a time:
+   `scripts/container/run.sh ci`, then `scripts/container/matrix.sh`.
+   With GitHub CI already green, that meets the standing approval for
+   the owner's fast-forward of `main` to `laptop/m5-w3`.
+2. **The owner's open items** below; the human trials' results go in
+   m5-report.md's "Human trials" table.
+3. **After the fast-forward**: delete the merged wave-3 branches
+   (`laptop/m5-w3`, `m5-fixups`, `m5-inspect`, `m5-platform`,
+   `m5-docs3`) from the remote, as earlier waves' were.
+4. **M6 or later** is not planned in features.md. The candidates are
+   m5-report.md's "What remains" and the known limits below; the 1.0
+   release is the owner's call once Strand has been used for a while
+   (Q20). From here a change to grammar.md or spec.md needs a
+   decisions.md paragraph citing spec.md 14's compatibility policy.
 
 ## Open items for the owner
 
@@ -143,87 +73,63 @@ Each has its paragraph in decisions.md.
 
 1. **The newcomer exit criterion (Q15).** Two or three timed human
    trials on their own machines and compositors, with the budgets job's
-   `strand-release-binaries` artifact or a source build; or invoke
-   Q15's fallback (ii), where the green automated newcomer test and the
-   agent proxy carry it (no proxy session has been run: starting one is
-   a person's call, `scripts/agent-proxy/run.sh` with
+   `strand-release-binaries` artifact (30 days) or a source build; or
+   invoke Q15's fallback (ii), where the green automated newcomer test
+   and the agent proxy carry it (no proxy session has been run: starting
+   one is a person's call, `scripts/agent-proxy/run.sh` with
    `AGENT_PROXY_CMD`).
-2. **Wave 3's `.text` overruns: accepted by the integrator under the
-   standing policy** (speed beats size, gates are tripwires, overruns
-   are fine with a recorded reason; decisions.md m5-integration-w3,
-   sweep-3): S-platform +94,272 B against 20 KB, S-inspect +35,008 B
-   against 20 KB, S-fixups +4,992 B against the 64 KiB reserve. The
-   merged tree is inside both gates; the owner may re-rule.
-3. **Interface changes wave 3 wrote into architecture.md, accepted by
-   the integrator** (S-fixups' drag identity and `drawn`/`unchanged`,
-   S-inspect's inspect protocol, S-platform's handler input context and
-   `Presented`/token types), and one **proposed** in the sweep: the
-   `why` field of `inspect.node`'s answer for a `shader` node.
-4. **The tightened `.text` gate** (m5-plan Closing step 5): proposed
-   under Budgets below; the gate test keeps today's value until the
-   owner says.
-5. **The fast-forward of `main`** to the closing head once GitHub CI is
-   green on it (the standing approval covers it when local ci, matrix
-   and GitHub CI all pass on that exact commit).
+2. **The close gate** (m5-plan Closing step 5): proposed **keep both**
+   `.text` gates (18,874,368 / 22,806,528 B; the speed rule reproduces
+   them); the alternative is m5-plan's original "next 64 KiB above"
+   (18,743,296 / 22,675,456 B). The gate test keeps today's values until
+   the owner says.
+3. **Wave 3's `.text` overruns, accepted by the integrator** under the
+   standing policy (S-platform +94,272 B against 20 KB, S-inspect
+   +35,008 B against 20 KB; decisions.md m5-integration-w3, sweep-3).
+   The owner may re-rule.
+4. **Interface changes**: wave 3's accepted ones (S-fixups' drag
+   identity and `drawn`/`unchanged`, S-inspect's inspect protocol,
+   S-platform's handler input context and token types) and one
+   **proposed** in architecture.md: the `why` field of `inspect.node`'s
+   answer for a `shader` node.
+5. **The fast-forward of `main`** once item 1 of "Next" is green.
 
-Answered before wave 3 and standing: wave 2's overruns (accepted
-2026-10-11), S-ipc's `Request(s json)` alternative (not taken), the
-presented GPU leg's after-drop bound (a leak tripwire), the
-`gpu-measure.sh` KMS-card run (not needed, Q19 (A)), and `strand
-report`'s grim reference PNGs (deferred to the integrator, who made
-them; m5-fixups). Every M4 owner item was answered on 2026-10-10.
+Answered and standing: the owner deferred `strand report`'s grim
+reference PNGs to the integrator (2026-10-11), who made them,
+deterministic on the frozen-clock acceptance mock (m5-fixups); wave 2's
+overruns (accepted 2026-10-11), S-ipc's `Request(s json)` alternative
+(not taken), the presented GPU leg's after-drop bound (a leak
+tripwire), the `gpu-measure.sh` KMS-card run (not needed, Q19 (A)).
+Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
 
-`.text` figures are on `laptop/m5-w3` at `9e3a91d`, wave 3 merged with
-the integrator's sweep (decisions.md m5-integration-w3, sweep-3); the
-memory and latency figures are wave 2's and the sweep's runs.
+At `672b114` (m5-report.md has the tables). Size and memory gates are
+regression tripwires, never caps on a user's shell: growth past them is
+read by its cause and re-based or cut with a recorded reason.
 
-- **`.text`**, from `scripts/size-report.sh` in the container (Δ is
-  against M4's merged figures 15,657,671 / 19,041,095 B): CPU-only
-  **18,711,127 B** (Δ +3,053,456; +155,776 over wave 2's tree) of the
-  **18,874,368 B** gate, 163,241 B of headroom; GPU **22,630,295 B**
-  (Δ +3,589,200; +157,184) of **22,806,528 B**, 176,233 B of headroom.
-  Wave 3 overran its room inside the gates (105,536 B CPU-only, 125,056
-  B GPU) by 50,240 B and 32,128 B, mostly S-platform's xdg-activation
-  (+94,272 B against 20 KB); the integrator accepted it with its
-  reasons under the standing policy (m5-plan, "Measured after wave
-  3"). M5 has spent 764,800 B CPU-only and 785,152 B GPU in the ledger
-  line's terms. **Proposed close gate: keep both** (the speed review's
-  rule, measured + 64 KiB rounded up to 256 KiB, gives today's values);
-  m5-plan's original "next 64 KiB above" rule (18,743,296 / 22,675,456
-  B) is the owner's alternative. Size gates are regression tripwires,
-  not caps: growth past them is read by its cause and re-based or cut
-  with a recorded reason.
-  - GitHub's runner links about 2 KB smaller than the container; read
-    the ledger against the same machine's baseline.
-- **Memory** (tripwires for accidental regressions in CI, never
-  runtime caps on a user's shell; set by judgement under the owner's
-  2026-10-10 policy, with headroom for waves 1-2's IPC, inspector and
-  LSP code, decisions.md m5-open-budgets): the design bar warns above
-  42 MB (43,008 kB) and fails above 48 MB (49,152 kB); it measured
-  37,768 kB in the container at `8e84059` (36,465 kB after the speed
-  review) and 37,588–37,817 kB
+- **`.text`** (`scripts/size-report.sh` in the container; Δ against
+  M4's merged 15,657,671 / 19,041,095 B): CPU-only **18,711,127 B** (Δ
+  +3,053,456) of the **18,874,368 B** gate, 163,241 B of headroom; GPU
+  **22,630,295 B** (Δ +3,589,200) of **22,806,528 B**, 176,233 B of
+  headroom. GitHub's runner links about 2 KB smaller (18,709,202 /
+  22,628,370 B); read the ledger against the same machine's baseline.
+- **Memory** (CI tripwires set by judgement, decisions.md
+  m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
+  fails above 48 MB (49,152 kB): 37,328 kB in the container, 38,912 kB
   on GitHub. The full shell warns above 76 MB (77,824 kB) and fails
-  above 86 MB (88,064 kB); 64,163 kB (161 entries) and 53,575 kB (4)
-  here at `8e84059`, 61,428 kB (161 entries) after the speed review, 63,184–64,480
-  kB in speed-code's runs, 62,503 and 68,040 kB (172 entries) on
-  GitHub at `31da659` and `2fedfa2`. A target warning is info; raise
-  them again with a recorded measurement rather than trimming a
-  feature to fit.
-- **The promoted GPU surface on hardware** (reported, never gated;
-  features.md's M5 box): Intel PTL presenting to a GLES2 sway on
-  renderD128, `gpu_idle.rs` in release: frame p50 1.09–1.10 ms, p95
-  3.87–4.18 ms, p99 4.53–5.08 ms; PSS +21.0–26.1 MB while promoted,
-  +6.35 MB after the drop (bound 12 MiB), +2.18 MB at most between
-  cycles (bound 4 MiB).
-- **Latency** (GitHub's timing job enforces; advisory on the laptop):
-  reload p95 35 ms token / 50 ms markup at design.md's model, gated by
-  the headless break; at `94fe372` token p95 17.1 ms against a break of
-  19.6 ms. theme_swap_bench's 8-scope `spring(1600, 1)` whole swap 2.56
-  ms against 5 ms at `94fe372` (4.31 ms at `laptop/m5-infra`); 1.50 ms
-  in the container at `8e84059`, every case within its gate (swap
-  medians 0.96–1.73 ms, `file` outputs after a flip 0.55 ms).
+  above 86 MB (88,064 kB): 51,944 kB (4 entries) and 62,204 kB (161)
+  in the container, 66,422 kB (15) and 68,070 kB (172) on GitHub.
+- **The promoted GPU surface on hardware** (reported, never gated):
+  Intel PTL presenting to a GLES2 sway on renderD128: frame p50
+  1.09–1.10 ms, p95 3.87–4.18 ms, p99 4.53–5.08 ms; PSS +21.0–26.1 MB
+  while promoted, +6.35 MB after the drop (bound 12 MiB).
+- **Latency** (GitHub's timing job enforces; advisory on the laptop),
+  CI at `672b114`: reload token p95 16.2 ms headless against a break
+  of 19.3 ms (design.md's 35 / 50 ms at its vblank model: 31.9 / 32.1
+  ms); theme_swap_bench's 8-scope `spring(1600, 1)` whole swap 2.43 ms
+  against 5 ms; list scroll p95 1.07 ms (60 Hz) and 0.99 ms (144 Hz)
+  against 3.5 ms, 0 stalled frames.
 
 ## CI notes
 
@@ -286,7 +192,7 @@ memory and latency figures are wave 2's and the sweep's runs.
 5. **xdg-activation**: scheduled for M5 (features.md's M5 box).
 6. **The promoted GPU cost on hardware**: moved to M5 (features.md's M5
    box); presenting works on renderD128 (Q19 (A)), its after-drop bound
-   is open item 4 above.
+   a leak tripwire (m5-speed-gpu-bound); measured and ticked in M5.
 7. **Lost devices**: the GPU is off after 3 (`promote::LOST_CAP`)
    (m4-owner-3).
 8. **A 4K crossfade**: resolved by a cheaper blend (m4-owner-3).
@@ -472,8 +378,9 @@ M5 wave 2 and both its boxes are ticked.
   CI's `lock-vm` job runs the same harness under the runner's KVM.
 - Size: `scripts/size-report.sh` (two fat-LTO builds, per-crate
   breakdown, top symbols; on demand, it takes a build slot).
-- Plans: `docs/m5-plan.md` (M5), `docs/m4-plan.md` (M4); interface text
-  in `docs/architecture.md`.
+- Plans and reports: `docs/m5-plan.md` and `docs/m5-report.md` (M5),
+  `docs/m4-plan.md` and `docs/m4-report.md` (M4); interface text in
+  `docs/architecture.md`.
 - Remote branches: `origin/main` and M5's wave-3 `origin/laptop/m5-*`
   branches: the integration branch `m5-w3` and wave 3's streams
   (`m5-fixups`, `m5-inspect`, `m5-platform`, `m5-docs3`), all merged
@@ -481,27 +388,31 @@ M5 wave 2 and both its boxes are ticked.
   the remote (wave 2 is on `main`); earlier waves' branches were merged
   into `main` and deleted.
 
-## Handoff checklist (wave 3)
+## Handoff checklist (M5 close)
 
-Wave 2's checklist is in git history (`aa3053c`), wave 1's at
-`6cee276`, wave 0's at `88d4d99`, M4's at `70cdc56`.
+Wave 3's checklist is in git history (`672b114`), wave 2's at
+`aa3053c`, wave 1's at `6cee276`, wave 0's at `88d4d99`, M4's at
+`70cdc56`.
 
-- [x] Wave 3's four streams merged on `laptop/m5-w3`, each reviewed and
-  fixed before its merge; fmt, workspace clippy and the affected crates'
-  tests passed in the container per merge (decisions.md
-  m5-integration-w3).
-- [x] The integrator's sweep: the stragglers closed, each with its test
-  and decisions.md paragraph; all ten M5 boxes ticked.
-- [x] The ledger and gates read on the merged tree; wave 3's overruns
-  accepted with their reasons; the tightened gate proposed.
-- [x] The docs follow what landed (spec.md, the guide, design.md,
-  architecture.md, features.md, m5-plan.md and this file).
-- [x] The freeze commit (spec.md and grammar.md frozen), the last of
-  wave 3.
-- [ ] The full local set on the closing head, one at a time (`run.sh
-  ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), and GitHub CI
-  green on that head.
-- [ ] The newcomer trials or Q15 (ii) (owner); m5-report.md.
-- [ ] The owner fast-forwards `main` to the closing head.
-- [ ] Delete worktree `target/` directories (each agent at its task's
-  end; the cargo registry stays in its volumes).
+- [x] Every M5 stream merged on its integration branch, reviewed and
+  fixed before its merge; wave 2's and wave 3's stragglers built or
+  ruled on (m5-fixups, m5-integration-w3).
+- [x] All ten M5 boxes ticked with their tests; the freeze commit
+  (`672b114`) ticks the freeze exit.
+- [x] `.text` measured at close with `scripts/size-report.sh`, inside
+  both gates; m5-plan's ledger "Confirmed at close"; the close gate
+  proposed (keep both).
+- [x] The release budgets test passes in the container at the head (11
+  passed); GitHub CI green on every job at `672b114`.
+- [x] m5-report.md written; features.md's M5 count; this file as the
+  M5 handoff.
+- [x] Wave-3 stream worktrees' `target/` directories deleted
+  (`strand-wt/{fixups,inspect,platform,docs3}`).
+- [ ] The laptop's `run.sh ci` and `matrix.sh` on the closing head, one
+  at a time.
+- [ ] The newcomer trials or Q15 (ii) (owner), recorded in
+  m5-report.md.
+- [ ] The owner fast-forwards `main` to the closing head; the merged
+  `laptop/m5-*` branches are deleted from the remote after it.
+- [ ] `strand-wt/w3/target` deleted when the integrator's work on the
+  branch ends.
