@@ -180,7 +180,7 @@ allocations.
 | Wave 1, merged on `laptop/m5-w1`: S-ipc's `get`, `toggle`, `call`, `clear` and the token overlay layer; S-inspect's compiler and scene half (identity, cells, reset subtree, provenance, dump); S-lsp's `Suggestion` use and key suggestions | 46–123 KB (the surveys' 15–40, 30–80 and 1–3) | 93 KB (35 + 55 + 3) | **115,328 B** (merged tree against `f61acec`: 18,077,143 − 17,961,815 B; per branch S-ipc +87,104 B and S-inspect's library 73,718 B, which overlap when merged) |
 | D-Bus front end (one `#[zbus::interface]`; zbus is already linked) | 15–40 KB | 37,400 B (40 KB less 0b's request channel, 2,600 B) | | **52,736 B** on `laptop/m5-ipc` against `3e833c9` (decisions.md m5-ipc) |
 | Wave-2 IPC arms: `inspect.node`, `inspect.dump`, `reset{node}` in `Shell::request` (S-ipc in wave 2, over S-inspect's library) | 2,186 B, measured with the arms wired temporarily (decisions.md m5-inspect) | 3 KB | | **60,416 B** on `laptop/m5-ipc` against `3e833c9`: almost all S-inspect's wave-1 library, dead code until these arms called it (decisions.md m5-ipc) |
-| Inspector wave 2: pick and the Router hook, the highlight outline and the repaint flash on CPU surfaces | 10–20 KB (the rest of the 30–80 KB survey after wave 1's 73.7 KB) | 20 KB | | not built (deferred to wave 3); its 20,000 B stays in the re-based gates |
+| Inspector wave 2: pick and the Router hook, the highlight outline and the repaint flash on CPU surfaces | 10–20 KB (the rest of the 30–80 KB survey after wave 1's 73.7 KB) | 20 KB | | built in wave 3 by S-inspect (with its `strand-dev inspect` client, which is not in `strand`): **+35,008 B** CPU-only and **+34,176 B** GPU on `laptop/m5-inspect` against `aa3053c` (decisions.md m5-inspect, size); over its line by 15,008 B, accepted (decisions.md m5-integration-w3, sweep-3); the sweep's node-pane "why" line for a `shader` node is inside the merged figure below |
 | `strand report` (snapshot hop, smaps_rollup, frame summary ring) | 10–25 KB | 20 KB | | with `strand new`: **+70,208 B** CPU-only and **+90,688 B** GPU on the merged tree against `db85876` (S-tools wave 3 and its three review rounds; the GPU figure includes `strand-gpu`'s timestamp queries, +17,408 B over `a5edd67`) |
 | xdg-activation (Dispatch impls, handler input context, ordered action queue, launch env) | 8–20 KB | 20 KB | | **+94,272 B** CPU-only (18,649,623 B) and **+96,832 B** GPU (22,569,943 B) on `laptop/m5-platform` at review round 3 against `aa3053c` (18,555,351 B and 22,473,111 B); over its line by 74,272 B, within both re-based gates (224,745 B and 236,585 B left). First measured +49,856 B / +51,712 B at `79f5c96`, before review rounds 1–3 (decisions.md m5-platform, "the `.text`" and "the `.text` after review") |
 | Theming hub, S-palette: 13 hue roles and extras and identity (4–6), the `json` and `base24` writers (3–4) | 7–10 KB | 10 KB | | **56,128 B** CPU-only and GPU against `3e833c9`, with the writers wired temporarily (decisions.md m5-palette) |
@@ -189,7 +189,7 @@ allocations.
 | tree-sitter grammar (S-lsp; linked only into strand-dev's tests) | 0 B in `strand` | 0 | |
 | Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 61,001 B | |
 | **Total M5 (CPU-only)** | | **338,217 B**: the gate (18,350,080 B) less the 64 KiB reserve, less the speed re-base and M4's baseline | 130,688 B charged so far (130,816 B by the ledger line's formula, which also counts the 128 B `f61acec` reads over the speed review's merged tree); after wave 2 (with S-tools' wave 3), **609,024 B** CPU-only and 627,968 B GPU by the ledger line's formula: 130,816 B through wave 1 plus the merged wave-2 tree's +478,208 B over wave 1's (GPU 129,536 plus 498,432 B); the gates were re-based to that tree ("Re-based after wave 2" below) |
-| GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) | | `report`'s GPU section **20,480 B** (the GPU build's wave-3 delta less the CPU-only one); the outline and flash are not built, and their 19,520 B left stays in the re-based GPU gate |
+| GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) | | `report`'s GPU section **20,480 B** (the GPU build's wave-3 delta less the CPU-only one); the outline and flash were built in wave 3 by S-inspect, whose GPU-build figure (+34,176 B) is 832 B below its CPU-only one (+35,008 B): the GPU-only part costs nothing measurable apart, inside the GPU build's 39,520 B (decisions.md m5-inspect) |
 
 How the lines add up (CPU-only): the merged wave-1 tree is 18,077,143 B
 against the 18,350,080 B gate, 272,937 B of headroom; less the gate's
@@ -246,6 +246,31 @@ help's options) measure CPU-only **18,560,343 B** (+4,992 B over
 `8e84059`) and GPU **22,477,847 B** (+4,736 B), charged to the 64 KiB
 reserve.
 
+**Measured after wave 3 (2026-10-12, decisions.md m5-integration-w3,
+sweep-3).** `scripts/size-report.sh` on `laptop/m5-w3` at `9e3a91d`
+(every wave-3 stream merged and the integrator's sweep, whose later
+commits are docs only) measures CPU-only **18,711,127 B** (+155,776 B
+over `8e84059`) and GPU **22,630,295 B** (+157,184 B), 163,241 B and
+176,233 B under the gates. The streams' own figures add to 134,272 B
+CPU-only (S-fixups +4,992, S-inspect +35,008, S-platform +94,272, each
+against `8e84059`/`aa3053c`); the other 21,504 B is the merges'
+interaction and the sweep (the landed equality rule, the shader "why"
+line, the `run:` THP restore). Against wave 3's room inside the
+re-based gates (the inspector's and xdg-activation's 40,000 B plus the
+64 KiB reserve, 105,536 B; GPU 125,056 B with the GPU-only 19,520 B)
+that is 50,240 B over CPU-only and 32,128 B over GPU, inside both gates.
+The integrator accepts it under the owner's standing policy (speed
+beats size; the gates are regression tripwires, and an overrun is fine
+with a recorded reason): S-platform's +94,272 B against its 20 KB line
+is xdg-activation's hand-back queue, held-action ordering and token
+plumbing through four crates after three review rounds, all cold
+(input and activation, no frame or swap path); S-inspect's +35,008 B
+against 20 KB is pick mode, the outline and the flash, cold until
+`strand-dev inspect` connects. Nothing was cut. In the ledger line's terms M5 has spent
+764,800 B CPU-only and 785,152 B GPU (wave 2's 609,024 B and 627,968 B
+plus wave 3's), and the gates are hit at Δ +3,216,697 and +3,765,433
+(Δ now +3,053,456 and +3,589,200 against M4's merged figures).
+
 Optional items, paid from the reserve only if the reserve allows:
 check-time `import()` validation (2–4 KB) and the "says why" lines in the
 node pane (2–5 KB).
@@ -292,6 +317,18 @@ lowered as reclaims land, tightened at close.**
   plus the unbuilt lines (40,000 B) and a 64 KiB reserve, rounded up to
   256 KiB (213,481 B of rounding, not spendable). The arithmetic is under
   "Re-based after wave 2" above.
+- **Proposed at M5's close (2026-10-12, decisions.md m5-integration-w3,
+  sweep-3): keep 18,874,368 B CPU-only and 22,806,528 B GPU.** The
+  final measured size is 18,711,127 B and 22,630,295 B (after wave 3,
+  above). The speed review's rule that replaced this section's first
+  one (measured + a 64 KiB reserve, rounded up to 256 KiB, with no
+  unbuilt lines left) gives exactly today's gates (18,776,663 → 72 ×
+  256 KiB; 22,695,831 → 87 × 256 KiB), so nothing changes and the gate
+  test keeps its values. This section's original close rule, "the next
+  64 KiB above the final measured size", would give 18,743,296 B and
+  22,675,456 B (32,169 B and 45,161 B of headroom), tight enough that
+  the next feature's first commit would trip it; it is the owner's to
+  choose instead.
 
 Not taken: **(B) keep 15 MiB, as m4-integration-w2 did (decisions.md:9573:
 "the code moved, not the gate").** That would have left 71 KB plus

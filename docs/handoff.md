@@ -1,247 +1,196 @@
-# Handoff: M5 after wave 2 (updated 2026-10-11)
+# Handoff: M5 after wave 3 (updated 2026-10-12)
 
-A pausing point: M5's wave 2 (its first launch) and S-tools' wave-3
-`strand new` and `strand report` are merged on the integration branch,
-`laptop/m5-w2`, the `.text` gates are re-based to that tree under the
-owner's size ruling, and the rest of wave 3 has not started. Read this
-first when picking the repo up cold, then `docs/m5-plan.md` (streams,
-waves, ledger, closing checks), `docs/decisions.md` (`## m5-owner`,
-`## m5-integration`, `## m5-w0-harden`, the `## m5-speed*` and
-`## m5-open-*` sections, `## m5-w1-owner`, the streams' `## m5-docs`,
+A pausing point before M5 closes: every wave-3 stream is merged on the
+integration branch `laptop/m5-w3`, the integrator's sweep has closed
+the stragglers wave 2 and wave 3 left, all ten of M5's boxes are
+ticked, and what is left is the freeze commit, the full checks on the
+closing head and the owner's two items (the newcomer trials, the
+fast-forward of `main`). Read this first when picking the repo up cold,
+then `docs/m5-plan.md` (streams, waves, ledger, closing checks),
+`docs/decisions.md` (`## m5-owner`, `## m5-integration`,
+`## m5-w0-harden`, the `## m5-speed*` and `## m5-open-*` sections,
+`## m5-w1-owner`, the streams' `## m5-docs`, `## m5-docs3`,
 `## m5-plugins`, `## m5-tools`, `## m5-lsp`, `## m5-inspect`,
-`## m5-ipc`, `## m5-palette`, and the integrator's
-`## m5-integration-w1` and `## m5-integration-w2`) for the reasons, and
-`docs/features.md` for M5's boxes. `docs/m4-report.md` has M4's
-measured numbers.
+`## m5-ipc`, `## m5-palette`, `## m5-fixups`, `## m5-platform`, and the
+integrator's `## m5-integration-w1`, `## m5-integration-w2` and
+`## m5-integration-w3`) for the reasons, and `docs/features.md` for
+M5's boxes. `docs/m4-report.md` has M4's measured numbers.
 
 ## State
 
-- **M0–M4 are complete**, and **M5's wave 1 is on `main`** (`6cee276`,
-  fast-forwarded by the owner). features.md: M0 20/20, M1 59/59 (the
-  tree-sitter box, carried to M5, ticked in wave 2), M2 30/30, M3 14/14,
-  M4 18/18, **M5 6/12 on `laptop/m5-w2`** (ten boxes and two exit
-  criteria; ticked: CLI + IPC, `new`/`export`/`report`, the importers,
-  plugins, tree-sitter and the LSP; open: the inspector, xdg-activation,
-  the promoted GPU cost on hardware, the docs, and both exit criteria).
-- **Wave 2 is merged on `laptop/m5-w2`** (branched from `main` at
-  `6cee276`; its first commit `3e833c9` is the integrator's pure move of
-  `main.rs`'s CLI into `src/entry.rs`). Six streams, each reviewed and
-  fixed in up to three rounds before its merge, merged in this order
-  (decisions.md m5-integration-w2 records each merge and the crate tests
-  run in the container for it):
-  - **S-lsp** (`0a1a558`): the tree-sitter grammar package
-    `crates/strand-dev/tree-sitter-strand/` (`grammar.js`, the line-break
-    scanner, highlights/locals/indents/injections queries, the generated
-    `src/` held to `grammar.js` by `scripts/check-tree-sitter.sh`), and
-    the guide's strand-check test `crates/strand-dev/tests/guide.rs`.
-    Tests: `crates/strand-dev/tests/tree_sitter.rs`. grammar.md now has
-    a closing section on how the tree-sitter grammar writes it.
-    Size: 0 B in `strand` (nothing links it).
-  - **S-ipc** (`8f8350a`): the D-Bus front end
-    (`strand_services::ipc_bus`: `io.github.jakeb_grant.Strand` at `/`,
-    typed methods `Get`, `Set`, `Toggle`, `Clear`, `Reset`, `Call`,
-    `Reload`, the `Changed` signal, a second instance running without
-    the name; spec.md 13 now names them), a bus `reload` that waits for
-    its load, and the inspector's `inspect.node`, `inspect.dump` and
-    `reset{node}` arms over S-inspect's library. Tests:
-    `crates/strand/tests/m5/dbus_ipc.rs`, `ipc_bus.rs`'s units,
-    `run/tests.rs` (`saves_reload_live_with_state_kept`,
-    `a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it`,
-    `a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept`); the
-    CLI + IPC box is ticked. Size as reported: CPU-only **+112,960 B**
-    over `3e833c9` (D-Bus +52,736 B against 37,400 B; the inspect arms
-    +60,416 B against 3,000 B, almost all S-inspect's wave-1 library,
-    dead code until these arms called it).
-  - **S-palette** (`8cc3982`): the 13 hue roles (`Role::COUNT` 62,
-    derived from the sRGB primaries and secondaries harmonised toward
-    the accent), every importer's extras in source order and the
-    palette's identity (`$palette.*`, beside the tokens in
-    `TokenTable::palette`, not springing), the persisted file's `name`
-    and `extra` lines, the reserved names (`check::reserved_token`), and
-    the `json` and `base24` writers. Tests: `crates/strand-theme/tests/
-    {palette,export}.rs`, the negative fixture `reserved_token.strand`.
-    Size as reported: **+56,128 B** CPU-only and GPU against its 10 KB
-    line.
-  - **S-plugins** (`dbc1ffb`): `strand::Shell::builder().service::<S>()
-    .run()` (`main.rs` is now `Shell::builder().run()`),
-    `--write-schemas`, `strand_compiler::schema::plugins` read by `strand
-    check`, `strand run` and the LSP, `UnservedHost` for a file's
-    service no binary serves, the `plugin_hello` and `plugin_bare`
-    examples and `docs/guide/plugins.md`. Tests:
-    `crates/strand/tests/m5/plugin.rs`, `crates/strand-dev/tests/lsp.rs`'s
-    plugin tests and the units; the plugins box is ticked. Size as
-    reported: **+25,408 B** CPU-only and GPU against its 8 KB line.
-  - **S-tools** (`33c4490`): templates (`strand_compiler::template`, the
-    other mode with `.light()`/`.dark()`, channel methods, `hex`/`argb`),
-    `strand export json | base24 | --template [--palette] [-o]` offline
-    and over the socket (`Request::Export`, agreeing with offline), the
-    `file` element (top level and in trees) with its output host and the
-    `strand-files` writer (atomic, owned, manifest, retries, `run:`
-    debounce and timeout, `[replace]`). Tests: `crates/strand-compiler/
-    tests/{template,hub,outputs}.rs`, `crates/strand/tests/m5/export.rs`,
-    `run::outputs` and `run::request::export` units, and
-    theme_swap_bench's `file_outputs_after_a_swap_are_under_five_milliseconds`
-    (0.55 ms median). Size as reported: **+219,776 B CPU-only and
-    +219,264 B GPU** against `6a33477` after 77 KB reclaimed with no
-    feature dropped, against its 28 KB line; on its branch that crossed
-    both gates (CPU-only by 98,199 B, GPU by 63,127 B).
-  - **S-tools, wave 3** (`6b8b8e6`, merged by `8e84059`): `strand new
-    [dir]` (the guide's hello bar into a new or empty directory,
-    refusing a non-empty one) and `strand report [--json]` (globals,
-    outputs, per-surface frame p50/p95/p99 over the last 600 frames,
-    GPU status and lost devices, the PSS; through the snapshot hop),
-    with three review rounds on a promoted frame's GPU time (timestamp
-    queries in `strand-gpu`'s `timer.rs`, `Presented { surface, frame,
-    at, waited, ran }`). Tests: `crates/strand/tests/m5/{new,report}.rs`,
-    `renderer::summary` and `report`/`new` units,
-    `crates/strand-render/tests/gpu.rs`'s frame-time tests. The
-    `new`/`export`/`report` box is ticked; m5-plan's grim reference PNGs
-    were missing at this merge and S-fixups made them in wave 3
-    (owner item 6). Size on the merged tree: **+70,208
-    B CPU-only, +90,688 B GPU** over `db85876`.
-  - **S-docs** (`732976f`): guide levels 4 and 5 (design.md's builds
-    byte for byte, then one construct per step; level 5's `file`
-    example as its own `colors.strand` with a neutral CSS template), the
-    README and level 3 edits, and the guide tests in `tests/guide.rs`
-    (every step checked, templates included). The docs box stays open
-    (ladder test, generated reference, newcomer test and the freeze are
-    wave 3).
-- **Docs synced after the merges** (this commit): spec.md follows the
-  hub as built (9.5's canonical hues, collisions and role extras; 9.7's
-  retries, links, `when` and run rules; 9.8's `join`), names the D-Bus
-  methods and `Changed` (13), the plugin schema files (5.6) and
-  `export --palette` as offline only; design.md, grammar.md and
-  architecture.md drop the "M5 wave 2" marks of what is built (the
-  hub, D-Bus, plugins, tree-sitter) and say what is not (`strand new`,
-  `strand report`, the inspector's pick/highlight/flash and its client,
-  the reference generator); architecture.md takes the plugin stream's
-  proposed as-built text (`Served.warnings`, `cli` without `main`,
-  `strand::Builder`); the guide notes that `strand new` and `strand
-  report` are not built yet; features.md adds S-tools' and S-docs'
-  evidence under their open boxes.
-- **Sizes on the merged tree, and the gates re-based** (decisions.md
-  m5-size, wave 2, and m5-integration-w2; m5-plan's "Re-based after
-  wave 2"). The streams measured against different bases, so their
-  figures do not simply add. `scripts/size-report.sh` on `laptop/m5-w2`
-  at `8e84059` gives CPU-only **18,555,351 B** (+478,208 over wave 1's
-  merged tree) and GPU **22,473,111 B** (+498,432). The size pass found
-  no gross verbosity and cut nothing; the owner accepted the overruns
-  (2026-10-11), and the gates are now **18,874,368 B** CPU-only and
-  **22,806,528 B** GPU (measured + the unbuilt lines + 64 KiB, rounded
-  up to 256 KiB). The budgets test passes on the tree in the container.
-- **Full checks have not run on the merged head**: only crate-scoped
-  tests, fmt and workspace clippy ran per merge. `run.sh ci`,
-  `matrix.sh`, the lock VM scenarios, `gpu.sh` and GitHub CI are next.
+- **M0–M4 are complete**, and **M5's wave 1 is on `main`** (`6cee276`);
+  wave 2 is on `main` too (`aa3053c`, the owner's fast-forward of
+  `laptop/m5-w2`). features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14,
+  M4 18/18, **M5 10/10 boxes on `laptop/m5-w3`**, with the two exit
+  criteria open (below, and features.md's Exit line says why).
+- **Wave 3 is merged on `laptop/m5-w3`** (branched from `main` at
+  `aa3053c`). Four streams, each reviewed and fixed in up to three
+  rounds before its merge, merged in this order (decisions.md
+  m5-integration-w3 records each merge and the crate tests run in the
+  container for it):
+  - **S-fixups** (`1368898`, fast-forward, `787b5fa`): wave 2's
+    stragglers. `drop_index` leaves out one row per list, the dragged
+    item's own row in its own list and another list's first copy of it
+    (`strand_scene::drag_identity`, `Prop::Drag`'s identity,
+    `Prop::DropRows`, `Prop::NotRow`), so a dock drop on another
+    monitor's dock lands where it is let go; the checker and lowering
+    write a config service's `rw` field; `Document::parse` skips `#`
+    comment lines and strips single quotes; `strand report`'s
+    percentiles are over drawn frames (`drawn`/`unchanged`); spec.md 13
+    names `new`, `report` and `compositor-rules`; `strand export -o`
+    writes as a `file` element does; `strand report`'s grim reference
+    PNGs, made deterministic on the frozen-clock acceptance mock (owner
+    item 6). Size: +4,992 B CPU-only, +4,736 B GPU.
+  - **S-inspect, render and binary half** (`9809d9a`, merged by
+    `6e00b74`/`05f38c4`): pick across surfaces (the router holds pointer
+    input from handlers while picking; never a lock surface), the
+    outline and the 300 ms repaint flash on CPU and `GpuPresent`
+    surfaces, `inspect.pick`, `inspect.highlight` and `inspect.flash`
+    (owned by the socket client that asked), and `strand-dev inspect`
+    (a line-mode session: pick, pane, reset, flash, `set`/`token`
+    write-back that is atomic, hash-guarded, symlink-following and
+    refuses a file this user cannot replace, with an `$EDITOR` offer).
+    Tests: `crates/strand-render/tests/inspect.rs` (PNG refs),
+    `crates/strand/tests/m5/inspect.rs` (sway, two outputs),
+    `crates/strand-dev/tests/{inspect,inspect_session}.rs`,
+    `crates/strand/tests/lock.rs::the_inspector_cannot_pick_while_locked`
+    (lock VM). The Inspector box is ticked. Size: +35,008 B CPU-only,
+    +34,176 B GPU on its branch.
+  - **S-platform** (`3511f16`, merged by `e1fa1e8`): xdg-activation. The
+    notification server sends spec 1.2's `ActivationToken` before
+    `ActionInvoked`; app launches pass the click's token as
+    `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID` and never strand's own;
+    the press serial rides the events it causes; held actions wait at
+    most 200 ms for their token, in order across services. Tests: the
+    xdg-activation box's list in features.md, with the compositor
+    matrix's `a_launched_app_is_activated_with_its_token` on sway, niri
+    and (since the sweep) Hyprland. The box is ticked. Size: +94,272 B
+    CPU-only, +96,832 B GPU on its branch.
+  - **S-docs, wave 3** (`afa6749`, merged by `1697c94`): the ladder test
+    (`crates/strand-dev/tests/ladder.rs`), `docs/reference/` generated by
+    `strand-dev reference` and checked current, spec.md reviewed for
+    the freeze, `crates/strand/tests/m5/newcomer.rs` (levels 1–3 build
+    bar (a) live on two outputs, 27 reference PNGs), and the agent
+    proxy's harness (`scripts/agent-proxy/`, advisory). The Docs box is
+    ticked. Size: 0 B in `strand` (strand-dev and tests).
+- **The integrator's sweep** (decisions.md m5-integration-w3, the
+  "integrator sweep" paragraphs; one commit each after `1697c94`):
+  - the Hyprland leg of the activation matrix test sets
+    `misc:focus_on_activate` through `hyprctl eval` (Hyprland's Lua
+    config refuses `keyword` with exit status 0, which failed the leg on
+    every S-platform CI run), checked with `getoption`; the compositors
+    job is green again;
+  - a `file` element's `run:` command gets back strand's inherited THP
+    setting;
+  - the equality checker change landed: `==` and `!=` take numbers by
+    the ordering rule (spec.md 7.2's last open point);
+  - canvas paint order pinned by a PNG test and stated in the guide;
+    spec.md 6.7 states the windowed-list drop limit as one of 1.0's
+    implementation;
+  - the inspector's node pane says why a `shader` node draws nothing
+    (design.md, Paint), its `why` field proposed in architecture.md;
+  - the promoted GPU cost measured on hardware and its box ticked;
+  - a strand-auth test flake (ETXTBSY) fixed;
+  - the size ledger and gates read on the merged tree (below);
+  - the records corrected (architecture.md's strand-dev section, the
+    merge paragraphs' commits, features.md's Exit line, this file).
 
-## Deferred from wave 2
+## Deferred from wave 3
 
-- **S-inspect's render and binary half** (pick across surfaces, the
-  outline and repaint flash on main, `inspect.pick`,
-  `inspect.highlight`, `inspect.flash`, `strand-dev inspect`; 20 KB
-  line): never launched; those commands still answer `unknown command`.
-- **S-platform** (xdg-activation: `ActivationToken` from the
-  notification server, `XDG_ACTIVATION_TOKEN` for launches; 20 KB
-  line): never launched.
-- **S-docs' wave-3 work**: the ladder test, `docs/reference/` and its
-  generator, `tests/m5/newcomer.rs`, the agent-proxy harness, the spec
-  freeze.
-- **Proposed fixes for other owners: made in wave 3 by S-fixups**
-  (decisions.md m5-fixups): `drop_index` leaves out one row per list,
-  the dragged item's own row in its own list and another list's first
-  copy of it (`strand_scene::drag_identity`), so a dock drop on another
-  monitor's dock lands where it is let go; the checker and
-  lowering write a config service's `rw` field; `Document::parse` skips
-  `#` comment lines and strips single quotes; the tray schema's
-  `open()` doc; S-plugins' leftover-file log level stays `info`
-  (decided). With them: `strand report`'s percentiles are over drawn
-  frames (`drawn`/`unchanged`), spec.md 13 names `new`, `report` and
-  `compositor-rules`, `--write-schemas` is in `strand help`, and
-  `strand export -o` writes as a `file` element does.
+- **Nothing a stream left is unowned.** S-inspect's inspect-r2-6 (the
+  node pane's "why" for a `shader` node) was built in the sweep; the
+  equality change S-docs proposed landed; S-platform's `run:` THP
+  restore was made.
+- **Known limits wave 3 recorded** (also under "Known limits" below):
+  a drop's `at` does not see a copy outside a windowed `list`'s mounted
+  rows (spec.md 6.7, m5-fixups); write-back's rename window (POSIX has
+  no compare-and-rename, m5-inspect); an answer to `inspect.pick` means
+  logic told main, not that main turned pick mode on (architecture.md).
+- **The compositor matrix**: the activation test runs on sway, niri and
+  Hyprland (CI's vkms; `matrix.sh` skips Hyprland on the laptop, no KMS
+  card); labwc skips it as it skips every IPC test (`live()`), since it
+  reads the focus from the compositor's IPC and labwc has none.
 
-## Next: M5 wave 3
+## Next: M5 close
 
-From m5-plan.md's Waves table ("Closing" for the integrator):
+From m5-plan.md's "Closing (wave 3, integrator)":
 
-1. Done: the owner's size ruling, the ledger and both gates re-based
-   to the merged tree, the budgets test passing on it.
-2. **The full local set on `laptop/m5-w2`'s head**, one at a time
-   (`run.sh ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), then
-   GitHub CI green on that head, then the owner's fast-forward of
-   `main`.
-3. **The deferred streams take slots** (at most three building):
-   S-inspect's render half and its `strand-dev inspect` client with
-   write-back, and S-platform; S-docs' wave-3 writing (ladder, reference, newcomer, agent
-   proxy) beside them, holding no slot.
-4. **Closing**: the freeze text, m5-report, and this file as the M5
-   handoff.
-
-The launch procedure (branch point, slots, per-stream build → review →
-verify → fix loop, integrator merges, full checks on the exact head,
-the owner's ff of `main`) is wave 2's, in git history at `37f600b`
-("How to launch it").
+1. **The freeze commit**: spec.md and grammar.md final, decisions.md
+   recording the freeze; the last commit of wave 3 (the sweep's last).
+2. **Full checks on the exact closing head**: GitHub CI green on it
+   (lint with the `--no-default-features` steps, test, budgets,
+   acceptance, timing, compositors with Hyprland, lock-vm with
+   `scenarios/all.sh`), plus the laptop's `run.sh ci`, `matrix.sh` and
+   `gpu.sh` one at a time (the sweep ran only crate tests, the lock VM
+   and `gpu.sh` locally; its hand-back says which).
+3. Done in the sweep: **the GPU box** (frame time and PSS on hardware).
+4. **Human trials** (Q15, the owner's), recorded in m5-report.md.
+5. **Paperwork**: m5-report.md (ledger, PSS, the resident split, trial
+   times), the tightened `.text` gate proposal (below, under Budgets),
+   worktree `target/` directories, then the owner's fast-forward of
+   `main`. No version bump, tag, release notes or release artifact
+   (Q20).
 
 ## Open items for the owner
 
 Each has its paragraph in decisions.md.
 
-1. **Wave 2's `.text` overruns: answered** (2026-10-11): "those size
-   overruns still don't seem like that big of a deal in the scope of
-   the entire binary. We're still pretty small." Accepted as cold code
-   (IPC, import, export, writer, report); nothing cut, since the size
-   pass found no gross verbosity; both gates re-based to the merged tree
-   (decisions.md m5-integration-w2). Per stream as reported: S-ipc
-   +112,960 B, S-palette +56,128 B, S-plugins +25,408 B, S-tools
-   +219,776 B (wave 2) and +70,208 B (wave 3, on the merged tree).
-2. **S-ipc's `Request(s json)` alternative** (about −18 KB): not taken;
-   the ruling made the cut unnecessary, and spec.md 13's typed methods
-   stand.
-3. **The remaining lines** (inspector render half 20 KB, xdg-activation
-   20 KB, the GPU-only outline and flash 19,520 B): answered by item 1;
-   they are inside the re-based gates.
-4. **The presented GPU leg's after-drop bound: answered** (a leak
-   tripwire, m5-infra, m5-speed-gpu-bound, m5-open-budgets).
-5. **`scripts/gpu-measure.sh`'s KMS-card run: not needed** (Q19 (A));
-   owner-optional, never run by an agent.
-6. **`strand report`'s grim reference PNGs: answered** (2026-10-11,
-   deferred to the integrator, who made them): `strand new`'s shell on
-   two outputs on the frozen-clock acceptance mock,
-   `acceptance.rs::the_new_shell_checks_and_runs_on_two_outputs`
-   (decisions.md m5-fixups).
+1. **The newcomer exit criterion (Q15).** Two or three timed human
+   trials on their own machines and compositors, with the budgets job's
+   `strand-release-binaries` artifact or a source build; or invoke
+   Q15's fallback (ii), where the green automated newcomer test and the
+   agent proxy carry it (no proxy session has been run: starting one is
+   a person's call, `scripts/agent-proxy/run.sh` with
+   `AGENT_PROXY_CMD`).
+2. **Wave 3's `.text` overruns: accepted by the integrator under the
+   standing policy** (speed beats size, gates are tripwires, overruns
+   are fine with a recorded reason; decisions.md m5-integration-w3,
+   sweep-3): S-platform +94,272 B against 20 KB, S-inspect +35,008 B
+   against 20 KB, S-fixups +4,992 B against the 64 KiB reserve. The
+   merged tree is inside both gates; the owner may re-rule.
+3. **Interface changes wave 3 wrote into architecture.md, accepted by
+   the integrator** (S-fixups' drag identity and `drawn`/`unchanged`,
+   S-inspect's inspect protocol, S-platform's handler input context and
+   `Presented`/token types), and one **proposed** in the sweep: the
+   `why` field of `inspect.node`'s answer for a `shader` node.
+4. **The tightened `.text` gate** (m5-plan Closing step 5): proposed
+   under Budgets below; the gate test keeps today's value until the
+   owner says.
+5. **The fast-forward of `main`** to the closing head once GitHub CI is
+   green on it (the standing approval covers it when local ci, matrix
+   and GitHub CI all pass on that exact commit).
 
-Wave 1's overruns (S-ipc's socket half, S-inspect's library) were
-accepted at wave 1's integration and stand (m5-integration-w1). Every M4
-owner item was answered on 2026-10-10 (decisions.md m4-owner-2 and
-m4-owner-3; summarised under "M4 owner items" below).
+Answered before wave 3 and standing: wave 2's overruns (accepted
+2026-10-11), S-ipc's `Request(s json)` alternative (not taken), the
+presented GPU leg's after-drop bound (a leak tripwire), the
+`gpu-measure.sh` KMS-card run (not needed, Q19 (A)), and `strand
+report`'s grim reference PNGs (deferred to the integrator, who made
+them; m5-fixups). Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
 
-These are the figures on `laptop/m5-w2` at `8e84059`, wave 2 merged
-with S-tools' wave 3 (decisions.md m5-integration-w2).
+`.text` figures are on `laptop/m5-w3` at `9e3a91d`, wave 3 merged with
+the integrator's sweep (decisions.md m5-integration-w3, sweep-3); the
+memory and latency figures are wave 2's and the sweep's runs.
 
-- **`.text`**, from `scripts/size-report.sh` and budgets.rs's gate test
-  in the container (the ledger line; Δ is against M4's merged figures
-  15,657,671 / 19,041,095 B): CPU-only **18,555,351 B** (Δ +2,897,680)
-  of the **18,874,368 B** gate, 319,017 B of headroom; GPU **22,473,111
-  B** (Δ +3,432,016) of **22,806,528 B**, 333,417 B of headroom. The
-  gates were re-based to this tree under the owner's ruling of
-  2026-10-11 by the speed review's rule: measured + the unspent lines of
-  unbuilt work (40,000 B CPU-only: the inspector's render half and
-  xdg-activation; 59,520 B GPU, with the GPU-only outline and flash) + a
-  64 KiB reserve, rounded up to 256 KiB (213,481 / 208,361 B of
-  rounding, not spendable). The speed re-base (+2,325,712 CPU-only,
-  +2,841,424 GPU) is no allocation's spend: spend is Δ − 2,288,656
-  CPU-only and Δ − 2,804,048 GPU, so M5 has spent 609,024 B CPU-only
-  and 627,968 B GPU. A deliberate speed revert raises its gate by its
-  recorded cost (m5-speed-policy); other growth past the lines is read
-  by its cause, as wave 2's was, and re-based or cut with a recorded
-  reason (size gates are regression tripwires, not caps).
+- **`.text`**, from `scripts/size-report.sh` in the container (Δ is
+  against M4's merged figures 15,657,671 / 19,041,095 B): CPU-only
+  **18,711,127 B** (Δ +3,053,456; +155,776 over wave 2's tree) of the
+  **18,874,368 B** gate, 163,241 B of headroom; GPU **22,630,295 B**
+  (Δ +3,589,200; +157,184) of **22,806,528 B**, 176,233 B of headroom.
+  Wave 3 overran its room inside the gates (105,536 B CPU-only, 125,056
+  B GPU) by 50,240 B and 32,128 B, mostly S-platform's xdg-activation
+  (+94,272 B against 20 KB); the integrator accepted it with its
+  reasons under the standing policy (m5-plan, "Measured after wave
+  3"). M5 has spent 764,800 B CPU-only and 785,152 B GPU in the ledger
+  line's terms. **Proposed close gate: keep both** (the speed review's
+  rule, measured + 64 KiB rounded up to 256 KiB, gives today's values);
+  m5-plan's original "next 64 KiB above" rule (18,743,296 / 22,675,456
+  B) is the owner's alternative. Size gates are regression tripwires,
+  not caps: growth past them is read by its cause and re-based or cut
+  with a recorded reason.
   - GitHub's runner links about 2 KB smaller than the container; read
     the ledger against the same machine's baseline.
-  - Wave 3's lines inside the gates: inspector render half 20,000 B,
-    xdg-activation 20,000 B, GPU-only outline and flash 19,520 B, and
-    the 64 KiB reserve for review rounds. Within them: CPU-only Δ ≤
-    +2,937,680, GPU Δ ≤ +3,491,536; the gates are hit at Δ +3,216,697
-    and +3,765,433.
 - **Memory** (tripwires for accidental regressions in CI, never
   runtime caps on a user's shell; set by judgement under the owner's
   2026-10-10 policy, with headroom for waves 1-2's IPC, inspector and
@@ -256,6 +205,12 @@ with S-tools' wave 3 (decisions.md m5-integration-w2).
   GitHub at `31da659` and `2fedfa2`. A target warning is info; raise
   them again with a recorded measurement rather than trimming a
   feature to fit.
+- **The promoted GPU surface on hardware** (reported, never gated;
+  features.md's M5 box): Intel PTL presenting to a GLES2 sway on
+  renderD128, `gpu_idle.rs` in release: frame p50 1.09–1.10 ms, p95
+  3.87–4.18 ms, p99 4.53–5.08 ms; PSS +21.0–26.1 MB while promoted,
+  +6.35 MB after the drop (bound 12 MiB), +2.18 MB at most between
+  cycles (bound 4 MiB).
 - **Latency** (GitHub's timing job enforces; advisory on the laptop):
   reload p95 35 ms token / 50 ms markup at design.md's model, gated by
   the headless break; at `94fe372` token p95 17.1 ms against a break of
@@ -301,7 +256,11 @@ with S-tools' wave 3 (decisions.md m5-integration-w2).
   uploads the release binaries as artifact `strand-release-binaries`
   (30 days; for the human trials, not a release).
 - `matrix.sh` skips Hyprland locally (no KMS card); Hyprland's leg is
-  CI's (vkms), where it runs 0.56.2 with a Lua config.
+  CI's (vkms), where it runs 0.56.2 with a Lua config. Hyprland settings
+  a test changes go through `hyprctl eval 'hl.config({ … })'`, never
+  `keyword`, which a Lua config refuses with exit status 0, and are
+  checked with `hyprctl -j getoption` (`compositor_matrix.rs`'s
+  `Policy::hyprland`; decisions.md m5-integration-w3).
 - `gpu.sh` is advisory (WARN unless `STRAND_STRICT_GPU=1`);
   `STRAND_GPU_PRESENT=1` presents on renderD128. Never run
   `scripts/gpu-measure.sh` as an agent.
@@ -399,7 +358,8 @@ recorded reason.
 - Done in M5's wave 0 (decisions.md m5-infra): the two functional tests
   that bounded wall-clock time now check work done and order, and
   `compositor_matrix.rs` sends Hyprland's Lua dispatch form first (its
-  classic fallback has never run: no leg uses a hyprlang config).
+  classic fallback has never run: no leg uses a hyprlang config); the
+  sweep moved its option settings to `eval` too (m5-integration-w3).
 
 ### Verification gaps
 
@@ -438,6 +398,17 @@ recorded reason.
 - sway: `win.maximize()` answers `Unsupported` on the adapter (sway has
   no maximize). Through the wlr fallback (adapter off) the reply is
   `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
+- Drag and drop: a drop's `at` in another list does not see that list's
+  copy of the item when the copy is outside a windowed `list`'s mounted
+  rows (render has only the mounted rows), so it is one too high then;
+  spec.md 6.7 states it as a limit of 1.0's implementation, whose fix is
+  a bug fix (decisions.md m5-fixups, m5-integration-w3).
+- Inspector: write-back checks the target's inode and hash just before
+  its rename, but a small window remains between that check and the
+  rename (POSIX has no compare-and-rename; closing it needs a lock
+  editors do not take). An answer to `inspect.pick` means logic told
+  main, not that main has turned pick mode on (decisions.md
+  m5-inspect; architecture.md).
 - Notifications: `Notification.time` has no time of day yet (spec 1.2's
   `ActivationToken` is sent since S-platform, M5 wave 3).
 - Tray: Activate and ContextMenu get the press's output-logical point
@@ -497,32 +468,34 @@ M5 wave 2 and both its boxes are ticked.
   breakdown, top symbols; on demand, it takes a build slot).
 - Plans: `docs/m5-plan.md` (M5), `docs/m4-plan.md` (M4); interface text
   in `docs/architecture.md`.
-- Remote branches: `origin/main` and M5's `origin/laptop/m5-*`
-  branches: the integration branch `m5-w2` and wave 2's streams
-  (`m5-ipc`, `m5-lsp`, `m5-palette`, `m5-plugins`, `m5-tools`,
-  `m5-docs`), all merged into `m5-w2`. Wave 1's integration branch and
-  `m5-inspect` are gone from the remote (wave 1 is on `main`); wave 0's
-  branches and the speed review's were merged into `main` and deleted.
+- Remote branches: `origin/main` and M5's wave-3 `origin/laptop/m5-*`
+  branches: the integration branch `m5-w3` and wave 3's streams
+  (`m5-fixups`, `m5-inspect`, `m5-platform`, `m5-docs3`), all merged
+  into `m5-w3`. Wave 2's integration branch and streams are gone from
+  the remote (wave 2 is on `main`); earlier waves' branches were merged
+  into `main` and deleted.
 
-## Handoff checklist (wave 2)
+## Handoff checklist (wave 3)
 
-Wave 1's checklist is in git history (`6cee276`), wave 0's at
-`88d4d99`, M4's at `70cdc56`.
+Wave 2's checklist is in git history (`aa3053c`), wave 1's at
+`6cee276`, wave 0's at `88d4d99`, M4's at `70cdc56`.
 
-- [x] Wave 2's six streams merged on `laptop/m5-w2`, each reviewed and
+- [x] Wave 3's four streams merged on `laptop/m5-w3`, each reviewed and
   fixed before its merge; fmt, workspace clippy and the affected crates'
   tests passed in the container per merge (decisions.md
-  m5-integration-w2).
+  m5-integration-w3).
+- [x] The integrator's sweep: the stragglers closed, each with its test
+  and decisions.md paragraph; all ten M5 boxes ticked.
+- [x] The ledger and gates read on the merged tree; wave 3's overruns
+  accepted with their reasons; the tightened gate proposed.
 - [x] The docs follow what landed (spec.md, the guide, design.md,
-  grammar.md, architecture.md, features.md and this file; this commit).
-- [x] The owner's ruling on wave 2's overruns (accepted), S-tools'
-  wave-3 `new` and `report` merged, the budgets test on the merged tree
-  and m5-plan's ledger and both `.text` gates re-based to it
-  (decisions.md m5-integration-w2).
-- [ ] The full local set on the branch's final head, one at a time
-  (`run.sh ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), then
-  GitHub CI green on that head. The integrator runs these after the last
-  docs commit, so their results are in its hand-back, not here.
-- [ ] The owner fast-forwards `main` to that head.
+  architecture.md, features.md, m5-plan.md and this file).
+- [ ] The freeze commit (spec.md and grammar.md final), the last of
+  wave 3.
+- [ ] The full local set on the closing head, one at a time (`run.sh
+  ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), and GitHub CI
+  green on that head.
+- [ ] The newcomer trials or Q15 (ii) (owner); m5-report.md.
+- [ ] The owner fast-forwards `main` to the closing head.
 - [ ] Delete worktree `target/` directories (each agent at its task's
   end; the cargo registry stays in its volumes).
