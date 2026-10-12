@@ -9,6 +9,9 @@
 //!   binary never takes a lock nothing releases. What the compositor
 //!   reports (`SurfaceHost::lock_changed`) goes to logic as
 //!   [`ToLogic::LockState`], which `Instance::set_session_lock` takes.
+//!   Whether a lock is asked for or held reaches `auth` too
+//!   (`AuthConfig::lock`), which keeps PAM's conversation open meanwhile,
+//!   so a fingerprint module runs before any password (m6-lock).
 //! - **The fallback** ([`LockScreen`], held by the surface host): while a
 //!   lock is asked for or held, the main thread paints render's built-in
 //!   password field (`strand_render::lock_fallback`) on the lock's
@@ -512,6 +515,10 @@ pub(crate) struct LockScreen {
     /// This lock session has begun ([`LockScreen::see`]): the generation
     /// was bumped when a lock was first seen asked for.
     begun: bool,
+    /// Tells `auth` whether a lock is shown (`AuthConfig::lock`), so that
+    /// it keeps PAM's conversation open while one is (m6-lock): set in
+    /// [`LockScreen::see`], after the generation a conversation reads.
+    signal: strand_services::auth::LockSignal,
 }
 
 impl std::fmt::Debug for LockScreen {
@@ -804,6 +811,7 @@ impl LockScreen {
             self.begin();
         }
         self.begun = active;
+        self.signal.set(active);
     }
 
     /// No lock any more: the fallback and its reasons go.
@@ -818,6 +826,8 @@ impl LockScreen {
         self.begun = false;
         self.session
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // `auth`'s conversation goes with the lock session.
+        self.signal.set(false);
     }
 }
 
@@ -932,6 +942,7 @@ impl Guard {
             session: Some(Arc::new(move || {
                 session.load(std::sync::atomic::Ordering::SeqCst)
             })),
+            lock: Some(state.host_mut().lock.signal.clone()),
             ..Default::default()
         };
         faults::auth_config(&mut config);

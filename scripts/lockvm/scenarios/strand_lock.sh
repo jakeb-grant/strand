@@ -8,10 +8,12 @@
 # inspector's pick refused while locked (M5). Each
 # asserts the session stayed locked, the built-in password field showed
 # and only the right password unlocked. One test at a time: each starts
-# its own sway.
+# its own sway. The `fingerprint_*` tests need fingerprint.sh's stack and
+# run there.
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
-as_tester "$STRAND_LOCK_TEST" --test-threads=1 --nocapture 2>&1 | tee "$out/strand_lock.log"
+as_tester "$STRAND_LOCK_TEST" --skip fingerprint --test-threads=1 --nocapture 2>&1 \
+  | tee "$out/strand_lock.log"
 status=${PIPESTATUS[0]}
 # A test that skipped did not run: the scenario fails if any did.
 if grep -q 'skipping ' "$out/strand_lock.log"; then

@@ -455,6 +455,11 @@ locked. A config has at most one `lock`, and it needs no name.
   `auth.failed` after one was refused. The field sends nothing when it
   is empty, because an empty Return pressed to wake the screen would
   otherwise count as a failed attempt.
+- `auth.message` is what PAM last told you, as it says it: "Place your
+  finger on the fingerprint reader" when your PAM stack has a
+  fingerprint reader, which then unlocks with no password at all. A
+  lock that might meet one shows it:
+  `if auth.message != "" { text auth.message }`.
 - Which monitors, which layer, where and how it takes the keyboard are
   the session lock's to decide: every monitor, above everything,
   filling it, always. Setting `screens`, `layer`, `anchor` or

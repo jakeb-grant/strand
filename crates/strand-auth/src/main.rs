@@ -2,9 +2,12 @@
 //!
 //! Started by [`strand_auth::Client`] with a socketpair as stdin and
 //! stdout, a scrubbed environment and no other open descriptors. It says
-//! hello (the protocol version and the PAM service it uses), then answers
-//! each password with one verdict, until the client closes the socket.
-//! It authenticates the user it runs as; the client never names one.
+//! hello (the protocol version and the PAM service it uses), then runs
+//! one PAM conversation for each `BEGIN`: PAM's texts and hidden prompts
+//! go to the client as they come, each prompt is answered by the
+//! client's next password, and a verdict ends it (`pam.rs`). It does so
+//! until the client closes the socket. It authenticates the user it runs
+//! as; the client never names one.
 //!
 //! The service is `strand`, or `login` when libpam would not read a
 //! `strand` service file: missing, unreadable, or only in a vendor
@@ -63,21 +66,24 @@ fn main() -> ExitCode {
         .and_then(|d| CString::new(d.as_os_str().as_encoded_bytes()).ok());
     loop {
         match protocol::read_message(&mut input) {
-            Ok(Message::Submit(password)) => {
-                fault_before_check(&mut output);
-                let (code, message) = match &user {
+            Ok(Message::Begin) => {
+                let outcome = match &user {
                     Some(user) => pam::check(
                         service.name(),
                         user,
-                        password.as_bytes(),
                         confdir_c.as_deref(),
+                        &mut input,
+                        &mut output,
                     ),
-                    None => (
+                    None => Some((
                         Code::Error,
                         "the helper's user has no passwd entry".to_string(),
-                    ),
+                    )),
                 };
-                drop(password);
+                // The client went away mid-conversation: nobody to answer.
+                let Some((code, message)) = outcome else {
+                    return ExitCode::from(2);
+                };
                 if protocol::write_message(&mut output, &Message::Verdict { code, message })
                     .is_err()
                 {
@@ -85,7 +91,7 @@ fn main() -> ExitCode {
                 }
             }
             Ok(_) => {
-                eprintln!("strand-auth: the client sent something other than a password");
+                eprintln!("strand-auth: the client sent something other than a begin");
                 return ExitCode::from(2);
             }
             Err(ProtocolError::Eof) => return ExitCode::SUCCESS,
@@ -216,12 +222,13 @@ fn fault(fault: &str) -> bool {
     std::env::var("STRAND_FAULT").is_ok_and(|v| v.split(',').any(|f| f.trim() == fault))
 }
 
-/// (`faults`) The injection points before a check: the helper crashes
+/// (`faults`) The injection points when a password arrives for a
+/// prompt, before PAM sees it: the helper crashes
 /// (`auth_crash`), hangs (`auth_hang`) or answers garbage
 /// (`auth_garbage`), or a chatty PAM module writes to fd 1 and reads fd 0
 /// (`auth_stdio`), which must reach neither the client nor the protocol.
 #[cfg(feature = "faults")]
-fn fault_before_check(output: &mut File) {
+pub(crate) fn fault_before_check(output: &mut File) {
     use std::io::Write;
     if fault("auth_stdio") {
         let chatter = b"STRAND_FAULT a module's chatter\n";
@@ -252,7 +259,7 @@ fn fault_before_check(output: &mut File) {
 }
 
 #[cfg(not(feature = "faults"))]
-fn fault_before_check(_: &mut File) {}
+pub(crate) fn fault_before_check(_: &mut File) {}
 
 #[cfg(test)]
 mod tests {

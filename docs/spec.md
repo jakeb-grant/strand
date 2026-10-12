@@ -196,7 +196,11 @@ filling the monitor, the keyboard always).
   anything in it faults, a built-in password field is shown.
   Authentication runs in a separate helper through the PAM service
   `strand`, or `login` with a one-time warning when `/etc/pam.d/strand`
-  is missing.
+  is missing. While a lock is shown PAM's conversation runs: the `auth`
+  service's `message` and `prompt` hold PAM's latest text and the hidden
+  prompt it waits on, as PAM says them, so a module that needs no
+  password (a fingerprint reader) can unlock, and `auth.submit` answers
+  the prompt PAM waits on, or the next one it asks.
 
 ### 5.2 Components and slot
 

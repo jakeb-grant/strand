@@ -191,11 +191,16 @@ stack: on Debian and Ubuntu (the lock VM's file)
 and on Arch and Fedora `auth include system-auth` and
 `account include system-auth`. A file in `/usr/lib/pam.d` counts
 only where the system keeps its own `login` there (decisions.md,
-m4-audit). Keep the lock's stack to passwords: the lock shows PAM's
-messages only with the verdict and gives a check 30 s, so a fingerprint
-module ahead of `pam_unix` (`pam_fprintd`, whose default wait is 30 s)
-times out before the password is tried. If the system's stack includes
-one, write the `strand` file with `pam_unix` alone
+m4-audit). A fingerprint module ahead of `pam_unix` works: while the
+lock is shown PAM's conversation runs, its texts reach the lock as
+`auth.message` ("Place your finger on the fingerprint reader") and its
+password prompt as `auth.prompt`, so show them in your `lock`
+(`if auth.message != "" { text auth.message }`). A finger unlocks with
+no password. A password typed while `pam_fprintd` waits is tried once
+it stops waiting (30 s by default; `timeout=10` on its line shortens
+that, as Ubuntu's `pam-auth-update` does), and after a wrong password
+PAM starts over with the reader. If you want the password checked at
+once, write the `strand` file with `pam_unix` alone
 (`auth required pam_unix.so` and `account required pam_unix.so`).
 
 If strand dies while the session is locked, the compositor keeps it

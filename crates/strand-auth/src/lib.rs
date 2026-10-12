@@ -5,8 +5,11 @@
 //! Two halves:
 //!
 //! - **This library** (libc and zeroize only, no Strand crate): the
-//!   framed request/reply [`protocol`] spoken over a socketpair, the
-//!   blocking [`Client`] that fork+execs the helper and talks to it,
+//!   framed [`protocol`] spoken over a socketpair, the blocking
+//!   [`Client`] that fork+execs the helper and runs its PAM
+//!   conversations ([`Client::converse`], whose texts and prompts arrive
+//!   as PAM says them and whose prompts take passwords sent through
+//!   [`Answers`]; [`Client::submit`] for one password),
 //!   [`Password`] buffers that are wiped when dropped, and
 //!   [`UnlockToken`], which only a [`Client`] mints, from a success
 //!   reply. `strand-surface` releases a session lock only for an
@@ -16,7 +19,8 @@
 //!   code that links libpam. It authenticates the user it runs as against
 //!   the `strand` PAM service, or `login` with a one-time warning when
 //!   `/etc/pam.d/strand` is missing (decisions.md, m4-owner), with
-//!   `pam_authenticate` then `pam_acct_mgmt` and no `pam_setcred`. Every
+//!   `pam_authenticate` then `pam_acct_mgmt` and no `pam_setcred`, one
+//!   conversation per `BEGIN` (decisions.md, m6-lock). Every
 //!   other PAM error fails closed: anything but `PAM_SUCCESS` from both
 //!   calls is not an unlock.
 //!
@@ -30,8 +34,8 @@ pub mod protocol;
 mod secret;
 
 pub use client::{
-    AuthError, Client, DEFAULT_TIMEOUT, HELPER_NAME, UnlockToken, Verdict, default_helper,
-    take_service_warning,
+    Answers, AuthError, Client, Conversed, DEFAULT_TIMEOUT, HELPER_NAME, Inbox, LIMIT_FACTOR, Said,
+    UnlockToken, Verdict, answers, default_helper, refusal, take_service_warning,
 };
 pub use protocol::Service;
 pub use secret::Password;

@@ -8,12 +8,13 @@
 //! the default features (the one that ships), and says in
 //! `STRAND_LOCK_VM_SERVICE` which service the guest offers: `strand`
 //! (the image's `/etc/pam.d/strand`), or `login` after the scenario
-//! removed it.
+//! removed it; `faillock` and `fingerprint` name the stacks their
+//! scenarios install.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use strand_auth::{Client, Password, Service, Verdict, take_service_warning};
+use strand_auth::{Client, Password, Said, Service, Verdict, take_service_warning};
 
 fn no_hook() {}
 
@@ -118,4 +119,91 @@ fn pam_faillock_locks_out_after_three_wrong_passwords() {
         matches!(v, Verdict::Denied { .. }),
         "a new helper while locked out: {v:?}"
     );
+}
+
+/// (m6-lock) A fingerprint module ahead of real `pam_unix`
+/// (`scripts/lockvm/scenarios/fingerprint.sh` installs the stack:
+/// `pam_echo` says "Place your finger on the fingerprint reader", a
+/// `sufficient pam_exec` waits 5 s for the finger, the file named in
+/// `STRAND_LOCK_VM_FINGER`, then the image's `common-auth`), with the
+/// shipping helper and the client's default timeout: the text comes
+/// while the reader waits and a finger unlocks with no password; with no
+/// finger PAM asks for the password after the reader's wait and only the
+/// right one unlocks; a password typed while the reader waits is tried
+/// after it; `submit` (the fallback lock's call) works the same.
+#[test]
+fn pam_fingerprint_then_password() {
+    let Some(helper) = in_lock_vm("pam_fingerprint_then_password") else {
+        return;
+    };
+    assert_eq!(
+        std::env::var("STRAND_LOCK_VM_SERVICE").as_deref(),
+        Ok("fingerprint"),
+        "run by scripts/lockvm/scenarios/fingerprint.sh"
+    );
+    let finger = PathBuf::from(
+        std::env::var_os("STRAND_LOCK_VM_FINGER").expect("the scenario names the finger"),
+    );
+    let mut client = Client::new(helper, no_hook);
+    let finger_text = |m: &str| m.contains("Place your finger on the fingerprint reader");
+
+    // The finger, touched on seeing the text.
+    let (answers, inbox) = strand_auth::answers().unwrap();
+    let mut said = Vec::new();
+    let out = client.converse(inbox, &mut |s| {
+        match s {
+            Said::Message(m) if finger_text(m) => std::fs::write(&finger, "").unwrap(),
+            Said::Prompt(_) => assert!(answers.send(Password::from("wrong".to_string()))),
+            Said::Message(_) => {}
+        }
+        said.push(format!("{s:?}"));
+    });
+    assert!(
+        out.verdict.is_unlocked(),
+        "finger: {:?} {said:?}",
+        out.verdict
+    );
+    assert!(!out.answered, "no password: {said:?}");
+
+    // No finger: the prompt after the reader's wait.
+    for (password, unlocks) in [("wrong-password", false), ("strand-test", true)] {
+        let (answers, inbox) = strand_auth::answers().unwrap();
+        let mut said = Vec::new();
+        let out = client.converse(inbox, &mut |s| {
+            if let Said::Prompt(_) = s {
+                assert!(answers.send(Password::from(password.to_string())));
+            }
+            said.push(format!("{s:?}"));
+        });
+        assert_eq!(
+            out.verdict.is_unlocked(),
+            unlocks,
+            "{password}: {:?}",
+            out.verdict
+        );
+        if !unlocks {
+            assert!(
+                matches!(out.verdict, Verdict::Denied { .. }),
+                "{password}: {:?}",
+                out.verdict
+            );
+        }
+        assert!(said[0].contains("Place your finger"), "{said:?}");
+        assert!(said.iter().any(|s| s.contains("Prompt")), "{said:?}");
+    }
+
+    // Typed while the reader waits.
+    let (answers, inbox) = strand_auth::answers().unwrap();
+    let out = client.converse(inbox, &mut |s| {
+        if matches!(s, Said::Message(m) if finger_text(m)) {
+            assert!(answers.send(Password::from("strand-test".to_string())));
+        }
+    });
+    assert!(out.verdict.is_unlocked(), "typed early: {:?}", out.verdict);
+
+    let v = check(&mut client, "strand-test");
+    assert!(v.is_unlocked(), "submit: {v:?}");
+    let v = check(&mut client, "wrong-password");
+    assert!(matches!(v, Verdict::Denied { .. }), "submit, wrong: {v:?}");
+    assert_eq!(client.spawns(), 1, "one helper served every conversation");
 }

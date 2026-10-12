@@ -1,13 +1,25 @@
-//! The blocking client: spawns the helper, sends it passwords, mints
-//! [`UnlockToken`]s from its success replies.
+//! The blocking client: spawns the helper, runs its PAM conversations,
+//! answers PAM's prompts with passwords, mints [`UnlockToken`]s from its
+//! success replies.
+//!
+//! A conversation's deadlines (decisions.md, m6-lock): while no password
+//! is waiting for PAM or with it, there is none, since PAM may wait on
+//! the user (a fingerprint reader) for as long as its module likes. Once
+//! the helper has a password, PAM must say something (a text, the next
+//! prompt or the verdict) within the client's timeout of the last thing
+//! it said or was told; and a password must be answered (by the next
+//! prompt or the verdict) within [`LIMIT_FACTOR`] timeouts of being sent,
+//! including the time it waited for PAM's prompt (a fingerprint module's
+//! wait ahead of `pam_unix`).
 
-use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -18,10 +30,16 @@ use crate::protocol::{self, Code, HEADER, Message, ProtocolError, Service};
 /// The helper's file name.
 pub const HELPER_NAME: &str = "strand-auth";
 
-/// How long a password check may take before the helper is killed and
-/// the check fails (a PAM module that hangs). Generous: `pam_faildelay`
-/// and `pam_faillock` add seconds on purpose.
+/// How long PAM may stay quiet once it has a password before the helper
+/// is killed and the check fails (a PAM module that hangs). Generous:
+/// `pam_faildelay` and `pam_faillock` add seconds on purpose.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A password must be answered within this many timeouts of being sent
+/// (90 s by default): room for a fingerprint module's wait ahead of
+/// `pam_unix` (`pam_fprintd`'s default is 30 s) and for `pam_unix`
+/// after it.
+pub const LIMIT_FACTOR: u32 = 3;
 
 /// Proof that the helper accepted a password: the only value
 /// `strand-surface` releases a session lock for. Only [`Client::submit`]
@@ -63,6 +81,136 @@ impl Verdict {
     }
 }
 
+/// What PAM said during a conversation, as it said it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Said<'a> {
+    /// A `PAM_TEXT_INFO` or `PAM_ERROR_MSG` text ("Place your finger on
+    /// the fingerprint reader").
+    Message(&'a str),
+    /// A hidden prompt ("Password: "): PAM waits for the next password.
+    Prompt(&'a str),
+}
+
+/// What a conversation came to.
+#[derive(Debug)]
+pub struct Conversed {
+    pub verdict: Verdict,
+    /// A password was sent through its [`Answers`] (used, or still
+    /// waiting when the verdict came: then it was dropped and wiped).
+    pub answered: bool,
+}
+
+/// The sending half of a conversation's passwords ([`answers`]): held by
+/// whoever takes them from the user, on any thread. Dropping it tells
+/// the conversation nobody will answer: one with no password waiting for
+/// PAM or with it then ends ([`AuthError::Cancelled`]).
+#[derive(Debug)]
+pub struct Answers {
+    queue: Arc<Mutex<Option<Password>>>,
+    wake: UnixStream,
+}
+
+/// The receiving half, which [`Client::converse`] takes.
+#[derive(Debug)]
+pub struct Inbox {
+    queue: Arc<Mutex<Option<Password>>>,
+    wake: UnixStream,
+    /// The [`Answers`] were dropped.
+    closed: bool,
+}
+
+/// A conversation's passwords: one at a time, each for the next prompt.
+pub fn answers() -> io::Result<(Answers, Inbox)> {
+    let (tx, rx) = UnixStream::pair()?;
+    tx.set_nonblocking(true)?;
+    rx.set_nonblocking(true)?;
+    let queue = Arc::new(Mutex::new(None));
+    Ok((
+        Answers {
+            queue: queue.clone(),
+            wake: tx,
+        },
+        Inbox {
+            queue,
+            wake: rx,
+            closed: false,
+        },
+    ))
+}
+
+impl Answers {
+    /// Gives `password` to PAM's next prompt, or to the one waiting.
+    /// `false` (and the password wiped) when one is already waiting.
+    pub fn send(&self, password: Password) -> bool {
+        let Ok(mut queue) = self.queue.lock() else {
+            return false;
+        };
+        if queue.is_some() {
+            return false;
+        }
+        *queue = Some(password);
+        drop(queue);
+        // A full buffer already holds a wake-up.
+        let _ = (&self.wake).write(&[1]);
+        true
+    }
+}
+
+impl Inbox {
+    /// Reads the wake-ups; notes when the [`Answers`] are gone.
+    fn drain(&mut self) {
+        let mut buf = [0u8; 64];
+        loop {
+            match (&self.wake).read(&mut buf) {
+                Ok(0) => {
+                    self.closed = true;
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                Err(_) => {
+                    self.closed = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    fn waiting(&self) -> bool {
+        self.queue.lock().is_ok_and(|q| q.is_some())
+    }
+
+    fn take(&self) -> Option<Password> {
+        self.queue.lock().ok().and_then(|mut q| q.take())
+    }
+}
+
+/// Where a conversation's answers come from.
+enum Source {
+    /// The user, one password per prompt.
+    Inbox(Inbox),
+    /// [`Client::submit`]: every prompt gets this password.
+    Repeat(Password),
+}
+
+/// Why `password` cannot go to PAM: PAM takes at most
+/// [`protocol::MAX_PASSWORD`] bytes and stops at a NUL, so a longer one
+/// or one with a NUL would be checked as a prefix; each is refused,
+/// never cut. The helper refuses them too.
+pub fn refusal(password: &Password) -> Option<String> {
+    let bytes = password.as_bytes();
+    if bytes.contains(&0) {
+        return Some("a password cannot contain a NUL byte".into());
+    }
+    (bytes.len() > protocol::MAX_PASSWORD).then(|| {
+        format!(
+            "a password longer than {} bytes cannot be checked",
+            protocol::MAX_PASSWORD
+        )
+    })
+}
+
 /// Why a check could not be made. Every one fails closed.
 #[derive(Debug)]
 pub enum AuthError {
@@ -72,6 +220,9 @@ pub enum AuthError {
     Timeout,
     /// The helper went away before answering.
     HelperDied,
+    /// PAM asked for a password and nobody was left to give one (the
+    /// [`Answers`] were dropped): the helper was killed.
+    Cancelled,
     /// The helper sent something that is not the protocol; it was
     /// killed.
     Protocol(ProtocolError),
@@ -88,6 +239,7 @@ impl std::fmt::Display for AuthError {
             Self::Spawn(e) => write!(f, "cannot start the PAM helper: {e}"),
             Self::Timeout => write!(f, "the PAM helper did not answer in time"),
             Self::HelperDied => write!(f, "the PAM helper stopped"),
+            Self::Cancelled => write!(f, "nobody was left to answer PAM"),
             Self::Protocol(e) => write!(f, "the PAM helper answered garbage: {e}"),
             Self::Io(e) => write!(f, "talking to the PAM helper: {e}"),
             Self::Pam(m) => write!(f, "PAM: {m}"),
@@ -233,8 +385,9 @@ fn descendants(root: libc::pid_t) -> Vec<libc::pid_t> {
     out
 }
 
-/// Talks to one helper process over a socketpair; fork+execs it again
-/// when it has died. Blocking: the `auth` service and the binary's
+/// Talks to one helper process over a socketpair, one conversation at a
+/// time; fork+execs it again when it has died. Blocking: the `auth`
+/// service and the binary's
 /// fallback lock (its `strand-lock-auth` thread) each call it on a thread
 /// of their own, never on the main thread.
 pub struct Client {
@@ -279,7 +432,9 @@ impl Client {
         c
     }
 
-    /// How long a check may take ([`DEFAULT_TIMEOUT`]).
+    /// How long PAM may stay quiet once it has a password
+    /// ([`DEFAULT_TIMEOUT`]); a password must be answered within
+    /// [`LIMIT_FACTOR`] times it.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -317,28 +472,60 @@ impl Client {
         self.helper.as_ref().and_then(|h| h.service)
     }
 
-    /// Checks `password` (wiped once sent). Blocks until the helper
-    /// answers or the timeout passes. Only a success reply mints an
-    /// [`UnlockToken`]; anything else, including every failure to ask,
-    /// is not an unlock. A password longer than
-    /// [`protocol::MAX_PASSWORD`] bytes is denied without asking: PAM
-    /// takes no more, and cutting it would check a prefix.
+    /// Checks `password` (wiped once the check ends): one conversation
+    /// whose every hidden prompt is answered with it, as a login prompt
+    /// fed one password would be (the fallback lock's field; tests).
+    /// Blocks until the verdict or a deadline (the module docs; the whole
+    /// check within [`LIMIT_FACTOR`] timeouts). Only a success reply
+    /// mints an [`UnlockToken`]; anything else, including every failure
+    /// to ask, is not an unlock. A password PAM cannot take
+    /// ([`refusal`]) is denied without asking. A denial's or an error's
+    /// message joins what PAM said on the way.
     pub fn submit(&mut self, password: Password) -> Verdict {
-        // Refused, never cut (the helper refuses it too): PAM would be
-        // asked about a prefix of what was typed.
-        if password.as_bytes().len() > protocol::MAX_PASSWORD {
-            return Verdict::Denied {
-                message: Some(format!(
-                    "a password longer than {} bytes cannot be checked",
-                    protocol::MAX_PASSWORD
-                )),
-            };
+        if let Some(why) = refusal(&password) {
+            return Verdict::Denied { message: Some(why) };
         }
-        let deadline = Instant::now() + self.timeout;
-        if let Err(e) = self.ensure_helper() {
-            return Verdict::Failed(e);
+        let mut said = Vec::new();
+        let result = self.run(
+            &mut Source::Repeat(password),
+            &mut |s| {
+                if let Said::Message(m) = s {
+                    said.push(m.to_string());
+                }
+            },
+            &mut false,
+        );
+        let result = result.map(|(code, m)| {
+            if !m.is_empty() {
+                said.push(m);
+            }
+            (code, said.join("\n"))
+        });
+        self.verdict(result)
+    }
+
+    /// Runs one PAM conversation: blocks until its verdict. Each text and
+    /// prompt goes to `said` as PAM says it, and each prompt is answered
+    /// with the next password sent through `inbox`'s [`Answers`] (one
+    /// already waiting answers at once). With no password waiting or with
+    /// PAM it may wait on the user for as long as PAM does; the deadlines
+    /// are in the module docs. Dropping the [`Answers`] ends it while no
+    /// password is waiting or with PAM ([`AuthError::Cancelled`]), and
+    /// otherwise once PAM next asks. A password PAM cannot take
+    /// ([`refusal`]) is wiped unsent, said as a [`Said::Message`], and the
+    /// prompt waits for the next.
+    pub fn converse(&mut self, inbox: Inbox, said: &mut dyn FnMut(Said<'_>)) -> Conversed {
+        let mut answered = false;
+        let result = self.run(&mut Source::Inbox(inbox), said, &mut answered);
+        Conversed {
+            verdict: self.verdict(result),
+            answered,
         }
-        let result = self.exchange(password, deadline);
+    }
+
+    /// A conversation's result as a verdict; a helper that failed it is
+    /// not trusted again.
+    fn verdict(&mut self, result: Result<(Code, String), AuthError>) -> Verdict {
         match result {
             Ok((Code::Success, _)) => Verdict::Unlocked(UnlockToken::mint()),
             Ok((Code::Denied, m)) => Verdict::Denied {
@@ -346,7 +533,6 @@ impl Client {
             },
             Ok((Code::Error, m)) => Verdict::Failed(AuthError::Pam(m)),
             Err(e) => {
-                // Whatever went wrong, this helper is not trusted again.
                 if let Some(h) = self.helper.take() {
                     h.kill();
                 }
@@ -413,16 +599,32 @@ impl Client {
         Ok(())
     }
 
-    fn exchange(
+    /// One conversation, from `BEGIN` to the verdict (see
+    /// [`Client::converse`]); `answered` is set once a password came
+    /// from `source`.
+    fn run(
         &mut self,
-        password: Password,
-        deadline: Instant,
+        source: &mut Source,
+        said: &mut dyn FnMut(Said<'_>),
+        answered: &mut bool,
     ) -> Result<(Code, String), AuthError> {
+        let timeout = self.timeout;
+        let limit = timeout.saturating_mul(LIMIT_FACTOR);
+        // Since when a password has been waiting for PAM or with it.
+        let mut since = match source {
+            Source::Inbox(inbox) if !inbox.waiting() => None,
+            // One sent before the conversation began waits from now.
+            _ => {
+                *answered = true;
+                Some(Instant::now())
+            }
+        };
+        self.ensure_helper()?;
         let Some(h) = self.helper.as_mut() else {
             return Err(AuthError::HelperDied);
         };
         if h.service.is_none() {
-            match read_message(&h.sock, deadline)? {
+            match read_message(&h.sock, Instant::now() + timeout)? {
                 Message::Hello { version, service } if version == protocol::VERSION => {
                     if service == Service::Login {
                         WARNING.store(true, Ordering::SeqCst);
@@ -441,14 +643,93 @@ impl Client {
                 }
             }
         }
-        let frame = protocol::encode(&Message::Submit(password));
-        send_all(&h.sock, &frame, deadline)?;
-        drop(frame);
-        match read_message(&h.sock, deadline)? {
-            Message::Verdict { code, message } => Ok((code, message)),
-            _ => Err(AuthError::Protocol(ProtocolError::BadPayload(
-                "a reply that is not a verdict",
-            ))),
+        send_all(
+            &h.sock,
+            &protocol::encode(&Message::Begin),
+            Instant::now() + timeout,
+        )?;
+        // PAM waits for an answer.
+        let mut prompt = false;
+        // PAM has a password: the last time it said or was told something.
+        let mut quiet: Option<Instant> = None;
+        loop {
+            if prompt {
+                let password = match source {
+                    Source::Repeat(p) => Some(Password::from_bytes(p.as_bytes().to_vec())),
+                    Source::Inbox(inbox) => inbox.take(),
+                };
+                match password {
+                    Some(password) => {
+                        *answered = true;
+                        if let Some(why) = refusal(&password) {
+                            // Wiped unsent; the prompt waits for the next.
+                            drop(password);
+                            said(Said::Message(&why));
+                            since = None;
+                        } else {
+                            let frame = protocol::encode(&Message::Submit(password));
+                            send_all(&h.sock, &frame, Instant::now() + timeout)?;
+                            drop(frame);
+                            prompt = false;
+                            let now = Instant::now();
+                            since.get_or_insert(now);
+                            quiet = Some(now);
+                        }
+                    }
+                    None => {
+                        if matches!(source, Source::Inbox(i) if i.closed) {
+                            return Err(AuthError::Cancelled);
+                        }
+                    }
+                }
+            }
+            let deadline = [since.map(|t| t + limit), quiet.map(|t| t + timeout)]
+                .into_iter()
+                .flatten()
+                .min();
+            let wake = match source {
+                Source::Inbox(i) if !i.closed => Some(i.wake.as_raw_fd()),
+                _ => None,
+            };
+            let (from_helper, woken) = wait_either(&h.sock, wake, deadline)?;
+            if woken && let Source::Inbox(inbox) = source {
+                inbox.drain();
+                if inbox.waiting() {
+                    *answered = true;
+                    since.get_or_insert_with(Instant::now);
+                }
+                if inbox.closed && since.is_none() && !inbox.waiting() {
+                    return Err(AuthError::Cancelled);
+                }
+            }
+            if !from_helper {
+                continue;
+            }
+            // A frame, once begun, comes whole within the timeout.
+            match read_message(&h.sock, Instant::now() + timeout)? {
+                Message::Info(text) => {
+                    said(Said::Message(&text));
+                    if quiet.is_some() {
+                        quiet = Some(Instant::now());
+                    }
+                }
+                Message::Prompt(text) => {
+                    said(Said::Prompt(&text));
+                    prompt = true;
+                    // The password PAM had is answered: the next one
+                    // starts its own clock (every prompt of a `submit`
+                    // shares one).
+                    if quiet.take().is_some() && matches!(source, Source::Inbox(_)) {
+                        since = None;
+                    }
+                }
+                Message::Verdict { code, message } => return Ok((code, message)),
+                _ => {
+                    return Err(AuthError::Protocol(ProtocolError::BadPayload(
+                        "a frame the helper does not send in a conversation",
+                    )));
+                }
+            }
         }
     }
 }
@@ -463,19 +744,47 @@ impl Drop for Client {
 
 /// Waits until `fd` is ready for `events` or `deadline` passes.
 fn wait(fd: &UnixStream, events: libc::c_short, deadline: Instant) -> Result<(), AuthError> {
+    let mut fds = [libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events,
+        revents: 0,
+    }];
+    poll(&mut fds, Some(deadline))
+}
+
+/// Waits until the helper's socket or `wake` is readable (or hung up), or
+/// `deadline` passes (`None`: no deadline). Which of them is ready.
+fn wait_either(
+    sock: &UnixStream,
+    wake: Option<RawFd>,
+    deadline: Option<Instant>,
+) -> Result<(bool, bool), AuthError> {
+    let pollfd = |fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // A negative fd is ignored by poll(2).
+    let mut fds = [pollfd(sock.as_raw_fd()), pollfd(wake.unwrap_or(-1))];
+    poll(&mut fds, deadline)?;
+    Ok((fds[0].revents != 0, fds[1].revents != 0))
+}
+
+/// poll(2) until something in `fds` is ready, or `deadline` passes.
+fn poll(fds: &mut [libc::pollfd], deadline: Option<Instant>) -> Result<(), AuthError> {
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(AuthError::Timeout);
-        }
-        let mut pfd = libc::pollfd {
-            fd: fd.as_raw_fd(),
-            events,
-            revents: 0,
+        let ms = match deadline {
+            Some(d) => {
+                let left = d.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(AuthError::Timeout);
+                }
+                left.as_millis().clamp(1, i32::MAX as u128) as libc::c_int
+            }
+            None => -1,
         };
-        let ms = left.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
-        // SAFETY: one valid pollfd for the duration of the call.
-        let n = unsafe { libc::poll(&mut pfd, 1, ms) };
+        // SAFETY: `fds` is a valid array of pollfds for the call.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted {

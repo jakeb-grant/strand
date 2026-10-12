@@ -3,8 +3,8 @@
 
 use strand_auth::Password;
 use strand_auth::protocol::{
-    Code, HELLO, MAX_PAYLOAD, Message, ProtocolError, SUBMIT, Service, VERDICT, VERSION, encode,
-    read_message, write_message,
+    BEGIN, Code, HELLO, INFO, MAX_PAYLOAD, Message, PROMPT, ProtocolError, SUBMIT, Service,
+    VERDICT, VERSION, encode, read_message, write_message,
 };
 
 fn round_trip(m: &Message) -> Message {
@@ -51,6 +51,32 @@ fn every_message_round_trips() {
             panic!("{m:?}");
         };
         assert_eq!((c, t.as_str()), (code, message));
+    }
+    // (m6-lock) A conversation's frames.
+    assert!(matches!(round_trip(&Message::Begin), Message::Begin));
+    for text in [
+        "",
+        "Place your finger on the fingerprint reader",
+        "Mot de passe : ✓",
+    ] {
+        let m = round_trip(&Message::Info(text.to_string()));
+        assert!(matches!(&m, Message::Info(t) if t == text), "{m:?}");
+        let m = round_trip(&Message::Prompt(text.to_string()));
+        assert!(matches!(&m, Message::Prompt(t) if t == text), "{m:?}");
+    }
+}
+
+/// (m6-lock) A text longer than a frame holds is cut on a character
+/// boundary, never sent as a frame the client would refuse.
+#[test]
+fn long_texts_are_cut_on_a_character_boundary() {
+    let long = "é".repeat(MAX_PAYLOAD);
+    for m in [Message::Info(long.clone()), Message::Prompt(long.clone())] {
+        let back = round_trip(&m);
+        let (Message::Info(t) | Message::Prompt(t)) = back else {
+            panic!("{back:?}");
+        };
+        assert!(t.len() <= MAX_PAYLOAD && t.chars().all(|c| c == 'é'));
     }
 }
 
@@ -133,6 +159,9 @@ fn garbage_is_an_error_never_a_verdict() {
         raw(2, HELLO, &[1]),
         raw(3, HELLO, &[1, 7]),
         raw(4, HELLO, &[1, 0, 0]),
+        raw(2, BEGIN, &[0]),
+        raw(2, INFO, &[0xff]),
+        raw(3, PROMPT, &[0xc3, 0x28]),
     ] {
         assert!(
             matches!(err(&bad), ProtocolError::BadPayload(_)),

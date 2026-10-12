@@ -4,6 +4,11 @@
 //! refusal or a failure, an [`UnlockToken`] to the sink only on success,
 //! one check at a time, the `login` fallback's single warning, and a
 //! check that outlives its store still delivering, with its session tag.
+//! (m6-lock) PAM's texts and prompts in `message` and `prompt` as they
+//! come, a conversation kept open while the lock signal says a lock is
+//! shown (a fingerprint unlocks with no password; a password typed while
+//! it waits is tried after it), and a stack that ends at once not
+//! looping.
 //!
 //! [`UnlockToken`]: strand_auth::UnlockToken
 //!
@@ -18,30 +23,87 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use strand_core::Runtime;
-use strand_services::auth::{self, AuthAction, AuthConfig, FailureSink, UnlockSink};
+use strand_services::auth::{self, AuthAction, AuthConfig, FailureSink, LockSignal, UnlockSink};
 use strand_services::{Buses, ServiceDiagnostic};
 use support::*;
 
-/// A fake helper: says hello (with `service`: 0 `strand`, 1 `login`),
-/// reads each password's frame and counts it in `dir/<name>.asked`, then
-/// after `delay` answers
-/// `verdict` (0 success, 1 denied, 2 error).
-fn fake(dir: &Path, name: &str, service: u8, verdict: u8, delay: &str) -> PathBuf {
+/// Shell functions for fake helpers that speak conversations (as in
+/// strand-auth's tests/client.rs): `hello SERVICE`, `frame [FILE]`,
+/// `info TEXT`, `prompt TEXT`, `verdict CODE`.
+const SPEAK: &str = r#"
+hello() { printf "$(printf '\\003\\000\\000\\000\\001\\002\\%03o' "$1")"; }
+frame() {
+  len=$(head -c 4 | od -An -tu4 | tr -d ' ')
+  [ -n "$len" ] || exit 0
+  head -c 1 >/dev/null
+  if [ "$len" -gt 1 ]; then head -c $((len - 1)) > "${1:-/dev/null}"; else : > "${1:-/dev/null}"; fi
+}
+send() { printf "$(printf '\\%03o\\000\\000\\000\\%03o' $((${#2} + 1)) "$1")"; printf '%s' "$2"; }
+info() { send 5 "$1"; }
+prompt() { send 6 "$1"; }
+verdict() { printf "$(printf '\\002\\000\\000\\000\\003\\%03o' "$1")"; }
+"#;
+
+/// An executable fake helper `name` in `dir`: [`SPEAK`], then `body`.
+fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{SPEAK}\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// A fake helper: says hello (with `service`: 0 `strand`, 1 `login`),
+/// then for each conversation asks for a password, counts it in
+/// `dir/<name>.asked`, and after `delay` answers `verdict` (0 success,
+/// 1 denied, 2 error).
+fn fake(dir: &Path, name: &str, service: u8, verdict: u8, delay: &str) -> PathBuf {
     let asked = dir.join(format!("{name}.asked"));
-    std::fs::write(
-        &path,
-        format!(
-            "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\001\\{service:03o}'\n\
-             while len=$(head -c 4 | od -An -tu4 | tr -d ' ') && [ -n \"$len\" ]; do\n  \
-             head -c \"$len\" >/dev/null\n  echo . >> {asked}\n  sleep {delay}\n  \
-             printf '\\002\\000\\000\\000\\003\\{verdict:03o}'\ndone\n",
+    script(
+        dir,
+        name,
+        &format!(
+            "hello {service}\nwhile frame; do\n  prompt 'Password: '; frame\n  echo . >> {asked}\n  \
+             sleep {delay}\n  verdict {verdict}\ndone",
             asked = asked.display()
         ),
     )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
+}
+
+/// A fake helper shaped like `pam_fprintd` ahead of `pam_unix`: each
+/// conversation is counted in `dir/<name>.begun`, says "Place your
+/// finger", waits up to `wait` seconds for the file `dir/finger`
+/// (removed when seen) and succeeds on it; otherwise it asks for the
+/// password and takes only `right`.
+fn reader(dir: &Path, name: &str, wait: u32) -> PathBuf {
+    let finger = dir.join("finger");
+    let begun = dir.join(format!("{name}.begun"));
+    let got = dir.join(format!("{name}.got"));
+    script(
+        dir,
+        name,
+        &format!(
+            r#"hello 0
+while frame; do
+  echo . >> {begun}
+  info "Place your finger"
+  n=0
+  while [ ! -e {finger} ] && [ $n -lt {ticks} ]; do sleep 0.05; n=$((n + 1)); done
+  if [ -e {finger} ]; then rm -f {finger}; verdict 0; continue; fi
+  prompt "Password: "; frame {got}
+  if [ "$(cat {got})" = right ]; then verdict 0; else verdict 1; fi
+done"#,
+            begun = begun.display(),
+            finger = finger.display(),
+            got = got.display(),
+            ticks = wait * 20,
+        ),
+    )
+}
+
+fn count(dir: &Path, file: &str) -> usize {
+    std::fs::read_to_string(dir.join(file))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
 }
 
 /// The session tag checks read when they begin.
@@ -69,6 +131,11 @@ struct Harness {
 impl Harness {
     /// Starts `auth` with `helper`.
     fn start(helper: PathBuf) -> Harness {
+        Harness::start_with(helper, None)
+    }
+
+    /// Starts `auth` with `helper` and the binary's lock signal.
+    fn start_with(helper: PathBuf, lock: Option<LockSignal>) -> Harness {
         let unlocks = Arc::new(AtomicUsize::new(0));
         let tags = Arc::new(Mutex::new(Vec::new()));
         let u = unlocks.clone();
@@ -93,6 +160,7 @@ impl Harness {
             failed: Some(failed),
             session: Some(Arc::new(move || session.load(Ordering::SeqCst) as u64)),
             client_hook: None,
+            lock,
         }));
         let rt = Runtime::new();
         let (services, builtin) = services(&rt, Buses::none());
@@ -129,6 +197,28 @@ impl Harness {
 
     fn failed(&self) -> bool {
         self.builtin.auth.cells().failed.get_untracked(&self.rt) == Ok(true)
+    }
+
+    fn message(&self) -> String {
+        self.builtin
+            .auth
+            .cells()
+            .message
+            .get_untracked(&self.rt)
+            .unwrap_or_default()
+    }
+
+    fn prompt(&self) -> String {
+        self.builtin
+            .auth
+            .cells()
+            .prompt
+            .get_untracked(&self.rt)
+            .unwrap_or_default()
+    }
+
+    fn unlocks(&self) -> usize {
+        self.unlocks.load(Ordering::SeqCst)
     }
 
     fn until(&self, what: &str, cond: impl Fn(&Harness) -> bool) {
@@ -263,5 +353,117 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
     assert_eq!(*h.tags.lock().unwrap(), [5]);
     assert_eq!(h.unlocks.load(Ordering::SeqCst), 0);
     h.stop();
+
+    conversations(dir.path());
     auth::configure(None);
+}
+
+/// (m6-lock) PAM's conversation through the store, with the binary's
+/// lock signal.
+fn conversations(dir: &Path) {
+    // Without a lock shown nothing begins; once one is, PAM's text shows
+    // before any password, and a finger unlocks with none.
+    let lock = LockSignal::new();
+    let h = Harness::start_with(reader(dir, "fp", 3), Some(lock.clone()));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(count(dir, "fp.begun"), 0, "no lock, no conversation");
+    lock.set(true);
+    h.until("PAM's text", |h| h.message() == "Place your finger");
+    assert!(!h.busy() && h.prompt().is_empty());
+    std::fs::write(dir.join("finger"), "").unwrap();
+    h.until("unlocked by the finger", |h| h.unlocks() == 1);
+    assert!(!h.failed());
+    assert_eq!(count(dir, "fp.begun"), 1, "an unlock begins nothing more");
+
+    // The next lock: the reader gives up, PAM asks for the password and
+    // the text goes; a wrong one is refused and PAM starts over (its text
+    // again); the right one, typed while the reader waits, stays busy
+    // through the reader's wait and unlocks once PAM asks for it.
+    lock.set(false);
+    h.until("the texts cleared", |h| h.message().is_empty());
+    lock.set(true);
+    h.until("PAM's text again", |h| h.message() == "Place your finger");
+    h.until("the password prompt", |h| h.prompt() == "Password: ");
+    assert!(h.message().is_empty(), "a prompt clears the text");
+    h.submit("wrong");
+    h.until("refused", |h| h.failed() && !h.busy());
+    h.until("PAM starts over", |h| {
+        h.message() == "Place your finger" && count(dir, "fp.begun") == 3
+    });
+    h.submit("right");
+    h.until("busy while the reader waits", Harness::busy);
+    h.until("unlocked by the password", |h| h.unlocks() == 2);
+    assert!(
+        h.prompt().is_empty(),
+        "the prompt was answered, never shown"
+    );
+
+    // The lock goes while PAM waits on the user: that conversation ends
+    // (no password in it) and the next lock begins its own.
+    lock.set(false);
+    lock.set(true);
+    h.until("a new conversation", |_| count(dir, "fp.begun") == 4);
+    lock.set(false);
+    h.until("cleared", |h| {
+        h.message().is_empty() && h.prompt().is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(count(dir, "fp.begun"), 4, "nothing begins while unlocked");
+    assert_eq!(h.unlocks(), 2);
+    h.stop();
+
+    // A stack that ends at once with no prompt (pam_faillock locked out):
+    // its text shows, `failed` stays unset, and no conversation follows
+    // until a submit, which is refused.
+    let begun = dir.join("locked.begun");
+    let locked = script(
+        dir,
+        "locked",
+        &format!(
+            r#"hello 0
+while frame; do echo . >> {begun}; info "The account is locked"; verdict 1; done"#,
+            begun = begun.display()
+        ),
+    );
+    let lock = LockSignal::new();
+    lock.set(true);
+    let h = Harness::start_with(locked, Some(lock.clone()));
+    h.until("the lockout's text", |h| {
+        h.message() == "The account is locked"
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(count(dir, "locked.begun"), 1, "no loop");
+    assert!(!h.failed());
+    h.submit("anything");
+    h.until("refused", |h| h.failed() && !h.busy());
+    // The submit's conversation, then one more (a password was given),
+    // and no other.
+    h.until("PAM started over once", |_| count(dir, "locked.begun") == 3);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(count(dir, "locked.begun"), 3, "no loop");
+    assert!(h.failures.lock().unwrap().is_empty(), "refusals only");
+    assert_eq!(h.unlocks(), 0);
+    h.stop();
+
+    // A second prompt (a one-time code) takes the next submit; `busy` is
+    // false while PAM waits on the user.
+    let (one, two) = (dir.join("otp.one"), dir.join("otp.two"));
+    let otp = script(
+        dir,
+        "otp",
+        &format!(
+            r#"hello 0
+while frame; do prompt "Password: "; frame {one}; prompt "Code: "; frame {two}; verdict 0; done"#,
+            one = one.display(),
+            two = two.display()
+        ),
+    );
+    let h = Harness::start(otp);
+    h.submit("pw");
+    h.until("the code's prompt", |h| h.prompt() == "Code: " && !h.busy());
+    h.submit("123456");
+    h.until("unlocked", |h| h.unlocks() == 1);
+    assert_eq!(std::fs::read(&one).unwrap(), b"pw");
+    assert_eq!(std::fs::read(&two).unwrap(), b"123456");
+    h.stop();
 }

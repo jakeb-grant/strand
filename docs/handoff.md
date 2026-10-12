@@ -328,14 +328,14 @@ recorded reason.
   the first press and for actions no press caused (`dismiss`, `scroll`,
   `drop`).
 - Media: remote (https) art is not fetched.
-- Lock: PAM's info and error texts reach the lock only with the verdict,
-  inside one 30 s client timeout. A stack with `pam_fprintd` before
-  `pam_unix` (30 s default wait) never shows "Place your finger" and
-  times out before the password is tried, then shows the fallback,
-  which meets the same wall. Streaming interim text needs a protocol
-  message and a lock prompt design.md does not have; moved past M4
-  (decisions.md m4-audit, round 3). README asks for a password-only
-  stack meanwhile.
+- Lock: PAM's texts and prompts reach the lock as PAM says them
+  (`auth.message`, `auth.prompt`; M6 S-lock, decisions.md m6-lock), so
+  a `pam_fprintd` stack shows "Place your finger" and unlocks on a
+  finger. What PAM's one conversation still imposes: a password typed
+  while `pam_fprintd` waits is tried only once it stops waiting (30 s
+  by default), after a wrong password PAM starts over with the reader,
+  and the fallback field shows no PAM text (it has no text; its
+  password still goes through the same stack).
 - Network: `connect()` is awaited inline (bounded: 5 s per settings call,
   25 s for activation); enterprise (802.1X) and WEP networks are refused.
 - Audio: `StepVolume` has no caller on the language path. Without an

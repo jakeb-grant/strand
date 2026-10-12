@@ -2,39 +2,59 @@
 //!
 //! The store runs a [`strand_auth::Client`]: the `strand-auth` PAM
 //! helper, a separate process started when the store starts (a lock
-//! screen reads `auth.busy` or `auth.failed`, so that is when a lock is
-//! shown) and killed when it stops, respawned by the client when it dies.
-//! It is spawned with [`child::restore_in_child`](crate::child) as its
-//! `pre_exec`, as every program strand starts is. `auth.submit(password)`
-//! hands the password to the client on a blocking task (the client
-//! blocks until the helper answers or its timeout fires) and sets `busy`
-//! meanwhile; a second submit while one is checked is dropped. The
-//! password is a [`Password`] from the moment it arrives, wiped once
-//! sent.
+//! screen reads an `auth` field, so that is when a lock is shown) and
+//! killed when it stops, respawned by the client when it dies. It is
+//! spawned with [`child::restore_in_child`](crate::child) as its
+//! `pre_exec`, as every program strand starts is.
+//!
+//! Each check is a PAM conversation ([`strand_auth::Client::converse`])
+//! on a blocking task (decisions.md, m6-lock). PAM's texts set `message`
+//! and its hidden prompts `prompt` as PAM says them, so a lock can show
+//! "Place your finger on the fingerprint reader" while `pam_fprintd`
+//! waits, then the password prompt. `auth.submit(password)` answers the
+//! prompt PAM is waiting on, or the next one it asks (typed while a
+//! fingerprint module waits, the password waits for `pam_unix`), and
+//! sets `busy` until PAM answers it; a second submit meanwhile is
+//! dropped. The password is a [`Password`] from the moment it arrives,
+//! wiped once sent or dropped.
+//!
+//! While the binary's [`LockSignal`] says a lock is shown, the store
+//! keeps a conversation open, so a fingerprint module runs before any
+//! password is typed: one begins when the lock shows (or the store
+//! starts under it), and again after each one that a password was given
+//! to and that did not unlock; one that ended with no password (a
+//! `pam_faillock` lockout, a helper that died) is begun again only by the
+//! next submit, so a stack that fails at once cannot loop. When the lock
+//! goes, a conversation with no password in it ends (its helper is
+//! killed). Without a signal (tests, an embedder) each submit begins a
+//! conversation of its own.
 //!
 //! A success mints a [`strand_auth::UnlockToken`], which goes to the
 //! [`UnlockSink`] the binary [`configure`]s (it passes it to the surface
 //! manager's unlock, the only way a session lock is released); this store
-//! never unlocks anything itself. Anything else sets `failed`. A check
-//! that could not be made (no helper, a crash, a timeout, a PAM error) is
-//! also a warning diagnostic and goes to the [`FailureSink`] (the binary
-//! then shows its built-in password field, whose own client may still
-//! work: decisions.md, m4-lock-w2), and the helper's `login` fallback
-//! warns once per process (decisions.md, m4-owner).
+//! never unlocks anything itself. A refusal of a password sets `failed`.
+//! A check that could not be made with a password in it (no helper, a
+//! crash, a timeout, a PAM error) also sets `failed`, is a warning
+//! diagnostic and goes to the [`FailureSink`] (the binary then shows its
+//! built-in password field, whose own client may still work:
+//! decisions.md, m4-lock-w2); one with no password in it is only logged,
+//! and the next submit tries again. The helper's `login` fallback warns
+//! once per process (decisions.md, m4-owner).
 //!
-//! The blocking task that checks a password hands its verdict to the
-//! sinks itself, so a check outlives the store: a lock that never reads
-//! `auth.busy` or `auth.failed` holds no reader, and the store stops
-//! [`STOP_GRACE`](crate::STOP_GRACE) after a submit, mid-check if PAM is
-//! slow; its token or its failure still arrives (m4-audit). Each check
-//! carries the [`SessionTag`] read when it began, so that the binary can
-//! drop a verdict for a lock session that has ended.
+//! The blocking task hands its verdict to the sinks itself, so a check
+//! outlives the store: a lock that never reads an `auth` field holds no
+//! reader, and the store stops [`STOP_GRACE`](crate::STOP_GRACE) after a
+//! submit, mid-check if PAM is slow; its token or its failure still
+//! arrives (m4-audit). Each conversation carries the [`SessionTag`] read
+//! when it began, so that the binary can drop a verdict for a lock
+//! session that has ended.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use strand_auth::{Client, Password, UnlockToken, Verdict};
+use strand_auth::{Answers, Client, Password, Said, UnlockToken, Verdict};
+use tokio::sync::{mpsc, watch};
 
 use crate::{Call, Cx, Msg, ServiceError, Store, service};
 
@@ -56,6 +76,34 @@ pub type FailureSink = Arc<dyn Fn(&str, u64) + Send + Sync>;
 /// its lock session's generation). Without one every check's tag is 0.
 pub type SessionTag = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// Whether a lock is shown, set by the binary as its lock sessions begin
+/// and end: while it is, the store keeps a PAM conversation open (see
+/// the module docs). Clones share one value.
+#[derive(Clone, Debug)]
+pub struct LockSignal(Arc<watch::Sender<bool>>);
+
+impl Default for LockSignal {
+    fn default() -> Self {
+        Self(Arc::new(watch::Sender::new(false)))
+    }
+}
+
+impl LockSignal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A lock is shown (`true`) or not.
+    pub fn set(&self, shown: bool) {
+        self.0
+            .send_if_modified(|v| std::mem::replace(v, shown) != shown);
+    }
+
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.0.subscribe()
+    }
+}
+
 /// Applied to every [`Client`] the store makes, before its first
 /// password (the binary's `faults` build passes `STRAND_FAULT` through
 /// with `Client::with_test_env`).
@@ -66,7 +114,9 @@ pub type ClientHook = Arc<dyn Fn(Client) -> Client + Send + Sync>;
 pub struct AuthConfig {
     /// The helper; `None` looks it up ([`strand_auth::default_helper`]).
     pub helper: Option<PathBuf>,
-    /// How long one check may take ([`strand_auth::DEFAULT_TIMEOUT`]).
+    /// How long PAM may stay quiet with a password
+    /// ([`strand_auth::DEFAULT_TIMEOUT`]; a password is answered within
+    /// [`strand_auth::LIMIT_FACTOR`] times it).
     pub timeout: Duration,
     /// Where unlocks go. Without one an accepted password unlocks
     /// nothing (and says so in the log).
@@ -77,6 +127,9 @@ pub struct AuthConfig {
     pub session: Option<SessionTag>,
     /// Applied to each client made.
     pub client_hook: Option<ClientHook>,
+    /// Whether a lock is shown (see [`LockSignal`]); `None`: each submit
+    /// begins its own conversation.
+    pub lock: Option<LockSignal>,
 }
 
 impl Default for AuthConfig {
@@ -88,6 +141,7 @@ impl Default for AuthConfig {
             failed: None,
             session: None,
             client_hook: None,
+            lock: None,
         }
     }
 }
@@ -101,6 +155,7 @@ impl std::fmt::Debug for AuthConfig {
             .field("failed", &self.failed.is_some())
             .field("session", &self.session.is_some())
             .field("client_hook", &self.client_hook.is_some())
+            .field("lock", &self.lock.is_some())
             .finish()
     }
 }
@@ -135,44 +190,93 @@ pub enum AuthAction {
 #[service(name = "auth", action = AuthAction)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Auth {
-    /// A password is being checked.
+    /// A password is with PAM, or waits for PAM's next prompt.
     pub busy: bool,
     /// The last password was refused, or could not be checked.
     pub failed: bool,
+    /// What PAM last told the user (`PAM_TEXT_INFO`, `PAM_ERROR_MSG`),
+    /// as it said it; "" once PAM next asks for a password, and while no
+    /// lock is shown.
+    pub message: String,
+    /// The hidden prompt PAM waits on ("Password: "), or "" while it
+    /// waits on none.
+    pub prompt: String,
 }
 
-/// What a check came to, once its verdict went to the sinks: the client
-/// back, and [`deliver`]'s answer.
-type Check = tokio::task::JoinHandle<(Client, Delivered)>;
+/// What PAM said, from the checking task to the store.
+enum Event {
+    Message(String),
+    Prompt(String),
+}
 
-/// Whether `failed` is set, and the warning a failure to check is.
-type Delivered = (bool, Option<String>);
+/// A conversation that ended: the client back, [`deliver`]'s answer,
+/// and whether a password was given to it.
+type Ended = (Client, Delivered, bool);
+
+/// What [`deliver`] made of a verdict: `failed`'s new value, if it
+/// changes, the warning a failure to check is, and whether it unlocked.
+#[derive(Debug, Default)]
+struct Delivered {
+    failed: Option<bool>,
+    warning: Option<String>,
+    unlocked: bool,
+}
 
 /// Hands `verdict` to the sinks (on the checking task's thread, so that a
-/// stopped store still delivers it).
-fn deliver(config: &AuthConfig, verdict: Verdict, session: u64) -> Delivered {
+/// stopped store still delivers it). `answered`: a password was given to
+/// the conversation; without one a refusal or a failure is only logged.
+fn deliver(config: &AuthConfig, verdict: Verdict, answered: bool, session: u64) -> Delivered {
     match verdict {
         Verdict::Unlocked(token) => {
             match &config.sink {
                 Some(sink) => sink(token, session),
                 None => log::warn!("auth: a password was accepted, but nothing takes the unlock"),
             }
-            (false, None)
+            Delivered {
+                failed: Some(false),
+                unlocked: true,
+                ..Delivered::default()
+            }
         }
         Verdict::Denied { message } => {
             if let Some(m) = message {
                 log::info!("auth: refused: {m}");
             }
-            (true, None)
+            Delivered {
+                failed: answered.then_some(true),
+                ..Delivered::default()
+            }
+        }
+        Verdict::Failed(strand_auth::AuthError::Cancelled) => Delivered::default(),
+        Verdict::Failed(e) if !answered => {
+            log::info!("auth: a conversation with no password ended: {e}");
+            Delivered::default()
         }
         Verdict::Failed(e) => {
             let why = format!("the password could not be checked: {e}");
             if let Some(f) = &config.failed {
                 f(&why, session);
             }
-            (true, Some(why))
+            Delivered {
+                failed: Some(true),
+                warning: Some(why),
+                unlocked: false,
+            }
         }
     }
+}
+
+/// The conversation in progress.
+struct Running {
+    task: tokio::task::JoinHandle<Ended>,
+    /// Its passwords; dropped when the lock goes, which ends it unless a
+    /// password is in it.
+    answers: Option<Answers>,
+    /// A submitted password waits for PAM's next prompt.
+    queued: bool,
+    /// PAM waits on a prompt no password has answered.
+    asking: bool,
+    tag: u64,
 }
 
 impl Auth {
@@ -196,20 +300,118 @@ impl Auth {
             return Ok(());
         }
         cx.ready();
-        let mut check: Option<(Check, u64)> = None;
+        let mut lock = config.lock.as_ref().map(LockSignal::subscribe);
+        let shown =
+            |lock: &Option<watch::Receiver<bool>>| lock.as_ref().is_some_and(|l| *l.borrow());
+        let (events_tx, mut events) = mpsc::unbounded_channel::<Event>();
+        let mut running: Option<Running> = None;
+        // Begins a conversation with `password` waiting for its first
+        // prompt, if any; `false` when the store has stopped.
+        let begin = |cx: &mut Cx<Self>,
+                     client: &mut Option<Client>,
+                     running: &mut Option<Running>,
+                     password: Option<Password>|
+         -> bool {
+            let tag = session();
+            let asked = password.is_some();
+            let pair = client
+                .take()
+                .ok_or_else(|| {
+                    "no `strand-auth` helper is installed: the password could not be checked"
+                        .to_string()
+                })
+                .and_then(|c| match strand_auth::answers() {
+                    Ok(pair) => Ok((c, pair)),
+                    Err(e) => {
+                        *client = Some(c);
+                        Err(format!("the password could not be checked: {e}"))
+                    }
+                });
+            let (mut c, (answers, inbox)) = match pair {
+                Ok(p) => p,
+                Err(why) => {
+                    if !asked {
+                        return true;
+                    }
+                    if let Some(f) = &config.failed {
+                        f(&why, tag);
+                    }
+                    cx.warn(why);
+                    return cx.update(|s| s.failed = true);
+                }
+            };
+            if let Some(p) = password {
+                answers.send(p);
+            }
+            let config = config.clone();
+            let events = events_tx.clone();
+            let task = tokio::task::spawn_blocking(move || {
+                let out = c.converse(inbox, &mut |said| {
+                    let _ = events.send(match said {
+                        Said::Message(m) => Event::Message(m.to_string()),
+                        Said::Prompt(p) => Event::Prompt(p.to_string()),
+                    });
+                });
+                let d = deliver(&config, out.verdict, out.answered, tag);
+                (c, d, out.answered)
+            });
+            *running = Some(Running {
+                task,
+                answers: Some(answers),
+                queued: asked,
+                asking: false,
+                tag,
+            });
+            !asked
+                || cx.update(|s| {
+                    s.busy = true;
+                    s.failed = false;
+                    s.prompt.clear();
+                })
+        };
+        // What PAM said, in order.
+        let said = |cx: &mut Cx<Self>, running: &mut Option<Running>, event: Event| -> bool {
+            match event {
+                Event::Message(m) => cx.update(|s| s.message = m),
+                Event::Prompt(p) => {
+                    let Some(r) = running.as_mut() else {
+                        return true;
+                    };
+                    if std::mem::take(&mut r.queued) {
+                        // The submitted password answers it at once.
+                        return cx.update(|s| s.message.clear());
+                    }
+                    r.asking = true;
+                    cx.update(|s| {
+                        s.message.clear();
+                        s.prompt = p;
+                        s.busy = false;
+                    })
+                }
+            }
+        };
+        if shown(&lock) && !begin(&mut cx, &mut client, &mut running, None) {
+            return Ok(());
+        }
         loop {
             tokio::select! {
                 done = async {
-                    match check.as_mut() {
-                        Some((c, _)) => c.await,
+                    match running.as_mut() {
+                        Some(r) => (&mut r.task).await,
                         None => std::future::pending().await,
                     }
                 } => {
-                    let tag = check.take().map_or(0, |(_, t)| t);
-                    let (failed, warning) = match done {
-                        Ok((c, d)) => {
+                    let tag = running.take().map_or(0, |r| r.tag);
+                    // Its texts first: they were said before its verdict.
+                    while let Ok(e) = events.try_recv() {
+                        if !said(&mut cx, &mut None, e) {
+                            return Ok(());
+                        }
+                    }
+                    let (d, answered) = match done {
+                        Ok((c, d, answered)) => {
                             client = Some(c);
-                            d
+                            (d, answered)
                         }
                         // The blocking task panicked: its client (and
                         // helper) went with it; a new one takes over.
@@ -218,58 +420,107 @@ impl Auth {
                             let v = Verdict::Failed(strand_auth::AuthError::Io(
                                 std::io::Error::other(e.to_string()),
                             ));
-                            deliver(&config, v, tag)
+                            (deliver(&config, v, true, tag), true)
                         }
                     };
                     if let Some(w) = strand_auth::take_service_warning() {
                         cx.warn(w);
                     }
-                    if let Some(w) = warning {
+                    if let Some(w) = d.warning {
                         cx.warn(w);
                     }
                     if !cx.update(|s| {
                         s.busy = false;
-                        s.failed = failed;
+                        s.prompt.clear();
+                        if let Some(f) = d.failed {
+                            s.failed = f;
+                        }
                     }) {
                         return Ok(());
+                    }
+                    // The lock is still shown and the user tried: PAM
+                    // starts over (a fingerprint module first).
+                    if shown(&lock)
+                        && answered
+                        && !d.unlocked
+                        && !begin(&mut cx, &mut client, &mut running, None)
+                    {
+                        return Ok(());
+                    }
+                }
+                Some(e) = events.recv() => {
+                    if !said(&mut cx, &mut running, e) {
+                        return Ok(());
+                    }
+                }
+                changed = async {
+                    match lock.as_mut() {
+                        Some(l) => l.changed().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if changed.is_err() {
+                        // The binary's signal went: no lock shows again.
+                        lock = None;
+                    }
+                    if shown(&lock) {
+                        if running.is_none() && !begin(&mut cx, &mut client, &mut running, None) {
+                            return Ok(());
+                        }
+                    } else {
+                        // Ends a conversation with no password in it.
+                        if let Some(r) = running.as_mut() {
+                            r.answers = None;
+                        }
+                        if !cx.update(|s| {
+                            s.message.clear();
+                            s.prompt.clear();
+                        }) {
+                            return Ok(());
+                        }
                     }
                 }
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Action(AuthAction::Submit { password })) => {
                         let password = Password::from(password);
-                        if check.is_some() {
+                        if cx.state().busy {
                             // One check at a time; this one is dropped
                             // (and wiped).
                             continue;
                         }
-                        let tag = session();
-                        let Some(mut c) = client.take() else {
-                            let why = "no `strand-auth` helper is installed: the password could not be checked";
-                            if let Some(f) = &config.failed {
-                                f(why, tag);
-                            }
-                            cx.warn(why);
+                        if let Some(why) = strand_auth::refusal(&password) {
+                            log::info!("auth: refused: {why}");
                             if !cx.update(|s| s.failed = true) {
                                 return Ok(());
                             }
                             continue;
+                        }
+                        let sent = match running.as_mut() {
+                            Some(r) => match &r.answers {
+                                Some(a) if a.send(password) => {
+                                    r.queued = !std::mem::take(&mut r.asking);
+                                    true
+                                }
+                                // Ending (the lock went), or one waits.
+                                _ => false,
+                            },
+                            None => {
+                                if !begin(&mut cx, &mut client, &mut running, Some(password)) {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
                         };
-                        if !cx.update(|s| {
-                            s.busy = true;
-                            s.failed = false;
-                        }) {
+                        if sent
+                            && !cx.update(|s| {
+                                s.busy = true;
+                                s.failed = false;
+                                s.prompt.clear();
+                            })
+                        {
                             return Ok(());
                         }
-                        let config = config.clone();
-                        check = Some((
-                            tokio::task::spawn_blocking(move || {
-                                let v = c.submit(password);
-                                let d = deliver(&config, v, tag);
-                                (c, d)
-                            }),
-                            tag,
-                        ));
                     }
                     Some(_) => {}
                 },
