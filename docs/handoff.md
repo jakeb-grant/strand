@@ -2,8 +2,8 @@
 
 M5 is closed on `main` (`361296e`). M6 wave 1 (hardening, approved by
 the owner 2026-10-12) is on the integration branch `laptop/m6-w1`: its
-four streams are merged and the integrator's sweep has closed what they
-left. Read this first when picking the repo up cold, then
+four streams are merged, the integrator's sweep has closed what they
+left, and the integrator's close has measured the head. Read this first when picking the repo up cold, then
 `docs/features.md` ("M6 Hardening"), `docs/decisions.md` (the
 `## m6-*` sections; `## m6-integration-w1` holds the merges and the
 sweep), and for M5's numbers `docs/m5-report.md`.
@@ -36,9 +36,16 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   (decisions.md m6-integration-w1, the S-services merge).
 - **Checks.** Each merge and the sweep ran fmt, workspace clippy and
   the touched crates' tests in the container, and the lock VM's
-  `scenarios/all.sh` where lock code changed. **Not yet run on the
-  head**: the laptop's `run.sh ci` and `matrix.sh`, and GitHub CI on the
-  pushed head; the standing fast-forward approval needs all three.
+  `scenarios/all.sh` where lock code changed (LOCK VM SCENARIOS PASSED
+  on the sweep's lock change). The close measured `.text` at `067711a`
+  with `scripts/size-report.sh` (inside both gates, below) and ran the
+  release budgets test there (11 passed, 1 ignored). **Not yet run on
+  the head**: the laptop's `run.sh ci` and `matrix.sh`, and GitHub CI
+  on the pushed head; the standing fast-forward approval needs all
+  three.
+- **What remains of wave 1's scope:** nothing the streams owned. The
+  owner-run Hyprland capture (open item 7) is the one hardening item an
+  agent cannot do here, since it reads the live session's event socket.
 
 ## Next
 
@@ -53,7 +60,9 @@ sweep), and for M5's numbers `docs/m5-report.md`.
    from the remote, as earlier waves' were; M5's wave-3 branches
    (`laptop/m5-w3`, `m5-fixups`, `m5-inspect`, `m5-platform`,
    `m5-docs3`) too if they are still there.
-4. **Later M6 waves** are the owner's to plan; candidates are the known
+4. **The Hyprland capture** (owner, open item 7), whenever convenient;
+   it does not hold the fast-forward.
+5. **Later M6 waves** are the owner's to plan; candidates are the known
    limits below and m5-report.md's "What remains". The language is
    frozen: a change to grammar.md or spec.md needs a decisions.md
    paragraph citing spec.md 14's compatibility policy.
@@ -94,6 +103,15 @@ Each has its paragraph in decisions.md.
    drop log (S-flakes), and from the sweep
    `strand_auth::Client::submit_saying` and
    `lock_fallback::paint`'s `message` argument.
+7. **The Hyprland IPC capture** (owner-run; Verification gaps below).
+   The Hyprland 0.56.2 fixture lacks a second monitor, close, move,
+   fullscreen, reload and special workspaces, and was stitched from
+   three captures with unrecorded gaps. Running
+   `scripts/capture-hyprland.sh [SECONDS] [OUT]` on the owner's own
+   session while doing those things closes it. It is read-only, but it
+   holds the session's window titles and classes (scrubbed before
+   committing, as its header says), and agents never attach to the live
+   session, so it is the owner's to run and hand over.
 
 Answered and standing: the owner deferred `strand report`'s grim
 reference PNGs to the integrator (2026-10-11), who made them,
@@ -105,31 +123,35 @@ Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
 
-M5's figures at `672b114` (m5-report.md has the tables); M6 wave 1's
-`.text` after the last merge (`d221f7d`) was 19,684,823 B CPU-only and
-23,602,455 B GPU, inside the re-based gates above (decisions.md
-m6-integration-w1). Size and memory gates are
-regression tripwires, never caps on a user's shell: growth past them is
-read by its cause and re-based or cut with a recorded reason.
+M6 wave 1's close at `067711a` (in the container; M5's figures at
+`672b114` are in m5-report.md). Size and memory gates are regression
+tripwires, never caps on a user's shell: growth past them is read by
+its cause and re-based or cut with a recorded reason.
 
-- **`.text`** (`scripts/size-report.sh` in the container; Δ against
-  M4's merged 15,657,671 / 19,041,095 B): CPU-only **18,711,127 B** (Δ
-  +3,053,456) of the **18,874,368 B** gate, 163,241 B of headroom; GPU
-  **22,630,295 B** (Δ +3,589,200) of **22,806,528 B**, 176,233 B of
-  headroom. GitHub's runner links about 2 KB smaller (18,709,202 /
-  22,628,370 B); read the ledger against the same machine's baseline.
+- **`.text`** (`scripts/size-report.sh`): CPU-only **19,701,655 B** of
+  the **19,922,944 B** gate (221,289 B of headroom; +990,528 B over
+  M5's close, 18,711,127 B, almost all remote media art's ureq/rustls
+  stack, and +16,832 B over the last merge `d221f7d`, the sweep's row
+  probe, fallback font and stubs); GPU **23,619,223 B** of
+  **23,855,104 B** (235,881 B of headroom; +988,928 B over M5's
+  22,630,295 B, +16,768 B over `d221f7d`). No re-base needed at close.
 - **Memory** (CI tripwires set by judgement, decisions.md
   m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
-  fails above 48 MB (49,152 kB): 37,328 kB in the container, 38,912 kB
-  on GitHub. The full shell warns above 76 MB (77,824 kB) and fails
-  above 86 MB (88,064 kB): 51,944 kB (4 entries) and 62,204 kB (161)
-  in the container, 66,422 kB (15) and 68,070 kB (172) on GitHub.
+  fails above 48 MB (49,152 kB): 38,201 kB in the container at
+  `067711a` (M5: 37,328 kB; 38,912 kB on GitHub). The full shell warns
+  above 76 MB (77,824 kB) and fails above 86 MB (88,064 kB): 52,984 kB
+  (4 entries) and 68,585 kB (161) in the container at `067711a` (M5:
+  51,944 and 62,204 kB; GitHub at M5: 66,422 kB (15) and 68,070 kB
+  (172)). The 161-entry figure is mostly launcher icon and buffer
+  memory, under the warn line; read it against GitHub's at the next
+  CI run.
 - **The promoted GPU surface on hardware** (reported, never gated):
   Intel PTL presenting to a GLES2 sway on renderD128: frame p50
   1.09–1.10 ms, p95 3.87–4.18 ms, p99 4.53–5.08 ms; PSS +21.0–26.1 MB
   while promoted, +6.35 MB after the drop (bound 12 MiB).
 - **Latency** (GitHub's timing job enforces; advisory on the laptop),
-  CI at `672b114`: reload token p95 16.2 ms headless against a break
+  CI at `672b114` (not re-measured in wave 1; GitHub's timing job on the
+  pushed head is the check): reload token p95 16.2 ms headless against a break
   of 19.3 ms (design.md's 35 / 50 ms at its vblank model: 31.9 / 32.1
   ms); theme_swap_bench's 8-scope `spring(1600, 1)` whole swap 2.43 ms
   against 5 ms; list scroll p95 1.07 ms (60 Hz) and 0.99 ms (144 Hz)
@@ -426,38 +448,35 @@ M5 wave 2 and both its boxes are ticked.
 - Plans and reports: `docs/m5-plan.md` and `docs/m5-report.md` (M5),
   `docs/m4-plan.md` and `docs/m4-report.md` (M4); interface text in
   `docs/architecture.md`.
-- Remote branches: `origin/main` and M5's wave-3 `origin/laptop/m5-*`
-  branches: the integration branch `m5-w3` and wave 3's streams
-  (`m5-fixups`, `m5-inspect`, `m5-platform`, `m5-docs3`), all merged
-  into `m5-w3`. Wave 2's integration branch and streams are gone from
-  the remote (wave 2 is on `main`); earlier waves' branches were merged
-  into `main` and deleted.
+- Remote branches: `origin/main` and M6 wave 1's: the integration
+  branch `laptop/m6-w1` and its streams (`laptop/m6-services`,
+  `m6-edges`, `m6-lock`, `m6-flakes`), all merged into `laptop/m6-w1`.
+  M5's branches are gone from the remote (M5 is on `main`).
 
-## Handoff checklist (M5 close)
+## Handoff checklist (M6 wave 1)
 
-Wave 3's checklist is in git history (`672b114`), wave 2's at
-`aa3053c`, wave 1's at `6cee276`, wave 0's at `88d4d99`, M4's at
-`70cdc56`.
+M5's close checklist is in git history (`361296e`); its open lines
+(the newcomer trials or Q15 (ii), `run.sh ci` and `matrix.sh` on a
+closing head) carry over below or to the owner's items.
 
-- [x] Every M5 stream merged on its integration branch, reviewed and
-  fixed before its merge; wave 2's and wave 3's stragglers built or
-  ruled on (m5-fixups, m5-integration-w3).
-- [x] All ten M5 boxes ticked with their tests; the freeze commit
-  (`672b114`) ticks the freeze exit.
-- [x] `.text` measured at close with `scripts/size-report.sh`, inside
-  both gates; m5-plan's ledger "Confirmed at close"; the close gate
-  proposed (keep both).
+- [x] All four wave-1 streams merged into `laptop/m6-w1`, each reviewed
+  and fixed before its merge (decisions.md m6-*).
+- [x] The integrator's sweep: the drop position exact for every row
+  shape, the fallback lock's PAM text, the stubs, the write-back
+  fallback's test, the flake fixes stressed (m6-integration-w1).
+- [x] M6 Hardening's ten boxes ticked with their tests.
+- [x] `.text` measured at the head (`067711a`): inside both gates, no
+  re-base at close.
 - [x] The release budgets test passes in the container at the head (11
-  passed); GitHub CI green on every job at `672b114`.
-- [x] m5-report.md written; features.md's M5 count; this file as the
-  M5 handoff.
-- [x] Wave-3 stream worktrees' `target/` directories deleted
-  (`strand-wt/{fixups,inspect,platform,docs3}`).
-- [ ] The laptop's `run.sh ci` and `matrix.sh` on the closing head, one
-  at a time.
-- [ ] The newcomer trials or Q15 (ii) (owner), recorded in
-  m5-report.md.
-- [ ] The owner fast-forwards `main` to the closing head; the merged
-  `laptop/m5-*` branches are deleted from the remote after it.
-- [ ] `strand-wt/w3/target` deleted when the integrator's work on the
+  passed, 1 ignored).
+- [x] The lock VM's `scenarios/all.sh` printed LOCK VM SCENARIOS PASSED
+  on the last lock change (the sweep).
+- [x] Stream worktrees' `target/` directories gone
+  (`strand-wt/m6-{lock,services,edges,flakes}`).
+- [ ] The laptop's `run.sh ci` and `matrix.sh` on the head, one at a
+  time, and GitHub CI green on the same commit.
+- [ ] The owner fast-forwards `main`; the merged `laptop/m6-*` branches
+  are deleted from the remote after it.
+- [ ] The Hyprland capture (owner-run, open item 7).
+- [ ] `strand-wt/m6/target` deleted when the integrator's work on the
   branch ends.
