@@ -2,7 +2,6 @@
 //! to speak, the protocol): garbage, early exits and silence all fail
 //! closed; only a success verdict mints a token.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,11 +9,27 @@ use strand_auth::{AuthError, Client, Password, Verdict};
 
 fn no_hook() {}
 
-/// A fake helper: `body` after `#!/bin/sh`.
+/// A fake helper: `body` after `#!/bin/sh`. Written by a `sh` of its own,
+/// never through a descriptor of this process: a test on another thread
+/// forking while this process held the file open for writing would carry
+/// that descriptor until its `exec`, and executing the file meanwhile
+/// fails with `ETXTBSY` ("Text file busy", seen once in GitHub run
+/// 38217404775).
 fn fake(dir: &Path, body: &str) -> PathBuf {
+    use std::io::Write as _;
     let path = dir.join("fake-helper");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut sh = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(&path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = sh.stdin.take().unwrap();
+    stdin
+        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .unwrap();
+    drop(stdin);
+    assert!(sh.wait().unwrap().success(), "writing {path:?}");
     path
 }
 

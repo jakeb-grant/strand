@@ -723,6 +723,41 @@ fn gpu_is_released_when_idle() {
              of {baseline} kB",
             promoted.saturating_sub(baseline)
         );
+        // Its frame time (the same box): `strand report`'s p50/p95/p99
+        // for Glow, promoted, over the frames drawn among its last 600
+        // paints (the CPU's frames before the promotion among them),
+        // each from its paint through the GPU's run of it, the waits for
+        // a swapchain image left out (decisions.md m5-tools). Reported,
+        // never gated: the run is the record.
+        let report = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["report", "--json"])
+            .env("STRAND_SOCKET", &socket)
+            .output()
+            .unwrap();
+        assert!(report.status.success(), "strand report --json: {report:?}");
+        let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+        let glow = report["surfaces"]
+            .as_array()
+            .and_then(|s| s.iter().find(|s| s["namespace"] == "strand-Glow"))
+            .unwrap_or_else(|| panic!("cycle {cycle}: no strand-Glow in the report: {report}"));
+        assert!(
+            !glow["promoted"].is_null(),
+            "cycle {cycle}: the report says Glow is not promoted ({mode}): {glow}"
+        );
+        let f = &glow["frames"];
+        let us = |k: &str| f[k].as_u64().unwrap_or(0);
+        assert!(us("drawn") > 0, "cycle {cycle}: no frames drawn: {glow}");
+        eprintln!(
+            "cycle {cycle}: promoted ({mode}) frame time: p50 {} us, p95 {} us, p99 {} us \
+             over {} drawn ({} unchanged); backend {}, gpu {}",
+            us("p50_us"),
+            us("p95_us"),
+            us("p99_us"),
+            us("drawn"),
+            us("unchanged"),
+            glow["backend"],
+            report["gpu"]
+        );
         // Hidden (both panels stay open): Glow goes back to the CPU, its
         // swapchain released before the manager commits it again.
         assert!(set(false), "strand set glow.on false");
