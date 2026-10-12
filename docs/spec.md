@@ -1,15 +1,13 @@
 # The Strand language specification
 
-Status: **reviewed for the freeze, not yet frozen** (M5 wave 3). The
-freeze review settled every point the draft left open, each with a test
+Status: **frozen** (2026-10-12, the last commit of M5's wave 3;
+decisions.md m5-integration-w3, "the language freeze"). The freeze
+review settled every point the draft left open, each with a test
 (decisions.md m5-docs, "the freeze review"); the last, equality across
-units (7.2), with the checker change that landed in wave 3's sweep
-(decisions.md m5-integration-w3). The freeze
-itself is the last commit of M5's wave 3, the integrator's, after every
-stream that could add a schema entry (m5-plan, "Language spec frozen"); from then
-on this file and `docs/grammar.md` are the language 1.x promises, and a
-change to either needs a decisions.md paragraph that cites the
-compatibility policy (section 14); typo fixes are exempt. The theming hub (hue roles, the palette's extras and identity,
+units (7.2), with the checker change that landed in wave 3's sweep.
+From the freeze this file and `docs/grammar.md` are the language 1.x
+promises, and a change to either needs a decisions.md paragraph that
+cites the compatibility policy (section 14); typo fixes are exempt. The theming hub (hue roles, the palette's extras and identity,
 templates, the `file` element and `strand export`; sections 4.1, 9 and
 13) is owner-approved design (decisions.md m5-tools), built in M5 wave 2
 (decisions.md m5-palette, m5-tools); the text here follows the code as

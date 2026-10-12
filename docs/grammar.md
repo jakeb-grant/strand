@@ -9,6 +9,11 @@ block in `design.md` parses under it with zero errors (see
 `crates/strand-dev/tree-sitter-strand/` follows this file production by
 production for editors (see "The tree-sitter grammar" at the end).
 
+Frozen with `docs/spec.md` at M5's close (2026-10-12; decisions.md
+m5-integration-w3, "the language freeze"): a change to this file needs
+a decisions.md paragraph that cites spec.md's compatibility policy
+(section 14); typo fixes are exempt.
+
 Semantic restrictions that need names or types (which element kinds exist,
 whether a prop is valid on a node, whether `slot` is inside a component) are
 the checker's job, not the grammar's. Where the parser deliberately accepts

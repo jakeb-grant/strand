@@ -3,9 +3,9 @@
 A pausing point before M5 closes: every wave-3 stream is merged on the
 integration branch `laptop/m5-w3`, the integrator's sweep has closed
 the stragglers wave 2 and wave 3 left, all ten of M5's boxes are
-ticked, and what is left is the freeze commit, the full checks on the
-closing head and the owner's two items (the newcomer trials, the
-fast-forward of `main`). Read this first when picking the repo up cold,
+ticked, the language is frozen (the sweep's last commit), and what is
+left is the laptop's full local set on the closing head and the owner's
+two items (the newcomer trials, the fast-forward of `main`). Read this first when picking the repo up cold,
 then `docs/m5-plan.md` (streams, waves, ledger, closing checks),
 `docs/decisions.md` (`## m5-owner`, `## m5-integration`,
 `## m5-w0-harden`, the `## m5-speed*` and `## m5-open-*` sections,
@@ -21,8 +21,9 @@ M5's boxes. `docs/m4-report.md` has M4's measured numbers.
 - **M0–M4 are complete**, and **M5's wave 1 is on `main`** (`6cee276`);
   wave 2 is on `main` too (`aa3053c`, the owner's fast-forward of
   `laptop/m5-w2`). features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14,
-  M4 18/18, **M5 10/10 boxes on `laptop/m5-w3`**, with the two exit
-  criteria open (below, and features.md's Exit line says why).
+  M4 18/18, **M5 10/10 boxes on `laptop/m5-w3`**, and of the two exit
+  criteria the language freeze is ticked; the newcomer one waits on the
+  owner (below, and features.md's Exit line says why).
 - **Wave 3 is merged on `laptop/m5-w3`** (branched from `main` at
   `aa3053c`). Four streams, each reviewed and fixed in up to three
   rounds before its merge, merged in this order (decisions.md
@@ -115,14 +116,19 @@ M5's boxes. `docs/m4-report.md` has M4's measured numbers.
 
 From m5-plan.md's "Closing (wave 3, integrator)":
 
-1. **The freeze commit**: spec.md and grammar.md final, decisions.md
-   recording the freeze; the last commit of wave 3 (the sweep's last).
+1. Done: **the freeze commit** (spec.md and grammar.md frozen,
+   decisions.md m5-integration-w3 "the language freeze"), the last of
+   wave 3.
 2. **Full checks on the exact closing head**: GitHub CI green on it
    (lint with the `--no-default-features` steps, test, budgets,
    acceptance, timing, compositors with Hyprland, lock-vm with
-   `scenarios/all.sh`), plus the laptop's `run.sh ci`, `matrix.sh` and
-   `gpu.sh` one at a time (the sweep ran only crate tests, the lock VM
-   and `gpu.sh` locally; its hand-back says which).
+   `scenarios/all.sh`), plus the laptop's `run.sh ci` and `matrix.sh`
+   one at a time. The sweep was held to crate tests, so it did not run
+   those two; it ran the lock VM's `scenarios/all.sh` (passed, the
+   inspector's lock test included), the hardware `gpu.sh` leg (passed)
+   and the `--no-default-features` clippy and build steps (passed)
+   locally, and GitHub CI was green on every job at `4b39471`
+   (decisions.md m5-integration-w3, sweep-2).
 3. Done in the sweep: **the GPU box** (frame time and PSS on hardware).
 4. **Human trials** (Q15, the owner's), recorded in m5-report.md.
 5. **Paperwork**: m5-report.md (ledger, PSS, the resident split, trial
@@ -490,7 +496,7 @@ Wave 2's checklist is in git history (`aa3053c`), wave 1's at
   accepted with their reasons; the tightened gate proposed.
 - [x] The docs follow what landed (spec.md, the guide, design.md,
   architecture.md, features.md, m5-plan.md and this file).
-- [ ] The freeze commit (spec.md and grammar.md final), the last of
+- [x] The freeze commit (spec.md and grammar.md frozen), the last of
   wave 3.
 - [ ] The full local set on the closing head, one at a time (`run.sh
   ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), and GitHub CI
