@@ -1002,8 +1002,10 @@ S-platform in M5 wave 3, decisions.md m5-platform).**
     a token through the `TokenSource` the binary hands
     `Services::set_token_source`: an `Arc<dyn Fn(u32, u32) ->
     TokenFuture>` (the surface's number, as in `InputCtx::surface`, and
-    the serial), whose one-shot (`token_reply()`) the binary sends over
-    a services→main calloop channel (`run::TokenAsk`); main calls
+    the serial), whose one-shot (`token_reply()`) the binary queues for
+    main as a `run::TokenAsk` and wakes main with a `calloop::ping` (a
+    queue rather than a calloop channel, for `.text`; decisions.md
+    m5-platform); main calls
     `State::activation_token` and completes the one-shot (the services
     thread cannot call `SurfaceHost`, the manager's callback trait on
     main).
