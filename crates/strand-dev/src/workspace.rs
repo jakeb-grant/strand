@@ -102,6 +102,9 @@ pub struct Analysis {
     /// It checks `from dbus` services, against the introspection answers
     /// in by then ([`introspected`]).
     introspected: Option<u64>,
+    /// It asks the buses at all (not an [`Analysis::offline`] one); the
+    /// analyses derived from it do the same.
+    bus: bool,
     /// The last [`Analysis::with_inserted`] asked for, kept with this
     /// analysis (so dropped when the text changes): completion after a
     /// `.` asks for the same one again on every request at that place.
@@ -122,6 +125,17 @@ type Edited = (FileId, String, Arc<Analysis>);
 impl Analysis {
     /// Compiles `files` as one config.
     pub fn new(key: ConfigKey, files: Vec<Input>, schema: Arc<Schema>) -> Self {
+        Self::build(key, files, schema, true)
+    }
+
+    /// [`Analysis::new`] without `from dbus` introspection: every other
+    /// check, and none whose result depends on a bus or on when its
+    /// background answer came in (the guide's checks; decisions.md m5-lsp).
+    pub fn offline(key: ConfigKey, files: Vec<Input>, schema: Arc<Schema>) -> Self {
+        Self::build(key, files, schema, false)
+    }
+
+    fn build(key: ConfigKey, files: Vec<Input>, schema: Arc<Schema>, bus: bool) -> Self {
         let mut map = SourceMap::new();
         let mut uris = Vec::new();
         let mut lines = Vec::new();
@@ -136,12 +150,13 @@ impl Analysis {
         // `from dbus` services against the bus's introspection (answers
         // remembered a while: one bus call per service, not per edit;
         // never waited for here).
-        let dbus = compiled.program.files.iter().any(|f| {
-            f.items.iter().any(|i| {
-                matches!(i, strand_compiler::hir::Item::Service(s)
+        let dbus = bus
+            && compiled.program.files.iter().any(|f| {
+                f.items.iter().any(|i| {
+                    matches!(i, strand_compiler::hir::Item::Service(s)
                     if matches!(s.spec, Some(strand_compiler::hir::SourceSpec::Dbus { .. })))
-            })
-        });
+                })
+            });
         let introspected = dbus.then(|| introspector().answered());
         if dbus {
             compiled
@@ -160,6 +175,13 @@ impl Analysis {
         compiled
             .diagnostics
             .extend(strand_compiler::check::paths::check(&compiled.program, dir));
+        // (M5, S-tools) `file`s' literal `template:` paths.
+        compiled
+            .diagnostics
+            .extend(strand_compiler::check::files::templates(
+                &compiled.program,
+                dir,
+            ));
         // `shader "x.wgsl"` files, checked with naga (relative paths only
         // in a config directory).
         use strand_compiler::check::shaders;
@@ -179,6 +201,7 @@ impl Analysis {
             schema,
             stamps,
             introspected,
+            bus,
             inserted: Mutex::new(None),
             edited: Mutex::new(None),
         }
@@ -241,7 +264,7 @@ impl Analysis {
                 )
             })
             .collect();
-        Analysis::new(self.key.clone(), files, self.schema.clone())
+        Analysis::build(self.key.clone(), files, self.schema.clone(), self.bus)
     }
 
     /// The memoised [`Analysis::with_inserted`], if any.

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use strand_services::testing::PrivateBus;
 
-struct Proc(Child);
+pub(super) struct Proc(Child);
 
 impl Drop for Proc {
     fn drop(&mut self) {
@@ -37,7 +37,7 @@ impl Drop for Proc {
 }
 
 /// A bar painted with `$probe.c`, a token of `tokens base`.
-fn bar(color: &str) -> String {
+pub(super) fn bar(color: &str) -> String {
     format!(
         "tokens base {{ probe.c: {color} }}\n\
          export state open = false\n\
@@ -46,7 +46,7 @@ fn bar(color: &str) -> String {
     )
 }
 
-fn tools() -> bool {
+pub(super) fn tools() -> bool {
     for tool in ["sway", "swaymsg", "grim"] {
         if Command::new(tool).arg("--version").output().is_err() {
             assert!(
@@ -62,7 +62,7 @@ fn tools() -> bool {
 
 /// A headless sway, one 1280x720 output, and `strand run` on a config
 /// directory; the CLI reaches it through `STRAND_SOCKET`.
-struct Desk {
+pub(super) struct Desk {
     strand: Option<Proc>,
     _sway: Proc,
     dir: PathBuf,
@@ -80,7 +80,7 @@ impl Drop for Desk {
 }
 
 impl Desk {
-    fn start(tag: &str, files: &[(&str, &str)], env: &[(&str, &str)]) -> Desk {
+    pub(super) fn start(tag: &str, files: &[(&str, &str)], env: &[(&str, &str)]) -> Desk {
         // Short: the socket paths must fit in sun_path.
         let dir = std::env::temp_dir().join(format!("strand-cli-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -185,8 +185,24 @@ impl Desk {
         desk
     }
 
+    /// The `strand run` process's id.
+    pub(super) fn pid(&self) -> u32 {
+        self.strand.as_ref().map_or(0, |p| p.0.id())
+    }
+
     fn state(&self) -> PathBuf {
         self.dir.join("state")
+    }
+
+    /// The test's directory: `config` (the config), `state` (its
+    /// `XDG_STATE_HOME`), the sockets (S-tools' export tests).
+    pub(super) fn root(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// Stops `strand run` (killed), leaving sway and the directories.
+    pub(super) fn stop(&mut self) {
+        self.strand.take();
     }
 
     fn env(&self) -> Vec<(&'static str, PathBuf)> {
@@ -197,7 +213,7 @@ impl Desk {
         ]
     }
 
-    fn log_text(&self) -> String {
+    pub(super) fn log_text(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
@@ -222,7 +238,7 @@ impl Desk {
     }
 
     /// `strand <args>`, which must succeed: its stdout.
-    fn ok(&self, args: &[&str]) -> String {
+    pub(super) fn ok(&self, args: &[&str]) -> String {
         let out = self.strand(args);
         assert!(
             out.status.success(),
@@ -276,7 +292,7 @@ impl Desk {
     }
 
     /// Saves `text` as `name` the way an editor's atomic save does.
-    fn save(&self, name: &str, text: &str) {
+    pub(super) fn save(&self, name: &str, text: &str) {
         let tmp = self.dir.join(format!("{name}.new"));
         std::fs::write(&tmp, text).unwrap();
         std::fs::rename(&tmp, self.config.join(name)).unwrap();
@@ -284,7 +300,7 @@ impl Desk {
 
     /// `strand watch --json`, its events on a channel once it is
     /// subscribed.
-    fn watch(&self) -> (Proc, mpsc::Receiver<serde_json::Value>) {
+    pub(super) fn watch(&self) -> (Proc, mpsc::Receiver<serde_json::Value>) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_strand"))
             .args(["watch", "--json"])
             .envs(self.env())
@@ -327,7 +343,7 @@ fn heard(events: &mpsc::Receiver<serde_json::Value>, text: &str) -> bool {
     false
 }
 
-fn json(s: &str) -> serde_json::Value {
+pub(super) fn json(s: &str) -> serde_json::Value {
     serde_json::from_str(s.trim()).unwrap_or_else(|e| panic!("{s:?}: {e}"))
 }
 

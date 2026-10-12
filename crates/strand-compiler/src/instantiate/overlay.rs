@@ -80,6 +80,9 @@ struct Shared {
     file: Option<PathBuf>,
     state: Mutex<State>,
     writer: Writer,
+    /// (M5) [`TokenOverlay::read_only`]: the file is read, never moved
+    /// aside or written.
+    read_only: bool,
 }
 
 #[derive(Default)]
@@ -184,6 +187,17 @@ impl TokenOverlay {
         }))
     }
 
+    /// (M5) An overlay read from `file` that never changes it: the
+    /// offline export applies the overlays and writes nothing
+    /// (decisions.md m5-tools, "the CLI", step 2).
+    pub fn read_only(file: impl Into<PathBuf>) -> Self {
+        TokenOverlay(Arc::new(Shared {
+            file: Some(file.into()),
+            read_only: true,
+            ..Shared::default()
+        }))
+    }
+
     /// The overlay file (`None`: in memory only).
     pub fn file(&self) -> Option<&Path> {
         self.0.file.as_deref()
@@ -273,6 +287,35 @@ impl TokenOverlay {
                         ));
                     }
                 }
+            }
+        }
+    }
+
+    /// (M5) The overlays applied to the other mode's table (decisions.md
+    /// m5-tools, "overlays apply to both modes"): the same values as
+    /// [`TokenOverlay::apply`] (read tracked, so `strand set` and `strand
+    /// clear` invalidate the other mode too), without the notices and the
+    /// shadowing record, which belong to the current mode's table.
+    pub(crate) fn apply_quietly(&self, rt: &Runtime, types: &TypeTable, t: &mut TokenTable) {
+        let mut st = self.0.state();
+        if let Some(g) = st.generation {
+            let _ = g.get(rt);
+        }
+        self.load(&mut st);
+        let values: Vec<(String, String)> = st
+            .values
+            .0
+            .iter()
+            .map(|(p, text)| (p.clone(), text.clone()))
+            .collect();
+        drop(st);
+        for (path, text) in values {
+            let Some(file) = t.lookup(&path) else {
+                continue;
+            };
+            if let Ok(v) = read(types, &file, &text) {
+                t.insert(path.clone(), v);
+                t.set_origin(path, OVERLAY_ORIGIN);
             }
         }
     }
@@ -385,7 +428,7 @@ impl TokenOverlay {
         if let Some(g) = st.generation {
             let _ = g.update(rt, |n| *n += 1);
         }
-        if let Some(file) = &self.0.file {
+        if let Some(file) = self.0.file.as_ref().filter(|_| !self.0.read_only) {
             let text = st.doc.to_string();
             st.known = Some(text.clone());
             self.0.writer.save(file.clone(), text);
@@ -441,7 +484,11 @@ impl TokenOverlay {
                 st.known = None;
                 st.doc = DocumentMut::new();
                 st.base.0.clear();
-                let moved_to = aside(file);
+                let moved_to = if self.0.read_only {
+                    file.clone()
+                } else {
+                    aside(file)
+                };
                 st.notices.push(self.0.notice(
                     None,
                     SettingsIssue::CorruptOverlay {

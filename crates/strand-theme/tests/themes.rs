@@ -147,13 +147,33 @@ fn matugen_output_fills_the_palette() {
     let mut dark = serde_json::Map::new();
     for (r, c) in seed.iter() {
         let [x, y, z, _] = c.to_rgba8();
-        dark.insert(r.m3().to_string(), format!("#{x:02x}{y:02x}{z:02x}").into());
+        if let Some(m3) = r.m3() {
+            dark.insert(m3.to_string(), format!("#{x:02x}{y:02x}{z:02x}").into());
+        }
     }
+    // matugen writes the seed as `source_color`, the seed palette's one
+    // extra.
+    dark.insert("source_color".into(), "#7aa2f7".into());
     let doc = serde_json::json!({ "colors": { "dark": dark, "light": {} }, "mode": "dark" });
     std::fs::write(dir.join("colors.json"), doc.to_string()).unwrap();
     let p = import("matugen:colors.json", Some(&dir)).unwrap();
     whole(&p);
-    assert_eq!(p, seed, "a full matugen scheme comes back role for role");
+    // Every key is kept as an extra (spec.md 9.5), so the extras are the
+    // seed's `source_color` plus the 49 M3 names, in the file's order
+    // (serde_json writes the map sorted).
+    let mut want: Vec<(String, Color)> = dark
+        .iter()
+        .map(|(k, v)| (k.clone(), hex(v.as_str().unwrap())))
+        .collect();
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(p.extras(), &want[..]);
+    assert_eq!(p.extra("source_color"), Some(hex("#7aa2f7")));
+    assert_eq!(p.extra("primary"), Some(seed.get(Role::Accent)));
+    assert_eq!(
+        p,
+        seed.clone().with_extras(want),
+        "a full matugen scheme comes back role for role, hues included"
+    );
     // colors.<role>.<mode>, with `{ "color": … }` values; partial, so the
     // derivation table fills the rest.
     let doc = serde_json::json!({
@@ -361,6 +381,37 @@ fn material_image_is_deterministic_and_cached_by_content() {
         Lookup::Failed { last: Some(_), .. }
     ));
     drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (M5) A read-only quantiser (`strand export`'s offline mount) answers
+/// a wallpaper the running shell quantised from its index, decoding
+/// nothing, and quantises a new one without writing the index.
+#[test]
+fn a_read_only_quantiser_reads_the_index_and_writes_nothing() {
+    let dir = temp("read-only");
+    let cache = dir.join("cache");
+    let wall = dir.join("wall.png");
+    std::fs::write(&wall, png([30, 90, 200], [240, 200, 40], 64, 64)).unwrap();
+    let mut q = Quantiser::new(Some(cache.clone())).unwrap();
+    q.lookup(&wall);
+    let seed = wait_ready(&mut q, &wall);
+    drop(q);
+    let index = std::fs::read(cache.join("index")).unwrap();
+    let mut ro = Quantiser::read_only(cache.clone()).unwrap();
+    assert_eq!(ro.lookup(&wall), Lookup::Ready(seed));
+    assert_eq!(ro.quantised(), 0, "answered from the index");
+    let other = dir.join("other.png");
+    std::fs::write(&other, png([200, 40, 40], [20, 20, 20], 64, 64)).unwrap();
+    ro.lookup(&other);
+    assert_ne!(wait_ready(&mut ro, &other), seed);
+    assert_eq!(ro.quantised(), 1);
+    drop(ro);
+    assert_eq!(
+        std::fs::read(cache.join("index")).unwrap(),
+        index,
+        "the index is as the shell left it"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 

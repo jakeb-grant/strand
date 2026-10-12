@@ -12,6 +12,7 @@
 
 pub mod contrast;
 pub mod defaults;
+pub mod export;
 pub mod image;
 pub mod import;
 pub mod material;

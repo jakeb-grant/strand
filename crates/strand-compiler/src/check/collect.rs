@@ -713,6 +713,12 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ItemKind::Timer(t) => out.push(hir::Item::Timer(self.timer(t, item.span))),
+                // (M5) grammar.md's `top_file`.
+                ItemKind::Element(e) if e.kind.name == "file" => {
+                    if let hir::Node::Element(el) = self.file_element(e, item.span) {
+                        self.top_outputs.push(el);
+                    }
+                }
                 // Tree items at the top level were reported by the parser.
                 _ => {}
             }

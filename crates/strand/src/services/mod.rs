@@ -2,8 +2,10 @@
 //! service crates, one host").
 //!
 //! - [`schema`]: the builtin schema extended by every service crate this
-//!   binary links (`strand_services::schemas()`); `strand check`, `strand
-//!   run` (and its compile cache key, the schema's fingerprint) use it.
+//!   binary links (`strand_services::schemas()`), its plugin services'
+//!   texts and the plugin schema files ([`served`]); `strand check`,
+//!   `strand run` (and its compile cache key, the schema's fingerprint)
+//!   use it.
 //! - [`StoreHost`]: one service store as a `ServiceHost`, converting its
 //!   typed cells to and from the VM's `Value` ([`convert`]).
 //! - [`Composite`]: one host over every store, routing by service name;
@@ -16,11 +18,13 @@ mod adapter;
 mod composite;
 pub mod convert;
 pub mod custom;
+mod unserved;
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use strand_compiler::schema::Schema;
+use strand_compiler::schema::{Schema, plugins};
 use strand_compiler::ty::TypeTable;
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
@@ -29,21 +33,195 @@ use strand_services::{Builtin, Buses, Services};
 pub use adapter::StoreHost;
 pub use composite::Composite;
 pub use custom::CustomHost;
+pub use unserved::UnservedHost;
 
-/// The schema `strand check` and `strand run` check against: the builtin
-/// one with the linked service crates' declarations in place of their
-/// provisional stubs. A service schema that does not apply (a bug their
-/// tests catch: `service_schemas_extend_the_builtin_one`) is logged and
-/// the builtin schema used.
+use crate::plugin::Registration;
+
+/// The schema `strand check` and `strand run` check against
+/// ([`served`]'s).
 pub fn schema() -> &'static Schema {
-    static SCHEMA: OnceLock<Schema> = OnceLock::new();
-    SCHEMA.get_or_init(|| match Schema::builtin_with(&strand_services::schemas()) {
+    &served().schema
+}
+
+/// The served schema, and what serves it.
+#[derive(Debug)]
+pub struct Served {
+    pub schema: Schema,
+    /// The services plugin schema files declare that no linked store
+    /// serves, each with its file ([`UnservedHost`]).
+    pub unserved: Vec<(String, PathBuf)>,
+    /// What was skipped or is stale, for `strand check` to print and
+    /// `strand run` to log.
+    pub warnings: Vec<String>,
+}
+
+/// [`schema_with`] over this binary's plugin services and the plugin
+/// schema directory's files, built once per process (a new file is seen
+/// after a restart). Its warnings are logged.
+pub fn served() -> &'static Served {
+    static SERVED: OnceLock<Served> = OnceLock::new();
+    SERVED.get_or_init(|| {
+        let (files, skipped) = plugins::dir()
+            .map(|d| plugins::load(&d))
+            .unwrap_or_default();
+        let mut s = schema_with(crate::plugin::extras(), &files);
+        s.warnings
+            .splice(0..0, skipped.iter().map(ToString::to_string));
+        for w in &s.warnings {
+            log::warn!("{w}");
+        }
+        s
+    })
+}
+
+/// The builtin schema with the linked service crates' declarations in
+/// place of their provisional stubs, then each of `extras`' texts, then
+/// `files` in order, skipping a file named for one of `extras` (code
+/// wins over its file) and one that does not apply. A service schema
+/// that does not apply (a bug their tests catch:
+/// `service_schemas_extend_the_builtin_one`; a plugin's own `run`
+/// refuses) is left out with a warning.
+#[cold]
+#[inline(never)]
+pub fn schema_with(extras: &[Registration], files: &[(PathBuf, String)]) -> Served {
+    let mut warnings = Vec::new();
+    let mut schema = match Schema::builtin_with(&strand_services::schemas()) {
         Ok(s) => s,
         Err((i, errors)) => {
-            log::error!("service schema #{i} does not apply: {errors:?}");
-            Schema::builtin().clone()
+            warnings.push(format!("service schema #{i} does not apply: {errors:?}"));
+            Schema::builtin_with(&[]).unwrap_or_default()
         }
-    })
+    };
+    for r in extras {
+        if let Err(errors) = schema.extend((r.schema)()) {
+            warnings.push(format!(
+                "the schema of `{}` does not apply: {errors:?}",
+                r.name
+            ));
+        }
+    }
+    let linked: Vec<&str> = extras.iter().map(|r| r.name).collect();
+    let mut unserved = Vec::new();
+    for file in files {
+        let (path, text) = file;
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if let Some(r) = extras.iter().find(|r| r.name == stem) {
+            if plugins::body(text) != (r.schema)() {
+                warnings.push(format!(
+                    "{}: stale; run `{} --write-schemas`",
+                    path.display(),
+                    crate::plugin::binary_name()
+                ));
+            }
+            continue;
+        }
+        let before: Vec<String> = schema.services.keys().cloned().collect();
+        let skipped = plugins::apply(&mut schema, std::slice::from_ref(file), &linked);
+        warnings.extend(skipped.iter().map(ToString::to_string));
+        for name in schema.services.keys() {
+            if !before.contains(name) {
+                unserved.push((name.clone(), path.clone()));
+            }
+        }
+    }
+    Served {
+        schema,
+        unserved,
+        warnings,
+    }
+}
+
+/// Gives `host` cells at their defaults for `name`, a service `schema`
+/// declares that the builtin schema does not (`SchemaHost` holds only
+/// the builtin schema's names until told).
+fn declare_at_defaults(
+    rt: &Runtime,
+    host: &SchemaHost,
+    types: &TypeTable,
+    schema: &Schema,
+    name: &str,
+    path: &Path,
+) {
+    use strand_compiler::vm::ServiceHost as _;
+    if let Some(&record) = schema.services.get(name) {
+        let at_defaults = strand_compiler::lower::CustomService {
+            name: name.to_string(),
+            record,
+            source: strand_compiler::hir::SourceSpec::File {
+                path: path.display().to_string(),
+            },
+            fields: Vec::new(),
+        };
+        host.declare(rt, &at_defaults, types);
+    }
+}
+
+/// The records `service`'s values hand out (its own, and those its
+/// fields, events and methods reach, transitively) that neither the
+/// builtin schema declares nor a store already serves the items of
+/// (`claimed`): an [`UnservedHost`] is their items' only owner.
+fn handed_out(
+    schema: &Schema,
+    service: &str,
+    claimed: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    use strand_compiler::ty::{RecordId, Ty};
+    fn push(ty: &Ty, todo: &mut Vec<RecordId>) {
+        match ty {
+            Ty::Record(id) => todo.push(*id),
+            Ty::List(t, _) | Ty::Optional(t) | Ty::Async(t) => push(t, todo),
+            Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().for_each(|t| push(t, todo)),
+            _ => {}
+        }
+    }
+    let types = &schema.types;
+    let builtin = &Schema::builtin().types;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut todo: Vec<RecordId> = schema.services.get(service).copied().into_iter().collect();
+    let mut out = Vec::new();
+    while let Some(id) = todo.pop() {
+        let Some(def) = types.records.get(id.0 as usize) else {
+            continue;
+        };
+        if !seen.insert(id.0) {
+            continue;
+        }
+        if builtin.find_record(&def.name).is_none() && !claimed.contains(&def.name) {
+            out.push(def.name.clone());
+        }
+        def.fields.iter().for_each(|f| push(&f.ty, &mut todo));
+        for e in &def.events {
+            e.params.iter().for_each(|p| push(&p.ty, &mut todo));
+        }
+        for m in &def.methods {
+            m.sigs.iter().for_each(|s| push(&s.ret, &mut todo));
+        }
+    }
+    out
+}
+
+/// Under `STRAND_MOCK` the schema host stands in for every service and
+/// no [`Real`] starts, so the services `served` adds to the builtin
+/// schema (a plugin's own, a file's) get its cells here, read at their
+/// defaults as the mock reads every service it does not fill. A file's
+/// service is logged as [`Real::start_with`] logs it; the mock raises no
+/// service notices (decisions.md m5-plugins, review round 2).
+pub fn mock_served(rt: &Runtime, host: &SchemaHost, types: &TypeTable, served: &Served) {
+    let builtin = &Schema::builtin().services;
+    for name in served.schema.services.keys() {
+        if builtin.contains_key(name) {
+            continue;
+        }
+        let file = served.unserved.iter().find(|(n, _)| n == name);
+        if let Some((_, path)) = file {
+            log::info!(
+                "{} declares service `{name}`, which this binary does not serve",
+                path.display()
+            );
+        }
+        let path = file.map_or(Path::new(""), |(_, p)| p.as_path());
+        declare_at_defaults(rt, host, types, &served.schema, name, path);
+    }
 }
 
 /// How long `strand set` on a service waits for a stopped service's
@@ -72,10 +250,21 @@ pub fn set_text(
     path: &str,
     text: &str,
 ) -> Result<(), String> {
+    set_text_with(schema(), host, rt, types, path, text)
+}
+
+/// [`set_text`] with the service and its fields resolved in `s`.
+pub fn set_text_with(
+    s: &Schema,
+    host: &dyn strand_compiler::vm::ServiceHost,
+    rt: &Runtime,
+    types: &TypeTable,
+    path: &str,
+    text: &str,
+) -> Result<(), String> {
     use strand_compiler::ty::{Prim, Ty};
     use strand_compiler::vm::Value;
     use strand_compiler::vm::host::PathSeg;
-    let s = schema();
     let mut parts = path.split('.');
     let service = parts.next().unwrap_or_default();
     let fields: Vec<&str> = parts.collect();
@@ -177,6 +366,9 @@ pub struct Real {
     pub custom: Rc<CustomHost>,
     stores: Vec<Rc<StoreHost>>,
     types: Rc<TypeTable>,
+    /// The plugin services, served as the builtins are.
+    extras: Vec<Rc<dyn strand_services::DynService>>,
+    served: &'static Served,
 }
 
 impl std::fmt::Debug for Real {
@@ -202,16 +394,51 @@ impl Real {
         fallback: Rc<SchemaHost>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Real {
+        let extras = crate::plugin::extras();
+        Real::start_with(rt, types, buses, fallback, wake, extras, served())
+    }
+
+    /// [`Real::start`] with this binary's plugin services (`extras`,
+    /// registered after the builtins and served as they are) and the
+    /// schema `served` (the services its files declare that nothing
+    /// serves each get an [`UnservedHost`]).
+    pub fn start_with(
+        rt: &Runtime,
+        types: &TypeTable,
+        buses: Buses,
+        fallback: Rc<SchemaHost>,
+        wake: impl Fn() + Send + Sync + 'static,
+        extras: &[Registration],
+        served: &'static Served,
+    ) -> Real {
         let services = Services::new(rt, buses, wake);
         let builtin = Builtin::register(&services, rt);
+        let extras: Vec<_> = extras.iter().map(|r| (r.register)(&services, rt)).collect();
         let types = Rc::new(types.clone());
-        let mut host = Composite::new(fallback, types.clone());
+        let mut host = Composite::new(fallback.clone(), types.clone());
         let mut stores = Vec::new();
-        for svc in builtin.all() {
+        let mut claimed = std::collections::BTreeSet::new();
+        for svc in builtin.all().into_iter().chain(extras.iter().cloned()) {
             let items = svc.item_records();
+            claimed.extend(items.iter().cloned());
             let store = Rc::new(StoreHost::new(rt, svc, types.clone()));
             host.add(store.clone(), &[store.name()], &items);
             stores.push(store);
+        }
+        for (name, path) in &served.unserved {
+            log::info!(
+                "{} declares service `{name}`, which this binary does not serve",
+                path.display()
+            );
+            // The fallback answers its reads at the schema's defaults
+            // (it holds only the builtin schema's names until told).
+            declare_at_defaults(rt, &fallback, &types, &served.schema, name, path);
+            let unserved = UnservedHost::new(name, path, fallback.clone(), services.clone());
+            // Its item actions and writes are refused too, not simulated
+            // by the fallback (review round 3).
+            let items = handed_out(&served.schema, name, &claimed);
+            claimed.extend(items.iter().cloned());
+            host.add(Rc::new(unserved), &[name], &items);
         }
         let custom = Rc::new(CustomHost::new(services.clone(), None));
         host.set_custom(custom.clone());
@@ -222,7 +449,17 @@ impl Real {
             custom,
             stores,
             types,
+            extras,
+            served,
         }
+    }
+
+    /// The store serving `name`: a builtin, else a plugin service.
+    pub fn served(&self, name: &str) -> Option<Rc<dyn strand_services::DynService>> {
+        let builtin = self.builtin.all().into_iter();
+        builtin
+            .chain(self.extras.iter().cloned())
+            .find(|s| s.name() == name)
     }
 
     /// `strand set brightness.level 0.4` (or `+5%`): an `rw` service
@@ -232,7 +469,7 @@ impl Real {
     /// from its real value. It stops 5 s later.
     pub fn set_text(&self, rt: &Runtime, path: &str, text: &str) -> Result<(), String> {
         let name = path.split('.').next().unwrap_or_default();
-        let svc = self.builtin.all().into_iter().find(|s| s.name() == name);
+        let svc = self.served(name);
         let relative = text.trim().starts_with(['+', '-']);
         if let Some(svc) = &svc {
             svc.acquire(rt);
@@ -240,7 +477,8 @@ impl Real {
                 self.services.wait_ready_of(rt, Some(name), SET_WAIT);
             }
         }
-        let r = set_text(&*self.host, rt, &self.types, path, text);
+        let s = &self.served.schema;
+        let r = set_text_with(s, &*self.host, rt, &self.types, path, text);
         if let Some(svc) = &svc {
             svc.release(rt);
         }
@@ -2665,6 +2903,311 @@ service shelf {
                     )
                     .is_err()
             );
+        }
+    }
+
+    /// Plugin services (decisions.md m5-plugins): an extra served as a
+    /// builtin is, and a service a plugin schema file declares that
+    /// nothing serves. All through `Real::start_with` and a `Served`
+    /// from `schema_with`, never the process-wide lists.
+    mod plugins {
+        use std::path::{Path, PathBuf};
+
+        use strand_compiler::vm::host::{ActionCtx, ActionTarget, PathSeg};
+        use strand_services::{Call, Cx, Msg, ServiceError, Store, service};
+
+        use super::*;
+
+        pub const COUNTER: &str = "
+/// A counter, a plugin service of the tests.
+service counter {
+  /// The count, 41 after its first read.
+  count: int rw
+  /// Adds one.
+  action bump()
+}
+";
+
+        #[derive(Call, Debug)]
+        pub enum CounterAction {
+            Bump,
+        }
+
+        /// See the schema.
+        #[service(name = "counter", schema = COUNTER, action = CounterAction)]
+        #[derive(Store, Clone, Debug, Default, PartialEq)]
+        pub struct Counter {
+            /// The count.
+            #[store(rw)]
+            pub count: i64,
+        }
+
+        impl Counter {
+            async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+                cx.update(|s| s.count = 41);
+                cx.ready();
+                while let Some(m) = cx.recv().await {
+                    match m {
+                        Msg::Write(w) => {
+                            let n: i64 = w.value().map_err(ServiceError::from)?;
+                            cx.report(&w, |s| s.count = n);
+                        }
+                        Msg::Action(CounterAction::Bump) => {
+                            cx.update(|s| s.count += 1);
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        const HELLO: &str = "/// Hello.\nservice hello {\n  /// A greeting.\n  greeting: text\n  /// A count.\n  count: int rw\n  /// Greets.\n  action greet(name: text)\n}\n";
+
+        struct Temp(PathBuf);
+
+        impl Temp {
+            fn new(tag: &str) -> Temp {
+                let p = std::env::temp_dir()
+                    .join(format!("strand-served-{tag}-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&p);
+                std::fs::create_dir_all(&p).unwrap();
+                Temp(p)
+            }
+
+            fn file(&self, name: &str, text: &str) -> (PathBuf, String) {
+                let p = self.0.join(name);
+                std::fs::write(&p, text).unwrap();
+                (p, text.to_string())
+            }
+        }
+
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        fn leak(s: Served) -> &'static Served {
+            Box::leak(Box::new(s))
+        }
+
+        /// A config mounted on one monitor against `Real::start_with`.
+        fn boot(
+            src: &str,
+            extras: &[Registration],
+            served: &'static Served,
+        ) -> (Runtime, Real, Instance) {
+            let mut map = SourceMap::new();
+            map.add("svc.strand", src.to_string());
+            let compiled = strand_compiler::compile_with(&map, &served.schema);
+            assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+            let program = Arc::new(lower::lower(&compiled.program, &served.schema));
+            let rt = Runtime::new();
+            let fallback = Rc::new(SchemaHost::new(&rt, &program.types, None));
+            let screen = fallback.record(
+                "Screen",
+                &[
+                    ("id", Value::text("Mock | DP-1 | Display")),
+                    ("name", Value::text("DP-1")),
+                ],
+            );
+            fallback
+                .set(&rt, "screens.all", Value::list(vec![screen]))
+                .unwrap();
+            let types = program.types.clone();
+            let real =
+                Real::start_with(&rt, &types, Buses::none(), fallback, || {}, extras, served);
+            let inst = Instance::new(&rt, program, real.host.clone(), Storage::none());
+            let u = inst.tick(Duration::ZERO);
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            (rt, real, inst)
+        }
+
+        /// `Real::served` finds a builtin and a registered extra.
+        #[test]
+        fn real_served_finds_the_extra() {
+            let extras = [Registration::of::<Counter>()];
+            let served = leak(schema_with(&extras, &[]));
+            assert!(served.warnings.is_empty(), "{:?}", served.warnings);
+            let (rt, real, mut inst) = boot("bar B { text \"x\" }\n", &extras, served);
+            assert!(real.served("counter").is_some());
+            assert!(real.served("battery").is_some());
+            assert!(real.served("nope").is_none());
+            inst.shutdown();
+            real.shutdown(&rt);
+        }
+
+        /// `strand set counter.count +1` on the extra nobody reads starts
+        /// from its first read (41), not from the default.
+        #[test]
+        fn a_relative_set_on_an_unread_extra_steps_from_its_first_read() {
+            let extras = [Registration::of::<Counter>()];
+            let served = leak(schema_with(&extras, &[]));
+            let (rt, real, mut inst) = boot("bar B { text \"x\" }\n", &extras, served);
+            real.set_text(&rt, "counter.count", "+1").unwrap();
+            let count = real.host.read(&rt, "counter", "count").unwrap();
+            assert_eq!(count, Value::int(42));
+            inst.shutdown();
+            real.shutdown(&rt);
+        }
+
+        /// The served schema: a linked service's own file is skipped (a
+        /// stale one says so), and a file that declares what nothing
+        /// serves is listed with its path.
+        #[test]
+        fn files_join_the_served_schema() {
+            let t = Temp::new("files");
+            let head = strand_compiler::schema::plugins::header("/x/plugin");
+            let fresh = t.file("counter.schema", &format!("{head}{COUNTER}"));
+            let hello = t.file("hello.schema", HELLO);
+            let extras = [Registration::of::<Counter>()];
+            let s = schema_with(&extras, &[fresh.clone(), hello.clone()]);
+            assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+            assert_eq!(s.unserved, [("hello".to_string(), hello.0.clone())]);
+            assert!(s.schema.services.contains_key("counter"));
+            let stale = t.file("counter.schema", "/// Old.\nservice counter {}\n");
+            let s = schema_with(&extras, &[stale]);
+            assert!(
+                s.warnings.len() == 1 && s.warnings[0].contains("stale; run"),
+                "{:?}",
+                s.warnings
+            );
+            // Without the code, its file declares it: unserved.
+            let s = schema_with(&[], std::slice::from_ref(&fresh));
+            assert_eq!(s.unserved, [("counter".to_string(), fresh.0)]);
+        }
+
+        /// A service only a file declares: read at its defaults, with one
+        /// notice naming the file on the first acquire, resolved on the
+        /// last release; writes and actions refused with its text.
+        #[test]
+        fn an_unserved_file_service_raises_a_notice_while_read() {
+            let t = Temp::new("unserved");
+            let hello = t.file("hello.schema", HELLO);
+            let path: &Path = &hello.0;
+            let served = leak(schema_with(&[], std::slice::from_ref(&hello)));
+            let (rt, real, mut inst) = boot("bar B { text hello.greeting }\n", &[], served);
+            let said = unserved::notice("hello", path);
+            assert!(said.contains(&path.display().to_string()), "{said}");
+            let d = real.services.take_diagnostics();
+            assert_eq!(d.len(), 1, "{d:?}");
+            assert!(
+                d[0].notice && !d[0].resolved && d[0].message == said,
+                "{d:?}"
+            );
+            assert_eq!(
+                real.host.read(&rt, "hello", "greeting").unwrap(),
+                Value::text("")
+            );
+            let err = real.set_text(&rt, "hello.count", "1").unwrap_err();
+            assert!(err.contains(&said), "{err}");
+            let err = real
+                .host
+                .action(
+                    &rt,
+                    ActionTarget::Service("hello"),
+                    "greet",
+                    &[Value::text("world")],
+                    ActionCtx::default(),
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains(&said), "{err}");
+            inst.shutdown();
+            let d = real.services.take_diagnostics();
+            assert!(
+                d.len() == 1 && d[0].resolved && d[0].message == said,
+                "{d:?}"
+            );
+            real.shutdown(&rt);
+        }
+
+        /// An unserved file service's items refuse their actions and
+        /// writes with the notice's text too (review round 3: they went
+        /// to the fallback, which simulated them and answered `Ok`).
+        #[test]
+        fn an_unserved_file_service_refuses_item_actions() {
+            const GREETER: &str = "/// A greeter.\nrecord Greeter {\n  /// Its name.\n  name: text\n  /// Pokes it.\n  action poke()\n}\n/// Hello.\nservice hello {\n  /// The main one.\n  main: Greeter\n}\n";
+            let t = Temp::new("unserved-items");
+            let hello = t.file("hello.schema", GREETER);
+            let served = leak(schema_with(&[], std::slice::from_ref(&hello)));
+            assert!(served.warnings.is_empty(), "{:?}", served.warnings);
+            let (rt, real, mut inst) = boot("bar B { text hello.main.name }\n", &[], served);
+            let said = unserved::notice("hello", &hello.0);
+            let g = real.host.read(&rt, "hello", "main").unwrap();
+            assert!(matches!(g, Value::Record(_)), "{g:?}");
+            let err = real
+                .host
+                .action(
+                    &rt,
+                    ActionTarget::Item(&g),
+                    "poke",
+                    &[],
+                    ActionCtx::default(),
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains(&said), "{err}");
+            let err = real
+                .host
+                .write_item(&rt, &g, &[PathSeg::Field("name".into())], Value::text("x"))
+                .unwrap_err();
+            assert!(err.to_string().contains(&said), "{err}");
+            inst.shutdown();
+            real.shutdown(&rt);
+        }
+
+        /// Under `STRAND_MOCK` (no `Real`), a config reading a file's
+        /// service and a plugin's own mounts on the schema host alone and
+        /// reads both at their defaults (review round 2: it failed with
+        /// "`hello` has no field `greeting`").
+        #[test]
+        fn the_mock_reads_plugin_services_at_their_defaults() {
+            let t = Temp::new("mock");
+            let hello = t.file("hello.schema", HELLO);
+            let extras = [Registration::of::<Counter>()];
+            let served = schema_with(&extras, &[hello]);
+            let src = "export let g = hello.greeting\n\
+                       export let c = counter.count\n\
+                       bar B { text g }\n";
+            let mut map = SourceMap::new();
+            map.add("svc.strand", src.to_string());
+            let compiled = strand_compiler::compile_with(&map, &served.schema);
+            assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+            let program = Arc::new(lower::lower(&compiled.program, &served.schema));
+            let rt = Runtime::new();
+            let host = Rc::new(SchemaHost::new(&rt, &program.types, None));
+            let screen = host.record(
+                "Screen",
+                &[
+                    ("id", Value::text("Mock | DP-1 | Display")),
+                    ("name", Value::text("DP-1")),
+                ],
+            );
+            host.set(&rt, "screens.all", Value::list(vec![screen]))
+                .unwrap();
+            mock_served(&rt, &host, &program.types, &served);
+            let mut inst = Instance::new(&rt, program, host.clone(), Storage::none());
+            let u = inst.tick(Duration::ZERO);
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            assert_eq!(
+                host.read(&rt, "hello", "greeting").unwrap(),
+                Value::text("")
+            );
+            assert_eq!(host.read(&rt, "counter", "count").unwrap(), Value::int(0));
+            inst.shutdown();
+        }
+
+        /// A file nobody reads raises nothing.
+        #[test]
+        fn an_unread_file_service_raises_nothing() {
+            let t = Temp::new("unread");
+            let hello = t.file("hello.schema", HELLO);
+            let served = leak(schema_with(&[], &[hello]));
+            let (rt, real, mut inst) = boot("bar B { text \"x\" }\n", &[], served);
+            assert!(real.services.take_diagnostics().is_empty());
+            inst.shutdown();
+            assert!(real.services.take_diagnostics().is_empty());
+            real.shutdown(&rt);
         }
     }
 }

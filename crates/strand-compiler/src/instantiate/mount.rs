@@ -291,7 +291,7 @@ fn one_node(prog: &Program, nodes: &[Node], depth: u32) -> bool {
                                 .get(d)
                                 .is_some_and(|c| one_node(prog, &c.body.nodes, depth + 1))
                     }
-                    ElementKind::Unknown(_) => false,
+                    ElementKind::Unknown(_) | ElementKind::File(_) => false,
                 };
                 if !one {
                     return false;
@@ -1334,7 +1334,9 @@ impl Ctx {
                 Some(*d),
             ),
             ElementKind::Builtin(k) => (format!("`{}`", k.name()), env.component),
-            ElementKind::Unknown(_) => ("an element".to_string(), env.component),
+            ElementKind::Unknown(_) | ElementKind::File(_) => {
+                ("an element".to_string(), env.component)
+            }
         };
         let what = match (&e.kind, env.component) {
             (ElementKind::Component(_), _) | (_, None) => what,
@@ -1373,6 +1375,7 @@ impl Ctx {
             ElementKind::Builtin(k) => *k,
             ElementKind::Component(d) => return self.mount_component(rt, *d, e, env, parent),
             ElementKind::Unknown(_) => return,
+            ElementKind::File(f) => return self.mount_output(rt, e, f, env),
         };
         let frag = {
             let mut em = self.em.borrow_mut();

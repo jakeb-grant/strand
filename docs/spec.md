@@ -750,8 +750,10 @@ props accept bare numbers. The freeze review confirms the wording.
   `color.brand-primary` is `$palette.color.brand_primary`. The palette's
   identity is read-only: `$palette.name` (the scheme's own name, else
   the source string), `$palette.source` and `$palette.dark`. A source
-  colour named `name`, `source` or `dark` is kept as `name_`, `source_`
-  or `dark_`. Extras and identity are read only in the template scope
+  colour or W3C group named `name`, `source` or `dark` is kept as
+  `name_`, `source_` or `dark_` (a group `dark` holding `surface` is
+  `$palette.dark_.surface`, since `$palette.dark` is the identity's
+  bool); a later segment is never renamed. Extras and identity are read only in the template scope
   (section 9.8), never in a prop; a missing extra without `??` is an
   error.
 - `system.dark`, `system.accent` and `system.contrast` follow the

@@ -37,7 +37,7 @@ impl Shell {
         let Some(real) = &self.real else {
             return self.host.action(rt, target, action, args, ctx);
         };
-        let svc = real.builtin.all().into_iter().find(|s| s.name() == service);
+        let svc = real.served(service);
         if let Some(svc) = &svc {
             svc.acquire(rt);
             real.services

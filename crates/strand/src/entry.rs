@@ -2,7 +2,7 @@
 //! body, in the library so a plugin binary answers every command as
 //! `strand` does (docs/architecture.md, "Plugin builder"; decisions.md
 //! m5-plugins). `main.rs` keeps `process_setup!` and `main`, which calls
-//! [`main`] through `strand::cli`.
+//! [`main`] through `strand::Shell::builder().run()` (`plugin.rs`).
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -53,7 +53,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("new", "scaffold a working shell", "M5"),
     (
         "export",
-        "write the palette: json | base24 | --template <file> (M5 wave 2)",
+        "write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]",
         "M5",
     ),
     (
@@ -123,6 +123,9 @@ pub fn main() -> ExitCode {
     strand_text::set_idle_hook(cli::trim);
     strand_render::image::set_idle_hook(cli::trim);
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--write-schemas") {
+        return crate::plugin::write_schemas_main(&args[1..]);
+    }
     let tool: Option<Tool> = match args.first().map(String::as_str) {
         Some("check") => Some(cli::check),
         Some("fmt") => Some(cli::fmt),
@@ -146,6 +149,7 @@ pub fn main() -> ExitCode {
         Some("toggle") => Some(cli::toggle_cli),
         Some("call") => Some(cli::call_cli),
         Some("clear") => Some(cli::clear_cli),
+        Some("export") => Some(cli::export_cli),
         _ => None,
     };
     if let Some(command) = ipc {

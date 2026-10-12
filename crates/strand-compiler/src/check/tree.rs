@@ -767,6 +767,9 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn element(&mut self, el: &'a ast::Element, span: Span, list_item: bool) -> Option<Node> {
         let kind = el.kind.name.as_str();
+        if kind == "file" {
+            return Some(self.file_element(el, span));
+        }
         if let Some(schema) = self.element_schema(kind) {
             return Some(self.builtin_element(el, schema, span, list_item));
         }

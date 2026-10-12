@@ -32,6 +32,8 @@
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
+//! [`ipc_bus`] is no service: it is the running shell's D-Bus front end
+//! (`io.github.jakeb_grant.Strand`), a task on the same runtime.
 
 extern crate self as strand_services;
 
@@ -51,6 +53,7 @@ mod cx;
 mod data;
 pub mod dbus;
 pub mod icon_theme;
+pub mod ipc_bus;
 pub mod media;
 pub mod memory;
 pub mod network;

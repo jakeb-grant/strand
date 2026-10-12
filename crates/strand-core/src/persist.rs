@@ -308,6 +308,9 @@ struct Shared {
     sweep_every: Duration,
     /// [`PersistStore::on_written`].
     observer: Mutex<Option<WriteObserver>>,
+    /// (M5) [`PersistStore::read_only`]: nothing is written, removed,
+    /// touched, moved aside or swept.
+    read_only: bool,
 }
 
 #[derive(Default)]
@@ -539,7 +542,7 @@ impl Shared {
                 last_sweep = std::time::Instant::now();
                 continue;
             };
-            if sweep {
+            if sweep && !self.read_only {
                 sweep_temps(&self.dir, None);
             }
             let r = self.perform_guarded(&file, &job.op, true);
@@ -582,6 +585,9 @@ impl Shared {
     }
 
     fn perform(&self, file: &Path, op: &Op) -> Result<(), PersistError> {
+        if self.read_only {
+            return Ok(());
+        }
         let observer = self
             .observer
             .lock()
@@ -650,6 +656,9 @@ impl Shared {
     /// removal happen under the queue lock, so a claim cannot slip in
     /// between.
     fn sweep_unclaimed(&self) {
+        if self.read_only {
+            return;
+        }
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
@@ -714,6 +723,27 @@ impl PersistStore {
         Self::build(dir.into(), None, PERSIST_SWEEP_INTERVAL)
     }
 
+    /// (M5) A store that reads `dir` and never changes it: `load` reads
+    /// the files (and what this store queued itself, so a cell written
+    /// during the run reads back), while writes, removals, touches,
+    /// moving a corrupt file aside and the sweeps are dropped. For the
+    /// offline export (decisions.md m5-tools, "the CLI", step 2), which
+    /// must leave the state directory byte-identical.
+    pub fn read_only(dir: impl Into<PathBuf>) -> Self {
+        let mut s = Self::build(dir.into(), None, PERSIST_SWEEP_INTERVAL);
+        if let Some(inner) = Arc::get_mut(&mut s.inner)
+            && let Some(shared) = Arc::get_mut(&mut inner.shared)
+        {
+            shared.read_only = true;
+        }
+        s
+    }
+
+    /// (M5) Whether this store is [`PersistStore::read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.inner.shared.read_only
+    }
+
     /// A store whose IO thread calls `hook` with the file before every
     /// queued operation: tests simulate a slow disk with it.
     #[doc(hidden)]
@@ -734,6 +764,7 @@ impl PersistStore {
                     io_hook,
                     sweep_every,
                     observer: Mutex::new(None),
+                    read_only: false,
                 }),
                 worker: Mutex::new(None),
             }),
@@ -917,7 +948,9 @@ impl PersistStore {
             Err(reason) => {
                 // Best effort: the default is used either way, and the next
                 // write replaces the file.
-                quarantine(&file);
+                if !self.is_read_only() {
+                    quarantine(&file);
+                }
                 Err(PersistError::Corrupt {
                     path: file,
                     reason: Arc::from(reason),

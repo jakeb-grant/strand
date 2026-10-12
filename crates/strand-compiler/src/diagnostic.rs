@@ -231,6 +231,14 @@ impl fmt::Display for Diagnostic {
 /// Candidates whose length rules them out are skipped before any
 /// distance is computed, so long candidate lists stay cheap.
 pub fn suggest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    suggest_in(word, &mut candidates.into_iter())
+}
+
+/// [`suggest`]'s body, compiled once: each caller's iterator type only
+/// instantiates the shim above (a diagnostic's help is cold, and one
+/// indirect call per candidate is nothing beside the comparison).
+#[inline(never)]
+fn suggest_in<'a>(word: &str, candidates: &mut dyn Iterator<Item = &'a str>) -> Option<&'a str> {
     let len = word.chars().count();
     let limit = len.div_ceil(3).max(1);
     let ascii = word.is_ascii();
@@ -310,7 +318,7 @@ fn plausible_typo(a: &str, b: &str) -> bool {
 /// The closest candidate to `word` as an owned name, for
 /// [`Diagnostic::suggest_opt`].
 pub fn closest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    suggest(word, candidates).map(str::to_string)
+    suggest_in(word, &mut candidates.into_iter()).map(str::to_string)
 }
 
 /// How [`render`] draws.

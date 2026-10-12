@@ -275,6 +275,20 @@ impl Worker {
         }
     }
 
+    /// (M5) The `file` outputs' writer registers its writes with the
+    /// watcher through this before they land (architecture.md, "The
+    /// theming hub"), so a target the config also watches (an imported
+    /// file, a template) never comes back as a change. A weak handle, as
+    /// for [`Worker::register_own_writes`].
+    pub fn own_write_hook(&self) -> Option<crate::run::OwnWrites> {
+        let w = self.watcher.as_ref().map(Arc::downgrade)?;
+        Some(crate::run::OwnWrites(Box::new(move |path, bytes| {
+            if let Some(w) = w.upgrade() {
+                w.register_own_write(path, strand_watch::hash_bytes(bytes));
+            }
+        })))
+    }
+
     /// A handle that sends jobs (logic's `strand reload`, settings files).
     pub fn jobs(&self) -> mpsc::Sender<Job> {
         self.jobs.clone()

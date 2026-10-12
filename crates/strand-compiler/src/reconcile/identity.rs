@@ -390,6 +390,7 @@ impl Identity {
                 ElementKind::Builtin(k) => k.name().to_string(),
                 ElementKind::Component(d) => prog.def(*d).name.clone(),
                 ElementKind::Unknown(n) => format!("?{n}"),
+                ElementKind::File(_) => "file".to_string(),
             },
         };
         let id_name = e.id.map(|l| prog.local(l).name.clone());

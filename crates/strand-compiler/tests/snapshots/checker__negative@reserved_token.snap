@@ -1,0 +1,50 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::override_needed
+
+  × `$red` is a palette role
+   ╭─[reserved_token.strand:4:15]
+ 3 │ // palette's extras and identity.
+ 4 │ tokens base { red: #ff0000; palette.mauve: #cba6f7; palette { glow: #ffffff } }
+   ·               ─┬─
+   ·                ╰── redefined without `override`
+ 5 │ tokens other { override green: #00ff00; override palette.name: "mine" }
+   ╰────
+  help: palette roles come from `use palette …`; to replace one here, write `override red: …`
+
+check::reserved_token
+
+  × `$palette.mauve` is under `palette`, which is reserved for the palette's extras and identity
+   ╭─[reserved_token.strand:4:29]
+ 3 │ // palette's extras and identity.
+ 4 │ tokens base { red: #ff0000; palette.mauve: #cba6f7; palette { glow: #ffffff } }
+   ·                             ──────┬──────
+   ·                                   ╰── reserved
+ 5 │ tokens other { override green: #00ff00; override palette.name: "mine" }
+   ╰────
+  help: templates read `$palette.<name>`; give the token another name
+
+check::reserved_token
+
+  × `$palette.glow` is under `palette`, which is reserved for the palette's extras and identity
+   ╭─[reserved_token.strand:4:63]
+ 3 │ // palette's extras and identity.
+ 4 │ tokens base { red: #ff0000; palette.mauve: #cba6f7; palette { glow: #ffffff } }
+   ·                                                               ──┬─
+   ·                                                                 ╰── reserved
+ 5 │ tokens other { override green: #00ff00; override palette.name: "mine" }
+   ╰────
+  help: templates read `$palette.<name>`; give the token another name
+
+check::reserved_token
+
+  × `$palette.name` is under `palette`, which is reserved for the palette's extras and identity
+   ╭─[reserved_token.strand:5:50]
+ 4 │ tokens base { red: #ff0000; palette.mauve: #cba6f7; palette { glow: #ffffff } }
+ 5 │ tokens other { override green: #00ff00; override palette.name: "mine" }
+   ·                                                  ──────┬─────
+   ·                                                        ╰── reserved
+   ╰────
+  help: templates read `$palette.<name>`; give the token another name

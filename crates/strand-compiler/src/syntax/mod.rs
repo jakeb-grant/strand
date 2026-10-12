@@ -10,5 +10,5 @@ pub mod lexer;
 mod parser;
 mod span;
 
-pub use parser::{Parse, parse};
+pub use parser::{Parse, parse, parse_expr_in};
 pub use span::{LineIndex, Span};

@@ -26,6 +26,7 @@ mod cycles;
 pub mod dbus;
 mod effects;
 mod expr;
+pub mod files;
 mod lock;
 pub mod paths;
 mod prepin;
@@ -391,6 +392,13 @@ pub(crate) struct Checker<'a> {
     /// Checked defaults of component parameters.
     pub param_defaults: HashMap<(DefId, usize), hir::Expr>,
     pub out_files: Vec<hir::FileHir>,
+    /// (M5) `file` elements' compiled `text:` props, by the value's span
+    /// (`files.rs`).
+    pub file_texts: Vec<((FileId, Span), std::sync::Arc<crate::template::Template>)>,
+    /// (M5) `file` elements' literal `template:` paths (`files.rs`).
+    pub file_templates: Vec<files::TemplatePath>,
+    /// (M5) The current file's top-level `file` elements.
+    pub top_outputs: Vec<hir::Element>,
     /// Component calls being checked.
     pub calls: Vec<tree::CallCtx>,
     /// Token entries of each component's `tokens { }`.
@@ -494,6 +502,9 @@ impl<'a> Checker<'a> {
             item_defs: HashMap::new(),
             param_defaults: HashMap::new(),
             out_files: Vec::new(),
+            file_texts: Vec::new(),
+            file_templates: Vec::new(),
+            top_outputs: Vec::new(),
             calls: Vec::new(),
             comp_tokens: HashMap::new(),
             fn_params: HashMap::new(),
@@ -535,6 +546,7 @@ impl<'a> Checker<'a> {
                 file: m.file,
                 name: m.name.to_string(),
                 items,
+                outputs: std::mem::take(&mut self.top_outputs),
             });
         }
         self.deferred_components(&mut files);
@@ -592,6 +604,10 @@ impl<'a> Checker<'a> {
         // clean: a misspelt `auth.submit` already has its own error.
         let clean = !self.diags.iter().any(Diagnostic::is_error);
         self.diags.extend(lock::way_out(&files, clean));
+        // (M5) `file`s' `text:` holes read tokens the config has.
+        let all = self.tokens.all_types(self.schema);
+        self.diags
+            .extend(files::text_tokens(&self.file_texts, &all));
         // Stable order: by file, then position.
         self.diags.sort_by_key(|d| {
             (
@@ -601,7 +617,7 @@ impl<'a> Checker<'a> {
             )
         });
         self.diags.dedup();
-        let tokens = self.tokens.all_types(self.schema);
+        let tokens = all;
         Checked {
             program: Program {
                 files,
@@ -610,6 +626,8 @@ impl<'a> Checker<'a> {
                 types: self.types,
                 tokens,
                 refs: self.refs,
+                file_texts: self.file_texts,
+                file_templates: self.file_templates,
             },
             diagnostics: self.diags,
             passes: 1,

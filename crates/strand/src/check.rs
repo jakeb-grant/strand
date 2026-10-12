@@ -116,6 +116,11 @@ fn check_config(
     };
     // Problems elsewhere in the config are not this file's.
     let whole = focus.is_none();
+    // Plugin schema files skipped or stale (decisions.md m5-plugins).
+    for w in crate::services::served().warnings.iter().filter(|_| whole) {
+        report.warnings += 1;
+        let _ = writeln!(report.text, "warning: plugin schema: {w}\n");
+    }
     for (path, e) in found.errors.iter().filter(|_| whole) {
         report.errors += 1;
         let _ = writeln!(report.text, "error: cannot read {}: {e}\n", path.display());
@@ -173,6 +178,11 @@ fn check_config(
     ));
     // `from file`/`from poll` paths that name a program (read, not run).
     diags.extend(strand_compiler::check::paths::check(
+        &compiled.program,
+        Some(dir),
+    ));
+    // (M5) `file`s' literal `template:` paths against their files.
+    diags.extend(strand_compiler::check::files::templates(
         &compiled.program,
         Some(dir),
     ));
@@ -316,6 +326,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// (M5) `strand check` checks a `file`'s literal template path: a
+    /// missing template is an error naming it.
+    #[test]
+    fn a_files_template_is_checked() {
+        let d = TempDir::new();
+        d.write(
+            "theme.strand",
+            "file \"out/c.css\" { template: \"c.tmpl\" }\n",
+        );
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert_eq!(r.errors, 1, "{}", r.text);
+        assert!(
+            r.text.contains("cannot read the template `c.tmpl`"),
+            "{}",
+            r.text
+        );
+        d.write("c.tmpl", "{{ $accent }}\n");
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert!(r.ok(), "{}", r.text);
     }
 
     #[test]

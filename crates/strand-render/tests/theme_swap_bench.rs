@@ -222,10 +222,19 @@ struct Shell {
 
 impl Shell {
     fn boot(config: &std::path::Path, storage: Storage) -> Shell {
+        Shell::boot_with(config, storage, "")
+    }
+
+    /// [`Shell::boot`] with `extra` as one more file of the config (none
+    /// when empty).
+    fn boot_with(config: &std::path::Path, storage: Storage, extra: &str) -> Shell {
         let theme = fixture("theme.strand").replace("~/.config/strand/prefs.toml", "prefs.toml");
         let mut map = SourceMap::new();
         map.add("theme.strand".to_string(), theme);
         map.add("hello_bar.strand".to_string(), fixture("hello_bar.strand"));
+        if !extra.is_empty() {
+            map.add("outputs.strand".to_string(), extra.to_string());
+        }
         let compiled = strand_compiler::compile(&map);
         assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
         let program = Arc::new(lower::lower(
@@ -843,6 +852,112 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
         });
         gates.check(each < gate_frame, || {
             format!("{case}: {each:?} per frame, over {gate_frame:?}")
+        });
+    }
+    gates.hold();
+}
+
+/// Portal flips per `file` outputs case.
+const OUTPUT_FLIPS: usize = 32;
+
+/// `file` outputs after a swap (decisions.md m5-tools, "the `file`
+/// element"): design.md's theme with `look = auto`, so the other mode is
+/// a real second evaluation of its `dark` and `scheme` lets, and 10
+/// outputs that all read both modes. After each portal flip's diff,
+/// logic pulls the outputs (`Instance::take_outputs`: the other-mode
+/// memo and the outputs' content memos) and that work is held to the
+/// swap's 5 ms; the same 10 outputs reading only the current mode are
+/// timed beside it, to show the other mode's share. Each flip solves
+/// `material(seed:)` again, as the swap bench's do.
+#[test]
+fn file_outputs_after_a_swap_are_under_five_milliseconds() {
+    let outputs = |both: bool| {
+        (0..10)
+            .map(|i| {
+                let text = match both {
+                    true => {
+                        "join(\" \", $surface, $surface.light() ?? $surface, \
+                             $surface.dark() ?? $surface, $accent.light() ?? $accent)"
+                    }
+                    false => "join(\" \", $surface, $fg, $accent)",
+                };
+                format!("file \"out/{i}.txt\" {{ text: {text} }}\n")
+            })
+            .collect::<String>()
+    };
+    let mut report = Vec::new();
+    for both in [true, false] {
+        let dir = temp_dir(if both {
+            "outputs-both"
+        } else {
+            "outputs-current"
+        });
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let storage = Storage::in_dirs(dir.join("state"), &config);
+        let mut shell = Shell::boot_with(&config, storage.clone(), &outputs(both));
+        shell.look("auto", false);
+        shell.settle();
+        let _ = shell.inst.take_outputs();
+        let mut times = Vec::new();
+        for i in 0..samples(OUTPUT_FLIPS) {
+            let dark = i % 2 == 0;
+            strand_theme::material::forget_kept_palettes();
+            shell
+                .host
+                .set(&shell.rt, "system.dark", Value::Bool(dark))
+                .unwrap();
+            let u = shell.inst.flush();
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            assert!(shell.r.apply(u.diff).is_empty());
+            // The logic thread's work after the diff.
+            let started = Instant::now();
+            let out = shell.inst.take_outputs();
+            times.push(started.elapsed());
+            let written: Vec<String> = out
+                .iter()
+                .filter(|c| c.path.as_ref().is_some_and(|p| p.starts_with(&config)))
+                .map(|c| match &c.content {
+                    strand_compiler::instantiate::OutputContent::Write { bytes, .. } => {
+                        String::from_utf8(bytes.clone()).unwrap()
+                    }
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            assert_eq!(written.len(), 10, "every output changes on a flip");
+            if both {
+                // `$surface.light()` and `$surface` differ in the dark
+                // mode: the other mode is there, not absent.
+                let parts: Vec<&str> = written[0].split(' ').collect();
+                assert_eq!(parts.len(), 4, "{}", written[0]);
+                match dark {
+                    true => assert_ne!(parts[0], parts[1], "{}", written[0]),
+                    false => assert_ne!(parts[0], parts[2], "{}", written[0]),
+                }
+            }
+            shell.settle();
+        }
+        let median = median(&times);
+        eprintln!(
+            "file outputs after a flip, 10 reading {}: median {median:?}, p95 {:?}",
+            if both {
+                "both modes"
+            } else {
+                "the current mode"
+            },
+            quantile(&times, 0.95)
+        );
+        report.push((both, median));
+        finish(shell, dir, storage);
+    }
+    let gate = gate();
+    let mut gates = Gates::default();
+    for (both, median) in report.into_iter().filter(|(both, _)| *both) {
+        gates.check(median < gate, || {
+            format!(
+                "10 `file` outputs reading both modes (both: {both}): {median:?} of logic's work \
+                 after the diff, over {gate:?} (design.md: {BUDGET:?} optimised)"
+            )
         });
     }
     gates.hold();

@@ -75,6 +75,9 @@ pub struct Line {
     /// decides this row (a bad value, a syntax error, an unreadable
     /// file): a read that no longer reports it takes it away.
     pub settings_read: Option<String>,
+    /// (M5) The `file` output target a click on its `[replace]` hands
+    /// to Strand (a file Strand did not write).
+    pub replace: Option<PathBuf>,
 }
 
 /// The row key of the notice that edits wait for the unlock (not a
@@ -120,6 +123,17 @@ pub fn service_lines(service: &str, text: &str) -> Vec<Line> {
             ..Line::default()
         })
         .collect()
+}
+
+/// (M5) [`service_lines`] for a `file` output whose target Strand did
+/// not write: every row carries `[replace]`, which hands `target` to
+/// Strand.
+pub fn replace_lines(service: &str, text: &str, target: &Path) -> Vec<Line> {
+    let mut rows = service_lines(service, &format!("{text} [replace]"));
+    for r in &mut rows {
+        r.replace = Some(target.to_path_buf());
+    }
+    rows
 }
 
 /// The cell key prefix of a service's rows.
@@ -307,6 +321,9 @@ pub enum Click {
     /// A settings notice's `[clear]`: drop the runtime overlay of this
     /// field of this settings file.
     Clear(String, String),
+    /// (M5) A `file` notice's `[replace]`: let Strand write over this
+    /// file it did not write.
+    Replace(PathBuf),
     /// A line with nowhere to go, or the panel itself.
     Nothing,
 }
@@ -422,6 +439,23 @@ impl Overlay {
         }
     }
 
+    /// Whether a row offers a `[reset]` (a cell kept over a changed
+    /// default).
+    pub fn has_resets(&self) -> bool {
+        self.notes.iter().any(|n| n.reset.is_some())
+    }
+
+    /// The cells at `paths` were reset together (IPC `reset{node}`, the
+    /// inspector's "reset subtree"): their rows no longer apply.
+    pub fn forget_cells(&mut self, paths: &[String], inst: &Instance) {
+        let before = self.notes.len();
+        self.notes
+            .retain(|n| n.cell.as_ref().is_none_or(|c| !paths.contains(c)));
+        if self.notes.len() != before {
+            self.refresh(inst);
+        }
+    }
+
     /// Service `service`'s notice was resolved (the notification server
     /// took the name over): its rows go.
     pub fn forget_service(&mut self, service: &str, inst: &Instance) {
@@ -509,6 +543,12 @@ impl Overlay {
                 self.notes.retain(|n| *n != line);
                 self.refresh(inst);
                 return Some(Click::Clear(file.clone(), field.clone()));
+            }
+            if let Some(target) = &line.replace {
+                // Done with: every row of its notice goes.
+                self.notes.retain(|n| n.replace.as_ref() != Some(target));
+                self.refresh(inst);
+                return Some(Click::Replace(target.clone()));
             }
             if let Some(path) = &line.reset {
                 // Done with: its rows go.
@@ -945,6 +985,33 @@ mod tests {
             Some(Click::Clear("/c/prefs.toml".into(), "accent".into()))
         );
         assert_eq!(o.lines().len(), 2, "its row goes");
+    }
+
+    /// (M5) A `file` output's unowned target: its notice's rows carry
+    /// `[replace]`, and a click hands the target to Strand and takes
+    /// every row of the notice away.
+    #[test]
+    fn an_unowned_file_notice_offers_replace() {
+        let (_rt, inst) = instance();
+        let mut o = Overlay::default();
+        let t0 = Instant::now();
+        let target = PathBuf::from("/home/u/.cache/strand/colors.css");
+        let rows = replace_lines(
+            "files:/home/u/.cache/strand/colors.css",
+            "file /home/u/.cache/strand/colors.css: refused: Strand did not write this file; \
+             [replace] it, or move it away (or delete it), and Strand writes it",
+            &target,
+        );
+        assert!(rows.len() > 1, "wrapped: {rows:?}");
+        assert!(rows.iter().all(|r| r.replace.as_ref() == Some(&target)));
+        assert!(rows.last().unwrap().text.ends_with("[replace]"));
+        o.note(rows, t0, &inst);
+        o.tick(t0 + QUIET, &inst);
+        let mut m = strand_compiler::instantiate::SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        let row = m.find_text(&o.lines().last().unwrap().text).unwrap();
+        assert_eq!(o.click(row, &inst), Some(Click::Replace(target)));
+        assert!(o.lines().is_empty(), "{:?}", o.lines());
     }
 
     /// Reload notices are listed after the quiet period as warning rows;

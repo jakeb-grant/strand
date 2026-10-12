@@ -24,6 +24,11 @@ serde_json = "1.0.151"
 [dev-dependencies]
 # `tests/reloads.rs` mounts an instance (the runtime the VM runs on).
 strand-core.workspace = true
+# `tests/tree_sitter.rs` holds the editor grammar to the compiler's parser;
+# the grammar is linked into no binary (docs/architecture.md, "tree-sitter
+# layout").
+tree-sitter = "0.27.0"
+tree-sitter-strand = { path = "tree-sitter-strand" }
 
 [lints]
 workspace = true

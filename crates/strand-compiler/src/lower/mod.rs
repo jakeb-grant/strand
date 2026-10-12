@@ -271,6 +271,37 @@ pub enum ElementKind {
     Component(DefId),
     /// An element the scene does not know (already reported).
     Unknown(String),
+    /// (M5) A `file` output: no scene node, a file kept in step with the
+    /// theme (`instantiate/outputs.rs`).
+    File(Arc<FileOutput>),
+}
+
+/// (M5) A `file` element's parts, evaluated in its scope: the path, and
+/// its props (the template file or the `text:` hole, the `run:` argv),
+/// its own and its `when`s', in source order: of those that apply, the
+/// last one of each kind wins.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileOutput {
+    pub path: Option<ChunkId>,
+    pub props: Vec<FileProp>,
+}
+
+/// (M5) One prop of a `file`, under its `when`'s condition (`None`: the
+/// element's own).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileProp {
+    pub when: Option<ChunkId>,
+    pub part: FilePart,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FilePart {
+    /// `template:`: the template file's path.
+    Template(ChunkId),
+    /// `text:`, compiled as a template hole.
+    Text(Arc<crate::template::Template>),
+    /// `run:`: the argv.
+    Run(ChunkId),
 }
 
 #[derive(Clone, Debug)]
@@ -522,6 +553,10 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         l.begin_body();
         for item in &f.items {
             l.item(item, &mut fp.items);
+        }
+        for el in &f.outputs {
+            let e = l.element(el);
+            fp.items.push(Node::Element(e));
         }
         fp.services = l.end_body(Vec::new(), false).services;
         l.out.files.push(fp);
@@ -937,6 +972,9 @@ impl Lowerer<'_> {
         if let Some(top) = self.owned.last_mut() {
             top.insert(e.node);
         }
+        if matches!(&e.kind, hir::ElementKind::Builtin(k) if k == "file") {
+            return self.file_output(e);
+        }
         let (kind, schema) = match &e.kind {
             hir::ElementKind::Builtin(name) => match NodeKind::from_name(name) {
                 Some(k) => (ElementKind::Builtin(k), self.schema.element(name)),
@@ -954,7 +992,7 @@ impl Lowerer<'_> {
                     (name, prop)
                 }
                 ElementKind::Component(d) => (self.first_param(*d), None),
-                ElementKind::Unknown(_) => (String::new(), None),
+                ElementKind::Unknown(_) | ElementKind::File(_) => (String::new(), None),
             };
             let ty = schema.and_then(|s| s.arg.clone()).unwrap_or(a.ty.clone());
             Prop {
@@ -995,6 +1033,61 @@ impl Lowerer<'_> {
             span: e.span,
             file: self.file,
             services,
+        }
+    }
+
+    /// (M5) A `file` element: its parts as chunks, its `text:` as the
+    /// checker compiled it, its `when`s' props under their conditions,
+    /// all in source order.
+    fn file_output(&mut self, e: &hir::Element) -> Element {
+        let mut props: Vec<(u32, FileProp)> = Vec::new();
+        let part = |l: &mut Self, p: &hir::Prop| match p.name.as_str() {
+            "template" => Some(FilePart::Template(l.expr_chunk(&p.value))),
+            "run" => Some(FilePart::Run(l.expr_chunk(&p.value))),
+            "text" => l
+                .hir
+                .file_texts
+                .iter()
+                .find(|(k, _)| *k == (l.file, p.value.span))
+                .map(|(_, t)| FilePart::Text(t.clone())),
+            _ => None,
+        };
+        for p in &e.props {
+            if let Some(part) = part(self, p) {
+                props.push((p.span.start, FileProp { when: None, part }));
+            }
+        }
+        for c in &e.children {
+            let hir::Node::When(w) = c else { continue };
+            let cond = self.expr_chunk(&w.cond);
+            for p in &w.props {
+                if let Some(part) = part(self, p) {
+                    props.push((
+                        p.span.start,
+                        FileProp {
+                            when: Some(cond),
+                            part,
+                        },
+                    ));
+                }
+            }
+        }
+        props.sort_by_key(|(at, _)| *at);
+        let out = FileOutput {
+            path: e.arg.as_ref().map(|a| self.expr_chunk(a)),
+            props: props.into_iter().map(|(_, p)| p).collect(),
+        };
+        Element {
+            node: e.node,
+            kind: ElementKind::File(Arc::new(out)),
+            arg: None,
+            props: Vec::new(),
+            children: Arc::new(Vec::new()),
+            id: None,
+            scope: Vec::new(),
+            span: e.span,
+            file: self.file,
+            services: None,
         }
     }
 

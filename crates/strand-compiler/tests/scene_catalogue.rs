@@ -48,6 +48,9 @@ const COMPILER_SET: &[Prop] = &[
 /// `svg "a.svg" { #needle { … } }` selector blocks.
 const SCENE_ONLY_KINDS: &[NodeKind] = &[NodeKind::SvgPart];
 
+/// Elements that make no scene node: a `file` output (M5) writes a file.
+const NO_NODE_ELEMENTS: &[&str] = &["file"];
+
 #[test]
 fn every_element_is_a_scene_kind() {
     let schema = Schema::builtin();
@@ -55,7 +58,7 @@ fn every_element_is_a_scene_kind() {
         .elements
         .keys()
         .map(String::as_str)
-        .filter(|k| NodeKind::from_name(k).is_none())
+        .filter(|k| NodeKind::from_name(k).is_none() && !NO_NODE_ELEMENTS.contains(k))
         .collect();
     assert!(missing.is_empty(), "elements with no NodeKind: {missing:?}");
     let kinds: BTreeSet<&str> = NodeKind::ALL.iter().map(|k| k.name()).collect();
@@ -76,6 +79,9 @@ fn every_prop_is_a_scene_prop() {
     let mut missing = BTreeSet::new();
     let mut pending_seen = BTreeSet::new();
     for (kind, el) in &schema.elements {
+        if NO_NODE_ELEMENTS.contains(&kind.as_str()) {
+            continue;
+        }
         let subs = el.props.iter().flat_map(|p| p.sub.iter());
         for p in el.props.iter().chain(subs) {
             let name = p.name.as_str();
@@ -105,6 +111,9 @@ fn every_prop_is_a_scene_prop() {
 fn every_positional_fills_a_scene_prop() {
     let schema = Schema::builtin();
     for (kind, el) in &schema.elements {
+        if NO_NODE_ELEMENTS.contains(&kind.as_str()) {
+            continue;
+        }
         if let Some(p) = &el.arg_prop {
             assert!(
                 Prop::from_name(p).is_some(),

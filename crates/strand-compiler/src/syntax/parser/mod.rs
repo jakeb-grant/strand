@@ -84,6 +84,46 @@ pub fn parse(file_id: FileId, src: &str) -> Parse {
     }
 }
 
+/// (M5) Parses `src[start..end]` as one expression, line breaks free (a
+/// template hole, `{{ expr }}`, may span lines): spans are offsets into
+/// the whole of `src`, so diagnostics point into the file the expression
+/// sits in. Anything after the expression is an error. The caller stamps
+/// the diagnostics with its file.
+pub fn parse_expr_in(src: &str, start: u32, end: u32) -> (Expr, Vec<Diagnostic>) {
+    let (a, b) = (start as usize, end as usize);
+    let Some(text) = src.get(a..b) else {
+        let e = Expr {
+            kind: ExprKind::Error,
+            span: Span::at(start),
+        };
+        return (e, Vec::new());
+    };
+    let (mut tokens, mut diagnostics) = lex(text);
+    for t in &mut tokens {
+        t.span = Span::new(t.span.start + start, t.span.end + start);
+    }
+    for d in &mut diagnostics {
+        for l in &mut d.labels {
+            l.span = Span::new(l.span.start + start, l.span.end + start);
+        }
+    }
+    let mut p = Parser::new(src, &tokens);
+    if let Some(eof) = p.toks.last_mut() {
+        eof.span = Span::at(end);
+    }
+    p.nl = vec![false];
+    let e = p.expr();
+    if !p.at(K::Eof) && !p.gave_up.get() {
+        let at = p.cur().span;
+        p.diags.push(
+            Diagnostic::error("syntax::expected", "expected the end of the expression")
+                .with_label(at, "one expression per hole"),
+        );
+    }
+    diagnostics.append(&mut p.diags);
+    (e, diagnostics)
+}
+
 /// Maximum nesting of blocks and expressions before the parser reports an
 /// error instead of recursing further.
 pub(crate) const MAX_DEPTH: u32 = 128;

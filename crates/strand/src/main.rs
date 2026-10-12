@@ -1,6 +1,6 @@
 //! The Strand shell runtime and CLI: the process setup and `main`, which
-//! calls the command line in the `strand` library (`entry.rs`, through
-//! `strand::cli::main`).
+//! runs the command line in the `strand` library: `strand` is a plugin
+//! binary with no plugin services (`strand::Shell::builder()`).
 //!
 //! See `docs/design.md` for the design and roadmap.
 
@@ -11,7 +11,7 @@ use std::process::ExitCode;
 strand::process_setup!();
 
 fn main() -> ExitCode {
-    strand::cli::main()
+    strand::Shell::builder().run()
 }
 
 #[cfg(test)]

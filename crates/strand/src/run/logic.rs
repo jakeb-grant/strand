@@ -36,6 +36,11 @@ pub struct Live {
     /// logic thread, socket or not (S-ipc's D-Bus `Changed` signal;
     /// tests).
     pub events_to: Option<ipc::EventSink>,
+    /// (M5) Registers a write of `file` outputs with the config watcher
+    /// before it lands (path, bytes), so the change never comes back as
+    /// an external one ([`crate::live::Worker::own_write_hook`]). `None`:
+    /// nothing is registered.
+    pub own_writes: Option<OwnWrites>,
 }
 
 #[cfg(test)]
@@ -53,6 +58,18 @@ pub struct RequestsTo(pub Box<dyn FnOnce(ipc::IpcRequests) + Send>);
 impl std::fmt::Debug for RequestsTo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RequestsTo")
+    }
+}
+
+/// What [`OwnWrites`] calls: the path about to be written, and its bytes.
+pub type OwnWrite = dyn Fn(&std::path::Path, &[u8]) + Send;
+
+/// A callback for [`Live::own_writes`].
+pub struct OwnWrites(pub Box<OwnWrite>);
+
+impl std::fmt::Debug for OwnWrites {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnWrites")
     }
 }
 
@@ -95,11 +112,12 @@ pub fn logic(
         });
     let rt = Runtime::new();
     let services_ping = ping.clone();
+    let files_ping = ping.clone();
+    let own_writes = live.own_writes;
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
-    // S-ipc gives `bus_requests` to the D-Bus front end
-    // (`strand_services::ipc_bus`); until then only `Live::requests_to`
-    // (tests) feeds it.
+    // The D-Bus front end (`strand_services::ipc_bus`, below) and
+    // `Live::requests_to` (tests) feed it.
     let bus_ping = ping.clone();
     let (bus_requests, bus_inbox) = ipc::channel(move || bus_ping.ping());
     if let Some(to) = live.requests_to {
@@ -128,6 +146,7 @@ pub fn logic(
     });
     if let Some(m) = &mock {
         crate::mock::desktop(&rt, &host, m);
+        crate::services::mock_served(&rt, &host, &host_types, crate::services::served());
     }
     // The real services (none under the mock): registered now, each
     // started by its first reader.
@@ -142,6 +161,22 @@ pub fn logic(
         real.custom.set_config_dir(storage.config_dir.clone());
         real
     });
+    // (M5) The D-Bus front end, on the services' runtime: it owns
+    // `io.github.jakeb_grant.Strand` now, as `strand run` starts (a second
+    // instance runs without it), sends its calls through the request
+    // channel and hears every event the socket's watchers get (its
+    // `Changed` signal). Not under the mock, which runs no services.
+    let (bus_front, bus_events) = real
+        .as_ref()
+        .map(|r| strand_services::ipc_bus::spawn(&r.services, bus_requests.clone()))
+        .unzip();
+    let event_sink = match (live.events_to, bus_events) {
+        (Some(a), Some(b)) => Some(ipc::EventSink::new(move |ev| {
+            a.send(ev);
+            b.send(ev);
+        })),
+        (a, b) => a.or(b),
+    };
     // GNOME (and any portal backend exposing GSettings) names the icon
     // theme in `org.gnome.desktop.interface`, not GTK's settings files:
     // followed for the whole run as a task of the services' shared
@@ -192,6 +227,8 @@ pub fn logic(
         }
         r.builtin.system.acquire(&rt);
     }
+    // (M5) What `file` outputs wrote: `$XDG_STATE_HOME/strand/files`.
+    let manifest = storage.palette_dir().map(|d| d.with_file_name("files"));
     let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
     // The first frame waits (at most BOOT_SERVICES_HOLD) for the first
     // reads of the services the config started, so a desktop whose
@@ -209,7 +246,8 @@ pub fn logic(
         build,
         overlay: Overlay::default(),
         server,
-        event_sink: live.events_to,
+        event_sink,
+        bus_reloads: Vec::new(),
         jobs: live.jobs,
         deferred: None,
         deferred_hard: false,
@@ -225,6 +263,8 @@ pub fn logic(
         layout_seen: None,
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
+        exports: Vec::new(),
+        files: super::outputs::Files::new(files_ping, manifest, own_writes),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -281,6 +321,9 @@ pub fn logic(
             break;
         }
         shell.after_step(&update);
+        // (M5) The theming hub's work after the diff: `file` outputs and
+        // waiting `export` requests (`outputs.rs`).
+        shell.after_diff();
         // Output a client's socket cannot take yet waits for its write
         // source to wake the loop (no polling).
         if let Some(s) = shell.server.as_mut() {
@@ -307,6 +350,9 @@ pub fn logic(
                 .deadline()
                 .map(|d| d.saturating_duration_since(now)),
         );
+        // (M5) An `export` waiting for its other mode is answered at its
+        // deadline even when nothing else wakes the loop.
+        also(shell.exports_wait(now));
         // A step that closed the lock: the deferred load commits now
         // (no polling while it stays shown: only a step can unlock).
         if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {
@@ -387,6 +433,8 @@ pub fn logic(
     // and one queued after the last drain is refused now.
     drop(bus_requests);
     drop(bus_inbox);
+    // The front end stops serving (its pending calls were just refused).
+    drop(bus_front);
     #[cfg(test)]
     UNMOUNTING.with(|h| {
         if let Some(f) = h.borrow_mut().take() {

@@ -1,0 +1,28 @@
+[package]
+name = "tree-sitter-strand"
+description = "tree-sitter grammar for .strand files (editor highlighting); used only by strand-dev's tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+build = "bindings/rust/build.rs"
+# The grammar, its generated parser and the queries are the package; the
+# Rust binding is a thin wrapper over them (docs/architecture.md,
+# "tree-sitter layout").
+include = ["bindings/rust/*", "grammar.js", "queries/*", "src/*", "tree-sitter.json"]
+
+[lib]
+path = "bindings/rust/lib.rs"
+
+[dependencies]
+tree-sitter-language = "0.1.9"
+
+[build-dependencies]
+cc = "1.6.0"
+
+[dev-dependencies]
+tree-sitter = "0.27.0"
+
+[lints]
+workspace = true

@@ -81,12 +81,13 @@ mod gpu;
 mod lists;
 pub(crate) mod lock;
 mod logic;
+mod outputs;
 mod request;
 mod shell;
 mod sleep;
 mod trim;
 
-pub use logic::{Live, Switched, logic};
+pub use logic::{Live, OwnWrites, Switched, logic};
 pub use trim::trim;
 use trim::{Trimmer, structural};
 
@@ -537,6 +538,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: compiler.own_write_hook(),
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
