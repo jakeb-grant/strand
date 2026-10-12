@@ -8,7 +8,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Thread | Crates | Owns | Never does |
 | --- | --- | --- | --- |
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
-| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `inspect.node`, `inspect.dump`, `reset{node}`, `export` and `report`; `inspect.pick`, `inspect.highlight` and `inspect.flash` are not served yet) is a source on this loop, as is the request channel from the D-Bus front end; it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
+| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `inspect.node`, `inspect.dump`, `reset{node}`, `export` and `report`, and since M5 wave 3 `inspect.pick`, `inspect.highlight` and `inspect.flash`, on the socket only) is a source on this loop, as is the request channel from the D-Bus front end; it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
 | Compiler worker (`strand-compile`) | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker (`strand-text`) | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Image worker (`strand-image`, one per renderer; one that cannot start stops the shell) | `strand-render` (`image.rs`, `media/`) | Image and icon decodes (an animated GIF, APNG or WebP's player kept between its frames), the `svg` and `lottie` file jobs (`ImageStore::load_file`: read through a bounded read and parsed here, a Lottie's assets with it), and `set_idle_hook`'s allocator trim; each result pings the render loop | Block render: a frame draws nothing, or a stand-in of the same image at another size, until the decode arrives; read a file without a size bound |
@@ -688,8 +688,12 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     the inspector's own answers spell (S-inspect picks the spelling);
     `call`'s `args` are a list of strings, each read by the action
     parameter's type as `set`'s value is.
-  - (Every command above is served since M5 wave 3.) A command the
-    shell does not serve yet is answered exactly as an unknown one (`unknown command `x``), so 0b changes no answer;
+  - Every command above is served on the socket since M5 wave 3.
+    Where one is not served (the D-Bus front end has no `Export`
+    method, and answers `inspect.pick`, `inspect.highlight` and
+    `inspect.flash`, which are socket-only, through `not_served`) it is
+    answered exactly as an unknown one (`unknown command `x``), so 0b
+    changes no answer;
     `reset{node}` is answered "`reset` needs a `path`", M4's answer,
     from the socket and from the request channel alike.
     `Request` has every command's variant and `encode` writes each, but
@@ -811,13 +815,18 @@ new).**
   and one root shows on several surfaces (a bar per output). So no
   logic→main message carries a `SurfaceId`; a node chosen from a dump or
   typed into the terminal client is resolved on main.
-- `ToMain::PickMode(bool)`: the router's pick-mode hook on or off
-  (`inspect.pick`, and off when the client that asked disconnects).
+- `ToMain::PickMode { on, seq }`: the router's pick-mode hook on or off
+  (`inspect.pick`, and off when the client that asked disconnects);
+  `seq` numbers logic's `PickMode` messages.
   A pick happens later, on a click, so it is not a snapshot: main sends
   `ToLogic::Picked(PickEvent::Picked { surface, node })` (`node` from
   `Renderer::pick`, none when nothing pickable is under the click), and
-  `ToLogic::Picked(PickEvent::Ended)` when pick mode ends on main's side
-  (a surface unmapped, a lock started).
+  `ToLogic::Picked(PickEvent::Ended { seq })` when pick mode ends on
+  main's side (a surface unmapped, a lock started), `seq` being the last
+  `PickMode`'s main acted on. The socket and this channel are separate
+  sources on logic's loop, so an `Ended` can arrive after a newer
+  `inspect.pick` has turned pick mode on again; logic ignores an `Ended`
+  whose `seq` is not its last (decisions.md m5-inspect, inspect-r1-2).
 
 0b landed the snapshot types, and the wave-0 hardening the rest
 (decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request, and
@@ -960,8 +969,10 @@ and the GPU's lowering draw them unchanged. Pick mode's two calls,
 beside them:
 - `Router::set_picking(on, scene) -> Vec<Intent>` and
   `Router::picking()`: while picking, pointer events reach no handler
-  (the pointer's position is still tracked); turning it on ends hovers,
-  presses and drags as a leave would, and returns their intents;
+  (the pointer's position is still tracked), and neither does another
+  program's drag (no drop target, so its offer is declined, and no
+  `on drop`); turning it on ends hovers, presses and drags as a leave
+  would, forgets an offer, and returns their intents;
 - `Renderer::pick_input(&InputEvent) -> Option<(SurfaceId,
   Option<NodeId>)>`, fed the pointer events the router held back: the
   node under the pointer is outlined on whichever surface it is over
@@ -979,7 +990,9 @@ client ends it (Enter, or Escape then Enter, there sends
 ends pick mode), a click picks, and pick mode also ends on the IPC
 client's disconnect, on the unmap of the surface picked on and when a
 lock starts. Lock surfaces are never pickable, and `inspect.pick` is
-refused while locked.
+refused while locked, as is `inspect.highlight` of a node. An outline
+asked before the lock is hidden while it lasts (main clears it) and
+drawn again after the unlock, still its client's.
 
 As served (S-inspect, wave 3): `inspect.pick`, `inspect.highlight` and
 `inspect.flash` are socket requests only (the D-Bus front end has no

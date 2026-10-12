@@ -583,6 +583,7 @@ impl Router {
                     self.middle_down.remove(&s);
                 }
                 self.cancel_drag(scene);
+                self.offer = None;
             }
         }
         self.flush(scene)
@@ -802,6 +803,15 @@ impl Router {
                 InputEvent::PointerButton { .. }
                 | InputEvent::PointerAxis { .. }
                 | InputEvent::ClickAway { .. } => return,
+                // A drag (another program's) finds no drop target: the
+                // surface manager declines its offer and no `on drop`
+                // runs.
+                InputEvent::DragEnter { .. }
+                | InputEvent::DragMotion { .. }
+                | InputEvent::DragDrop { .. } => {
+                    self.offer = None;
+                    return;
+                }
                 _ => {}
             }
         }

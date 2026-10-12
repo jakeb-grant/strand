@@ -992,6 +992,45 @@ fn escape_cancels_a_drag() {
     assert!(events(f.drain()).is_empty(), "no drop and no click");
 }
 
+/// (M5, S-inspect; inspect-r1-4) While picking, another program's drag
+/// finds no drop target (the surface manager declines its offer) and a
+/// drop runs no `on drop`; turning pick mode on forgets an offer already
+/// over a target.
+#[test]
+fn pick_mode_holds_drops_from_the_handlers() {
+    let (mut r, [panel, _, _, bin, ..]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    let at = LogicalPoint::new(50.0, 190.0);
+    let enter = InputEvent::DragEnter {
+        surface: s,
+        at,
+        kinds: vec![DropKind::Files],
+    };
+    f.input(&enter, &mut r);
+    assert_eq!(f.router.drop_target(s), Some(bin));
+    assert!(f.router.set_picking(true, &mut r).is_empty());
+    assert_eq!(f.router.drop_target(s), None, "pick mode forgets the offer");
+    f.input(&enter, &mut r);
+    f.input(&InputEvent::DragMotion { surface: s, at }, &mut r);
+    assert_eq!(f.router.drop_target(s), None);
+    f.input(
+        &InputEvent::DragDrop {
+            surface: s,
+            at,
+            payload: DropPayload::External {
+                kind: DropKind::Files,
+                files: vec!["/tmp/a.png".into()],
+                text: String::new(),
+                app_id: None,
+            },
+        },
+        &mut r,
+    );
+    assert!(f.drain().is_empty(), "no handler hears the drop");
+}
+
 /// (M4) Other programs' drags (`wl_data_device`): files over the box
 /// whose `on drop` takes `Drop` have a target there (the surface manager
 /// accepts the offer then) and none over the `Pin` list; dropped on the

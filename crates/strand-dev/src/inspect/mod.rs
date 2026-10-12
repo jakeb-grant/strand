@@ -13,7 +13,7 @@ pub mod client;
 pub mod pane;
 pub mod write;
 
-use std::io::{self, BufRead as _, Write as _};
+use std::io::{self, BufRead as _, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -22,6 +22,14 @@ use serde_json::Value as Json;
 use strand_core::ipc::{Request, refusal};
 
 use client::Connection;
+
+/// A line to the session's terminal (a failed write is not the
+/// shell's problem, so it is dropped).
+macro_rules! say {
+    ($s:expr, $($t:tt)*) => {{
+        let _ = writeln!($s.out, $($t)*);
+    }};
+}
 
 /// How long an answer may take.
 const WAIT: Duration = Duration::from_secs(5);
@@ -43,16 +51,62 @@ enum Ev {
     Socket,
 }
 
+/// Opens a file at a line and waits for the editor.
+pub type Editor = Box<dyn FnMut(&Path, u64) + Send>;
+
+/// The terminal [`drive`] talks to: lines in, text out, and `$EDITOR`.
+pub struct Terminal {
+    /// The next line typed (`None`: end of input). Called on a thread of
+    /// its own, and again only once the last line is handled, so
+    /// `$EDITOR` gets the terminal to itself.
+    pub read_line: Box<dyn FnMut() -> Option<String> + Send>,
+    /// Where the client prints.
+    pub out: Box<dyn Write + Send>,
+    /// Opens a file at a line and waits for the editor.
+    pub editor: Editor,
+}
+
+impl std::fmt::Debug for Terminal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Terminal")
+    }
+}
+
 /// Runs the client against the socket at `socket` (default: the
-/// shell's, by `strand_core::ipc::socket_path`'s rule).
+/// shell's, by `strand_core::ipc::socket_path`'s rule), on this
+/// process's terminal.
 pub fn run(socket: Option<PathBuf>) -> Result<(), String> {
     let path = socket
         .or_else(strand_core::ipc::socket_path)
         .ok_or("no socket: set $STRAND_SOCKET, or $XDG_RUNTIME_DIR and $WAYLAND_DISPLAY")?;
+    drive(
+        &path,
+        Terminal {
+            read_line: Box::new(|| {
+                let mut line = String::new();
+                match io::stdin().lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => None,
+                    Ok(_) => Some(line),
+                }
+            }),
+            out: Box::new(io::stdout()),
+            editor: Box::new(open_editor),
+        },
+    )
+}
+
+/// Runs the client against the socket at `path` on `term` until it
+/// quits (`q`, or the end of input).
+pub fn drive(path: &Path, term: Terminal) -> Result<(), String> {
+    let Terminal {
+        mut read_line,
+        out,
+        editor,
+    } = term;
     let (tx, rx) = mpsc::channel();
     let notify = tx.clone();
     let conn = Connection::connect(
-        &path,
+        path,
         Some(Box::new(move || {
             let _ = notify.send(Ev::Socket);
         })),
@@ -64,13 +118,8 @@ pub fn run(socket: Option<PathBuf>) -> Result<(), String> {
     std::thread::Builder::new()
         .name("inspect-stdin".into())
         .spawn(move || {
-            let stdin = io::stdin();
             loop {
-                let mut line = String::new();
-                let got = match stdin.lock().read_line(&mut line) {
-                    Ok(0) | Err(_) => None,
-                    Ok(_) => Some(line),
-                };
+                let got = read_line();
                 let end = got.is_none();
                 if tx.send(Ev::Line(got)).is_err() || end || acked.recv().is_err() {
                     return;
@@ -80,12 +129,15 @@ pub fn run(socket: Option<PathBuf>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let mut s = Session {
         conn,
+        out,
+        editor,
         node: None,
         picking: false,
         flash: false,
         offer: None,
     };
-    println!(
+    say!(
+        s,
         "strand-dev inspect: connected to {}\n{HELP}",
         path.display()
     );
@@ -111,6 +163,8 @@ pub fn run(socket: Option<PathBuf>) -> Result<(), String> {
 /// One client's state.
 struct Session {
     conn: Connection,
+    out: Box<dyn Write + Send>,
+    editor: Editor,
     /// The pane shown: an `inspect.node` answer.
     node: Option<Json>,
     picking: bool,
@@ -130,12 +184,12 @@ impl Session {
 
     fn pick(&mut self, on: bool) -> Result<(), String> {
         if let Err(e) = self.ask(&Request::InspectPick { on }) {
-            println!("{e}");
+            say!(self, "{e}");
             return Ok(());
         }
         self.picking = on;
         if on {
-            println!("picking: click a node on any output (Enter stops)");
+            say!(self, "picking: click a node on any output (Enter stops)");
         }
         Ok(())
     }
@@ -151,11 +205,14 @@ impl Session {
                         self.pick(false)?;
                         self.show(&id)?;
                     }
-                    None => println!("nothing pickable there"),
+                    None => say!(self, "nothing pickable there"),
                 },
                 Some("pick_ended") if self.picking => {
                     self.picking = false;
-                    println!("pick mode ended by the shell (a lock, or the surface went away)");
+                    say!(
+                        self,
+                        "pick mode ended by the shell (a lock, or the surface went away)"
+                    );
                 }
                 _ => {}
             }
@@ -167,15 +224,15 @@ impl Session {
         let answer = match self.ask(&Request::InspectNode { id: id.into() }) {
             Ok(a) => a,
             Err(e) => {
-                println!("{e}");
+                say!(self, "{e}");
                 return Ok(());
             }
         };
         let _ = self.ask(&Request::InspectHighlight {
             id: Some(id.into()),
         });
-        print!("\n{}", pane::pane(&answer));
-        let _ = io::stdout().flush();
+        let _ = write!(self.out, "\n{}", pane::pane(&answer));
+        let _ = self.out.flush();
         self.node = Some(answer);
         Ok(())
     }
@@ -184,7 +241,7 @@ impl Session {
     fn command(&mut self, line: &str) -> Result<bool, String> {
         if let Some((file, at)) = self.offer.take() {
             if matches!(line, "y" | "Y" | "yes") {
-                open_editor(&file, at);
+                (self.editor)(&file, at);
             }
             return Ok(true);
         }
@@ -194,36 +251,37 @@ impl Session {
             "" | "\u{1b}" if self.picking => self.pick(false)?,
             "" => {}
             "q" | "quit" => return Ok(false),
-            "?" | "h" | "help" => println!("{HELP}"),
+            "?" | "h" | "help" => say!(self, "{HELP}"),
             "p" | "pick" => self.pick(true)?,
             "f" | "flash" => {
                 let on = !self.flash;
                 match self.ask(&Request::InspectFlash { on }) {
                     Ok(_) => {
                         self.flash = on;
-                        println!("damage flashing {}", if on { "on" } else { "off" });
+                        say!(self, "damage flashing {}", if on { "on" } else { "off" });
                     }
-                    Err(e) => println!("{e}"),
+                    Err(e) => say!(self, "{e}"),
                 }
             }
-            _ if self.node.is_none() => println!("pick a node first (p)"),
+            _ if self.node.is_none() => say!(self, "pick a node first (p)"),
             "r" | "reset" => {
                 let id = self.node_id();
                 match self.ask(&Request::ResetNode { node: id.clone() }) {
                     Ok(_) => {
-                        println!("reset {id}'s subtree");
+                        say!(self, "reset {id}'s subtree");
                         self.show(&id)?;
                     }
-                    Err(e) => println!("{e}"),
+                    Err(e) => say!(self, "{e}"),
                 }
             }
             "e" | "edit" => match self.origin() {
-                Some((file, line)) => open_editor(&file, line),
-                None => println!("the node has no source file"),
+                Some((file, line)) => (self.editor)(&file, line),
+                None => say!(self, "the node has no source file"),
             },
             "set" | "token" => {
                 let Some((what, value)) = rest.split_once(' ') else {
-                    println!(
+                    say!(
+                        self,
                         "usage: {cmd} <{}> <value>",
                         if cmd == "set" { "prop" } else { "path" }
                     );
@@ -233,19 +291,28 @@ impl Session {
                     "set" => self.prop_edit(what, value.trim()),
                     _ => self.token_edit(what.trim_start_matches('$'), value.trim()),
                 };
-                match edit.and_then(|e| write::write(&e)) {
-                    Ok(file) => println!("wrote {}: the shell reloads it", file.display()),
+                let edit = match edit {
+                    Ok(e) => e,
                     Err(r) => {
-                        println!("{r}");
+                        say!(self, "{r}");
+                        return Ok(true);
+                    }
+                };
+                match write::write(&edit) {
+                    Ok(file) => say!(self, "wrote {}: the shell reloads it", file.display()),
+                    Err(r) => {
+                        say!(self, "{r}");
                         if let Some(f) = r.editor_offer() {
-                            print!("open {} in $EDITOR? [y/N] ", f.display());
-                            let _ = io::stdout().flush();
-                            self.offer = Some((f.to_path_buf(), self.origin().map_or(1, |o| o.1)));
+                            let _ = write!(self.out, "open {} in $EDITOR? [y/N] ", f.display());
+                            let _ = self.out.flush();
+                            // At the edited value's line: the token's
+                            // definition, not the node's origin.
+                            self.offer = Some((f.to_path_buf(), line_of(&edit)));
                         }
                     }
                 }
             }
-            _ => println!("unknown command `{cmd}` (? for help)"),
+            _ => say!(self, "unknown command `{cmd}` (? for help)"),
         }
         Ok(true)
     }
@@ -289,6 +356,15 @@ impl Session {
             })?;
         write::token_edit(&a["files"], path, origin, value)
     }
+}
+
+/// The 1-based line of the file `edit` changes where its span starts
+/// (1 when the file cannot be read).
+fn line_of(edit: &write::Edit) -> u64 {
+    std::fs::read(&edit.file).map_or(1, |b| {
+        let upto = &b[..edit.span.start.min(b.len())];
+        1 + upto.iter().filter(|c| **c == b'\n').count() as u64
+    })
 }
 
 /// Opens `file` at `line` in `$VISUAL` or `$EDITOR` (`vi` without

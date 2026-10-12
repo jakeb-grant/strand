@@ -203,10 +203,9 @@ impl Shell {
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => {
                 self.lock_state(state);
-                // (M5, S-inspect) Pick mode and the outline end.
-                if self.inst.lock_shown() {
-                    self.inspector_locked();
-                }
+                // (M5, S-inspect) Pick mode ends and the outline hides
+                // while locked; the outline comes back after.
+                self.inspector_lock_changed();
             }
             ToLogic::Beat(seq) => super::lock::beat(seq),
             // (M5) An `inspect.node`'s layouts (S-inspect), else `strand

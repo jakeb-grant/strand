@@ -2,8 +2,9 @@
 //! logic's `ToMain::{Highlight, DamageFlash, PickMode}` and
 //! `SnapshotKind::Layout`, answered from the renderer between frames
 //! (the logic half is `run/request/inspect.rs`), and the lock's guard:
-//! pick mode and the outline end when a lock is asked for, and pick mode
-//! is not turned on while one is.
+//! pick mode ends and the outline is cleared when a lock is asked for
+//! (logic draws it again after the unlock), and pick mode is not turned
+//! on while one is.
 
 use calloop::channel::Sender;
 use serde_json::{Value as Json, json};
@@ -44,10 +45,10 @@ pub(crate) fn on_main(state: &mut State<Host>, msg: ToMain, answer: &Sender<ToLo
         ToMain::Snapshot { .. } => return,
         ToMain::Highlight(node) => host.renderer.set_highlight(node),
         ToMain::DamageFlash(on) => host.renderer.set_damage_flash(on),
-        ToMain::PickMode(on) => {
-            host.set_picking(on && !locked);
+        ToMain::PickMode { on, seq } => {
+            host.set_picking(on && !locked, seq);
             if on && locked {
-                let _ = answer.send(ToLogic::Picked(PickEvent::Ended));
+                let _ = answer.send(ToLogic::Picked(PickEvent::Ended { seq }));
             }
         }
     }

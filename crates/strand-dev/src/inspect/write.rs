@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value as Json;
 use strand_compiler::FileId;
 use strand_compiler::syntax::ast::{
-    Block, Else, ExprKind, Item, ItemKind, TokenBody, TokenEntry, UnaryOp,
+    ArmBody, Block, Else, ExprKind, Item, ItemKind, TokenBody, TokenEntry, UnaryOp,
 };
 use strand_compiler::syntax::{Span, parse, parse_expr_in};
 
@@ -229,7 +229,10 @@ fn entry<'a>(block: &'a Block<TokenEntry>, prefix: &str, path: &str) -> Option<&
     None
 }
 
-/// The innermost element or surface whose span holds `span`.
+/// The innermost element or surface whose span holds `span`: every
+/// item that holds a tree (an element's block, a surface's or a
+/// component's body, `when`, `for`, each branch of an `if`/`else if`
+/// chain and each `match` arm) is searched.
 fn innermost_at(items: &[Item], span: Span) -> Option<&Item> {
     let mut best: Option<&Item> = None;
     let mut stack: Vec<&Item> = items.iter().collect();
@@ -237,24 +240,41 @@ fn innermost_at(items: &[Item], span: Span) -> Option<&Item> {
         if i.span.start > span.start || i.span.end < span.end {
             continue;
         }
-        let blocks: [Option<&Block<Item>>; 2] = match &i.kind {
-            ItemKind::Element(e) => [e.block.as_ref(), None],
-            ItemKind::Surface(s) => [Some(&s.body), None],
-            ItemKind::Component(c) => [Some(&c.body), None],
-            ItemKind::When(w) => [Some(&w.body), None],
-            ItemKind::For(f) => [Some(&f.body), None],
-            ItemKind::If(f) => match &f.else_ {
-                Some(Else::Block(b)) => [Some(&f.then), Some(b)],
-                _ => [Some(&f.then), None],
-            },
-            _ => [None, None],
-        };
         if matches!(i.kind, ItemKind::Element(_) | ItemKind::Surface(_))
             && best.is_none_or(|b| i.span.len() <= b.span.len())
         {
             best = Some(i);
         }
-        stack.extend(blocks.into_iter().flatten().flat_map(|b| &b.items));
+        match &i.kind {
+            ItemKind::Element(e) => stack.extend(e.block.iter().flat_map(|b| &b.items)),
+            ItemKind::Surface(s) => stack.extend(&s.body.items),
+            ItemKind::Component(c) => stack.extend(&c.body.items),
+            ItemKind::When(w) => stack.extend(&w.body.items),
+            ItemKind::For(f) => stack.extend(&f.body.items),
+            ItemKind::If(f) => {
+                let mut branch = Some(f);
+                while let Some(f) = branch {
+                    stack.extend(&f.then.items);
+                    branch = match &f.else_ {
+                        Some(Else::If(next, _)) => Some(next),
+                        Some(Else::Block(b)) => {
+                            stack.extend(&b.items);
+                            None
+                        }
+                        None => None,
+                    };
+                }
+            }
+            ItemKind::Match(m) => {
+                for arm in &m.arms {
+                    match &arm.body {
+                        ArmBody::Block(b) => stack.extend(&b.items),
+                        ArmBody::Single(item) => stack.push(item),
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     best
 }

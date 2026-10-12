@@ -73,6 +73,35 @@ fn one_span_is_edited() {
     assert_eq!(fs::read_dir(&d).unwrap().count(), 1);
 }
 
+/// A node declared in an `else if` branch or a `match` arm is its own
+/// element: the edit lands on it, never on the enclosing box's prop of
+/// the same name (inspect-r1-1).
+#[test]
+fn a_node_in_else_if_or_a_match_arm_is_its_own_element() {
+    let d = dir("branches");
+    let f = d.join("bar.strand");
+    let text = "enum Page { a, b }\nstate page = a\nstate x = false\nbar Top {\n    box {\n        width: 100\n        if x {\n        } else if true {\n            box { id: inner; width: 20 }\n        }\n        match page {\n            a => box { id: armed; width: 30 }\n            _ => box { width: 31 }\n        }\n    }\n}\n";
+    fs::write(&f, text).unwrap();
+    let name = f.display().to_string();
+    let mut files = serde_json::Map::new();
+    files.insert(name.clone(), Json::String(hash(text.as_bytes())));
+    let files = Json::Object(files);
+    for (decl, want) in [
+        ("box { id: inner; width: 20 }", "20"),
+        ("box { id: armed; width: 30 }", "30"),
+    ] {
+        let start = text.find(decl).unwrap();
+        let node = json!({
+            "id": "3.0", "kind": "box",
+            "origin": {"span": [start, start + decl.len()], "file": name, "line": 1, "col": 1},
+        });
+        let e = prop_edit(&node, &files, "width", "300").unwrap();
+        assert_eq!(&text[e.span.clone()], want, "{decl}");
+        let inner = start + decl.find(want).unwrap();
+        assert_eq!(e.span, inner..inner + want.len(), "{decl}");
+    }
+}
+
 /// A token's literal is written at its definition, in whichever file
 /// the running shell compiled it from; a palette's is refused.
 #[test]

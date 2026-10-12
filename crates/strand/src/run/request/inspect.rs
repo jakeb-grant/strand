@@ -19,7 +19,8 @@
 //! asked (a socket request only, as `report`): each ends when that client
 //! disconnects, pick mode also when a lock starts (and it is refused
 //! while one is shown) or when main ends it (the surface it picked on
-//! unmapped). While pick mode is on, its client hears `{"event":
+//! unmapped). The outline is refused while a lock is shown; one asked
+//! before is hidden while it lasts and drawn again after. While pick mode is on, its client hears `{"event":
 //! "picked", "surface": n, "node": "12.0" | null}` for each left press,
 //! and `{"event": "pick_ended"}` when pick mode ends without its asking.
 
@@ -38,7 +39,11 @@ use crate::run::{PickEvent, Snapshot, SnapshotId, SnapshotKind, ToMain};
 #[derive(Debug, Default)]
 pub(in crate::run) struct Inspector {
     pick: Option<ClientId>,
-    highlight: Option<ClientId>,
+    /// The last `ToMain::PickMode`'s sequence number.
+    pick_seq: u64,
+    /// The outline's owner and node; kept across a lock, which hides
+    /// it on main, and drawn again after the unlock.
+    highlight: Option<(ClientId, NodeId)>,
     flash: Option<ClientId>,
     nodes: Vec<(SnapshotId, Caller, Json)>,
 }
@@ -137,7 +142,7 @@ impl Shell {
                 proto::refused("the session is locked: nothing is pickable"),
             );
         }
-        if !self.tell_main(ToMain::PickMode(on)) {
+        if !self.tell_pick_mode(on) {
             return self.answer(from, proto::refused("no display thread to pick on"));
         }
         let before = std::mem::replace(&mut self.inspector.pick, on.then_some(id));
@@ -164,10 +169,16 @@ impl Shell {
         {
             return self.answer(from, gone(n));
         }
+        if target.is_some() && self.inst.lock_shown() {
+            return self.answer(
+                from,
+                proto::refused("the session is locked: nothing is outlined"),
+            );
+        }
         if !self.tell_main(ToMain::Highlight(target)) {
             return self.answer(from, proto::refused("no display thread to draw on"));
         }
-        self.inspector.highlight = target.map(|_| client);
+        self.inspector.highlight = target.map(|n| (client, n));
         self.answer(from, proto::ok());
     }
 
@@ -198,20 +209,33 @@ impl Shell {
                 let event = json!({"event": "picked", "surface": surface.0, "node": node});
                 self.send_event(owner, &event);
             }
-            PickEvent::Ended => {
+            // An end main sent before acting on a newer `inspect.pick`
+            // is stale: pick mode is on again, for the new owner.
+            PickEvent::Ended { seq } if seq != self.inspector.pick_seq => {}
+            PickEvent::Ended { .. } => {
                 self.inspector.pick = None;
                 self.send_event(owner, &pick_ended());
             }
         }
     }
 
-    /// A lock started: pick mode and the outline end (main has ended them
-    /// on its side already).
-    pub(in crate::run) fn inspector_locked(&mut self) {
-        if let Some(owner) = self.inspector.pick.take() {
-            self.send_event(owner, &pick_ended());
+    /// The session lock changed (`ToLogic::LockState`). A lock shown:
+    /// pick mode ends (main has ended it on its side already) and the
+    /// outline is hidden (main clears it while the lock lasts). The lock
+    /// gone: the outline its client still owns is drawn again, so a
+    /// client is never left believing a node is outlined when none is.
+    pub(in crate::run) fn inspector_lock_changed(&mut self) {
+        if self.inst.lock_shown() {
+            if let Some(owner) = self.inspector.pick.take() {
+                self.send_event(owner, &pick_ended());
+            }
+            return;
         }
-        self.inspector.highlight = None;
+        if let Some((_, n)) = self.inspector.highlight {
+            self.tell_main(ToMain::Highlight(
+                self.inst.identity(n).is_some().then_some(n),
+            ));
+        }
     }
 
     /// Pick mode, the outline and the flash of a socket client that has
@@ -224,11 +248,11 @@ impl Shell {
         let gone = |c: &mut Option<ClientId>| c.take_if(|id| !s.has(*id)).is_some();
         let (pick, highlight, flash) = (
             gone(&mut i.pick),
-            gone(&mut i.highlight),
+            i.highlight.take_if(|(id, _)| !s.has(*id)).is_some(),
             gone(&mut i.flash),
         );
         if pick {
-            self.tell_main(ToMain::PickMode(false));
+            self.tell_pick_mode(false);
         }
         if highlight {
             self.tell_main(ToMain::Highlight(None));
@@ -236,6 +260,14 @@ impl Shell {
         if flash {
             self.tell_main(ToMain::DamageFlash(false));
         }
+    }
+
+    /// Sends main pick mode on or off, numbered; false without a main
+    /// thread.
+    fn tell_pick_mode(&mut self, on: bool) -> bool {
+        self.inspector.pick_seq += 1;
+        let seq = self.inspector.pick_seq;
+        self.tell_main(ToMain::PickMode { on, seq })
     }
 
     /// Sends main `msg`; false without a main thread.

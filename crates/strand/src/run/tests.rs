@@ -373,7 +373,9 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
             "`1v0` is not a node id (`index.generation`, as the inspector spells it)"})
     );
     // An event reaches the sink without a socket.
-    to_logic.send(ToLogic::Picked(PickEvent::Ended)).unwrap();
+    to_logic
+        .send(ToLogic::Picked(PickEvent::Ended { seq: 0 }))
+        .unwrap();
     to_logic.send(ToLogic::Notice("from main".into())).unwrap();
     let ev = loop {
         let ev = events.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -507,7 +509,8 @@ fn a_report_is_mains_snapshot_with_logics_half() {
 /// outline and the flash go to main and belong to the client that asked;
 /// a pick on main reaches it as a `picked` event; `inspect.node` carries
 /// main's layouts; and the client's disconnect ends all three on main.
-/// A second client taking pick mode tells the first it ended.
+/// A second client taking pick mode tells the first it ended; an end
+/// main sent before acting on a newer `inspect.pick` is ignored.
 #[test]
 fn the_inspector_belongs_to_its_client() {
     use std::io::{BufRead as _, Write as _};
@@ -569,7 +572,10 @@ fn the_inspector_belongs_to_its_client() {
     let (mut aw, mut ar) = connect();
     send(&mut aw, &ipc::Request::InspectPick { on: true });
     assert_eq!(read(&mut ar), json!({"ok": true}));
-    assert!(matches!(told(1)[..], [ToMain::PickMode(true)]));
+    assert!(matches!(
+        told(1)[..],
+        [ToMain::PickMode { on: true, seq: 1 }]
+    ));
     // A pick on main: the client hears it.
     to_logic
         .send(ToLogic::Picked(PickEvent::Picked {
@@ -625,7 +631,10 @@ fn the_inspector_belongs_to_its_client() {
     send(&mut bw, &ipc::Request::InspectPick { on: true });
     assert_eq!(read(&mut br), json!({"ok": true}));
     assert_eq!(read(&mut ar), json!({"event": "pick_ended"}));
-    assert!(matches!(told(1)[..], [ToMain::PickMode(true)]));
+    assert!(matches!(
+        told(1)[..],
+        [ToMain::PickMode { on: true, seq: 2 }]
+    ));
     // The first goes: its outline and flash end; pick mode is the
     // second's and stays.
     drop((aw, ar));
@@ -639,7 +648,25 @@ fn the_inspector_belongs_to_its_client() {
     );
     // Main ends pick mode (a lock, an unmap): the second hears it, and
     // its going then tells main nothing more.
-    to_logic.send(ToLogic::Picked(PickEvent::Ended)).unwrap();
+    // An end main sent for the first's pick mode, read after the
+    // second's took it (main has turned pick mode on again), is stale:
+    // the second keeps pick mode and its picks (inspect-r1-2).
+    to_logic
+        .send(ToLogic::Picked(PickEvent::Ended { seq: 1 }))
+        .unwrap();
+    to_logic
+        .send(ToLogic::Picked(PickEvent::Picked {
+            surface: SurfaceId(4),
+            node: None,
+        }))
+        .unwrap();
+    assert_eq!(
+        read(&mut br),
+        json!({"event": "picked", "surface": 4, "node": null})
+    );
+    to_logic
+        .send(ToLogic::Picked(PickEvent::Ended { seq: 2 }))
+        .unwrap();
     assert_eq!(read(&mut br), json!({"event": "pick_ended"}));
     drop((bw, br));
     let mut rest = Vec::new();
@@ -649,6 +676,113 @@ fn the_inspector_belongs_to_its_client() {
             .unwrap();
     }
     assert!(rest.is_empty(), "{rest:?}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (S-inspect, wave 3; inspect-r1-5) The outline across a lock: while a
+/// lock is shown `inspect.highlight` of a node is refused (as
+/// `inspect.pick` is) and the outline its client asked before the lock
+/// is hidden (main clears it), then drawn again after the unlock, so
+/// the client is never left believing a node is outlined when nothing
+/// is; pick mode ends with the lock and its client hears so.
+#[test]
+fn the_outline_hides_while_locked_and_returns_after() {
+    use std::io::{BufRead as _, Write as _};
+    use strand_compiler::instantiate::SessionLock;
+    let dir = temp_dir("inspector-lock");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "export state locked = false\nlock L {\n  open: <-> locked\n  on key(k) { auth.submit(k.name) }\n  text \"l\"\n}\nbar Top {\n  on click { locked = true }\n  box { id: t\n    width: 20 }\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let socket = dir.join("ipc.sock");
+    let (to_main, from_logic) = calloop::channel::channel::<ToMain>();
+    let live = Live {
+        socket: Some(socket.clone()),
+        to_main: Some(to_main),
+        ..Live::default()
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(program, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| !s.of_kind(NodeKind::Box).is_empty());
+    let target = m.scene.of_kind(NodeKind::Box)[0];
+    let bar = m.scene.of_kind(NodeKind::Bar)[0];
+    let id = strand_compiler::instantiate::inspect::node_ref(target);
+    let mut main = calloop::EventLoop::<Vec<ToMain>>::try_new().unwrap();
+    main.handle()
+        .insert_source(from_logic, |e, _, got| {
+            if let Event::Msg(msg) = e {
+                got.push(msg);
+            }
+        })
+        .unwrap();
+    let mut got = Vec::new();
+    let mut told = |n: usize| -> Vec<ToMain> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while got.len() < n {
+            assert!(Instant::now() < deadline, "main was told only {got:?}");
+            main.dispatch(Some(Duration::from_millis(20)), &mut got)
+                .unwrap();
+        }
+        std::mem::take(&mut got)
+    };
+    let s = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let (mut w, mut r) = (s.try_clone().unwrap(), std::io::BufReader::new(s));
+    let mut ask = |req: &ipc::Request| {
+        w.write_all(ipc::encode(req).as_bytes()).unwrap();
+    };
+    let mut read = || -> Json {
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let highlight = ipc::Request::InspectHighlight {
+        id: Some(id.clone()),
+    };
+    ask(&highlight);
+    assert_eq!(read(), json!({"ok": true}));
+    ask(&ipc::Request::InspectPick { on: true });
+    assert_eq!(read(), json!({"ok": true}));
+    let msgs = told(2);
+    assert!(
+        matches!(msgs[..], [ToMain::Highlight(Some(n)), ToMain::PickMode { on: true, .. }] if n == target),
+        "{msgs:?}"
+    );
+    // The bar locks the session; the compositor reports it.
+    to_logic
+        .send(ToLogic::Event {
+            node: bar,
+            event: NodeEvent::Click,
+        })
+        .unwrap();
+    m.until("the lock", |s| !s.of_kind(NodeKind::Lock).is_empty());
+    to_logic
+        .send(ToLogic::LockState(SessionLock::Locked))
+        .unwrap();
+    assert_eq!(read(), json!({"event": "pick_ended"}));
+    ask(&highlight);
+    assert_eq!(
+        read(),
+        json!({"ok": false, "error": "the session is locked: nothing is outlined"})
+    );
+    // Unlocked: the outline its client still owns is drawn again.
+    to_logic
+        .send(ToLogic::LockState(SessionLock::Unlocked))
+        .unwrap();
+    let msgs = told(1);
+    assert!(
+        matches!(msgs[..], [ToMain::Highlight(Some(n))] if n == target),
+        "{msgs:?}"
+    );
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(dir);

@@ -299,8 +299,11 @@ pub enum ToMain {
     DamageFlash(bool),
     /// `inspect.pick{on}`, and `false` when the asking IPC client goes:
     /// the router's pick-mode hook on or off. A pick arrives later, on a
-    /// click, as [`ToLogic::Picked`].
-    PickMode(bool),
+    /// click, as [`ToLogic::Picked`]. `seq` counts logic's `PickMode`
+    /// messages; main's [`PickEvent::Ended`] carries back the last one
+    /// it acted on, so logic ignores an end that a newer `PickMode`
+    /// overtook (the socket and this channel are separate sources).
+    PickMode { on: bool, seq: u64 },
 }
 
 /// (M5) What main tells logic about pick mode ([`ToLogic::Picked`]).
@@ -313,8 +316,10 @@ pub enum PickEvent {
         node: Option<NodeId>,
     },
     /// Pick mode ended on main's side (a surface unmapped, a lock
-    /// started), so logic tells the client that asked.
-    Ended,
+    /// started), so logic tells the client that asked; `seq` is the
+    /// last [`ToMain::PickMode`]'s main acted on (stale when logic has
+    /// sent a newer one since).
+    Ended { seq: u64 },
 }
 
 /// (M5) Which snapshot logic asks main for.
