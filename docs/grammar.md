@@ -5,9 +5,8 @@ truth for what the constructs *mean*; this file fixes how they are *written*.
 `strand-compiler::syntax` implements exactly this grammar, and every code
 block in `design.md` parses under it with zero errors (see
 `crates/strand-compiler/tests/fixtures/`). The one exception until M5
-wave 2 is `top_file` (below): it is owner-approved and lands with S-tools'
-parser and schema change; until then the parser reports a top-level `file`
-as a misplaced element.
+wave 2 was `top_file` (below), which landed with S-tools' parser and schema
+change (M5 wave 2); the parser now accepts a top-level `file`.
 
 Semantic restrictions that need names or types (which element kinds exist,
 whether a prop is valid on a node, whether `slot` is inside a component) are
@@ -219,8 +218,7 @@ level are an error ("must be inside a surface or component"); the parser
 reports it and parses them anyway to keep going. The one exception is a
 `file` element (`file "~/.cache/strand/colors.css" { template:
 "colors.css.tmpl" }`), which draws nothing and keeps a file in step with the
-theme (decisions.md m5-tools; built in M5 wave 2, when the parser starts
-accepting it).
+theme (decisions.md m5-tools; M5 wave 2).
 
 ## Declarations
 

@@ -50,6 +50,12 @@ pub struct Program {
     pub tokens: BTreeMap<String, Ty>,
     /// Resolved name uses, in source order per file.
     pub refs: Vec<Reference>,
+    /// (M5) Each `file` element's `text:` props, compiled as template
+    /// holes, by the file and the value's span (`check/files.rs`).
+    pub file_texts: Vec<((FileId, Span), std::sync::Arc<crate::template::Template>)>,
+    /// (M5) Each `file` element's literal `template:` path, for
+    /// [`crate::check::files::templates`].
+    pub file_templates: Vec<crate::check::files::TemplatePath>,
 }
 
 impl Program {
@@ -94,6 +100,9 @@ pub struct FileHir {
     /// `theme.look`.
     pub name: String,
     pub items: Vec<Item>,
+    /// (M5) Its top-level `file` elements (grammar.md `top_file`), each
+    /// an element of kind `file`.
+    pub outputs: Vec<Element>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

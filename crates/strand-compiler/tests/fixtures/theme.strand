@@ -30,3 +30,4 @@ tokens base {
 }
 tokens compact extends base { override space { 1: 2px; 2: 4px; 3: 8px; 4: 12px } }
 use tokens prefs.compact ? compact : base, palette scheme
+file "~/.cache/strand/accent.txt" { text: $accent }   // kept in step with every switch

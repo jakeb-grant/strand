@@ -1,0 +1,117 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::file_source
+
+  × a `file` takes one of `template:` and `text:`
+   ╭─[file_element.strand:7:45]
+ 6 │ state n = 1
+ 7 │ file "~/.cache/a.css" { template: "a.tmpl"; text: $accent }
+   ·                         ────┬───            ──┬─
+   ·                             │                 ╰── a second source
+   ·                             ╰── the first
+ 8 │ file "~/.cache/b.css" { run: ["notify-send", "x"] }
+   ╰────
+  help: keep one: a template file, or a `text:` expression
+
+check::file_source
+
+  × a `file` needs `template:` or `text:`
+   ╭─[file_element.strand:8:1]
+ 7 │ file "~/.cache/a.css" { template: "a.tmpl"; text: $accent }
+ 8 │ file "~/.cache/b.css" { run: ["notify-send", "x"] }
+   · ──┬─
+   ·   ╰── nothing to write
+ 9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
+   ╰────
+  help: `template: "colors.css.tmpl"` (a file beside the config), or `text: …`
+
+check::no_permit
+
+  × running `notify-send` needs `permit exec`
+   ╭─[file_element.strand:8:30]
+ 7 │ file "~/.cache/a.css" { template: "a.tmpl"; text: $accent }
+ 8 │ file "~/.cache/b.css" { run: ["notify-send", "x"] }
+   ·                              ──────────┬─────────
+   ·                                        ╰── not permitted
+ 9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
+   ╰────
+  help: add `permit exec "notify-send"` at the top level
+
+check::file_target
+
+  × a `file` never writes a `.strand` file
+    ╭─[file_element.strand:9:6]
+  8 │ file "~/.cache/b.css" { run: ["notify-send", "x"] }
+  9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
+    ·      ─────────────┬─────────────
+    ·                   ╰── a config file
+ 10 │ file "~/.cache/c.css" { text: n }
+    ╰────
+  help: write the output beside the config, not into it
+
+check::unknown_prop
+
+  × a `file` has no prop `colour`
+    ╭─[file_element.strand:9:51]
+  8 │ file "~/.cache/b.css" { run: ["notify-send", "x"] }
+  9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
+    ·                                                   ───┬──
+    ·                                                      ╰── unknown prop
+ 10 │ file "~/.cache/c.css" { text: n }
+    ╰────
+  help: a `file` takes `template:` (a template file), or `text:`, and `run:`, and `when` blocks
+        that change them
+
+template::not_theme
+
+  × a template reads the theme only: `n` is not in its scope
+    ╭─[file_element.strand:10:31]
+  9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
+ 10 │ file "~/.cache/c.css" { text: n }
+    ·                               ┬
+    ·                               ╰── not a token, a palette entry or a template function
+ 11 │ bar Top {
+    ╰────
+  help: a hole reads tokens (`$accent`, `$fg.muted.light()`), `$palette.<name>`, literals, `??`,
+        `join`, `hex` and `argb`
+
+check::file_item
+
+  × a `file` holds its props and `when` blocks only
+    ╭─[file_element.strand:12:47]
+ 11 │ bar Top {
+ 12 │   file "~/.cache/d.css" { template: "d.tmpl"; text "hi" }
+    ·                                               ────┬────
+    ·                                                   ╰── not a prop of `file`
+ 13 │ }
+    ╰────
+  help: a `file` takes `template:` (a template file), or `text:`, and `run:`, and `when` blocks
+        that change them
+
+check::file_source
+
+  × this `when` gives `template:` to a `file` written with `text:`
+    ╭─[file_element.strand:14:54]
+ 13 │ }
+ 14 │ file "~/.cache/e.css" { text: $accent; when n == 1 { template: "e.tmpl" } }
+    ·                         ──┬─                         ────┬───
+    ·                           │                              ╰── not `text:`
+    ·                           ╰── the `file`'s source
+ 15 │ file "~/.cache/f.css" { text: $acent }
+    ╰────
+  help: a `when` changes the `file`'s own source: give it another `text:`
+
+check::unknown_token
+
+  × unknown token `$acent`
+    ╭─[file_element.strand:15:31]
+ 14 │ file "~/.cache/e.css" { text: $accent; when n == 1 { template: "e.tmpl" } }
+ 15 │ file "~/.cache/f.css" { text: $acent }
+    ·                               ───┬──
+    ·                                  ╰── not a token
+    ╰────
+  help: did you mean `$accent`?
+
+fix [check::unknown_token] file_element.strand: `$acent` -> `$accent`

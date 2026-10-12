@@ -1,0 +1,15 @@
+// expect: check::file_item, check::file_source, check::file_target, check::no_permit, check::unknown_prop, check::unknown_token, template::not_theme
+// A `file` takes one of `template:` and `text:`, never writes a `.strand`
+// file, runs only what `permit exec` allows, and its `text:` reads the
+// theme only, tokens the config has; a `when` changes the `file`'s own
+// source.
+state n = 1
+file "~/.cache/a.css" { template: "a.tmpl"; text: $accent }
+file "~/.cache/b.css" { run: ["notify-send", "x"] }
+file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
+file "~/.cache/c.css" { text: n }
+bar Top {
+  file "~/.cache/d.css" { template: "d.tmpl"; text "hi" }
+}
+file "~/.cache/e.css" { text: $accent; when n == 1 { template: "e.tmpl" } }
+file "~/.cache/f.css" { text: $acent }

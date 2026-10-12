@@ -468,6 +468,7 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -542,6 +543,7 @@ fn saves_reload_live_with_state_kept() {
             let _ = give.send(r);
         }))),
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -857,6 +859,7 @@ fn spawn_live_quiet(
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1649,6 +1652,7 @@ fn five_save_styles_land_on_a_cold_boot() {
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2256,6 +2260,7 @@ fn main_thread_notices_reach_watchers_that_come_later() {
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2324,6 +2329,7 @@ fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2434,6 +2440,7 @@ fn an_unavailable_gpu_is_a_notice_once() {
         icon_theme_switched: None,
         requests_to: None,
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2541,6 +2548,7 @@ fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
             let _ = give.send(r);
         }))),
         events_to: None,
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2638,6 +2646,7 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
         events_to: Some(ipc::EventSink::new(move |ev| {
             let _ = heard.lock().unwrap().send(ev.clone());
         })),
+        own_writes: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();

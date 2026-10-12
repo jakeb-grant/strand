@@ -181,6 +181,11 @@ fn check_config(
         &compiled.program,
         Some(dir),
     ));
+    // (M5) `file`s' literal `template:` paths against their files.
+    diags.extend(strand_compiler::check::files::templates(
+        &compiled.program,
+        Some(dir),
+    ));
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call
@@ -321,6 +326,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// (M5) `strand check` checks a `file`'s literal template path: a
+    /// missing template is an error naming it.
+    #[test]
+    fn a_files_template_is_checked() {
+        let d = TempDir::new();
+        d.write(
+            "theme.strand",
+            "file \"out/c.css\" { template: \"c.tmpl\" }\n",
+        );
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert_eq!(r.errors, 1, "{}", r.text);
+        assert!(
+            r.text.contains("cannot read the template `c.tmpl`"),
+            "{}",
+            r.text
+        );
+        d.write("c.tmpl", "{{ $accent }}\n");
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert!(r.ok(), "{}", r.text);
     }
 
     #[test]

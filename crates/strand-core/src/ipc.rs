@@ -80,6 +80,17 @@ pub enum Request {
     Clear { path: String },
     /// (M5) `strand report`.
     Report,
+    /// (M5 wave 2, S-tools) `strand export`: `kind` is `json`, `base24`
+    /// or `template`; a template's text and the name its diagnostics
+    /// give it (the CLI's path) travel with it, since the shell may not
+    /// see the CLI's working directory. `--palette` never reaches the
+    /// shell (it mounts no config, so the CLI renders it offline). A
+    /// socket request only: the D-Bus front end has no `Export`.
+    Export {
+        kind: String,
+        template: Option<String>,
+        name: Option<String>,
+    },
     /// (M5) `inspect.pick{on}`: pick mode on or off.
     InspectPick { on: bool },
     /// (M5) `inspect.node{id}`: one node's pane.
@@ -109,6 +120,7 @@ impl Request {
             Request::Call { .. } => "call",
             Request::Clear { .. } => "clear",
             Request::Report => "report",
+            Request::Export { .. } => "export",
             Request::InspectPick { .. } => "inspect.pick",
             Request::InspectNode { .. } => "inspect.node",
             Request::InspectDump { .. } => "inspect.dump",
@@ -171,7 +183,8 @@ pub fn parse(line: &str) -> Result<Request, String> {
         "mock" => Request::Mock(v),
         // (M5, S-ipc) `get`, `toggle`, `call`, `clear`, and the
         // inspector's `inspect.node` and `inspect.dump`.
-        "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" => {
+        // (M5 wave 2, S-tools) `export`.
+        "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" | "export" => {
             return parse_m5(cmd, &v);
         }
         other => return Err(format!("unknown command `{other}`")),
@@ -217,6 +230,11 @@ pub fn parse_m5(cmd: &str, v: &Json) -> Result<Request, String> {
             },
         },
         "report" => Request::Report,
+        "export" => Request::Export {
+            kind: need("kind")?,
+            template: text(v, "template"),
+            name: text(v, "name"),
+        },
         "inspect.pick" => Request::InspectPick { on: on()? },
         "inspect.node" => Request::InspectNode { id: need("id")? },
         "inspect.dump" => Request::InspectDump {
@@ -260,6 +278,18 @@ pub fn encode(req: &Request) -> String {
             put("id", text(id))
         }
         Request::InspectDump { surface: Some(s) } => put("surface", text(s)),
+        Request::Export {
+            kind,
+            template,
+            name,
+        } => {
+            put("kind", text(kind));
+            for (key, v) in [("template", template), ("name", name)] {
+                if let Some(v) = v {
+                    put(key, text(v));
+                }
+            }
+        }
         Request::InspectDump { surface: None } | Request::InspectHighlight { id: None } => {}
     }
     line(&Json::Object(m))
@@ -637,6 +667,16 @@ mod tests {
                 id: Some("4v0".into()),
             },
             Request::InspectFlash { on: true },
+            Request::Export {
+                kind: "json".into(),
+                template: None,
+                name: None,
+            },
+            Request::Export {
+                kind: "template".into(),
+                template: Some("{{ $accent }}\n".into()),
+                name: Some("a.tmpl".into()),
+            },
         ]
     }
 
@@ -657,6 +697,7 @@ mod tests {
                 | Request::Clear { .. }
                 | Request::InspectNode { .. }
                 | Request::InspectDump { .. }
+                | Request::Export { .. }
         )
     }
 

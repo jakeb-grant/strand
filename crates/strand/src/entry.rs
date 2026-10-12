@@ -53,7 +53,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("new", "scaffold a working shell", "M5"),
     (
         "export",
-        "write the palette: json | base24 | --template <file> (M5 wave 2)",
+        "write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]",
         "M5",
     ),
     (
@@ -149,6 +149,7 @@ pub fn main() -> ExitCode {
         Some("toggle") => Some(cli::toggle_cli),
         Some("call") => Some(cli::call_cli),
         Some("clear") => Some(cli::clear_cli),
+        Some("export") => Some(cli::export_cli),
         _ => None,
     };
     if let Some(command) = ipc {

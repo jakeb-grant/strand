@@ -1,0 +1,8 @@
+:root {
+  --accent: #cba6f7;
+  --on-accent: #11111b;
+  --surface: #1e1e2e;
+  --fg: #cdd6f4;
+  --fg-muted: #cdd6f4a6;
+  --glow: #cba6f766;
+}

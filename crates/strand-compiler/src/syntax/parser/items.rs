@@ -210,7 +210,10 @@ impl Parser<'_> {
             return ItemKind::Error;
         }
         let next = self.nth(1);
-        if ctx == Ctx::Top && !cannot_follow_keyword(next) {
+        // (M5 wave 2) grammar.md's `top_file`: the element named `file`
+        // is a declaration at the top level (a `file` draws nothing).
+        let top_file = ctx == Ctx::Top && word == "file";
+        if ctx == Ctx::Top && !top_file && !cannot_follow_keyword(next) {
             // A slip of a declaration keyword (`compnent`, `tokns`): say
             // so once and parse what was meant. An element here would be
             // an error anyway, so nothing is lost.
@@ -247,8 +250,8 @@ impl Parser<'_> {
                 }
             }
         }
-        let (el, statement) = self.element(ctx != Ctx::Top);
-        if ctx == Ctx::Top {
+        let (el, statement) = self.element(ctx != Ctx::Top || top_file);
+        if ctx == Ctx::Top && !top_file {
             let (label, help) = if statement {
                 ("statements go inside a handler", Some(STATEMENT_HELP))
             } else {

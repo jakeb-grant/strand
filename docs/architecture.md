@@ -20,7 +20,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | GPU (M4; `strand-gpu`, started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 | Theme quantiser (`strand-quantise`, one per `Quantiser`, started at the first wallpaper palette asked for) | `strand-theme` (`image.rs`), driven from `strand-compiler`'s `vm/theme.rs` | Wallpaper decodes and palette quantisation off the logic thread, with the quantise cache; a short-lived `strand-quantise-grace` sleeper per torn wallpaper wakes the owner when its grace ends | Run on the logic tick: logic polls for results and keeps the last palette meanwhile |
 | Token overlay writer (`strand-tokens`, M5; started on the first write, ends when idle) | `strand-compiler` (`instantiate/overlay.rs`) | Atomic writes of `$XDG_STATE_HOME/strand/tokens.toml` (temp file, `fsync`, rename, directory `fsync`), the newest queued text winning; a bounded wait for the last write at exit | Run on the logic tick or block logic (a failure comes back as settings' `WriteFailed` notice); it is not the persist IO thread |
-| File output writer (`strand-files`, M5 wave 2, S-tools; started with the first mounted `file` output, ends with the shell) | the binary's output host (`run/outputs.rs`) | Writes the bytes logic rendered for each `file` output (atomic temp file and rename, following symlinks, keeping the mode; latest bytes per path win), keeps the manifest under `$XDG_STATE_HOME/strand/files`, runs `run:` with its 200 ms trailing debounce, one run per file plus one queued and the 10 s timeout that kills its process group; each outcome goes back to logic over a channel logic polls, so a failure is a notice and a `strand watch` event through `Shell::broadcast` | Render a template, touch the scene or Wayland, or block logic; it has no channel to the main thread |
+| File output writer (`strand-files`, M5 wave 2, S-tools; started with the first mounted `file` output, ends with the shell) | the binary's output host (`run/outputs.rs`) | Writes the bytes logic rendered for each `file` output (atomic temp file and rename, following symlinks, keeping the mode; latest bytes per path win), keeps the manifest under `$XDG_STATE_HOME/strand/files`, tries a refused or failed write again (1 s, doubling to 10 s), runs `run:` with its 200 ms trailing debounce, one run per file plus one queued and the 10 s timeout that kills its process group, each run waited for on a short-lived `strand-files-run` thread; each outcome goes back to logic over a channel logic polls, so a failure is a notice and a `strand watch` event through `Shell::broadcast` | Render a template, touch the scene or Wayland, or block logic; it has no channel to the main thread |
 | State writer (`strand-state-write`, one per `FileWriter`: the logic thread's for the portal's last values, the theme VM's for the last palette, each started on first use and idle until a write) | `strand-theme` (`writer.rs`) | Atomic writes of the last palette and the portal's last settings, batched per path | Block logic (a write is queued and returns at once; a failure is a WARN) |
 | Introspection asks (`strand-introspect`, one short-lived thread per uncached ask; in `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`), used by `strand-dev`'s workspace (`strand check` and the loader ask on their own thread and wait) | One D-Bus introspection call, its answer remembered for `TTL`, then `done` | Block the LSP's analysis: it gets the remembered answer, or none, at once |
 | Short-lived waiters | the binary's `overlay.rs` (`strand-editor`), `strand-services`'s `custom.rs` (`strand-kill`) | `strand-editor`: waits on the `$EDITOR` the overlay's click opened, so it is reaped; `strand-kill`: SIGKILLs a dropped `permit exec` process group after its SIGTERM grace | Anything else: each ends with its one wait |
@@ -2117,8 +2117,9 @@ table.
 > into force at wave 1's integration (decisions.md m5-integration-w1).
 > The palette half (S-palette) is built on `laptop/m5-palette`
 > (`Role::COUNT` 62, extras, identity, the reserved names, the `json`
-> and `base24` writers; decisions.md m5-palette); the rest is not yet:
-> the parser still reports a top-level `file` as `syntax::misplaced`. Two streams
+> and `base24` writers; decisions.md m5-palette); S-tools' half is built
+> on `laptop/m5-tools` (templates, `export`, the `file` element and its
+> writer; decisions.md m5-tools, wave 2). Two streams
 > build it (m5-plan, Streams): **S-palette** owns the strand-theme and
 > strand-scene parts, **S-tools** the strand-compiler, strand-core and
 > binary parts. The design and its reasons are in decisions.md m5-tools
@@ -2151,6 +2152,8 @@ table.
     `base24` follows the slot table in decisions.md m5-tools ("the
     CLI"), and `json` the value rules in "template expressions and
     formats".
+  - `image::Quantiser::read_only(dir)` (S-tools, M5 wave 2): reads the
+    seed index in `dir`, never writes it; the offline mount's.
   - Owner: S-palette (hue roles, `Role::COUNT` 62, extras, identity,
     the persisted file's `name` and `extra` lines, the harmonised
     derivation, every importer's extras, and the `json` and `base24`
@@ -2169,94 +2172,160 @@ table.
   (`.red()`, `.green()`, `.blue()`, `.opacity()`, `.light()`,
   `.dark()`) never reach the render thread.
 - **strand-compiler** (S-tools; the parser's `top_file` arm is a small
-  change S-lsp reviews, since the tree-sitter grammar follows it).
-  - `Instance::palette(rt) -> Result<Palette, Error>` evaluates
+  change S-lsp reviews, since the tree-sitter grammar follows it). As
+  built in M5 wave 2 (changed from the first text with the code,
+  decisions.md m5-tools, "the interfaces as built"):
+  - `Instance::palette(&self) -> Result<Palette, Error>` evaluates
     `use palette` with no fallback (built-in only when the program
-    has none); `token_table` swallows a failing palette
-    (`instantiate/mod.rs` 467–494).
+    has none; the offline mount's pinned palette when it has one); a
+    pending wallpaper gives its last value if it has one, else
+    `instantiate::theme::PALETTE_PENDING` (`is_pending(&Error)` tells
+    it), the one sentinel the outputs, the IPC request and the offline
+    mount share. `token_table` still swallows a failing palette for the
+    screen. `Instance::tokens_now() -> Result<TokenTable, Error>` is
+    the current table, overlays included, as the last tick resolved it.
   - Mounting with a pinned palette root (the persisted palette, for
-    the offline mount), and with a read-only `ThemeHost`: it reads
+    the offline mount), and with a read-only `ThemeHost`
+    (`Storage::read_only(state_dir, config_dir)`, which also opens a
+    read-only `PersistStore` and token overlay): it reads
     `palettes/palette` and the `Quantiser`'s seed index from the
     `palettes` directory but writes neither (`remember_palette` keeps
-    the palette in memory only; the `Quantiser` stores no seed), since
+    the palette in memory only; `strand_theme::image::Quantiser::
+    read_only(dir)` reads the index and stores no seed), since
     `Storage::palette_dir` would otherwise give it the real directory
     and an offline export would write `palettes/palette`.
-  - `Instance::other_mode(rt) -> Memo<Result<TokenTable, Error>>`: the
-    theme's `use palette` and `use tokens` evaluated with every read of
-    `system.dark` answered by its negation, with no fallback. It
-    evaluates in an other-mode child env with fresh slots for every
-    top-level `let` that the theme reaches and that reaches
-    `system.dark` (the static dependency graph, through `fn` bodies),
-    since a `let` is one shared slot already computed with the real
-    `system.dark`; states, settings and `persist` cells stay shared;
-    the env flags the service read (and `default_palette`) to negate
-    `system.dark`. It never calls `ThemeHost::remember_palette`, never
-    reads or sets `last_palette`, and stores no `Quantiser` seed. The
-    runtime token overlays apply to its table as to the current one.
-    One per instance, held (counted) by each mounted output whose
-    template reads `.light()` or `.dark()` and by an IPC `export`
-    request whose template does, for that request; made with the first
-    holder and dropped with the last; it writes no cell, tracks what only the other mode reads (imports, settings
-    fields, a pending image's `Async`) as any memo does, and is pulled
-    on the logic thread after the tick's diff, once per change for all
-    outputs.
-  - A `pub` path for the persisted palette (today `LAST_PALETTE` is
-    private in `vm/theme.rs`).
-  - `template::Template::compile(file, src, scope) -> Result<Template,
-    Vec<Diagnostic>>` produces a pure IR (text runs and compiled holes;
+  - The other mode: the theme's `use palette` and `use tokens`
+    evaluated with every read of `system.dark` answered by its
+    negation, with no fallback. It evaluates in an other-mode child env
+    with fresh slots for every top-level `let` that the theme reaches
+    and that reaches `system.dark` (the static dependency graph,
+    through `fn` bodies), since a `let` is one shared slot already
+    computed with the real `system.dark`; states, settings and
+    `persist` cells stay shared; the env flags the service read (and
+    `default_palette`) to negate `system.dark`. It never calls
+    `ThemeHost::remember_palette`, never reads or sets `last_palette`,
+    and stores no `Quantiser` seed. The runtime token overlays apply to
+    its table as to the current one. It is one counted memo per
+    instance (in place of the first text's `Instance::other_mode(rt)`):
+    `Instance::hold_other_mode() -> OtherModeHold` takes a hold
+    (`OtherModeHold::memo() -> Memo<TokenTable>`), and
+    `Instance::release_other_mode(OtherModeHold)` lets go of it on the
+    program it was taken on, so a hold from before a reload releases
+    nothing the reloaded program holds; `other_mode_holders()` counts
+    them, and `other_table() -> Result<Option<TokenTable>, Error>`
+    pulls it now under a hold of its own (`Ok(None)` when the theme
+    gives the same mode either way, `instantiate::theme::
+    other_differs`). Each mounted output whose template reads `.light()`
+    or `.dark()` holds it, and so does an IPC `export` request whose
+    template does, until its reply; made with the first holder and
+    dropped with the last, it writes no cell, tracks what only the
+    other mode reads (imports, settings fields, a pending image's
+    `Async`) as any memo does, and is pulled on the logic thread after
+    the tick's diff, once per change for all outputs.
+  - `vm::theme::persisted_palette(dir) -> Option<Palette>` is the
+    `pub` path for the persisted palette.
+  - `template::Template::compile(file, src) -> Result<Template,
+    Vec<Diagnostic>>` and `Template::compile_expr(file, &ast::Expr)` (a
+    `text:` prop) produce a pure IR (text runs and compiled holes;
     token-only scope; the template-only methods `.red()`, `.green()`,
-    `.blue()`, `.opacity()`, `.light()` and `.dark()`; a flag saying
-    whether it reads the other mode).
+    `.blue()`, `.opacity()`, `.light()` and `.dark()`;
+    `reads_other_mode()`; `token_paths()` for the check).
     `Template::render(&self, current: &TokenTable, other:
     Option<&TokenTable>) -> Result<Vec<u8>, Vec<Diagnostic>>` is pure
-    and `Send`; the output host calls it on the logic thread after the
-    tick's diff is sent, over the tick's frozen token tables (decisions.md
+    and `Send`, over the tick's frozen token tables (decisions.md
     m5-integration-w1).
   - The `file` element in the schema, and at the top level in the
     parser (grammar.md `top_file`; every other top-level element keeps
-    `syntax::misplaced`): one of `template:`/`text:`, `run:` checked
-    against `permit exec`.
-  - `Update` gains `outputs: Vec<OutputChange>`: a path plus the
-    compiled template or text and the token tables (current, and the
-    other mode only when the template reads it), produced only when an
-    output's memo changes, after the tick's diff. An output's memo reads
-    `other_mode` when its template does, so an edit that changes only
-    the other mode re-renders it.
+    `syntax::misplaced`), checked by `check/files.rs`: one of
+    `template:`/`text:`, `run:` against `permit exec`, `when` blocks
+    that change its props (the source keeping its kind), a `text:`'s
+    tokens. The HIR is an element of kind `Builtin("file")` (its `when`s
+    its children; a top-level one in `FileHir.outputs`), with
+    `Program.file_texts` (each `text:` compiled, by its value's span)
+    and `Program.file_templates` (the literal `template:` paths);
+    lowering makes it `lower::ElementKind::File(Arc<FileOutput>)`, its
+    path and its props in source order, each under its `when`'s
+    condition. `check::files::templates(&Program, Option<&Path>) ->
+    Vec<Diagnostic>` checks literal template paths against their files
+    (read, compiled, tokens known); `strand check` and the LSP run it,
+    `strand run`'s loader does not (a template is watched, and its
+    errors are its output's notice).
+  - Outputs are pulled, not pushed in `Update` (in place of the first
+    text's `Update.outputs: Vec<OutputChange>`): each mounted `file` is
+    a content memo with equality cut-off (path, template, `run:`, the
+    current table, the held other mode, and one shared no-fallback
+    palette check), and `Instance::take_outputs() -> Vec<OutputChange>`,
+    called after the tick's diff is sent, renders the changed ones on
+    the logic thread and hands them out: `OutputChange { path:
+    Option<PathBuf>, file, span, content }`, the content
+    `OutputContent::Write { bytes, run: Option<Vec<String>> }` or
+    `OutputContent::Failed { diags, template: Option<(name, text)> }`
+    (the diagnostics point into the template when it is given). A
+    pending palette hands out nothing; one path mounted from two places
+    is `file::twice` on both. `Instance::output_count()` counts them,
+    and `Instance::output_targets(each: impl FnMut(&Path))` names the
+    paths they write now (each output whose last handed-out change was
+    a write; a removed `file`, a changed path and a failing render have
+    none), so the writer drops what it still tries elsewhere.
 - **strand-core** (S-tools). A read-only `PersistStore` (reads cells, never
   writes) for the offline mount.
 - **strand (binary)** (S-tools).
   - `strand export json | base24 | --template <file> [--palette
     <expr>] [-o <file>]` (`src/export.rs`).
-  - The `export` IPC request: `Request::Export` in `strand_core::ipc`
-    with its `parse_m5` arm, its `Shell::request` arm and its handler,
+  - The `export` IPC request: `Request::Export { kind, template:
+    Option<String>, name: Option<String> }` in `strand_core::ipc`
+    (`export{kind, template?, name?}` on the wire: the template's text
+    and its name for diagnostics travel, `--palette` never does) with
+    its `parse_m5` arm, its `Shell::request` arm and its handler,
     `run/request/export.rs` (0a's v1 command list names it). It is a
     socket request only (no D-Bus method). It renders against the live
-    table, overlays included, on the logic thread after the tick's
-    diff, holding `Instance::other_mode` while it builds its reply when
-    its template reads the other mode; the CLI falls back to the
-    offline mount when no shell answers.
+    table, overlays included, on the logic thread, through the same
+    `export::produce` as the offline mount; when its template reads the
+    other mode it holds it (`Instance::hold_other_mode`) until its reply
+    is built, and one whose other palette is still loading waits (tried
+    again after each tick's diff, at most 30 s, the deadline among the
+    logic loop's wake-ups so an idle shell answers). The CLI falls back to
+    the offline mount when no shell answers, when the shell predates
+    `export`, or when the template is too large for one request line.
   - The output host (`run/outputs.rs`) lives on the logic side. After
-    the tick's diff is sent, logic takes `Update.outputs` and renders
-    each changed output from its compiled template IR (or `text:`
-    value) over the tick's frozen token tables, current and, when the
-    template reads it, the other mode; a render error is that output's
-    notice and writes nothing. The rendered bytes go to the file output
-    writer thread (`strand-files`, Threads), so logic never waits on a
-    disk or a child process. No main-side channel is added: main never
-    sees an output.
+    the tick's diff is sent, logic calls `Instance::take_outputs`, which
+    renders each changed output over the tick's token tables, current
+    and, when the template reads it, the other mode; a render error is
+    that output's notice and writes nothing. The rendered bytes go to
+    the file output writer thread (`strand-files`, Threads), so logic
+    never waits on a disk or a child process. After the changes, logic
+    sends the writer the outputs' targets when they changed
+    (`Instance::output_targets`), and the writer drops the retries of
+    every other path (spec.md 9.7, "Removing a `file` stops its
+    updates"); a `run:` due for bytes already written there still runs,
+    so its consumer hears of the file it holds. No main-side channel is added: main never sees
+    an output.
   - The writer thread writes atomically (temp file and rename,
     following symlinks and keeping the file's mode; the latest bytes per
     path win), and Strand's own writes are registered with the watcher
-    in advance. It keeps a manifest of written files and their hashes in
-    `$XDG_STATE_HOME/strand/files`, and refuses unowned and `.strand`
-    targets.
+    in advance (`Live::own_writes`, an `OwnWrites` hook the binary takes
+    from `Worker::own_write_hook`; the link and the file it names both).
+    It keeps a manifest of written files in
+    `$XDG_STATE_HOME/strand/files` (a `#` comment line, then one
+    `<hash> <path>` line per file, the hash FNV-1a 64 of the bytes as 16
+    hex digits; the path is the file written, links followed, and the
+    hash only spares rewriting the manifest), and refuses unowned and
+    `.strand` targets, a read-only file and a link to a missing file,
+    each judged on the file a link names, not the link. The thread ends
+    when the shell's `Files` is dropped (a `Stop` job: its runs'
+    threads hold senders of its queue). A refused or failed write is
+    tried again (after 1 s, doubling to 10 s) until it lands or newer
+    content replaces it; an unowned target's notice offers `[replace]`
+    (`overlay::Click::Replace`), which hands the file to Strand.
   - It runs `run:` with a 200 ms trailing debounce, at most one run
     per file plus one queued, and a 10 s timeout that kills the
-    process group. Each outcome goes back to logic over a channel the
-    logic loop polls: a failure (a refused target, a failed write, a
-    failing `run` with the last 4 KiB of its stderr) becomes an overlay
-    notice and a `strand watch` event through `Shell::broadcast`, and
-    the last good file stays.
+    process group. Its stderr is read without blocking while it runs
+    and for 100 ms after, never to its end of file, so a process it
+    backgrounds never holds the writer. Each outcome goes back to logic
+    over a channel the logic loop polls: a failure (a refused target, a
+    failed write, a failing `run` with the last 4 KiB of its stderr)
+    becomes an overlay notice and a `strand watch` event through
+    `Shell::broadcast`, and the last good file stays.
   - The CLI's `export` row (in `src/entry.rs` after the wave 1 → 2 move)
     reads "write the palette: json | base24 | --template <file> (M5 wave
     2)" since wave 1's integration; S-tools drops the "(M5 wave 2)"

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use strand_services::testing::PrivateBus;
 
-struct Proc(Child);
+pub(super) struct Proc(Child);
 
 impl Drop for Proc {
     fn drop(&mut self) {
@@ -194,6 +194,17 @@ impl Desk {
         self.dir.join("state")
     }
 
+    /// The test's directory: `config` (the config), `state` (its
+    /// `XDG_STATE_HOME`), the sockets (S-tools' export tests).
+    pub(super) fn root(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// Stops `strand run` (killed), leaving sway and the directories.
+    pub(super) fn stop(&mut self) {
+        self.strand.take();
+    }
+
     fn env(&self) -> Vec<(&'static str, PathBuf)> {
         vec![
             ("XDG_RUNTIME_DIR", self.dir.clone()),
@@ -289,7 +300,7 @@ impl Desk {
 
     /// `strand watch --json`, its events on a channel once it is
     /// subscribed.
-    fn watch(&self) -> (Proc, mpsc::Receiver<serde_json::Value>) {
+    pub(super) fn watch(&self) -> (Proc, mpsc::Receiver<serde_json::Value>) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_strand"))
             .args(["watch", "--json"])
             .envs(self.env())

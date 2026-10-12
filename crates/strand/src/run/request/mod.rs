@@ -3,7 +3,7 @@
 //! own disjoint files (docs/m5-plan.md, "Streams": `get`, `set`,
 //! `toggle`, `call`, `clear` S-ipc, and in wave 2 `inspect.node`,
 //! `inspect.dump` and `reset{node}` over S-inspect's library; the other
-//! `inspect.*` S-inspect; `report` S-tools). A command no module serves
+//! `inspect.*` S-inspect; `report` and `export` S-tools). A command no module serves
 //! yet does not parse from the socket (`strand_core::ipc::parse`); from
 //! another thread it arrives as a `Request` and is answered as the
 //! socket answers it, as an unknown command ([`strand_core::ipc::unknown`]).
@@ -21,6 +21,7 @@ use crate::ipc;
 
 mod call;
 mod clear;
+mod export;
 mod get;
 mod inspect;
 mod mock;
@@ -30,6 +31,8 @@ mod reset;
 mod set;
 mod toggle;
 mod watch;
+
+pub(in crate::run) use export::Waiting;
 
 /// Who asked, and where the answer goes.
 #[derive(Debug)]
@@ -56,6 +59,14 @@ impl Shell {
             Request::Call { target, args } => self.call_request(from, &target, &args),
             Request::Clear { path } => self.clear_request(from, &path),
             Request::Mock(req) => self.mock_request(from, &req),
+            // A socket request only (decisions.md m5-tools, "the CLI").
+            Request::Export {
+                kind,
+                template,
+                name,
+            } if matches!(from, Caller::Socket(_)) => {
+                self.export_request(from, &kind, template, name)
+            }
             req => self.not_served(from, req.cmd()),
         }
     }
