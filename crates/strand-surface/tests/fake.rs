@@ -1392,3 +1392,35 @@ fn no_activation_protocol_means_no_token_and_no_wait() {
     assert_eq!(got.take(), Some(None), "answered at once, with no token");
     assert!(fake.activation_requests().is_empty());
 }
+
+/// (M5, S-platform) A compositor that never answers a token request:
+/// the request is given up after five seconds by its own timer, with no
+/// later request to sweep it (its caller hears `None`, nothing is left
+/// waiting), and an answer to a later one still arrives.
+#[test]
+fn an_unanswered_token_is_given_up_on_its_own() {
+    let (fake, mut mgr, id) = seated(true, true);
+    let serial = click_panel(&fake, &mut mgr);
+    fake.cmd(Cmd::HoldTokens(true));
+    fake.sync();
+    let got = std::rc::Rc::new(std::cell::Cell::new(None));
+    let put = got.clone();
+    let asked = std::time::Instant::now();
+    mgr.state_mut()
+        .activation_token(id, serial, move |t| put.set(Some(t)));
+    let ok = mgr
+        .dispatch_until(Duration::from_secs(10), |s| {
+            s.activation_tokens_waiting() == 0
+        })
+        .unwrap();
+    assert!(ok, "the unanswered token was never given up");
+    let took = asked.elapsed();
+    assert!(took >= Duration::from_secs(5), "{took:?}");
+    assert_eq!(got.take(), Some(None), "its caller heard no token");
+    assert_eq!(fake.activation_requests().len(), 1, "it was asked");
+
+    fake.cmd(Cmd::HoldTokens(false));
+    fake.sync();
+    assert_eq!(token(&mut mgr, id, serial).as_deref(), Some("fake-token-2"));
+    assert_eq!(mgr.state().activation_tokens_waiting(), 0);
+}

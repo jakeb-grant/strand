@@ -89,7 +89,9 @@ impl Dispatch<XdgActivationTokenV1, Mutex<ActivationRequest>> for Server {
                 if let Ok(mut log) = state.activation_log.lock() {
                     log.push(asked.clone());
                 }
-                token.done(asked.token.clone());
+                if !state.hold_tokens {
+                    token.done(asked.token.clone());
+                }
             }
             _ => {}
         }

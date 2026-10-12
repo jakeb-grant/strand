@@ -119,6 +119,10 @@ pub enum Cmd {
     /// ([`SurfaceGlobals::pointer`]): enter, press, release, each with
     /// a serial of its own.
     Click(&'static str),
+    /// (M5) Activation tokens asked for from now on are recorded but
+    /// never answered (true), as a compositor that ignores the request;
+    /// false answers them again (the held ones stay unanswered).
+    HoldTokens(bool),
     /// Answered once every command sent before it is applied
     /// ([`Fake::sync`]).
     Sync(mpsc::Sender<()>),
@@ -223,6 +227,8 @@ struct Server {
     /// (M5) Tokens given so far, and what each was asked with.
     tokens: u32,
     activation_log: Arc<Mutex<Vec<ActivationRequest>>>,
+    /// (M5) Tokens are not answered ([`Cmd::HoldTokens`]).
+    hold_tokens: bool,
 }
 
 impl Server {
@@ -431,6 +437,7 @@ impl Server {
                 }
             }
             Cmd::KeyboardLeave => self.keyboard_leave(),
+            Cmd::HoldTokens(hold) => self.hold_tokens = hold,
             Cmd::Click(namespace) => {
                 let Some(to) = self.surf.layer_surface(namespace) else {
                     return;

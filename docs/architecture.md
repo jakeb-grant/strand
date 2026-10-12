@@ -1023,16 +1023,18 @@ S-platform in M5 wave 3, decisions.md m5-platform).**
   not an `async fn`, since main has no executor. It sets the press's
   serial with the seat it came from, and the surface while it is still
   mapped. Without `xdg_activation_v1`, `done(None)` runs before it
-  returns; a token never answered is dropped (`done(None)`) after 5 s.
+  returns; a token never answered is dropped (`done(None)`, its object
+  destroyed) after 5 s by a calloop timer armed when it is asked.
 - **Launches.** A launched program gets the press's token in
   `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`
   (`strand_services::apps::spawn_launched`), and never the token strand
   inherited: every program strand starts (launches, `exec` sources, the
-  editor) goes through `strand_services::child::activation_env`, which
+  editor, a `file` element's `run:` command) goes through `strand_services::child::activation_env`, which
   removes both on the `Command` before `fork`.
 - **Ordering rule.** An action that needs a token (notification
-  `invoke` and `activate`, an app launch) waits up to 200 ms for it, then goes ahead
-  without one (m5-owner Q14). Every later action from the same handler
+  `invoke` and `activate`, an app launch) waits up to 200 ms from when
+  the handler sent it (a deadline, so several in one invocation wait
+  together), then goes ahead without one (m5-owner Q14). Every later action from the same handler
   invocation queues behind it, whichever service it goes to and whether
   or not an `await` came between, so `n.invoke("default"); n.dismiss()`
   and `n.invoke("default"); await x; n.dismiss()` both send
@@ -1040,7 +1042,9 @@ S-platform in M5 wave 3, decisions.md m5-platform).**
   the services side, one for all services; logic never blocks. A compositor
   without `xdg_activation_v1`, or one that never answers, means no
   token: never a wait beyond 200 ms, never a dropped or reordered
-  action.
+  action. An action whose service's run ended or was stopped while it
+  waited goes back to the logic thread, which sends it to the run that
+  is up then (started for it), as an action sent at once would be.
 
 **`strand-compiler` `Suggestion`** gains `title: Option<String>` (the
 code action's title; `None` keeps today's "Change to `…`", the title

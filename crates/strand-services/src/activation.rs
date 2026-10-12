@@ -10,7 +10,9 @@
 //! surface and serial, whose future the compositor's answer completes.
 //!
 //! **Ordering rule.** An action that needs a token waits for it at most
-//! [`TOKEN_WAIT`], then goes without one. Every later action of the same
+//! [`TOKEN_WAIT`] from when it was submitted (a deadline, so several in
+//! one invocation wait together, never one after another), then goes
+//! without one. Every later action of the same
 //! handler invocation (`ActionCtx::invocation`), to whichever service,
 //! with or without an `await` between, queues behind it, so
 //! `n.invoke("default"); n.dismiss()` still reaches the notification
@@ -25,7 +27,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_core::ActionCtx;
 use tokio::sync::oneshot;
@@ -71,7 +73,8 @@ pub(crate) type Spawn<'a> =
     &'a dyn Fn(Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>) -> bool;
 
 struct Step {
-    token: Option<TokenFuture>,
+    /// Its token, and when it stops waiting for it (submit + [`TOKEN_WAIT`]).
+    token: Option<(TokenFuture, Instant)>,
     deliver: Deliver,
 }
 
@@ -116,7 +119,10 @@ impl Order {
     ) -> bool {
         self.lines.borrow_mut().retain(|_, l| !lock(l).done);
         let token = match (wants, ctx.input, self.source.borrow().as_ref()) {
-            (true, Some(input), Some(source)) => Some(source(input.surface, input.serial)),
+            (true, Some(input), Some(source)) => Some((
+                source(input.surface, input.serial),
+                Instant::now() + TOKEN_WAIT,
+            )),
             _ => None,
         };
         let mut step = Some(Step { token, deliver });
@@ -154,8 +160,9 @@ impl Order {
     }
 }
 
-/// Delivers `line`'s actions in order, each waiting at most
-/// [`TOKEN_WAIT`] for its token; marks it done once empty.
+/// Delivers `line`'s actions in order, each waiting for its token until
+/// its deadline ([`TOKEN_WAIT`] after it was submitted); marks it done
+/// once empty.
 async fn drain(line: Shared) {
     loop {
         let step = {
@@ -169,7 +176,10 @@ async fn drain(line: Shared) {
             }
         };
         let token = match step.token {
-            Some(t) => tokio::time::timeout(TOKEN_WAIT, t).await.ok().flatten(),
+            Some((t, by)) => tokio::time::timeout_at(tokio::time::Instant::from_std(by), t)
+                .await
+                .ok()
+                .flatten(),
             None => None,
         };
         if !(step.deliver)(token) {
@@ -291,6 +301,28 @@ mod tests {
             *log.lock().unwrap(),
             [("launch".into(), None), ("close".into(), None)]
         );
+    }
+
+    /// Several actions of one invocation that want a token, from a
+    /// compositor that never answers: each waits [`TOKEN_WAIT`] from its
+    /// own submit, so together they cost one bound, not one each, and
+    /// still go in order.
+    #[test]
+    fn token_waits_of_one_invocation_overlap() {
+        let log: Log = Arc::default();
+        let never: TokenSource = Arc::new(|_, _| Box::pin(std::future::pending()));
+        let start = Instant::now();
+        with_order(Some(never), |order, spawn| {
+            for what in ["a", "b", "c", "d", "e"] {
+                order.submit(ctx(11), true, deliver(&log, what), spawn);
+            }
+            order.submit(ctx(11), false, deliver(&log, "after"), spawn);
+        });
+        let took = start.elapsed();
+        assert!(took >= TOKEN_WAIT, "{took:?}");
+        assert!(took < TOKEN_WAIT * 2, "five waits added up: {took:?}");
+        let got: Vec<String> = log.lock().unwrap().iter().map(|e| e.0.clone()).collect();
+        assert_eq!(got, ["a", "b", "c", "d", "e", "after"]);
     }
 
     /// No token source (no compositor protocol), or no press: the action

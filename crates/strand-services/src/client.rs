@@ -371,6 +371,7 @@ impl Services {
             reports: Cell::new(0),
             last_error: RefCell::new(None),
             last_notice: RefCell::new(None),
+            bounced: Arc::default(),
         });
         self.0
             .members
@@ -535,6 +536,11 @@ struct Run<S: Service> {
     noticed: bool,
     /// When it started (the logic clock).
     started: Duration,
+    /// (M5) Set, under its lock, when the run is stopped: an action
+    /// held for its token that goes after it is handed back
+    /// ([`ClientInner::bounced`]) instead of sent to a body that is
+    /// going away.
+    stopped: Arc<Mutex<bool>>,
 }
 
 impl<S: Service> Run<S> {
@@ -588,6 +594,57 @@ struct ClientInner<S: Service> {
     last_error: RefCell<Option<String>>,
     /// The notice last reported ([`ServiceDiagnostic`]).
     last_notice: RefCell<Option<String>>,
+    /// (M5) Actions that waited behind a token and found the run they
+    /// were meant for gone (it ended or was stopped meanwhile), in
+    /// order: [`Member::pump`] sends them to the run that is up now,
+    /// started for them if need be, as [`Client::act`] does.
+    bounced: Bounced<S>,
+}
+
+/// Messages handed back to the logic thread, each with its token.
+type Bounced<S> = Arc<Mutex<std::collections::VecDeque<(Msg<S>, Option<String>)>>>;
+
+impl<S: Service> ClientInner<S> {
+    /// Sends the actions [`ClientInner::bounced`] holds through
+    /// [`ClientInner::with_run`], in order. One the run still in place
+    /// cannot take (its body ended and its `Ended` is not in yet) stays,
+    /// with those after it, for the next pump; one that cannot be sent
+    /// at all (a body waiting out its retry backoff, as [`Client::act`]
+    /// refuses) is dropped with a warning.
+    fn redeliver(&self, rt: &Runtime) -> bool {
+        let Some(me) = self.me.upgrade() else {
+            return false;
+        };
+        let mut any = false;
+        loop {
+            let next = match self.bounced.lock() {
+                Ok(mut b) => b.pop_front(),
+                Err(e) => e.into_inner().pop_front(),
+            };
+            let Some(msg) = next else {
+                return any;
+            };
+            any = true;
+            let sent = me.with_run(rt, |run| {
+                // The message back when the run cannot take it.
+                let back = run.tx.send(msg).err().map(|e| e.0);
+                run.poke();
+                back
+            });
+            match sent {
+                Ok(None) => {}
+                Ok(Some(msg)) => {
+                    let mut b = self.bounced.lock().unwrap_or_else(|e| e.into_inner());
+                    b.push_front(msg);
+                    return any;
+                }
+                Err(e) => log::warn!(
+                    "service `{}`: an action held for its activation token was lost: {e}",
+                    self.name
+                ),
+            }
+        }
+    }
 }
 
 impl<S: Service> ClientInner<S> {
@@ -754,12 +811,14 @@ impl<S: Service> ClientInner<S> {
             noticed: false,
             ended: false,
             started: rt.now(),
+            stopped: Arc::default(),
         });
     }
 
     fn stop(&self) {
         let run = self.run.borrow_mut().take();
         if let Some(mut run) = run {
+            *run.stopped.lock().unwrap_or_else(|e| e.into_inner()) = true;
             if let Some(s) = run.stop.take() {
                 let _ = s.send(());
             }
@@ -971,6 +1030,27 @@ impl<S: Service> Member for ClientInner<S> {
     }
 
     fn pump(&self, rt: &Runtime) -> bool {
+        let any = self.pump_envelopes(rt);
+        self.redeliver(rt) | any
+    }
+
+    fn waiting(&self) -> bool {
+        self.run.borrow().as_ref().is_some_and(|r| !r.ready)
+    }
+
+    fn stop_now(&self) {
+        self.stop();
+        self.resolve();
+    }
+
+    fn take_thread(&self) -> Option<JoinHandle<()>> {
+        self.last_thread.borrow_mut().take()
+    }
+}
+
+impl<S: Service> ClientInner<S> {
+    /// Applies every envelope the run has sent.
+    fn pump_envelopes(&self, rt: &Runtime) -> bool {
         let mut any = false;
         loop {
             let next = match self.run.borrow().as_ref() {
@@ -1058,19 +1138,6 @@ impl<S: Service> Member for ClientInner<S> {
                 }
             }
         }
-    }
-
-    fn waiting(&self) -> bool {
-        self.run.borrow().as_ref().is_some_and(|r| !r.ready)
-    }
-
-    fn stop_now(&self) {
-        self.stop();
-        self.resolve();
-    }
-
-    fn take_thread(&self) -> Option<JoinHandle<()>> {
-        self.last_thread.borrow_mut().take()
     }
 }
 
@@ -1309,13 +1376,37 @@ impl<S: Service> Client<S> {
         ctx: ActionCtx,
         token: bool,
     ) -> Result<(), Error> {
-        let (tx, notify) = self
-            .0
-            .with_run(rt, |run| (run.tx.clone(), run.notify.clone()))?;
+        // Actions handed back before this one go first.
+        self.0.redeliver(rt);
+        let (tx, notify, stopped) = self.0.with_run(rt, |run| {
+            (run.tx.clone(), run.notify.clone(), run.stopped.clone())
+        })?;
+        // Queued behind a token wait, the run may end or be stopped
+        // before this runs: the action goes back to the logic thread
+        // ([`ClientInner::bounced`]), which sends it to the run up then.
+        let bounced = self.0.bounced.clone();
+        let wake = self.0.reg.upgrade().map(|r| r.wake.clone());
         let deliver: crate::activation::Deliver = Box::new(move |token| {
-            let ok = tx.send((Msg::Action(action), token)).is_ok();
+            let msg = (Msg::Action(action), token);
+            let back = {
+                let stopped = stopped.lock().unwrap_or_else(|e| e.into_inner());
+                if *stopped {
+                    Err(msg)
+                } else {
+                    tx.send(msg).map_err(|e| e.0)
+                }
+            };
+            if let Err(back) = back {
+                bounced
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_back(back);
+                if let Some(w) = &wake {
+                    w.wake();
+                }
+            }
             poke(&notify);
-            ok
+            true
         });
         let sent = match self.0.reg.upgrade() {
             Some(reg) => reg

@@ -1351,3 +1351,50 @@ fn a_body_failing_right_after_ready_backs_off() {
     assert!((5..=6).contains(&starts), "{starts} starts in 30 s");
     s.shutdown();
 }
+
+/// (M5, S-platform) An action held for its xdg-activation token whose
+/// run is stopped meanwhile (a reload's `stop_now`, or a run that ended)
+/// is not lost: it goes to the run that is up when its token comes,
+/// started for it, and the invocation's later action still follows it.
+#[test]
+fn an_action_held_for_its_token_reaches_the_run_up_when_it_goes() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let (answers_tx, answers) = std::sync::mpsc::channel();
+    let answers_tx = Mutex::new(answers_tx);
+    s.set_token_source(Some(Arc::new(move |_, _| {
+        let (answer, fut) = strand_services::activation::token_reply();
+        answers_tx.lock().unwrap().send(answer).unwrap();
+        fut
+    })));
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let ctx = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 1,
+            serial: 2,
+        }),
+        invocation: 31,
+    };
+    probe.act_with(&rt, ProbeAction::Bump, ctx, true).unwrap();
+    probe
+        .act_with(&rt, ProbeAction::Rename("x".into(), 1), ctx, false)
+        .unwrap();
+    let answer = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The run is stopped while both wait for the token.
+    probe.stop_now(&rt);
+    let sc2 = script_again();
+    answer.send(Some("tok".into()));
+    until(&rt, &s, "a new run", || probe.starts() == 2);
+    assert_eq!(sc2.next(), "start visible=true");
+    assert_eq!(sc2.next(), "action Bump");
+    assert_eq!(
+        sc2.next(),
+        format!("action {:?}", ProbeAction::Rename("x".into(), 1))
+    );
+    s.shutdown();
+}

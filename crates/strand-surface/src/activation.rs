@@ -7,7 +7,8 @@
 //! to the caller once the compositor answers. Without the protocol the
 //! answer is `None` at once; a compositor that never answers is the
 //! caller's bound to keep (strand-services waits 200 ms, then goes on
-//! without one). Press serials are tracked per seat
+//! without one), and the request itself is given up after
+//! `FORGET_AFTER` by a timer of its own. Press serials are tracked per seat
 //! ([`State::note_press`]): a pointer button's and a key's.
 //!
 //! This file is part of the manager (`manager/mod.rs` includes it as
@@ -25,9 +26,9 @@ use super::*;
 /// asks within a frame or two of its press.
 const PRESSES: usize = 8;
 
-/// A token asked for and not answered yet older than this is given up
-/// (its caller told `None`): a compositor that never answers costs no
-/// more than a few entries.
+/// A token asked for and not answered this long is given up (its caller
+/// told `None`, its object destroyed) by a timer armed when it is asked:
+/// a compositor that never answers keeps nothing alive for good.
 const FORGET_AFTER: Duration = Duration::from_secs(5);
 
 /// Told the token, or `None`.
@@ -40,8 +41,9 @@ pub(super) struct Activation {
     global: Option<XdgActivationV1>,
     /// The last presses on our surfaces: serial and seat, newest last.
     presses: std::collections::VecDeque<(u32, wl_seat::WlSeat)>,
-    /// Tokens asked for: their object, when, and whom to tell.
-    waiting: Vec<(XdgActivationTokenV1, Instant, TokenDone)>,
+    /// Tokens asked for: their object, the timer that gives it up, and
+    /// whom to tell.
+    waiting: Vec<(XdgActivationTokenV1, Option<RegistrationToken>, TokenDone)>,
     /// Tokens the compositor gave (tests).
     issued: u64,
 }
@@ -93,7 +95,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// closed may be), and tells `done` the token when it comes. Without
     /// `xdg_activation_v1`, `done` hears `None` before this returns. A
     /// compositor that never answers: `done` hears `None` after
-    /// `FORGET_AFTER` at the latest, when a later token is asked for.
+    /// `FORGET_AFTER`, from a timer armed here.
     pub fn activation_token(
         &mut self,
         surface: SurfaceId,
@@ -104,15 +106,6 @@ impl<H: SurfaceHost + 'static> State<H> {
             done(None);
             return;
         };
-        let now = Instant::now();
-        let (old, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.activation.waiting)
-            .into_iter()
-            .partition(|(_, at, _)| now.duration_since(*at) > FORGET_AFTER);
-        self.activation.waiting = keep;
-        for (token, _, f) in old {
-            token.destroy();
-            f(None);
-        }
         let seat = self
             .activation
             .presses
@@ -129,7 +122,39 @@ impl<H: SurfaceHost + 'static> State<H> {
             token.set_surface(s.wl());
         }
         token.commit();
-        self.activation.waiting.push((token, now, Box::new(done)));
+        let timer = self
+            .handle
+            .insert_source(Timer::from_duration(FORGET_AFTER), {
+                let token = token.clone();
+                move |_, _, state: &mut State<H>| {
+                    state.give_up_token(&token);
+                    TimeoutAction::Drop
+                }
+            })
+            .map_err(|e| {
+                log::warn!(
+                    "an activation token cannot be given up in time: {}",
+                    e.error
+                )
+            })
+            .ok();
+        self.activation.waiting.push((token, timer, Box::new(done)));
+    }
+
+    /// `FORGET_AFTER` passed with `token` unanswered: its caller hears
+    /// `None` and the object goes.
+    fn give_up_token(&mut self, token: &XdgActivationTokenV1) {
+        let waiting = &mut self.activation.waiting;
+        if let Some(i) = waiting.iter().position(|(t, _, _)| t == token) {
+            let (t, _, done) = waiting.swap_remove(i);
+            t.destroy();
+            done(None);
+        }
+    }
+
+    /// Tokens asked for and not answered or given up yet (tests).
+    pub fn activation_tokens_waiting(&self) -> usize {
+        self.activation.waiting.len()
     }
 }
 
@@ -159,8 +184,11 @@ impl<H: SurfaceHost + 'static> Dispatch2<XdgActivationTokenV1, State<H>> for Tok
         };
         let waiting = &mut state.activation.waiting;
         if let Some(i) = waiting.iter().position(|(t, _, _)| t == proxy) {
-            let (t, _, done) = waiting.swap_remove(i);
+            let (t, timer, done) = waiting.swap_remove(i);
             t.destroy();
+            if let Some(timer) = timer {
+                state.handle.remove(timer);
+            }
             state.activation.issued += 1;
             done(Some(token));
         }

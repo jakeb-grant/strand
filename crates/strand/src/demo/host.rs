@@ -102,6 +102,11 @@ pub(crate) struct Forward {
     /// (`SurfaceHost::press_serial`): the press the node events it
     /// causes carry to logic, for xdg-activation tokens.
     press: Option<u32>,
+    /// (M5) `press` was told since the last input event: the next event
+    /// is that press. A click away carries a press only then (the
+    /// catcher's, told before it); one without (a popup the compositor
+    /// dismissed, the user having clicked another client) carries none.
+    fresh: bool,
 }
 
 impl Forward {
@@ -112,7 +117,20 @@ impl Forward {
             surfaces: HashMap::new(),
             router: Router::new(),
             press: None,
+            fresh: false,
         }
+    }
+
+    /// (M5) A button or key press with `serial` comes next
+    /// (`SurfaceHost::press_serial`).
+    pub(crate) fn pressed(&mut self, serial: u32) {
+        self.press = Some(serial);
+        self.fresh = true;
+    }
+
+    /// (M5) An input event went elsewhere (the fallback lock took it).
+    pub(crate) fn passed(&mut self) {
+        self.fresh = false;
     }
 
     fn send(&self, msg: ToLogic) {
@@ -213,7 +231,7 @@ impl Forward {
     /// what it asks for: flags, node events (bubbled by logic to the
     /// nearest handler) and two-way writes.
     pub(crate) fn input(&mut self, event: &InputEvent, scene: &mut dyn InputScene) {
-        let press = press_of(event, self.press);
+        let press = press_of(event, self.press, std::mem::take(&mut self.fresh));
         for intent in self.router.handle(event, scene) {
             if let Some(msg) = to_logic(intent, press) {
                 self.send(msg);
@@ -224,11 +242,19 @@ impl Forward {
 
 /// (M5) The press whose handlers `event`'s node events run for, with its
 /// serial (`serial`, the last press's): a button's press or release (the
-/// click its press started), a key press or its repeat, a click away.
-/// None for a scroll, a drag or a key release: no press of their own.
-fn press_of(event: &InputEvent, serial: Option<u32>) -> Option<strand_compiler::vm::InputCtx> {
+/// click its press started), a key press or its repeat, a click away
+/// that is a press (`fresh`: its serial was told just before it, the
+/// catcher's). None for a scroll, a drag, a key release, or a click away
+/// the compositor sent (a popup's `done`: the press was on another
+/// client, and `serial` an older one of ours).
+fn press_of(
+    event: &InputEvent,
+    serial: Option<u32>,
+    fresh: bool,
+) -> Option<strand_compiler::vm::InputCtx> {
     let surface = match event {
-        InputEvent::PointerButton { surface, .. } | InputEvent::ClickAway { surface } => *surface,
+        InputEvent::PointerButton { surface, .. } => *surface,
+        InputEvent::ClickAway { surface } if fresh => *surface,
         InputEvent::Key { surface, key } if key.state == strand_scene::ButtonState::Pressed => {
             *surface
         }
@@ -836,7 +862,7 @@ impl SurfaceHost for Host {
 
     fn press_serial(&mut self, serial: u32) {
         if let Some(f) = &mut self.logic {
-            f.press = Some(serial);
+            f.pressed(serial);
         }
     }
 
@@ -847,6 +873,9 @@ impl SurfaceHost for Host {
         }
         // The fallback lock takes its surface's input (`run/lock.rs`).
         if self.lock.input(event) {
+            if let Some(f) = &mut self.logic {
+                f.passed();
+            }
             if let Some(p) = &self.wake {
                 p.ping();
             }
@@ -1410,7 +1439,7 @@ mod tests {
         };
         let root_only = |_: SurfaceId, _: LogicalPoint| Vec::new();
         // What `SurfaceHost::press_serial` sets, before each press.
-        f.press = Some(41);
+        f.pressed(41);
         f.input(
             &button(button::LEFT, ButtonState::Pressed),
             &mut HitOnly(root_only),
@@ -1419,7 +1448,7 @@ mod tests {
             &button(button::LEFT, ButtonState::Released),
             &mut HitOnly(root_only),
         );
-        f.press = Some(42);
+        f.pressed(42);
         f.input(
             &button(button::RIGHT, ButtonState::Pressed),
             &mut HitOnly(root_only),
@@ -1470,13 +1499,54 @@ mod tests {
                 time: 0,
             },
         };
-        assert_eq!(press_of(&key(ButtonState::Pressed), Some(43)), press(43));
-        assert_eq!(press_of(&key(ButtonState::Released), Some(43)), None);
         assert_eq!(
-            press_of(&key(ButtonState::Pressed), None),
+            press_of(&key(ButtonState::Pressed), Some(43), true),
+            press(43)
+        );
+        assert_eq!(press_of(&key(ButtonState::Released), Some(43), true), None);
+        assert_eq!(
+            press_of(&key(ButtonState::Pressed), None, true),
             None,
             "no serial yet"
         );
+    }
+
+    /// (M5, S-platform) A click away on the catcher is a press of ours
+    /// (its serial told just before it) and carries it; a click away the
+    /// compositor sent (a popup's `done`, the user having clicked another
+    /// client) carries none, not the last press of ours.
+    #[test]
+    fn only_a_click_away_that_is_a_press_carries_one() {
+        use strand_compiler::vm::InputCtx;
+        let s = SurfaceId(7);
+        let away = InputEvent::ClickAway { surface: s };
+        assert_eq!(
+            press_of(&away, Some(50), true),
+            Some(InputCtx {
+                surface: 7,
+                serial: 50
+            })
+        );
+        assert_eq!(press_of(&away, Some(50), false), None);
+
+        // Through `Forward`: the freshness goes with the first event.
+        let (mut f, _el) = setup();
+        f.pressed(51);
+        let root_only = |_: SurfaceId, _: LogicalPoint| Vec::new();
+        f.input(
+            &InputEvent::PointerButton {
+                surface: s,
+                position: LogicalPoint::new(1.0, 1.0),
+                button: button::LEFT,
+                state: ButtonState::Pressed,
+                time: 0,
+            },
+            &mut HitOnly(root_only),
+        );
+        assert!(!f.fresh, "the press was its event");
+        assert_eq!(press_of(&away, f.press, f.fresh), None);
+        f.pressed(52);
+        assert!(f.fresh);
     }
 
     /// Monitors are `screens` in plug order; one that comes back within
