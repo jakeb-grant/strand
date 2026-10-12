@@ -25,6 +25,10 @@
 //! to and that did not unlock; one that ended with no password (a
 //! `pam_faillock` lockout, a helper that died) is begun again only by the
 //! next submit, so a stack that fails at once cannot loop. When the lock
+//! is woken ([`LockSignal::wake`]: a key or pointer event on it) while
+//! PAM waits on a prompt that came after a text and with no password (the
+//! fingerprint module ahead of it gave up), that conversation ends and
+//! the next begins, so the reader listens again (lock-r2-1). When the lock
 //! goes, a conversation with no password in it ends (its helper is
 //! killed), and what it says no longer shows. One begun for a lock
 //! session that has ended while another is shown (the signal went false
@@ -83,13 +87,25 @@ pub type SessionTag = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Whether a lock is shown, set by the binary as its lock sessions begin
 /// and end: while it is, the store keeps a PAM conversation open (see
-/// the module docs). Clones share one value.
+/// the module docs). The binary also says when the lock is woken (input
+/// on it: [`LockSignal::wake`]), so a conversation whose reader gave up
+/// begins again. Clones share one value.
 #[derive(Clone, Debug)]
-pub struct LockSignal(Arc<watch::Sender<bool>>);
+pub struct LockSignal(Arc<Signals>);
+
+#[derive(Debug)]
+struct Signals {
+    shown: watch::Sender<bool>,
+    /// Bumped by each wake.
+    woken: watch::Sender<u64>,
+}
 
 impl Default for LockSignal {
     fn default() -> Self {
-        Self(Arc::new(watch::Sender::new(false)))
+        Self(Arc::new(Signals {
+            shown: watch::Sender::new(false),
+            woken: watch::Sender::new(0),
+        }))
     }
 }
 
@@ -101,11 +117,26 @@ impl LockSignal {
     /// A lock is shown (`true`) or not.
     pub fn set(&self, shown: bool) {
         self.0
+            .shown
             .send_if_modified(|v| std::mem::replace(v, shown) != shown);
     }
 
-    fn subscribe(&self) -> watch::Receiver<bool> {
-        self.0.subscribe()
+    /// The user is at the lock (a key, a pointer event on it): when PAM
+    /// waits on its password prompt because a module ahead of it (a
+    /// fingerprint reader) gave up, that conversation ends and the next
+    /// begins, so the reader listens again (lock-r2-1). Cheap; the binary
+    /// calls it for every such event while a lock is shown.
+    pub fn wake(&self) {
+        self.0.woken.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// How many wakes there have been.
+    pub fn wakes(&self) -> u64 {
+        *self.0.woken.borrow()
+    }
+
+    fn subscribe(&self) -> (watch::Receiver<bool>, watch::Receiver<u64>) {
+        (self.0.shown.subscribe(), self.0.woken.subscribe())
     }
 }
 
@@ -284,6 +315,12 @@ struct Running {
     queued: bool,
     /// PAM waits on a prompt no password has answered.
     asking: bool,
+    /// PAM said a text in it (a fingerprint module's "Place your finger").
+    spoke: bool,
+    /// A password was given to it.
+    given: bool,
+    /// Ended by a wake (lock-r2-1): the next begins once it has.
+    restart: bool,
     tag: u64,
 }
 
@@ -309,7 +346,7 @@ impl Auth {
         }
         cx.ready();
         let signalled = config.lock.is_some();
-        let mut lock = config.lock.as_ref().map(LockSignal::subscribe);
+        let (mut lock, mut woken) = config.lock.as_ref().map(LockSignal::subscribe).unzip();
         let shown =
             |lock: &Option<watch::Receiver<bool>>| lock.as_ref().is_some_and(|l| *l.borrow());
         // A conversation tagged `tag` belongs to a lock session that has
@@ -385,6 +422,9 @@ impl Auth {
                 next: None,
                 queued: asked,
                 asking: false,
+                spoke: false,
+                given: asked,
+                restart: false,
                 tag,
             });
             !asked
@@ -398,7 +438,12 @@ impl Auth {
         let said =
             |cx: &mut Cx<Self>, running: &mut Option<Running>, live: bool, event: Event| -> bool {
                 match event {
-                    Event::Message(m) => !live || cx.update(|s| s.message = m),
+                    Event::Message(m) => {
+                        if let Some(r) = running.as_mut() {
+                            r.spoke = true;
+                        }
+                        !live || cx.update(|s| s.message = m)
+                    }
                     Event::Prompt(p) => {
                         let Some(r) = running.as_mut() else {
                             return true;
@@ -492,7 +537,11 @@ impl Auth {
                     // starts over (a fingerprint module first).
                     let again = match next {
                         Some(p) if !unlocked && (!signalled || shown(&lock)) => Some(Some(p)),
-                        _ if shown(&lock) && (stale || answered && !unlocked) => Some(None),
+                        _ if shown(&lock)
+                            && (stale || ended.restart || answered && !unlocked) =>
+                        {
+                            Some(None)
+                        }
                         _ => None,
                     };
                     if let Some(p) = again
@@ -559,6 +608,39 @@ impl Auth {
                         }
                     }
                 }
+                changed = async {
+                    match woken.as_mut() {
+                        Some(w) => w.changed().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if changed.is_err() {
+                        woken = None;
+                        continue;
+                    }
+                    // (lock-r2-1) The user is back at the lock while PAM
+                    // waits on a prompt that came after a text and no
+                    // password: a module ahead of it (the reader) gave
+                    // up. That conversation ends (no password in it) and
+                    // the next begins, so the reader listens again, as
+                    // when the lock showed.
+                    let restart = shown(&lock)
+                        && running.as_ref().is_some_and(|r| {
+                            r.answers.is_some()
+                                && r.asking
+                                && r.spoke
+                                && !r.given
+                                && r.tag == session()
+                        });
+                    if restart && let Some(r) = running.as_mut() {
+                        r.answers = None;
+                        r.asking = false;
+                        r.restart = true;
+                        if !cx.update(|s| s.prompt.clear()) {
+                            return Ok(());
+                        }
+                    }
+                }
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Action(AuthAction::Submit { password })) => {
@@ -582,6 +664,7 @@ impl Auth {
                                     let sent = a.send(password);
                                     if sent {
                                         r.queued = !std::mem::take(&mut r.asking);
+                                        r.given = true;
                                     }
                                     sent
                                 }

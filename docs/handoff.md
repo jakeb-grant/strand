@@ -334,8 +334,11 @@ recorded reason.
   finger. What PAM's one conversation still imposes: a password typed
   while `pam_fprintd` waits is tried only once it stops waiting (30 s
   by default), after a wrong password PAM starts over with the reader,
-  and the fallback field shows no PAM text (it has no text; its
-  password still goes through the same stack).
+  once the reader gives up it listens again only when the lock is
+  woken (a key or pointer event; the first key of a password typed
+  then waits through the reader's wait again; m6-lock lock-r2-1), and
+  the fallback field shows no PAM text (it has no text; its password
+  still goes through the same stack).
 - Network: `connect()` is awaited inline (bounded: 5 s per settings call,
   25 s for activation); enterprise (802.1X) and WEP networks are refused.
 - Audio: `StepVolume` has no caller on the language path. Without an

@@ -205,7 +205,8 @@ sleep: `Inbox`, `Sleeper`), `shell.rs` (`Shell`: messages, commits and
 reloads, IPC requests, `strand watch` events), `lock.rs` (the session
 lock in the binary: `Guard::wire`, which enables the session lock only
 with `auth`'s tokens wired to `State::unlock`, and tells `auth` whether
-a lock is shown through `auth::LockSignal`; the main loop's fault
+a lock is shown, and when one is woken by input, through
+`auth::LockSignal`; the main loop's fault
 checks, the first-frame timeout and the heartbeat watchdog; the
 built-in fallback (`LockScreen`) and its own `strand_auth::Client`
 (the `Checker`); lock sessions tagging verdicts; the restart marker;
@@ -5096,16 +5097,25 @@ transparent huge pages for life.
     lock shows and again after one a password was given to that did not
     unlock; one with no password in it ends when the lock goes, and
     after one that ended with no password only a submit begins the
-    next (decisions.md m6-lock). The password is a
+    next. `LockSignal::wake`, which the binary calls for each key and
+    pointer event on a shown lock, ends a conversation waiting on a
+    prompt that came after a text with no password given (the reader
+    ahead of `pam_unix` gave up) and begins the next, so the reader
+    listens again; `LockSignal::wakes` counts them (decisions.md
+    m6-lock, lock-r2-1). The password is a
     `strand_auth::Password` from the moment it arrives, wiped once
     sent. A success hands the `strand_auth::UnlockToken` to the
     `auth::UnlockSink` the binary sets with `auth::configure`
     (`AuthConfig { helper, timeout, sink, failed, session, client_hook,
     lock }`),
-    which passes it to the surface manager's unlock; anything else sets
-    `failed`, and a check with a password in it that could not be made
-    goes to the `auth::FailureSink` and is a warning diagnostic (one
-    with none is only logged), as is the `login`
+    which passes it to the surface manager's unlock (a conversation
+    with no password in it, a finger's, mints one too); a refusal of a
+    password, or a check with one in it that could not be made, sets
+    `failed`, and one with no password in it (a refusal such as
+    `pam_faillock`'s lockout, a cancelled or failed conversation)
+    leaves `failed` as it was. A check with a password in it that
+    could not be made also goes to the `auth::FailureSink` and is a
+    warning diagnostic (one with none is only logged), as is the `login`
     fallback (once per process). The blocking task hands the verdict to
     the sinks itself, with the `auth::SessionTag` value read when the
     conversation began (`Fn(UnlockToken, u64)`, `Fn(&str, u64)`), so a check

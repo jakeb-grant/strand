@@ -646,6 +646,19 @@ impl LockScreen {
     /// the fallback, and nothing on it reaches the `Router`. True when it
     /// took the event (the caller wakes the main loop to repaint).
     pub(crate) fn input(&mut self, event: &InputEvent) -> bool {
+        // (lock-r2-1) The user is at the lock: `auth` begins PAM again if
+        // its reader gave up.
+        if self.begun
+            && matches!(
+                event,
+                InputEvent::Key { .. }
+                    | InputEvent::PointerMotion { .. }
+                    | InputEvent::PointerButton { .. }
+                    | InputEvent::PointerAxis { .. }
+            )
+        {
+            self.signal.wake();
+        }
         if !self.shown_on(event.surface()) {
             return false;
         }
@@ -1431,6 +1444,34 @@ mod tests {
         let mut px = vec![0u8; 40 * 20 * 4];
         let mut t = PaintTarget::new(&mut px, size, 160, Scale::ONE, 0).unwrap();
         screen.paint(surface, &mut t)
+    }
+
+    /// (lock-r2-1) While a lock is shown, a key or a pointer event on it
+    /// wakes `auth` (which begins PAM again if its reader gave up); focus
+    /// changes do not, and nothing does while no lock is.
+    #[test]
+    fn input_on_a_shown_lock_wakes_auth() {
+        let mut s = LockScreen::default();
+        let pointer = InputEvent::PointerMotion {
+            surface: SurfaceId(3),
+            position: strand_scene::LogicalPoint::new(1.0, 1.0),
+            time: 0,
+        };
+        s.input(&key("a", "a"));
+        s.input(&pointer);
+        assert_eq!(s.signal.wakes(), 0, "no lock");
+        s.see(true);
+        s.input(&key("a", "a"));
+        assert_eq!(s.signal.wakes(), 1);
+        s.input(&pointer);
+        assert_eq!(s.signal.wakes(), 2);
+        s.input(&InputEvent::KeyboardEnter {
+            surface: SurfaceId(3),
+        });
+        assert_eq!(s.signal.wakes(), 2, "focus is not the user");
+        s.changed(LockState::Unlocked);
+        s.input(&key("a", "a"));
+        assert_eq!(s.signal.wakes(), 2, "unlocked");
     }
 
     /// Before a fault the renderer paints the lock; once the fallback

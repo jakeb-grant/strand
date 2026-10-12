@@ -507,6 +507,52 @@ done"#,
     );
     h.stop();
 
+    // (lock-r2-1) The reader gives up and PAM waits on the password with
+    // no deadline: the reader listens again only once the lock is woken
+    // (a key or the pointer on it), which ends that conversation and
+    // begins the next; a wake while the reader still waits, or at a
+    // prompt no text came before, begins nothing.
+    let lock = LockSignal::new();
+    let h = Harness::start_with(reader(dir, "idle", 3), Some(lock.clone()));
+    show(&lock, true);
+    h.until("the reader gave up", |h| {
+        h.prompt() == "Password: " && count(dir, "idle.waited") == 1
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(count(dir, "idle.begun"), 1, "nothing asks the reader again");
+    lock.wake();
+    h.until("the reader asked again", |h| {
+        count(dir, "idle.begun") == 2 && h.message() == "Place your finger"
+    });
+    assert!(h.prompt().is_empty() && !h.busy() && !h.failed());
+    lock.wake();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(count(dir, "idle.begun"), 2, "a wake while it listens");
+    std::fs::write(dir.join("finger"), "").unwrap();
+    h.until("unlocked by the finger", |h| h.unlocks() == 1);
+    assert!(!h.failed());
+    assert!(h.failures.lock().unwrap().is_empty());
+    h.stop();
+    let begun = dir.join("plain.begun");
+    let plain = script(
+        dir,
+        "plain",
+        &format!(
+            r#"hello 0
+while frame; do echo . >> {begun}; prompt "Password: "; frame; verdict 1; done"#,
+            begun = begun.display()
+        ),
+    );
+    let lock = LockSignal::new();
+    let h = Harness::start_with(plain, Some(lock.clone()));
+    show(&lock, true);
+    h.until("the prompt", |h| h.prompt() == "Password: ");
+    lock.wake();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(count(dir, "plain.begun"), 1, "no text came before it");
+    assert_eq!(h.prompt(), "Password: ");
+    h.stop();
+
     // A stack that ends at once with no prompt (pam_faillock locked out):
     // its text shows, `failed` stays unset, and no conversation follows
     // until a submit, which is refused.

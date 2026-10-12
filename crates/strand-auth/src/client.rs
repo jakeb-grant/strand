@@ -43,9 +43,11 @@ pub const LIMIT_FACTOR: u32 = 3;
 
 /// Proof that the helper accepted a password: the only value
 /// `strand-surface` releases a session lock for. Only [`Client::submit`]
-/// makes one, from a success reply; it is `Send`, neither `Clone` nor
-/// `Copy`, and has no public constructor, so no other code path can
-/// unlock.
+/// and [`Client::converse`] make one, from the helper's success reply;
+/// `converse` makes one even for a conversation no password was given
+/// to, when the PAM stack succeeds without one (a fingerprint module).
+/// It is `Send`, neither `Clone` nor `Copy`, and has no public
+/// constructor, so no other code path can unlock.
 pub struct UnlockToken {
     _private: (),
 }

@@ -196,10 +196,14 @@ lock is shown PAM's conversation runs, its texts reach the lock as
 `auth.message` ("Place your finger on the fingerprint reader") and its
 password prompt as `auth.prompt`, so show them in your `lock`
 (`if auth.message != "" { text auth.message }`). A finger unlocks with
-no password. A password typed while `pam_fprintd` waits is tried once
-it stops waiting (30 s by default; `timeout=10` on its line shortens
-that, as Ubuntu's `pam-auth-update` does), and after a wrong password
-PAM starts over with the reader. If you want the password checked at
+no password. Once `pam_fprintd` stops waiting (30 s by default;
+`timeout=10` on its line shortens that, as Ubuntu's
+`pam-auth-update` does) PAM asks for the password, and the reader
+listens again only when the lock is woken: press a key or move the
+pointer, then touch the reader. A password typed while `pam_fprintd`
+waits is tried once it stops waiting, the first key on a lock whose
+reader gave up starts that wait again, and after a wrong password PAM
+starts over with the reader. If you want the password checked at
 once, write the `strand` file with `pam_unix` alone
 (`auth required pam_unix.so` and `account required pam_unix.so`).
 

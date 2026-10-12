@@ -1554,6 +1554,25 @@ fn fingerprint_gives_up_and_the_lock_asks_for_the_password() {
     vm.no_fallback();
 }
 
+/// (lock-r2-1) The reader gave up and the lock was left waiting on the
+/// password (an idle lock, the user away): a key wakes it, PAM begins
+/// again, and a finger unlocks it.
+#[test]
+fn fingerprint_a_woken_lock_listens_to_the_reader_again() {
+    let Some((mut vm, finger)) = finger_vm("fp_woken") else {
+        return;
+    };
+    vm.lock();
+    vm.told();
+    vm.until_locked("HEADLESS-1", "PAM's password prompt", true, |s| {
+        near(s.corner(), LOCK_ASKED)
+    });
+    vm.keys.type_text("a");
+    std::fs::write(&finger, "").unwrap();
+    vm.until("HEADLESS-1", "unlocked by the finger", Shot::desktop);
+    vm.no_fallback();
+}
+
 /// A password typed while the reader waits is tried once it gives up.
 #[test]
 fn fingerprint_a_password_typed_while_the_reader_waits_unlocks_after_it() {
