@@ -109,6 +109,11 @@ rustix = { version = "1.1.5", features = ["process", "event", "fs"] }
 # sway and a private PipeWire (strand-services' test helpers).
 wayland-protocols = { version = "0.32.13", features = ["client"] }
 tempfile = "3.27.0"
+# `tests/m5/inspect.rs` compiles strand-dev's write-back module by path
+# (a strand-dev dev-dependency would turn on strand-compiler's `shaders`
+# in the CPU-only build budgets.rs measures); its hash, as strand-watch's
+# and strand-theme's.
+blake3 = "1.8.7"
 
 [lints]
 workspace = true
