@@ -1363,6 +1363,7 @@ impl<'a> Flattener<'a> {
                 radii,
                 inverse,
                 clip: inh.clip,
+                grow,
             });
         }
 

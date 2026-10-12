@@ -233,6 +233,9 @@ pub struct HitBox {
     pub clip: Rect,
     /// Surface pixels to the node's own space (`None`: identity).
     pub inverse: Option<kurbo::Affine>,
+    /// (M5) How far `hit: grow(n)` grew `rect` (physical pixels): the
+    /// inspector outlines and reports the box without it.
+    pub grow: f64,
 }
 
 impl HitBox {
