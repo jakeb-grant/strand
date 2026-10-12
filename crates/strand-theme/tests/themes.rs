@@ -384,6 +384,37 @@ fn material_image_is_deterministic_and_cached_by_content() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (M5) A read-only quantiser (`strand export`'s offline mount) answers
+/// a wallpaper the running shell quantised from its index, decoding
+/// nothing, and quantises a new one without writing the index.
+#[test]
+fn a_read_only_quantiser_reads_the_index_and_writes_nothing() {
+    let dir = temp("read-only");
+    let cache = dir.join("cache");
+    let wall = dir.join("wall.png");
+    std::fs::write(&wall, png([30, 90, 200], [240, 200, 40], 64, 64)).unwrap();
+    let mut q = Quantiser::new(Some(cache.clone())).unwrap();
+    q.lookup(&wall);
+    let seed = wait_ready(&mut q, &wall);
+    drop(q);
+    let index = std::fs::read(cache.join("index")).unwrap();
+    let mut ro = Quantiser::read_only(cache.clone()).unwrap();
+    assert_eq!(ro.lookup(&wall), Lookup::Ready(seed));
+    assert_eq!(ro.quantised(), 0, "answered from the index");
+    let other = dir.join("other.png");
+    std::fs::write(&other, png([200, 40, 40], [20, 20, 20], 64, 64)).unwrap();
+    ro.lookup(&other);
+    assert_ne!(wait_ready(&mut ro, &other), seed);
+    assert_eq!(ro.quantised(), 1);
+    drop(ro);
+    assert_eq!(
+        std::fs::read(cache.join("index")).unwrap(),
+        index,
+        "the index is as the shell left it"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A wallpaper copied over in place keeping its size and modification
 /// time (`cp -p`) is a new file (its change time moved); one replaced by
 /// delete-then-create holds its seed through the gap; one that stays

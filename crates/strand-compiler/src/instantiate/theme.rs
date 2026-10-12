@@ -28,11 +28,33 @@ pub fn is_pending(e: &Error) -> bool {
     matches!(e, Error::Failed(m) if &**m == PALETTE_PENDING)
 }
 
+/// (M5) One hold on an instance's other-mode memo
+/// ([`Instance::hold_other_mode`]), tied to the program it was taken on.
+#[must_use = "a hold is let go of with `Instance::release_other_mode`"]
+#[derive(Debug)]
+pub struct OtherModeHold {
+    ctx: std::rc::Weak<Ctx>,
+    memo: Memo<TokenTable>,
+}
+
+impl OtherModeHold {
+    /// The memo held: the other mode's token table.
+    pub fn memo(&self) -> Memo<TokenTable> {
+        self.memo
+    }
+}
+
 /// The instance's other-mode memo while something holds it.
 pub(crate) struct OtherHold {
     scope: Scope,
     memo: Memo<TokenTable>,
     holders: usize,
+}
+
+impl OtherHold {
+    pub(crate) fn memo(&self) -> Memo<TokenTable> {
+        self.memo
+    }
 }
 
 /// The top-level `let`s whose value reaches `system.dark`, through other
@@ -140,7 +162,10 @@ impl Ctx {
         }
         let ctx = self.clone();
         let vm: Rc<Vm> = self.vm.clone();
-        let (scope, memo) = rt.untrack(|rt| {
+        // Owned by the instance's root scope, not by whichever output or
+        // request makes it: it outlives its first holder.
+        let owner = vm.root.owner().filter(|o| rt.exists(*o));
+        let make = |rt: &Runtime| {
             rt.scope(|rt| {
                 let env = Rc::new(OtherEnv::default());
                 let root = vm.root.clone();
@@ -154,10 +179,15 @@ impl Ctx {
                     rt.set_name(m.id(), format!("{} (other mode)", vm.prog.def(d).name));
                     env.bind(d, Slot::Memo(m));
                 }
+                let ctx = ctx.clone();
                 let m = rt.memo(move |rt| ctx.other_table(rt, &env));
                 rt.set_name(m.id(), "tokens (other mode)");
                 m
             })
+        };
+        let (scope, memo) = rt.untrack(|rt| match owner {
+            Some(o) => rt.with_owner(o, |rt| make(rt)).unwrap_or_else(|_| make(rt)),
+            None => make(rt),
         });
         *slot = Some(OtherHold {
             scope,
@@ -212,17 +242,25 @@ impl Instance {
     }
 
     /// (M5) Holds the other-mode memo (the theme evaluated with
-    /// `system.dark` negated, decisions.md m5-tools) and returns it;
+    /// `system.dark` negated, decisions.md m5-tools);
     /// [`Instance::release_other_mode`] lets go. Holds are counted, so a
     /// request and the outputs, or two requests, share one memo and one
-    /// evaluation.
-    pub fn hold_other_mode(&self) -> Memo<TokenTable> {
-        self.ctx.hold_other(&self.rt)
+    /// evaluation. The hold belongs to the instance's program as it is
+    /// now: after a reload it lets go of nothing the new one holds.
+    pub fn hold_other_mode(&self) -> OtherModeHold {
+        let memo = self.ctx.hold_other(&self.rt);
+        OtherModeHold {
+            ctx: Rc::downgrade(&self.ctx),
+            memo,
+        }
     }
 
-    /// (M5) Lets go of one [`Instance::hold_other_mode`].
-    pub fn release_other_mode(&self) {
-        self.ctx.release_other(&self.rt);
+    /// (M5) Lets go of `hold`, on the program it was taken on (a reload
+    /// since then disposed of that program's memo with it).
+    pub fn release_other_mode(&self, hold: OtherModeHold) {
+        if let Some(ctx) = hold.ctx.upgrade() {
+            ctx.release_other(&self.rt);
+        }
     }
 
     /// (M5) How many hold the other-mode memo now.
@@ -235,9 +273,9 @@ impl Instance {
     /// [`PALETTE_PENDING`] while its palette loads. Takes and releases a
     /// hold around the pull, so an existing holder's memo is shared.
     pub fn other_table(&self) -> Result<Option<TokenTable>, Error> {
-        let memo = self.hold_other_mode();
+        let memo = self.ctx.hold_other(&self.rt);
         let r = memo.get_untracked(&self.rt);
-        self.release_other_mode();
+        self.ctx.release_other(&self.rt);
         let other = r?;
         let current = self.tokens_now()?;
         Ok(other_differs(&current, &other).then_some(other))

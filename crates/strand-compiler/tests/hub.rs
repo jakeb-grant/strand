@@ -212,7 +212,8 @@ fn an_edit_only_the_other_mode_reads_changes_it() {
     let other = shell.inst.other_table().unwrap().unwrap();
     assert_eq!(color(&other, "bg"), Color::from_hex("#fafafa").unwrap());
     // Held, as an output that reads `.light()` holds it.
-    let memo = shell.inst.hold_other_mode();
+    let hold = shell.inst.hold_other_mode();
+    let memo = hold.memo();
     let before = memo.get_untracked(&shell.rt).unwrap();
     let current = shell.table();
     std::fs::write(&file, scheme("#f0e0d0")).unwrap();
@@ -226,7 +227,7 @@ fn an_edit_only_the_other_mode_reads_changes_it() {
         current,
         "the current mode never read the file"
     );
-    shell.inst.release_other_mode();
+    shell.inst.release_other_mode(hold);
     assert_eq!(shell.inst.other_mode_holders(), 0);
 }
 
@@ -238,7 +239,8 @@ fn the_other_mode_writes_nothing() {
     let dir = temp_dir("writes-nothing");
     let storage = Storage::in_dirs(dir.join("state"), &dir);
     let shell = boot(&[("theme.strand", theme())], storage, true);
-    let memo = shell.inst.hold_other_mode();
+    let hold = shell.inst.hold_other_mode();
+    let memo = hold.memo();
     for dark in [false, true, false, true, true, false] {
         shell.portal_dark(dark);
         let other = memo.get_untracked(&shell.rt).unwrap();
@@ -253,7 +255,7 @@ fn the_other_mode_writes_nothing() {
             "the persisted palette is the current mode"
         );
     }
-    shell.inst.release_other_mode();
+    shell.inst.release_other_mode(hold);
 }
 
 /// A failing other-mode palette fails that table only.
@@ -281,7 +283,8 @@ fn overlays_reach_both_modes() {
     shell.inst.set_token_overlay("accent", "#ff0000").unwrap();
     shell.flush();
     let red = Color::from_hex("#ff0000").unwrap();
-    let memo = shell.inst.hold_other_mode();
+    let hold = shell.inst.hold_other_mode();
+    let memo = hold.memo();
     for dark in [true, false, true] {
         shell.portal_dark(dark);
         assert_eq!(color(&shell.table(), "accent"), red);
@@ -293,7 +296,7 @@ fn overlays_reach_both_modes() {
     shell.flush();
     let other = memo.get_untracked(&shell.rt).unwrap();
     assert_ne!(color(&other, "accent"), red);
-    shell.inst.release_other_mode();
+    shell.inst.release_other_mode(hold);
 }
 
 /// Every file under `dir`, with its bytes.
@@ -360,4 +363,108 @@ fn the_offline_storage_writes_nothing() {
         drop(shell);
         assert_eq!(snapshot(&state), before, "with_palette: {with_palette}");
     }
+}
+
+/// A hold taken before a reload lets go of nothing the reloaded program
+/// holds: an `export` request waiting across a config save, released
+/// after it, leaves a mounted output's hold (and its memo) in place.
+#[test]
+fn a_hold_from_before_a_reload_releases_nothing_after_it() {
+    let dir = temp_dir("stale-hold");
+    let src = |label: &str| {
+        format!(
+            "{}\nexport state label = \"{label}\"\n\
+             file \"out/both.txt\" {{ text: join(\" \", $surface, $surface.light() ?? $surface) }}\n",
+            theme()
+        )
+    };
+    let mut shell = boot(
+        &[("theme.strand", src("a"))],
+        Storage::in_dirs(dir.join("state"), &dir),
+        true,
+    );
+    let first = shell.inst.take_outputs();
+    assert!(first.iter().any(|c| both(c).is_some()), "{first:?}");
+    assert_eq!(shell.inst.other_mode_holders(), 1, "the output holds it");
+    // The request's hold, then a save.
+    let request = shell.inst.hold_other_mode();
+    assert_eq!(shell.inst.other_mode_holders(), 2);
+    let mut map = SourceMap::new();
+    map.add("theme.strand", src("b"));
+    let build = Build::compile(None, map).unwrap_or_else(|d| panic!("{d:#?}"));
+    shell.inst.reload(&build);
+    shell.flush();
+    let _ = shell.inst.take_outputs();
+    assert_eq!(shell.inst.other_mode_holders(), 1, "the remounted output");
+    shell.inst.release_other_mode(request);
+    assert_eq!(
+        shell.inst.other_mode_holders(),
+        1,
+        "the stale hold let go of the output's"
+    );
+    // The output still renders both modes after the next flip.
+    shell.portal_dark(false);
+    let out = shell.inst.take_outputs();
+    let text = out.iter().find_map(both).unwrap();
+    let parts: Vec<&str> = text.split(' ').collect();
+    assert_eq!(parts.len(), 2, "{text}");
+    assert_eq!(parts[0], parts[1], "light is the current mode now: {text}");
+    shell.portal_dark(true);
+    let out = shell.inst.take_outputs();
+    let text = out.iter().find_map(both).unwrap();
+    let parts: Vec<&str> = text.split(' ').collect();
+    assert_ne!(parts[0], parts[1], "the other mode is still there: {text}");
+}
+
+/// `out/both.txt`'s text, if `c` writes it.
+fn both(c: &strand_compiler::instantiate::OutputChange) -> Option<String> {
+    use strand_compiler::instantiate::OutputContent;
+    if !c.path.as_ref()?.ends_with("out/both.txt") {
+        return None;
+    }
+    match &c.content {
+        OutputContent::Write { bytes, .. } => Some(String::from_utf8(bytes.clone()).unwrap()),
+        OutputContent::Failed { diags, .. } => panic!("{diags:?}"),
+    }
+}
+
+/// The offline mount reads the running shell's seed index: with no
+/// persisted palette, a wallpaper the shell quantised is answered at
+/// once, not quantised again, and the state directory is left as it was.
+#[test]
+fn the_offline_mount_reads_the_seed_index() {
+    let dir = temp_dir("seed-index");
+    let img = image::RgbImage::from_fn(64, 64, |x, _| {
+        image::Rgb(if x < 48 {
+            [30, 90, 200]
+        } else {
+            [240, 200, 40]
+        })
+    });
+    img.save(dir.join("wall.png")).unwrap();
+    let src = "use palette material(image: \"wall.png\", dark: true) ?? material(seed: #ff0000)\n"
+        .to_string();
+    let state = dir.join("state");
+    {
+        let shell = boot(
+            &[("theme.strand", src.clone())],
+            Storage::in_dirs(&state, &dir),
+            true,
+        );
+        let theme = shell.inst.theme().unwrap();
+        assert!(theme.wait_images(&shell.rt, Duration::from_secs(30)));
+        shell.flush();
+        assert!(theme.sync(Duration::from_secs(5)));
+    }
+    std::fs::remove_file(state.join("palettes/palette")).unwrap();
+    let before = snapshot(&state);
+    let shell = boot(
+        &[("theme.strand", src)],
+        Storage::read_only(&state, &dir),
+        true,
+    );
+    let p = shell.inst.palette().expect("answered from the index");
+    assert_eq!(p.source(), Some("wallpaper"));
+    drop(shell);
+    assert_eq!(snapshot(&state), before);
 }

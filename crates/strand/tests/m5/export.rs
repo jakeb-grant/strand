@@ -242,6 +242,28 @@ fn a_broken_theme_has_no_palette() {
         "{err}"
     );
     assert!(err.contains("nope"), "{err}");
+    // A template too: never the built-in palette the token table falls
+    // back to, from the config or from `--palette`.
+    let tmpl = home.write("t.tmpl", "{{ $accent }}\n");
+    let tmpl = tmpl.to_str().unwrap();
+    let err = home.err(&["--template", tmpl]);
+    assert!(err.contains("no palette") && err.contains("nope"), "{err}");
+    let err = home.err(&[
+        "--template",
+        tmpl,
+        "--palette",
+        "import(\"catppuccin:nope\")",
+    ]);
+    assert!(err.contains("no palette") && err.contains("nope"), "{err}");
+    home.write(
+        "config/strand/theme.strand",
+        "use palette import(\"base16:missing.yaml\")\n",
+    );
+    let err = home.err(&["--template", tmpl]);
+    assert!(
+        err.contains("no palette") && err.contains("missing"),
+        "{err}"
+    );
     home.write("config/strand/theme.strand", "let x: Int = \"a\"\n");
     let err = home.err(&["base24"]);
     assert!(
@@ -340,4 +362,117 @@ fn the_running_shell_answers_and_agrees_with_offline() {
     assert!(!after.status.success());
     assert!(String::from_utf8_lossy(&after.stderr).contains("no palette"));
     assert_eq!(text(offline(&["json"])), before);
+}
+
+/// Waits (bounded) for `f` to hold.
+fn until(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !f() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn lines(p: &Path) -> usize {
+    std::fs::read_to_string(p).map_or(0, |t| t.lines().count())
+}
+
+/// `file` outputs on a running shell: written at boot, once per change
+/// (and `run:` once per write, 200 ms after it), nothing for a change
+/// that leaves the text as it was; a template edit re-renders; an
+/// unowned target and a failing `run:` are notices, the file kept.
+#[test]
+fn file_outputs_follow_the_theme() {
+    if !super::cli::tools() {
+        return;
+    }
+    let base = std::env::temp_dir().join(format!("strand-fo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let runs = base.join("runs.log");
+    let theme = format!(
+        "permit exec\n\
+         export state flip = false\n\
+         export state other = 1\n\
+         use palette material(seed: #7aa2f7, dark: flip ? !system.dark : system.dark)\n\
+         file \"out/accent.txt\" {{ text: $accent; run: [\"sh\", \"-c\", \"echo x >> {runs}\"] }}\n\
+         file \"out/both.css\" {{ template: \"both.tmpl\" }}\n\
+         file \"mine.txt\" {{ text: $fg }}\n\
+         file \"out/fails.txt\" {{ text: $fg; run: [\"sh\", \"-c\", \"echo boom >&2; exit 3\"] }}\n",
+        runs = runs.display()
+    );
+    let mut desk = super::cli::Desk::start(
+        "files",
+        &[
+            ("bar.strand", BAR),
+            ("theme.strand", &theme),
+            (
+                "both.tmpl",
+                "{{ $surface }} {{ $surface.dark() ?? $surface }}\n",
+            ),
+            ("mine.txt", "the user's\n"),
+        ],
+        &[],
+    );
+    let (_watch, events) = desk.watch();
+    let config = desk.root().join("config");
+    let accent = config.join("out/accent.txt");
+    until("the boot write", || accent.exists());
+    until("the boot run", || lines(&runs) == 1);
+    let first = std::fs::read_to_string(&accent).unwrap();
+    assert!(first.starts_with('#'), "{first}");
+    let both = std::fs::read_to_string(config.join("out/both.css")).unwrap();
+    let parts: Vec<&str> = both.split_whitespace().collect();
+    assert_eq!(parts.len(), 2, "{both}");
+    assert_ne!(
+        parts[0], parts[1],
+        "the dark mode is the other mode: {both}"
+    );
+    // The flip: written once, run once.
+    desk.ok(&["set", "theme.flip", "true"]);
+    until("the flip's write", || {
+        std::fs::read_to_string(&accent).is_ok_and(|t| t != first)
+    });
+    until("the flip's run", || lines(&runs) == 2);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(lines(&runs), 2, "one run per write");
+    // A change the outputs do not read: nothing written, nothing run.
+    let stamp = std::fs::metadata(&accent).unwrap().modified().unwrap();
+    desk.ok(&["set", "theme.other", "2"]);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(
+        std::fs::metadata(&accent).unwrap().modified().unwrap(),
+        stamp
+    );
+    assert_eq!(lines(&runs), 2);
+    // A template edit re-renders.
+    desk.save("both.tmpl", "edited {{ $accent }}\n");
+    until("the template edit", || {
+        std::fs::read_to_string(config.join("out/both.css"))
+            .is_ok_and(|t| t.starts_with("edited #"))
+    });
+    // The unowned target is refused and kept; the failing run is a
+    // notice with its stderr; its file is written.
+    assert_eq!(
+        std::fs::read_to_string(config.join("mine.txt")).unwrap(),
+        "the user's\n"
+    );
+    assert!(config.join("out/fails.txt").exists());
+    let mut heard_refused = false;
+    let mut heard_boom = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !(heard_refused && heard_boom) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(ev) = events.recv_timeout(left) else {
+            break;
+        };
+        for n in ev["notices"].as_array().into_iter().flatten() {
+            let n = n.as_str().unwrap_or_default();
+            heard_refused |= n.contains("mine.txt") && n.contains("did not write");
+            heard_boom |= n.contains("fails.txt") && n.contains("boom");
+        }
+    }
+    assert!(heard_refused && heard_boom, "{}", desk.log_text());
+    desk.stop();
+    let _ = std::fs::remove_dir_all(&base);
 }

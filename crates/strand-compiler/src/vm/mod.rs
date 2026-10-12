@@ -285,6 +285,11 @@ impl Env {
         }
     }
 
+    /// (M5) The core scope this scope is tied to, if any.
+    pub fn owner(&self) -> Option<strand_core::NodeId> {
+        self.owner.get()
+    }
+
     /// Tie this scope to the core scope `owner` (the one being mounted).
     pub fn set_owner(&self, owner: Option<strand_core::NodeId>) {
         self.owner.set(owner);

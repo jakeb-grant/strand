@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use strand_services::testing::PrivateBus;
 
-struct Proc(Child);
+pub(super) struct Proc(Child);
 
 impl Drop for Proc {
     fn drop(&mut self) {
@@ -300,7 +300,7 @@ impl Desk {
 
     /// `strand watch --json`, its events on a channel once it is
     /// subscribed.
-    fn watch(&self) -> (Proc, mpsc::Receiver<serde_json::Value>) {
+    pub(super) fn watch(&self) -> (Proc, mpsc::Receiver<serde_json::Value>) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_strand"))
             .args(["watch", "--json"])
             .envs(self.env())

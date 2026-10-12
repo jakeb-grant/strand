@@ -884,7 +884,21 @@ impl Quantiser {
     /// A quantiser whose caches live in `dir` (`None`: memory only). The
     /// index is read now; the worker thread starts now and idles.
     pub fn new(dir: Option<PathBuf>) -> io::Result<Quantiser> {
+        Quantiser::open(dir, true)
+    }
+
+    /// (M5) A quantiser that reads the seed index in `dir` (the running
+    /// shell's, so a wallpaper it quantised is not quantised again) but
+    /// never writes it: what it learns stays in memory (`strand export`'s
+    /// offline mount, which writes nothing; decisions.md m5-tools, "the
+    /// CLI").
+    pub fn read_only(dir: PathBuf) -> io::Result<Quantiser> {
+        Quantiser::open(Some(dir), false)
+    }
+
+    fn open(dir: Option<PathBuf>, store: bool) -> io::Result<Quantiser> {
         let (cache, last) = dir.as_deref().map(read_index).unwrap_or_default();
+        let dir = dir.filter(|_| store);
         let index: HashMap<PathBuf, Entry> = cache
             .known
             .iter()

@@ -28,9 +28,12 @@ pub mod inspect;
 mod lock;
 mod mirror;
 mod mount;
+mod outputs;
 mod overlay;
 mod reload;
 pub mod theme;
+
+pub use outputs::{OutputChange, OutputContent};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -261,6 +264,17 @@ pub(crate) struct Ctx {
     pub drags: RefCell<HashMap<NodeId, Value>>,
     /// (M5) The other-mode memo while something holds it (`theme.rs`).
     pub(crate) other: RefCell<Option<theme::OtherHold>>,
+    /// (M5) Mounted `file` outputs (`outputs.rs`).
+    pub(crate) outputs: RefCell<Vec<outputs::Slot>>,
+    pub(crate) next_output: Cell<u64>,
+    /// (M5) The outputs' shared check of the palette with no fallback
+    /// (`outputs.rs`).
+    pub(crate) palette_ok: Cell<Option<Memo<()>>>,
+    /// (M5) Other-mode holds let go while the runtime was disposing,
+    /// released at the next take.
+    pub(crate) releases: Cell<usize>,
+    /// (M5) The token table memo, once `boot` made it.
+    pub(crate) tokens_memo: Cell<Option<Memo<TokenTable>>>,
 }
 
 impl VmHooks for Ctx {
@@ -623,6 +637,11 @@ impl Ctx {
             drags: RefCell::default(),
             pages: RefCell::default(),
             other: RefCell::default(),
+            outputs: RefCell::default(),
+            next_output: Cell::new(0),
+            palette_ok: Cell::new(None),
+            releases: Cell::new(0),
+            tokens_memo: Cell::new(None),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -950,6 +969,7 @@ impl Instance {
         ctx.storage.tokens.prepare(&rt, self.root);
         let memo = rt.memo(move |rt| c.token_table(rt));
         rt.set_name(memo.id(), "tokens");
+        ctx.tokens_memo.set(Some(memo));
         let chunks: Vec<_> = prog
             .use_palette
             .iter()

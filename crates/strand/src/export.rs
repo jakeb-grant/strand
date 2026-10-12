@@ -198,6 +198,10 @@ pub(crate) fn produce(
     template: Option<(&Source, &Template)>,
     other: Option<&TokenTable>,
 ) -> Result<Vec<u8>, String> {
+    // The palette with no fallback, for every format: a broken theme is
+    // the error, never the built-in or last good palette the token
+    // table falls back to (decisions.md m5-tools, "the CLI", step 3).
+    let palette = inst.palette().map_err(|e| format!("{NO_PALETTE} ({e})"))?;
     let table = inst
         .tokens_now()
         .map_err(|e| format!("{NO_PALETTE} ({e})"))?;
@@ -208,14 +212,11 @@ pub(crate) fn produce(
                 .map_err(|d| render(&d, &map, Style::Plain))
         }
         (Format::Template(_), None) => Err("no template".into()),
-        (f, _) => {
-            let palette = inst.palette().map_err(|e| format!("{NO_PALETTE} ({e})"))?;
-            Ok(match f {
-                Format::Base24 => strand_theme::export::base24(&palette, &table),
-                _ => strand_theme::export::json(&palette, &table),
-            }
-            .into_bytes())
+        (f, _) => Ok(match f {
+            Format::Base24 => strand_theme::export::base24(&palette, &table),
+            _ => strand_theme::export::json(&palette, &table),
         }
+        .into_bytes()),
     }
 }
 
@@ -224,6 +225,9 @@ struct Mount {
     // Dropped before the runtime it lives in.
     inst: Instance,
     _rt: Runtime,
+    /// The boot's runtime errors (a failing `use palette` among them),
+    /// given as the cause when no palette can be had.
+    errors: Vec<String>,
 }
 
 impl Mount {
@@ -287,9 +291,18 @@ impl Mount {
             let _ = host.set_initial(&rt, field, v);
         }
         let inst = Instance::from_build(&rt, build, host, storage);
-        let _ = inst.flush();
+        let errors = inst
+            .flush()
+            .errors
+            .iter()
+            .map(|e| format!("{}: {}", e.what, e.error))
+            .collect();
         inst.wait_images(IMAGE_WAIT);
-        Mount { inst, _rt: rt }
+        Mount {
+            inst,
+            _rt: rt,
+            errors,
+        }
     }
 
     fn produce(&self, format: &Format, template: Option<&Source>) -> Result<Vec<u8>, String> {
@@ -312,6 +325,12 @@ impl Mount {
             format,
             template.as_ref().map(|(s, t)| (*s, t)),
             other.as_ref(),
+        )
+        .map_err(
+            |e| match e.starts_with(NO_PALETTE) && !self.errors.is_empty() {
+                true => format!("{e}\n{}", self.errors.join("\n")),
+                false => e,
+            },
         )
     }
 }

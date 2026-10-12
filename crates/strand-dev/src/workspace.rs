@@ -175,6 +175,13 @@ impl Analysis {
         compiled
             .diagnostics
             .extend(strand_compiler::check::paths::check(&compiled.program, dir));
+        // (M5, S-tools) `file`s' literal `template:` paths.
+        compiled
+            .diagnostics
+            .extend(strand_compiler::check::files::templates(
+                &compiled.program,
+                dir,
+            ));
         // `shader "x.wgsl"` files, checked with naga (relative paths only
         // in a config directory).
         use strand_compiler::check::shaders;

@@ -101,6 +101,8 @@ pub(super) struct Shell {
     /// (M5, S-tools) `export` requests waiting for their other mode's
     /// palette (`request/export.rs`).
     pub(super) exports: Vec<super::request::Waiting>,
+    /// (M5, S-tools) `file` outputs' writer (`outputs.rs`).
+    pub(super) files: super::outputs::Files,
 }
 
 /// A surface's `blur` nodes as `ToLogic::BlurFallback` carries them.
@@ -129,6 +131,7 @@ impl Shell {
                         Click::Clear(file, field) => {
                             inst.clear_settings_overlay(&file, &field);
                         }
+                        Click::Replace(target) => self.files.replace(target),
                         Click::Dismissed | Click::Nothing => {}
                     }
                     return;

@@ -49,3 +49,5 @@ file
       token 3 8px
       token 4 12px
   use (tokens (?: (. prefs compact) compact base)) (palette scheme)
+  element file "~/.cache/strand/accent.txt"
+    prop text: $accent

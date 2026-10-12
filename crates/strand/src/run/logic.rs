@@ -95,6 +95,7 @@ pub fn logic(
         });
     let rt = Runtime::new();
     let services_ping = ping.clone();
+    let files_ping = ping.clone();
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
     // The D-Bus front end (`strand_services::ipc_bus`, below) and
@@ -207,6 +208,8 @@ pub fn logic(
         }
         r.builtin.system.acquire(&rt);
     }
+    // (M5) What `file` outputs wrote: `$XDG_STATE_HOME/strand/files`.
+    let manifest = storage.palette_dir().map(|d| d.with_file_name("files"));
     let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
     // The first frame waits (at most BOOT_SERVICES_HOLD) for the first
     // reads of the services the config started, so a desktop whose
@@ -242,6 +245,7 @@ pub fn logic(
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
         exports: Vec::new(),
+        files: super::outputs::Files::new(files_ping, manifest),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good

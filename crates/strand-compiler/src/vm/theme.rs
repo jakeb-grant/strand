@@ -115,8 +115,9 @@ impl ThemeHost {
     /// CLI", step 2): it reads the persisted palette from `palettes` and
     /// pins the palette root to it, but writes nothing there:
     /// [`ThemeHost::remember_palette`] keeps the palette in memory only,
-    /// and the quantiser (only started when nothing is persisted) keeps
-    /// no seed cache.
+    /// and the quantiser (only started when nothing is persisted) reads
+    /// the shell's seed index there and stores no seed
+    /// (`Quantiser::read_only`).
     pub fn read_only(
         rt: &Runtime,
         palettes: Option<PathBuf>,
@@ -236,8 +237,12 @@ impl ThemeHost {
         self.hold(rt, |h| &h.images, path.clone());
         let mut q = self.quantiser.borrow_mut();
         if q.is_none() {
-            let cache = self.cache_dir.clone().filter(|_| !self.read_only);
-            match Quantiser::new(cache) {
+            // Read-only: the shell's seed index is read, never written.
+            let made = match (self.cache_dir.clone(), self.read_only) {
+                (Some(dir), true) => Quantiser::read_only(dir),
+                (cache, _) => Quantiser::new(cache),
+            };
+            match made {
                 Ok(new) => {
                     let notify = self.notify.clone();
                     new.set_waker(move || {
@@ -270,6 +275,15 @@ impl ThemeHost {
             self.hold(rt, |h| &h.imports, file);
         }
         strand_theme::import(source, self.config_dir.as_deref()).map_err(|e| e.to_string())
+    }
+
+    /// (M5) A `file` output's template, read as an import is: tracked by
+    /// the running computation and watched while it holds it, so an edit
+    /// re-renders the output.
+    pub fn read_template(self: &Rc<Self>, rt: &Runtime, path: &Path) -> std::io::Result<String> {
+        let _ = self.generation.get(rt);
+        self.hold(rt, |h| &h.imports, path.to_path_buf());
+        std::fs::read_to_string(path)
     }
 
     /// The watcher saw these files change: anything read from them is
@@ -319,6 +333,17 @@ impl ThemeHost {
             .is_none_or(|q| q.wait(timeout));
         self.bump(rt);
         done
+    }
+
+    /// (M5) Whether a wallpaper is still being quantised (a `file` output
+    /// writes nothing until it resolves, even while `??` gives the screen
+    /// a fallback). Tracked: the reader runs again when a job ends.
+    pub fn images_pending(&self, rt: &Runtime) -> bool {
+        let _ = self.generation.get(rt);
+        self.quantiser
+            .borrow()
+            .as_ref()
+            .is_some_and(Quantiser::busy)
     }
 
     /// How many images were decoded and quantised.

@@ -401,6 +401,7 @@ tokens base {
 }
 tokens compact extends base { override space { 1: 2px; 2: 4px; 3: 8px; 4: 12px } }
 use tokens prefs.compact ? compact : base, palette scheme
+file "~/.cache/strand/accent.txt" { text: $accent }   // kept in step with every switch
 ```
 
 A theme switcher anywhere in your shell is one line: `segmented { options: Look; value: <-> theme.look }`. From a terminal or keybind: `strand set theme.look mocha`.
@@ -421,7 +422,7 @@ Writing `look`, a portal dark-mode change, a new wallpaper, `strand set` and sav
 - Both the wallpaper path and its symlink target are watched, so `swww` or a script replacing the file re-themes live.
 - The old palette holds until the new one is ready. The last palette is persisted, so boot never flashes default colours.
 - The rest of the desktop gets the same palette through generic outputs (M5 wave 2); Strand ships no per-app themes or templates. `strand export json` writes the palette as data (name, source, dark, the 62 roles, every resolved token, the source's colours). `strand export base24` writes a base24 scheme, so the community's base16/base24 templates work with no Strand-side upkeep. `strand export --template <file>` fills a text file of any format whose holes are Strand expressions over the theme: `--accent: {{ $accent }};`, `--glow: {{ hex($accent.alpha(0.4), alpha: true) }};`, the light value from a dark theme with `{{ $surface.light() }}`. A literal `{{` is `{{ "{{" }}`; an error carries the template's file, line and caret, and nothing is written. Each writes to stdout, or atomically to `-o <file>`. The CLI reads the running shell over its socket (overlays included), else solves the theme offline, else says "run strand once, or fix the theme".
-- A config keeps files in step with every theme switch with the `file` element (M5 wave 2), allowed at the top level as well as in trees: `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl"; run: ["reload-colors"] }` (the command needs `permit exec`). A file is re-rendered when its text would change, written atomically and only then, and caught up at boot; `run` follows 200 ms after the last write. Strand never writes into another program's config directory unless asked, and never overwrites a file it did not write.
+- A config keeps files in step with every theme switch with the `file` element (M5 wave 2), allowed at the top level as well as in trees, as the theme file's last line shows: `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl"; run: ["reload-colors"] }` fills a template file beside the config (the command needs `permit exec`), and `text:` takes one template expression in place of `template:`. A file is re-rendered when its text would change, written atomically and only then, and caught up at boot; `run` follows 200 ms after the last write. Strand never writes into another program's config directory unless asked, and never overwrites a file it did not write.
 
 ### Overrides
 

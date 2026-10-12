@@ -1083,6 +1083,25 @@ element segmented: node {
 /// A tooltip with content of its own.
 element tooltip: node { flags on_demand }
 
+// Outputs (M5).
+
+/// Keeps a file in step with the theme: `file "~/.cache/strand/colors.css"
+/// { template: "colors.css.tmpl"; run: ["reload-colors"] }`. Allowed at
+/// the top level as well as in a tree, where `when` can change its
+/// props; it draws nothing. Written atomically when its text would
+/// change, and caught up at boot.
+element file(text -> path) {
+  /// A template file (relative to the config), its holes `{{ expr }}`
+  /// over the theme.
+  template: text
+  /// The content as one template expression, in place of `template:`.
+  text: any
+  /// A command run 200 ms after the file was last written; it needs
+  /// `permit exec`.
+  run: [text]
+  flags leaf
+}
+
 // Effects and media nodes.
 
 /// An arc or ring gauge: `arc { value: cpu.usage; sweep: 270deg }`.
