@@ -102,7 +102,7 @@ impl Inspect {
         let mut out = Overlay::default();
         let mut now = Damage::new();
         let mut sig = std::collections::hash_map::DefaultHasher::new();
-        if self.flash && !time.is_zero() {
+        if self.flash && !lock && !time.is_zero() {
             let list = self.flashes.entry(surface).or_default();
             list.retain(|(_, t)| flash_alpha(time.saturating_sub(*t)).is_some());
             if !content.is_empty() {

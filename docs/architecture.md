@@ -953,7 +953,8 @@ frame drew it, in logical pixels, after paint offsets, scrolling and
 any transform (their bounding box), without `hit: grow(n)`; the outline
 is a 2 px ring inside the node's rounded box, under its transform and
 its ancestors' clip; the flash tints each frame's own repaint, fading
-over 300 ms, and only frames with a presentation time. Both are display
+over 300 ms, and only frames with a presentation time (never a lock
+surface's). Both are display
 items appended to the frame's list after flattening, so the CPU raster
 and the GPU's lowering draw them unchanged. Pick mode's two calls,
 beside them:

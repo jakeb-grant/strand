@@ -350,8 +350,8 @@ fn pick_follows_the_pointer_across_surfaces() {
     );
 }
 
-/// A lock surface is never pickable, and the outline is never drawn on
-/// one.
+/// A lock surface is never pickable, and neither the outline nor the
+/// flash is ever drawn on one.
 #[test]
 fn a_lock_surface_is_never_picked_or_outlined() {
     let mut b = Builder::default();
@@ -368,6 +368,7 @@ fn a_lock_surface_is_never_picked_or_outlined() {
         ],
     );
     let mut r = renderer();
+    r.set_reduced_motion(true);
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, lock);
     let mut buf = buffer(1);
@@ -375,8 +376,17 @@ fn a_lock_surface_is_never_picked_or_outlined() {
     let plain = buf.pixels.clone();
     assert_eq!(r.pick(S, LogicalPoint::new(20.0, 20.0)), None);
     r.set_highlight(Some(field));
-    buf.paint_at(&mut r, S, 1, ms(16));
+    buf.paint_at(&mut r, S, 1, T0 + ms(16));
     assert_eq!(buf.pixels, plain);
+    // Nor is the flash: a lock's repaint (a typed character's) is drawn
+    // untinted.
+    r.set_damage_flash(true);
+    let mut d = SceneDiff::new();
+    d.set(field, Prop::Bg, color("#f38ba8"));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, T0 + ms(32));
+    assert_eq!(buf.px(20, 15), [0xa8, 0x8b, 0xf3, 0xff]);
+    assert!(!r.wants_frame(S));
 }
 
 /// A `GpuPresent` surface draws the outline and the flash as the CPU
