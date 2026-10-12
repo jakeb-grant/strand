@@ -1197,14 +1197,32 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "c");
         // A slow run: writes during it queue one re-run.
         std::fs::remove_file(&log).unwrap();
+        // Waits on the run's own line, not on time: a loaded runner can
+        // take longer than the debounce to start `sh` (GitHub run
+        // 38304456895). The line is echoed before the run's sleep, so
+        // the writes below land while it is going.
+        let slow = Instant::now();
         write("d", "; sleep 0.6");
-        std::thread::sleep(RUN_DEBOUNCE + Duration::from_millis(150));
-        assert_eq!(lines(&log), 1, "the slow run started");
+        while lines(&log) == 0 {
+            assert!(
+                slow.elapsed() < Duration::from_secs(5),
+                "the slow run started"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         write("e", "; sleep 0.6");
-        std::thread::sleep(Duration::from_millis(50));
         write("f", "; sleep 0.6");
-        std::thread::sleep(Duration::from_millis(2500));
-        assert_eq!(lines(&log), 2, "one queued re-run");
+        let rerun = Instant::now();
+        while lines(&log) < 2 {
+            assert!(
+                rerun.elapsed() < Duration::from_secs(5),
+                "one queued re-run"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The re-run's own sleep and a debounce more: no third run.
+        std::thread::sleep(Duration::from_millis(600) + RUN_DEBOUNCE * 2);
+        assert_eq!(lines(&log), 2, "one queued re-run, however many writes");
     }
 
     /// A refused write is tried again: once the user deletes the file
