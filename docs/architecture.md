@@ -1044,10 +1044,16 @@ S-platform in M5 wave 3, decisions.md m5-platform).**
   token: never a wait beyond 200 ms, never a dropped or reordered
   action. An action whose service's run ended or was stopped while it
   waited goes back to the logic thread, which sends it to the run that
-  is up then (started for it), as an action sent at once would be; the
-  actions queued after it follow it there, even one that was handed the
-  newer run, so none overtakes it. An action sent at once (no wait) to
-  a run whose body has gone is the caller's error, as before tokens.
+  is up then (started for it), as an action sent at once would be. The
+  queue it goes back to is one for every service, in the order actions
+  were handed back, and while it holds anything every action joins it
+  at the back, any service's, whether it waited or was sent at once; so
+  the actions after a handed-back one follow it there, even one that
+  was handed the newer run or goes to another service, and none
+  overtakes it. `Services::pump` sends the queue on after the services'
+  envelopes, and `act_with` before its own action. An action sent at
+  once (no wait) to a run whose body has gone, with nothing handed
+  back, is the caller's error, as before tokens.
 
 **`strand-compiler` `Suggestion`** gains `title: Option<String>` (the
 code action's title; `None` keeps today's "Change to `…`", the title
