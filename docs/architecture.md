@@ -158,9 +158,10 @@ opt-levels build the code users wait on for speed and event-rate
 glue for size (decisions.md m5-speed-profile), and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
 build from the workspace (`budgets.rs` holds the release binary's
-`.text` to 22,282,240 B, and a build without the GPU backend to
-18,350,080 B, both re-based in M5 for the speed profile (decisions.md
-m5-speed); see "`strand-gpu`"). Every program strand starts gets back
+`.text` to 22,806,528 B, and a build without the GPU backend to
+18,874,368 B, both re-based in M5 for the speed profile and again to
+wave 2's merged tree (decisions.md m5-speed, m5-integration-w2); see
+"`strand-gpu`"). Every program strand starts gets back
 the THP setting strand inherited (`strand_services::child`, in each
 `pre_exec`). SIGINT, SIGTERM (a
 `signalfd` on the main loop, the signals blocked in every thread) and
@@ -507,7 +508,8 @@ blocker). The `strand` binary's default feature `gpu` turns on render's
 on `shaders` so the LSP checks shaders too. Built with
 `--no-default-features`, `strand` links none of wgpu, vello_gpu, naga or
 libwayland-client: that build is the CPU core the CPU-only `.text` gate
-measures (18,350,080 B since M5's speed re-base; decisions.md m5-speed).
+measures (18,874,368 B since M5 wave 2's re-base; decisions.md
+m5-integration-w2).
 
 ```
 strand-scene <── strand-gpu (M4: wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -4170,10 +4172,11 @@ inspector (M5) to say why.
 
 **Budgets and tests.**
 - `.text` (`strand/tests/budgets.rs`): the default build at most
-  22,282,240 B and `strand --no-default-features` at most 18,350,080 B
-  (decisions.md m5-speed: the speed profile's measured 21,857,111 and
-  17,961,687 B, plus M5's unspent allocation and a 64 KiB reserve,
-  rounded up to 256 KiB). Before the speed profile they were 18.5 MiB
+  22,806,528 B and `strand --no-default-features` at most 18,874,368 B
+  (decisions.md m5-integration-w2: wave 2's merged tree, 22,473,111 and
+  18,555,351 B, plus M5's unspent lines and a 64 KiB reserve, rounded up
+  to 256 KiB; 22,282,240 and 18,350,080 B after the speed review,
+  decisions.md m5-speed). Before the speed profile they were 18.5 MiB
   (19,398,656 B: the spike's 17,683,543 B with GPU code linked, plus
   9.7%) and 15 MiB (the spike's CPU build had 1.14 MiB to spare),
   re-based in M5 to 15,925,248 B, then 15,859,712 B after wave 0's

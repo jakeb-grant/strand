@@ -1,7 +1,9 @@
 # Handoff: M5 after wave 2 (updated 2026-10-11)
 
-A pausing point: M5's wave 2 (its first launch) is merged on its
-integration branch, `laptop/m5-w2`, and wave 3 has not started. Read this
+A pausing point: M5's wave 2 (its first launch) and S-tools' wave-3
+`strand new` and `strand report` are merged on the integration branch,
+`laptop/m5-w2`, the `.text` gates are re-based to that tree under the
+owner's size ruling, and the rest of wave 3 has not started. Read this
 first when picking the repo up cold, then `docs/m5-plan.md` (streams,
 waves, ledger, closing checks), `docs/decisions.md` (`## m5-owner`,
 `## m5-integration`, `## m5-w0-harden`, the `## m5-speed*` and
@@ -17,10 +19,10 @@ measured numbers.
 - **M0–M4 are complete**, and **M5's wave 1 is on `main`** (`6cee276`,
   fast-forwarded by the owner). features.md: M0 20/20, M1 59/59 (the
   tree-sitter box, carried to M5, ticked in wave 2), M2 30/30, M3 14/14,
-  M4 18/18, **M5 5/12** (ten boxes and two exit criteria; ticked: CLI +
-  IPC, the importers, plugins, tree-sitter and the LSP; open: the
-  inspector, `new`/`export`/`report`, xdg-activation, the promoted GPU
-  cost on hardware, the docs, and both exit criteria).
+  M4 18/18, **M5 6/12 on `laptop/m5-w2`** (ten boxes and two exit
+  criteria; ticked: CLI + IPC, `new`/`export`/`report`, the importers,
+  plugins, tree-sitter and the LSP; open: the inspector, xdg-activation,
+  the promoted GPU cost on hardware, the docs, and both exit criteria).
 - **Wave 2 is merged on `laptop/m5-w2`** (branched from `main` at
   `6cee276`; its first commit `3e833c9` is the integrator's pure move of
   `main.rs`'s CLI into `src/entry.rs`). Six streams, each reviewed and
@@ -82,9 +84,21 @@ measured numbers.
     (0.55 ms median). Size as reported: **+219,776 B CPU-only and
     +219,264 B GPU** against `6a33477` after 77 KB reclaimed with no
     feature dropped, against its 28 KB line; on its branch that crossed
-    both gates (CPU-only by 98,199 B, GPU by 63,127 B). **Not built:**
-    `strand new` and `strand report` (its scope item 4), so the
-    `new`/`export`/`report` box stays open.
+    both gates (CPU-only by 98,199 B, GPU by 63,127 B).
+  - **S-tools, wave 3** (`6b8b8e6`, merged by `8e84059`): `strand new
+    [dir]` (the guide's hello bar into a new or empty directory,
+    refusing a non-empty one) and `strand report [--json]` (globals,
+    outputs, per-surface frame p50/p95/p99 over the last 600 frames,
+    GPU status and lost devices, the PSS; through the snapshot hop),
+    with three review rounds on a promoted frame's GPU time (timestamp
+    queries in `strand-gpu`'s `timer.rs`, `Presented { surface, frame,
+    at, waited, ran }`). Tests: `crates/strand/tests/m5/{new,report}.rs`,
+    `renderer::summary` and `report`/`new` units,
+    `crates/strand-render/tests/gpu.rs`'s frame-time tests. The
+    `new`/`export`/`report` box is ticked; m5-plan's grim reference PNGs
+    for `report` are missing (the two-output test in `report.rs` stands
+    in), left to the owner to confirm. Size on the merged tree: **+70,208
+    B CPU-only, +90,688 B GPU** over `db85876`.
   - **S-docs** (`732976f`): guide levels 4 and 5 (design.md's builds
     byte for byte, then one construct per step; level 5's `file`
     example as its own `colors.strand` with a neutral CSS template), the
@@ -105,15 +119,16 @@ measured numbers.
   `strand::Builder`); the guide notes that `strand new` and `strand
   report` are not built yet; features.md adds S-tools' and S-docs'
   evidence under their open boxes.
-- **Sizes on the merged tree: measured after the merge** (decisions.md
-  m5-size, wave 2; m5-plan's "Measured after wave 2"). The streams
-  measured against different bases, so their figures do not simply
-  add; `scripts/size-report.sh` on `laptop/m5-w2` at `db85876` gives
-  CPU-only 18,485,143 B (+408,000 over wave 1's merged tree; 135,063 B
-  over the 18,350,080 B gate) and GPU 22,382,423 B (+407,744; 100,183 B
-  over the 22,282,240 B gate). The size pass found no gross verbosity
-  and cut nothing. Expect CI's `budgets` job to fail on `laptop/m5-w2`
-  until the gates are re-based to the measured tree (open item 1).
+- **Sizes on the merged tree, and the gates re-based** (decisions.md
+  m5-size, wave 2, and m5-integration-w2; m5-plan's "Re-based after
+  wave 2"). The streams measured against different bases, so their
+  figures do not simply add. `scripts/size-report.sh` on `laptop/m5-w2`
+  at `8e84059` gives CPU-only **18,555,351 B** (+478,208 over wave 1's
+  merged tree) and GPU **22,473,111 B** (+498,432). The size pass found
+  no gross verbosity and cut nothing; the owner accepted the overruns
+  (2026-10-11), and the gates are now **18,874,368 B** CPU-only and
+  **22,806,528 B** GPU (measured + the unbuilt lines + 64 KiB, rounded
+  up to 256 KiB). The budgets test passes on the tree in the container.
 - **Full checks have not run on the merged head**: only crate-scoped
   tests, fmt and workspace clippy ran per merge. `run.sh ci`,
   `matrix.sh`, the lock VM scenarios, `gpu.sh` and GitHub CI are next.
@@ -127,10 +142,6 @@ measured numbers.
 - **S-platform** (xdg-activation: `ActivationToken` from the
   notification server, `XDG_ACTIVATION_TOKEN` for launches; 20 KB
   line): never launched.
-- **S-tools' scope item 4**: `strand new` (the guide's level 1 starts
-  with it; its template `docs/guide/template/bar.strand` exists and is
-  checked) and `strand report` (20 KB line); both rows answer "not
-  implemented yet (M5)".
 - **S-docs' wave-3 work**: the ladder test, `docs/reference/` and its
   generator, `tests/m5/newcomer.rs`, the agent-proxy harness, the spec
   freeze.
@@ -147,16 +158,15 @@ measured numbers.
 
 From m5-plan.md's Waves table ("Closing" for the integrator):
 
-1. **The owner's size ruling first** (open item 1); then the budgets
-   job on the merged tree, and the ledger re-based or the cuts made.
+1. Done: the owner's size ruling, the ledger and both gates re-based
+   to the merged tree, the budgets test passing on it.
 2. **The full local set on `laptop/m5-w2`'s head**, one at a time
    (`run.sh ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), then
    GitHub CI green on that head, then the owner's fast-forward of
    `main`.
 3. **The deferred streams take slots** (at most three building):
    S-inspect's render half and its `strand-dev inspect` client with
-   write-back, S-platform, and S-tools' `strand new` and `strand
-   report`; S-docs' wave-3 writing (ladder, reference, newcomer, agent
+   write-back, and S-platform; S-docs' wave-3 writing (ladder, reference, newcomer, agent
    proxy) beside them, holding no slot.
 4. **Closing**: the freeze text, m5-report, and this file as the M5
    handoff.
@@ -170,30 +180,28 @@ the owner's ff of `main`) is wave 2's, in git history at `37f600b`
 
 Each has its paragraph in decisions.md.
 
-1. **Wave 2's `.text` overruns, unruled.** Every building stream
-   reported past its line: S-ipc +112,960 B (lines 40,400 B), S-palette
-   +56,128 B (10,000 B), S-plugins +25,408 B (8,000 B), S-tools
-   +219,776 B CPU-only and +219,264 B GPU (28,000 B). None is on a frame
-   or swap path (cold IPC, import, export and writer code; the swap
-   gains only the 13 hue roots). The streams list the cuts that remain
-   and what each would cost (m5-ipc "size" and round 1 item 1, which
-   recommends raising the gate; m5-palette "size"; m5-plugins "built"
-   item 6; m5-tools round 2 item 7, whose biggest cuts, the other mode
-   at 44 KB and the IPC `export` arm at 9 KB, drop owner-approved
-   features). The choice is the owner's: accept as cold code under the
-   speed-first policy and re-base the gates on the merged tree (as wave
-   1 did), or name cuts.
-2. **S-ipc's `Request(s json)` alternative** (about −18 KB) was
-   declined by the stream because it would make the D-Bus interface a
-   JSON tunnel; it would change spec.md 13's methods, so it needs the
-   owner if taken.
-3. **The remaining wave-2 and wave-3 lines** (inspector render half
-   20 KB, xdg-activation 20 KB, `strand report` 20 KB) have no headroom
-   left under the current gates; they follow from item 1's ruling.
+1. **Wave 2's `.text` overruns: answered** (2026-10-11): "those size
+   overruns still don't seem like that big of a deal in the scope of
+   the entire binary. We're still pretty small." Accepted as cold code
+   (IPC, import, export, writer, report); nothing cut, since the size
+   pass found no gross verbosity; both gates re-based to the merged tree
+   (decisions.md m5-integration-w2). Per stream as reported: S-ipc
+   +112,960 B, S-palette +56,128 B, S-plugins +25,408 B, S-tools
+   +219,776 B (wave 2) and +70,208 B (wave 3, on the merged tree).
+2. **S-ipc's `Request(s json)` alternative** (about −18 KB): not taken;
+   the ruling made the cut unnecessary, and spec.md 13's typed methods
+   stand.
+3. **The remaining lines** (inspector render half 20 KB, xdg-activation
+   20 KB, the GPU-only outline and flash 19,520 B): answered by item 1;
+   they are inside the re-based gates.
 4. **The presented GPU leg's after-drop bound: answered** (a leak
    tripwire, m5-infra, m5-speed-gpu-bound, m5-open-budgets).
 5. **`scripts/gpu-measure.sh`'s KMS-card run: not needed** (Q19 (A));
    owner-optional, never run by an agent.
+6. **`strand report`'s grim reference PNGs** (m5-plan): not made; the
+   two-output test in `tests/m5/report.rs` stands in for them. Confirm
+   or ask for them (decisions.md m5-integration-w2, S-tools' wave-3
+   merge).
 
 Wave 1's overruns (S-ipc's socket half, S-inspect's library) were
 accepted at wave 1's integration and stand (m5-integration-w1). Every M4
@@ -202,43 +210,43 @@ m4-owner-3; summarised under "M4 owner items" below).
 
 ## Budgets now
 
-These are the figures after wave 1 (the last tree the budgets job
-measured). Wave 2's merged tree was measured by the size pass, not yet
-by the budgets job: CPU-only 18,485,143 B and GPU 22,382,423 B at
-`db85876`, both over the gates below (decisions.md m5-size, wave 2;
-"State" above); the streams' own figures are in open item 1.
+These are the figures on `laptop/m5-w2` at `8e84059`, wave 2 merged
+with S-tools' wave 3 (decisions.md m5-integration-w2).
 
-- **`.text`**, from budgets.rs's gate test (the ledger line; Δ is
-  against M4's merged figures 15,657,671 / 19,041,095 B), the merged
-  wave-1 tree on `laptop/m5-w1` in the container: CPU-only
-  **18,077,143 B** (Δ +2,419,472; +115,328 over `f61acec`) of the
-  **18,350,080 B** gate, 272,937 B of headroom; GPU **21,974,679 B** (Δ
-  +2,933,584) of **22,282,240 B**, 307,561 B of headroom. The speed
-  re-base (+2,325,712 CPU-only, +2,841,424 GPU) is no allocation's
-  spend: spend is Δ − 2,288,656 CPU-only and Δ − 2,804,048 GPU, so M5
-  has spent 130,816 B CPU-only and 129,536 B GPU. The gates are
-  unchanged since the speed review (decisions.md m5-speed,
-  m5-integration-w1). A later deliberate speed revert raises its gate by
-  its recorded cost (m5-speed-policy); anything else that overruns is
-  accidental growth.
+- **`.text`**, from `scripts/size-report.sh` and budgets.rs's gate test
+  in the container (the ledger line; Δ is against M4's merged figures
+  15,657,671 / 19,041,095 B): CPU-only **18,555,351 B** (Δ +2,897,680)
+  of the **18,874,368 B** gate, 319,017 B of headroom; GPU **22,473,111
+  B** (Δ +3,432,016) of **22,806,528 B**, 333,417 B of headroom. The
+  gates were re-based to this tree under the owner's ruling of
+  2026-10-11 by the speed review's rule: measured + the unspent lines of
+  unbuilt work (40,000 B CPU-only: the inspector's render half and
+  xdg-activation; 59,520 B GPU, with the GPU-only outline and flash) + a
+  64 KiB reserve, rounded up to 256 KiB (213,481 / 208,361 B of
+  rounding, not spendable). The speed re-base (+2,325,712 CPU-only,
+  +2,841,424 GPU) is no allocation's spend: spend is Δ − 2,288,656
+  CPU-only and Δ − 2,804,048 GPU, so M5 has spent 609,024 B CPU-only
+  and 627,968 B GPU. A deliberate speed revert raises its gate by its
+  recorded cost (m5-speed-policy); other growth past the lines is read
+  by its cause, as wave 2's was, and re-based or cut with a recorded
+  reason (size gates are regression tripwires, not caps).
   - GitHub's runner links about 2 KB smaller than the container; read
     the ledger against the same machine's baseline.
-  - The ledger is re-based to the gate's headroom less its 64 KiB
-    reserve (207,401 B CPU-only). Wave-2 and wave-3 lines (m5-plan's
-    ledger): D-Bus 37,400; wave-2 IPC arms 3,000 (2,186 measured);
-    inspector wave 2 20,000; report 20,000; xdg-activation 20,000;
-    theming hub S-palette 10,000 and S-tools 28,000; plugins 8,000;
-    tree-sitter 0; review-fix reserve 61,001 B (55,625 B on the GPU
-    build after its GPU-only 40,000 B line). Within allocation: CPU-only
-    Δ ≤ +2,626,873, GPU Δ ≤ +3,175,609.
+  - Wave 3's lines inside the gates: inspector render half 20,000 B,
+    xdg-activation 20,000 B, GPU-only outline and flash 19,520 B, and
+    the 64 KiB reserve for review rounds. Within them: CPU-only Δ ≤
+    +2,937,680, GPU Δ ≤ +3,491,536; the gates are hit at Δ +3,216,697
+    and +3,765,433.
 - **Memory** (tripwires for accidental regressions in CI, never
   runtime caps on a user's shell; set by judgement under the owner's
   2026-10-10 policy, with headroom for waves 1-2's IPC, inspector and
   LSP code, decisions.md m5-open-budgets): the design bar warns above
   42 MB (43,008 kB) and fails above 48 MB (49,152 kB); it measured
-  36,465 kB in the container on the merged tree and 37,588–37,817 kB
+  37,768 kB in the container at `8e84059` (36,465 kB after the speed
+  review) and 37,588–37,817 kB
   on GitHub. The full shell warns above 76 MB (77,824 kB) and fails
-  above 86 MB (88,064 kB); 61,428 kB (161 entries) here, 63,184–64,480
+  above 86 MB (88,064 kB); 64,163 kB (161 entries) and 53,575 kB (4)
+  here at `8e84059`, 61,428 kB (161 entries) after the speed review, 63,184–64,480
   kB in speed-code's runs, 62,503 and 68,040 kB (172 entries) on
   GitHub at `31da659` and `2fedfa2`. A target warning is info; raise
   them again with a recorded measurement rather than trimming a
@@ -247,7 +255,9 @@ by the budgets job: CPU-only 18,485,143 B and GPU 22,382,423 B at
   reload p95 35 ms token / 50 ms markup at design.md's model, gated by
   the headless break; at `94fe372` token p95 17.1 ms against a break of
   19.6 ms. theme_swap_bench's 8-scope `spring(1600, 1)` whole swap 2.56
-  ms against 5 ms at `94fe372` (4.31 ms at `laptop/m5-infra`).
+  ms against 5 ms at `94fe372` (4.31 ms at `laptop/m5-infra`); 1.50 ms
+  in the container at `8e84059`, every case within its gate (swap
+  medians 0.96–1.73 ms, `file` outputs after a flip 0.55 ms).
 
 ## CI notes
 
@@ -503,8 +513,10 @@ Wave 1's checklist is in git history (`6cee276`), wave 0's at
   m5-integration-w2).
 - [x] The docs follow what landed (spec.md, the guide, design.md,
   grammar.md, architecture.md, features.md and this file; this commit).
-- [ ] The owner's ruling on wave 2's overruns, then the budgets job on
-  the merged tree and m5-plan's ledger re-based to it.
+- [x] The owner's ruling on wave 2's overruns (accepted), S-tools'
+  wave-3 `new` and `report` merged, the budgets test on the merged tree
+  and m5-plan's ledger and both `.text` gates re-based to it
+  (decisions.md m5-integration-w2).
 - [ ] The full local set on the branch's final head, one at a time
   (`run.sh ci`, `matrix.sh`, the lock VM scenarios, `gpu.sh`), then
   GitHub CI green on that head. The integrator runs these after the last

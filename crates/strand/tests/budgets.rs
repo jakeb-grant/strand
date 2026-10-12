@@ -2384,8 +2384,8 @@ fn the_release_binary_code_stays_within_its_gate() {
     }
     let elf = std::fs::read(env!("CARGO_BIN_EXE_strand")).unwrap();
     let text = text_size(&elf).expect("an ELF64 binary with a .text");
-    // Both gates are the speed profile's measured size plus M5's unspent
-    // allocation and a reserve (decisions.md m5-speed; `TEXT_GATE_*`).
+    // Both gates are wave 2's measured size plus M5's unspent lines and a
+    // reserve (decisions.md m5-integration-w2; `TEXT_GATE_*`).
     let (gate, build) = if cfg!(feature = "gpu") {
         (TEXT_GATE_GPU, "the default build (GPU backend)")
     } else {
@@ -2479,21 +2479,25 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 22,282,240 B (85 × 256
-/// KiB). The speed profile's merged tree measured 21,857,111 B; the gate
-/// adds M5's unspent GPU allocation (258,032 B of 270,000) and a 64 KiB
-/// reserve, rounded up to 256 KiB (decisions.md m5-speed). It was 18.5
-/// MiB (the spike's size plus 9.7%) before the speed profile.
-const TEXT_GATE_GPU: u64 = 22_282_240;
-/// `.text` of the CPU-only release build: 18,350,080 B (70 × 256 KiB).
-/// The speed profile's merged tree measured 17,961,687 B; the gate adds
-/// M5's unspent allocation (214,640 B of 230,000, docs/m5-plan.md,
-/// "Size strategy") and a 64 KiB reserve, rounded up to 256 KiB; the
-/// rounding is not spendable (decisions.md m5-speed). It was 15,859,712 B
-/// (M5's provisional re-base after wave 0's reclaims, m5-integration)
-/// before the speed profile. The gate catches accidental growth; a
-/// deliberate speed choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 18_350_080;
+/// `.text` of the default (GPU) release build: 22,806,528 B (87 × 256
+/// KiB). Wave 2's merged tree (with S-tools' wave-3 `new` and `report`)
+/// measured 22,473,111 B; the gate adds the GPU lines still unspent
+/// (59,520 B: the inspector's render half 20,000, xdg-activation 20,000
+/// and the GPU-only outline and flash 19,520) and a 64 KiB reserve,
+/// rounded up to 256 KiB (decisions.md m5-integration-w2, the re-base;
+/// the owner's size ruling of 2026-10-11). It was 22,282,240 B after the
+/// speed review (decisions.md m5-speed) and 18.5 MiB before it.
+const TEXT_GATE_GPU: u64 = 22_806_528;
+/// `.text` of the CPU-only release build: 18,874,368 B (72 × 256 KiB).
+/// Wave 2's merged tree measured 18,555,351 B; the gate adds the lines
+/// still unspent (40,000 B: the inspector's render half and
+/// xdg-activation) and a 64 KiB reserve, rounded up to 256 KiB; the
+/// rounding is not spendable (decisions.md m5-integration-w2). It was
+/// 18,350,080 B after the speed review (decisions.md m5-speed) and
+/// 15,859,712 B before it. The gate catches accidental growth, never
+/// caps a feature: a deliberate choice re-bases it with its measured
+/// reason.
+const TEXT_GATE_CPU: u64 = 18_874_368;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

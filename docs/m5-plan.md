@@ -178,18 +178,18 @@ allocations.
 |---|---|---|---|
 | Wave 0: 0b's shared code (lib/bin split, request channel) and the wave-0 hardening | — | — | 15,360 B (decisions.md m5-integration, m5-w0-harden) |
 | Wave 1, merged on `laptop/m5-w1`: S-ipc's `get`, `toggle`, `call`, `clear` and the token overlay layer; S-inspect's compiler and scene half (identity, cells, reset subtree, provenance, dump); S-lsp's `Suggestion` use and key suggestions | 46–123 KB (the surveys' 15–40, 30–80 and 1–3) | 93 KB (35 + 55 + 3) | **115,328 B** (merged tree against `f61acec`: 18,077,143 − 17,961,815 B; per branch S-ipc +87,104 B and S-inspect's library 73,718 B, which overlap when merged) |
-| D-Bus front end (one `#[zbus::interface]`; zbus is already linked) | 15–40 KB | 37,400 B (40 KB less 0b's request channel, 2,600 B) | |
-| Wave-2 IPC arms: `inspect.node`, `inspect.dump`, `reset{node}` in `Shell::request` (S-ipc in wave 2, over S-inspect's library) | 2,186 B, measured with the arms wired temporarily (decisions.md m5-inspect) | 3 KB | |
-| Inspector wave 2: pick and the Router hook, the highlight outline and the repaint flash on CPU surfaces | 10–20 KB (the rest of the 30–80 KB survey after wave 1's 73.7 KB) | 20 KB | |
-| `strand report` (snapshot hop, smaps_rollup, frame summary ring) | 10–25 KB | 20 KB | |
-| xdg-activation (Dispatch impls, handler input context, ordered action queue, launch env) | 8–20 KB | 20 KB | |
-| Theming hub, S-palette: 13 hue roles and extras and identity (4–6), the `json` and `base24` writers (3–4) | 7–10 KB | 10 KB | |
+| D-Bus front end (one `#[zbus::interface]`; zbus is already linked) | 15–40 KB | 37,400 B (40 KB less 0b's request channel, 2,600 B) | | **52,736 B** on `laptop/m5-ipc` against `3e833c9` (decisions.md m5-ipc) |
+| Wave-2 IPC arms: `inspect.node`, `inspect.dump`, `reset{node}` in `Shell::request` (S-ipc in wave 2, over S-inspect's library) | 2,186 B, measured with the arms wired temporarily (decisions.md m5-inspect) | 3 KB | | **60,416 B** on `laptop/m5-ipc` against `3e833c9`: almost all S-inspect's wave-1 library, dead code until these arms called it (decisions.md m5-ipc) |
+| Inspector wave 2: pick and the Router hook, the highlight outline and the repaint flash on CPU surfaces | 10–20 KB (the rest of the 30–80 KB survey after wave 1's 73.7 KB) | 20 KB | | not built (deferred to wave 3); its 20,000 B stays in the re-based gates |
+| `strand report` (snapshot hop, smaps_rollup, frame summary ring) | 10–25 KB | 20 KB | | with `strand new`: **+70,208 B** CPU-only and **+90,688 B** GPU on the merged tree against `db85876` (S-tools wave 3 and its three review rounds; the GPU figure includes `strand-gpu`'s timestamp queries, +17,408 B over `a5edd67`) |
+| xdg-activation (Dispatch impls, handler input context, ordered action queue, launch env) | 8–20 KB | 20 KB | | not built (deferred to wave 3); its 20,000 B stays in the re-based gates |
+| Theming hub, S-palette: 13 hue roles and extras and identity (4–6), the `json` and `base24` writers (3–4) | 7–10 KB | 10 KB | | **56,128 B** CPU-only and GPU against `3e833c9`, with the writers wired temporarily (decisions.md m5-palette) |
 | Theming hub, S-tools: template IR and formats with the other-mode evaluation (8–12), the `file` element and its output host (10–14), `strand new`'s code (1–2; its template is `.rodata`, which is not gated), the `export` CLI and IPC request | 19–28 KB | 28 KB | **219,776 B** measured on `laptop/m5-tools` against `6a33477` after review round 2 (GPU 219,264 B; first measured 297,088 B and 296,768 B, then 77 KB reclaimed with no feature dropped): over its line and over both gates on the branch (CPU-only 18,448,279 B by 98,199 B, GPU 22,345,367 B by 63,127 B), so CI's `budgets` job fails on the branch; the cause is the estimate, not one bloated item (the code costs what the crates' code costs per line), and the cuts that would close it drop owner-approved features, listed for the owner (decisions.md m5-tools, wave 2 review round 2, item 7); wave 3's `strand new` and `strand report` measured **+70,208 B** CPU-only and **+73,280 B** GPU against `db85876` (18,555,351 B and 22,455,703 B; decisions.md m5-tools, "the `.text` of `new` and `report`"), the gate's re-base left to the integrator under the owner's 2026-10-11 ruling |
-| Plugins: the schema-file reader and applier, `--write-schemas`, the builder's validation and the process-setup check (decisions.md m5-plugins, "size and speed") | 4–8 KB | 8 KB | |
+| Plugins: the schema-file reader and applier, `--write-schemas`, the builder's validation and the process-setup check (decisions.md m5-plugins, "size and speed") | 4–8 KB | 8 KB | | **25,408 B** CPU-only and GPU on its branch (decisions.md m5-plugins) |
 | tree-sitter grammar (S-lsp; linked only into strand-dev's tests) | 0 B in `strand` | 0 | |
 | Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 61,001 B | |
-| **Total M5 (CPU-only)** | | **338,217 B**: the gate (18,350,080 B) less the 64 KiB reserve, less the speed re-base and M4's baseline | 130,688 B charged so far (130,816 B by the ledger line's formula, which also counts the 128 B `f61acec` reads over the speed review's merged tree) |
-| GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) | |
+| **Total M5 (CPU-only)** | | **338,217 B**: the gate (18,350,080 B) less the 64 KiB reserve, less the speed re-base and M4's baseline | 130,688 B charged so far (130,816 B by the ledger line's formula, which also counts the 128 B `f61acec` reads over the speed review's merged tree); after wave 2 (with S-tools' wave 3), **609,024 B** CPU-only and 627,968 B GPU by the ledger line's formula: 130,816 B through wave 1 plus the merged wave-2 tree's +478,208 B over wave 1's (GPU 129,536 plus 498,432 B); the gates were re-based to that tree ("Re-based after wave 2" below) |
+| GPU-only: outline and flash on `GpuPresent` surfaces, `report`'s GPU section | 15–40 KB | 40 KB (GPU build only) | | `report`'s GPU section **20,480 B** (the GPU build's wave-3 delta less the CPU-only one); the outline and flash are not built, and their 19,520 B left stays in the re-based GPU gate |
 
 How the lines add up (CPU-only): the merged wave-1 tree is 18,077,143 B
 against the 18,350,080 B gate, 272,937 B of headroom; less the gate's
@@ -216,6 +216,27 @@ the measured tree now, as handoff's "Next: M5 wave 3" item 1, before the
 full checks and GitHub CI run on `laptop/m5-w2`'s head (item 2); wave 3's
 streams then charge against the re-based gates. The rows above stay as
 the record of what each stream was allocated.
+
+**Re-based after wave 2 (2026-10-11, decisions.md m5-integration-w2).**
+The owner ruled on the overruns: they "still don't seem like that big
+of a deal in the scope of the entire binary. We're still pretty small."
+With S-tools' wave-3 `strand new` and `strand report` merged,
+`laptop/m5-w2` at `8e84059` measures CPU-only **18,555,351 B** (+478,208
+B over wave 1's merged tree; +70,208 B over `db85876`) and GPU
+**22,473,111 B** (+498,432 B; +90,688 B over `db85876`). The gates follow
+the speed review's rule (m5-speed: measured size plus the unspent
+allocation plus a 64 KiB reserve, rounded up to 256 KiB), the unspent
+allocation now being the lines of work not yet built: the inspector's
+render half (20,000 B) and xdg-activation (20,000 B), plus on the GPU
+build the GPU-only line's 19,520 B left after `report`'s GPU section
+took 20,480 B. **`TEXT_GATE_CPU` = 18,874,368 B** (18,555,351 + 40,000 +
+65,536 = 18,660,887 → 72 × 256 KiB; 213,481 B of rounding, not
+spendable) and **`TEXT_GATE_GPU` = 22,806,528 B** (22,473,111 + 59,520 +
+65,536 = 22,598,167 → 87 × 256 KiB; 208,361 B of rounding). The
+review-fix reserve row above is spent and gone: wave 3's review rounds
+charge against the 64 KiB reserve, and an overrun past it is read as
+wave 2's were, by its cause, not cut to fit. In the ledger line's terms
+the gates are hit at Δ +3,216,697 CPU-only and +3,765,433 GPU.
 
 Optional items, paid from the reserve only if the reserve allows:
 check-time `import()` validation (2–4 KB) and the "says why" lines in the
@@ -256,6 +277,13 @@ lowered as reclaims land, tightened at close.**
   the owner" are superseded by that policy: a deliberate speed choice
   re-bases the gate with its measured reason (decisions.md
   m5-speed-policy).
+- **Now (after wave 2): 18,874,368 B** (decisions.md
+  m5-integration-w2). Wave 2's overruns were accepted by the owner (2026-10-11: "those
+  size overruns still don't seem like that big of a deal in the scope
+  of the entire binary"); the gate is the merged tree's 18,555,351 B
+  plus the unbuilt lines (40,000 B) and a 64 KiB reserve, rounded up to
+  256 KiB (213,481 B of rounding, not spendable). The arithmetic is under
+  "Re-based after wave 2" above.
 
 Not taken: **(B) keep 15 MiB, as m4-integration-w2 did (decisions.md:9573:
 "the code moved, not the gate").** That would have left 71 KB plus
@@ -270,7 +298,11 @@ Kept at 18.5 MiB until the speed review. The GPU build pays the 230 KB
 plus its own 40 KB. **Now: 22,282,240 B** (decisions.md m5-speed): the
 merged tree's 21,857,111 B (+2,841,424 B over the pre-speed 19,015,687
 B) plus M5's unspent GPU allocation (258,032 B of 270,000) plus a 64 KiB
-reserve, rounded up to 256 KiB (101,561 B of rounding).
+reserve, rounded up to 256 KiB (101,561 B of rounding). **Now (after
+wave 2): 22,806,528 B** (decisions.md m5-integration-w2): the merged
+tree's 22,473,111 B plus the unbuilt lines (59,520 B, the GPU-only
+outline and flash's 19,520 B among them) and a 64 KiB reserve, rounded
+up to 256 KiB (208,361 B of rounding).
 
 ### Reclaims (S-size, wave 0, behaviour-neutral, measured)
 
@@ -349,7 +381,11 @@ Expected: 20–80 KB. Recorded as measured, not promised.
   between. The merged tree reads Δ +2,304,016 CPU-only (17,961,687 B;
   15,360 B spent, 214,640 B left) and GPU Δ +2,816,016 (21,857,111 B;
   11,968 B spent, 258,032 B left). A later deliberate speed revert adds
-  its measured cost to the re-base and the gate, recorded.
+  its measured cost to the re-base and the gate, recorded. **After
+  wave 2** (decisions.md m5-integration-w2) the merged tree reads Δ
+  +2,897,680 CPU-only (18,555,351 B; 609,024 B spent) and GPU Δ
+  +3,432,016 (22,473,111 B; 627,968 B spent), and the re-based gates
+  (18,874,368 / 22,806,528 B) are hit at Δ +3,216,697 and +3,765,433.
   **After wave 1** (decisions.md m5-integration-w1) the merged tree on
   `laptop/m5-w1` reads CPU-only 18,077,143 B (Δ +2,419,472; 130,816 B
   spent) and GPU 21,974,679 B (Δ +2,933,584; 129,536 B spent). With the
@@ -1283,7 +1319,8 @@ answer; this list is the short form.
    15,859,712 B after wave 0's reclaims: decisions.md m5-integration.
    Superseded by the owner's speed policy of 2026-10-10: 18,350,080 B
    CPU-only and 22,282,240 B GPU after the speed review, decisions.md
-   m5-speed.)
+   m5-speed; 18,874,368 B and 22,806,528 B after wave 2, under the
+   owner's ruling of 2026-10-11, decisions.md m5-integration-w2.)
 7. **Reclaim policy: behaviour-neutral reclaims only**, each kept only
    if GitHub's timing job stays green. No opt-level cuts on gated hot
    paths.
