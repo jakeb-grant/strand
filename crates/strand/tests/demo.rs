@@ -566,23 +566,44 @@ fn demo_bar_on_two_outputs_then_idle() {
             "never settled after boot: {woke:?} woke in the last second"
         );
     }
-    // Idle: no thread of the process wakes. Skip a window that would
-    // contain a minute boundary (the clock tick is the one wakeup).
-    if seconds_into_minute() >= 56 {
-        std::thread::sleep(Duration::from_secs(6));
+    // Idle: no thread of the process wakes. The minute tick is the one
+    // wakeup, and its frame and the trims after it follow within a
+    // second or so: the window starts 2 s or more past a boundary and
+    // ends before the next. Where it ends is read, not assumed: a loaded
+    // runner can hold this thread past its 2 s sleep, and a window the
+    // tick fell into is taken again (decisions.md m6-flakes).
+    let minute = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 60
+    };
+    for attempt in 1.. {
+        let s = seconds_into_minute();
+        if !(2..56).contains(&s) {
+            std::thread::sleep(Duration::from_secs((62 - s) % 60));
+        }
+        let began = minute();
+        let frames = damage_lines(&log).len();
+        let before = switches(pid);
+        let threads = per_thread(pid);
+        std::thread::sleep(Duration::from_secs(2));
+        let after = switches(pid);
+        let woke: Vec<String> = per_thread(pid)
+            .into_iter()
+            .filter(|(t, n)| threads.get(t) != Some(n))
+            .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
+            .collect();
+        let painted = damage_lines(&log).len() - frames;
+        if minute() != began && attempt < 3 {
+            eprintln!("the idle window met a minute tick (attempt {attempt}): again");
+            continue;
+        }
+        assert_eq!(after - before, 0, "woke while idle: {woke:?}");
+        assert_eq!(painted, 0, "painted while idle");
+        break;
     }
-    let frames = damage_lines(&log).len();
-    let before = switches(pid);
-    let threads = per_thread(pid);
-    std::thread::sleep(Duration::from_secs(2));
-    let after = switches(pid);
-    let woke: Vec<String> = per_thread(pid)
-        .into_iter()
-        .filter(|(t, n)| threads.get(t) != Some(n))
-        .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
-        .collect();
-    assert_eq!(after - before, 0, "woke while idle: {woke:?}");
-    assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
 
     // A third monitor, at scale 1 like the first but narrower: the shared
     // bar node needs a layout per width, and the first bar must not move.

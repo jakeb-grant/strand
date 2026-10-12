@@ -243,18 +243,24 @@ recorded reason.
 - The laptop's timing WARNs: `CI_JOB=timing STRAND_STRICT_TIMING=1
   scripts/container/run.sh ci` under a performance power profile would
   confirm the power-state cause (decisions.md laptop-open).
-- CI flakes seen once and not reproduced (decisions.md laptop-flakes;
-  m3-report Open). The fixed ones are recorded there and in
-  decisions.md laptop-labwc and laptop-media.
+- The CI flakes seen once (decisions.md laptop-flakes; m3-report Open)
+  are resolved in M6 wave 1 (decisions.md m6-flakes):
   - `strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
-    (launcher drew no marked icon). A failure now says whether the icons
-    are late or never drawn, and where the magenta is.
-  - `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle`. Its idle
-    window now starts after boot has settled; the woken thread is named
-    on failure.
+    (launcher drew no marked icon): a real race in the image worker. The
+    launcher's frames want its icons, then none, then the icons again
+    within about 30 ms; a request dropped as unwanted in that gap, and
+    wanted again before the render loop polled the drop, was never asked
+    for again. The worker now wakes the loop for a drop and the poll
+    sends a wanted key again (`strand-render`'s
+    `image::tests::a_dropped_request_wanted_again_is_decoded`).
+  - `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle`: its idle
+    window now reads where it ended and is taken again if a minute tick
+    fell in it (a loaded runner holding the test thread). The cause of
+    the one CI failure is not proven.
   - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
-    (read before `max_delay`), once in run 37874718084. 0 of 30 failed
-    in the container.
+    (read before `max_delay`): the test's writes are stamped ahead of
+    the clock, so a stall between write and read no longer makes them
+    look old; it stalls once on purpose.
 - Explained and fixed (decisions.md m5-open-spectrum): `strand/tests/wm_audio_shells.rs::a_test_tone_lifts_a_spectrum_bar`
   (the tone's bar never lifted; GitHub runs 38065740030, 38076927579
   and 38116737469). When the bar's first frame came before the `audio`
@@ -263,10 +269,10 @@ recorded reason.
   was never retargeted. Feeds now sync after every applied diff
   (`Host::apply_diff`). Reproduced in the container by delaying the
   audio loop 3 s: it fails before the fix and passes after.
-- `crates/strand/tests/reloads.rs` still allows a bus connection that
-  only introspects, though `strand-introspect` now keeps one connection
-  per bus; tightening it is left to that file's owner (decisions.md
-  laptop-services).
+- `crates/strand/tests/reloads.rs` allows no bus connection at all
+  during the reloads now that `strand-introspect` keeps one connection
+  per bus, and counts the `from dbus` refreshes on the kept connection
+  (decisions.md m6-flakes).
 - Done in M5's wave 0 (decisions.md m5-infra): the two functional tests
   that bounded wall-clock time now check work done and order, and
   `compositor_matrix.rs` sends Hyprland's Lua dispatch form first (its

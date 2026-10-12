@@ -26,12 +26,13 @@
 //! - no service starts or stops again (`STRAND_LOG=info`: one
 //!   `service `x` started` line per run, the client's start counter),
 //!   but `memory` stopping once, 5 s after its reader's last removal;
-//! - no connection is made to the bus but the `from dbus` check's
-//!   introspection once its answer is 10 s old (dbus-daemon numbers its
-//!   connections in order: every number between a probe connection
-//!   before and one after the reloads is accounted for by a bus
-//!   monitor, which sees it `Introspect` and nothing else), and the mocks answer no
-//!   method call (python-dbusmock's logs: every `Get`, `GetAll` and
+//! - no connection is made to the bus at all (dbus-daemon numbers its
+//!   connections in order: no number falls between a probe connection
+//!   before and one after the reloads); the `from dbus` check asks again
+//!   once its answer is 10 s old over the connection `strand-introspect`
+//!   keeps for the process (a bus monitor counts those `Introspect`
+//!   calls, from a connection older than the first probe), and the mocks
+//!   answer no method call (python-dbusmock's logs: every `Get`, `GetAll` and
 //!   method call they answer is a line; the zbus mocks count each
 //!   property read and method call);
 //! - strand's sockets are the same ones after every reload (sway's IPC,
@@ -923,25 +924,30 @@ impl BusLog {
     }
 
     /// The connections numbered between two probes (`from`, `to`, see
-    /// [`next_connection`]) that did anything but introspect: the `from
-    /// dbus` check asks the bus again on a reload once its answer is
-    /// 10 s old (`strand_introspect::TTL`, decisions.md wave4-a3), on a
-    /// connection of its own (`Hello`, then `Introspect`); a service never
-    /// connects anew. A connection that never introspected counts.
-    fn not_introspecting(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
+    /// [`next_connection`]), with what each sent: there should be none.
+    /// The `from dbus` check asks the bus again on a reload once its
+    /// answer is 10 s old (`strand_introspect::TTL`, decisions.md
+    /// wave4-a3), over the one connection per bus `strand-introspect`
+    /// keeps for the process (decisions.md laptop-services), and a
+    /// service never connects anew (decisions.md m6-flakes).
+    fn connections_between(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
         // The monitor sees a message a moment after it is sent.
         std::thread::sleep(Duration::from_millis(200));
         let log = self.0.lock().map(|l| l.clone()).unwrap_or_default();
         (from + 1..to)
             .map(|n| (n, log.get(&n).cloned().unwrap_or_default()))
-            .filter(|(_, sent)| {
-                let introspect = "MethodCall org.freedesktop.DBus.Introspectable.Introspect";
-                !sent.iter().any(|s| s == introspect)
-                    || sent
-                        .iter()
-                        .any(|s| s != introspect && s != "MethodCall org.freedesktop.DBus.Hello")
-            })
             .collect()
+    }
+
+    /// How many `Introspect` calls connections numbered below `below`
+    /// (made before a probe) have sent since the monitor started: the
+    /// kept connection's refreshes.
+    fn introspections_below(&self, below: u64) -> usize {
+        let log = self.0.lock().map(|l| l.clone()).unwrap_or_default();
+        log.range(..below)
+            .flat_map(|(_, sent)| sent)
+            .filter(|s| *s == "MethodCall org.freedesktop.DBus.Introspectable.Introspect")
+            .count()
     }
 }
 
@@ -958,11 +964,10 @@ fn sockets(pid: u32) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Asserts a process's sockets are `baseline` again within a second: a
-/// short-lived connection (the `from dbus` check's introspection refresh,
-/// on a thread of its own beside a reload) may be open for a moment; the
-/// bus monitor, sway's accept log and pw-mon account for those. A
-/// difference that persists fails, naming the inodes.
+/// Asserts a process's sockets are `baseline` again within a second. A
+/// socket open only for a moment is not caught here: the bus monitor
+/// (no connection at all), sway's accept log and pw-mon account for
+/// those. A difference that persists fails, naming the inodes.
 fn same_sockets(pid: u32, baseline: &BTreeSet<String>, after: &str) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
@@ -1699,12 +1704,17 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "strand connected to PipeWire or created objects there during the reloads: {pw_new:?}"
     );
     let last = next_connection(&tokio, &bus);
-    let made = bus_log.not_introspecting(first, last);
+    let made = bus_log.connections_between(first, last);
+    let refreshed = bus_log.introspections_below(first);
     assert!(
         made.is_empty(),
-        "connections were made to the bus during the reloads (of {}, those \
-         that did more than introspect): {made:?}",
-        last - first - 1
+        "connections were made to the bus during the reloads (each with what \
+         it sent; the `from dbus` check asked {refreshed} times over the \
+         connection it keeps): {made:?}"
+    );
+    eprintln!(
+        "the `from dbus` check asked the bus {refreshed} times during the reloads, \
+         over the connection it keeps"
     );
     let after = mock_calls(&mocks);
     for (name, before) in &calls {
@@ -1767,7 +1777,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "the declaration's edit restarted more than `mood`"
     );
     let control = next_connection(&tokio, &bus);
-    let made = bus_log.not_introspecting(last, control);
+    let made = bus_log.connections_between(last, control);
     assert!(
         made.is_empty(),
         "the declaration's edit connected to the bus: {made:?}"

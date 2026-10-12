@@ -1025,7 +1025,11 @@ impl ImageWorker {
                     if out_tx.send((key, r)).is_err() {
                         return;
                     }
-                    if want && let Some(w) = &waker {
+                    // A dropped request wakes the render loop too: a frame
+                    // may have wanted it again while it was in flight (it
+                    // is not asked for twice), and only the render loop
+                    // can send it again (`ImageStore::poll`).
+                    if let Some(w) = &waker {
                         w();
                     }
                 }
@@ -1375,7 +1379,11 @@ impl ImageStore {
     }
 
     /// Takes the worker's results: the keys that arrived (decoded or
-    /// failed; ones dropped undecoded are not among them).
+    /// failed; ones dropped undecoded are not among them). A key dropped
+    /// undecoded that a frame wants again is sent again: it was dropped
+    /// because no frame wanted it when the worker came to it, and a frame
+    /// that wanted it again before this poll did not ask for it (it was
+    /// in flight), so nothing else would (decisions.md m6-flakes).
     pub fn poll(&mut self) -> Vec<ImageKey> {
         let ImageBackend::Worker(w) = &self.backend else {
             return Vec::new();
@@ -1383,6 +1391,16 @@ impl ImageStore {
         let got: Vec<_> = w.results.try_iter().collect();
         let mut arrived = Vec::new();
         for (k, r) in got {
+            if r.is_none()
+                && !self.stale.contains(&k)
+                && self.frames.values().any(|f| f.contains(&k))
+                && let ImageBackend::Worker(w) = &self.backend
+                && w.requests
+                    .as_ref()
+                    .is_some_and(|tx| tx.send(Job::Image(k.clone())).is_ok())
+            {
+                continue;
+            }
             self.pending.remove(&k);
             if self.stale.remove(&k) {
                 // Looked up in the old theme: asked for again by the
@@ -1901,6 +1919,68 @@ mod tests {
         );
         assert_eq!(done.len(), MAX_FILES_HELD - 1);
         assert!(!done.contains_key("k0"), "the oldest went");
+    }
+
+    /// A request dropped undecoded (no frame wanted it when the worker
+    /// came to it) that a frame wanted again while it was in flight is
+    /// decoded: the worker wakes the render loop for the drop too, and
+    /// the poll sends it again. Before, the frame's second want skipped
+    /// it as in flight, the poll forgot it, and the surface drew without
+    /// it until something else repainted it (the budgets test's launcher
+    /// without its icons, decisions.md m6-flakes).
+    #[test]
+    fn a_dropped_request_wanted_again_is_decoded() {
+        let (woke, wakes) = std::sync::mpsc::channel::<()>();
+        let waker = Box::new(move || {
+            let _ = woke.send(());
+        });
+        let worker = ImageWorker::spawn(IconTheme::named("StrandTest"), Some(waker)).unwrap();
+        let mut store = ImageStore::new(ImageBackend::Worker(worker));
+        let k = ImageKey {
+            source: "/nonexistent/strand-dropped.png".into(),
+            icon: false,
+            w: 8,
+            h: 8,
+            fit: Fit::Contain,
+            scale: 1,
+            frame: 0,
+        };
+        // The worker held while the frame wants `k`, then stops wanting
+        // it: the worker drops it when it comes to it.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let hold = move || -> Loaded {
+            let _ = held.recv();
+            Ok(Arc::new(()))
+        };
+        assert!(store.load_file("hold", hold).is_none());
+        store.want(SurfaceId(1), std::slice::from_ref(&k), false);
+        assert_eq!(store.pending(), 1);
+        store.want(SurfaceId(1), &[], false);
+        release.send(()).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let wait = |what: &str| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(wakes.recv_timeout(left).is_ok(), "no wake for {what}");
+        };
+        wait("the held job");
+        // The drop wakes the render loop too.
+        wait("`k` dropped");
+        // Wanted again before the render loop polled: in flight to the
+        // store, so not asked for again here.
+        store.want(SurfaceId(1), std::slice::from_ref(&k), false);
+        // The render loop: it polls at each wake, until `k` is in.
+        loop {
+            store.poll();
+            if store.get(&k).is_some() {
+                break;
+            }
+            wait("`k` decoded: it was dropped and never asked for again");
+        }
+        assert!(
+            store.get(&k).is_some_and(|r| r.is_err()),
+            "decoded (a missing file)"
+        );
+        assert_eq!(store.pending(), 0);
     }
 
     /// A media source's file job runs on the worker's thread, once while

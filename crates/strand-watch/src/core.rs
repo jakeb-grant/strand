@@ -2859,12 +2859,25 @@ mod tests {
     /// fresh" to read; it is put off, but not past `max_delay` after the
     /// event that first made it due: then a stable read is taken whatever
     /// its modification time, and the batch reports that first event.
+    ///
+    /// "Too fresh" is the file's modification time against the wall
+    /// clock at the read, so a writer that really writes without pause
+    /// is modelled by a modification time that stays fresh however long
+    /// the test thread is kept off the CPU between its write and the
+    /// flush: each write stamps the file `AHEAD` into the future (a
+    /// clock step back, within [`MTIME_SKEW`]). CI run 37874718084 read
+    /// it early ("read before `max_delay`") when a loaded runner held
+    /// the thread past the 15 ms quiet period after a write stamped with
+    /// the time of writing; the first round stalls that long on purpose
+    /// (decisions.md m6-flakes).
     #[test]
     fn a_file_rewritten_without_pause_is_read_within_max_delay() {
+        const AHEAD: Duration = Duration::from_millis(900);
         let (_tmp, root) = cfg_dir();
         let theme = root.join("theme.strand");
         std::fs::write(&theme, "theme 0").unwrap();
         let opts = Options::default();
+        assert!(AHEAD < MTIME_SKEW);
         let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
         settle(&mut core);
         let t0 = Instant::now();
@@ -2872,7 +2885,15 @@ mod tests {
         let mut first = None;
         let b = loop {
             n += 1;
-            std::fs::write(&theme, format!("theme {n}")).unwrap();
+            let f = std::fs::File::create(&theme).unwrap();
+            std::io::Write::write_all(&mut &f, format!("theme {n}").as_bytes()).unwrap();
+            f.set_modified(std::time::SystemTime::now() + AHEAD)
+                .unwrap();
+            drop(f);
+            if n == 1 {
+                // A loaded runner's stall between the write and the read.
+                std::thread::sleep(opts.coalesce * 2);
+            }
             let t = Instant::now();
             first.get_or_insert(t);
             core.on_raw(Raw::Written(theme.clone()), t);
