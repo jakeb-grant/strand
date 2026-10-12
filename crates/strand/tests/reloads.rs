@@ -878,62 +878,133 @@ fn pw_new_of(text: &str, pid: u32, serial: u64) -> Vec<String> {
 
 /// What each connection sent on the bus, by its unique name's number
 /// (`:1.N`), as `type interface.member`: a monitor's view
-/// (`BecomeMonitor`), kept from when it starts. With it, when each
-/// connection first spoke, when each `Introspect` was sent and when its
-/// answer came (to tell `strand-introspect`'s reconnect after a refresh
-/// that got no answer in time from a connection made for nothing).
+/// (`BecomeMonitor`), kept from when it starts, in the bus's order. With
+/// it, each `Introspect` call and its answer, to tell
+/// `strand-introspect`'s reconnect after it dropped a connection from a
+/// connection made for nothing (see [`Seen::unexplained`]).
 #[derive(Clone, Default)]
 struct BusLog(Arc<std::sync::Mutex<Seen>>);
 
 const INTROSPECT: &str = "MethodCall org.freedesktop.DBus.Introspectable.Introspect";
 const HELLO: &str = "MethodCall org.freedesktop.DBus.Hello";
 
+/// One `Introspect` call as the monitor saw it.
+#[derive(Clone, Copy, Debug)]
+struct Call {
+    /// Its place in the bus's order.
+    seq: u64,
+    /// When the monitor saw it, and its answer (a return or an error).
+    asked: Instant,
+    answered: Option<Instant>,
+}
+
 #[derive(Clone, Default)]
 struct Seen {
     sent: BTreeMap<u64, Vec<String>>,
-    /// When each connection sent its first message.
-    first: HashMap<u64, Instant>,
-    /// Each `Introspect` call, by its sender and serial: when it was
-    /// sent, and when its answer (a return or an error) came.
-    introspects: BTreeMap<(u64, u32), (Instant, Option<Instant>)>,
+    /// The bus's order: one number per message the monitor saw.
+    seq: u64,
+    /// Where each connection's first and last messages fall in it.
+    first: HashMap<u64, u64>,
+    last: HashMap<u64, u64>,
+    /// Each `Introspect` call, by its sender and serial.
+    introspects: BTreeMap<(u64, u32), Call>,
 }
 
 impl Seen {
-    fn record(&mut self, n: u64, what: String, at: Instant) {
-        self.first.entry(n).or_insert(at);
+    /// Connection `n` sent `what`.
+    fn record(&mut self, n: u64, what: String) {
+        self.seq += 1;
+        self.first.entry(n).or_insert(self.seq);
+        self.last.insert(n, self.seq);
         self.sent.entry(n).or_default().push(what);
     }
 
-    /// The connections numbered between two probes (`from`, `to`), with
-    /// what each sent, but `strand-introspect`'s reconnects: a connection
-    /// that said only `Hello` and `Introspect`, made after an older
-    /// connection's `Introspect` went unanswered for
-    /// `strand_introspect::TIMEOUT` (it drops a connection that gets no
-    /// answer in time, so the next question connects again; a starved
-    /// runner can make the mock that late, decisions.md m6-flakes).
-    fn unexplained(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
-        // A little under the deadline: it runs from the question, a
-        // moment before the call is on the bus.
-        let late = strand_introspect::TIMEOUT - Duration::from_millis(100);
-        (from + 1..to)
-            .map(|n| (n, self.sent.get(&n).cloned().unwrap_or_default()))
-            .filter(|(n, sent)| {
-                let only_introspects = sent.iter().any(|s| s == INTROSPECT)
-                    && sent.iter().all(|s| s == INTROSPECT || s == HELLO);
-                let Some(&began) = self.first.get(n) else {
-                    return true;
-                };
-                let after_a_late_answer =
-                    self.introspects
-                        .iter()
-                        .any(|(&(m, _), &(asked, answered))| {
-                            m < *n
-                                && began.duration_since(asked) >= late
-                                && answered.is_none_or(|a| a.duration_since(asked) >= late)
-                        });
-                !(only_introspects && after_a_late_answer)
+    /// Connection `n` sent `Introspect` with `serial`, seen at `at`.
+    fn call(&mut self, n: u64, serial: u32, at: Instant) {
+        self.record(n, INTROSPECT.into());
+        let seq = self.seq;
+        self.introspects.insert(
+            (n, serial),
+            Call {
+                seq,
+                asked: at,
+                answered: None,
+            },
+        );
+    }
+
+    /// An answer to connection `n`'s call `serial`, seen at `at` (the
+    /// first counts).
+    fn answer(&mut self, n: u64, serial: u32, at: Instant) {
+        if let Some(c) = self.introspects.get_mut(&(n, serial)) {
+            c.answered.get_or_insert(at);
+        }
+    }
+
+    /// Its connection sent nothing after it: `strand-introspect` dropped
+    /// the connection (or it was the last question asked).
+    fn last_word(&self, n: u64, call: &Call) -> bool {
+        self.last.get(&n).is_none_or(|&l| l <= call.seq)
+    }
+
+    /// The `Introspect` calls after which `strand-introspect` dropped
+    /// its connection, in the bus's order: its connection never spoke
+    /// again, and the call went unanswered (it failed with no answer,
+    /// and the question is asked again at once on a new connection) or
+    /// its answer took at least half of `strand_introspect::TIMEOUT`
+    /// (it timed out, and the next question connects again). Half: the
+    /// monitor's times carry its own scheduling, and the deadline starts
+    /// before the call is written, so an answer the monitor saw 1.9 s
+    /// after the call can still be one strand gave up on; a healthy
+    /// bus answers in milliseconds.
+    fn dropped(&self) -> Vec<(u64, Call)> {
+        let late = strand_introspect::TIMEOUT / 2;
+        let mut dropped: Vec<(u64, Call)> = self
+            .introspects
+            .iter()
+            .filter(|((n, _), call)| {
+                self.last_word(*n, call)
+                    && call
+                        .answered
+                        .is_none_or(|a| a.duration_since(call.asked) >= late)
             })
-            .collect()
+            .map(|(&(n, _), &call)| (n, call))
+            .collect();
+        dropped.sort_by_key(|(_, c)| c.seq);
+        dropped
+    }
+
+    /// The connections numbered between two probes (`from`, `to`), with
+    /// what each sent, but `strand-introspect`'s reconnects (decisions.md
+    /// m6-flakes): a connection that said only `Hello` and `Introspect`,
+    /// first speaking after a call in [`Seen::dropped`] by an older
+    /// connection. Each dropped call explains one reconnect, the
+    /// earliest it can, so a connection made per question cannot hide
+    /// behind one missed answer.
+    fn unexplained(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
+        let mut dropped = self.dropped();
+        let mut out = Vec::new();
+        for n in from + 1..to {
+            let sent = self.sent.get(&n).cloned().unwrap_or_default();
+            let only_introspects = sent.iter().any(|s| s == INTROSPECT)
+                && sent.iter().all(|s| s == INTROSPECT || s == HELLO);
+            let explains = self
+                .first
+                .get(&n)
+                .filter(|_| only_introspects)
+                .and_then(|&began| {
+                    dropped
+                        .iter()
+                        .position(|(m, call)| *m < n && call.seq < began)
+                });
+            match explains {
+                Some(i) => {
+                    dropped.remove(i);
+                }
+                None => out.push((n, sent)),
+            }
+        }
+        out
     }
 
     /// How many connections between two probes were
@@ -945,6 +1016,17 @@ impl Seen {
                 .iter()
                 .filter(|(n, _)| self.sent.contains_key(n))
                 .count()
+    }
+
+    /// The `Introspect` calls the monitor saw no answer to though their
+    /// connection spoke again: none, unless the monitor misses answers
+    /// (which would make kept connections look dropped).
+    fn unanswered_but_kept(&self) -> Vec<(u64, u32)> {
+        self.introspects
+            .iter()
+            .filter(|((n, _), call)| call.answered.is_none() && !self.last_word(*n, call))
+            .map(|(&k, _)| k)
+            .collect()
     }
 }
 
@@ -981,9 +1063,8 @@ impl BusLog {
                 if let (Some(to), Some(serial)) = (
                     h.destination().and_then(|d| number(d.as_str())),
                     h.reply_serial(),
-                ) && let Some((_, answered)) = seen.introspects.get_mut(&(to, serial.get()))
-                {
-                    answered.get_or_insert(at);
+                ) {
+                    seen.answer(to, serial.get(), at);
                 }
                 let Some(n) = h.sender().and_then(|s| number(s.as_str())) else {
                     continue;
@@ -995,10 +1076,10 @@ impl BusLog {
                     h.member().map(|m| m.to_string()).unwrap_or_default()
                 );
                 if what == INTROSPECT {
-                    seen.introspects
-                        .insert((n, h.primary().serial_num().get()), (at, None));
+                    seen.call(n, h.primary().serial_num().get(), at);
+                } else {
+                    seen.record(n, what);
                 }
-                seen.record(n, what, at);
             }
         });
         log
@@ -1036,51 +1117,98 @@ impl BusLog {
 }
 
 /// (m6-flakes) The bus check's classification: a connection that only
-/// introspects is `strand-introspect`'s reconnect when an older
-/// connection's `Introspect` went unanswered for its timeout, and made
-/// for nothing otherwise; any other connection is never explained.
+/// introspects is `strand-introspect`'s reconnect when it follows an
+/// older connection's last `Introspect` that went unanswered or was
+/// answered late, one reconnect per such call; any other connection is
+/// never explained, nor is one after a prompt answer.
 #[test]
 fn a_reconnect_after_an_unanswered_introspect_is_explained() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
-    let introspecting = |seen: &mut Seen, n: u64, began: u64| {
-        seen.record(n, HELLO.into(), at(began));
-        seen.record(n, INTROSPECT.into(), at(began + 1));
+    let both = || vec![HELLO.to_string(), INTROSPECT.to_string()];
+    // Connection `n` says `Hello` and asks with serial 2 at `ms`.
+    let introspecting = |seen: &mut Seen, n: u64, ms: u64| {
+        seen.record(n, HELLO.into());
+        seen.call(n, 2, at(ms));
     };
     // The kept connection, :1.5, answered at once; then :1.10 connects.
     let mut seen = Seen::default();
     introspecting(&mut seen, 5, 0);
-    seen.introspects.insert((5, 2), (at(1), Some(at(3))));
+    seen.answer(5, 2, at(3));
+    let healthy = seen.clone();
     introspecting(&mut seen, 10, 10_000);
-    seen.record(11, HELLO.into(), at(10_500));
+    seen.answer(10, 2, at(10_002));
+    seen.record(11, HELLO.into());
     assert_eq!(
         seen.unexplained(7, 12),
         vec![
             (8, vec![]),
             (9, vec![]),
-            (10, vec![HELLO.to_string(), INTROSPECT.to_string()]),
-            (11, vec![HELLO.to_string()]),
+            (10, both()),
+            (11, vec![HELLO.to_string()])
         ],
         "made for nothing"
     );
     assert_eq!(seen.reconnects(7, 12), 0);
-    // :1.5's refresh got no answer in time: :1.10 is its reconnect.
-    for answered in [None, Some(at(8_000 + 2_500))] {
-        let mut late = seen.clone();
-        late.introspects.insert((5, 3), (at(8_000), answered));
+    assert!(seen.unanswered_but_kept().is_empty());
+    // :1.5's refresh got no answer, or one the monitor saw 1.88 s late
+    // (strand's deadline, which starts before the call is written, had
+    // passed): :1.10 is its reconnect, made at the next refresh or, after
+    // a failure with no answer, a moment later.
+    for (answered, reconnect) in [
+        (None, 8_005),
+        (Some(8_000 + 2_500), 18_000),
+        (Some(8_000 + 1_880), 18_000),
+    ] {
+        let mut late = healthy.clone();
+        late.call(5, 3, at(8_000));
+        if let Some(a) = answered {
+            late.answer(5, 3, at(a));
+        }
+        introspecting(&mut late, 10, reconnect);
+        late.answer(10, 2, at(reconnect + 2));
+        late.record(11, HELLO.into());
         assert_eq!(
             late.unexplained(9, 12),
             vec![(11, vec![HELLO.to_string()])],
             "only the reconnect is explained ({answered:?})"
         );
         assert_eq!(late.reconnects(9, 12), 1);
+        assert!(late.unanswered_but_kept().is_empty());
+        // One late call explains one reconnect: a new connection per
+        // question after it is not explained.
+        let mut again = late.clone();
+        introspecting(&mut again, 12, reconnect + 10_000);
+        again.answer(12, 2, at(reconnect + 10_002));
+        assert_eq!(again.unexplained(9, 13).len(), 2, "{answered:?}");
         // One that did more than introspect is not.
         late.record(
             10,
             "MethodCall org.freedesktop.DBus.Properties.GetAll".into(),
-            at(10_002),
         );
         assert_eq!(late.unexplained(9, 11).len(), 1);
+    }
+    // A late call whose connection spoke again was not dropped: the
+    // reconnect after it is not explained, and an unanswered one says
+    // the monitor missed an answer.
+    for answered in [None, Some(8_000 + 2_500)] {
+        let mut kept = healthy.clone();
+        kept.call(5, 3, at(8_000));
+        if let Some(a) = answered {
+            kept.answer(5, 3, at(a));
+        }
+        kept.call(5, 4, at(18_000));
+        kept.answer(5, 4, at(18_002));
+        introspecting(&mut kept, 10, 28_000);
+        assert_eq!(kept.unexplained(9, 11), vec![(10, both())], "{answered:?}");
+        assert_eq!(
+            kept.unanswered_but_kept(),
+            if answered.is_none() {
+                vec![(5, 3)]
+            } else {
+                vec![]
+            }
+        );
     }
 }
 
@@ -1841,27 +1969,30 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     let refreshed = bus_log.introspections_below(first);
     let seen = bus_log.seen();
     let reconnects = seen.reconnects(first, last);
-    // The monitor sees the answers: else every refresh would look late.
+    // The monitor sees the answers: else kept connections would look
+    // dropped, and their calls would explain connections.
     let answered = seen
         .introspects
         .values()
-        .filter(|(_, a)| a.is_some())
+        .filter(|c| c.answered.is_some())
         .count();
+    let missed = seen.unanswered_but_kept();
     assert!(
-        seen.introspects.is_empty() || answered > 0,
-        "the bus monitor saw no answer to {} `Introspect` calls",
-        seen.introspects.len()
+        missed.is_empty(),
+        "the bus monitor saw no answer to `Introspect` calls (by sender and \
+         serial) whose connection spoke again: {missed:?}"
     );
     assert!(
         made.is_empty(),
         "connections were made to the bus during the reloads (each with what \
          it sent; the `from dbus` check asked {refreshed} times over the \
-         connection it keeps, and reconnected {reconnects} times after an \
-         `Introspect` went unanswered for its timeout): {made:?}"
+         connection it keeps, and reconnected {reconnects} times after it \
+         dropped a connection whose `Introspect` went unanswered or was \
+         answered late): {made:?}"
     );
     eprintln!(
         "the `from dbus` check asked the bus {refreshed} times during the reloads, \
-         over the connection it keeps; {reconnects} reconnects after a late answer; \
+         over the connection it keeps; {reconnects} reconnects after a dropped connection; \
          {answered} of {} `Introspect` calls answered",
         seen.introspects.len()
     );
