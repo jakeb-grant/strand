@@ -15,7 +15,7 @@ pub mod write;
 
 use std::io::{self, BufRead as _, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use serde_json::Value as Json;
@@ -107,7 +107,7 @@ pub fn drive(path: &Path, term: Terminal) -> Result<(), String> {
     let notify = tx.clone();
     let conn = Connection::connect(
         path,
-        Some(Box::new(move || {
+        Some(Arc::new(move || {
             let _ = notify.send(Ev::Socket);
         })),
     )
@@ -142,6 +142,9 @@ pub fn drive(path: &Path, term: Terminal) -> Result<(), String> {
         path.display()
     );
     s.pick(true)?;
+    if s.conn.closed() {
+        return Err("the shell closed the connection".into());
+    }
     for ev in rx {
         match ev {
             Ev::Socket => s.events()?,
@@ -175,14 +178,73 @@ struct Session {
 
 impl Session {
     fn ask(&mut self, req: &Request) -> Result<Json, String> {
-        let a = self.conn.ask(req, WAIT).map_err(|e| e.to_string())?;
+        let a = match self.conn.ask(req, WAIT) {
+            Ok(a) => a,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut && !self.conn.closed() => {
+                return Err(format!("{e}{}", self.restore()));
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         match refusal(&a) {
             Some(why) => Err(format!("{}: {why}", req.cmd())),
             None => Ok(a),
         }
     }
 
+    /// After the connection started again (a request timed out, so the
+    /// shell ended the old one's pick mode, outline and flash): asks for
+    /// them again on the new one, and says which are off now. Pick mode
+    /// and flashing are on here only if they were before the request
+    /// that timed out and it did not turn them off; the outline is on
+    /// the node shown.
+    fn restore(&mut self) -> String {
+        let want = [
+            (self.picking, "pick mode", Request::InspectPick { on: true }),
+            (
+                self.node.is_some(),
+                "the outline",
+                Request::InspectHighlight {
+                    id: Some(self.node_id()),
+                },
+            ),
+            (self.flash, "flashing", Request::InspectFlash { on: true }),
+        ];
+        (self.picking, self.flash) = (false, false);
+        let mut off = Vec::new();
+        let mut gone = false;
+        for (i, (on, what, req)) in want.into_iter().enumerate() {
+            if !on {
+                continue;
+            }
+            // A second timeout started yet another connection: the rest
+            // stays off rather than wait again.
+            let back = !gone
+                && match self.conn.ask(&req, WAIT) {
+                    Ok(a) => refusal(&a).is_none(),
+                    Err(_) => {
+                        gone = true;
+                        false
+                    }
+                };
+            match (back, i) {
+                (true, 0) => self.picking = true,
+                (true, 2) => self.flash = true,
+                (true, _) => {}
+                (false, _) => off.push(what),
+            }
+        }
+        match off.is_empty() {
+            true => String::new(),
+            false => format!(" ({} off now)", off.join(", ")),
+        }
+    }
+
     fn pick(&mut self, on: bool) -> Result<(), String> {
+        // Off is off on this side whatever the answer: a timeout's new
+        // connection ends pick mode too, and must not turn it back on.
+        if !on {
+            self.picking = false;
+        }
         if let Err(e) = self.ask(&Request::InspectPick { on }) {
             say!(self, "{e}");
             return Ok(());
@@ -232,12 +294,16 @@ impl Session {
                 return Ok(());
             }
         };
-        let _ = self.ask(&Request::InspectHighlight {
-            id: Some(id.into()),
-        });
         let _ = write!(self.out, "\n{}", pane::pane(&answer));
         let _ = self.out.flush();
+        // Shown before it is outlined, so a timeout's new connection
+        // outlines this node, not the one before.
         self.node = Some(answer);
+        if let Err(e) = self.ask(&Request::InspectHighlight {
+            id: Some(id.into()),
+        }) {
+            say!(self, "{e}");
+        }
         Ok(())
     }
 
@@ -259,6 +325,8 @@ impl Session {
             "p" | "pick" => self.pick(true)?,
             "f" | "flash" => {
                 let on = !self.flash;
+                // As for pick mode: off is off here whatever the answer.
+                self.flash = false;
                 match self.ask(&Request::InspectFlash { on }) {
                     Ok(_) => {
                         self.flash = on;

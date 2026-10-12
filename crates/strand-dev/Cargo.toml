@@ -21,6 +21,9 @@ strand-core.workspace = true
 # Write-back checks a file against the running shell's BLAKE3 hash of it.
 blake3 = "1.8.7"
 crossbeam-channel = "0.5.17"
+# Write-back asks whether this user may write a file (access(2)), who
+# owns it, whether it has an ACL, and keeps its group.
+rustix = { version = "1.1.5", features = ["fs", "process"] }
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 serde_json = "1.0.151"

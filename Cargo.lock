@@ -2902,6 +2902,7 @@ dependencies = [
  "crossbeam-channel",
  "lsp-server",
  "lsp-types",
+ "rustix",
  "serde_json",
  "strand-compiler",
  "strand-core",

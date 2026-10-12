@@ -5,8 +5,9 @@
 //! arriving while the client waits for an answer is handled once the
 //! answer is in (a `picked`), except a `pick_ended` before
 //! `inspect.pick`'s answer, which ended the pick mode before it; one
-//! after it ends pick mode, so Enter sends nothing; an answer that
-//! timed out is discarded when it comes late;
+//! after it ends pick mode, so Enter sends nothing; a request that
+//! times out starts a new connection, so a late answer is never read
+//! as a later request's;
 //! `e` opens the node's origin; a read-only token write-back offers
 //! `$EDITOR` at the token's line, and the next line answers the offer.
 
@@ -230,9 +231,50 @@ fn the_terminal_session_picks_shows_resets_flashes_and_offers_editor() {
     let _ = fs::remove_dir_all(&d);
 }
 
-/// (inspect-r2-5) An answer that comes after its request timed out is
-/// discarded, not read as the next request's: answers come in order and
-/// carry no id, so one late answer would shift every later one.
+/// The next connection on `listener`, within 10 s.
+fn accept(listener: &UnixListener) -> Shell {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let s = loop {
+        match listener.accept() {
+            Ok((s, _)) => break s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the client never connected again"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
+    s.set_nonblocking(false).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    Shell {
+        r: BufReader::new(s.try_clone().unwrap()),
+        w: s,
+    }
+}
+
+impl Shell {
+    /// The client hung up: nothing more is read.
+    fn hung_up(&mut self) {
+        let mut line = String::new();
+        assert_eq!(self.r.read_line(&mut line).unwrap(), 0, "{line}");
+    }
+    /// A line the client may no longer read (it hung up).
+    fn send_late(&mut self, v: Json) {
+        let _ = self.w.write_all(format!("{v}\n").as_bytes());
+    }
+}
+
+/// (inspect-r2-5, inspect-r3-1) A request that times out starts a new
+/// connection. Answers carry no id and do not come in request order:
+/// logic answers `inspect.flash`, `inspect.pick`, `inspect.highlight` and
+/// `reset` as it reads them, an `inspect.node` pane only after main's
+/// layout hop, so while main stalls the next request's answer comes
+/// before the late pane. On the new connection each answer is its own
+/// request's, and the late pane goes to the old one.
 #[test]
 fn a_late_answer_is_not_the_next_requests() {
     use strand_core::ipc::Request;
@@ -243,48 +285,113 @@ fn a_late_answer_is_not_the_next_requests() {
     let socket = d.join("shell.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let mut conn = Connection::connect(&socket, None).unwrap();
-    let (s, _) = listener.accept().unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let mut sh = Shell {
-        r: BufReader::new(s.try_clone().unwrap()),
-        w: s,
-    };
+    let mut old = accept(&listener);
     let short = Duration::from_millis(50);
     let node = Request::InspectNode { id: "3.0".into() };
     let err = conn.ask(&node, short).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
-    sh.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
-    // The late pane, then the flash's own answer.
+    assert!(
+        err.to_string().contains("started a new connection"),
+        "{err}"
+    );
+    assert!(!conn.closed());
+    old.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
+    old.hung_up();
+    let mut sh = accept(&listener);
+    // The shell's real order while main stalls: the flash's answer, then
+    // the late pane.
     let wait = Duration::from_secs(10);
-    let flash = Request::InspectFlash { on: true };
     let asked = std::thread::spawn(move || {
-        let a = conn.ask(&flash, wait).unwrap();
+        let a = conn.ask(&Request::InspectFlash { on: true }, wait).unwrap();
         (conn, a)
     });
-    sh.expect(json!({"cmd": "inspect.flash", "on": true}));
-    sh.send(json!({"ok": true, "node": {"id": "3.0"}}));
-    sh.send(json!({"ok": false, "error": "flash refused"}));
+    sh.answer(
+        json!({"cmd": "inspect.flash", "on": true}),
+        json!({"ok": false, "error": "flash refused"}),
+    );
+    old.send_late(json!({"ok": true, "node": {"id": "3.0"}}));
     let (mut conn, a) = asked.join().unwrap();
     assert_eq!(a, json!({"ok": false, "error": "flash refused"}));
-    // Late again, this time while no request waits: `event` skips it
-    // and the next answer is the next request's.
-    assert_eq!(
-        conn.ask(&node, short).unwrap_err().kind(),
-        std::io::ErrorKind::TimedOut
+    // A refused pick is the pick's refusal, never a late pane's `ok`.
+    let asked = std::thread::spawn(move || {
+        let a = conn.ask(&Request::InspectPick { on: true }, wait).unwrap();
+        (conn, a)
+    });
+    sh.answer(
+        json!({"cmd": "inspect.pick", "on": true}),
+        json!({"ok": false, "error": "the session is locked"}),
     );
-    sh.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
-    sh.send(json!({"ok": true, "node": {"id": "3.0"}}));
+    let (mut conn, a) = asked.join().unwrap();
+    assert_eq!(a, json!({"ok": false, "error": "the session is locked"}));
+    // Events come on the new connection.
     sh.send(json!({"event": "pick_ended"}));
     assert_eq!(
         conn.event(wait).unwrap(),
         Some(json!({"event": "pick_ended"}))
     );
-    let asked = std::thread::spawn(move || {
-        conn.ask(&Request::InspectFlash { on: false }, wait)
-            .unwrap()
+    // With the socket gone, a timeout closes the connection.
+    drop(listener);
+    fs::remove_file(&socket).unwrap();
+    let err = conn.ask(&node, short).unwrap_err();
+    sh.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
+    assert!(err.to_string().contains("reconnecting failed"), "{err}");
+    assert!(conn.closed());
+    let _ = fs::remove_dir_all(&d);
+}
+
+/// (inspect-r3-1) The terminal session across a timeout: `inspect.node`
+/// gets no answer in 5 s (main stalled), so the client starts a new
+/// connection and asks again for what the old one had on (flashing; it
+/// had ended pick mode for the pick). `f` then turns flashing off with
+/// one press, and a refused `p` says so instead of "picking".
+#[test]
+fn a_timeout_starts_a_new_connection_and_keeps_the_session() {
+    let d = std::env::temp_dir().join(format!("strand-dev-restart-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(&d).unwrap();
+    let socket = d.join("shell.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (lines, typed) = mpsc::channel::<String>();
+    let typed = Mutex::new(typed);
+    let out = Out::default();
+    let term = Terminal {
+        read_line: Box::new(move || typed.lock().unwrap().recv().ok()),
+        out: Box::new(out.clone()),
+        editor: Box::new(|_, _| {}),
+    };
+    let client = std::thread::spawn({
+        let socket = socket.clone();
+        move || drive(&socket, term)
     });
-    sh.expect(json!({"cmd": "inspect.flash", "on": false}));
-    sh.ok();
-    assert_eq!(asked.join().unwrap(), json!({"ok": true}));
+    let mut old = accept(&listener);
+    let type_line = |l: &str| lines.send(format!("{l}\n")).unwrap();
+    let pick = |on: bool| json!({"cmd": "inspect.pick", "on": on});
+    let flash = |on: bool| json!({"cmd": "inspect.flash", "on": on});
+    old.answer(pick(true), json!({"ok": true}));
+    let mut at = out.wait_for(0, "picking: click a node");
+    type_line("f");
+    old.answer(flash(true), json!({"ok": true}));
+    at = out.wait_for(at, "damage flashing on");
+    old.send(json!({"event": "picked", "surface": 1, "node": "3.0"}));
+    old.answer(pick(false), json!({"ok": true}));
+    // Main stalls: no pane within the client's 5 s.
+    old.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
+    old.hung_up();
+    let mut sh = accept(&listener);
+    sh.answer(flash(true), json!({"ok": true}));
+    at = out.wait_for(at, "no answer to `inspect.node`");
+    old.send_late(json!({"ok": true, "node": {"id": "3.0"}}));
+    type_line("f");
+    sh.answer(flash(false), json!({"ok": true}));
+    at = out.wait_for(at, "damage flashing off");
+    type_line("p");
+    sh.answer(
+        pick(true),
+        json!({"ok": false, "error": "the session is locked: nothing is pickable"}),
+    );
+    at = out.wait_for(at, "inspect.pick: the session is locked");
+    type_line("q");
+    assert_eq!(client.join().unwrap(), Ok(()));
+    assert!(!out.text()[at..].contains("picking"), "{}", out.text());
     let _ = fs::remove_dir_all(&d);
 }

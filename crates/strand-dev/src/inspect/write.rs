@@ -18,6 +18,11 @@
 //!   file renamed into place between the hash check and the rename (an
 //!   editor's atomic save) is refused, as is a read-only target (a Nix
 //!   store file), with the reason and an offer to open it in `$EDITOR`.
+//!   Read-only means this user cannot write the file itself, or the
+//!   rename would change more than its text: a file another user owns
+//!   (the new file would be ours), or one with an ACL (the new file
+//!   would have none). A group the new file did not get from the
+//!   directory is given to it, or the edit is refused.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -346,10 +351,10 @@ pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, R
     if hash(&bytes) != edit.hash {
         return Err(Refusal::Changed(edit.file.clone()));
     }
-    if meta.permissions().readonly() {
+    if let Err(why) = replaceable(&real, &meta, rustix::process::geteuid().as_raw()) {
         return Err(Refusal::ReadOnly {
             file: edit.file.clone(),
-            why: "it has no write permission".into(),
+            why,
         });
     }
     let (a, b) = (edit.span.start, edit.span.end);
@@ -386,6 +391,26 @@ pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, R
         }
         Err(e) => return Err(io(&tmp, e)),
     };
+    // Created with our group, or the directory's (setgid): the file's
+    // own group is kept, as an owner may give it, or the edit refused.
+    let regroup = t.metadata().map_err(|e| io(&tmp, e)).and_then(|m| {
+        if m.gid() == meta.gid() {
+            return Ok(());
+        }
+        let gid = rustix::fs::Gid::from_raw(meta.gid());
+        rustix::fs::fchown(&t, None, Some(gid)).map_err(|e| Refusal::ReadOnly {
+            file: edit.file.clone(),
+            why: format!(
+                "its group ({}) cannot be kept on the rewritten file: {e}",
+                meta.gid()
+            ),
+        })
+    });
+    if let Err(r) = regroup {
+        drop(t);
+        let _ = fs::remove_file(&tmp);
+        return Err(r);
+    }
     let written = t
         .write_all(&out)
         .and_then(|()| t.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o7777)))
@@ -417,7 +442,62 @@ pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, R
     Ok(real)
 }
 
+/// Whether user `uid` may replace the file at `real` (with `meta`, its
+/// metadata) by renaming a rewritten copy over it, or why not. The
+/// rename needs only the directory's write permission, so the file's
+/// own is checked here (inspect-r3-2): its mode bits alone say nothing
+/// of who may write it.
+fn replaceable(real: &Path, meta: &fs::Metadata, uid: u32) -> Result<(), String> {
+    if meta.permissions().readonly() {
+        return Err("it has no write permission".into());
+    }
+    // Root may write anything, and the new file would still be root's
+    // where the old one was not: the same refusal.
+    if meta.uid() != uid {
+        return Err(format!(
+            "it belongs to user {}, and rewriting it would make it yours",
+            meta.uid()
+        ));
+    }
+    if rustix::fs::access(real, rustix::fs::Access::WRITE_OK).is_err() {
+        return Err("you cannot write it".into());
+    }
+    if rustix::fs::getxattr(real, "system.posix_acl_access", &mut [0u8; 0][..]).is_ok() {
+        return Err("it has an access ACL, which rewriting it would drop".into());
+    }
+    Ok(())
+}
+
 /// `at` falls between UTF-8 characters of `bytes`.
 fn is_boundary(bytes: &[u8], at: usize) -> bool {
     at == bytes.len() || bytes.get(at).is_some_and(|b| (*b as i8) >= -0x40)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (inspect-r3-2) A file whose mode has a write bit but which
+    /// another user owns is not replaced: the rename needs only the
+    /// directory, and the new file would be ours (a `root:root 0644`
+    /// theme in the user's own config directory).
+    #[test]
+    fn a_file_another_user_owns_is_not_replaceable() {
+        let d = std::env::temp_dir().join(format!("strand-dev-owner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let f = d.join("theme.strand");
+        fs::write(&f, "tokens base {}\n").unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+        let meta = fs::metadata(&f).unwrap();
+        assert_eq!(replaceable(&f, &meta, meta.uid()), Ok(()));
+        let other = meta.uid().wrapping_add(1);
+        let why = replaceable(&f, &meta, other).unwrap_err();
+        assert!(why.contains("belongs to user"), "{why}");
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o444)).unwrap();
+        let meta = fs::metadata(&f).unwrap();
+        let why = replaceable(&f, &meta, meta.uid()).unwrap_err();
+        assert!(why.contains("no write permission"), "{why}");
+        let _ = fs::remove_dir_all(&d);
+    }
 }
