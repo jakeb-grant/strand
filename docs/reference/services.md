@@ -133,7 +133,7 @@ and only while a visible reader shows it.
 | `title` | `text?` | The track's title. |
 | `artist` | `text?` | The track's artist. |
 | `album` | `text?` | The track's album. |
-| `art` | `text?` | The album art: `image media.art { fit: cover }`. Local art only (a `file://` URL or a path); null when the player sent none or a remote URL, so `media.art ?? "audio-x-generic"` falls back. |
+| `art` | `text?` | The album art: `image media.art { fit: cover }`. Local art (a `file://` URL or a path) as the player sent it; remote (`https://`, `http://`) art fetched and shown as a file once it is in. Null when the player sent none, while remote art loads, or when it failed, so `media.art ?? "audio-x-generic"` falls back. |
 | `position` | `float` | Fraction of the track played, 0 to 1. |
 | `elapsed` | `duration` | Time played. |
 | `length` | `duration?` | The track's length, when known. |

@@ -2479,25 +2479,23 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 22,806,528 B (87 × 256
-/// KiB). Wave 2's merged tree (with S-tools' wave-3 `new` and `report`)
-/// measured 22,473,111 B; the gate adds the GPU lines still unspent
-/// (59,520 B: the inspector's render half 20,000, xdg-activation 20,000
-/// and the GPU-only outline and flash 19,520) and a 64 KiB reserve,
-/// rounded up to 256 KiB (decisions.md m5-integration-w2, the re-base;
-/// the owner's size ruling of 2026-10-11). It was 22,282,240 B after the
-/// speed review (decisions.md m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 22_806_528;
-/// `.text` of the CPU-only release build: 18,874,368 B (72 × 256 KiB).
-/// Wave 2's merged tree measured 18,555,351 B; the gate adds the lines
-/// still unspent (40,000 B: the inspector's render half and
-/// xdg-activation) and a 64 KiB reserve, rounded up to 256 KiB; the
-/// rounding is not spendable (decisions.md m5-integration-w2). It was
-/// 18,350,080 B after the speed review (decisions.md m5-speed) and
-/// 15,859,712 B before it. The gate catches accidental growth, never
-/// caps a feature: a deliberate choice re-bases it with its measured
-/// reason.
-const TEXT_GATE_CPU: u64 = 18_874_368;
+/// `.text` of the default (GPU) release build: 23,855,104 B (91 × 256
+/// KiB). M6 wave 1's tree with remote media art (ureq over rustls/ring,
+/// about 778 KB of it) measured 23,556,951 B; the gate adds a 64 KiB
+/// reserve, rounded up to 256 KiB (decisions.md m6-integration-w1). It
+/// was 22,806,528 B from M5 wave 2's re-base (decisions.md
+/// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
+/// m5-speed) and 18.5 MiB before it.
+const TEXT_GATE_GPU: u64 = 23_855_104;
+/// `.text` of the CPU-only release build: 19,922,944 B (76 × 256 KiB).
+/// M6 wave 1's tree with remote media art measured 19,639,511 B; the
+/// gate adds a 64 KiB reserve, rounded up to 256 KiB; the rounding is not
+/// spendable (decisions.md m6-integration-w1). It was 18,874,368 B from
+/// M5 wave 2's re-base (decisions.md m5-integration-w2), 18,350,080 B
+/// after the speed review (decisions.md m5-speed) and 15,859,712 B
+/// before it. The gate catches accidental growth, never caps a feature:
+/// a deliberate choice re-bases it with its measured reason.
+const TEXT_GATE_CPU: u64 = 19_922_944;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

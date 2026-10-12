@@ -177,6 +177,18 @@ opt-level = "z"
 
 [profile.release.package.libspa]
 opt-level = "z"
+
+[profile.release.package.ureq]
+opt-level = "z"
+
+[profile.release.package.ureq-proto]
+opt-level = "z"
+
+[profile.release.package.rustls]
+opt-level = "z"
+
+[profile.release.package.rustls-native-certs]
+opt-level = "z"
 ```
 
 Leave your own crate at the release default, opt-level 3: do not add

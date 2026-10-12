@@ -64,10 +64,9 @@ pub struct Media {
     pub album: Option<String>,
     /// The album art: `image media.art { fit: cover }`. Local art (a
     /// `file://` URL or a path) as the player sent it; remote (`https://`,
-    /// `http://`) art fetched and shown as a file once it is in
-    /// ([`crate::art`]). Null when the player sent none, while remote art
-    /// loads, or when it failed, so `media.art ?? "audio-x-generic"` falls
-    /// back.
+    /// `http://`) art fetched and shown as a file once it is in. Null when
+    /// the player sent none, while remote art loads, or when it failed, so
+    /// `media.art ?? "audio-x-generic"` falls back.
     pub art: Option<String>,
     /// Fraction of the track played, 0 to 1.
     #[store(stream)]

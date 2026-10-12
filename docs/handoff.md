@@ -82,7 +82,8 @@ Each has its paragraph in decisions.md.
    `.text` gates (18,874,368 / 22,806,528 B; the speed rule reproduces
    them); the alternative is m5-plan's original "next 64 KiB above"
    (18,743,296 / 22,675,456 B). The gate test keeps today's values until
-   the owner says.
+   the owner says. (M6 wave 1 re-based both to 19,922,944 / 23,855,104
+   B for remote media art's HTTPS stack; decisions.md m6-integration-w1.)
 3. **Wave 3's `.text` overruns, accepted by the integrator** under the
    standing policy (S-platform +94,272 B against 20 KB, S-inspect
    +35,008 B against 20 KB; decisions.md m5-integration-w3, sweep-3).
