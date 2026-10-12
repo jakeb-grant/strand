@@ -61,9 +61,9 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Dis
               text width=28 height=28 align=center color=$fg.faint text=" 7"
               text width=28 height=28 align=center color=$fg.faint text=" 8"
     end gap=$space.3 drop_rows=true
-      row gap=$space.1
+      row gap=$space.1 not_row=true
         icon source="audio-volume-medium-symbolic"
-      row gap=$space.1
+      row gap=$space.1 not_row=true
         icon source="battery-good-symbolic"
         text text="42% · 2 h 5 min"
       image size=16 source="network-wireless"
@@ -125,9 +125,9 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
               text width=28 height=28 align=center color=$fg.faint text=" 7"
               text width=28 height=28 align=center color=$fg.faint text=" 8"
     end gap=$space.3 drop_rows=true
-      row gap=$space.1
+      row gap=$space.1 not_row=true
         icon source="audio-volume-medium-symbolic"
-      row gap=$space.1
+      row gap=$space.1 not_row=true
         icon source="battery-good-symbolic"
         text text="42% · 2 h 5 min"
       image size=16 source="network-wireless"

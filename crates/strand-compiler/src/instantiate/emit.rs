@@ -117,6 +117,7 @@ impl Emitter {
             scene: None,
             scope: None,
             depth,
+            rows: false,
         };
         let id = match self.free_frags.pop() {
             Some(id) => {
@@ -257,6 +258,27 @@ impl Emitter {
             window: false,
         });
         id
+    }
+
+    /// (M5) Whether what is mounted in `frag` is a `for`'s row of the
+    /// scene node it sits in: a `for`'s fragment lies between `frag` and
+    /// that node's own fragment. Otherwise it is that node's own content
+    /// (`Prop::NotRow`).
+    pub fn in_rows(&self, frag: FragId) -> bool {
+        let mut cur = self.frag(frag).and_then(|f| f.parent);
+        while let Some(p) = cur {
+            let Some(f) = self.frag(p) else {
+                return false;
+            };
+            if f.scene.is_some() {
+                return false;
+            }
+            if f.rows {
+                return true;
+            }
+            cur = f.parent;
+        }
+        false
     }
 
     /// Top-level scene nodes of `frag`, in order.

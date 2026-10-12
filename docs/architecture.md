@@ -2017,7 +2017,13 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     when they are not `drag:` sources, and a `drag:` source under one
     (or under a `list`) is that list's item, not an item of a list
     further out: a row of an outer list holding the source's list (a
-    kanban column holding the dragged card) is counted. `Renderer::drag_image(surface, node) ->
+    kanban column holding the dragged card) is counted. `Prop::NotRow`
+    (`Bool`, compiler-set, m5-fixups round 3) marks a child of a
+    `DropRows` element that is not one of its `for`'s rows (a column's
+    header, a dock item's icon beside its `for` of window dots): a
+    `drag:` source in it is not that element's item, so the element is
+    not a nested list for it and an outer list leaves it out as the
+    source's row (or as another list's copy). `Renderer::drag_image(surface, node) ->
     Option<DragImage>` draws a node alone at rest (lift and glide held,
     no animation stepped) for the drag icon; `strand_scene::DragImage {
     size, scale, origin, pixels }` is premultiplied ARGB at the surface's
@@ -3409,7 +3415,9 @@ Public interfaces other crates and later stages build on:
     type, with its text, files or app id when it has them, and its
     identity last) and
     `Prop::Accepts` (from each `on drop` parameter's type), plus
-    `Prop::DropRows` on a target with a direct `for` child; a
+    `Prop::DropRows` on every element with a direct `for` child,
+    `on drop` or not, and `Prop::NotRow` on each of that element's
+    children that is not one of the `for`'s rows; a
     `NodeEvent::Drop` with `DropPayload::Node` is delivered with that
     source node's `drag:` value, an `External` one as a `Drop` record.
   - The lock: only an `auth` success unlocks; the runtime then writes the

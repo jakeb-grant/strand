@@ -77,6 +77,9 @@ pub(crate) struct Frag {
     /// Element and component levels above and including this fragment
     /// (see [`MAX_MOUNT_DEPTH`]).
     pub depth: u32,
+    /// (M5) A `for`'s fragment: what is mounted in it is that `for`'s
+    /// rows (`Emitter::in_rows`).
+    pub rows: bool,
 }
 
 /// How many elements and components may nest at run time: the parser's

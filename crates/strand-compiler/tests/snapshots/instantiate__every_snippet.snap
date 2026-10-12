@@ -9,83 +9,83 @@ panel keyboard=on_demand name="KeyboardOnDemand"
 panel keyboard=exclusive name="KeyboardExclusive"
 bar screens="Mock | DP-1 | Display" name="Everything"
   col drop_rows=true
-    box bg=$accent
-    text text="09:41"
-    slider two_way=[value] value=0.5
-    popup open=false two_way=[open]
-    col color=$fg font=$font.ui
-    box
-    text text="0%"
-    box margin=[8, 8, 0]
-    list row_count=3 row_first=0 drop_rows=true
+    box bg=$accent not_row=true
+    text text="09:41" not_row=true
+    slider two_way=[value] value=0.5 not_row=true
+    popup open=false two_way=[open] not_row=true
+    col color=$fg font=$font.ui not_row=true
+    box not_row=true
+    text text="0%" not_row=true
+    box margin=[8, 8, 0] not_row=true
+    list row_count=3 row_first=0 drop_rows=true not_row=true
       text text="Firefox"
       text text="Foot"
       text text="Files"
-    segmented two_way=[value] value=auto options=[auto, light, dark, wallpaper, mocha]
-    col tokens={$surface: $surface.alpha(0.5)}
-    box place=absolute
-    box gap=0 watch=query
-    box hit=grow(6)
-    box width=24
-    box width=24
-    box width=24
-    input nav=node 25
-    list
-    box drag=[Pin, ["d438a1dc122c7167"]]
-    pages current=wifi row_first=0
+    segmented two_way=[value] value=auto options=[auto, light, dark, wallpaper, mocha] not_row=true
+    col not_row=true tokens={$surface: $surface.alpha(0.5)}
+    box place=absolute not_row=true
+    box gap=0 watch=query not_row=true
+    box hit=grow(6) not_row=true
+    box width=24 not_row=true
+    box width=24 not_row=true
+    box width=24 not_row=true
+    input nav=node 25 not_row=true
+    list not_row=true
+    box drag=[Pin, ["d438a1dc122c7167"]] not_row=true
+    pages current=wifi row_first=0 not_row=true
       page name=wifi
         text text="Wi-Fi"
-    box tooltip="A tooltip"
-    shader source="aurora.wgsl" uniforms=uniforms {u_speed: 0.4; u_tint: $accent}
-    canvas watch=size draw=draw [1 ops]
-    box radius=[14, 14, 0, 0] corners=squircle
-    popup attach=top
-    box shape=cookie
-    box stroke=template(3, #000000 <- $accent) trim=[0, 0.5] cap=round wave=[2, 18]
-    arc width=4 value=0 sweep=270deg
-    merge value=10
+    box tooltip="A tooltip" not_row=true
+    shader source="aurora.wgsl" uniforms=uniforms {u_speed: 0.4; u_tint: $accent} not_row=true
+    canvas watch=size draw=draw [1 ops] not_row=true
+    box radius=[14, 14, 0, 0] corners=squircle not_row=true
+    popup attach=top not_row=true
+    box shape=cookie not_row=true
+    box stroke=template(3, #000000 <- $accent) trim=[0, 0.5] cap=round wave=[2, 18] not_row=true
+    arc width=4 value=0 sweep=270deg not_row=true
+    merge value=10 not_row=true
       box
       box
-    box bg=template(linear(45deg, #000000, #000000) <- $accent, $tertiary)
-    box bg=template(conic(from 90deg, #000000, #000000) <- $accent, $secondary)
-    box border=template(2, conic(from 0deg, #000000, #000000, #000000) <- $accent, $secondary, $accent; _, (t * 60))
-    box glow=[12, $accent.alpha(0.6)]
-    box inner_shadow=template(0 2 6 0 #000000 <- $shadow) rim=[top, $fg.alpha(0.15)]
-    box grain=0.04
-    text fill=template(linear(90deg, #000000, #000000) <- $accent, $tertiary) text="x" text_stroke=template(1, #000000 <- $bg)
-    letters y=(2 * wave(1000ms, phase: (index * 0.1)))
-    popup scrim=$shadow.alpha(0.3)
-    box filter=grayscale(1)
-    box filter=saturate(1.3)
-    box filter=hue(30deg)
-    box filter=brightness(0.9)
-    box filter=tint($accent)
-    box blend=screen
-    box blend=add
-    box blend=multiply
-    box blend=overlay
-    box blend=difference
-    box mask=fade(bottom, 24)
-    box mask=radial(center, 40%)
-    box mask=shape(cookie)
-    box backdrop=blur(16)
-    box blur=24
-    box blur=24 blur_fallback=tint
-    box blur=24 blur_fallback=none
-    box x=4
-    box x=4
-    box enter=popin(0.8) exit=popin(0.8)
-    box enter=slide(top) exit=slide(top)
-    box enter=slidefade exit=slidefade
-    box enter=fade exit=fade
-    box x=t y=wave(1600ms, phase: 0) scale=0
-    box
-    row stagger=30ms
-    box morph="media"
-    text text="50%" roll=true
-    box jelly=0.4
-    box parallax=6 tilt=8deg
-    row bg=$surface.alpha(0.7) radius=full corners=squircle border=template(1.5, conic(from 0deg, #000000, #000000, #000000) <- $accent, $tertiary, $accent; _, (t * 40)) blur=24 morph="media"
+    box bg=template(linear(45deg, #000000, #000000) <- $accent, $tertiary) not_row=true
+    box bg=template(conic(from 90deg, #000000, #000000) <- $accent, $secondary) not_row=true
+    box border=template(2, conic(from 0deg, #000000, #000000, #000000) <- $accent, $secondary, $accent; _, (t * 60)) not_row=true
+    box glow=[12, $accent.alpha(0.6)] not_row=true
+    box inner_shadow=template(0 2 6 0 #000000 <- $shadow) rim=[top, $fg.alpha(0.15)] not_row=true
+    box grain=0.04 not_row=true
+    text fill=template(linear(90deg, #000000, #000000) <- $accent, $tertiary) text="x" text_stroke=template(1, #000000 <- $bg) not_row=true
+    letters y=(2 * wave(1000ms, phase: (index * 0.1))) not_row=true
+    popup scrim=$shadow.alpha(0.3) not_row=true
+    box filter=grayscale(1) not_row=true
+    box filter=saturate(1.3) not_row=true
+    box filter=hue(30deg) not_row=true
+    box filter=brightness(0.9) not_row=true
+    box filter=tint($accent) not_row=true
+    box blend=screen not_row=true
+    box blend=add not_row=true
+    box blend=multiply not_row=true
+    box blend=overlay not_row=true
+    box blend=difference not_row=true
+    box mask=fade(bottom, 24) not_row=true
+    box mask=radial(center, 40%) not_row=true
+    box mask=shape(cookie) not_row=true
+    box backdrop=blur(16) not_row=true
+    box blur=24 not_row=true
+    box blur=24 blur_fallback=tint not_row=true
+    box blur=24 blur_fallback=none not_row=true
+    box x=4 not_row=true
+    box x=4 not_row=true
+    box enter=popin(0.8) exit=popin(0.8) not_row=true
+    box enter=slide(top) exit=slide(top) not_row=true
+    box enter=slidefade exit=slidefade not_row=true
+    box enter=fade exit=fade not_row=true
+    box x=t y=wave(1600ms, phase: 0) scale=0 not_row=true
+    box not_row=true
+    row stagger=30ms not_row=true
+    box morph="media" not_row=true
+    text text="50%" roll=true not_row=true
+    box jelly=0.4 not_row=true
+    box parallax=6 tilt=8deg not_row=true
+    row bg=$surface.alpha(0.7) radius=full corners=squircle border=template(1.5, conic(from 0deg, #000000, #000000, #000000) <- $accent, $tertiary, $accent; _, (t * 40)) blur=24 morph="media" not_row=true
       image size=28 rotate=0 shape=cookie
       spectrum width=72 color=$accent source="40" bars=24 style=mirror
     box

@@ -1391,6 +1391,27 @@ impl Ctx {
             .em
             .borrow_mut()
             .create_with(frag, kind, claimed.as_ref().map(|c| c.0));
+        // (M5) A child of an element holding a `for` that is not one of
+        // its rows (a header beside a column's cards, a dock item's icon
+        // beside its window dots) is that element's own content: a drag
+        // source in it is not the element's item (`drop_index`).
+        {
+            let mut em = self.em.borrow_mut();
+            let holds_rows = em.scene_parent(frag).is_some_and(|p| {
+                matches!(
+                    em.sent.get(&p).and_then(|m| m.get(&SceneProp::DropRows)),
+                    Some(PropValue::Bool(true))
+                )
+            });
+            if holds_rows && !em.in_rows(frag) {
+                em.set(
+                    id,
+                    SceneProp::NotRow,
+                    PropValue::Bool(true),
+                    Transition::Instant,
+                );
+            }
+        }
         let state = env.node_state(rt, e.node);
         if let Some((_, was)) = &claimed
             && !Rc::ptr_eq(was, &state)
@@ -2352,7 +2373,17 @@ impl Ctx {
             window,
         } = k;
         let prefix: Rc<str> = format!("{}/{tag}", env.ident()).into();
-        let frag = self.em.borrow_mut().new_frag(Some(parent), None);
+        let frag = {
+            let mut em = self.em.borrow_mut();
+            let frag = em.new_frag(Some(parent), None);
+            // (M5) A `for`'s items are rows of the node they sit in
+            // (`Prop::NotRow` marks that node's other content); parked
+            // per-monitor bars are surfaces.
+            if !park && let Some(f) = em.frag_mut(frag) {
+                f.rows = true;
+            }
+            frag
+        };
         let (block, ()) = rt.scope(|_| ());
         let list_id: Cell<Option<strand_core::NodeId>> = Cell::new(None);
         let Ok(read) = rt.with_owner(block.id(), |rt| -> ReadDiffs {

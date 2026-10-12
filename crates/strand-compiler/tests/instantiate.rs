@@ -4393,6 +4393,72 @@ bar B {
     }
 }
 
+/// (M5) A child of an element holding a `for` that is not one of its
+/// rows is marked `Prop::NotRow` (decisions.md m5-fixups, review round
+/// 3): a dock item's label and icon beside its `for` of window dots, the
+/// icon mounted later through an `if`, are the item's own content, so
+/// render takes the item as the icon's row; the dots, and the items
+/// themselves (rows of the dock's `for`), are not marked.
+#[test]
+fn content_beside_a_for_is_marked_not_a_row() {
+    let src = r#"type Pin { app: text; windows: [int] }
+state pins: [Pin] key app = [
+  Pin(app: "a", windows: [1, 2]),
+  Pin(app: "b", windows: [3]),
+]
+state shown = true
+bar B {
+  row {
+    on drop(p: Pin, at: int) { }
+    for p in pins key p.app {
+      col {
+        text p.app
+        for w in p.windows key w { box { } }
+        if shown { stack { drag: p } }
+      }
+    }
+  }
+}
+"#;
+    let shell = boot(&[("dock.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let dock = shell.scene.of_kind(NodeKind::Row)[0];
+    assert_eq!(shell.scene.prop(dock, Prop::NotRow), None);
+    let items = shell.scene.of_kind(NodeKind::Col);
+    assert_eq!(items.len(), 2);
+    for c in &items {
+        assert_eq!(
+            shell.scene.prop(*c, Prop::DropRows),
+            Some(&PropValue::Bool(true))
+        );
+        assert_eq!(
+            shell.scene.prop(*c, Prop::NotRow),
+            None,
+            "a row of the dock"
+        );
+    }
+    let content: Vec<NodeId> = shell
+        .scene
+        .of_kind(NodeKind::Text)
+        .into_iter()
+        .chain(shell.scene.of_kind(NodeKind::Stack))
+        .collect();
+    assert_eq!(content.len(), 4);
+    for n in content {
+        assert_eq!(
+            shell.scene.prop(n, Prop::NotRow),
+            Some(&PropValue::Bool(true)),
+            "the item's own content"
+        );
+    }
+    let dots = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(dots.len(), 3);
+    for b in dots {
+        assert_eq!(shell.scene.prop(b, Prop::NotRow), None, "a `for` row");
+    }
+}
+
 /// (M5) A drag source's identity (`strand_scene::drag_identity`) is
 /// equal exactly when the values are (`==`): equal items in one list
 /// share it, and values whose text shows the same but which differ

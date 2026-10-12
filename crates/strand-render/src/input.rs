@@ -1802,9 +1802,11 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// row holding a `drag:` source of the same `drag_identity`, as the
 /// same pin on another monitor's dock; the first, as `move` takes the
 /// first equal item out). A row holds an item as its list's own only
-/// when no other list (a `list`, or a `Prop::DropRows` element) lies
-/// between them: a kanban board's column holding the dragged card is a
-/// row of the board, counted, not the card's row. So a row moved within its own list, or onto
+/// when no other list (a `list`, or a `Prop::DropRows` element) holds
+/// it as a row between them: a kanban board's column holding the
+/// dragged card is a row of the board, counted, not the card's row,
+/// while a dock item whose icon sits beside its own `for` of window dots
+/// (the icon `Prop::NotRow`) is the icon's row. So a row moved within its own list, or onto
 /// another surface's copy of that list, lands where it is let go,
 /// `pins.move(p.app, at)`. A copy unmounted from a windowed list is
 /// not seen. Rows mounted but not laid out (out
@@ -1841,10 +1843,18 @@ fn drop_index(
             x.kind == NodeKind::List || matches!(x.get(Prop::DropRows), Some(PropValue::Bool(true)))
         })
     };
+    // A child of a boundary that is its own content, not one of its
+    // `for`'s rows (`Prop::NotRow`: a dock item's icon beside its `for`
+    // of window dots).
+    let not_row = |c: NodeId| {
+        tree.get(c)
+            .is_some_and(|x| matches!(x.get(Prop::NotRow), Some(PropValue::Bool(true))))
+    };
     // The row of list `n` that is or holds node `s` as one of `n`'s own
-    // items: the child of `n` on `s`'s path up, when no other list lies
-    // between them (a wrapper such as `box { image { drag: p } }` is
-    // not one).
+    // items: the child of `n` on `s`'s path up, when no other list holds
+    // it as a row between them (a wrapper such as `box { image { drag:
+    // p } }`, or `col { for w in p.windows {…} image { drag: p } }`
+    // whose icon is its own content, is not one).
     let row_in = |n: NodeId, s: NodeId| -> Option<NodeId> {
         let mut row = s;
         let mut up = tree.get(s)?.parent;
@@ -1852,7 +1862,7 @@ fn drop_index(
             if x == n {
                 return Some(row);
             }
-            if boundary(x) {
+            if boundary(x) && !not_row(row) {
                 return None;
             }
             row = x;
@@ -1862,7 +1872,8 @@ fn drop_index(
     };
     // Whether row `r` of list `n` is a copy of the dragged item: it is,
     // or holds as `n`'s item, a `drag:` source of the dragged identity.
-    // Another list inside it (a column of cards) holds its own items.
+    // Another list inside it (a column of cards) holds its own items;
+    // only that list's own content (`Prop::NotRow`) is searched.
     let copy = |n: NodeId, r: NodeId| -> bool {
         let Some(id) = identity else {
             return false;
@@ -1877,7 +1888,9 @@ fn drop_index(
             {
                 return true;
             }
-            if !boundary(c) {
+            if boundary(c) {
+                stack.extend(x.children.iter().copied().filter(|k| not_row(*k)));
+            } else {
                 stack.extend(x.children.iter().copied());
             }
         }

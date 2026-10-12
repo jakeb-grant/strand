@@ -42,6 +42,8 @@ const COMPILER_SET: &[Prop] = &[
     Prop::RowCount,
     Prop::RowFirst,
     Prop::DropRows,
+    // M5.
+    Prop::NotRow,
 ];
 
 /// Scene kinds the compiler makes from something other than an element:

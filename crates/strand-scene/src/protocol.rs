@@ -306,9 +306,16 @@ props! {
     /// (M4) On an element whose direct child is a `for` (M5: every
     /// such element, not only an `on drop` target): its children are
     /// rows, each with its index among them, whether or not they are
-    /// `drag:` sources (`Bool`). A drag source under it is its item,
-    /// not an item of a list further out.
+    /// `drag:` sources (`Bool`). A drag source in one of those rows is
+    /// its item, not an item of a list further out (one in a
+    /// [`Prop::NotRow`] child is not).
     DropRows = "drop_rows": Snap,
+    /// (M5) On a child of a [`Prop::DropRows`] element that is not one
+    /// of its `for`'s rows (a column's header beside its cards, a dock
+    /// item's icon beside its `for` of window dots): the element's own
+    /// content (`Bool`). A drag source in it is not that element's item,
+    /// so the element is not a nested list for it.
+    NotRow = "not_row": Snap,
     // Tokens.
     /// Token overrides for this node and its subtree, as a
     /// [`PropValue::Tokens`] table: `set { $surface: $surface.alpha(0.5) }`
@@ -1147,6 +1154,7 @@ mod tests {
             (Prop::RowCount, "row_count"),
             (Prop::RowFirst, "row_first"),
             (Prop::DropRows, "drop_rows"),
+            (Prop::NotRow, "not_row"),
         ] {
             assert_eq!(p.name(), name);
         }
