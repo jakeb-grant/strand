@@ -451,9 +451,10 @@ filling the monitor, the keyboard always).
   target that is itself a row, among its siblings), counted without the
   dragged item: in its own list, without its own row (an equal item
   beside it is another row); in another list, without that list's first
-  copy of it (the same value drawn by another monitor's surface). So
-  `list.move(key, at)`, which moves the first item with that key, puts
-  it where it was let go. Values from other programs (files, apps,
+  copy of it (the same value drawn by another monitor's surface). A
+  row of an outer list that holds the item's list (a kanban column
+  holding the dragged card) is counted. So `list.move(key, at)`, which
+  moves the first item with that key, puts it where it was let go. Values from other programs (files, apps,
   text) arrive as typed `Drop` values.
 - **`pages`** shows one `page` at a time, with directional transitions;
   hidden pages unmount, so their service subscriptions stop.

@@ -2011,9 +2011,13 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     takes the first equal item out), as it leaves out the source's row
     in its own list, where equal items beside it are counted.
     `Prop::DropRows`
-    (`Bool`, compiler-set) marks an `on drop` target whose direct children
-    come from a `for`, so render places drops among those items even when
-    they are not `drag:` sources. `Renderer::drag_image(surface, node) ->
+    (`Bool`, compiler-set) marks an element whose direct children
+    come from a `for` (m5-fixups round 2: every such element, not only
+    an `on drop` target), so render places drops among those items even
+    when they are not `drag:` sources, and a `drag:` source under one
+    (or under a `list`) is that list's item, not an item of a list
+    further out: a row of an outer list holding the source's list (a
+    kanban column holding the dragged card) is counted. `Renderer::drag_image(surface, node) ->
     Option<DragImage>` draws a node alone at rest (lift and glide held,
     no animation stepped) for the drag icon; `strand_scene::DragImage {
     size, scale, origin, pixels }` is premultiplied ARGB at the surface's

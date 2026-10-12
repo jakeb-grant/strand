@@ -126,8 +126,10 @@ pub fn drag_type(value: &crate::PropValue) -> Option<&str> {
 /// compiler puts it last in [`Prop::Drag`](crate::Prop::Drag)'s `List`
 /// (`[type, …, List [Text(identity)]]`), equal for equal values. Two
 /// sources with one identity carry the same value, such as one pin's
-/// icon on the dock of each monitor: a drop counts its rows with every
-/// copy of the dragged item left out, not only the dragged node.
+/// icon on the dock of each monitor: a drop counts its rows with one row
+/// per list left out, the dragged item's own row in its own list and
+/// another list's first copy of it (as `move` takes the first equal
+/// item out); equal items beside the dragged one are counted.
 /// `None`: a prop without one (a bare `Keyword`).
 pub fn drag_identity(value: &crate::PropValue) -> Option<&str> {
     use crate::PropValue as V;

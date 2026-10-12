@@ -4348,6 +4348,51 @@ bar B {
     assert_eq!(shell.scene.prop(row, Prop::DropRows), None, "no `on drop`");
 }
 
+/// (M5) Every element whose direct child is a `for` is marked
+/// `Prop::DropRows`, `on drop` or not, so render tells a nested list's
+/// items from the outer list's rows: a kanban board's columns, each a
+/// `for` of `drag:` cards, are marked as the board is; a card's own box
+/// (no `for`) is not.
+#[test]
+fn every_element_holding_a_for_marks_its_rows() {
+    let src = r#"type Card { id: text }
+type Column { name: text; cards: [Card] }
+state cols: [Column] key name = [
+  Column(name: "todo", cards: [Card(id: "a")]),
+  Column(name: "doing", cards: [Card(id: "b"), Card(id: "c")]),
+]
+state got = ""
+bar B {
+  row {
+    on drop(c: Card, at: int) { got = c.id }
+    for column in cols key column.name {
+      col { for c in column.cards key c.id { box { drag: c } } }
+    }
+  }
+}
+"#;
+    let shell = boot(&[("board.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let board = shell.scene.of_kind(NodeKind::Row)[0];
+    assert_eq!(
+        shell.scene.prop(board, Prop::DropRows),
+        Some(&PropValue::Bool(true))
+    );
+    let cols = shell.scene.of_kind(NodeKind::Col);
+    assert_eq!(cols.len(), 2);
+    for c in cols {
+        assert_eq!(
+            shell.scene.prop(c, Prop::DropRows),
+            Some(&PropValue::Bool(true)),
+            "a column holding a `for` without `on drop`"
+        );
+    }
+    for b in shell.scene.of_kind(NodeKind::Box) {
+        assert_eq!(shell.scene.prop(b, Prop::DropRows), None);
+    }
+}
+
 /// (M5) A drag source's identity (`strand_scene::drag_identity`) is
 /// equal exactly when the values are (`==`): equal items in one list
 /// share it, and values whose text shows the same but which differ

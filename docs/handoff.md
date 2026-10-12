@@ -146,9 +146,10 @@ measured numbers.
   generator, `tests/m5/newcomer.rs`, the agent-proxy harness, the spec
   freeze.
 - **Proposed fixes for other owners: made in wave 3 by S-fixups**
-  (decisions.md m5-fixups): `drop_index` leaves out every copy of the
-  dragged item (`strand_scene::drag_identity`), so a dock drop on
-  another monitor's dock lands where it is let go; the checker and
+  (decisions.md m5-fixups): `drop_index` leaves out one row per list,
+  the dragged item's own row in its own list and another list's first
+  copy of it (`strand_scene::drag_identity`), so a dock drop on another
+  monitor's dock lands where it is let go; the checker and
   lowering write a config service's `rw` field; `Document::parse` skips
   `#` comment lines and strips single quotes; the tray schema's
   `open()` doc; S-plugins' leftover-file log level stays `info`

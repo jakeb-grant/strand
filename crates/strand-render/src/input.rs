@@ -1801,7 +1801,10 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// place); (M5) in another list, its first copy of the dragged item (a
 /// row holding a `drag:` source of the same `drag_identity`, as the
 /// same pin on another monitor's dock; the first, as `move` takes the
-/// first equal item out). So a row moved within its own list, or onto
+/// first equal item out). A row holds an item as its list's own only
+/// when no other list (a `list`, or a `Prop::DropRows` element) lies
+/// between them: a kanban board's column holding the dragged card is a
+/// row of the board, counted, not the card's row. So a row moved within its own list, or onto
 /// another surface's copy of that list, lands where it is let go,
 /// `pins.move(p.app, at)`. A copy unmounted from a windowed list is
 /// not seen. Rows mounted but not laid out (out
@@ -1828,38 +1831,65 @@ fn drop_index(
     let identity = source
         .and_then(|s| tree.get(s)?.get(Prop::Drag))
         .and_then(strand_scene::drag_identity);
-    let copy = |r: NodeId| -> bool {
+    // A node whose children are another list's rows: a `list`, or an
+    // element the compiler marks as holding a `for`'s rows
+    // (`Prop::DropRows`). A drag source under one belongs to that list,
+    // not to a list further out (a card in a kanban column, not the
+    // board's row of columns).
+    let boundary = |n: NodeId| {
+        tree.get(n).is_some_and(|x| {
+            x.kind == NodeKind::List || matches!(x.get(Prop::DropRows), Some(PropValue::Bool(true)))
+        })
+    };
+    // The row of list `n` that is or holds node `s` as one of `n`'s own
+    // items: the child of `n` on `s`'s path up, when no other list lies
+    // between them (a wrapper such as `box { image { drag: p } }` is
+    // not one).
+    let row_in = |n: NodeId, s: NodeId| -> Option<NodeId> {
+        let mut row = s;
+        let mut up = tree.get(s)?.parent;
+        while let Some(x) = up {
+            if x == n {
+                return Some(row);
+            }
+            if boundary(x) {
+                return None;
+            }
+            row = x;
+            up = tree.get(x)?.parent;
+        }
+        None
+    };
+    // Whether row `r` of list `n` is a copy of the dragged item: it is,
+    // or holds as `n`'s item, a `drag:` source of the dragged identity.
+    // Another list inside it (a column of cards) holds its own items.
+    let copy = |n: NodeId, r: NodeId| -> bool {
         let Some(id) = identity else {
             return false;
         };
         let mut stack = vec![r];
-        while let Some(n) = stack.pop() {
-            let Some(x) = tree.get(n).filter(|_| tree.contains_live(n)) else {
+        while let Some(c) = stack.pop() {
+            let Some(x) = tree.get(c).filter(|_| tree.contains_live(c)) else {
                 continue;
             };
-            if x.get(Prop::Drag).and_then(strand_scene::drag_identity) == Some(id) {
+            if x.get(Prop::Drag).and_then(strand_scene::drag_identity) == Some(id)
+                && row_in(n, c) == Some(r)
+            {
                 return true;
             }
-            stack.extend(x.children.iter().copied());
-        }
-        false
-    };
-    // Whether row `r` is, or holds, the dragged source.
-    let holds_source = |r: NodeId| -> bool {
-        let mut n = source;
-        while let Some(x) = n {
-            if x == r {
-                return true;
+            if !boundary(c) {
+                stack.extend(x.children.iter().copied());
             }
-            n = tree.get(x).and_then(|y| y.parent);
         }
         false
     };
     // A list's rows without the dragged item: in the source's own list,
-    // the row that holds the source (an equal item beside it is another
-    // row, which `move` leaves in place); in another list (the same
-    // pins on another monitor's dock), its first copy, as `move` takes
-    // the first equal item out. `keep` (a per-item target) is counted.
+    // the row that is or holds the source as that list's item (an equal
+    // item beside it is another row, which `move` leaves in place); in
+    // another list (the same pins on another monitor's dock), its first
+    // copy, as `move` takes the first equal item out. A row of an outer
+    // list that holds the source's list (a kanban column) is counted.
+    // `keep` (a per-item target) is counted.
     let rows_of = |n: NodeId, keep: Option<NodeId>| -> Vec<NodeId> {
         let live: Vec<NodeId> = tree.get(n).map_or_else(Vec::new, |x| {
             x.children
@@ -1868,11 +1898,11 @@ fn drop_index(
                 .filter(|r| tree.contains_live(*r))
                 .collect()
         });
-        let out = match live.iter().copied().find(|r| holds_source(*r)) {
-            Some(own) => Some(own),
-            None => live.iter().copied().find(|r| copy(*r)),
-        }
-        .filter(|r| Some(*r) != keep);
+        let own = source.and_then(|s| row_in(n, s));
+        let out = own
+            .filter(|r| live.contains(r))
+            .or_else(|| live.iter().copied().find(|r| copy(n, *r)))
+            .filter(|r| Some(*r) != keep);
         live.into_iter()
             .filter(|r| Some(*r) != source && Some(*r) != out)
             .collect()
@@ -1946,7 +1976,7 @@ fn drop_index(
     let Some(i) = siblings.iter().position(|r| *r == target) else {
         return first(parent);
     };
-    if copy(target) {
+    if copy(parent, target) {
         return first(parent) + i as u32;
     }
     let rs = rects(&siblings);

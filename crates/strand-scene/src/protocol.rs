@@ -303,9 +303,11 @@ props! {
     /// On a `list` whose direct child is a `for`: the global index of the
     /// first mounted row (`Number`).
     RowFirst = "row_first": Snap,
-    /// (M4) On an `on drop` target whose direct child is a `for`: its
-    /// children are rows, each with its index among them, whether or not
-    /// they are `drag:` sources (`Bool`).
+    /// (M4) On an element whose direct child is a `for` (M5: every
+    /// such element, not only an `on drop` target): its children are
+    /// rows, each with its index among them, whether or not they are
+    /// `drag:` sources (`Bool`). A drag source under it is its item,
+    /// not an item of a list further out.
     DropRows = "drop_rows": Snap,
     // Tokens.
     /// Token overrides for this node and its subtree, as a

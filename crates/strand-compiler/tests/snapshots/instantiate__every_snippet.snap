@@ -8,7 +8,7 @@ panel keyboard=none name="KeyboardNone"
 panel keyboard=on_demand name="KeyboardOnDemand"
 panel keyboard=exclusive name="KeyboardExclusive"
 bar screens="Mock | DP-1 | Display" name="Everything"
-  col
+  col drop_rows=true
     box bg=$accent
     text text="09:41"
     slider two_way=[value] value=0.5
@@ -17,7 +17,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     box
     text text="0%"
     box margin=[8, 8, 0]
-    list row_count=3 row_first=0
+    list row_count=3 row_first=0 drop_rows=true
       text text="Firefox"
       text text="Foot"
       text text="Files"

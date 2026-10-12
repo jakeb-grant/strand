@@ -1550,6 +1550,126 @@ fn equal_items_in_one_list_are_counted_apart() {
     assert_eq!(only_drop(&mut f, lists[1]), 3);
 }
 
+/// (M5) A drop on an outer list whose rows hold a nested list counts
+/// the row holding the dragged item: a kanban board (a `row` taking
+/// `Card`s, `Prop::DropRows`) of three 60 px columns [todo, doing,
+/// done], each a `for` of two cards (`Prop::DropRows`, as the compiler
+/// marks every element whose direct child is a `for`), on two surfaces.
+/// A card dragged out of `doing` and let go past the middle of `done`
+/// lands at 3, not 2 (the `doing` column is a row of the board, not the
+/// card's row); let go between `doing` and `done` at 2. Handed to the
+/// other surface's board, whose `doing` holds a copy of the card, it is
+/// at 3 there too (the copy is that column's item, not the board's).
+#[test]
+fn a_drop_on_an_outer_list_counts_the_row_holding_the_item() {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    let mut boards = Vec::new();
+    let mut cards = Vec::new();
+    for p in 0..2u32 {
+        let id = |i: u32| NodeId::new(p * 100 + i, 0);
+        let (panel, board) = (id(0), id(1));
+        d.create(panel, NodeKind::Panel, None, p)
+            .set(panel, Prop::Width, PropValue::Number(180.0))
+            .set(panel, Prop::Height, PropValue::Number(80.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(board, NodeKind::Row, Some(panel), 0)
+            .set(board, Prop::Height, PropValue::Number(80.0))
+            .set(board, Prop::DropRows, PropValue::Bool(true))
+            .set(board, Prop::Accepts, PropValue::List(vec![kw("Card")]));
+        let mut mine = Vec::new();
+        for c in 0..3u32 {
+            let col = id(10 + c);
+            d.create(col, NodeKind::Col, Some(board), c)
+                .set(col, Prop::Width, PropValue::Number(60.0))
+                .set(col, Prop::Height, PropValue::Number(80.0))
+                .set(col, Prop::DropRows, PropValue::Bool(true));
+            for k in 0..2u32 {
+                let card = id(20 + c * 2 + k);
+                d.create(card, NodeKind::Box, Some(col), k)
+                    .set(card, Prop::Width, PropValue::Number(60.0))
+                    .set(card, Prop::Height, PropValue::Number(40.0))
+                    .set(
+                        card,
+                        Prop::Drag,
+                        PropValue::List(vec![
+                            kw("Card"),
+                            PropValue::List(vec![PropValue::Text(format!("card{c}{k}"))]),
+                        ]),
+                    );
+                mine.push(card);
+            }
+        }
+        boards.push(board);
+        cards.push(mine);
+    }
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    for (s, root) in [(s1, NodeId::new(0, 0)), (s2, NodeId::new(100, 0))] {
+        r.attach_surface(s, root);
+        f.attached(s, root);
+        let mut px = vec![0u8; 180 * 80 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(180, 80), 720, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    }
+    let only_drop = |f: &mut R, board: NodeId| {
+        let got = events(f.drain());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, board);
+        let NodeEvent::Drop { at, .. } = got[0].1 else {
+            panic!("{got:?}");
+        };
+        at
+    };
+    // The first card of `doing` (x 60..120, y 0..40).
+    let within = |f: &mut R, r: &mut Renderer, x: f32| {
+        f.input(&motion(s1, 90.0, 20.0, 0), r);
+        f.input(&left(s1, 90.0, 20.0, ButtonState::Pressed), r);
+        f.input(&motion(s1, 90.0, 30.0, 10), r);
+        f.input(&motion(s1, x, 60.0, 20), r);
+        f.input(&left(s1, x, 60.0, ButtonState::Released), r);
+        only_drop(f, boards[0])
+    };
+    // Past the middle of `done`: after all three columns.
+    assert_eq!(within(&mut f, &mut r, 170.0), 3);
+    // Past the middle of `doing`, before `done`'s: 2.
+    assert_eq!(within(&mut f, &mut r, 130.0), 2);
+    // Handed to the other surface's board, past the middle of its `done`.
+    let from = cards[0][2];
+    f.input(&motion(s1, 90.0, 20.0, 0), &mut r);
+    f.input(&left(s1, 90.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s1, 90.0, 30.0, 10), &mut r);
+    f.input(&InputEvent::PointerLeave { surface: s1 }, &mut r);
+    f.drain();
+    let at = LogicalPoint::new(170.0, 60.0);
+    f.input(
+        &InputEvent::DragEnter {
+            surface: s2,
+            at,
+            kinds: vec![],
+        },
+        &mut r,
+    );
+    f.input(&InputEvent::DragMotion { surface: s2, at }, &mut r);
+    f.input(
+        &InputEvent::DragDrop {
+            surface: s2,
+            at,
+            payload: DropPayload::Node(from),
+        },
+        &mut r,
+    );
+    assert_eq!(only_drop(&mut f, boards[1]), 3);
+}
+
 /// A focused `input` that logic removes loses focus at once, although
 /// it still plays its exit pose (a ghost): keys no longer reach its id.
 #[test]

@@ -5,7 +5,7 @@ expression: shell.scene.render()
 bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Display" name="Top" bg=$surface.alpha(0.72) color=$fg radius=$radius.lg shadow=$elevation.md blur=24 font=$font.ui
   split pad=[0, $space.3]
     start gap=$space.3
-      row gap=$space.1
+      row gap=$space.1 drop_rows=true
         box width=24 size=8 bg=$accent radius=full hit=grow(6) enter={width: 0; opacity: 0} exit={width: 0; opacity: 0}
         box size=8 bg=$fg.muted radius=full hit=grow(6) enter={width: 0; opacity: 0} exit={width: 0; opacity: 0}
       text max_width=40% color=$fg.muted text="strand — design.md" ellipsis=end
@@ -17,7 +17,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Dis
               button text="‹"
               text grow=1 align=center text="October 2026"
               button text="›"
-            grid gap=$space.1 columns=7
+            grid gap=$space.1 columns=7 drop_rows=true
               text width=28 height=28 align=center color=$fg.faint text="28"
               text width=28 height=28 align=center color=$fg.faint text="29"
               text width=28 height=28 align=center color=$fg.faint text="30"
@@ -60,7 +60,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Dis
               text width=28 height=28 align=center color=$fg.faint text=" 6"
               text width=28 height=28 align=center color=$fg.faint text=" 7"
               text width=28 height=28 align=center color=$fg.faint text=" 8"
-    end gap=$space.3
+    end gap=$space.3 drop_rows=true
       row gap=$space.1
         icon source="audio-volume-medium-symbolic"
       row gap=$space.1
@@ -70,7 +70,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Dis
 bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 | Display" name="Top" bg=$surface.alpha(0.72) color=$fg radius=$radius.lg shadow=$elevation.md blur=24 font=$font.ui
   split pad=[0, $space.3]
     start gap=$space.3
-      row gap=$space.1
+      row gap=$space.1 drop_rows=true
         box size=8 bg=$fg.muted radius=full hit=grow(6) enter={width: 0; opacity: 0} exit={width: 0; opacity: 0}
       text max_width=40% color=$fg.muted text="strand — design.md" ellipsis=end
     center
@@ -81,7 +81,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
               button text="‹"
               text grow=1 align=center text="October 2026"
               button text="›"
-            grid gap=$space.1 columns=7
+            grid gap=$space.1 columns=7 drop_rows=true
               text width=28 height=28 align=center color=$fg.faint text="28"
               text width=28 height=28 align=center color=$fg.faint text="29"
               text width=28 height=28 align=center color=$fg.faint text="30"
@@ -124,7 +124,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
               text width=28 height=28 align=center color=$fg.faint text=" 6"
               text width=28 height=28 align=center color=$fg.faint text=" 7"
               text width=28 height=28 align=center color=$fg.faint text=" 8"
-    end gap=$space.3
+    end gap=$space.3 drop_rows=true
       row gap=$space.1
         icon source="audio-volume-medium-symbolic"
       row gap=$space.1
@@ -134,7 +134,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
 panel anchor=center layer=overlay keyboard=exclusive screens=focused open=true name="Launcher" two_way=[open] enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
   col width=600 pad=$space.3 gap=$space.2 bg=$surface.alpha(0.82) radius=$radius.xl shadow=$elevation.xl blur=32 clip=true
     input two_way=[text] text="" font=$font.title placeholder="Search apps" focus=true nav=node 53
-    list max_height=420 row_count=3 row_first=0
+    list max_height=420 row_count=3 row_first=0 drop_rows=true
       row pad=$space.2 gap=$space.3 align=center radius=$radius.md
         image size=32 source="firefox"
         col grow=1
@@ -151,7 +151,7 @@ panel anchor=center layer=overlay keyboard=exclusive screens=focused open=true n
           text text="Files" weight=600 marks=[] mark_color=$accent
           text color=$fg.muted text="" font=$font.caption ellipsis=end
 panel margin=$space.3 anchor=top_right layer=overlay keyboard=none screens=focused open=true name="Toasts"
-  col width=380 gap=$space.2
+  col width=380 gap=$space.2 drop_rows=true
     col pad=$space.3 gap=$space.2 bg=$surface.alpha(0.88) radius=$radius.lg border=template(1, #000000 <- $border) shadow=$elevation.lg blur=24 enter={x: 420; opacity: 0} exit={x: 420; opacity: 0; height: 0}
       row gap=$space.2
         image size=36 radius=$radius.sm source=""

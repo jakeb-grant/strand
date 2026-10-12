@@ -1490,17 +1490,20 @@ impl Ctx {
                 }
             }
         }
+        // (M4) An element whose direct child is a `for`: its children
+        // are rows with an index among them, draggable or not. (M5) Set
+        // on every such element, not only `on drop` targets, so render
+        // knows a nested list's items (a kanban column's cards) are that
+        // list's rows and not the outer list's (`drop_index`).
+        if e.children.iter().any(|n| matches!(n, Node::For(_))) {
+            self.em.borrow_mut().set(
+                id,
+                SceneProp::DropRows,
+                PropValue::Bool(true),
+                Transition::Instant,
+            );
+        }
         if !accepts.is_empty() {
-            // (M4) A target whose direct child is a `for`: its children
-            // are rows with an index among them, draggable or not.
-            if e.children.iter().any(|n| matches!(n, Node::For(_))) {
-                self.em.borrow_mut().set(
-                    id,
-                    SceneProp::DropRows,
-                    PropValue::Bool(true),
-                    Transition::Instant,
-                );
-            }
             self.em.borrow_mut().set(
                 id,
                 SceneProp::Accepts,
