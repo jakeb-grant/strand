@@ -3786,13 +3786,14 @@ impl super::Instance {
     /// (`strand_scene::drag_identity`: the type's name, then a keyed
     /// record's key or else the value) is the dragged one's. A row not
     /// mounted has no `drag:` value, so it is read off the mounted rows
-    /// ([`row_drag`]): what each row's (shallowest) `drag:` value is of
-    /// its item, the item itself, its key or one of its fields, the same
-    /// for every mounted row; the hidden items are judged by that. Rows
-    /// with no `drag:`, or whose `drag:` value is none of those, are never
-    /// copies, as render counts none of them while mounted either; a
-    /// mounted window says nothing of the rows before it only when its
-    /// rows' `drag:` values differ in kind (decisions.md m6-edges). Render
+    /// ([`row_drag`]): what one of each row's own `drag:` values
+    /// ([`row_drags`], render's walk) is of its item, the item itself,
+    /// its key or one of its fields, the same for every mounted row; the
+    /// hidden items are judged by that. Rows with no `drag:`, or none of
+    /// whose `drag:` values is one of those, are never copies, as render
+    /// counts none of them while mounted either; a mounted window says
+    /// nothing of the rows before it only when no one way fits all its
+    /// rows (decisions.md m6-edges). Render
     /// sends `before` only when it left out no mounted copy before the
     /// pointer and the source is not one of the list's rows. A list
     /// that is gone leaves `at` as it is.
@@ -3803,7 +3804,7 @@ impl super::Instance {
         };
         let types = &self.ctx.vm.prog.types;
         let all = win.all.borrow();
-        let mounted: Vec<(Value, Value)> = {
+        let mounted: Vec<(Value, Vec<Value>)> = {
             let em = self.ctx.em.borrow();
             let drags = self.ctx.drags.borrow();
             let shown = win.shown.get();
@@ -3812,8 +3813,8 @@ impl super::Instance {
                 .enumerate()
                 .filter_map(|(i, row)| {
                     let (_, item) = all.get(shown + i)?;
-                    let drag = shallowest_drag(&em, &drags, *row)?;
-                    Some((item.clone(), drag))
+                    let held = row_drags(&em, &drags, *row);
+                    (!held.is_empty()).then(|| (item.clone(), held))
                 })
                 .collect()
         };
@@ -3833,25 +3834,45 @@ impl super::Instance {
     }
 }
 
-/// (M6) The `drag:` value of a row with scene node `row`: the first
-/// `drag:` source met going down from it a level at a time (a dock
-/// item's icon, not a window dot of the `for` beside it), if any.
-fn shallowest_drag(
+/// (M6) The `drag:` values a row with scene node `row` holds as its
+/// list's item, by render's own walk (`drop_index`'s `copy`): every
+/// `drag:` source in the row, nearest first, except under another list
+/// inside it (a `list`, or an element holding a `for`'s rows,
+/// `Prop::DropRows`), where only that element's own content
+/// (`Prop::NotRow`) is the row's. So a dock item's window dots, the
+/// rows of its `for`, are not its `drag:` values whether they come
+/// before or after its icon (edges-r2-1).
+fn row_drags(
     em: &super::emit::Emitter,
     drags: &HashMap<strand_scene::NodeId, Value>,
     row: strand_scene::NodeId,
-) -> Option<Value> {
+) -> Vec<Value> {
+    let flag = |n: strand_scene::NodeId, p: SceneProp| {
+        matches!(
+            em.sent.get(&n).and_then(|m| m.get(&p)),
+            Some(PropValue::Bool(true))
+        )
+    };
+    let boundary = |n: strand_scene::NodeId| {
+        em.nodes.get(&n).is_some_and(|e| e.kind == NodeKind::List) || flag(n, SceneProp::DropRows)
+    };
+    let mut out = Vec::new();
     let mut level = vec![row];
     while !level.is_empty() {
-        if let Some(v) = level.iter().find_map(|n| drags.get(n)) {
-            return Some(v.clone());
-        }
+        out.extend(level.iter().filter_map(|n| drags.get(n)).cloned());
         level = level
             .iter()
-            .flat_map(|n| em.children_of(Some(*n)).iter().copied())
+            .flat_map(|&n| {
+                let inner = boundary(n);
+                em.children_of(Some(n))
+                    .iter()
+                    .copied()
+                    .filter(move |&c| !inner || flag(c, SceneProp::NotRow))
+                    .collect::<Vec<_>>()
+            })
             .collect();
     }
-    None
+    out
 }
 
 /// (M6) What a list row's `drag:` value is of its item.
@@ -3876,19 +3897,21 @@ impl RowDrag {
     }
 }
 
-/// (M6) The one [`RowDrag`] that gives each mounted row's `drag:` value
-/// (by typed identity, as render compares them) from its item, as
-/// `(item, drag)` pairs: the item before its key before a field. `None`
-/// when no row has a `drag:`, or none fits every row.
-fn row_drag(types: &crate::ty::TypeTable, mounted: &[(Value, Value)]) -> Option<RowDrag> {
+/// (M6) The one [`RowDrag`] that gives one of each mounted row's `drag:`
+/// values (by typed identity, as render compares them) from its item,
+/// as `(item, drags)` pairs: the item before its key before a field.
+/// `None` when no row has a `drag:`, or none fits every row.
+fn row_drag(types: &crate::ty::TypeTable, mounted: &[(Value, Vec<Value>)]) -> Option<RowDrag> {
     let (first, _) = mounted.first()?;
     let fields = first.as_record().map_or(0, |r| r.fields.len());
     let mut ways = vec![RowDrag::Item, RowDrag::Key];
     ways.extend((0..fields).map(RowDrag::Field));
     ways.into_iter().find(|way| {
-        mounted.iter().all(|(item, drag)| {
-            way.apply(types, item)
-                .is_some_and(|d| drag_identity(types, &d) == drag_identity(types, drag))
+        mounted.iter().all(|(item, drags)| {
+            way.apply(types, item).is_some_and(|d| {
+                let id = drag_identity(types, &d);
+                drags.iter().any(|g| drag_identity(types, g) == id)
+            })
         })
     })
 }

@@ -1150,13 +1150,19 @@ zero-width span (an insertion) is allowed.
   check (renamed into place or written in place) is kept and nothing
   checked before the swap is trusted after it; saved again before the
   swap back, the latest save is put in place and the one before it kept
-  at the write's own temporary name, which the refusal names. Where the
+  at the write's own temporary name, which the refusal names; each
+  exchange of the swap back is checked by what it brings out (inode and
+  text), never by what was found before it (m6-edges review round 2).
+  A file missing at the exchange (`ENOENT`: an editor moving it to a
+  backup before writing it anew) is refused as `Changed`. Where the
   filesystem has no exchange (`EINVAL`, `ENOSYS`) the target is checked
   (inode, hash) just before a plain rename, as before M6.
   `write::write_with(edit, Swap, hook)` is the test hook
   (`Swap::{Auto, Exchange, Rename}`; `hook(Moment, &Path)` at
-  `Moment::{Before, Window, Back}`: before the swap, after the last look
-  at the file before it is replaced, and before a swap back).
+  `Moment::{Before, Window, Back, Again}`: before the swap, after the
+  last look at the file before it is replaced, before a swap back, and
+  before each further exchange that puts a later save in place;
+  `Again` added in review round 2 so a test can save in that gap).
 - `strand-dev reference [dir]`: generates `docs/reference/` from the
   builtin and service schemas (`Schema::builtin_with` of every builtin
   service's text, never the plugin schema files, so the pages are the

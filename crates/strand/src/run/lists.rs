@@ -293,12 +293,12 @@ panel P {
         for i in 0..60 {
             src.push_str(&format!("Pin(app: \"p{i}\"), "));
         }
-        src.push_str("]\nexport state tiles: [Tile] key id = [");
+        src.push_str("]\nexport state wins: [text] = [\"w1\", \"w2\"]\nexport state tiles: [Tile] key id = [");
         for i in 0..60 {
             src.push_str(&format!("Tile(id: \"p{i}\"), "));
         }
         src.push_str(
-            "]\npanel P {\n  col {\n    list { for t in tiles { box { drag: t } } }\n    list { for p in pins { box { drag: p.app } } }\n    list { for p in pins { box { drag: p } } }\n    list { for p in pins { box { box { drag: p } } } }\n    list { for p in pins { box { } } }\n    list { for p in pins { box { drag: p.app } } }\n    list { for a in apps.all { box { drag: a } } }\n  }\n}\n",
+            "]\npanel P {\n  col {\n    list { for t in tiles { box { drag: t } } }\n    list { for p in pins { box { drag: p.app } } }\n    list { for p in pins { box { drag: p } } }\n    list { for p in pins { box { box { drag: p } } } }\n    list { for p in pins { box { } } }\n    list { for p in pins { box { drag: p.app } } }\n    list { for a in apps.all { box { drag: a } } }\n    list { for p in pins { col { for w in wins key w { box { drag: w } } box { drag: p } } } }\n  }\n}\n",
         );
         let mut map = SourceMap::new();
         map.add("dock.strand", src);
@@ -322,10 +322,10 @@ panel P {
         let mut m = SceneMirror::new();
         m.apply(&inst.flush().diff).unwrap();
         let lists = m.of_kind(NodeKind::List);
-        let [tiles, apps, from, pins, bare, keyed, installed] = lists[..] else {
+        let [tiles, apps, from, pins, bare, keyed, installed, dotted] = lists[..] else {
             panic!("{lists:?}");
         };
-        for l in [pins, bare, keyed, installed] {
+        for l in [pins, bare, keyed, installed, dotted] {
             set_window(&inst, l, 40, 20);
         }
         m.apply(&inst.flush().diff).unwrap();
@@ -356,5 +356,9 @@ panel P {
         assert_eq!(at(source(apps, "p5"), keyed), Value::int(42), "an app");
         assert_eq!(at(source(tiles, "p5"), keyed), Value::int(43), "a Tile");
         assert_eq!(at(source(from, "p5"), bare), Value::int(43), "no row drags");
+        // (edges-r2-1) A dock item whose window dots come before its icon:
+        // the dots are the `for`'s rows (`Prop::DropRows`), not the item's,
+        // and render's test reads only the icon (`Prop::NotRow`).
+        assert_eq!(at(source(from, "p5"), dotted), Value::int(42), "dots first");
     }
 }

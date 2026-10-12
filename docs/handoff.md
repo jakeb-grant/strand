@@ -314,17 +314,21 @@ recorded reason.
   and checks the file it took out (M6, m6-edges), so an editor's save
   after the check is kept. Two edges remain: on a filesystem without the
   exchange (`EINVAL`/`ENOSYS`) it falls back to the check just before a
-  plain rename, with that small window; and an editor already holding
+  plain rename, with that small window; an editor saving without pause
+  through eight exchanges is refused with a later save kept, not
+  necessarily with the latest in place; and an editor already holding
   the file open that writes into it after the check of the old file
   writes into the file being removed (no lock editors take could stop
   it). An answer to `inspect.pick` means logic told main, not that main
   has turned pick mode on (decisions.md m5-inspect; architecture.md).
 - Drag and drop: a copy of the dragged item above a windowed `list`'s
   mounted rows is left out of `at` by logic (M6, m6-edges), which reads
-  each row's `drag:` value off the mounted rows as its item, its key or
-  one of its fields; rows whose `drag:` value is none of those (or not
-  the same one for every mounted row) are never copies there, so `at`
-  stays one too high for them, as before M6.
+  each row's own `drag:` values off the mounted rows (render's walk: a
+  `list` or `for` inside the row, such as a dock item's window dots, is
+  not the row's, wherever it sits among the row's children) as its item,
+  its key or one of its fields; rows none of whose own `drag:` values is
+  one of those (or not the same one for every mounted row) are never
+  copies there, so `at` stays one too high for them, as before M6.
 - Notifications: `Notification.time` has no time of day yet (spec 1.2's
   `ActivationToken` is sent since S-platform, M5 wave 3).
 - Tray: Activate and ContextMenu get the press's output-logical point

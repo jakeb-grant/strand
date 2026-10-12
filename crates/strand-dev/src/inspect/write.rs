@@ -375,6 +375,11 @@ pub enum Moment {
     /// (exchange) The file swapped out was found changed and is not yet
     /// swapped back: the path is the file's, which holds the edit.
     Back,
+    /// (exchange) The swap back brought out a later save than the edit,
+    /// which is not yet exchanged into place: the path is the file's,
+    /// which holds the save before it (edges-r2-2). Called before each
+    /// such exchange.
+    Again,
 }
 
 /// Temporary names made by this process, so each write has its own and
@@ -492,6 +497,13 @@ pub fn write_with(
             }
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
+                // `RENAME_EXCHANGE` needs both names: an editor that
+                // moves the file to a backup and then writes it anew
+                // leaves no file for a moment, which is a change, as the
+                // check before a plain rename finds it (edges-r2-4).
+                if e == rustix::io::Errno::NOENT && fs::symlink_metadata(&real).is_err() {
+                    return Err(Refusal::Changed(edit.file.clone()));
+                }
                 return Err(io(&real, e.into()));
             }
         },
@@ -506,13 +518,12 @@ pub fn write_with(
             sync_dir(&dir);
             return Ok(real);
         }
-        hook(Moment::Back, &real);
-        let ours = Ours {
+        let ours = Version {
             dev: ours.dev(),
             ino: ours.ino(),
-            text: &out,
+            text: out,
         };
-        return Err(undo(edit, &real, &tmp, &dir, ours));
+        return Err(undo(edit, &real, &tmp, &dir, ours, &mut hook));
     }
     // No exchange: still the file that was hashed, holding what was
     // hashed, just before the rename (an editor's save in the window
@@ -555,68 +566,128 @@ fn temp_beside(
     }
 }
 
-/// The rewritten file as it was made: its inode and its text.
-struct Ours<'a> {
+/// A file as it was seen: its inode and its text.
+struct Version {
     dev: u64,
     ino: u64,
-    text: &'a [u8],
+    text: Vec<u8>,
 }
 
-impl Ours<'_> {
-    /// `p` is the rewritten file, holding only what was written.
+impl Version {
+    /// The file at `p` now (not through a link), or why it cannot be read.
+    fn of(p: &Path) -> std::io::Result<Version> {
+        let m = fs::symlink_metadata(p)?;
+        let text = fs::read(p)?;
+        Ok(Version {
+            dev: m.dev(),
+            ino: m.ino(),
+            text,
+        })
+    }
+
+    /// `p` is this file, holding only this text.
     fn at(&self, p: &Path) -> bool {
         fs::symlink_metadata(p).is_ok_and(|m| m.dev() == self.dev && m.ino() == self.ino)
             && fs::read(p).is_ok_and(|now| now == self.text)
     }
 }
 
+/// How many exchanges [`undo`] makes before it stops putting a later
+/// save in place (an editor saving without pause).
+const ROUNDS: usize = 8;
+
 /// (M6) The exchange put the edit at `real`, but the file it took out
 /// (now at `tmp`) was not the one hashed: an editor saved meanwhile.
-/// The two are swapped back and the edit is refused (`Changed`), unless
-/// the file was saved again before that, or the swap back fails: then
-/// nothing is removed, the latest save is put in place where it can be,
-/// and the refusal says what the file holds and where the other version
-/// is kept (each write has its own temporary name, so it blocks none).
-fn undo(edit: &Edit, real: &Path, tmp: &Path, dir: &Path, ours: Ours<'_>) -> Refusal {
+/// The two are swapped back, and what each exchange brings out of
+/// `real` is checked against what was expected there (the same inode,
+/// holding the same text): the edit, and the edit is refused
+/// (`Changed`) and removed. Anything else is a save made since, newer
+/// than what was just put in place, so it is exchanged in in turn
+/// (edges-r2-2): nothing found before an exchange is trusted after it.
+/// When the latest save is in place, the refusal says so and where the
+/// save before it is kept (each write has its own temporary name, so it
+/// blocks none). Nothing is removed but the edit, checked; a failed
+/// exchange is reported by what is at `real` then (edges-r2-3).
+fn undo(
+    edit: &Edit,
+    real: &Path,
+    tmp: &Path,
+    dir: &Path,
+    ours: Version,
+    hook: &mut impl FnMut(Moment, &Path),
+) -> Refusal {
     let kept = |why: String| Refusal::Io {
         file: edit.file.clone(),
         why,
     };
-    if let Err(e) = exchange(tmp, real) {
-        let other = match fs::symlink_metadata(tmp) {
-            Ok(_) => format!("the version saved meanwhile is kept at {}", tmp.display()),
-            Err(_) => format!("the version saved meanwhile is gone from {}", tmp.display()),
+    let at = tmp.display();
+    // What should be at `real`, and so come out of it.
+    let mut expect = ours;
+    for round in 0..ROUNDS {
+        // `tmp` is this write's own name: what is there goes in place.
+        let going = Version::of(tmp);
+        hook(
+            if round == 0 {
+                Moment::Back
+            } else {
+                Moment::Again
+            },
+            real,
+        );
+        let failed = match &going {
+            Ok(_) => exchange(tmp, real).err().map(|e| e.to_string()),
+            Err(e) => Some(e.to_string()),
         };
-        return kept(format!(
-            "it changed while the edit was written, and it could not be put back ({e}): \
-             the file holds the edit, and {other}"
-        ));
-    }
-    if ours.at(tmp) {
-        let _ = fs::remove_file(tmp);
-        sync_dir(dir);
-        return Refusal::Changed(edit.file.clone());
-    }
-    // Saved again between the check and the swap back (a new file
-    // renamed over the edit, or the edit written into): what came back
-    // is that latest save, and the file holds the save before it. Swap
-    // them, so the latest is in place.
-    match exchange(tmp, real) {
-        Ok(()) => {
-            sync_dir(dir);
-            kept(format!(
-                "it was saved twice while the edit was written: the edit is not applied, \
-                 the file holds the latest save, and the save before it is kept at {}",
-                tmp.display()
-            ))
+        if let Some(e) = failed {
+            let other = match fs::symlink_metadata(tmp) {
+                Ok(_) => format!("is kept at {at}"),
+                Err(_) => format!("is gone from {at}"),
+            };
+            let same = expect.at(real);
+            return kept(match (round, same) {
+                (0, true) => format!(
+                    "it changed while the edit was written, and it could not be put back ({e}): \
+                     the file holds the edit, and the version saved meanwhile {other}"
+                ),
+                (0, false) => format!(
+                    "it changed while the edit was written, and it could not be put back ({e}): \
+                     the edit is not applied, the file holds a save made since, and the version \
+                     saved before it {other}"
+                ),
+                (_, true) => format!(
+                    "it was saved more than once while the edit was written, and the latest save \
+                     could not be put in place ({e}): the edit is not applied, the file holds the \
+                     save before it, and the latest {other}"
+                ),
+                (_, false) => format!(
+                    "it was saved more than once while the edit was written ({e}): the edit is not \
+                     applied, the file holds a save made since, and an earlier one {other}"
+                ),
+            });
         }
-        Err(e) => kept(format!(
-            "it was saved twice while the edit was written, and the latest save could not \
-             be put in place ({e}): the edit is not applied, the file holds the save before \
-             it, and the latest is kept at {}",
-            tmp.display()
-        )),
+        if expect.at(tmp) {
+            if round == 0 {
+                let _ = fs::remove_file(tmp);
+                sync_dir(dir);
+                return Refusal::Changed(edit.file.clone());
+            }
+            sync_dir(dir);
+            return kept(format!(
+                "it was saved more than once while the edit was written: the edit is not \
+                 applied, the file holds the latest save, and the save before it is kept at {at}"
+            ));
+        }
+        // A save made since, now at `tmp`: what just went in is expected
+        // back from `real` when it goes in in turn.
+        if let Ok(v) = going {
+            expect = v;
+        }
     }
+    sync_dir(dir);
+    kept(format!(
+        "it kept changing while the edit was written: the edit is not applied, and a version \
+         saved meanwhile is kept at {at}"
+    ))
 }
 
 /// (M6) Swaps the names `a` and `b` atomically (`renameat2` with

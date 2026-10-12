@@ -361,10 +361,13 @@ fn a_second_save_before_the_swap_back_is_kept_in_place() {
                     fs::rename(&swp, p).unwrap();
                 }
                 Moment::Back => fs::write(p, &latest).unwrap(),
-                Moment::Before => {}
+                Moment::Before | Moment::Again => {}
             }
         });
-        assert_eq!(moments, [Moment::Before, Moment::Window, Moment::Back]);
+        assert_eq!(
+            moments,
+            [Moment::Before, Moment::Window, Moment::Back, Moment::Again]
+        );
         assert_eq!(
             fs::read_to_string(&f).unwrap(),
             latest,
@@ -377,7 +380,7 @@ fn a_second_save_before_the_swap_back_is_kept_in_place() {
             panic!("{r:?}");
         };
         assert_eq!(file, f);
-        assert!(why.contains("saved twice"), "{why}");
+        assert!(why.contains("saved more than once"), "{why}");
         assert!(why.contains("the edit is not applied"), "{why}");
         assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
         // The next edit is not blocked by the version kept.
@@ -412,7 +415,7 @@ fn a_swap_back_that_fails_says_the_edit_is_in_place() {
         Moment::Back => {
             fs::set_permissions(p.parent().unwrap(), fs::Permissions::from_mode(0o555)).unwrap()
         }
-        Moment::Before => {}
+        Moment::Before | Moment::Again => {}
     });
     fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(
@@ -427,4 +430,124 @@ fn a_swap_back_that_fails_says_the_edit_is_in_place() {
     };
     assert!(why.contains("the file holds the edit"), "{why}");
     assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
+}
+
+/// (M6, edges-r2-2) A third save lands after the swap back brought out
+/// the second, before that one is exchanged into place
+/// (`Moment::Again`): renamed over the file, or written into it. What
+/// the exchange then brings out is checked, not assumed to be the save
+/// before: the third, newest save ends in place, not hidden at the
+/// temporary name, and the refusal's account of the file holds.
+#[test]
+fn a_third_save_before_the_latest_goes_in_place_is_not_hidden() {
+    let d = dir("thrice");
+    let f = d.join("bar.strand");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let first = BAR.replace("width: 40", "width: 50");
+    let second = BAR.replace("width: 40", "width: 60");
+    let third = BAR.replace("width: 40", "width: 70");
+    let rename = |p: &Path, text: &str| {
+        let swp = p.with_extension("swp");
+        fs::write(&swp, text).unwrap();
+        fs::rename(&swp, p).unwrap();
+    };
+    for renamed in [true, false] {
+        fs::write(&f, BAR).unwrap();
+        let mut again = 0;
+        let r = write::write_with(&edit, Swap::Exchange, |m, p| match m {
+            Moment::Window => fs::write(p, &first).unwrap(),
+            Moment::Back => rename(p, &second),
+            Moment::Again => {
+                again += 1;
+                if again == 1 {
+                    if renamed {
+                        rename(p, &third);
+                    } else {
+                        fs::write(p, &third).unwrap();
+                    }
+                }
+            }
+            Moment::Before => {}
+        });
+        assert_eq!(fs::read_to_string(&f).unwrap(), third, "renamed: {renamed}");
+        let kept = others(&d, &f);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].1, second, "the save before the latest");
+        let Err(Refusal::Io { why, .. }) = r else {
+            panic!("{r:?}");
+        };
+        assert!(why.contains("the file holds the latest save"), "{why}");
+        assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
+        fs::remove_file(&kept[0].0).unwrap();
+    }
+}
+
+/// (M6, edges-r2-3) The swap back fails after the editor renamed a new
+/// save over the edit: the refusal says what the file holds then (that
+/// save, the edit not applied), not that it holds the edit, so the
+/// version kept is not mistaken for one to copy back over it.
+#[test]
+fn a_failed_swap_back_says_what_the_file_holds() {
+    if is_root() {
+        return;
+    }
+    let d = dir("noback-saved");
+    let f = d.join("bar.strand");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let saved = BAR.replace("width: 40", "width: 50");
+    let latest = BAR.replace("width: 40", "width: 60");
+    let r = write::write_with(&edit, Swap::Exchange, |m, p| match m {
+        Moment::Window => fs::write(p, &saved).unwrap(),
+        Moment::Back => {
+            let swp = p.with_extension("swp");
+            fs::write(&swp, &latest).unwrap();
+            fs::rename(&swp, p).unwrap();
+            fs::set_permissions(p.parent().unwrap(), fs::Permissions::from_mode(0o555)).unwrap()
+        }
+        Moment::Before | Moment::Again => {}
+    });
+    fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(fs::read_to_string(&f).unwrap(), latest);
+    let kept = others(&d, &f);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].1, saved);
+    let Err(Refusal::Io { why, .. }) = r else {
+        panic!("{r:?}");
+    };
+    assert!(!why.contains("the file holds the edit"), "{why}");
+    assert!(why.contains("the edit is not applied"), "{why}");
+    assert!(why.contains("the file holds a save made since"), "{why}");
+    assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
+}
+
+/// (M6, edges-r2-4) An editor that saves by moving the file to a backup
+/// and writing it anew leaves no file for a moment. An exchange in that
+/// moment finds no file to swap with (`ENOENT`): the edit is refused as
+/// `Changed`, as the check before a plain rename refuses it, not as an
+/// opaque I/O error, and nothing of the write is left.
+#[test]
+fn a_file_missing_at_the_swap_is_refused_as_changed() {
+    let d = dir("missing");
+    let f = d.join("bar.strand");
+    let bak = d.join("bar.strand~");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    for swap in [Swap::Auto, Swap::Exchange, Swap::Rename] {
+        fs::write(&f, BAR).unwrap();
+        let r = write::write_with(&edit, swap, |m, p| {
+            if m == Moment::Before {
+                fs::rename(p, &bak).unwrap();
+            }
+        });
+        assert_eq!(r, Err(Refusal::Changed(f.clone())), "{swap:?}");
+        assert!(!f.exists(), "{swap:?}");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), BAR, "{swap:?}");
+        assert_eq!(left(&d), 1, "{swap:?}");
+        fs::remove_file(&bak).unwrap();
+    }
 }

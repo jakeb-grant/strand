@@ -460,8 +460,10 @@ filling the monitor, the keyboard always).
   in a windowed `list` too, whose rows not mounted count as well
   (decisions.md m5-fixups, m6-edges). Known limit of the
   implementation, not of the language: a copy among a windowed list's
-  rows not mounted is seen only when the rows' `drag:` value is their
-  item, its key or one of its fields (the same for every row), so for
+  rows not mounted is seen only when one of each row's own `drag:`
+  values (not those of a `list` or `for` inside the row, such as a dock
+  item's window dots) is its item, its key or one of its fields (the
+  same one for every row), so for
   other rows `at` is one too high when the copy is scrolled out above
   the drop point. Values from other programs (files, apps, text)
   arrive as typed `Drop` values.
