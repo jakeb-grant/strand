@@ -87,7 +87,7 @@ mod shell;
 mod sleep;
 mod trim;
 
-pub use logic::{Live, OwnWrites, Switched, logic};
+pub use logic::{Live, OwnWrites, Switched, Tokens, logic};
 /// The `file` element's write (a link followed, the target's mode kept),
 /// which `strand export -o` shares.
 pub(crate) use outputs::write_through;
@@ -209,8 +209,16 @@ pub enum ToLogic {
     /// A monitor unplugged 30 s ago did not come back.
     Forget(String),
     /// An input event on a node (`on click`, `on scroll(dy, dx)`, …),
-    /// delivered to its nearest handler.
-    Event { node: NodeId, event: NodeEvent },
+    /// delivered to its nearest handler; (M5) `input` is the press that
+    /// caused it, its surface and compositor serial (none for a scroll,
+    /// a drop or a dismiss with no press of its own), which the
+    /// handler's actions ask an xdg-activation token with
+    /// (`Instance::event_with`).
+    Event {
+        node: NodeId,
+        event: NodeEvent,
+        input: Option<strand_compiler::vm::InputCtx>,
+    },
     /// A surface's node is hovered or pressed (`on`) or no longer.
     Flag {
         node: NodeId,
@@ -278,6 +286,49 @@ pub enum ToLogic {
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,
+}
+
+/// (M5) A services' request for an xdg-activation token, to the main
+/// thread: the press's surface and serial, and where the token goes.
+#[derive(Debug)]
+pub struct TokenAsk {
+    surface: u32,
+    serial: u32,
+    answer: strand_services::activation::TokenAnswer,
+}
+
+/// (M5) The token asks waiting for the main thread: a queue and a ping
+/// rather than a calloop channel of their own (a channel's generic
+/// source costs about 11 KB of `.text`; decisions.md m5-platform).
+pub(crate) type TokenAsks = std::sync::Arc<std::sync::Mutex<Vec<TokenAsk>>>;
+
+/// (M5) The services' token source: each ask queued on `asks`, main
+/// woken by `wake`, and answered when main drains the queue
+/// ([`take_token_asks`]); main gone, the queue and the answers in it
+/// are dropped and the futures answer `None`.
+pub(crate) fn token_source(
+    asks: TokenAsks,
+    wake: calloop::ping::Ping,
+) -> strand_services::activation::TokenSource {
+    std::sync::Arc::new(move |surface, serial| {
+        let (answer, token) = strand_services::activation::token_reply();
+        if let Ok(mut q) = asks.lock() {
+            q.push(TokenAsk {
+                surface,
+                serial,
+                answer,
+            });
+        }
+        wake.ping();
+        token
+    })
+}
+
+/// (M5) The asks queued so far, taken.
+pub(crate) fn take_token_asks(asks: &TokenAsks) -> Vec<TokenAsk> {
+    asks.lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
 }
 
 /// (M5) What logic tells or asks the main thread (docs/architecture.md,
@@ -530,6 +581,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         events_to: None,
         own_writes: compiler.own_write_hook(),
         to_main: None,
+        tokens: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
@@ -567,6 +619,12 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // frames (`strand report`).
     let (to_main, from_logic) = calloop::channel::channel::<ToMain>();
     live.to_main = Some(to_main);
+    // (M5) xdg-activation tokens: the services ask from the logic
+    // thread, main asks the compositor and answers (`State::
+    // activation_token`).
+    let token_asks = TokenAsks::default();
+    let (token_ping, token_rx) = calloop::ping::make_ping()?;
+    live.tokens = Some(Tokens(token_source(token_asks.clone(), token_ping)));
     // (M4) The GPU thread's replies wake the loop; the loop pumps them
     // after every dispatch (`run/gpu.rs`).
     #[cfg(feature = "gpu")]
@@ -626,6 +684,15 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
                 Ok(PostAction::Continue)
             },
         )
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(token_rx, move |_, _, state| {
+            for ask in take_token_asks(&token_asks) {
+                state.activation_token(SurfaceId(ask.surface), ask.serial, move |t| {
+                    ask.answer.send(t)
+                });
+            }
+        })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let answer = to_logic.clone();
     handle

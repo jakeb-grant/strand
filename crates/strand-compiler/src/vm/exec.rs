@@ -37,6 +37,10 @@ pub struct EventCtx {
     /// `propagate()` already passed this event on (a second call, or a
     /// second handler of the same event on the element, does nothing).
     pub propagated: std::cell::Cell<bool>,
+    /// (M5) The press that caused the event (`Instance::event_with`):
+    /// the handler's actions get it until its first `await`
+    /// ([`super::action_ctx`]).
+    pub input: Option<super::InputCtx>,
 }
 
 impl EventCtx {
@@ -52,6 +56,7 @@ impl EventCtx {
             event: event.into(),
             args,
             propagated: std::cell::Cell::new(false),
+            input: None,
         }
     }
 }
@@ -353,14 +358,9 @@ impl Machine {
                             Value::Service(s) => super::ActionTarget::Service(s),
                             v => super::ActionTarget::Item(v),
                         };
-                        // The empty context until the VM records handler input (M5).
-                        vm.host.action(
-                            rt,
-                            target,
-                            name,
-                            &a.into_vec(),
-                            super::ActionCtx::default(),
-                        )?;
+                        // (M5) The running handler's invocation and input.
+                        vm.host
+                            .action(rt, target, name, &a.into_vec(), super::action_ctx())?;
                         Value::Unit
                     } else {
                         builtins::method(vm, rt, &recv, name, a)?

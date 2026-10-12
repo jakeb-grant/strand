@@ -304,7 +304,7 @@ impl VmHooks for Ctx {
             .get(&scene)
             .and_then(|e| e.parent.filter(|_| !e.surface));
         if let Some(p) = parent {
-            self.route(rt, p, &ctx.event, ctx.args.clone());
+            self.route(rt, p, &ctx.event, ctx.args.clone(), ctx.input);
         }
     }
 }
@@ -424,7 +424,14 @@ impl Ctx {
     }
 
     /// Deliver `event` to `node` or its nearest ancestor with a handler.
-    fn route(&self, rt: &Runtime, node: NodeId, event: &str, args: Vec<Value>) -> bool {
+    fn route(
+        &self,
+        rt: &Runtime,
+        node: NodeId,
+        event: &str,
+        args: Vec<Value>,
+        input: Option<crate::vm::InputCtx>,
+    ) -> bool {
         let mut cur = Some(node);
         while let Some(n) = cur {
             let (queues, state, parent) = {
@@ -443,7 +450,9 @@ impl Ctx {
             if !queues.is_empty() {
                 // One context for every handler of the event on this
                 // element: `propagate()` passes it on once.
-                let ctx = Rc::new(EventCtx::new(Some(state), Some(n), event, args));
+                let mut ctx = EventCtx::new(Some(state), Some(n), event, args);
+                ctx.input = input;
+                let ctx = Rc::new(ctx);
                 let mut ok = false;
                 for q in queues {
                     ok |= q.emit(rt, ctx.clone()).is_ok();
@@ -1563,7 +1572,22 @@ impl Instance {
     /// Deliver `on <event>` to `node`, or to its nearest ancestor that
     /// handles it. Returns whether a handler got it.
     pub fn event(&self, node: NodeId, event: &str, args: Vec<Value>) -> bool {
-        self.ctx.route(&self.rt, node, event, args)
+        self.ctx.route(&self.rt, node, event, args, None)
+    }
+
+    /// (M5) [`Instance::event`] for an event a press caused: `input` (its
+    /// surface and compositor serial) goes to the actions the handler
+    /// calls before its first `await`, which ask an xdg-activation token
+    /// with it (`strand_core::ActionCtx`; docs/architecture.md, "Handler
+    /// input context").
+    pub fn event_with(
+        &self,
+        node: NodeId,
+        event: &str,
+        args: Vec<Value>,
+        input: Option<crate::vm::InputCtx>,
+    ) -> bool {
+        self.ctx.route(&self.rt, node, event, args, input)
     }
 
     /// Render reports a node flag (`hover` and friends).

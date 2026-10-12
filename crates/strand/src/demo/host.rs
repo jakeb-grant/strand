@@ -105,6 +105,15 @@ pub(crate) struct Forward {
     /// sent, which a `PickEvent::Ended` carries back so logic can tell
     /// an end it has since overtaken.
     pick_seq: u64,
+    /// (M5) The compositor serial of the last button or key press
+    /// (`SurfaceHost::press_serial`): the press the node events it
+    /// causes carry to logic, for xdg-activation tokens.
+    press: Option<u32>,
+    /// (M5) `press` was told since the last input event: the next event
+    /// is that press. A click away carries a press only then (the
+    /// catcher's, told before it); one without (a popup the compositor
+    /// dismissed, the user having clicked another client) carries none.
+    fresh: bool,
 }
 
 impl Forward {
@@ -116,7 +125,21 @@ impl Forward {
             router: Router::new(),
             picking_on: None,
             pick_seq: 0,
+            press: None,
+            fresh: false,
         }
+    }
+
+    /// (M5) A button or key press with `serial` comes next
+    /// (`SurfaceHost::press_serial`).
+    pub(crate) fn pressed(&mut self, serial: u32) {
+        self.press = Some(serial);
+        self.fresh = true;
+    }
+
+    /// (M5) An input event went elsewhere (the fallback lock took it).
+    pub(crate) fn passed(&mut self) {
+        self.fresh = false;
     }
 
     fn send(&self, msg: ToLogic) {
@@ -217,18 +240,46 @@ impl Forward {
     /// what it asks for: flags, node events (bubbled by logic to the
     /// nearest handler) and two-way writes.
     pub(crate) fn input(&mut self, event: &InputEvent, scene: &mut dyn InputScene) {
+        let press = press_of(event, self.press, std::mem::take(&mut self.fresh));
         for intent in self.router.handle(event, scene) {
-            if let Some(msg) = to_logic(intent) {
+            if let Some(msg) = to_logic(intent, press) {
                 self.send(msg);
             }
         }
     }
 }
 
-/// What routing asks of logic, as the logic thread's message. `None`
-/// for an intent logic cannot take yet: a drop (M4), until S-lists adds
-/// `NodeEvent::Drop` on the logic side.
-fn to_logic(intent: Intent) -> Option<ToLogic> {
+/// (M5) The press whose handlers `event`'s node events run for, with its
+/// serial (`serial`, the last press's): a button's press or release (the
+/// click its press started), a key press or its repeat, a click away
+/// that is a press (`fresh`: its serial was told just before it, the
+/// catcher's). None for a scroll, a drag, a key release, or a click away
+/// the compositor sent (a popup's `done`: the press was on another
+/// client, and `serial` an older one of ours).
+fn press_of(
+    event: &InputEvent,
+    serial: Option<u32>,
+    fresh: bool,
+) -> Option<strand_compiler::vm::InputCtx> {
+    let surface = match event {
+        InputEvent::PointerButton { surface, .. } => *surface,
+        InputEvent::ClickAway { surface } if fresh => *surface,
+        InputEvent::Key { surface, key } if key.state == strand_scene::ButtonState::Pressed => {
+            *surface
+        }
+        _ => return None,
+    };
+    Some(strand_compiler::vm::InputCtx {
+        surface: surface.0,
+        serial: serial?,
+    })
+}
+
+/// What routing asks of logic, as the logic thread's message, its node
+/// events carrying `press` (M5). `None` for an intent logic cannot take
+/// yet: a drop (M4), until S-lists adds `NodeEvent::Drop` on the logic
+/// side.
+fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Option<ToLogic> {
     Some(match intent {
         Intent::Flag { node, flag, on } => ToLogic::Flag {
             node,
@@ -242,6 +293,7 @@ fn to_logic(intent: Intent) -> Option<ToLogic> {
         },
         Intent::Event { node, event } => ToLogic::Event {
             node,
+            input: press,
             event: match event {
                 RouteEvent::Click => NodeEvent::Click,
                 RouteEvent::Secondary => NodeEvent::Secondary,
@@ -476,7 +528,7 @@ impl Host {
         };
         f.pick_seq = seq;
         for intent in f.router.set_picking(on, &mut self.renderer) {
-            if let Some(msg) = to_logic(intent) {
+            if let Some(msg) = to_logic(intent, None) {
                 f.send(msg);
             }
         }
@@ -547,7 +599,7 @@ impl Host {
     pub(crate) fn settle_input(&mut self) {
         if let Some(f) = &mut self.logic {
             for intent in f.router.settle(&mut self.renderer) {
-                if let Some(msg) = to_logic(intent) {
+                if let Some(msg) = to_logic(intent, None) {
                     f.send(msg);
                 }
             }
@@ -878,6 +930,12 @@ impl SurfaceHost for Host {
         strand_scene::drag_export(self.renderer.tree().get(node)?.get(Prop::Drag)?)
     }
 
+    fn press_serial(&mut self, serial: u32) {
+        if let Some(f) = &mut self.logic {
+            f.pressed(serial);
+        }
+    }
+
     fn input(&mut self, event: &InputEvent) {
         // Tests wait on this line before clicking a surface just mapped.
         if let InputEvent::PointerEnter { surface, .. } = event {
@@ -885,6 +943,9 @@ impl SurfaceHost for Host {
         }
         // The fallback lock takes its surface's input (`run/lock.rs`).
         if self.lock.input(event) {
+            if let Some(f) = &mut self.logic {
+                f.passed();
+            }
             if let Some(p) = &self.wake {
                 p.ping();
             }
@@ -1317,8 +1378,9 @@ mod tests {
             },
         };
         assert_eq!(
-            to_logic(drop),
+            to_logic(drop, None),
             Some(ToLogic::Event {
+                input: None,
                 node,
                 event: NodeEvent::Drop { payload, at: 3 },
             })
@@ -1409,7 +1471,11 @@ mod tests {
             f.input(&e, &mut HitOnly(root_only));
         }
         let flag = |flag, on| ToLogic::Flag { node, flag, on };
-        let event = |event: NodeEvent| ToLogic::Event { node, event };
+        let event = |event: NodeEvent| ToLogic::Event {
+            input: None,
+            node,
+            event,
+        };
         assert_eq!(
             drain(&mut el),
             vec![
@@ -1433,6 +1499,137 @@ mod tests {
             &mut HitOnly(root_only),
         );
         assert!(drain(&mut el).is_empty());
+    }
+
+    /// (M5, S-platform) A node event carries the press that caused it:
+    /// a click its press's serial (told before the press), a secondary
+    /// click its own, a key press its own; a scroll, and a key release,
+    /// none.
+    #[test]
+    fn a_press_serial_rides_the_events_it_causes() {
+        use strand_compiler::vm::InputCtx;
+        let (mut f, mut el) = setup();
+        let s = SurfaceId(7);
+        let node = NodeId::new(3, 0);
+        f.attached(s, node);
+        let at = LogicalPoint::new(10.0, 5.0);
+        let button = |b, state| InputEvent::PointerButton {
+            surface: s,
+            position: at,
+            button: b,
+            state,
+            time: 0,
+        };
+        let root_only = |_: SurfaceId, _: LogicalPoint| Vec::new();
+        // What `SurfaceHost::press_serial` sets, before each press.
+        f.pressed(41);
+        f.input(
+            &button(button::LEFT, ButtonState::Pressed),
+            &mut HitOnly(root_only),
+        );
+        f.input(
+            &button(button::LEFT, ButtonState::Released),
+            &mut HitOnly(root_only),
+        );
+        f.pressed(42);
+        f.input(
+            &button(button::RIGHT, ButtonState::Pressed),
+            &mut HitOnly(root_only),
+        );
+        f.input(
+            &button(button::RIGHT, ButtonState::Released),
+            &mut HitOnly(root_only),
+        );
+        f.input(
+            &InputEvent::PointerAxis {
+                surface: s,
+                position: at,
+                horizontal: AxisDelta::default(),
+                vertical: AxisDelta {
+                    pixels: 15.0,
+                    value120: 120,
+                    stop: false,
+                },
+                source: None,
+                time: 0,
+            },
+            &mut HitOnly(root_only),
+        );
+        let events: Vec<(NodeEvent, Option<InputCtx>)> = drain(&mut el)
+            .into_iter()
+            .filter_map(|m| match m {
+                ToLogic::Event { event, input, .. } => Some((event, input)),
+                _ => None,
+            })
+            .collect();
+        let press = |serial| Some(InputCtx { surface: 7, serial });
+        assert_eq!(
+            events,
+            [
+                (NodeEvent::Click, press(41)),
+                (NodeEvent::Secondary, press(42)),
+                (NodeEvent::Scroll { dy: 1.0, dx: 0.0 }, None),
+            ]
+        );
+        let key = |state| InputEvent::Key {
+            surface: s,
+            key: strand_scene::KeyInput {
+                name: "Return".into(),
+                text: String::new(),
+                state,
+                repeat: false,
+                modifiers: Default::default(),
+                time: 0,
+            },
+        };
+        assert_eq!(
+            press_of(&key(ButtonState::Pressed), Some(43), true),
+            press(43)
+        );
+        assert_eq!(press_of(&key(ButtonState::Released), Some(43), true), None);
+        assert_eq!(
+            press_of(&key(ButtonState::Pressed), None, true),
+            None,
+            "no serial yet"
+        );
+    }
+
+    /// (M5, S-platform) A click away on the catcher is a press of ours
+    /// (its serial told just before it) and carries it; a click away the
+    /// compositor sent (a popup's `done`, the user having clicked another
+    /// client) carries none, not the last press of ours.
+    #[test]
+    fn only_a_click_away_that_is_a_press_carries_one() {
+        use strand_compiler::vm::InputCtx;
+        let s = SurfaceId(7);
+        let away = InputEvent::ClickAway { surface: s };
+        assert_eq!(
+            press_of(&away, Some(50), true),
+            Some(InputCtx {
+                surface: 7,
+                serial: 50
+            })
+        );
+        assert_eq!(press_of(&away, Some(50), false), None);
+
+        // Through `Forward`: the freshness goes with the first event.
+        let (mut f, _el) = setup();
+        f.pressed(51);
+        let root_only = |_: SurfaceId, _: LogicalPoint| Vec::new();
+        f.input(
+            &InputEvent::PointerButton {
+                surface: s,
+                position: LogicalPoint::new(1.0, 1.0),
+                button: button::LEFT,
+                state: ButtonState::Pressed,
+                time: 0,
+            },
+            &mut HitOnly(root_only),
+        );
+        assert!(!f.fresh, "the press was its event");
+        assert_eq!(press_of(&away, f.press, f.fresh), None);
+        f.pressed(52);
+        assert!(f.fresh);
     }
 
     /// Monitors are `screens` in plug order; one that comes back within
@@ -1803,6 +2000,7 @@ mod tests {
         let sent = drain(&mut el);
         assert!(
             sent.contains(&ToLogic::Event {
+                input: None,
                 node: col,
                 event: NodeEvent::Drop {
                     payload: DropPayload::Node(rows[0]),

@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use strand_core::{Error, NodeId, Runtime, Scope, Timer};
+use strand_core::{ActionCtx, Error, NodeId, Runtime, Scope, Timer};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Buses;
@@ -223,7 +223,33 @@ trait Member {
     fn stop_now(&self);
     /// The thread of its last run on a thread of its own, if any.
     fn take_thread(&self) -> Option<JoinHandle<()>>;
+    /// (M5) Its key in [`Registry::bounced`].
+    fn id(&self) -> u64;
+    /// (M5) A run up to take a handed-back action ([`ClientInner::with_run`]:
+    /// started for it if need be).
+    fn ready_run(&self, rt: &Runtime) -> Result<(), Error>;
+    /// (M5) Sends a handed-back message to the run in place; gives it
+    /// back when that run cannot take it (stopped, or its body ended and
+    /// its `Ended` is not in yet).
+    fn send_back(&self, msg: BouncedMsg) -> Result<(), BouncedMsg>;
+    /// Wakes its run (a service on a thread of its own) for messages sent.
+    fn poke_run(&self);
 }
+
+/// A handed-back message: a service's `(Msg<S>, token)`, type-erased so
+/// one queue holds every service's.
+type BouncedMsg = Box<dyn std::any::Any + Send>;
+
+/// (M5) An action held for its xdg-activation token that was handed back
+/// to the logic thread, for the member keyed `member`.
+struct Bounce {
+    member: u64,
+    msg: BouncedMsg,
+}
+
+/// [`Registry::bounced`]: one queue for every service, in the order the
+/// actions were handed back.
+type Bounced = Arc<Mutex<std::collections::VecDeque<Bounce>>>;
 
 struct Registry {
     buses: Buses,
@@ -233,6 +259,17 @@ struct Registry {
     anchor: Scope,
     /// Why services failed, not yet taken by the host.
     diagnostics: RefCell<Vec<ServiceDiagnostic>>,
+    /// (M5) Actions held behind an xdg-activation token wait.
+    order: crate::activation::Order,
+    /// (M5) Actions that waited behind a token and found the run they
+    /// were meant for gone (it ended or was stopped meanwhile), every
+    /// service's in one queue in the order they were handed back:
+    /// [`Services::pump`] sends them on ([`Registry::redeliver`]). While
+    /// it holds anything, every action (any service's, held or sent now)
+    /// joins it at the back, so none overtakes one handed back.
+    bounced: Bounced,
+    /// The next member's key ([`Member::id`]).
+    next_id: Cell<u64>,
 }
 
 /// A service's run failed (its body returned an error, or panicked), or
@@ -314,7 +351,18 @@ impl Services {
             members: RefCell::new(Vec::new()),
             anchor,
             diagnostics: RefCell::new(Vec::new()),
+            order: crate::activation::Order::default(),
+            bounced: Arc::default(),
+            next_id: Cell::new(0),
         }))
+    }
+
+    /// (M5) Where actions that raise an app ([`crate::Service::ACTIVATION`])
+    /// get their xdg-activation token: the binary's channel to the main
+    /// thread (`None`: no tokens; such actions go at once without one).
+    /// See the `activation` module.
+    pub fn set_token_source(&self, source: Option<crate::activation::TokenSource>) {
+        self.0.order.set_source(source);
     }
 
     /// The buses services use.
@@ -341,8 +389,11 @@ impl Services {
             Ok((scope, cells)) => (Some(scope), cells),
             Err(_) => (None, S::Cells::new(rt, S::NAME, &S::default())),
         };
+        let id = self.0.next_id.get();
+        self.0.next_id.set(id + 1);
         let inner = Rc::new_cyclic(|me| ClientInner::<S> {
             me: me.clone(),
+            id,
             name: Rc::from(name),
             scope: Cell::new(scope),
             reg: Rc::downgrade(&self.0),
@@ -383,7 +434,8 @@ impl Services {
         for m in members {
             any |= m.pump(rt);
         }
-        any
+        // Envelopes first: a run whose `Ended` just came in is replaced.
+        any | self.0.redeliver(rt)
     }
 
     /// Pump until every running service said it is ready (its first read
@@ -511,7 +563,8 @@ fn join_all(threads: Vec<JoinHandle<()>>) {
 /// One run of a service: its channels.
 struct Run<S: Service> {
     rx: std::sync::mpsc::Receiver<Envelope<S::Patch>>,
-    tx: mpsc::UnboundedSender<Msg<S>>,
+    /// Messages, each with the xdg-activation token it carries.
+    tx: mpsc::UnboundedSender<(Msg<S>, Option<String>)>,
     /// Ends the body on the shared runtime.
     stop: Option<oneshot::Sender<()>>,
     notify: Notify,
@@ -523,21 +576,31 @@ struct Run<S: Service> {
     noticed: bool,
     /// When it started (the logic clock).
     started: Duration,
+    /// (M5) Set, under its lock, when the run is stopped: an action
+    /// held for its token that goes after it is handed back
+    /// ([`Registry::bounced`]) instead of sent to a body that is
+    /// going away.
+    stopped: Arc<Mutex<bool>>,
 }
 
 impl<S: Service> Run<S> {
     fn send(&self, m: Msg<S>) -> bool {
-        let ok = self.tx.send(m).is_ok();
+        let ok = self.tx.send((m, None)).is_ok();
         self.poke();
         ok
     }
 
     fn poke(&self) {
-        if let Ok(n) = self.notify.lock()
-            && let Some(f) = n.as_ref()
-        {
-            f();
-        }
+        poke(&self.notify);
+    }
+}
+
+/// Wakes a service on a thread of its own for a message just sent.
+fn poke(notify: &Notify) {
+    if let Ok(n) = notify.lock()
+        && let Some(f) = n.as_ref()
+    {
+        f();
     }
 }
 
@@ -546,6 +609,8 @@ pub type Observer = Box<dyn Fn(&Runtime, &Applied)>;
 
 struct ClientInner<S: Service> {
     me: Weak<ClientInner<S>>,
+    /// Its key in [`Registry::bounced`].
+    id: u64,
     /// The instance's name: `S::NAME`, or a no-code service's declared
     /// name (its log lines and [`ServiceDiagnostic`]s say it).
     name: Rc<str>,
@@ -571,6 +636,62 @@ struct ClientInner<S: Service> {
     last_error: RefCell<Option<String>>,
     /// The notice last reported ([`ServiceDiagnostic`]).
     last_notice: RefCell<Option<String>>,
+}
+
+impl Registry {
+    /// Sends the actions [`Registry::bounced`] holds on, in order: each to
+    /// its service's run up now ([`Member::ready_run`], started for it if
+    /// need be), under the queue's lock so a held action that goes
+    /// meanwhile on the shared runtime waits for them and goes after
+    /// them. One the run in place cannot take (its body ended and its
+    /// `Ended` is not in yet) stays, with everything after it, for the
+    /// next pump; one that cannot be sent at all (a body waiting out its
+    /// retry backoff, as [`Client::act`] refuses, or a service taken
+    /// away) is dropped with a warning.
+    fn redeliver(&self, rt: &Runtime) -> bool {
+        let mut any = false;
+        loop {
+            let Some(id) = lock(&self.bounced).front().map(|b| b.member) else {
+                return any;
+            };
+            any = true;
+            let member = self.members.borrow().iter().find(|m| m.id() == id).cloned();
+            let ready = match &member {
+                Some(m) => m.ready_run(rt),
+                None => Err(Error::failed("its service was removed".to_string())),
+            };
+            let Some(m) = member.filter(|_| ready.is_ok()) else {
+                lock(&self.bounced).pop_front();
+                if let Err(e) = ready {
+                    log::warn!("an action held for its activation token was lost: {e}");
+                }
+                continue;
+            };
+            // Lock order: the queue, then a run's `stopped` (as the held
+            // actions' `deliver` takes them). Only this thread pops, so
+            // the front is still `id`'s.
+            let mut q = lock(&self.bounced);
+            let mut blocked = false;
+            while q.front().is_some_and(|b| b.member == id) {
+                let Some(b) = q.pop_front() else { break };
+                if let Err(msg) = m.send_back(b.msg) {
+                    q.push_front(Bounce { member: id, msg });
+                    blocked = true;
+                    break;
+                }
+            }
+            drop(q);
+            m.poke_run();
+            if blocked {
+                return any;
+            }
+        }
+    }
+}
+
+/// A lock that a panic elsewhere does not poison for us.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl<S: Service> ClientInner<S> {
@@ -737,12 +858,14 @@ impl<S: Service> ClientInner<S> {
             noticed: false,
             ended: false,
             started: rt.now(),
+            stopped: Arc::default(),
         });
     }
 
     fn stop(&self) {
         let run = self.run.borrow_mut().take();
         if let Some(mut run) = run {
+            *run.stopped.lock().unwrap_or_else(|e| e.into_inner()) = true;
             if let Some(s) = run.stop.take() {
                 let _ = s.send(());
             }
@@ -954,6 +1077,62 @@ impl<S: Service> Member for ClientInner<S> {
     }
 
     fn pump(&self, rt: &Runtime) -> bool {
+        self.pump_envelopes(rt)
+    }
+
+    fn waiting(&self) -> bool {
+        self.run.borrow().as_ref().is_some_and(|r| !r.ready)
+    }
+
+    fn stop_now(&self) {
+        self.stop();
+        self.resolve();
+    }
+
+    fn take_thread(&self) -> Option<JoinHandle<()>> {
+        self.last_thread.borrow_mut().take()
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn ready_run(&self, rt: &Runtime) -> Result<(), Error> {
+        match self.me.upgrade() {
+            Some(me) => me.with_run(rt, |_| ()),
+            None => Err(not_running(&self.name)),
+        }
+    }
+
+    fn send_back(&self, msg: BouncedMsg) -> Result<(), BouncedMsg> {
+        let msg = match msg.downcast::<(Msg<S>, Option<String>)>() {
+            Ok(m) => *m,
+            Err(_) => {
+                log::warn!(
+                    "service `{}`: a handed-back action of another type",
+                    self.name
+                );
+                return Ok(());
+            }
+        };
+        match self.run.borrow().as_ref() {
+            Some(run) if !*lock(&run.stopped) => {
+                run.tx.send(msg).map_err(|e| Box::new(e.0) as BouncedMsg)
+            }
+            _ => Err(Box::new(msg)),
+        }
+    }
+
+    fn poke_run(&self) {
+        if let Some(run) = self.run.borrow().as_ref() {
+            run.poke();
+        }
+    }
+}
+
+impl<S: Service> ClientInner<S> {
+    /// Applies every envelope the run has sent.
+    fn pump_envelopes(&self, rt: &Runtime) -> bool {
         let mut any = false;
         loop {
             let next = match self.run.borrow().as_ref() {
@@ -1041,19 +1220,6 @@ impl<S: Service> Member for ClientInner<S> {
                 }
             }
         }
-    }
-
-    fn waiting(&self) -> bool {
-        self.run.borrow().as_ref().is_some_and(|r| !r.ready)
-    }
-
-    fn stop_now(&self) {
-        self.stop();
-        self.resolve();
-    }
-
-    fn take_thread(&self) -> Option<JoinHandle<()>> {
-        self.last_thread.borrow_mut().take()
     }
 }
 
@@ -1278,9 +1444,83 @@ impl<S: Service> Client<S> {
 
     /// Send an action (a stopped service starts for it).
     pub fn act(&self, rt: &Runtime, action: S::Action) -> Result<(), Error> {
-        match self.0.with_run(rt, |run| run.send(Msg::Action(action)))? {
-            true => Ok(()),
-            false => Err(not_running(&self.0.name)),
+        self.act_with(rt, action, ActionCtx::default(), false)
+    }
+
+    /// (M5) [`Client::act`] from the handler `ctx` describes: sent now,
+    /// or behind its invocation's xdg-activation token wait, with a
+    /// token of its own when `token` (one of [`Service::ACTIVATION`])
+    /// and the handler has a press (the `activation` module).
+    pub fn act_with(
+        &self,
+        rt: &Runtime,
+        action: S::Action,
+        ctx: ActionCtx,
+        token: bool,
+    ) -> Result<(), Error> {
+        let reg = self.0.reg.upgrade();
+        // Actions handed back before this one go first.
+        if let Some(reg) = &reg {
+            reg.redeliver(rt);
+        }
+        let (tx, notify, stopped) = self.0.with_run(rt, |run| {
+            (run.tx.clone(), run.notify.clone(), run.stopped.clone())
+        })?;
+        // While anything is handed back ([`Registry::bounced`], any
+        // service's), this action joins it at the back, sent now or later:
+        // one held for its token may have been handed back (its run
+        // stopped) on the shared runtime since the `redeliver` above, and
+        // an action after it, of the same invocation and whichever service,
+        // must not overtake it. With nothing handed back: sent now (`later`
+        // false, on this thread), a run that cannot take it is the caller's
+        // error, as before tokens; queued behind a token wait, the run may
+        // end or be stopped before this goes, and the action is handed back
+        // for the logic thread to send to the run up then.
+        let bounced = reg
+            .as_ref()
+            .map_or_else(Bounced::default, |r| r.bounced.clone());
+        let wake = reg.as_ref().map(|r| r.wake.clone());
+        let id = self.0.id;
+        let deliver: crate::activation::Deliver = Box::new(move |token, later| {
+            let msg = (Msg::Action(action), token);
+            let mut b = lock(&bounced);
+            let sent = if !b.is_empty() || *lock(&stopped) {
+                Err(msg)
+            } else {
+                tx.send(msg).map_err(|e| e.0)
+            };
+            let handed_back = match sent {
+                Ok(()) => false,
+                Err(_) if !later && b.is_empty() => {
+                    drop(b);
+                    poke(&notify);
+                    return false;
+                }
+                Err(msg) => {
+                    b.push_back(Bounce {
+                        member: id,
+                        msg: Box::new(msg),
+                    });
+                    true
+                }
+            };
+            drop(b);
+            if handed_back && let Some(w) = &wake {
+                w.wake();
+            }
+            poke(&notify);
+            true
+        });
+        let sent = match reg {
+            Some(reg) => reg
+                .order
+                .submit(ctx, token, deliver, &|job| reg.shared_spawn(job)),
+            None => deliver(None, false),
+        };
+        if sent {
+            Ok(())
+        } else {
+            Err(not_running(&self.0.name))
         }
     }
 
@@ -1377,13 +1617,16 @@ pub trait DynService {
         path: &[Step],
         value: Data,
     ) -> Result<(), Error>;
-    /// Run action `name` (on `item` for an item's action).
+    /// Run action `name` (on `item` for an item's action), from the
+    /// handler `ctx` describes (M5: its order and xdg-activation token,
+    /// the `activation` module).
     fn action(
         &self,
         rt: &Runtime,
         name: &str,
         item: Option<&Data>,
         args: &[Data],
+        ctx: ActionCtx,
     ) -> Result<(), Error>;
     /// A `fn` method, computed on the logic thread; `None`: none such.
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>>;
@@ -1576,10 +1819,11 @@ impl<S: Service> DynService for Client<S> {
         name: &str,
         item: Option<&Data>,
         args: &[Data],
+        ctx: ActionCtx,
     ) -> Result<(), Error> {
         let a = <S::Action as FromCall>::from_call(name, item, args)
             .map_err(|e| Error::failed(format!("{}.{name}: {e}", S::NAME)))?;
-        self.act(rt, a)
+        self.act_with(rt, a, ctx, S::ACTIVATION.contains(&name))
     }
 
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>> {

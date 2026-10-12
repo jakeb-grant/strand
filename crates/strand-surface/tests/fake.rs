@@ -1286,3 +1286,141 @@ fn a_lock_without_ext_session_lock_is_reported_finished() {
     }
     finished(&mut mgr, 2);
 }
+
+/// (M5) A fake with one seat (keyboard, and a pointer when `pointer`)
+/// and `xdg_activation_v1` when `activation`, showing `panel Dash`.
+fn seated(activation: bool, pointer: bool) -> (Fake, SurfaceManager<TestHost>, SurfaceId) {
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .surfaces(SurfaceGlobals {
+            activation,
+            pointer,
+            ..SurfaceGlobals::default()
+        })
+        .seats(1)
+        .start();
+    let mut mgr = manager(&fake);
+    show_panel(&fake, &mut mgr);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    (fake, mgr, id)
+}
+
+/// (M5) Clicks the panel and returns the press's serial, as the host was
+/// told it before the press itself.
+fn click_panel(fake: &Fake, mgr: &mut SurfaceManager<TestHost>) -> u32 {
+    use strand_scene::InputEvent;
+    let n = mgr.state().host().input.len();
+    fake.cmd(Cmd::Click("strand-Dash"));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().input[n..].iter().any(|e| {
+                matches!(
+                    e,
+                    InputEvent::PointerButton {
+                        state: strand_surface::ButtonState::Pressed,
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap();
+    assert!(ok, "the click reached the panel");
+    *mgr.state()
+        .host()
+        .press_serials
+        .last()
+        .expect("a press serial")
+}
+
+/// Asks a token for `serial` on `id` and dispatches until it is answered.
+fn token(mgr: &mut SurfaceManager<TestHost>, id: SurfaceId, serial: u32) -> Option<String> {
+    let got = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let put = got.clone();
+    mgr.state_mut()
+        .activation_token(id, serial, move |t| *put.borrow_mut() = Some(t));
+    let ok = mgr
+        .dispatch_until(WAIT, |_| got.borrow().is_some())
+        .unwrap();
+    assert!(ok, "the token request was never answered");
+    got.borrow_mut().take().flatten()
+}
+
+/// (M5, S-platform) A token is asked with the serial of the press that
+/// came (a pointer button's, then a key's), the seat it came from and
+/// the surface it landed on, and the compositor's answer is handed back.
+#[test]
+fn an_activation_token_comes_from_the_clicked_surface() {
+    let (fake, mut mgr, id) = seated(true, true);
+    assert!(mgr.state().activation_supported());
+    let serial = click_panel(&fake, &mut mgr);
+    assert_eq!(token(&mut mgr, id, serial).as_deref(), Some("fake-token-1"));
+    let asked = fake.activation_requests();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].serial, Some(serial));
+    assert!(asked[0].seat, "the seat the press came from");
+    assert_eq!(asked[0].surface.as_deref(), Some("strand-Dash"));
+
+    // A key press on the panel: its serial is tracked as the button's.
+    fake.cmd(Cmd::KeyboardEnter("strand-Dash"));
+    let before = mgr.state().host().press_serials.len();
+    fake.cmd(Cmd::Key(1, true));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.host().press_serials.len() > before)
+        .unwrap();
+    assert!(ok, "the key press's serial reached the host");
+    let key = *mgr.state().host().press_serials.last().unwrap();
+    assert_ne!(key, serial);
+    assert_eq!(token(&mut mgr, id, key).as_deref(), Some("fake-token-2"));
+    let asked = fake.activation_requests();
+    assert_eq!(asked[1].serial, Some(key), "{asked:?}");
+    assert!(asked[1].seat);
+    assert_eq!(asked[1].surface.as_deref(), Some("strand-Dash"));
+    assert_eq!(mgr.state().activation_tokens_issued(), 2);
+}
+
+/// (M5, S-platform) Without `xdg_activation_v1` there is no token, and
+/// no wait for one: the caller hears `None` before the call returns.
+#[test]
+fn no_activation_protocol_means_no_token_and_no_wait() {
+    let (fake, mut mgr, id) = seated(false, true);
+    assert!(!mgr.state().activation_supported());
+    let serial = click_panel(&fake, &mut mgr);
+    let got = std::rc::Rc::new(std::cell::Cell::new(None));
+    let put = got.clone();
+    mgr.state_mut()
+        .activation_token(id, serial, move |t| put.set(Some(t)));
+    assert_eq!(got.take(), Some(None), "answered at once, with no token");
+    assert!(fake.activation_requests().is_empty());
+}
+
+/// (M5, S-platform) A compositor that never answers a token request:
+/// the request is given up after five seconds by its own timer, with no
+/// later request to sweep it (its caller hears `None`, nothing is left
+/// waiting), and an answer to a later one still arrives.
+#[test]
+fn an_unanswered_token_is_given_up_on_its_own() {
+    let (fake, mut mgr, id) = seated(true, true);
+    let serial = click_panel(&fake, &mut mgr);
+    fake.cmd(Cmd::HoldTokens(true));
+    fake.sync();
+    let got = std::rc::Rc::new(std::cell::Cell::new(None));
+    let put = got.clone();
+    let asked = std::time::Instant::now();
+    mgr.state_mut()
+        .activation_token(id, serial, move |t| put.set(Some(t)));
+    let ok = mgr
+        .dispatch_until(Duration::from_secs(10), |s| {
+            s.activation_tokens_waiting() == 0
+        })
+        .unwrap();
+    assert!(ok, "the unanswered token was never given up");
+    let took = asked.elapsed();
+    assert!(took >= Duration::from_secs(5), "{took:?}");
+    assert_eq!(got.take(), Some(None), "its caller heard no token");
+    assert_eq!(fake.activation_requests().len(), 1, "it was asked");
+
+    fake.cmd(Cmd::HoldTokens(false));
+    fake.sync();
+    assert_eq!(token(&mut mgr, id, serial).as_deref(), Some("fake-token-2"));
+    assert_eq!(mgr.state().activation_tokens_waiting(), 0);
+}

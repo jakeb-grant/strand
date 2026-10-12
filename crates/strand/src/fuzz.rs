@@ -1433,6 +1433,7 @@ impl Shell {
             events_to: None,
             own_writes: None,
             to_main: None,
+            tokens: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();
@@ -2088,6 +2089,7 @@ impl Shell {
             .unwrap_or_else(|| panic!("{what}: the overlay has no close button"));
         self.to_logic
             .send(ToLogic::Event {
+                input: None,
                 node: close,
                 event: NodeEvent::Click,
             })
@@ -2100,6 +2102,7 @@ impl Shell {
     fn click(&mut self, node: NodeId) {
         self.to_logic
             .send(ToLogic::Event {
+                input: None,
                 node,
                 event: NodeEvent::Click,
             })

@@ -668,16 +668,28 @@ fn writes_actions_and_async_calls_reach_the_service() {
     assert_eq!(probe.cells().focus.get_untracked(&rt).unwrap().id, 5);
     assert_eq!(sc.next(), "write focus.id 5");
     // Actions, typed.
-    dynamic.action(&rt, "bump", None, &[]).unwrap();
+    dynamic
+        .action(&rt, "bump", None, &[], Default::default())
+        .unwrap();
     assert_eq!(sc.next(), "action Bump");
     dynamic
-        .action(&rt, "focus", Some(&ws(4, "d").to_data()), &[])
+        .action(
+            &rt,
+            "focus",
+            Some(&ws(4, "d").to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     assert_eq!(
         sc.next(),
         format!("action {:?}", ProbeAction::Focus { item: ws(4, "d") })
     );
-    assert!(dynamic.action(&rt, "rename", None, &[]).is_err());
+    assert!(
+        dynamic
+            .action(&rt, "rename", None, &[], Default::default())
+            .is_err()
+    );
     // An async call completes with the service's answer.
     let fut = dynamic.fetch(&rt, "echo", &[Data::text("hi")]);
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -781,7 +793,9 @@ fn writes_and_actions_start_a_stopped_service_for_a_moment() {
     assert_eq!(probe.readers(), 0);
     assert!(probe.running());
     // Still inside its grace: the action goes to the running service.
-    dynamic.action(&rt, "bump", None, &[]).unwrap();
+    dynamic
+        .action(&rt, "bump", None, &[], Default::default())
+        .unwrap();
     assert_eq!(sc.next(), "action Bump");
     assert_eq!(probe.starts(), 1);
     at(STOP_GRACE + Duration::from_millis(1));
@@ -1335,5 +1349,329 @@ fn a_body_failing_right_after_ready_backs_off() {
     }
     let starts = flaky.starts();
     assert!((5..=6).contains(&starts), "{starts} starts in 30 s");
+    s.shutdown();
+}
+
+/// (M5, S-platform) An action held for its xdg-activation token whose
+/// run is stopped meanwhile (a reload's `stop_now`, or a run that ended)
+/// is not lost: it goes to the run that is up when its token comes,
+/// started for it, and the invocation's later action still follows it.
+#[test]
+fn an_action_held_for_its_token_reaches_the_run_up_when_it_goes() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let (answers_tx, answers) = std::sync::mpsc::channel();
+    let answers_tx = Mutex::new(answers_tx);
+    s.set_token_source(Some(Arc::new(move |_, _| {
+        let (answer, fut) = strand_services::activation::token_reply();
+        answers_tx.lock().unwrap().send(answer).unwrap();
+        fut
+    })));
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let ctx = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 1,
+            serial: 2,
+        }),
+        invocation: 31,
+    };
+    probe.act_with(&rt, ProbeAction::Bump, ctx, true).unwrap();
+    probe
+        .act_with(&rt, ProbeAction::Rename("x".into(), 1), ctx, false)
+        .unwrap();
+    let answer = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The run is stopped while both wait for the token.
+    probe.stop_now(&rt);
+    let sc2 = script_again();
+    answer.send(Some("tok".into()));
+    until(&rt, &s, "a new run", || probe.starts() == 2);
+    assert_eq!(sc2.next(), "start visible=true");
+    assert_eq!(sc2.next(), "action Bump");
+    assert_eq!(
+        sc2.next(),
+        format!("action {:?}", ProbeAction::Rename("x".into(), 1))
+    );
+    s.shutdown();
+}
+
+/// (M5, S-platform) The invocation's later action, submitted after the
+/// run it would have gone to was stopped (so it was handed the new run),
+/// still follows the held one: it does not overtake it while the held
+/// one goes back through the logic thread.
+#[test]
+fn a_later_action_on_a_new_run_does_not_overtake_a_held_one() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let (answers_tx, answers) = std::sync::mpsc::channel();
+    let answers_tx = Mutex::new(answers_tx);
+    s.set_token_source(Some(Arc::new(move |_, _| {
+        let (answer, fut) = strand_services::activation::token_reply();
+        answers_tx.lock().unwrap().send(answer).unwrap();
+        fut
+    })));
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let ctx = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 1,
+            serial: 2,
+        }),
+        invocation: 32,
+    };
+    probe.act_with(&rt, ProbeAction::Bump, ctx, true).unwrap();
+    let answer = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The run is stopped while the first waits for its token; the
+    // handler goes on (after an `await`) and its next action starts a
+    // new run.
+    probe.stop_now(&rt);
+    let sc2 = script_again();
+    probe
+        .act_with(&rt, ProbeAction::Rename("x".into(), 1), ctx, false)
+        .unwrap();
+    assert_eq!(probe.starts(), 2);
+    assert_eq!(sc2.next(), "start visible=true");
+    answer.send(Some("tok".into()));
+    until(&rt, &s, "both actions", || {
+        sc2.seen
+            .recv_timeout(Duration::ZERO)
+            .is_ok_and(|l| match l.as_str() {
+                // The old run's body going away.
+                "stopped" => false,
+                l => {
+                    assert_eq!(l, "action Bump", "the later action overtook");
+                    true
+                }
+            })
+    });
+    assert_eq!(
+        sc2.next(),
+        format!("action {:?}", ProbeAction::Rename("x".into(), 1))
+    );
+    s.shutdown();
+}
+
+/// (M5, S-platform) A plain action (no token wait) sent to a run whose
+/// body has ended, before its `Ended` is pumped, is the caller's error,
+/// not an `Ok` that a retry backoff then drops.
+#[test]
+fn a_plain_action_to_an_ended_body_is_refused_not_lost() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    sc.cmd(Cmd::Fail("gone".into()));
+    // Not pumped: the run is still in place, its body gone.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if probe.act(&rt, ProbeAction::Bump).is_err() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an action to an ended body was never refused"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    s.shutdown();
+}
+
+#[derive(Call, Debug, PartialEq)]
+pub enum OtherAction {
+    Pause,
+}
+
+/// A second service whose actions land in the probe's log ("other …"),
+/// for an invocation's line across services.
+#[service(name = "other", schema = "service other { n: int }", action = OtherAction)]
+#[derive(Store, Clone, Debug, Default, PartialEq)]
+pub struct Other {
+    pub n: i64,
+}
+
+impl Other {
+    async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+        cx.ready();
+        while let Some(m) = cx.recv().await {
+            if let Msg::Action(a) = m {
+                log(format!("other {a:?}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A token source whose answers the test sends, one per ask.
+fn token_source(
+    s: &Services,
+) -> std::sync::mpsc::Receiver<strand_services::activation::TokenAnswer> {
+    let (answers_tx, answers) = std::sync::mpsc::channel();
+    let answers_tx = Mutex::new(answers_tx);
+    s.set_token_source(Some(Arc::new(move |_, _| {
+        let (answer, fut) = strand_services::activation::token_reply();
+        answers_tx.lock().unwrap().send(answer).unwrap();
+        fut
+    })));
+    answers
+}
+
+/// Waits `for_` on `sc`'s log, not pumping, and returns what came.
+fn seen_within(sc: &Script, for_: Duration) -> Vec<String> {
+    let deadline = std::time::Instant::now() + for_;
+    let mut seen = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match sc.seen.recv_timeout(left) {
+            Ok(l) => seen.push(l),
+            Err(_) => return seen,
+        }
+    }
+}
+
+/// Pumps until `sc`'s log has shown every line of `want` (in any order:
+/// two bodies on the shared runtime), skipping the old run's "stopped".
+fn until_seen(rt: &Runtime, s: &Services, sc: &Script, mut want: Vec<String>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !want.is_empty() {
+        s.pump(rt);
+        rt.flush();
+        while let Ok(l) = sc.seen.try_recv() {
+            if l != "stopped" {
+                let at = want.iter().position(|w| *w == l);
+                assert!(at.is_some(), "unexpected: {l} (left: {want:?})");
+                want.retain(|w| *w != l);
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "never: {want:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// (M5, S-platform, review round 3) A held action whose run is stopped
+/// during its token wait is handed back to the logic thread; the
+/// invocation's next action, queued behind it but for another service
+/// whose run is up, joins it there instead of going to that run at once:
+/// `n.invoke("default"); mpris.pause()` across a reload's stop never
+/// pauses before the invoke goes.
+#[test]
+fn a_held_action_handed_back_keeps_another_services_action_behind_it() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let answers = token_source(&s);
+    let probe = s.register::<Probe>(&rt);
+    let other = s.register::<Other>(&rt);
+    probe.acquire(&rt);
+    other.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let ctx = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 1,
+            serial: 2,
+        }),
+        invocation: 60,
+    };
+    probe.act_with(&rt, ProbeAction::Bump, ctx, true).unwrap();
+    other.act_with(&rt, OtherAction::Pause, ctx, false).unwrap();
+    let answer = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The probe's run is stopped while both wait for the token.
+    probe.stop_now(&rt);
+    let sc2 = script_again();
+    answer.send(Some("tok".into()));
+    // Not pumped: the invoke is handed back, so the pause waits too.
+    let early = seen_within(&sc2, Duration::from_millis(300));
+    assert!(
+        !early.iter().any(|l| l.starts_with("other")),
+        "the other service's action overtook the held one: {early:?}"
+    );
+    until_seen(
+        &rt,
+        &s,
+        &sc2,
+        vec![
+            "start visible=true".into(),
+            "action Bump".into(),
+            format!("other {:?}", OtherAction::Pause),
+        ],
+    );
+    s.shutdown();
+}
+
+/// (M5, S-platform, review round 3) An action sent at once (no token
+/// wait) while a held action is handed back and not yet sent on joins it
+/// at the back instead of going to its run first: the window between
+/// `act_with`'s own redelivery and its send, where the shared runtime may
+/// hand a held action back, cannot let it overtake. Here the handed-back
+/// action cannot go on yet (its body ended and its `Ended` is not
+/// pumped), which holds that window open.
+#[test]
+fn an_action_sent_at_once_waits_behind_a_handed_back_one() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, woken) = services(&rt);
+    let answers = token_source(&s);
+    let probe = s.register::<Probe>(&rt);
+    let other = s.register::<Other>(&rt);
+    probe.acquire(&rt);
+    other.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let ctx = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 1,
+            serial: 2,
+        }),
+        invocation: 61,
+    };
+    probe.act_with(&rt, ProbeAction::Bump, ctx, true).unwrap();
+    let answer = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The probe's body ends while the invoke waits (not pumped: its run
+    // stays in place, unable to take anything).
+    let before = *woken.lock().unwrap();
+    sc.cmd(Cmd::Fail("gone".into()));
+    let wait_woken = |past: u32| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while *woken.lock().unwrap() <= past {
+            assert!(std::time::Instant::now() < deadline, "never woken");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    wait_woken(before);
+    // The token comes: the invoke finds no body and is handed back.
+    std::thread::sleep(Duration::from_millis(50));
+    let before = *woken.lock().unwrap();
+    answer.send(Some("tok".into()));
+    wait_woken(before);
+    // Sent at once, it joins the handed-back invoke instead of going.
+    other.act(&rt, OtherAction::Pause).unwrap();
+    let early = seen_within(&sc, Duration::from_millis(300));
+    assert!(
+        !early.iter().any(|l| l.starts_with("other")),
+        "an action sent at once overtook a handed-back one: {early:?}"
+    );
+    // The next pump: the probe's body waits out its backoff, so the
+    // invoke is dropped with a warning (as `act` refuses), and the pause
+    // follows it.
+    until_seen(
+        &rt,
+        &s,
+        &sc,
+        vec![format!("other {:?}", OtherAction::Pause)],
+    );
     s.shutdown();
 }

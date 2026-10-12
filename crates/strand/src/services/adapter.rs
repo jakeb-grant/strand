@@ -446,16 +446,16 @@ impl ServiceHost for StoreHost {
         target: ActionTarget<'_>,
         name: &str,
         args: &[Value],
-        // (M5) S-platform passes its input context on for activation
-        // tokens; the services take none yet.
-        _ctx: ActionCtx,
+        // (M5) The handler's invocation and press: the services keep its
+        // actions in order and ask an xdg-activation token with it.
+        ctx: ActionCtx,
     ) -> Result<(), Error> {
         let args = self.data_args(args);
         match target {
-            ActionTarget::Service(_) => self.svc.action(rt, name, None, &args),
+            ActionTarget::Service(_) => self.svc.action(rt, name, None, &args, ctx),
             ActionTarget::Item(v) => {
                 self.svc
-                    .action(rt, name, Some(&to_data(&self.types, v)), &args)
+                    .action(rt, name, Some(&to_data(&self.types, v)), &args, ctx)
             }
         }
     }

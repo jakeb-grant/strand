@@ -174,7 +174,13 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     };
     b.network
         .dynamic()
-        .action(&rt, "connect", Some(&item.to_data()), &[])
+        .action(
+            &rt,
+            "connect",
+            Some(&item.to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").is_empty() {
@@ -188,7 +194,13 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     };
     b.network
         .dynamic()
-        .action(&rt, "connect", Some(&home_item.to_data()), &[])
+        .action(
+            &rt,
+            "connect",
+            Some(&home_item.to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     while mock_calls(&tokio, &conn, NM, ROOT, "ActivateConnection").is_empty() {
         assert!(std::time::Instant::now() < deadline, "never joined Home");
@@ -254,7 +266,13 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     };
     b.network
         .dynamic()
-        .action(&rt, "connect", Some(&gone.to_data()), &[])
+        .action(
+            &rt,
+            "connect",
+            Some(&gone.to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     until(&rt, &s, "the failure", || {
         !failures.lock().unwrap().is_empty()
@@ -357,6 +375,7 @@ fn a_join_that_fails_later_is_reported() {
             "connect_with",
             Some(&ap("Cafe").to_data()),
             &[Data::Text("hunter22".into())],
+            Default::default(),
         )
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -412,7 +431,13 @@ fn a_join_that_fails_later_is_reported() {
     );
     b.network
         .dynamic()
-        .action(&rt, "connect", Some(&ap("Airport").to_data()), &[])
+        .action(
+            &rt,
+            "connect",
+            Some(&ap("Airport").to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     while mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").len() < 2 {
         assert!(std::time::Instant::now() < deadline, "never joined Airport");

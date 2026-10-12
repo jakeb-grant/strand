@@ -683,16 +683,19 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 /// read without blocking while the command runs and for
 /// [`STDERR_GRACE`] after it ends, never to its end of file: a process
 /// the command backgrounds (`dunst &`), or one that left the group with
-/// `setsid`, inherits the pipe and may hold it open for good.
+/// `setsid`, inherits the pipe and may hold it open for good. (M5) Like
+/// every program strand starts, it does not inherit the xdg-activation
+/// token strand was started with (`child::activation_env`).
 fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
     let (prog, args) = argv.split_first()?;
-    let child = Command::new(prog)
-        .args(args)
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn();
+        .process_group(0);
+    strand_services::child::activation_env(&mut cmd, None);
+    let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
         Err(e) => return Some(format!("`run:` could not start `{prog}`: {e}")),
@@ -986,6 +989,46 @@ mod tests {
         )
         .unwrap();
         assert!(why.len() < STDERR_TAIL + 200, "{}", why.len());
+    }
+
+    /// (M5, S-platform) A `run:` command does not inherit the
+    /// xdg-activation token strand was started with: run in a copy of
+    /// this test binary started with both variables set, a command that
+    /// fails when it sees either succeeds.
+    #[test]
+    fn a_run_never_inherits_strands_activation_token() {
+        const CHILD: &str = "STRAND_TEST_RUN_TOKEN_CHILD";
+        let sh = |c: &str| vec!["sh".to_string(), "-c".into(), c.into()];
+        let probe = sh(
+            "test -z \"${XDG_ACTIVATION_TOKEN+x}${DESKTOP_STARTUP_ID+x}\" || \
+             { echo inherited >&2; exit 1; }",
+        );
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(
+                std::env::var("XDG_ACTIVATION_TOKEN").as_deref(),
+                Ok("stale")
+            );
+            assert_eq!(run_once(&probe, RUN_TIMEOUT), None);
+            return;
+        }
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run::outputs::tests::a_run_never_inherits_strands_activation_token",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("XDG_ACTIVATION_TOKEN", "stale")
+            .env("DESKTOP_STARTUP_ID", "stale")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
     /// A command that backgrounds a process (`pkill dunst; dunst &`)

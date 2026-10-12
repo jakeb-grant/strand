@@ -63,7 +63,8 @@ fn popups(b: &strand_services::Builtin, rt: &Runtime) -> Vec<Notification> {
         .collect()
 }
 
-/// The server's signals, as `Closed id reason` / `Invoked id key`.
+/// The server's signals, as `Closed id reason` / `Invoked id key` /
+/// `Token id token`.
 fn hear(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection) -> Arc<Mutex<Vec<String>>> {
     let heard = Arc::new(Mutex::new(Vec::new()));
     let h = heard.clone();
@@ -91,6 +92,10 @@ fn hear(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection) -> Arc<Mutex<V
                 "ActionInvoked" => {
                     let (id, key): (u32, String) = m.body().deserialize().unwrap();
                     format!("Invoked {id} {key}")
+                }
+                "ActivationToken" => {
+                    let (id, token): (u32, String) = m.body().deserialize().unwrap();
+                    format!("Token {id} {token}")
                 }
                 other => other.to_string(),
             };
@@ -147,7 +152,7 @@ fn the_server_serves_the_spec_and_the_store() {
             .deserialize()
             .unwrap();
     assert_eq!(info.0, "strand");
-    assert_eq!(info.3, "1.1", "no ActivationToken: not 1.2");
+    assert_eq!(info.3, "1.2", "with ActivationToken (M5)");
 
     // A notification with a default action, a button, a critical
     // urgency, an image and a timeout.
@@ -220,7 +225,13 @@ fn the_server_serves_the_spec_and_the_store() {
     let action = popups(&b, &rt)[1].actions[0].clone();
     b.notifications
         .dynamic()
-        .action(&rt, "invoke", Some(&action.to_data()), &[])
+        .action(
+            &rt,
+            "invoke",
+            Some(&action.to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     wait_heard(&heard, &format!("Invoked {id2} ok"));
     wait_heard(&heard, &format!("Closed {id2} 2"));
@@ -230,7 +241,7 @@ fn the_server_serves_the_spec_and_the_store() {
     let first = popups(&b, &rt)[0].to_data();
     b.notifications
         .dynamic()
-        .action(&rt, "expire", Some(&first), &[])
+        .action(&rt, "expire", Some(&first), &[], Default::default())
         .unwrap();
     until(&rt, &s, "no popups", || popups(&b, &rt).is_empty());
     assert_eq!(b.notifications.cells().count.get_untracked(&rt), Ok(1));
@@ -284,7 +295,7 @@ fn the_server_serves_the_spec_and_the_store() {
     assert_eq!(k.urgency, Urgency::Low);
     b.notifications
         .dynamic()
-        .action(&rt, "dismiss", Some(&k.to_data()), &[])
+        .action(&rt, "dismiss", Some(&k.to_data()), &[], Default::default())
         .unwrap();
     wait_heard(&heard, &format!("Closed {kept} 2"));
     assert_eq!(closed(id2), 1, "{:?}", heard.lock().unwrap());
@@ -319,13 +330,13 @@ fn the_server_serves_the_spec_and_the_store() {
     let l = popups(&b, &rt)[0].to_data();
     b.notifications
         .dynamic()
-        .action(&rt, "activate", Some(&l), &[])
+        .action(&rt, "activate", Some(&l), &[], Default::default())
         .unwrap();
     wait_heard(&heard, &format!("Closed {loud} 2"));
     // Clear: every one closes.
     b.notifications
         .dynamic()
-        .action(&rt, "clear", None, &[])
+        .action(&rt, "clear", None, &[], Default::default())
         .unwrap();
     wait_heard(&heard, &format!("Closed {quiet} 2"));
     until(&rt, &s, "cleared", || {
@@ -619,4 +630,197 @@ fn shutdown_closes_the_notifications_still_open() {
     s.shutdown();
     wait_heard(&heard, &format!("Closed {one} 3"));
     wait_heard(&heard, &format!("Closed {two} 3"));
+}
+
+/// (M5) A handler's press: surface 2, serial 77, invocation `n`.
+fn pressed(invocation: u64) -> strand_core::ActionCtx {
+    strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 2,
+            serial: 77,
+        }),
+        invocation,
+    }
+}
+
+/// (M5) A token source answering `tok-<surface>-<serial>` after `after`.
+fn tokens_after(after: Duration) -> strand_services::activation::TokenSource {
+    Arc::new(move |surface, serial| {
+        Box::pin(async move {
+            tokio::time::sleep(after).await;
+            Some(format!("tok-{surface}-{serial}"))
+        })
+    })
+}
+
+/// The lines heard about notification `id`, in order.
+fn heard_of(heard: &Arc<Mutex<Vec<String>>>, id: u32) -> Vec<String> {
+    heard
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.split(' ').nth(1) == Some(&id.to_string()))
+        .cloned()
+        .collect()
+}
+
+/// (M5, S-platform) Spec 1.2: an `invoke` or `activate` from a handler
+/// a press started sends `ActivationToken` with the press's token before
+/// `ActionInvoked`; one from no press (an IPC call, a timer) sends none.
+#[test]
+fn activation_token_precedes_action_invoked() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    s.set_token_source(Some(tokens_after(Duration::from_millis(20))));
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let id = notify(
+        &tokio,
+        &conn,
+        0,
+        "Button",
+        &["reply", "Reply"],
+        HashMap::new(),
+        -1,
+    );
+    let def = notify(
+        &tokio,
+        &conn,
+        0,
+        "Default",
+        &["default", "Open"],
+        HashMap::new(),
+        -1,
+    );
+    let plain = notify(&tokio, &conn, 0, "Plain", &["ok", "OK"], HashMap::new(), -1);
+    until(&rt, &s, "three popups", || popups(&b, &rt).len() == 3);
+    let all = popups(&b, &rt);
+    let find = |id: u32| all.iter().find(|n| n.id == i64::from(id)).unwrap().clone();
+
+    let reply = find(id).actions[0].to_data();
+    let d = b.notifications.dynamic();
+    d.action(&rt, "invoke", Some(&reply), &[], pressed(11))
+        .unwrap();
+    wait_heard(&heard, &format!("Closed {id} 2"));
+    assert_eq!(
+        heard_of(&heard, id),
+        [
+            format!("Token {id} tok-2-77"),
+            format!("Invoked {id} reply"),
+            format!("Closed {id} 2"),
+        ]
+    );
+
+    d.action(
+        &rt,
+        "activate",
+        Some(&find(def).to_data()),
+        &[],
+        pressed(12),
+    )
+    .unwrap();
+    wait_heard(&heard, &format!("Closed {def} 2"));
+    assert_eq!(
+        heard_of(&heard, def),
+        [
+            format!("Token {def} tok-2-77"),
+            format!("Invoked {def} default"),
+            format!("Closed {def} 2"),
+        ]
+    );
+
+    // No press: no token, and no wait for one.
+    let ok = find(plain).actions[0].to_data();
+    d.action(&rt, "invoke", Some(&ok), &[], Default::default())
+        .unwrap();
+    wait_heard(&heard, &format!("Closed {plain} 2"));
+    assert_eq!(
+        heard_of(&heard, plain),
+        [format!("Invoked {plain} ok"), format!("Closed {plain} 2")]
+    );
+    assert!(s.take_diagnostics().is_empty());
+}
+
+/// (M5, S-platform) The ordering rule: `a.invoke(); n.dismiss()` in one
+/// handler reaches the server in that order while the invoke waits for
+/// its token (a dismiss sent at once would close the notification
+/// first, and the invoke would then find nothing). A token that never
+/// comes holds the invoke 200 ms; it then goes without one, the dismiss
+/// still behind it.
+#[test]
+fn invoke_then_dismiss_keeps_order_while_waiting_for_a_token() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    s.set_token_source(Some(tokens_after(Duration::from_millis(100))));
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    // Resident: invoking it leaves it open, so the dismiss closes it.
+    let resident = || HashMap::from([("resident", Value::from(true))]);
+    let first = notify(&tokio, &conn, 0, "One", &["go", "Go"], resident(), -1);
+    let second = notify(&tokio, &conn, 0, "Two", &["go", "Go"], resident(), -1);
+    until(&rt, &s, "two popups", || popups(&b, &rt).len() == 2);
+    let all = popups(&b, &rt);
+    let find = |id: u32| all.iter().find(|n| n.id == i64::from(id)).unwrap().clone();
+    let d = b.notifications.dynamic();
+
+    let n = find(first);
+    d.action(
+        &rt,
+        "invoke",
+        Some(&n.actions[0].to_data()),
+        &[],
+        pressed(21),
+    )
+    .unwrap();
+    d.action(&rt, "dismiss", Some(&n.to_data()), &[], pressed(21))
+        .unwrap();
+    wait_heard(&heard, &format!("Closed {first} 2"));
+    assert_eq!(
+        heard_of(&heard, first),
+        [
+            format!("Token {first} tok-2-77"),
+            format!("Invoked {first} go"),
+            format!("Closed {first} 2"),
+        ]
+    );
+
+    // A compositor that never answers: the bound, then on in order.
+    s.set_token_source(Some(Arc::new(|_, _| Box::pin(std::future::pending()))));
+    let n = find(second);
+    let start = std::time::Instant::now();
+    d.action(
+        &rt,
+        "invoke",
+        Some(&n.actions[0].to_data()),
+        &[],
+        pressed(22),
+    )
+    .unwrap();
+    d.action(&rt, "dismiss", Some(&n.to_data()), &[], pressed(22))
+        .unwrap();
+    wait_heard(&heard, &format!("Closed {second} 2"));
+    let took = start.elapsed();
+    assert!(
+        took >= strand_services::activation::TOKEN_WAIT,
+        "the invoke waited for its token: {took:?}"
+    );
+    assert_eq!(
+        heard_of(&heard, second),
+        [format!("Invoked {second} go"), format!("Closed {second} 2")]
+    );
+    assert!(s.take_diagnostics().is_empty());
 }

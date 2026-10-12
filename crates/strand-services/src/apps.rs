@@ -105,7 +105,12 @@ pub enum AppsCall {
 }
 
 /// See the module docs.
-#[service(name = "apps", action = AppsAction, call = AppsCall)]
+#[service(
+    name = "apps",
+    action = AppsAction,
+    call = AppsCall,
+    activation = &["launch"]
+)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Apps {
     /// Every installed app, keyed by `id`, by name.
@@ -808,6 +813,18 @@ pub fn command(entry: &Entry) -> Result<Vec<String>, String> {
 /// `dir` when given. Returns once it was executed (an `execvp` failure is
 /// the error).
 pub fn spawn_detached(argv: &[String], dir: Option<&Path>) -> std::io::Result<()> {
+    spawn_launched(argv, dir, None)
+}
+
+/// (M5) [`spawn_detached`] for a launch: the program gets `token`, the
+/// xdg-activation token for the press that launched it, in
+/// `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`, and never the one
+/// strand inherited ([`crate::child::activation_env`]).
+pub fn spawn_launched(
+    argv: &[String],
+    dir: Option<&Path>,
+    token: Option<&str>,
+) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let (program, args) = argv
@@ -821,6 +838,7 @@ pub fn spawn_detached(argv: &[String], dir: Option<&Path>) -> std::io::Result<()
     if let Some(d) = dir.filter(|d| d.is_dir()) {
         cmd.current_dir(d);
     }
+    crate::child::activation_env(&mut cmd, token);
     // SAFETY: only async-signal-safe calls between fork and exec
     // (`setsid`, `fork`, `_exit`, `prctl`), as `pre_exec` requires.
     unsafe {
@@ -894,6 +912,8 @@ impl Apps {
                         reply.send(Ok::<_, String>(search(&entries, &frecency, &query, unix_now())));
                     }
                     Some(Msg::Action(AppsAction::Launch { item })) => {
+                        // (M5) The press's xdg-activation token, if any.
+                        let token = cx.activation_token().map(str::to_owned);
                         let Some(entry) = entries.iter().find(|e| e.app.id == item.id) else {
                             log::warn!("apps: no app `{}` to launch", item.id);
                             continue;
@@ -904,7 +924,7 @@ impl Apps {
                         let (id, entry) = (entry.app.id.clone(), entry.clone());
                         launching.spawn_blocking(move || {
                             command(&entry).and_then(|argv| {
-                                spawn_detached(&argv, entry.path.as_deref())
+                                spawn_launched(&argv, entry.path.as_deref(), token.as_deref())
                                     .map_err(|e| format!("cannot start `{}`: {e}", argv[0]))
                             })?;
                             Ok::<_, String>(id)

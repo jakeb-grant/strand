@@ -277,8 +277,10 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     PointerEventKind::Press { serial, .. } => {
                         if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                             p.button_serial = Some(*serial);
+                            let seat = p.seat.clone();
+                            self.note_press(&seat, *serial);
                             self.last_action = Some(UserAction {
-                                seat: p.seat.clone(),
+                                seat,
                                 serial: *serial,
                                 at: Instant::now(),
                             });
@@ -322,8 +324,10 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                 } => {
                     if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                         p.button_serial = Some(*serial);
+                        let seat = p.seat.clone();
+                        self.note_press(&seat, *serial);
                         self.last_action = Some(UserAction {
-                            seat: p.seat.clone(),
+                            seat,
                             serial: *serial,
                             at: Instant::now(),
                         });
@@ -462,8 +466,12 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         event: KeyEvent,
     ) {
         if let Some((seat, _)) = self.keyboards.iter().find(|(_, k)| k == keyboard) {
+            let seat = seat.clone();
+            // (M5) Key serials are tracked beside the pointer's, for
+            // xdg-activation tokens (`activation.rs`).
+            self.note_press(&seat, serial);
             self.last_action = Some(UserAction {
-                seat: seat.clone(),
+                seat,
                 serial,
                 at: Instant::now(),
             });

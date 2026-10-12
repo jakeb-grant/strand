@@ -1628,7 +1628,7 @@ impl Ctx {
                 } else {
                     rt.resume(block.get().id());
                 }
-                me.route(rt, ec.scene, "show", Vec::new());
+                me.route(rt, ec.scene, "show", Vec::new(), None);
             } else {
                 if mounted.get() {
                     match keep {
@@ -1659,7 +1659,7 @@ impl Ctx {
                 }
                 me.set_held(rt, token, false);
                 if prev.is_some() {
-                    me.route(rt, ec.scene, "hide", Vec::new());
+                    me.route(rt, ec.scene, "hide", Vec::new(), None);
                 }
             }
         };

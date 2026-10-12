@@ -127,7 +127,7 @@ impl Shell {
             ToLogic::Forget(id) => {
                 inst.forget_screen(&id);
             }
-            ToLogic::Event { node, event } => {
+            ToLogic::Event { node, event, input } => {
                 if event == NodeEvent::Click
                     && let Some(c) = self.overlay.click(node, inst)
                 {
@@ -152,7 +152,7 @@ impl Shell {
                     }
                     return;
                 }
-                inst.event(node, event.name(), event.args_with(&self.host));
+                inst.event_with(node, event.name(), event.args_with(&self.host), input);
             }
             ToLogic::Layout { seq, sizes } => {
                 for (node, w, h) in sizes {

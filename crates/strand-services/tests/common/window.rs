@@ -16,6 +16,7 @@ use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1;
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 const SIZE: i32 = 64;
@@ -77,6 +78,9 @@ struct State {
 pub struct TestWindow {
     conn: Connection,
     toplevel: xdg_toplevel::XdgToplevel,
+    surface: wl_surface::WlSurface,
+    /// `xdg_activation_v1`, when the compositor offers it.
+    activation: Option<xdg_activation_v1::XdgActivationV1>,
     stop: Arc<AtomicBool>,
     /// The compositor asked it to close (it then unmaps itself).
     pub closed: Arc<AtomicBool>,
@@ -106,6 +110,7 @@ impl TestWindow {
         let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 4..=6, ()).unwrap();
         let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
         let wm: xdg_wm_base::XdgWmBase = globals.bind(&qh, 1..=5, ()).unwrap();
+        let activation = globals.bind(&qh, 1..=1, ()).ok();
         let surface = compositor.create_surface(&qh, ());
         let xdg = wm.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
@@ -119,7 +124,7 @@ impl TestWindow {
         let maximized = Arc::new(AtomicBool::new(false));
         let fullscreen = Arc::new(AtomicBool::new(false));
         let mut state = State {
-            surface,
+            surface: surface.clone(),
             shm,
             rgba,
             buffer,
@@ -159,6 +164,8 @@ impl TestWindow {
         TestWindow {
             conn,
             toplevel,
+            surface,
+            activation,
             stop,
             closed,
             activated,
@@ -166,6 +173,18 @@ impl TestWindow {
             fullscreen,
             thread: Some(thread),
         }
+    }
+
+    /// Asks the compositor to activate it with an xdg-activation
+    /// `token` (as an app launched with `XDG_ACTIVATION_TOKEN` does);
+    /// false when the compositor has no `xdg_activation_v1`.
+    pub fn activate(&self, token: &str) -> bool {
+        let Some(a) = &self.activation else {
+            return false;
+        };
+        a.activate(token.into(), &self.surface);
+        self.conn.flush().unwrap();
+        true
     }
 
     /// Changes the title.
@@ -287,6 +306,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
 }
 
 delegate_noop!(State: ignore wl_compositor::WlCompositor);
+delegate_noop!(State: ignore xdg_activation_v1::XdgActivationV1);
 delegate_noop!(State: ignore wl_surface::WlSurface);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);

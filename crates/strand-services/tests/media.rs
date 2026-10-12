@@ -190,7 +190,7 @@ fn media_follows_the_active_player_without_polling() {
     // Play, through the service: the player is told; it reports.
     b.media
         .dynamic()
-        .action(&rt, "play_pause", None, &[])
+        .action(&rt, "play_pause", None, &[], Default::default())
         .unwrap();
     until(&rt, &s, "playing", || {
         cells.playing.get_untracked(&rt) == Ok(true)
@@ -253,7 +253,10 @@ fn media_follows_the_active_player_without_polling() {
         cells.player.get_untracked(&rt) == Ok(Some("mpv".into()))
     });
     // Next track.
-    b.media.dynamic().action(&rt, "next", None, &[]).unwrap();
+    b.media
+        .dynamic()
+        .action(&rt, "next", None, &[], Default::default())
+        .unwrap();
     until(&rt, &s, "the next track", || {
         cells.title.get_untracked(&rt) == Ok(Some("Second".into()))
     });
@@ -345,7 +348,7 @@ fn a_frozen_player_does_not_hold_up_the_others() {
     let asked = std::time::Instant::now();
     b.media
         .dynamic()
-        .action(&rt, "play_pause", None, &[])
+        .action(&rt, "play_pause", None, &[], Default::default())
         .unwrap();
     until(&rt, &s, "playing", || {
         cells.playing.get_untracked(&rt) == Ok(true)

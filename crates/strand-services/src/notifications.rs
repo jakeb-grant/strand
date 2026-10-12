@@ -1,14 +1,17 @@
 //! `notifications`: the shell's own notification server
-//! (`org.freedesktop.Notifications`, Desktop Notifications spec 1.1: 1.2's
-//! `ActivationToken` needs an xdg-activation token from the clicked
-//! surface, which M4's renderer will provide) as a
-//! zbus `#[interface]` on a session-bus connection of its own, so the
+//! (`org.freedesktop.Notifications`, Desktop Notifications spec 1.2) as
+//! a zbus `#[interface]` on a session-bus connection of its own, so the
 //! name goes with the connection when the service stops.
 //!
 //! - `Notify` (`replaces_id`, actions, hints: `urgency`, `image-data`,
 //!   `image-path`, `desktop-entry`, `resident`; `expire_timeout`),
 //!   `CloseNotification`, `GetCapabilities`, `GetServerInformation`; the
-//!   `NotificationClosed` and `ActionInvoked` signals.
+//!   `NotificationClosed`, `ActionInvoked` and (M5) `ActivationToken`
+//!   signals: an `invoke` or `activate` from a handler a press started
+//!   sends the xdg-activation token for that press first, so the app
+//!   that sent the notification may raise its window (the `activation`
+//!   module; the token waits at most 200 ms, then the action goes
+//!   without one).
 //! - The store: `popups` (shown now), `all` (kept, at most [`KEPT`]),
 //!   `count`, `dnd`, the `received` event; `n.expire()` ends a popup (the
 //!   notification stays open in `all`: the server keeps notifications,
@@ -71,9 +74,9 @@ pub const KEPT: usize = 1000;
 /// new notification's picture is left out.
 pub const IMAGES_QUEUED: usize = 8;
 
-/// What `GetServerInformation` answers as the spec version: 1.1, since
-/// 1.2's `ActivationToken` signal is not sent (decisions.md, wave4-a2).
-pub const SPEC_VERSION: &str = "1.1";
+/// What `GetServerInformation` answers as the spec version: 1.2, with
+/// its `ActivationToken` signal (M5; decisions.md m5-platform).
+pub const SPEC_VERSION: &str = "1.2";
 
 /// What `GetCapabilities` answers.
 pub const CAPABILITIES: &[&str] = &[
@@ -166,7 +169,11 @@ pub enum NotificationsAction {
 }
 
 /// See the module docs.
-#[service(name = "notifications", action = NotificationsAction)]
+#[service(
+    name = "notifications",
+    action = NotificationsAction,
+    activation = &["invoke", "activate"]
+)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Notifications {
     /// The notifications to show now; each leaves when it expires or is
@@ -755,6 +762,8 @@ impl Notifications {
                         }
                     }
                     Some(Msg::Action(a)) => {
+                        // (M5) Sent before `ActionInvoked` (spec 1.2).
+                        let token = cx.activation_token().map(str::to_owned);
                         let alive = match a {
                             NotificationsAction::Clear => {
                                 let all: Vec<i64> = cx.state().all.iter().map(|n| n.id).collect();
@@ -774,14 +783,14 @@ impl Notifications {
                             }
                             NotificationsAction::Activate { item } => {
                                 if kept.default.contains(&item.id) {
-                                    invoked(&conn, item.id, "default").await;
+                                    invoked(&conn, item.id, "default", token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.id)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Invoke { item } => {
                                 if cx.state().all.iter().any(|n| n.id == item.notification) {
-                                    invoked(&conn, item.notification, &item.id).await;
+                                    invoked(&conn, item.notification, &item.id, token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.notification)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.notification, Closed::Dismissed).await
@@ -923,12 +932,19 @@ async fn signal_closed(conn: &zbus::Connection, id: i64, why: Closed) {
     }
 }
 
-async fn invoked(conn: &zbus::Connection, id: i64, key: &str) {
-    let r = conn
-        .emit_signal(None::<&str>, PATH, NAME, "ActionInvoked", &(id as u32, key))
-        .await;
-    if let Err(e) = r {
-        log::debug!("notifications: ActionInvoked not sent: {e}");
+/// `ActionInvoked`, after (M5) spec 1.2's `ActivationToken` when the
+/// press that invoked it got a token.
+async fn invoked(conn: &zbus::Connection, id: i64, key: &str, token: Option<&str>) {
+    for (member, text) in [("ActivationToken", token), ("ActionInvoked", Some(key))] {
+        let Some(text) = text else {
+            continue;
+        };
+        let r = conn
+            .emit_signal(None::<&str>, PATH, NAME, member, &(id as u32, text))
+            .await;
+        if let Err(e) = r {
+            log::debug!("notifications: {member} not sent: {e}");
+        }
     }
 }
 

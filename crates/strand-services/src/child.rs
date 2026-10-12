@@ -90,6 +90,28 @@ pub fn restore_in_child() {
     }
 }
 
+/// (M5) The variables a launched program reads its xdg-activation token
+/// from: the protocol's, and the startup-notification one older toolkits
+/// read (the same token, as the xdg-activation spec asks).
+pub const ACTIVATION_VARS: [&str; 2] = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"];
+
+/// (M5) Sets `cmd`'s activation variables ([`ACTIVATION_VARS`]) to
+/// `token`, the token for the press that launched it, or removes them
+/// with none: a program strand starts never inherits the token strand
+/// itself was started with (spent, and meant for strand's own window).
+/// Every program strand starts goes through it, beside
+/// [`restore_in_child`], so it is done on the `Command` before `fork`
+/// (setting the environment between `fork` and `exec` is not
+/// async-signal-safe).
+pub fn activation_env(cmd: &mut std::process::Command, token: Option<&str>) {
+    for var in ACTIVATION_VARS {
+        match token {
+            Some(t) => cmd.env(var, t),
+            None => cmd.env_remove(var),
+        };
+    }
+}
+
 /// Whether THP is on for `status` (a `/proc/<pid>/status` text): the
 /// `THP_enabled:` line, `None` on kernels without it (tests).
 pub fn thp_enabled(status: &str) -> Option<bool> {
@@ -97,4 +119,49 @@ pub fn thp_enabled(status: &str) -> Option<bool> {
         .lines()
         .find_map(|l| l.strip_prefix("THP_enabled:"))
         .map(|v| v.trim() == "1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A launch with a token carries it in both variables; one without
+    /// carries neither, even one strand inherited (an explicit removal
+    /// overrides the inherited environment).
+    #[test]
+    fn a_launch_carries_its_token_and_never_an_inherited_one() {
+        let envs = |cmd: &std::process::Command| -> Vec<(String, Option<String>)> {
+            cmd.get_envs()
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.map(|v| v.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect()
+        };
+        let mut cmd = std::process::Command::new("true");
+        activation_env(&mut cmd, Some("tok"));
+        let mut got = envs(&cmd);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("DESKTOP_STARTUP_ID".into(), Some("tok".into())),
+                ("XDG_ACTIVATION_TOKEN".into(), Some("tok".into())),
+            ]
+        );
+        let mut cmd = std::process::Command::new("true");
+        cmd.env("XDG_ACTIVATION_TOKEN", "stale");
+        activation_env(&mut cmd, None);
+        let mut got = envs(&cmd);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("DESKTOP_STARTUP_ID".into(), None),
+                ("XDG_ACTIVATION_TOKEN".into(), None),
+            ]
+        );
+    }
 }

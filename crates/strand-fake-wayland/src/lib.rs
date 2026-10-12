@@ -11,7 +11,9 @@
 //!   `xdg_wm_base` for popups and a seat's
 //!   keyboard whose focus tests move ([`SurfaceGlobals`], through
 //!   [`Fake::builder`]), recording what every surface committed
-//!   ([`Fake::surfaces`]). Sway 1.9, the compositor CI tests on, lacks
+//!   ([`Fake::surfaces`]); from M5 `xdg_activation_v1`, recording the
+//!   tokens asked for ([`Fake::activation_requests`]), and a pointer that
+//!   clicks ([`Cmd::Click`]). Sway 1.9, the compositor CI tests on, lacks
 //!   the alpha modifier and the background effect.
 //!
 //! - `strand-services`' thumbnails: the image capture source and copy
@@ -19,9 +21,12 @@
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
+mod activation;
 mod capture;
 mod surfaces;
 mod xdg;
+
+pub use activation::ActivationRequest;
 
 pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
 
@@ -47,7 +52,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::server::{
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason, GlobalId};
-use wayland_server::protocol::{wl_keyboard, wl_output, wl_seat, wl_surface};
+use wayland_server::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
     Resource,
@@ -109,6 +114,15 @@ pub enum Cmd {
     /// sends the held ones `presented` (late) and presents each commit's
     /// feedback at its commit again.
     HoldFeedback(bool),
+    /// (M5) A left click at (10, 10) on the layer surface with this
+    /// namespace, on every bound pointer of its client
+    /// ([`SurfaceGlobals::pointer`]): enter, press, release, each with
+    /// a serial of its own.
+    Click(&'static str),
+    /// (M5) Activation tokens asked for from now on are recorded but
+    /// never answered (true), as a compositor that ignores the request;
+    /// false answers them again (the held ones stay unanswered).
+    HoldTokens(bool),
     /// Answered once every command sent before it is applied
     /// ([`Fake::sync`]).
     Sync(mpsc::Sender<()>),
@@ -208,6 +222,13 @@ struct Server {
     /// The surface with keyboard focus.
     keyboard_focus: Option<wl_surface::WlSurface>,
     serial: u32,
+    /// (M5) Bound pointers (`wl_seat.get_pointer`).
+    pointers: Vec<wl_pointer::WlPointer>,
+    /// (M5) Tokens given so far, and what each was asked with.
+    tokens: u32,
+    activation_log: Arc<Mutex<Vec<ActivationRequest>>>,
+    /// (M5) Tokens are not answered ([`Cmd::HoldTokens`]).
+    hold_tokens: bool,
 }
 
 impl Server {
@@ -416,6 +437,23 @@ impl Server {
                 }
             }
             Cmd::KeyboardLeave => self.keyboard_leave(),
+            Cmd::HoldTokens(hold) => self.hold_tokens = hold,
+            Cmd::Click(namespace) => {
+                let Some(to) = self.surf.layer_surface(namespace) else {
+                    return;
+                };
+                for p in self.pointers.iter().filter(|p| p.client() == to.client()) {
+                    self.serial += 1;
+                    p.enter(self.serial, &to, 10.0, 10.0);
+                    for state in [
+                        wl_pointer::ButtonState::Pressed,
+                        wl_pointer::ButtonState::Released,
+                    ] {
+                        self.serial += 1;
+                        p.button(self.serial, self.serial, 0x110, state);
+                    }
+                }
+            }
             Cmd::HoldFrames(on) => self.surf.hold_frames(on),
             Cmd::HoldFeedback(on) => self.surf.hold_feedback(on),
             Cmd::Sync(done) => {
@@ -788,7 +826,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, String> for Server {
 
 impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
     fn bind(
-        _: &mut Self,
+        state: &mut Self,
         _: &DisplayHandle,
         _: &Client,
         resource: New<wl_seat::WlSeat>,
@@ -796,7 +834,12 @@ impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
         init: &mut DataInit<'_, Self>,
     ) {
         let seat = init.init(resource, *n);
-        seat.capabilities(wl_seat::Capability::Keyboard);
+        let pointer = state.surf.globals.as_ref().is_some_and(|g| g.pointer);
+        seat.capabilities(if pointer {
+            wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer
+        } else {
+            wl_seat::Capability::Keyboard
+        });
     }
 }
 
@@ -810,7 +853,11 @@ impl Dispatch<wl_seat::WlSeat, usize> for Server {
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        // Only the keyboard is offered (`capabilities`).
+        // The keyboard, and the pointer when offered (`capabilities`).
+        if let wl_seat::Request::GetPointer { id } = request {
+            state.pointers.push(init.init(id, ()));
+            return;
+        }
         if let wl_seat::Request::GetKeyboard { id } = request {
             let k = init.init(id, ());
             if let Some(file) = keymap_file() {
@@ -838,6 +885,23 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Server {
     ) {
         // `release` is the only request.
         state.keyboards.retain(|o| o != k);
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        p: &wl_pointer::WlPointer,
+        request: wl_pointer::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        // A cursor is taken and shown nowhere.
+        if let wl_pointer::Request::Release = request {
+            state.pointers.retain(|o| o != p);
+        }
     }
 }
 
@@ -876,6 +940,8 @@ pub struct Fake {
     /// What the capture side did (`capture.rs`): `session <ident>`,
     /// `frame <ident>`, `failed <ident>`, `stopped <ident>`, `end <ident>`.
     pub captures: Arc<Mutex<Vec<String>>>,
+    /// (M5) Every xdg-activation token asked for, in order.
+    activation_log: Arc<Mutex<Vec<ActivationRequest>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -912,7 +978,8 @@ impl FakeBuilder {
         self
     }
 
-    /// Seat globals (keyboard only; their requests are not served).
+    /// Seat globals (a keyboard, and a pointer with
+    /// [`SurfaceGlobals::pointer`]).
     pub fn seats(mut self, n: usize) -> Self {
         self.seats = n;
         self
@@ -1017,6 +1084,8 @@ impl Fake {
         let thread_surfaces = surfaces.clone();
         let captures = Arc::new(Mutex::new(Vec::new()));
         let thread_captures = captures.clone();
+        let activation_log = Arc::new(Mutex::new(Vec::new()));
+        let thread_activation_log = activation_log.clone();
         let FakeBuilder {
             workspaces: with_workspaces,
             wlr,
@@ -1055,6 +1124,7 @@ impl Fake {
                 wlr_requests: thread_wlr_requests,
                 output_names: outputs.iter().map(|o| o.to_string()).collect(),
                 seat_globals,
+                activation_log: thread_activation_log,
                 ..Default::default()
             };
             state.surf.effect_caps = surface_globals
@@ -1111,8 +1181,17 @@ impl Fake {
             clients,
             surfaces,
             captures,
+            activation_log,
             thread: Some(thread),
         }
+    }
+
+    /// (M5) Every xdg-activation token asked for so far, in order.
+    pub fn activation_requests(&self) -> Vec<ActivationRequest> {
+        self.activation_log
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default()
     }
 
     /// Clients connected now.

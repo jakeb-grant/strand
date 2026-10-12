@@ -438,11 +438,8 @@ recorded reason.
 - sway: `win.maximize()` answers `Unsupported` on the adapter (sway has
   no maximize). Through the wlr fallback (adapter off) the reply is
   `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
-- Notifications: ActivationToken (spec 1.2) needs an xdg-activation token
-  from the clicked surface, so the server reports spec 1.1 until
-  S-platform's wave-2 work (features.md's M5 xdg-activation box, which
-  also covers `XDG_ACTIVATION_TOKEN` for app launches);
-  `Notification.time` has no time of day yet.
+- Notifications: `Notification.time` has no time of day yet (spec 1.2's
+  `ActivationToken` is sent since S-platform, M5 wave 3).
 - Tray: Activate and ContextMenu get the press's output-logical point
   (`demo/host.rs::a_press_sets_the_tray_click_point`); (0, 0) only before
   the first press and for actions no press caused (`dismiss`, `scroll`,
