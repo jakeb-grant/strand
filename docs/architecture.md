@@ -1139,8 +1139,18 @@ zero-width span (an insertion) is allowed.
   target, renamed over it only while the target is still the file
   whose bytes were hashed (same inode, same hash), so an editor's save
   renamed into place meanwhile is refused.
-- `strand-dev reference`: generates `docs/reference/` from the builtin
-  and service schemas.
+- `strand-dev reference [dir]`: generates `docs/reference/` from the
+  builtin and service schemas (`Schema::builtin_with` of every builtin
+  service's text, never the plugin schema files, so the pages are the
+  same on every machine) and their `///` docs: `README.md`,
+  `elements.md`, `services.md`, `types.md`, `functions.md` and
+  `tokens.md` (`strand_dev::reference::{schema, pages, write}`).
+  `write` replaces or removes only pages that open with the generated
+  note and refuses a directory holding any other `.md` file; with no
+  directory named, the CLI needs `./docs/reference` to exist
+  (decisions.md m5-docs3). The pages are committed; `reference::tests::the_reference_is_current`
+  fails on any difference, so CI fails on a schema edit without its
+  pages (built in M5 wave 3, m5-docs).
 - **tree-sitter layout.** `crates/strand-dev/tree-sitter-strand/` is a
   separate package (`publish = false`): `grammar.js`, the committed
   generated `src/` (`src/grammar.json`, `src/parser.c`,
@@ -4404,9 +4414,10 @@ reason. `context.only` filters both kinds.
 
 The tree-sitter package (`crates/strand-dev/tree-sitter-strand/`) joined
 it in M5 wave 2 (it was not built in M1, `docs/decisions.md`,
-wave2-lsp; m5-lsp). The inspector client (`strand-dev inspect`) and the
-reference generator join it later in M5 (see "M5 interfaces (wave 0a)");
-neither is built yet.
+wave2-lsp; m5-lsp). The reference generator (`strand-dev reference`,
+`src/reference.rs`) joined it in M5 wave 3 (m5-docs). The inspector
+client (`strand-dev inspect`) joins it later in M5 (see "M5 interfaces
+(wave 0a)"); it is not built yet.
 
 ### `strand-services`
 

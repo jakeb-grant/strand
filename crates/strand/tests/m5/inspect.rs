@@ -14,8 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value as Json;
 use strand_core::ipc::{Request, encode};
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 /// `strand-dev inspect`'s write-back, compiled here from its source: a
 /// dev-dependency on strand-dev would unify strand-compiler's `shaders`

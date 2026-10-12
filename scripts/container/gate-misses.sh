@@ -9,8 +9,10 @@
 # strand-render/tests/theme_swap_bench.rs,
 # strand-render/tests/list_scroll_bench.rs,
 # strand-render/tests/motion.rs, strand-compiler/tests/theme.rs,
-# strand/src/bench.rs and strand/src/run/tests.rs; their tests check this
-# file still names it). LOG
+# strand/src/bench.rs, strand/src/run/tests.rs and
+# strand/tests/m5/newcomer.rs; their tests check this file still names
+# it). Only ci.sh's timing steps consult this file: newcomer.rs runs in
+# the strict `cargo test --workspace` step, where its miss fails. LOG
 # passes when:
 #   - libtest reported "test result: FAILED" with N failed tests,
 #   - every panic in it ("thread '...' panicked at ...:" followed by its
