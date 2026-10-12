@@ -452,7 +452,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 - **Drag and drop.** `drag: pin` on the source; `on drop(p: Pin, at: int) { pins.move(p.app, at) }` on the target. Reordering springs by key. Files, apps and text from other programs arrive as typed `Drop` values.
 - **Pages.** `pages current: page { page wifi {…}; page bluetooth {…} }` gives directional transitions. Hidden pages unmount, so a Wi-Fi scan stops when you leave that page.
 - **Popups** are anchored xdg\_popups that nest, which is how tray menus work. `tooltip: expr` adds a tooltip.
-- **Lock screen** on `ext-session-lock`. Authentication runs in a small forked PAM helper using the `strand` PAM service, or `login` with a one-time warning when `/etc/pam.d/strand` is missing. The lock is exempt from reload and fails closed: if anything faults, a built-in password field appears.
+- **Lock screen** on `ext-session-lock`. Authentication runs in a small forked PAM helper using the `strand` PAM service, or `login` with a one-time warning when `/etc/pam.d/strand` is missing. While the lock is shown PAM's conversation runs, and its texts and prompts reach the lock as PAM says them (`auth.message`, `auth.prompt`), so a fingerprint module ahead of the password works: "Place your finger" shows, a finger unlocks, and a typed password waits for PAM to ask for it. Once the reader gives up and PAM asks for the password, waking the lock (a key or the pointer on it) has the reader listen again. The lock is exempt from reload and fails closed: if anything faults, a built-in password field appears.
 
 ## Motion and visual effects
 

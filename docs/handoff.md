@@ -341,14 +341,22 @@ recorded reason.
   fetched and cached; decisions.md m6-services.) An enterprise proxy that
   needs a login, or a private CA outside the system's certificates, leaves
   remote art null.
-- Lock: PAM's info and error texts reach the lock only with the verdict,
-  inside one 30 s client timeout. A stack with `pam_fprintd` before
-  `pam_unix` (30 s default wait) never shows "Place your finger" and
-  times out before the password is tried, then shows the fallback,
-  which meets the same wall. Streaming interim text needs a protocol
-  message and a lock prompt design.md does not have; moved past M4
-  (decisions.md m4-audit, round 3). README asks for a password-only
-  stack meanwhile.
+- Lock: PAM's texts and prompts reach the lock as PAM says them
+  (`auth.message`, `auth.prompt`; M6 S-lock, decisions.md m6-lock), so
+  a `pam_fprintd` stack shows "Place your finger" and unlocks on a
+  finger. What PAM's one conversation still imposes: a password typed
+  while `pam_fprintd` waits is tried only once it stops waiting (30 s
+  by default), after a wrong password PAM starts over with the reader,
+  once the reader gives up it listens again only when the lock is
+  woken (a key or pointer event; the first key of a password typed
+  then waits through the reader's wait again; m6-lock lock-r2-1; texts
+  with no wait before the prompt, a banner or a lockout's, are not
+  restarted, lock-r3-1), a reader wait of 90 s or more (`timeout=`
+  past three times the client's 30 s) leaves a typed password, the
+  fallback's too, to time out, so only the finger unlocks (lock-r3-2;
+  README says to keep it under 90 s), and
+  the fallback field shows no PAM text (it has no text; its password
+  still goes through the same stack).
 - Network: (resolved in M6 by S-services: a join is a task; an
   enterprise (802.1X) network with a profile saved in NetworkManager
   joins with `connect()`; WEP joins with its key like a WPA personal

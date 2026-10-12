@@ -4,13 +4,17 @@
 //! `pam_permit`, `pam_deny` and `pam_exec` stand in for real modules;
 //! `pam_exec expose_authtok` checks the password, so right, wrong and
 //! empty passwords are tested without `pam_unix` (the lock VM tests
-//! that).
+//! that). `pam_echo` and a waiting `pam_exec` stand in for a fingerprint
+//! module (`pam_fprintd`: a text, then a wait for the finger) ahead of
+//! the password (m6-lock).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use strand_auth::{AuthError, Client, Password, Service, Verdict, take_service_warning};
+use strand_auth::{
+    AuthError, Client, Password, Said, Service, Verdict, answers, take_service_warning,
+};
 
 const HELPER: &str = env!("CARGO_BIN_EXE_strand-auth");
 
@@ -41,6 +45,19 @@ fn script(dir: &Path, name: &str, body: &str) -> String {
     path.to_str().unwrap().to_string()
 }
 
+/// A stack that asks for a password (`pam_exec expose_authtok`) and
+/// accepts any, so the helper's fault points, which strike when a
+/// password arrives, are reached.
+fn prompting(dir: &Path) {
+    let accept = script(dir, "accept", "cat >/dev/null");
+    service(
+        dir,
+        "strand",
+        &format!("pam_exec.so expose_authtok quiet {accept}"),
+        "pam_permit.so",
+    );
+}
+
 fn submit(c: &mut Client, password: &str) -> Verdict {
     c.submit(Password::from(password.to_string()))
 }
@@ -64,7 +81,7 @@ fn a_permit_stack_unlocks() {
 #[test]
 fn a_module_on_stdin_and_stdout_does_not_touch_the_protocol() {
     let dir = tempfile::tempdir().unwrap();
-    service(dir.path(), "strand", "pam_permit.so", "pam_permit.so");
+    prompting(dir.path());
     let mut c = Client::new(HELPER.into(), no_hook)
         .with_test_env(&[
             ("STRAND_AUTH_PAM_CONFDIR", dir.path().to_str().unwrap()),
@@ -176,8 +193,10 @@ fn a_hanging_module_times_out_and_its_processes_are_killed() {
     let start = Instant::now();
     let v = submit(&mut c, "anything");
     assert!(matches!(v, Verdict::Failed(AuthError::Timeout)), "{v:?}");
+    // The module hangs before PAM asks for the password: the limit (three
+    // timeouts, m6-lock) ends the wait, not the timeout.
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        start.elapsed() < Duration::from_secs(10),
         "{:?}",
         start.elapsed()
     );
@@ -328,7 +347,7 @@ fn a_missing_helper_fails_closed() {
 #[test]
 fn helper_faults_fail_closed_and_respawn() {
     let dir = tempfile::tempdir().unwrap();
-    service(dir.path(), "strand", "pam_permit.so", "pam_permit.so");
+    prompting(dir.path());
     let confdir = dir.path().to_str().unwrap();
     let faulty = |fault: &str| {
         Client::new(HELPER.into(), no_hook)
@@ -394,13 +413,15 @@ fn an_overlong_password_is_refused_not_cut() {
 }
 
 /// The helper refuses an overlong password itself, whatever sends it:
-/// with a stack that accepts anything, a 600-byte password is denied.
+/// with a stack that accepts anything, a 600-byte answer to its prompt
+/// is denied. It also speaks only conversations: a password with no
+/// prompt is a protocol error, and it exits.
 #[test]
 fn the_helper_refuses_an_overlong_password() {
     use std::process::{Command, Stdio};
     use strand_auth::protocol::{Code, MAX_PASSWORD, Message, read_message, write_message};
     let dir = tempfile::tempdir().unwrap();
-    service(dir.path(), "strand", "pam_permit.so", "pam_permit.so");
+    prompting(dir.path());
     let mut child = Command::new(HELPER)
         .env_clear()
         .env("STRAND_AUTH_PAM_CONFDIR", dir.path())
@@ -415,6 +436,9 @@ fn the_helper_refuses_an_overlong_password() {
         Message::Hello { .. }
     ));
     let mut verdict = |pw: String| {
+        write_message(&mut input, &Message::Begin).unwrap();
+        let m = read_message(&mut output).unwrap();
+        assert!(matches!(m, Message::Prompt(_)), "{m:?}");
         write_message(&mut input, &Message::Submit(Password::from(pw))).unwrap();
         match read_message(&mut output).unwrap() {
             Message::Verdict { code, .. } => code,
@@ -424,6 +448,149 @@ fn the_helper_refuses_an_overlong_password() {
     assert_eq!(verdict("x".repeat(MAX_PASSWORD)), Code::Success, "control");
     assert_eq!(verdict("x".repeat(MAX_PASSWORD + 1)), Code::Denied);
     assert_eq!(verdict("x".repeat(600)), Code::Denied);
-    drop(input);
-    assert!(child.wait().unwrap().success());
+    assert_eq!(verdict("nul\0byte".into()), Code::Denied);
+    // A password nobody asked for.
+    write_message(
+        &mut input,
+        &Message::Submit(Password::from("x".to_string())),
+    )
+    .unwrap();
+    assert!(matches!(
+        read_message(&mut output),
+        Err(strand_auth::protocol::ProtocolError::Eof)
+    ));
+    assert!(!child.wait().unwrap().success());
+}
+
+// ---- a fingerprint module ahead of the password (m6-lock) ---------------------
+
+/// A stack shaped like `pam_fprintd` ahead of the password: `pam_echo`
+/// says "Place your finger on the fingerprint reader" (as pam_fprintd
+/// does, `PAM_TEXT_INFO`), a `sufficient pam_exec` waits up to `wait`
+/// for the finger (the file `finger`, which the test touches) and
+/// succeeds on it, and otherwise `pam_exec expose_authtok` asks for the
+/// password and takes only `right horse`. Returns the finger's path.
+fn fingerprint_stack(dir: &Path, wait: &str) -> std::path::PathBuf {
+    let finger = dir.join("finger");
+    std::fs::write(
+        dir.join("say"),
+        "Place your finger on the fingerprint reader\n",
+    )
+    .unwrap();
+    let reader = script(
+        dir,
+        "reader",
+        &format!(
+            r#"end=$(( $(date +%s%N) / 1000000 + {wait} ))
+while [ ! -e {finger} ]; do
+  [ $(( $(date +%s%N) / 1000000 )) -lt $end ] || exit 1
+  sleep 0.05
+done"#,
+            finger = finger.display()
+        ),
+    );
+    let check = script(
+        dir,
+        "check",
+        r#"pw=$(tr -d '\000'); [ "$pw" = "right horse" ]"#,
+    );
+    std::fs::write(
+        dir.join("strand"),
+        format!(
+            "auth optional pam_echo.so file={say}\n\
+             auth sufficient pam_exec.so quiet {reader}\n\
+             auth required pam_exec.so expose_authtok quiet {check}\n\
+             account required pam_permit.so\n",
+            say = dir.join("say").display()
+        ),
+    )
+    .unwrap();
+    finger
+}
+
+/// The fingerprint path: the text arrives while the reader waits, the
+/// test (the user) touches the reader on seeing it, and the
+/// conversation unlocks with no password at all.
+#[test]
+fn a_fingerprint_style_module_unlocks_without_a_password() {
+    let dir = tempfile::tempdir().unwrap();
+    // A long wait: had the text come only with the verdict, the reader
+    // would give up and the password prompt below would fail the test.
+    let finger = fingerprint_stack(dir.path(), "20000");
+    let mut c = client(dir.path()).with_timeout(Duration::from_millis(1500));
+    let (answers, inbox) = answers().unwrap();
+    let mut said = Vec::new();
+    let out = c.converse(inbox, &mut |s| {
+        match s {
+            Said::Message(m) if m.contains("Place your finger") => {
+                std::fs::write(&finger, "").unwrap();
+            }
+            // Asked for a password: the finger was never seen; a wrong
+            // one ends the test.
+            Said::Prompt(_) => assert!(answers.send(Password::from("wrong".to_string()))),
+            Said::Message(_) => {}
+        }
+        said.push(format!("{s:?}"));
+    });
+    assert!(out.verdict.is_unlocked(), "{:?}: {said:?}", out.verdict);
+    assert!(!out.answered, "no password: {said:?}");
+    assert_eq!(said.len(), 1, "{said:?}");
+}
+
+/// No finger: the reader gives up after 2 s of silence (past the
+/// client's 1.5 s timeout, harmless while no password waits), PAM asks for
+/// the password, and the one typed then unlocks; a wrong one does not.
+#[test]
+fn the_password_is_asked_once_the_fingerprint_module_gives_up() {
+    let dir = tempfile::tempdir().unwrap();
+    fingerprint_stack(dir.path(), "2000");
+    let mut c = client(dir.path()).with_timeout(Duration::from_millis(1500));
+    for (password, unlocks) in [("wrong horse", false), ("right horse", true)] {
+        let (answers, inbox) = answers().unwrap();
+        let mut said = Vec::new();
+        let out = c.converse(inbox, &mut |s| {
+            if let Said::Prompt(_) = s {
+                assert!(answers.send(Password::from(password.to_string())));
+            }
+            said.push(match s {
+                Said::Message(m) => format!("message {m}"),
+                Said::Prompt(_) => "prompt".to_string(),
+            });
+        });
+        assert_eq!(out.verdict.is_unlocked(), unlocks, "{:?}", out.verdict);
+        assert!(out.answered);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].contains("Place your finger"), "{said:?}");
+        assert_eq!(said[1], "prompt");
+    }
+    assert_eq!(c.spawns(), 1, "one helper for every conversation");
+}
+
+/// A password typed while the reader waits is kept until PAM asks for
+/// it: the reader is silent for 2 s with it waiting (past the 1.5 s
+/// timeout, within the 4.5 s limit), then it is the answer. `submit`, the
+/// fallback lock's call, works the same way.
+#[test]
+fn a_password_typed_while_the_fingerprint_module_waits_is_tried_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fingerprint_stack(dir.path(), "2000");
+    let mut c = client(dir.path()).with_timeout(Duration::from_millis(1500));
+    let (answers, inbox) = answers().unwrap();
+    let out = c.converse(inbox, &mut |s| {
+        if let Said::Message(_) = s {
+            assert!(answers.send(Password::from("right horse".to_string())));
+        }
+    });
+    assert!(out.verdict.is_unlocked(), "{:?}", out.verdict);
+    let v = submit(&mut c, "right horse");
+    assert!(v.is_unlocked(), "{v:?}");
+    // pam_exec fails a refused password as a module error, not a denial;
+    // either way the verdict says what PAM said on the way.
+    let v = submit(&mut c, "wrong horse");
+    let message = match &v {
+        Verdict::Denied { message } => message.clone().unwrap_or_default(),
+        Verdict::Failed(AuthError::Pam(m)) => m.clone(),
+        v => panic!("{v:?}"),
+    };
+    assert!(message.contains("Place your finger"), "{message}");
 }

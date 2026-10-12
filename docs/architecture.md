@@ -16,7 +16,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (`strand-persist`, one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
 | Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
-| Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check blocks here in PAM, up to the client's timeout, and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
+| Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check is one PAM conversation that blocks here, bounded by the client's deadlines (decisions.md m6-lock), and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
 | GPU (M4; `strand-gpu`, started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 | Theme quantiser (`strand-quantise`, one per `Quantiser`, started at the first wallpaper palette asked for) | `strand-theme` (`image.rs`), driven from `strand-compiler`'s `vm/theme.rs` | Wallpaper decodes and palette quantisation off the logic thread, with the quantise cache; a short-lived `strand-quantise-grace` sleeper per torn wallpaper wakes the owner when its grace ends | Run on the logic tick: logic polls for results and keeps the last palette meanwhile |
 | Token overlay writer (`strand-tokens`, M5; started on the first write, ends when idle) | `strand-compiler` (`instantiate/overlay.rs`) | Atomic writes of `$XDG_STATE_HOME/strand/tokens.toml` (temp file, `fsync`, rename, directory `fsync`), the newest queued text winning; a bounded wait for the last write at exit | Run on the logic tick or block logic (a failure comes back as settings' `WriteFailed` notice); it is not the persist IO thread |
@@ -206,7 +206,9 @@ thread's boot and step loop), `sleep.rs` (the logic thread's calloop
 sleep: `Inbox`, `Sleeper`), `shell.rs` (`Shell`: messages, commits and
 reloads, IPC requests, `strand watch` events), `lock.rs` (the session
 lock in the binary: `Guard::wire`, which enables the session lock only
-with `auth`'s tokens wired to `State::unlock`; the main loop's fault
+with `auth`'s tokens wired to `State::unlock`, and tells `auth` whether
+a lock is shown, and when one is woken by input, through
+`auth::LockSignal`; the main loop's fault
 checks, the first-frame timeout and the heartbeat watchdog; the
 built-in fallback (`LockScreen`) and its own `strand_auth::Client`
 (the `Checker`); lock sessions tagging verdicts; the restart marker;
@@ -267,7 +269,7 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   `strand-lock-auth` (`run/lock.rs`'s `Checker`, started at the
   fallback's first submit), which holds the fallback's
   `strand_auth::Client` (looking the helper up again at each check until
-  one is found), blocks in PAM for up to the client's timeout, and
+  one is found), blocks in PAM within the client's deadlines, and
   answers on the main loop's channel (`LockMsg::Checked`), so the main
   thread never waits on PAM. Every `LockMsg` carries the lock session its
   check began in (`LockScreen::session`, bumped when a lock ends; `auth`
@@ -459,11 +461,15 @@ assert on (decisions.md, m4-surface-w1; the crate's own doc comment,
 `strand-auth` (M4) is the lock's whole security boundary, small enough to
 review alone. Its lib depends on `libc` and `zeroize` and no Strand
 crate; its binary adds a hand-written PAM FFI and nothing else. The lib
-holds the framed request/reply protocol over a socketpair, a blocking
+holds the framed conversation protocol over a socketpair, a blocking
 `Client` (`Client::new(helper: PathBuf, pre_exec: fn())`, which spawns
 the helper and runs `pre_exec` in the child between fork and exec;
-`submit(password) -> Verdict`, timeout, respawn on a dead helper, with
-the same hook), password buffers that zeroize on drop, and `UnlockToken`:
+`converse(Inbox, &mut dyn FnMut(Said)) -> Conversed`, one PAM
+conversation whose texts and prompts arrive as PAM says them and whose
+prompts take the passwords sent through its `Answers`;
+`submit(password) -> Verdict`, a conversation whose every prompt gets
+that password; deadlines, respawn on a dead helper, with the same hook),
+password buffers that zeroize on drop, and `UnlockToken`:
 a value only `Client` mints, from a success reply, which is `Send` and
 neither `Clone` nor constructible elsewhere. `strand-surface` releases
 a session lock only for an `UnlockToken`, so no other code path can
@@ -478,16 +484,32 @@ ignored `strand` file all fall back (`strand-auth`'s `choose_service`).
 Every other PAM error fails closed. A `faults` cargo feature (off in default
 and release builds) adds `STRAND_FAULT` injection points here and in
 `strand`.
-As built (decisions.md, m4-lock-w1): `protocol` (frames of a `u32`
-length, a kind and at most 1 KiB: `HELLO` with the version and the
-service, `SUBMIT`, `VERDICT` with success, denied or error and PAM's
-text), `Password`, `Client` (`new`, `with_timeout`, `submit`,
-`helper_pid`, `spawns`, `service`; `faults` adds `with_test_env`),
-`Verdict { Unlocked(UnlockToken), Denied { message }, Failed(AuthError)
-}`, `default_helper()` (beside the executable, then the libexec paths)
-and `take_service_warning()` (the `login` fallback's warning, once per
-process). A timeout or a bad frame kills the helper and everything it
-started; the next password starts another. Under `faults` the helper
+As built (decisions.md, m4-lock-w1; conversations, m6-lock): `protocol`
+(frames of a `u32` length, a kind and at most 1 KiB, version 2: `HELLO`
+with the version and the service; `BEGIN`, which starts a conversation;
+`INFO`, a `PAM_TEXT_INFO` or `PAM_ERROR_MSG` text, and `PROMPT`, a
+`PAM_PROMPT_ECHO_OFF` prompt, each sent as PAM says it; `SUBMIT`, the
+answer to a prompt; `VERDICT` with success, denied or error and PAM's
+error text, which ends the conversation), `Password`, `Client` (`new`,
+`with_timeout`, `converse`, `submit`, `helper_pid`, `spawns`,
+`service`; `faults` adds `with_test_env`), `answers() -> (Answers,
+Inbox)` (`Answers::send(Password) -> bool`, one waiting at a time, from
+any thread; `Answers::take_back() -> Option<Password>`, the one no
+prompt took, which once the conversation has ended is one sent too late
+for it (added in m6-lock's review fixes, lock-r1-5: `send` cannot tell a
+conversation that has just ended from one still running); dropping it
+ends a conversation with no password in it, `AuthError::Cancelled`), `Said { Message(&str), Prompt(&str) }`,
+`Conversed { verdict, answered }`, `refusal(&Password)` (a NUL, or
+longer than PAM takes), `Verdict { Unlocked(UnlockToken), Denied {
+message }, Failed(AuthError) }`, `default_helper()` (beside the
+executable, then the libexec paths) and `take_service_warning()` (the
+`login` fallback's warning, once per process). No deadline runs while
+no password waits for PAM or is with it (PAM may wait on a reader);
+once PAM has a password it must send a frame within the timeout (30 s)
+of the last one or of the answer, and a password must be answered (the
+next prompt or the verdict) within `LIMIT_FACTOR` (3) timeouts of being
+sent. A missed deadline or a bad frame kills the helper and everything
+it started; the next conversation starts another. Under `faults` the helper
 also takes a private PAM confdir (`STRAND_AUTH_PAM_CONFDIR`,
 `pam_start_confdir`), which the tier-A tests use; those tests
 (`pam`, `no_faults`) name the feature (`required-features`) and run with
@@ -5125,7 +5147,8 @@ transparent huge pages for life.
   to S-surface, auth to S-lock, audio and wm to S-effects.
   - `auth` stops being provisional (`services/auth.rs`, as built in
     M4 wave 1): its schema is `strand-services-schema/src/auth.schema`
-    (`busy`, `failed`, `submit(password)`), with an `AUTH` constant and
+    (`busy`, `failed`, `message`, `prompt`, `submit(password)`; m6-lock
+    added `message` and `prompt`), with an `AUTH` constant and
     a `schemas()` entry, and it is registered in `Builtin`. Like every
     other builtin service it keeps its `provisional service auth` stub
     in builtin.schema, which the extension replaces, so the compiler's
@@ -5133,18 +5156,40 @@ transparent huge pages for life.
     service crates (decisions.md, m4-lock-w1). Its store runs a
     `strand_auth::Client` built with `child::restore_in_child` as the
     helper's `pre_exec`, started with the store and killed when it
-    stops; a submit runs on a blocking task, `busy` meanwhile, and one
-    arriving during a check is dropped. The password is a
+    stops; each conversation runs on a blocking task, its texts and
+    prompts reach the store over a channel as `message` and `prompt`,
+    and a submit answers the prompt PAM waits on or the next, `busy`
+    until PAM answers it; one arriving during a check is dropped. While
+    the binary's `auth::LockSignal` (`AuthConfig::lock`) says a lock is
+    shown, the store keeps a conversation open: one begins when the
+    lock shows and again after one a password was given to that did not
+    unlock; one with no password in it ends when the lock goes, and
+    after one that ended with no password only a submit begins the
+    next. `LockSignal::wake`, which the binary calls for each key and
+    pointer event on a shown lock, ends a conversation waiting on a
+    prompt with no password given that PAM asked only after waiting
+    `auth::READER_WAIT` (2 s) or longer since its first text (the reader
+    ahead of `pam_unix` waited and gave up) and begins the next, so the
+    reader listens again; a prompt that followed its texts at once (a
+    banner, a lockout's texts) is left alone. `LockSignal::wakes` counts
+    the wakes (decisions.md m6-lock, lock-r2-1, lock-r3-1; `READER_WAIT`
+    is an interface addition). The password is a
     `strand_auth::Password` from the moment it arrives, wiped once
     sent. A success hands the `strand_auth::UnlockToken` to the
     `auth::UnlockSink` the binary sets with `auth::configure`
-    (`AuthConfig { helper, timeout, sink, failed, session, client_hook }`),
-    which passes it to the surface manager's unlock; anything else sets
-    `failed`, and a check that could not be made goes to the
-    `auth::FailureSink` and is a warning diagnostic, as is the `login`
+    (`AuthConfig { helper, timeout, sink, failed, session, client_hook,
+    lock }`),
+    which passes it to the surface manager's unlock (a conversation
+    with no password in it, a finger's, mints one too); a refusal of a
+    password, or a check with one in it that could not be made, sets
+    `failed`, and one with no password in it (a refusal such as
+    `pam_faillock`'s lockout, a cancelled or failed conversation)
+    leaves `failed` as it was. A check with a password in it that
+    could not be made also goes to the `auth::FailureSink` and is a
+    warning diagnostic (one with none is only logged), as is the `login`
     fallback (once per process). The blocking task hands the verdict to
     the sinks itself, with the `auth::SessionTag` value read when the
-    check began (`Fn(UnlockToken, u64)`, `Fn(&str, u64)`), so a check
+    conversation began (`Fn(UnlockToken, u64)`, `Fn(&str, u64)`), so a check
     outlives a store that stops mid-check (a lock that reads no `auth`
     field holds no reader; m4-audit).
   - Audio: `Levels` carries FFT bins for a `spectrum` tap. The FFT

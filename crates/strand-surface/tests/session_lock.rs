@@ -174,7 +174,7 @@ fn token() -> UnlockToken {
     let path: PathBuf = dir.join("accept");
     std::fs::write(
         &path,
-        "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\001\\000'; sleep 0.2; \
+        "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\002\\000'; sleep 0.2; \
          printf '\\002\\000\\000\\000\\003\\000'; sleep 5\n",
     )
     .unwrap();

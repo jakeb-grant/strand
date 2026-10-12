@@ -36,7 +36,12 @@
 //! holds it: not a fault, nothing shows, the run goes on); an output
 //! plugged in while locked; a config write of `false` while locked
 //! (only a password unlocks). A run under `STRAND_MOCK` never locks. The
-//! inspector cannot pick while locked (M5).
+//! inspector cannot pick while locked (M5). With a fingerprint-shaped
+//! stack (`fingerprint_*`, run by `scripts/lockvm/scenarios/fingerprint.sh`
+//! only, m6-lock): the lock shows PAM's text while the reader waits and a
+//! finger unlocks it, the prompt once the reader gives up, a password
+//! typed while it waits is tried after it, and the fallback's field takes
+//! the password through the same stack.
 //!
 //! No assertion depends on how long anything took: each wait is for
 //! what grim shows, bounded only to fail instead of hanging.
@@ -104,6 +109,30 @@ lock Gate {
   text pct(10 / zero)
 }
 "#;
+
+/// (m6-lock) The config's lock coloured by `auth.message` (PAM's text
+/// shows) and `auth.prompt` (PAM asks for the password), which it also
+/// shows as text, for the fingerprint tests.
+const FINGER_CONFIG: &str = r#"export state locked = false
+export state zero = 1
+lock Gate {
+  state secret = ""
+  open: <-> locked
+  bg: #2050d0
+  when auth.message != "" { bg: #806020 }
+  when auth.prompt != "" { bg: #208080 }
+  when auth.failed { bg: #a02040 }
+  when secret != "" { bg: #20a050 }
+  input { type: password; text: <-> secret; focus: true
+    on activate { if secret != "" { auth.submit(secret) }; secret = "" }
+  }
+  text auth.message
+  text auth.prompt
+}
+"#;
+/// [`FINGER_CONFIG`]'s lock while PAM's text shows, and while PAM asks.
+const LOCK_TOLD: [u8; 3] = [0x80, 0x60, 0x20];
+const LOCK_ASKED: [u8; 3] = [0x20, 0x80, 0x80];
 
 /// auth.schema's `on activate` handler, which [`CONFIG`] uses.
 const IDIOM: &str = r#"on activate { if secret != "" { auth.submit(secret) }; secret = "" }"#;
@@ -519,7 +548,7 @@ fn token(dir: &Path) -> UnlockToken {
     let path = dir.join("accept");
     std::fs::write(
         &path,
-        "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\001\\000'; sleep 0.2; \
+        "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\002\\000'; sleep 0.2; \
          printf '\\002\\000\\000\\000\\003\\000'; sleep 5\n",
     )
     .unwrap();
@@ -1445,6 +1474,126 @@ fn pam_helper_deleted_and_killed_keeps_the_session_locked_until_it_is_back() {
         |s| near(s.corner(), FALLBACK_BG) && near(s.field(), FIELD_REFUSED),
     );
     drop(away);
+    vm.fallback_passwords();
+}
+
+// ---- a fingerprint module ahead of the password (m6-lock) ------------------------
+
+/// [`FINGER_CONFIG`] in the VM, with fingerprint.sh's stack: the finger's
+/// path (`STRAND_LOCK_VM_FINGER`), which the stack's reader waits 5 s for.
+fn finger_vm(test: &str) -> Option<(Vm, PathBuf)> {
+    if !in_lock_vm(test) {
+        return None;
+    }
+    let finger = finger();
+    let vm = Vm::with(test, "", FINGER_CONFIG);
+    Some((vm, finger))
+}
+
+/// The finger fingerprint.sh's reader waits for.
+fn finger() -> PathBuf {
+    std::env::var_os("STRAND_LOCK_VM_FINGER")
+        .map(PathBuf::from)
+        .expect("run by scripts/lockvm/scenarios/fingerprint.sh, which names the finger")
+}
+
+impl Vm {
+    /// The lock shows PAM's text: the reader waits.
+    fn told(&self) {
+        self.until_locked("HEADLESS-1", "PAM's text in the lock", true, |s| {
+            near(s.corner(), LOCK_TOLD)
+        });
+    }
+
+    fn no_fallback(&self) {
+        let log = self.strand.log_text();
+        assert!(
+            !log.contains("lock: showing the built-in password field"),
+            "the config's lock unlocked without the fallback:\n{log}"
+        );
+    }
+}
+
+/// The lock shows PAM's text before any key is pressed, and a finger on
+/// the reader unlocks it.
+#[test]
+fn fingerprint_unlocks_the_configs_lock_with_no_password() {
+    let Some((vm, finger)) = finger_vm("fp_finger") else {
+        return;
+    };
+    vm.lock();
+    vm.told();
+    std::fs::write(&finger, "").unwrap();
+    vm.until("HEADLESS-1", "unlocked by the finger", Shot::desktop);
+    vm.no_fallback();
+}
+
+/// No finger: once the reader gives up the lock shows PAM's prompt; a
+/// wrong password is refused, PAM starts over (the reader again), and
+/// the right one unlocks.
+#[test]
+fn fingerprint_gives_up_and_the_lock_asks_for_the_password() {
+    let Some((mut vm, _finger)) = finger_vm("fp_prompt") else {
+        return;
+    };
+    vm.lock();
+    vm.told();
+    vm.until_locked("HEADLESS-1", "PAM's password prompt", true, |s| {
+        near(s.corner(), LOCK_ASKED)
+    });
+    vm.lock_enter(WRONG);
+    vm.until_locked("HEADLESS-1", "the wrong password refused", true, |s| {
+        near(s.corner(), LOCK_REFUSED)
+    });
+    vm.lock_enter(PASSWORD);
+    vm.until(
+        "HEADLESS-1",
+        "unlocked by the right password",
+        Shot::desktop,
+    );
+    vm.no_fallback();
+}
+
+/// (lock-r2-1) The reader gave up and the lock was left waiting on the
+/// password (an idle lock, the user away): a key wakes it, PAM begins
+/// again, and a finger unlocks it.
+#[test]
+fn fingerprint_a_woken_lock_listens_to_the_reader_again() {
+    let Some((mut vm, finger)) = finger_vm("fp_woken") else {
+        return;
+    };
+    vm.lock();
+    vm.told();
+    vm.until_locked("HEADLESS-1", "PAM's password prompt", true, |s| {
+        near(s.corner(), LOCK_ASKED)
+    });
+    vm.keys.type_text("a");
+    std::fs::write(&finger, "").unwrap();
+    vm.until("HEADLESS-1", "unlocked by the finger", Shot::desktop);
+    vm.no_fallback();
+}
+
+/// A password typed while the reader waits is tried once it gives up.
+#[test]
+fn fingerprint_a_password_typed_while_the_reader_waits_unlocks_after_it() {
+    let Some((mut vm, _finger)) = finger_vm("fp_early") else {
+        return;
+    };
+    vm.lock();
+    vm.told();
+    vm.lock_enter(PASSWORD);
+    vm.until("HEADLESS-1", "unlocked after the reader", Shot::desktop);
+    vm.no_fallback();
+}
+
+/// The fallback's field checks passwords through the same stack: each
+/// waits for the reader, then only the right one unlocks.
+#[test]
+fn fingerprint_stack_in_the_fallback() {
+    let Some(mut vm) = fallback_scenario("fp_fallback", "logic_panic", None) else {
+        return;
+    };
+    finger();
     vm.fallback_passwords();
 }
 

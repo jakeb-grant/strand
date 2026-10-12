@@ -1,17 +1,21 @@
 //! The helper's PAM FFI, written by hand (Linux-PAM's `pam_appl.h`):
 //! the only code in the workspace that links libpam.
 //!
-//! One check is `pam_start` (with the user the helper runs as and a
-//! conversation that answers every hidden prompt with the password),
-//! `pam_authenticate`, `pam_acct_mgmt`, `pam_end`. Only `PAM_SUCCESS`
-//! from both calls is [`Code::Success`]; PAM's refusals are
-//! [`Code::Denied`] and everything else [`Code::Error`], both of which
-//! leave the session locked.
+//! One conversation is `pam_start` (with the user the helper runs as and
+//! a conversation callback that talks to the client), `pam_authenticate`,
+//! `pam_acct_mgmt`, `pam_end`. The callback sends each `PAM_TEXT_INFO`
+//! and `PAM_ERROR_MSG` to the client as an `INFO` frame as PAM says it,
+//! and each `PAM_PROMPT_ECHO_OFF` as a `PROMPT` frame, then waits for the
+//! client's `SUBMIT` and answers with that password (decisions.md,
+//! m6-lock). Only `PAM_SUCCESS` from both calls is [`Code::Success`];
+//! PAM's refusals are [`Code::Denied`] and everything else
+//! [`Code::Error`], both of which leave the session locked.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::fs::File;
 use std::ptr;
 
-use strand_auth::protocol::{Code, MAX_PASSWORD};
+use strand_auth::protocol::{self, Code, MAX_PASSWORD, Message};
 use zeroize::Zeroize;
 
 const PAM_SUCCESS: c_int = 0;
@@ -85,17 +89,55 @@ unsafe extern "C" {
     fn pam_strerror(pamh: *mut PamHandle, errnum: c_int) -> *const c_char;
 }
 
-/// What the conversation answers with, and what PAM told the user.
+/// The conversation's link to the client, and what became of it.
 struct Conversation<'a> {
-    /// The password, NUL-free (checked by [`check`]).
-    password: &'a [u8],
-    /// `PAM_ERROR_MSG` and `PAM_TEXT_INFO` texts, in order.
-    messages: Vec<String>,
+    input: &'a mut File,
+    output: &'a mut File,
+    /// Why an answer was refused before PAM saw it (a NUL, or longer
+    /// than PAM takes): the conversation then fails, and its verdict is
+    /// this denial whatever the stack made of it.
+    refused: Option<String>,
+    /// The client went away or broke the protocol: no verdict can reach
+    /// it, and every later callback fails at once.
+    gone: bool,
 }
 
-/// The denial of a password longer than PAM takes.
-fn too_long() -> String {
-    format!("a password longer than {MAX_PASSWORD} bytes cannot be checked")
+impl Conversation<'_> {
+    fn send(&mut self, message: &Message) -> bool {
+        if protocol::write_message(&mut *self.output, message).is_err() {
+            self.gone = true;
+        }
+        !self.gone
+    }
+
+    /// The client's answer to a prompt just sent: the password, checked
+    /// to be one PAM can take, or `None` (the conversation fails).
+    fn answer(&mut self) -> Option<strand_auth::Password> {
+        match protocol::read_message(&mut *self.input) {
+            Ok(Message::Submit(password)) => {
+                crate::fault_before_check(&mut *self.output);
+                if let Some(why) = strand_auth::refusal(&password) {
+                    self.refused = Some(why);
+                    return None;
+                }
+                Some(password)
+            }
+            Ok(_) => {
+                eprintln!("strand-auth: the client answered a prompt with something else");
+                self.gone = true;
+                None
+            }
+            Err(protocol::ProtocolError::Eof) => {
+                self.gone = true;
+                None
+            }
+            Err(e) => {
+                eprintln!("strand-auth: {e}");
+                self.gone = true;
+                None
+            }
+        }
+    }
 }
 
 /// Allocates a NUL-terminated copy of `bytes` with malloc (PAM frees
@@ -139,9 +181,12 @@ unsafe fn free_responses(resp: *mut PamResponse, n: usize) {
     unsafe { libc::free(resp.cast()) };
 }
 
-/// PAM's conversation callback. Every hidden prompt gets the password; a
-/// visible prompt (a user name, a one-time code) cannot be answered by a
-/// password field and fails the conversation, so the check fails closed.
+/// PAM's conversation callback. Each text goes to the client as PAM
+/// says it; each hidden prompt goes to the client, which answers it with
+/// a password. A visible prompt (a user name, a one-time code shown as
+/// typed) cannot be answered by a password field and fails the
+/// conversation, so the check fails closed; so does a client that went
+/// away or refused an answer.
 unsafe extern "C" fn conversation(
     num_msg: c_int,
     msg: *mut *const PamMessage,
@@ -155,18 +200,25 @@ unsafe extern "C" fn conversation(
     // SAFETY: `appdata` is the `Conversation` [`check`] passed, alive for
     // the whole `pam_*` call that calls back.
     let conv = unsafe { &mut *appdata.cast::<Conversation<'_>>() };
+    if conv.gone || conv.refused.is_some() {
+        return PAM_CONV_ERR;
+    }
     // SAFETY: calloc of n zeroed responses (resp null, retcode 0).
     let out = unsafe { libc::calloc(n, std::mem::size_of::<PamResponse>()) }.cast::<PamResponse>();
     if out.is_null() {
         return PAM_BUF_ERR;
     }
+    let fail = |code| {
+        // SAFETY: `out` as built above; each caller returns at once, so
+        // it is freed once and never handed to PAM.
+        unsafe { free_responses(out, n) };
+        code
+    };
     for i in 0..n {
         // SAFETY: Linux-PAM passes an array of `num_msg` message pointers.
         let m = unsafe { *msg.add(i) };
         if m.is_null() {
-            // SAFETY: `out` as built above.
-            unsafe { free_responses(out, n) };
-            return PAM_CONV_ERR;
+            return fail(PAM_CONV_ERR);
         }
         // SAFETY: a valid message from PAM.
         let m = unsafe { &*m };
@@ -182,22 +234,27 @@ unsafe extern "C" fn conversation(
         };
         match m.msg_style {
             PAM_PROMPT_ECHO_OFF => {
-                let p = malloc_copy(conv.password);
+                if !conv.send(&Message::Prompt(text())) {
+                    return fail(PAM_CONV_ERR);
+                }
+                let Some(password) = conv.answer() else {
+                    return fail(PAM_CONV_ERR);
+                };
+                let p = malloc_copy(password.as_bytes());
+                drop(password);
                 if p.is_null() {
-                    // SAFETY: `out` as built above.
-                    unsafe { free_responses(out, n) };
-                    return PAM_BUF_ERR;
+                    return fail(PAM_BUF_ERR);
                 }
                 // SAFETY: `i < n`, inside `out`.
                 unsafe { (*out.add(i)).resp = p };
             }
-            PAM_ERROR_MSG | PAM_TEXT_INFO => conv.messages.push(text()),
-            // PAM_PROMPT_ECHO_ON (2) and anything unknown.
-            _ => {
-                // SAFETY: `out` as built above.
-                unsafe { free_responses(out, n) };
-                return PAM_CONV_ERR;
+            PAM_ERROR_MSG | PAM_TEXT_INFO => {
+                if !conv.send(&Message::Info(text())) {
+                    return fail(PAM_CONV_ERR);
+                }
             }
+            // PAM_PROMPT_ECHO_ON (2) and anything unknown.
+            _ => return fail(PAM_CONV_ERR),
         }
     }
     // SAFETY: PAM owns the array from here and frees it.
@@ -231,27 +288,29 @@ fn denial(code: c_int) -> bool {
     )
 }
 
-/// Checks `password` for `user` with `service` (and, with `faults`, a
-/// private config dir). The verdict's message joins what PAM said.
+/// What a conversation came to: the verdict and its message, or `None`
+/// when the client went away (no verdict can reach it).
+pub type Outcome = Option<(Code, String)>;
+
+/// Runs one conversation for `user` with `service` (and, with `faults`,
+/// a private config dir), talking to the client on `input` and `output`.
+/// PAM's texts went to the client as they came; the verdict's message is
+/// PAM's error text when it is not a success.
 pub fn check(
     service: &str,
     user: &CStr,
-    password: &[u8],
     confdir: Option<&CStr>,
-) -> (Code, String) {
-    if password.contains(&0) {
-        return (Code::Denied, "a password cannot contain a NUL byte".into());
-    }
-    // Refused, never cut: PAM would check a prefix of what was typed.
-    if password.len() > MAX_PASSWORD {
-        return (Code::Denied, too_long());
-    }
+    input: &mut File,
+    output: &mut File,
+) -> Outcome {
     let Ok(service) = CString::new(service) else {
-        return (Code::Error, "bad service name".into());
+        return Some((Code::Error, "bad service name".into()));
     };
     let mut conv_data = Conversation {
-        password,
-        messages: Vec::new(),
+        input,
+        output,
+        refused: None,
+        gone: false,
     };
     let conv = PamConv {
         conv: Some(conversation),
@@ -271,32 +330,36 @@ pub fn check(
                 &mut pamh,
             ),
             #[cfg(not(feature = "faults"))]
-            Some(_) => return (Code::Error, "no private PAM confdir in this build".into()),
+            Some(_) => {
+                return Some((Code::Error, "no private PAM confdir in this build".into()));
+            }
             None => pam_start(service.as_ptr(), user.as_ptr(), &conv, &mut pamh),
         }
     };
     if started != PAM_SUCCESS || pamh.is_null() {
-        return (Code::Error, strerror(ptr::null_mut(), started));
+        return Some((Code::Error, strerror(ptr::null_mut(), started)));
     }
     // SAFETY: a started handle; the conversation data lives on this frame.
     let mut code = unsafe { pam_authenticate(pamh, 0) };
-    if code == PAM_SUCCESS {
+    if code == PAM_SUCCESS && !conv_data.gone && conv_data.refused.is_none() {
         // SAFETY: as above.
         code = unsafe { pam_acct_mgmt(pamh, 0) };
     }
     let what = strerror(pamh, code);
     // SAFETY: ends the handle started above, once.
     unsafe { pam_end(pamh, code) };
-    let mut said = std::mem::take(&mut conv_data.messages);
-    let verdict = if code == PAM_SUCCESS {
-        Code::Success
+    if conv_data.gone {
+        return None;
+    }
+    // A refused answer fails closed whatever the stack made of it.
+    if let Some(why) = conv_data.refused.take() {
+        return Some((Code::Denied, why));
+    }
+    Some(if code == PAM_SUCCESS {
+        (Code::Success, String::new())
+    } else if denial(code) {
+        (Code::Denied, what)
     } else {
-        said.push(what);
-        if denial(code) {
-            Code::Denied
-        } else {
-            Code::Error
-        }
-    };
-    (verdict, said.join("\n"))
+        (Code::Error, what)
+    })
 }

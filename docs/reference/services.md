@@ -36,16 +36,20 @@ The lock screen's password check: a PAM helper of its own
 (`strand-auth`, a separate process) checks each password with the
 `strand` PAM service, or `login` when `/etc/pam.d/strand` is missing.
 Only a success unlocks the session lock; anything else leaves it
-locked.
+locked. While a lock is shown PAM's conversation runs, so a module
+that needs no password (a fingerprint reader) can unlock it, and PAM's
+texts and prompts show as PAM says them.
 
 | Field | Type | |
 | --- | --- | --- |
-| `busy` | `bool` | A password is being checked. |
+| `busy` | `bool` | A password is being checked: PAM has it, or it waits for PAM to ask (typed while a fingerprint reader waits). |
 | `failed` | `bool` | The last password was refused, or could not be checked. |
+| `message` | `text` | What PAM last told the user, as it said it ("Place your finger on the fingerprint reader", "The account is locked"); "" once PAM next asks for a password, and while no lock is shown. Show it as it is: `if auth.message != "" { text auth.message }`. |
+| `prompt` | `text` | The hidden prompt PAM waits on ("Password: "), or "" while it waits on none (a fingerprint reader, a password being checked). |
 
 | Method | |
 | --- | --- |
-| `action submit(password: text)` | Checks `password`: `input { type: password; text: <-> secret; focus: true; on activate { if secret != "" { auth.submit(secret) }; secret = "" } }` (Return in the field activates it; an empty field is not sent, since with pam_faillock each empty Return pressed to wake the screen would count as a failed login). Every password, empty or not, goes to PAM. Ignored while one is being checked. |
+| `action submit(password: text)` | Checks `password`: `input { type: password; text: <-> secret; focus: true; on activate { if secret != "" { auth.submit(secret) }; secret = "" } }` (Return in the field activates it; an empty field is not sent, since with pam_faillock each empty Return pressed to wake the screen would count as a failed login). Every password, empty or not, goes to PAM: it answers the prompt PAM waits on, or the next one it asks. Ignored while one is being checked. |
 
 ## `battery`
 

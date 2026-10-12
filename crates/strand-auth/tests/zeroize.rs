@@ -82,12 +82,14 @@ fn freed_memory_never_holds_a_password() {
     drop(back);
     assert_eq!(SEEN.load(Ordering::SeqCst), 0, "a protocol buffer kept it");
 
-    // The client: a fake helper that reads the frame and refuses it.
+    // The client: a fake helper that begins a conversation, asks for the
+    // password, reads its frame and refuses it.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fake-helper");
     std::fs::write(
         &path,
-        "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\001\\000'; head -c 38 >/dev/null; \
+        "#!/bin/sh\nprintf '\\003\\000\\000\\000\\001\\002\\000'; head -c 5 >/dev/null; \
+         printf '\\001\\000\\000\\000\\006'; head -c 38 >/dev/null; \
          printf '\\002\\000\\000\\000\\003\\001'; sleep 5\n",
     )
     .unwrap();

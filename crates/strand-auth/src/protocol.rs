@@ -11,8 +11,16 @@
 //! | Kind | Direction | Payload |
 //! |---|---|---|
 //! | `HELLO` (1) | helper → client, once at start | `[VERSION, service]` (0 `strand`, 1 `login`) |
-//! | `SUBMIT` (2) | client → helper | the password's bytes |
-//! | `VERDICT` (3) | helper → client, one per `SUBMIT` | `[code]` (0 success, 1 denied, 2 error), then a UTF-8 message |
+//! | `BEGIN` (4) | client → helper, while no conversation runs | none: start one (`pam_authenticate`) |
+//! | `INFO` (5) | helper → client, during a conversation | a `PAM_TEXT_INFO` or `PAM_ERROR_MSG` text (UTF-8), as PAM says it |
+//! | `PROMPT` (6) | helper → client, during a conversation | a `PAM_PROMPT_ECHO_OFF` prompt's text (UTF-8); the helper waits for a `SUBMIT` |
+//! | `SUBMIT` (2) | client → helper, one per `PROMPT` | the password's bytes |
+//! | `VERDICT` (3) | helper → client, one per `BEGIN`, ending it | `[code]` (0 success, 1 denied, 2 error), then a UTF-8 message |
+//!
+//! A conversation is `BEGIN`, then any number of `INFO`s and of
+//! `PROMPT`s each answered by a `SUBMIT`, then one `VERDICT`
+//! (decisions.md, m6-lock: PAM's texts and prompts reach the lock as
+//! they happen, so a fingerprint module ahead of `pam_unix` works).
 //!
 //! Frames that carry a password are built and read into buffers that are
 //! wiped when dropped, sized once, so no reallocation leaves a copy
@@ -25,8 +33,9 @@ use zeroize::Zeroizing;
 use crate::Password;
 
 /// The protocol version a `HELLO` carries.
-pub const VERSION: u8 = 1;
-/// The longest payload of a frame: a password or a verdict's message.
+pub const VERSION: u8 = 2;
+/// The longest payload of a frame: a password, a text or a verdict's
+/// message.
 pub const MAX_PAYLOAD: usize = 1024;
 /// The longest password PAM can be asked about: `PAM_MAX_RESP_SIZE`
 /// (512) less its NUL. A longer one is refused, by the client before
@@ -39,6 +48,9 @@ pub const HEADER: usize = 5;
 pub const HELLO: u8 = 1;
 pub const SUBMIT: u8 = 2;
 pub const VERDICT: u8 = 3;
+pub const BEGIN: u8 = 4;
+pub const INFO: u8 = 5;
+pub const PROMPT: u8 = 6;
 
 /// The PAM service the helper authenticates with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -74,9 +86,21 @@ pub enum Code {
 /// One frame's content.
 #[derive(Debug)]
 pub enum Message {
-    Hello { version: u8, service: Service },
+    Hello {
+        version: u8,
+        service: Service,
+    },
     Submit(Password),
-    Verdict { code: Code, message: String },
+    Verdict {
+        code: Code,
+        message: String,
+    },
+    /// Start a conversation.
+    Begin,
+    /// What PAM told the user (`PAM_TEXT_INFO`, `PAM_ERROR_MSG`).
+    Info(String),
+    /// PAM asks for a hidden answer (`PAM_PROMPT_ECHO_OFF`): its text.
+    Prompt(String),
 }
 
 /// Why a frame could not be read.
@@ -136,8 +160,11 @@ pub fn encode(message: &Message) -> Zeroizing<Vec<u8>> {
             }],
             truncate(message, MAX_PAYLOAD - 1).as_bytes(),
         ),
+        Message::Begin => (BEGIN, Vec::new(), &[]),
+        Message::Info(text) => (INFO, Vec::new(), truncate(text, MAX_PAYLOAD).as_bytes()),
+        Message::Prompt(text) => (PROMPT, Vec::new(), truncate(text, MAX_PAYLOAD).as_bytes()),
     };
-    // A verdict's message is cut above. A password never needs cutting
+    // A verdict's message and a text are cut above. A password never needs cutting
     // (the client refuses one over `MAX_PASSWORD`); if one is, it stays
     // over `MAX_PASSWORD`, so the helper refuses it rather than check a
     // prefix.
@@ -211,8 +238,18 @@ pub fn decode(kind: u8, mut payload: Zeroizing<Vec<u8>>) -> Result<Message, Prot
                 .to_string();
             Ok(Message::Verdict { code, message })
         }
+        BEGIN if payload.is_empty() => Ok(Message::Begin),
+        BEGIN => Err(ProtocolError::BadPayload("a begin has no payload")),
+        INFO => Ok(Message::Info(text(&payload)?)),
+        PROMPT => Ok(Message::Prompt(text(&payload)?)),
         k => Err(ProtocolError::UnknownKind(k)),
     }
+}
+
+fn text(payload: &[u8]) -> Result<String, ProtocolError> {
+    std::str::from_utf8(payload)
+        .map(str::to_string)
+        .map_err(|_| ProtocolError::BadPayload("a text is not UTF-8"))
 }
 
 /// Reads one frame from a blocking reader (the helper; tests).
