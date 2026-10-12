@@ -263,6 +263,7 @@ impl Renderer {
         self.bounds.remove(&surface);
         self.facts_sent.retain(|(s, _), _| *s != surface);
         self.last_damage.remove(&surface);
+        self.frame_stats.forget(surface);
         self.raster.set_surfaces(self.surfaces.len());
         self.prune_scales();
         self.prune_texts();

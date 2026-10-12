@@ -8,7 +8,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Thread | Crates | Owns | Never does |
 | --- | --- | --- | --- |
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
-| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `inspect.node`, `inspect.dump`, `reset{node}` and `export`; `report`, `inspect.pick`, `inspect.highlight` and `inspect.flash` are not served yet) is a source on this loop, as is the request channel from the D-Bus front end; it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
+| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `inspect.node`, `inspect.dump`, `reset{node}`, `export` and `report`; `inspect.pick`, `inspect.highlight` and `inspect.flash` are not served yet) is a source on this loop, as is the request channel from the D-Bus front end; it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
 | Compiler worker (`strand-compile`) | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker (`strand-text`) | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Image worker (`strand-image`, one per renderer; one that cannot start stops the shell) | `strand-render` (`image.rs`, `media/`) | Image and icon decodes (an animated GIF, APNG or WebP's player kept between its frames), the `svg` and `lottie` file jobs (`ImageStore::load_file`: read through a bounded read and parsed here, a Lottie's assets with it), and `set_idle_hook`'s allocator trim; each result pings the render loop | Block render: a frame draws nothing, or a stand-in of the same image at another size, until the decode arrives; read a file without a size bound |
@@ -821,9 +821,15 @@ new).**
 (decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request, and
 the first hardening round's `SurfaceId` in `Layout` and `Highlight` went
 in the second, since logic cannot name one), all in `strand/src/run/mod.rs`.
-The channel itself is wired by the first stream that sends on it
-(S-tools' `report` or S-inspect), since an unused calloop channel would
-cost `.text` for nothing; the other reuses it.
+The channel itself is wired by the first stream that sends on it,
+since an unused calloop channel would cost `.text` for nothing: S-tools'
+`report` wired it (`Live::to_main`, a calloop channel whose source on
+the main loop answers `SnapshotKind::Report` with
+`crate::report::main_part`; logic keeps each waiting caller under its
+`SnapshotId`, adds its own half, the PSS from
+`/proc/self/smaps_rollup`, the version and the compositor's name from
+the environment, and answers; with no main thread, `report` is
+refused), and S-inspect reuses it.
 
 **`strand-compiler` `Instance` inspection (new; read-only, never read by
 evaluation).**
@@ -912,10 +918,33 @@ an overlay step and a contrast-guard step where they apply.
   allocation;
 - `Renderer::frame_summary(surface) -> Option<FrameSummary>`:
   p50/p95/p99 over the last 600 frames, presented and discarded
-  (`renderer/summary.rs`, S-tools).
+  (`renderer/summary.rs`, S-tools; built: a frame is one `paint`, its
+  time the render thread's work in it, presented when it damaged
+  something and discarded when it damaged nothing; a frame a `paint`
+  sends to the GPU (a promoted surface's) runs from that `paint`'s start
+  to the GPU thread's `Presented` or `Pixels`, and counts as presented
+  only then; `Presented { surface, frame, at, waited, ran }`'s `at` is
+  taken when the GPU thread has submitted the frame, before `present`,
+  and its `waited` (the request's time in the GPU thread's queue behind
+  other work, and the thread's block on the swapchain for an image,
+  FIFO pacing) is subtracted; the GPU thread never waits for a
+  presented frame's GPU work, so the GPU's run of it comes from
+  timestamp queries in `ran` of a later `Presented` of that surface,
+  and render counts the frame then, as its time before the GPU plus
+  its run (a frame whose run never comes is skipped). A readback
+  frame's `Pixels` comes after the GPU ran it and carries its queue
+  time as `waited`, subtracted too. Both backends time the frame
+  through the GPU's render, and neither times vsync or other surfaces'
+  work (m5-tools review rounds 2 and 3); nearest-rank percentiles over both; a detached
+  surface's frames go). Beside it,
+  `Renderer::gpu_lost_devices() -> u32` (0 without the `gpu` feature)
+  for the report's lost-device count, and strand-surface's
+  `State::globals() -> Vec<(String, u32)>` (each global's interface
+  and version, sorted, no global names); the outputs are the existing
+  `State::monitors()`, so no `outputs()` was added.
 
 0b lands these inert: `pick` is `None`, `node_layout` the default
-`LayoutInfo { rect: None }`, `frame_summary` `None`; the highlight and
+`LayoutInfo { rect: None }`, `frame_summary` `None` (until S-tools); the highlight and
 flash are only kept (`Renderer::highlight`, `damage_flash`), in
 `src/inspect/` (S-inspect).
 
@@ -1103,8 +1132,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   point, like `Shell::request`'s arms; S-ipc keeps the COMMANDS table
   and its own rows (the D-Bus front end is `strand-services`'
   `ipc_bus.rs`, not this table), and S-tools changes the three rows
-  that already name its commands (`new`, `export`, `report`, today
-  answering "not implemented yet (M5)") and adds their dispatch arms,
+  that already name its commands (`new`, `export`, `report`, which
+  answered "not implemented yet (M5)" until S-tools served them; once
+  every row was served, S-tools' wave-3 review removed that fallback and
+  the table's milestone column, so an unknown command is the only
+  error) and adds their dispatch arms,
   each as one-line entries the integrator merges. S-plugins owns the builder in
   `src/plugin.rs` (registration, `--write-schemas`, the setup check)
   and the single call from `entry.rs` into it, not the table.
@@ -2127,8 +2159,8 @@ table.
 > and `base24` writers; decisions.md m5-palette) and S-tools' half
 > (templates, `export` offline and over the socket, the `file` element
 > and its writer; decisions.md m5-tools, wave 2) are described below as
-> built. Not built: `strand new` and `strand report`, which S-tools
-> left for a later slot. Two streams
+> built. `strand new` and `strand report` were built in a later slot
+> (decisions.md m5-tools, "`strand new` and `strand report`"). Two streams
 > build it (m5-plan, Streams): **S-palette** owns the strand-theme and
 > strand-scene parts, **S-tools** the strand-compiler, strand-core and
 > binary parts. The design and its reasons are in decisions.md m5-tools
@@ -2338,8 +2370,12 @@ table.
   - The CLI's `export` row (in `src/entry.rs` after the wave 1 → 2 move)
     reads "write the palette: json | base24 | --template <file>
     [--palette <expr>] [-o <file>]" and dispatches to
-    `cli::export_cli`; the `new` and `report` rows still answer "not
-    implemented yet (M5)".
+    `cli::export_cli`; the `new` row ("write a starter shell into [dir]
+    …") dispatches to `cli::new_cli` and the `report` row to
+    `cli::report_cli`. `entry.rs` serves every one-shot command (the
+    socket's, `new`, `compositor-rules`) from one table
+    (`entry::one_shot`), so no listed command answers "not implemented
+    yet".
 
 ### `strand-core`
 
@@ -3855,8 +3891,15 @@ Wayland crate. Its interface:
   (m4-gpu-effects).
   `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
   `Attached { surface, mode: GpuMode }`, `Released(SurfaceId)`,
-  `Presented { surface, at: Instant }`, `Pixels { surface, frame: u64,
-  pixels: Readback }`, `PassPixels { key, frame, pixels }`, `Failed {
+  `Presented { surface, frame: u64, at: Instant, waited: Duration,
+  ran: Vec<(u64, Duration)> }` (`at` when the frame was submitted,
+  before `present`; `waited` its time in the thread's queue and the
+  block on the swapchain for its image; `ran` the GPU's run of earlier
+  frames of the surface by frame number, from timestamp queries, two
+  frames timed at once per surface, or this frame at zero on a device
+  without them; the thread never waits for a presented frame's GPU
+  work; m5-tools review rounds 2 and 3), `Pixels { surface, frame: u64,
+  pixels: Readback, waited: Duration }` (`waited` its queue time), `PassPixels { key, frame, pixels }`, `Failed {
   surface, key, error }` (a frame or pass that could not be drawn, such
   as a shader that fails to compile on the device; the device stays
   up), `Lost(GpuError)`, `Exited`. A readback waits at most

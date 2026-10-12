@@ -1044,7 +1044,10 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
     // Presented: idle from now, so the next wake demotes it.
     r.deliver_gpu(GpuReply::Presented {
         surface: S,
+        frame: 0,
         at: Instant::now(),
+        waited: Duration::ZERO,
+        ran: vec![],
     });
     r.update();
     assert!(
@@ -1061,6 +1064,191 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
             .any(|c| matches!(c, BackendChange::Demote(id) if *id == S)),
         "idle after its frame was shown"
     );
+}
+
+/// (M5, m5-tools review) `strand report`'s frame time of a promoted
+/// surface includes the GPU's work: a `GpuPresent` frame runs from its
+/// `paint` to its `Presented`'s `at` (its submission; round 3,
+/// `strand-gpu`'s `a_presented_frame_is_answered_before_the_gpu_ran_it`)
+/// plus the GPU's run of it (`ran`), a readback frame from its `paint`
+/// to its `Pixels`, and neither counts before its reply. Needs no
+/// device; the GPU thread's 40 ms is a sleep, its 30 ms run a number.
+#[test]
+fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
+    let gpu_work = Duration::from_millis(40);
+    let mut b = Builder::default();
+    b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    assert!(
+        !buf.paint_at(&mut r, S, 0, Duration::from_secs(1))
+            .is_empty()
+    );
+    let cpu = r.frame_summary(S).unwrap();
+    assert_eq!(cpu.presented, 1);
+    assert!(cpu.p99 < gpu_work, "the CPU frame: {:?}", cpu.p99);
+
+    // Presented: timed at the GPU thread's `Presented`.
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    let id = r.paint_gpu(S, Duration::from_secs(1)).unwrap().id;
+    assert_eq!(
+        r.frame_summary(S).unwrap().presented,
+        1,
+        "counted before its reply"
+    );
+    std::thread::sleep(gpu_work);
+    let ran = Duration::from_millis(30);
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        frame: id,
+        at: Instant::now(),
+        waited: Duration::ZERO,
+        ran: vec![(id, ran)],
+    });
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 2);
+    assert!(
+        f.p99 >= gpu_work + ran,
+        "the GPU's work left out: {:?}",
+        f.p99
+    );
+
+    // Readback: timed at its `Pixels`.
+    r.set_backend(S, Backend::Cpu);
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuReadback);
+    let _ = r.take_backend_changes();
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(2));
+    let id = r
+        .take_gpu_requests()
+        .into_iter()
+        .find_map(|q| match q {
+            GpuRequest::Frame(f) => Some(f.id),
+            _ => None,
+        })
+        .expect("a readback frame sent");
+    assert_eq!(
+        r.frame_summary(S).unwrap().presented,
+        2,
+        "counted before its reply"
+    );
+    std::thread::sleep(gpu_work);
+    r.deliver_gpu(GpuReply::Pixels {
+        surface: S,
+        frame: id,
+        pixels: strand_gpu::Readback {
+            width: 80,
+            height: 40,
+            stride: 320,
+            bytes: vec![0; 320 * 40],
+        },
+        waited: Duration::ZERO,
+    });
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 3);
+    assert!(
+        f.p50 >= gpu_work,
+        "the readback's GPU work left out: {:?}",
+        f.p50
+    );
+}
+
+/// A promoted surface with one frame painted on the CPU, ready for
+/// `paint_gpu`.
+fn presenting() -> (Renderer, Buffer) {
+    let mut b = Builder::default();
+    b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    assert!(
+        !buf.paint_at(&mut r, S, 0, Duration::from_secs(1))
+            .is_empty()
+    );
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    (r, buf)
+}
+
+/// (M5, m5-tools review rounds 2 and 3) A presented frame's time leaves
+/// out the GPU thread's `waited` (its queue behind other surfaces' work
+/// and its block on the swapchain, the compositor's FIFO pacing), and
+/// only that: of a 60 ms span with 30 ms waited, about 30 ms is left,
+/// neither zero nor the span. Needs no device: the span is a sleep.
+#[test]
+fn a_presented_frames_time_leaves_out_the_swapchain_wait() {
+    let span = Duration::from_millis(60);
+    let waited = Duration::from_millis(30);
+    let (mut r, _buf) = presenting();
+    let id = r.paint_gpu(S, Duration::from_secs(1)).unwrap().id;
+    std::thread::sleep(span);
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        frame: id,
+        at: Instant::now(),
+        waited,
+        ran: vec![(id, Duration::ZERO)],
+    });
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 2);
+    assert!(
+        f.p99 >= span - waited && f.p99 < span - waited / 2,
+        "the span less `waited`: {:?}",
+        f.p99
+    );
+}
+
+/// (M5, m5-tools review round 3) The GPU thread answers a presented
+/// frame before the GPU ran it, so its run comes with a later frame's
+/// `Presented`: a frame counts only then, as its time before the GPU
+/// plus the run; a frame whose run never comes (both of the surface's
+/// timers were busy) is skipped once a later frame's run comes.
+#[test]
+fn a_presented_frame_counts_when_its_gpu_run_comes() {
+    let (mut r, _buf) = presenting();
+    let present = |r: &mut Renderer, ran: Vec<(u64, Duration)>| {
+        r.invalidate(S);
+        let id = r.paint_gpu(S, Duration::from_secs(1)).unwrap().id;
+        let at = Instant::now();
+        r.deliver_gpu(GpuReply::Presented {
+            surface: S,
+            frame: id,
+            at,
+            waited: Duration::ZERO,
+            ran,
+        });
+        id
+    };
+    let _first = present(&mut r, vec![]);
+    assert_eq!(r.frame_summary(S).unwrap().presented, 1, "no run yet");
+    let second = present(&mut r, vec![]);
+    let run = Duration::from_millis(500);
+    let _third = present(&mut r, vec![(second, run)]);
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 2, "the second, and not the first");
+    assert!(f.p99 >= run && f.p99 < run * 2, "its run: {:?}", f.p99);
 }
 
 /// (m4-integration-w2) A surface the GPU thread presents paints its pose

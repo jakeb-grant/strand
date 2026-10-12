@@ -1,12 +1,14 @@
-//! The `strand-gpu` thread: waits on its channel (and on presents, inside
-//! `get_current_texture`), never on a timer; it does not decide when to
-//! stop. A panic in the device's code counts as a lost device.
+//! The `strand-gpu` thread: waits on its channel (on presents, inside
+//! `get_current_texture`, and on a readback's or pass's GPU work, at
+//! most `HUNG_AFTER`; never on a presented frame's), never on a timer;
+//! it does not decide when to stop. A panic in the device's code counts
+//! as a lost device.
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use vello_common::TextureId;
 
@@ -14,8 +16,9 @@ use crate::device::Device;
 use crate::draw::{self, DrawnPass, Held, Images};
 use crate::lru::Lru;
 use crate::pass::{self, Passes};
-use crate::present::{self, Blit, Presented};
+use crate::present::{self, Blit, Presented, Swapchain};
 use crate::readback::ReadBuffer;
+use crate::timer::Timer;
 use crate::{
     Frame, GpuError, GpuErrorKind, GpuMode, GpuOptions, GpuReply, GpuRequest, Op, PassFrame, Scale,
     Size, SurfaceId, Upload,
@@ -82,7 +85,7 @@ fn handle_caught(
 }
 
 pub(crate) fn run(
-    rx: mpsc::Receiver<GpuRequest>,
+    rx: mpsc::Receiver<(Instant, GpuRequest)>,
     tx: mpsc::Sender<GpuReply>,
     waker: Box<dyn Fn() + Send>,
     opts: GpuOptions,
@@ -117,12 +120,15 @@ pub(crate) fn run(
         return;
     };
     reply.send(GpuReply::Ready(info));
-    while let Ok(req) = rx.recv() {
+    while let Ok((sent, req)) = rx.recv() {
         if matches!(req, GpuRequest::Shutdown) {
             break;
         }
+        let queued = sent.elapsed();
         let owed = owed(&req);
-        handle_caught(&dev.lost, owed, &reply, || state.handle(&dev, req, &reply));
+        handle_caught(&dev.lost, owed, &reply, || {
+            state.handle(&dev, req, queued, &reply)
+        });
         if dev.is_lost() {
             let why = if dev.hung.load(Ordering::SeqCst) {
                 "stopped answering"
@@ -167,6 +173,8 @@ struct Target {
     #[allow(dead_code)]
     scale: Scale,
     present: Option<Presented>,
+    /// A presented surface's GPU timestamps (none without them).
+    timer: Option<Timer>,
     frame: Option<FrameTarget>,
     read: Option<ReadBuffer>,
 }
@@ -208,7 +216,8 @@ impl State {
         }
     }
 
-    fn handle(&mut self, dev: &Device, req: GpuRequest, reply: &Reply<'_>) {
+    /// Handles a request that sat `queued` in the channel.
+    fn handle(&mut self, dev: &Device, req: GpuRequest, queued: Duration, reply: &Reply<'_>) {
         match req {
             GpuRequest::Attach {
                 surface,
@@ -231,12 +240,14 @@ impl State {
                 } else {
                     GpuMode::Readback
                 };
+                let timer = present.as_ref().and_then(|_| Timer::new(dev));
                 self.targets.insert(
                     surface,
                     Target {
                         size,
                         scale,
                         present,
+                        timer,
                         frame: None,
                         read: None,
                     },
@@ -262,7 +273,7 @@ impl State {
                 self.targets.remove(&surface);
                 reply.send(GpuReply::Released(surface));
             }
-            GpuRequest::Frame(frame) => self.frame(dev, frame, reply),
+            GpuRequest::Frame(frame) => self.frame(dev, frame, queued, reply),
             GpuRequest::Pass(pass) => self.pass(dev, pass, reply),
             GpuRequest::Shutdown => {}
         }
@@ -375,9 +386,9 @@ impl State {
     /// `Pixels` or `Failed`), since the host sends a surface's next frame
     /// only after the answer to its last. A frame whose inline pass fails
     /// is answered `Failed` alone.
-    fn frame(&mut self, dev: &Device, frame: Frame, reply: &Reply<'_>) {
+    fn frame(&mut self, dev: &Device, frame: Frame, queued: Duration, reply: &Reply<'_>) {
         let surface = frame.surface;
-        if let Err(error) = self.draw_frame(dev, frame, reply) {
+        if let Err(error) = self.draw_frame(dev, frame, queued, reply) {
             reply.send(GpuReply::Failed {
                 surface: Some(surface),
                 key: None,
@@ -390,6 +401,7 @@ impl State {
         &mut self,
         dev: &Device,
         frame: Frame,
+        queued: Duration,
         reply: &Reply<'_>,
     ) -> Result<(), GpuError> {
         let surface = frame.surface;
@@ -413,6 +425,8 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("strand frame"),
             });
+        // A presented frame's GPU time starts with its first command.
+        let timed = target.timer.as_ref().and_then(|t| t.begin(&mut encoder));
         self.upload(dev, &mut encoder, &frame.uploads, &frame.retire);
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();
@@ -495,34 +509,18 @@ impl State {
             let Some(p) = target.present.as_mut() else {
                 return Err(render_error("no swapchain"));
             };
-            let tex = match p.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(t)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-                other => {
-                    log::debug!("GPU present of {surface:?}: {other:?}; reconfiguring");
-                    p.surface.configure(&dev.device, &p.config);
-                    match p.surface.get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(t)
-                        | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-                        _ => None,
-                    }
-                }
-            };
-            let Some(tex) = tex else {
-                return Err(render_error("no swapchain image"));
-            };
-            let dst = tex
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            self.blit
-                .record(dev, &mut encoder, &ft.view, &dst, p.config.format);
-            dev.queue.submit([encoder.finish()]);
-            dev.queue.present(tex);
+            let presented = present_frame(
+                dev,
+                &mut self.blit,
+                p,
+                target.timer.as_mut().map(|t| (t, timed)),
+                encoder,
+                &ft.view,
+                (surface, frame.id),
+                queued,
+            );
             drop(keep);
-            reply.send(GpuReply::Presented {
-                surface,
-                at: Instant::now(),
-            });
+            reply.send(presented?);
             Ok(())
         } else {
             if target.read.as_ref().is_none_or(|r| !r.fits(w, h)) {
@@ -539,6 +537,7 @@ impl State {
                 surface,
                 frame: frame.id,
                 pixels,
+                waited: queued,
             });
             Ok(())
         }
@@ -669,9 +668,218 @@ fn render_error(message: impl Into<String>) -> GpuError {
     GpuError::new(GpuErrorKind::Render, message)
 }
 
+/// The end of a presented frame: acquires an image (that block, with the
+/// frame's time in the queue, is `waited`), blits the frame into it,
+/// submits, takes `at`, presents, and answers without waiting for the GPU
+/// to run it: the timer (with the slot `begin` took for this frame, if
+/// any) reads its run time later, and the answer carries those of earlier
+/// frames that have come. A device without timestamps times this frame's
+/// GPU run at zero.
+#[allow(clippy::too_many_arguments)]
+fn present_frame<C: Swapchain>(
+    dev: &Device,
+    blit: &mut Blit,
+    chain: &mut C,
+    timer: Option<(&mut Timer, Option<usize>)>,
+    mut encoder: wgpu::CommandEncoder,
+    src: &wgpu::TextureView,
+    (surface, frame): (SurfaceId, u64),
+    queued: Duration,
+) -> Result<GpuReply, GpuError> {
+    let acquiring = Instant::now();
+    let image = chain.acquire(dev);
+    let waited = queued + acquiring.elapsed();
+    let Some((image, dst, format)) = image else {
+        return Err(render_error("no swapchain image"));
+    };
+    blit.record(dev, &mut encoder, src, &dst, format);
+    if let Some((t, Some(slot))) = &timer {
+        t.end(&mut encoder, *slot);
+    }
+    dev.queue.submit([encoder.finish()]);
+    let at = Instant::now();
+    chain.present(dev, image);
+    let ran = match timer {
+        Some((t, slot)) => {
+            if let Some(slot) = slot {
+                t.submitted(slot, frame);
+            }
+            t.ran(dev)
+        }
+        None => vec![(frame, Duration::ZERO)],
+    };
+    Ok(GpuReply::Presented {
+        surface,
+        frame,
+        at,
+        waited,
+        ran,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A swapchain that blocks like a FIFO one: `acquire` and `present`
+    /// sleep. It notes when `present` came and whether the GPU had run
+    /// everything by then.
+    struct Paced {
+        image: wgpu::Texture,
+        acquire: Duration,
+        present: Duration,
+        presented: Option<(Instant, bool)>,
+    }
+
+    impl Swapchain for Paced {
+        type Image = ();
+        fn acquire(&mut self, _: &Device) -> Option<((), wgpu::TextureView, wgpu::TextureFormat)> {
+            std::thread::sleep(self.acquire);
+            let view = self
+                .image
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            Some(((), view, FRAME_FORMAT))
+        }
+        fn present(&mut self, dev: &Device, _: ()) {
+            let idle = dev
+                .device
+                .poll(wgpu::PollType::Poll)
+                .is_ok_and(|s| s.is_queue_empty());
+            self.presented = Some((Instant::now(), idle));
+            std::thread::sleep(self.present);
+        }
+    }
+
+    fn texture(dev: &Device, side: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
+        dev.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FRAME_FORMAT,
+            usage,
+            view_formats: &[],
+        })
+    }
+
+    /// (m5-tools review round 3) `draw_frame`'s present path, on a
+    /// swapchain that blocks 30 ms to acquire and 100 ms to present, for
+    /// a frame that sat 50 ms in the queue: it presents while the GPU
+    /// still runs the frame (the thread never waits on a presented
+    /// frame's work, so another surface's frame starts at once), `at` is
+    /// taken before `present`, `waited` is the queue and the acquire and
+    /// nothing after, and the GPU's run comes later from the timestamps,
+    /// within submit to finish. Lavapipe runs a submission on its own
+    /// thread: 32 clears of a 4096² texture still run at `present`.
+    #[test]
+    fn a_presented_frame_is_answered_before_the_gpu_ran_it() {
+        let dev = match Device::open(&GpuOptions::from_env()) {
+            Ok(d) => d,
+            Err(e) => {
+                let required = std::env::var("STRAND_REQUIRE_GPU").is_ok_and(|v| v == "1");
+                assert!(!required, "STRAND_REQUIRE_GPU=1 but no GPU: {e}");
+                eprintln!("skipped: no GPU ({e})");
+                return;
+            }
+        };
+        let mut timer = Timer::new(&dev);
+        if dev.info.software {
+            assert!(timer.is_some(), "lavapipe has timestamps");
+        }
+        let big = texture(
+            &dev,
+            4096,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let view = big.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = dev
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let slot = timer.as_ref().and_then(|t| t.begin(&mut encoder));
+        for i in 0..32 {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(i) / 32.0,
+                            g: 0.5,
+                            b: 0.25,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..wgpu::RenderPassDescriptor::default()
+            });
+        }
+        let mut chain = Paced {
+            image: texture(&dev, 64, wgpu::TextureUsages::RENDER_ATTACHMENT),
+            acquire: Duration::from_millis(30),
+            present: Duration::from_millis(100),
+            presented: None,
+        };
+        let queued = Duration::from_millis(50);
+        let answer = present_frame(
+            &dev,
+            &mut Blit::default(),
+            &mut chain,
+            timer.as_mut().map(|t| (t, slot)),
+            encoder,
+            &view,
+            (SurfaceId(1), 7),
+            queued,
+        )
+        .unwrap();
+        let GpuReply::Presented {
+            surface,
+            frame,
+            at,
+            waited,
+            mut ran,
+        } = answer
+        else {
+            panic!("expected Presented, got {answer:?}");
+        };
+        assert_eq!((surface, frame), (SurfaceId(1), 7));
+        let (presented, idle) = chain.presented.expect("presented");
+        assert!(!idle, "the thread waited for the GPU before `present`");
+        assert!(at <= presented, "`at` taken after `present`");
+        let paced = queued + chain.acquire;
+        assert!(
+            waited >= paced && waited < paced + Duration::from_millis(50),
+            "`waited` is the queue and the acquire: {waited:?}"
+        );
+        dev.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(60)),
+            })
+            .unwrap();
+        let finished = Instant::now();
+        let Some(t) = timer.as_mut() else {
+            assert_eq!(ran, [(7, Duration::ZERO)], "no timestamps: zero");
+            return;
+        };
+        ran.extend(t.ran(&dev));
+        let gpu = match ran.as_slice() {
+            [(7, gpu)] => *gpu,
+            other => panic!("frame 7's run once, got {other:?}"),
+        };
+        assert!(
+            gpu > Duration::from_millis(1) && gpu <= finished - at,
+            "the GPU's run is within submit to finish: {gpu:?}"
+        );
+        assert!(t.ran(&dev).is_empty(), "each run comes once");
+    }
 
     fn replies(
         owed: Option<(Option<SurfaceId>, Option<u64>)>,

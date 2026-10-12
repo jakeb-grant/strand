@@ -41,6 +41,9 @@ pub struct Live {
     /// an external one ([`crate::live::Worker::own_write_hook`]). `None`:
     /// nothing is registered.
     pub own_writes: Option<OwnWrites>,
+    /// (M5) Where logic asks the main thread for snapshots (`strand
+    /// report`). `None`: no main thread, and `report` is refused.
+    pub to_main: Option<Sender<ToMain>>,
 }
 
 #[cfg(test)]
@@ -265,6 +268,9 @@ pub fn logic(
         secrets: Default::default(),
         exports: Vec::new(),
         files: super::outputs::Files::new(files_ping, manifest, own_writes),
+        to_main: live.to_main,
+        reports: Vec::new(),
+        next_snapshot: 0,
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good

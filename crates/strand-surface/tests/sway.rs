@@ -33,6 +33,17 @@ fn bar_on_every_output_with_hotplug() {
     let monitors = mgr.state().monitors();
     assert_eq!(monitors.len(), 2);
     assert_ne!(monitors[0].id, monitors[1].id);
+    // (M5) `globals()`, `strand report`'s: every global with its version,
+    // sorted, one per output.
+    let globals = mgr.state().globals();
+    let outputs = globals.iter().filter(|(i, _)| i == "wl_output").count();
+    assert_eq!(outputs, 2, "{globals:?}");
+    assert!(
+        globals
+            .iter()
+            .any(|(i, v)| i == "zwlr_layer_shell_v1" && *v >= 1)
+    );
+    assert!(globals.is_sorted(), "{globals:?}");
     let on_second = mgr
         .state()
         .surfaces()

@@ -32,7 +32,7 @@
 //!   are pipelined a frame behind instead. With no device a `shader` node
 //!   keeps its box and draws nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -499,6 +499,10 @@ fn value_floats(v: &PropValue, scale: f32, out: &mut Vec<f32>) {
 // ---------------------------------------------------------------------------
 // State
 
+/// Presented frames kept waiting for their GPU run: the GPU thread
+/// times at most two at once, so an older one's never comes.
+const UNTIMED: usize = 4;
+
 /// One surface as the GPU backend sees it.
 #[derive(Debug, Default)]
 struct Surf {
@@ -513,6 +517,13 @@ struct Surf {
     presenting: bool,
     /// Pixels of its last readback frame, not copied in yet.
     pixels: Option<Readback>,
+    /// When the `paint` of its last frame sent to the GPU began: that
+    /// frame's time for `strand report` runs from there to its
+    /// `Presented` or `Pixels` (`summary.rs`).
+    started: Option<Instant>,
+    /// Its presented frames whose GPU run has not come (frame number and
+    /// the time before it), oldest first, at most [`UNTIMED`].
+    untimed: VecDeque<(u64, Duration)>,
     /// Until when its next frame holds (a pass or readback in flight).
     hold: Option<Instant>,
     /// The `shader` nodes' passes its GPU frames draw inline (their id,
@@ -556,6 +567,9 @@ pub(super) struct GpuState {
     next_frame: u64,
     /// A `GpuPresent` frame `paint` lowered, for [`Renderer::paint_gpu`].
     present: Option<Frame>,
+    /// The current `paint` sent its frame to the GPU (lowered or
+    /// requested): its time is taken when the GPU's reply comes.
+    sent: bool,
     /// Readback frames copied in (tests).
     copied: u64,
     /// The pixels `paint_gpu`'s target points at: never written (a
@@ -658,6 +672,11 @@ impl Renderer {
     /// frame shows a `shader` node.
     pub fn gpu_off(&self) -> bool {
         self.gpu.device.is_off()
+    }
+
+    /// (M5) Devices lost so far in this process (`strand report`).
+    pub fn gpu_lost_devices(&self) -> u32 {
+        self.gpu.device.losses()
     }
 
     /// (M4) Unavailable reasons logged as warnings so far (tests).
@@ -814,9 +833,39 @@ impl Renderer {
                 self.set_backend(surface, backend);
             }
             GpuReply::Released(surface) => self.set_backend(surface, Backend::Cpu),
-            GpuReply::Presented { surface, .. } => {
+            GpuReply::Presented {
+                surface,
+                frame,
+                at,
+                waited,
+                ran,
+            } => {
                 self.gpu.device.used(now);
                 if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+                    // The frame's time: its paint on main and the GPU
+                    // thread's work to its submission, less the thread's
+                    // queue and swapchain waits (other surfaces' work, the
+                    // compositor's pacing), then the GPU's run of it,
+                    // which comes with a later `Presented`.
+                    if s.presenting
+                        && let Some(t) = s.started.take()
+                    {
+                        if s.untimed.len() == UNTIMED {
+                            s.untimed.pop_front();
+                        }
+                        let cpu = at.saturating_duration_since(t).saturating_sub(waited);
+                        s.untimed.push_back((frame, cpu));
+                    }
+                    for (done, gpu) in ran {
+                        while let Some(&(f, cpu)) = s.untimed.front()
+                            && f <= done
+                        {
+                            s.untimed.pop_front();
+                            if f == done && self.surfaces.contains_key(&surface) {
+                                self.frame_stats.record(surface, cpu + gpu, true);
+                            }
+                        }
+                    }
                     s.presenting = false;
                     // On screen from now: the idle window starts here.
                     s.promo.shown(now);
@@ -826,6 +875,7 @@ impl Renderer {
                 surface,
                 frame,
                 pixels,
+                waited,
             } => {
                 self.gpu.device.used(now);
                 if let Some(s) = self.gpu.surfaces.get_mut(&surface)
@@ -833,6 +883,15 @@ impl Renderer {
                 {
                     s.inflight = None;
                     s.hold = None;
+                    // The frame's time: its paint, the GPU's render and
+                    // the readback (it is shown at the next paint), less
+                    // its wait in the GPU thread's queue.
+                    if let Some(t) = s.started.take()
+                        && self.surfaces.contains_key(&surface)
+                    {
+                        let took = now.saturating_duration_since(t).saturating_sub(waited);
+                        self.frame_stats.record(surface, took, true);
+                    }
                     if s.backend == Backend::GpuReadback {
                         s.pixels = Some(pixels);
                         // Copied in by the next paint, in full.
@@ -1049,6 +1108,18 @@ impl Renderer {
                 st.mark_dirty();
             }
         }
+    }
+
+    /// After a `paint` of `surface` that began at `started`: whether it
+    /// sent its frame to the GPU, whose reply then times it.
+    pub(super) fn gpu_frame_sent(&mut self, surface: SurfaceId, started: Instant) -> bool {
+        if !std::mem::take(&mut self.gpu.sent) {
+            return false;
+        }
+        if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+            s.started = Some(started);
+        }
+        true
     }
 
     /// A frame of `surface` damaged `damage` pixels with `springs` in
@@ -1324,6 +1395,7 @@ impl Renderer {
             let frame = self.lower_frame(surface, id, items, passes, target.size, target.scale);
             self.gpu.out.push(GpuRequest::Frame(frame));
             self.gpu.device.used(now);
+            self.gpu.sent = true;
             if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
                 s.inflight = Some((id, now));
                 s.hold = Some(now + GPU_WAIT);
@@ -1409,6 +1481,7 @@ impl Renderer {
             }
         }
         self.gpu.present = Some(frame);
+        self.gpu.sent = true;
         Damage::full(size)
     }
 

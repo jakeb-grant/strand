@@ -29,7 +29,7 @@
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub use strand_scene::{AdapterInfo, Scale, ShaderPass, Size, SurfaceId};
 pub use vello_common::color::{AlphaColor, Srgb};
@@ -45,6 +45,7 @@ mod pass;
 mod present;
 mod readback;
 mod thread;
+mod timer;
 
 /// How the GPU is started.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -140,14 +141,34 @@ pub enum GpuReply {
     Attached { surface: SurfaceId, mode: GpuMode },
     /// `surface`'s swapchain is gone; the manager may commit it again.
     Released(SurfaceId),
-    /// A presented frame went to the compositor at `at`: the surface's
-    /// frame callback.
-    Presented { surface: SurfaceId, at: Instant },
-    /// A readback frame's pixels.
+    /// A presented frame went to the compositor: the surface's frame
+    /// callback. `frame` is render's frame number; `at` is when the GPU
+    /// thread had submitted the frame's work, taken before `present`
+    /// (which may block on the compositor's pacing); `waited` is the part
+    /// of the GPU thread's span that is not the frame's cost: the time
+    /// the request sat in the thread's queue behind other work (another
+    /// surface's frame, its `present`), and the block on the swapchain
+    /// for an image (FIFO pacing). The thread never waits for the GPU to
+    /// run a presented frame: `ran` gives how long the GPU ran earlier
+    /// frames of this surface, by frame number, as their timestamps come
+    /// (this frame's comes with a later `Presented`, and a frame that
+    /// found both of its surface's timers busy never comes; on a device
+    /// without timestamps, this frame itself at zero). A frame's time is
+    /// `at` less its `paint`'s start less `waited`, plus its `ran`.
+    Presented {
+        surface: SurfaceId,
+        frame: u64,
+        at: Instant,
+        waited: Duration,
+        ran: Vec<(u64, Duration)>,
+    },
+    /// A readback frame's pixels, after the GPU ran it; `waited` is the
+    /// time its request sat in the thread's queue behind other work.
     Pixels {
         surface: SurfaceId,
         frame: u64,
         pixels: Readback,
+        waited: Duration,
     },
     /// A pass's pixels.
     PassPixels {
@@ -380,7 +401,9 @@ impl Readback {
 
 /// The handle the binary owns (docs/architecture.md, "`strand-gpu`").
 pub struct Gpu {
-    tx: mpsc::Sender<GpuRequest>,
+    /// Each request with when it was sent: the thread times a frame's
+    /// wait in its queue (`GpuReply::Presented`'s `waited`).
+    tx: mpsc::Sender<(Instant, GpuRequest)>,
     rx: mpsc::Receiver<GpuReply>,
     thread: Option<JoinHandle<()>>,
     exited: bool,
@@ -458,7 +481,7 @@ impl Gpu {
     /// Queues a request; never blocks. A request after the thread ended
     /// is dropped.
     pub fn send(&self, req: GpuRequest) {
-        let _ = self.tx.send(req);
+        let _ = self.tx.send((Instant::now(), req));
     }
 
     /// The next reply, if one is waiting.
@@ -480,7 +503,7 @@ impl Gpu {
     /// false (without blocking) while it is still dropping the device:
     /// call again after its `Exited` reply.
     pub fn try_join(&mut self) -> bool {
-        let _ = self.tx.send(GpuRequest::Shutdown);
+        self.send(GpuRequest::Shutdown);
         match &self.thread {
             Some(t) if !t.is_finished() => false,
             Some(_) => {
@@ -499,7 +522,7 @@ impl Drop for Gpu {
         // The thread drops everything and ends on its own; it is detached
         // rather than joined so a slow driver never blocks the main
         // thread (the binary joins it with `try_join` when it can wait).
-        let _ = self.tx.send(GpuRequest::Shutdown);
+        self.send(GpuRequest::Shutdown);
     }
 }
 

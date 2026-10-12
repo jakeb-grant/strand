@@ -833,6 +833,12 @@ impl Renderer {
         false
     }
 
+    /// (M5) No device is ever lost in a build without the GPU.
+    #[cfg(not(feature = "gpu"))]
+    pub fn gpu_lost_devices(&self) -> u32 {
+        0
+    }
+
     /// (M4) True while a surface shows a `shader` node (logic hears the
     /// status only then).
     #[cfg(not(feature = "gpu"))]

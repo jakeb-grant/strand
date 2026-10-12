@@ -103,6 +103,13 @@ pub(super) struct Shell {
     pub(super) exports: Vec<super::request::Waiting>,
     /// (M5, S-tools) `file` outputs' writer (`outputs.rs`).
     pub(super) files: super::outputs::Files,
+    /// (M5, S-tools) Where snapshots are asked for (`strand report`);
+    /// `None` without a main thread.
+    pub(super) to_main: Option<Sender<ToMain>>,
+    /// (M5, S-tools) `report` requests waiting for main's snapshot.
+    pub(super) reports: Vec<(SnapshotId, super::request::Caller)>,
+    /// (M5) The next `SnapshotId`.
+    pub(super) next_snapshot: u64,
 }
 
 /// A surface's `blur` nodes as `ToLogic::BlurFallback` carries them.
@@ -193,9 +200,10 @@ impl Shell {
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => self.lock_state(state),
             ToLogic::Beat(seq) => super::lock::beat(seq),
-            // (M5) Nothing asks main for snapshots or turns pick mode on
-            // yet (S-tools, S-inspect).
-            ToLogic::Snapshot(_) | ToLogic::Picked(_) => {}
+            // (M5) `strand report`'s half from main (S-tools).
+            ToLogic::Snapshot(snap) => self.snapshot_answered(snap),
+            // Nothing turns pick mode on yet (S-inspect).
+            ToLogic::Picked(_) => {}
             ToLogic::Shutdown => {}
         }
     }

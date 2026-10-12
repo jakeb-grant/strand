@@ -98,6 +98,52 @@ pub(crate) fn try_surface(
     Ok(Presented { surface, config })
 }
 
+/// What a presented frame is drawn into and handed over through: the
+/// WSI's swapchain, or a test's stand-in.
+pub(crate) trait Swapchain {
+    type Image;
+    /// Blocks for the compositor's next image (FIFO pacing): the image,
+    /// a view to draw into and its format.
+    fn acquire(
+        &mut self,
+        dev: &Device,
+    ) -> Option<(Self::Image, wgpu::TextureView, wgpu::TextureFormat)>;
+    /// Hands the image to the compositor; may block on its last frame
+    /// callback.
+    fn present(&mut self, dev: &Device, image: Self::Image);
+}
+
+impl Swapchain for Presented {
+    type Image = wgpu::SurfaceTexture;
+
+    fn acquire(
+        &mut self,
+        dev: &Device,
+    ) -> Option<(Self::Image, wgpu::TextureView, wgpu::TextureFormat)> {
+        let tex = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            other => {
+                log::debug!("GPU present: {other:?}; reconfiguring");
+                self.surface.configure(&dev.device, &self.config);
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                    _ => return None,
+                }
+            }
+        };
+        let view = tex
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        Some((tex, view, self.config.format))
+    }
+
+    fn present(&mut self, dev: &Device, image: Self::Image) {
+        dev.queue.present(image);
+    }
+}
+
 impl Presented {
     pub fn resize(&mut self, dev: &Device, width: u32, height: u32) {
         if self.config.width == width.max(1) && self.config.height == height.max(1) {

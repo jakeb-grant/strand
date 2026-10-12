@@ -81,6 +81,17 @@ impl Drop for Desk {
 
 impl Desk {
     pub(super) fn start(tag: &str, files: &[(&str, &str)], env: &[(&str, &str)]) -> Desk {
+        Self::start_with(tag, files, env, false)
+    }
+
+    /// [`Desk::start`], with `strand run` given sway's `SWAYSOCK` when
+    /// `swaysock` (as in a sway session; S-tools' report test).
+    pub(super) fn start_with(
+        tag: &str,
+        files: &[(&str, &str)],
+        env: &[(&str, &str)],
+        swaysock: bool,
+    ) -> Desk {
         // Short: the socket paths must fit in sun_path.
         let dir = std::env::temp_dir().join(format!("strand-cli-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -121,7 +132,7 @@ impl Desk {
                 .unwrap(),
         );
         let deadline = Instant::now() + Duration::from_secs(10);
-        let display = loop {
+        let (display, ipc) = loop {
             let names: Vec<String> = std::fs::read_dir(&dir)
                 .unwrap()
                 .filter_map(|e| e.ok())
@@ -138,7 +149,7 @@ impl Desk {
                     .output()
                     .is_ok_and(|o| o.status.success())
             {
-                break d.clone();
+                break (d.clone(), dir.join(i));
             }
             assert!(Instant::now() < deadline, "sway did not start");
             std::thread::sleep(Duration::from_millis(20));
@@ -166,8 +177,13 @@ impl Desk {
             .env("XDG_STATE_HOME", desk.state())
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .env_remove("STRAND_MOCK")
+            .env_remove("SWAYSOCK")
+            .env_remove("XDG_CURRENT_DESKTOP")
             .stdin(Stdio::null())
             .stderr(std::fs::File::create(&desk.log).unwrap());
+        if swaysock {
+            cmd.env("SWAYSOCK", &ipc);
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }

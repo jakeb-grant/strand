@@ -10,67 +10,49 @@ use std::process::ExitCode;
 use crate::cli;
 use strand_compiler::diagnostic::Style;
 
-/// Subcommands the design commits to, with the milestone that delivers each.
-const COMMANDS: &[(&str, &str, &str)] = &[
+/// Subcommands the design commits to; each is served (`tool`, `one_shot`
+/// or `run`).
+const COMMANDS: &[(&str, &str)] = &[
     (
         "run",
         "run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)",
-        "M1",
     ),
-    ("check", "check the config without running it [dir]", "M1"),
-    (
-        "fmt",
-        "format .strand files in place [--check] [paths]",
-        "M1",
-    ),
-    ("watch", "stream reload events (--json)", "M1"),
-    (
-        "reload",
-        "rescan now (--hard drops non-persisted state)",
-        "M1",
-    ),
+    ("check", "check the config without running it [dir]"),
+    ("fmt", "format .strand files in place [--check] [paths]"),
+    ("watch", "stream reload events (--json)"),
+    ("reload", "rescan now (--hard drops non-persisted state)"),
     (
         "get",
         "read an exported value, a settings field or a token ('$accent') (--json)",
-        "M5",
     ),
     (
         "set",
         "write an exported value (strand set theme.look mocha; '$accent' overlays a token)",
-        "M2",
     ),
-    ("toggle", "flip an exported boolean", "M5"),
+    ("toggle", "flip an exported boolean"),
     (
         "call",
         "invoke a service action (strand call notifications.clear) (--json)",
-        "M5",
     ),
+    ("clear", "drop a runtime overlay (strand clear '$accent')"),
     (
-        "clear",
-        "drop a runtime overlay (strand clear '$accent')",
-        "M5",
+        "new",
+        "write a starter shell into [dir] (default $XDG_CONFIG_HOME/strand; refuses a non-empty dir)",
     ),
-    ("new", "scaffold a working shell", "M5"),
     (
         "export",
         "write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]",
-        "M5",
     ),
-    (
-        "compositor-rules",
-        "print blur rules for the compositor",
-        "M4",
-    ),
+    ("compositor-rules", "print blur rules for the compositor"),
     (
         "report",
-        "dump compositor, protocols, scales and frame stats",
-        "M5",
+        "dump compositor, protocols, scales, memory, GPU and frame stats (--json)",
     ),
 ];
 
 fn usage() -> String {
     let mut s = String::from("usage: strand <command> [args]\n\ncommands:\n");
-    for (name, about, _) in COMMANDS {
+    for (name, about) in COMMANDS {
         s.push_str(&format!("  {name:<18}{about}\n"));
     }
     s
@@ -102,17 +84,42 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
             [dir] if !dir.starts_with('-') => Ok(Action::Run(Some(dir.into()))),
             _ => Err("usage: strand run [dir | --demo]".into()),
         },
-        Some(cmd) => match COMMANDS.iter().find(|(name, ..)| *name == cmd) {
-            Some((name, _, milestone)) => {
-                Err(format!("strand {name}: not implemented yet ({milestone})"))
-            }
-            None => Err(format!("strand: unknown command `{cmd}`\n\n{}", usage())),
-        },
+        Some(cmd) => Err(format!("strand: unknown command `{cmd}`\n\n{}", usage())),
     }
 }
 
 /// A subcommand that reports through stderr text and a pass/fail flag.
 type Tool = fn(&[String], Style) -> (String, bool);
+
+fn tool(cmd: &str) -> Option<Tool> {
+    match cmd {
+        "check" => Some(cli::check),
+        "fmt" => Some(cli::fmt),
+        _ => None,
+    }
+}
+
+/// A subcommand that prints its text on stdout, or why it failed on
+/// stderr: the socket's commands, `new` and `compositor-rules` (printed
+/// for the user to paste; never applied to the session).
+type OneShot = fn(&[String]) -> Result<String, String>;
+
+fn one_shot(cmd: &str) -> Option<OneShot> {
+    Some(match cmd {
+        "get" => cli::get_cli,
+        "toggle" => cli::toggle_cli,
+        "call" => cli::call_cli,
+        "clear" => cli::clear_cli,
+        "export" => cli::export_cli,
+        "reload" => cli::reload_cli,
+        "set" => cli::set_cli,
+        "new" => cli::new_cli,
+        "report" => cli::report_cli,
+        "compositor-rules" => cli::compositor_rules,
+        "watch" => |a| cli::watch_cli(a, &mut std::io::stdout()).map(|()| String::new()),
+        _ => return None,
+    })
+}
 
 /// `main`'s body: the idle hooks, then the command line.
 pub fn main() -> ExitCode {
@@ -126,12 +133,7 @@ pub fn main() -> ExitCode {
     if args.first().is_some_and(|a| a == "--write-schemas") {
         return crate::plugin::write_schemas_main(&args[1..]);
     }
-    let tool: Option<Tool> = match args.first().map(String::as_str) {
-        Some("check") => Some(cli::check),
-        Some("fmt") => Some(cli::fmt),
-        _ => None,
-    };
-    if let Some(tool) = tool {
+    if let Some(tool) = args.first().and_then(|a| tool(a)) {
         let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         let style = if color { Style::Color } else { Style::Plain };
         let (text, ok) = tool(&args[1..], style);
@@ -142,17 +144,7 @@ pub fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    // The socket's one-shot commands: text on stdout, why on stderr.
-    type OneShot = fn(&[String]) -> Result<String, String>;
-    let ipc: Option<OneShot> = match args.first().map(String::as_str) {
-        Some("get") => Some(cli::get_cli),
-        Some("toggle") => Some(cli::toggle_cli),
-        Some("call") => Some(cli::call_cli),
-        Some("clear") => Some(cli::clear_cli),
-        Some("export") => Some(cli::export_cli),
-        _ => None,
-    };
-    if let Some(command) = ipc {
+    if let Some(command) = args.first().and_then(|a| one_shot(a)) {
         return match command(&args[1..]) {
             Ok(text) => {
                 print!("{text}");
@@ -163,55 +155,6 @@ pub fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
-    }
-    match args.first().map(String::as_str) {
-        Some("reload") => {
-            return match cli::reload_cli(&args[1..]) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("strand reload: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some("set") => {
-            return match cli::set_cli(&args[1..]) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("strand set: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some("compositor-rules") => {
-            // Printed for the user to paste; never applied to the session.
-            return match cli::compositor_rules(&args[1..]) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("strand compositor-rules: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some("watch") => {
-            return match cli::watch_cli(&args[1..], &mut std::io::stdout()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("strand watch: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        _ => {}
     }
     match dispatch(&args) {
         Ok(Action::Print(out)) => {
@@ -275,12 +218,16 @@ mod tests {
         }
     }
 
+    /// Every command the help lists is served: `run`, a tool or a
+    /// one-shot (none answers "not implemented yet" any more).
     #[test]
-    fn known_commands_name_their_milestone() {
-        assert_eq!(
-            run(&["new"]).unwrap_err(),
-            "strand new: not implemented yet (M5)"
-        );
+    fn known_commands_are_all_served() {
+        for (name, ..) in COMMANDS {
+            assert!(
+                *name == "run" || tool(name).is_some() || one_shot(name).is_some(),
+                "`strand {name}` is listed but not served"
+            );
+        }
     }
 
     #[test]
