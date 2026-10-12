@@ -203,6 +203,18 @@ every merge. The superseded allocations (35 KB IPC, 55 KB inspector,
 15 KB new/export plus 11–23 KB from the 29,176 B reserve, plugins from
 that reserve) are in git history at `3493b04`.
 
+**Measured after wave 2 (2026-10-11, decisions.md m5-size, wave 2).**
+`laptop/m5-w2` at `db85876` is CPU-only 18,485,143 B (+408,000 B over
+wave 1's merged tree; 135,063 B over the 18,350,080 B gate) and GPU
+22,382,423 B (+407,744 B; 100,183 B over the 22,282,240 B gate). The
+size pass found no gross verbosity to cut (no duplicated generic
+instantiations, under 10 KB of byte-identical functions in the whole
+binary, and wave 2's code costs about what the existing crates' code
+costs per line), so it cut nothing. Under the owner's ruling of
+2026-10-11 the overruns stand, and the integrator re-bases both gates to
+the measured tree after S-tools' remaining work merges; the rows above
+stay as the record of what each stream was allocated.
+
 Optional items, paid from the reserve only if the reserve allows:
 check-time `import()` validation (2–4 KB) and the "says why" lines in the
 node pane (2–5 KB).
