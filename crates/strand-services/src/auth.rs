@@ -26,7 +26,12 @@
 //! `pam_faillock` lockout, a helper that died) is begun again only by the
 //! next submit, so a stack that fails at once cannot loop. When the lock
 //! goes, a conversation with no password in it ends (its helper is
-//! killed). Without a signal (tests, an embedder) each submit begins a
+//! killed), and what it says no longer shows. One begun for a lock
+//! session that has ended while another is shown (the signal went false
+//! and true again, perhaps before the store saw the false) ends too, and
+//! the new lock's begins once it has. A password submitted while a
+//! conversation ends, or just after it ended, begins the next one.
+//! Without a signal (tests, an embedder) each submit begins a
 //! conversation of its own.
 //!
 //! A success mints a [`strand_auth::UnlockToken`], which goes to the
@@ -272,6 +277,9 @@ struct Running {
     /// Its passwords; dropped when the lock goes, which ends it unless a
     /// password is in it.
     answers: Option<Answers>,
+    /// A password submitted while it ends (its answers dropped): the
+    /// next conversation begins with it.
+    next: Option<Password>,
     /// A submitted password waits for PAM's next prompt.
     queued: bool,
     /// PAM waits on a prompt no password has answered.
@@ -300,9 +308,22 @@ impl Auth {
             return Ok(());
         }
         cx.ready();
+        let signalled = config.lock.is_some();
         let mut lock = config.lock.as_ref().map(LockSignal::subscribe);
         let shown =
             |lock: &Option<watch::Receiver<bool>>| lock.as_ref().is_some_and(|l| *l.borrow());
+        // A conversation tagged `tag` belongs to a lock session that has
+        // ended while another is shown (lock-r1-2): the binary drops its
+        // verdict, so it must not stand in for this lock's.
+        let is_stale = |lock: &Option<watch::Receiver<bool>>, tag: u64| {
+            signalled && shown(lock) && tag != session()
+        };
+        // What a conversation tagged `tag` says may show: with a signal,
+        // only while a lock is shown, and only for the session it began
+        // in (lock-r1-3).
+        let live = |lock: &Option<watch::Receiver<bool>>, tag: u64| {
+            !signalled || (shown(lock) && tag == session())
+        };
         let (events_tx, mut events) = mpsc::unbounded_channel::<Event>();
         let mut running: Option<Running> = None;
         // Begins a conversation with `password` waiting for its first
@@ -337,7 +358,10 @@ impl Auth {
                         f(&why, tag);
                     }
                     cx.warn(why);
-                    return cx.update(|s| s.failed = true);
+                    return cx.update(|s| {
+                        s.busy = false;
+                        s.failed = true;
+                    });
                 }
             };
             if let Some(p) = password {
@@ -358,6 +382,7 @@ impl Auth {
             *running = Some(Running {
                 task,
                 answers: Some(answers),
+                next: None,
                 queued: asked,
                 asking: false,
                 tag,
@@ -369,27 +394,34 @@ impl Auth {
                     s.prompt.clear();
                 })
         };
-        // What PAM said, in order.
-        let said = |cx: &mut Cx<Self>, running: &mut Option<Running>, event: Event| -> bool {
-            match event {
-                Event::Message(m) => cx.update(|s| s.message = m),
-                Event::Prompt(p) => {
-                    let Some(r) = running.as_mut() else {
-                        return true;
-                    };
-                    if std::mem::take(&mut r.queued) {
-                        // The submitted password answers it at once.
-                        return cx.update(|s| s.message.clear());
+        // What PAM said, in order; `live`: it may show.
+        let said =
+            |cx: &mut Cx<Self>, running: &mut Option<Running>, live: bool, event: Event| -> bool {
+                match event {
+                    Event::Message(m) => !live || cx.update(|s| s.message = m),
+                    Event::Prompt(p) => {
+                        let Some(r) = running.as_mut() else {
+                            return true;
+                        };
+                        let queued = std::mem::take(&mut r.queued);
+                        if !queued {
+                            r.asking = true;
+                        }
+                        if !live {
+                            return true;
+                        }
+                        if queued {
+                            // The submitted password answers it at once.
+                            return cx.update(|s| s.message.clear());
+                        }
+                        cx.update(|s| {
+                            s.message.clear();
+                            s.prompt = p;
+                            s.busy = false;
+                        })
                     }
-                    r.asking = true;
-                    cx.update(|s| {
-                        s.message.clear();
-                        s.prompt = p;
-                        s.busy = false;
-                    })
                 }
-            }
-        };
+            };
         if shown(&lock) && !begin(&mut cx, &mut client, &mut running, None) {
             return Ok(());
         }
@@ -401,10 +433,14 @@ impl Auth {
                         None => std::future::pending().await,
                     }
                 } => {
-                    let tag = running.take().map_or(0, |r| r.tag);
+                    let Some(ended) = running.take() else {
+                        continue;
+                    };
+                    let tag = ended.tag;
                     // Its texts first: they were said before its verdict.
+                    let live_now = live(&lock, tag);
                     while let Ok(e) = events.try_recv() {
-                        if !said(&mut cx, &mut None, e) {
+                        if !said(&mut cx, &mut None, live_now, e) {
                             return Ok(());
                         }
                     }
@@ -423,33 +459,51 @@ impl Auth {
                             (deliver(&config, v, true, tag), true)
                         }
                     };
+                    // A password submitted after the conversation had
+                    // ended (it never saw it: lock-r1-5), or while it was
+                    // ending: the next conversation's.
+                    let late = ended
+                        .answers
+                        .as_ref()
+                        .and_then(Answers::take_back)
+                        .filter(|_| !answered);
+                    let next = ended.next.or(late);
                     if let Some(w) = strand_auth::take_service_warning() {
                         cx.warn(w);
                     }
                     if let Some(w) = d.warning {
                         cx.warn(w);
                     }
+                    let stale = is_stale(&lock, tag);
                     if !cx.update(|s| {
                         s.busy = false;
                         s.prompt.clear();
-                        if let Some(f) = d.failed {
+                        if let Some(f) = d.failed.filter(|_| !stale) {
                             s.failed = f;
                         }
                     }) {
                         return Ok(());
                     }
-                    // The lock is still shown and the user tried: PAM
+                    let unlocked = d.unlocked && !stale;
+                    // Only while a lock is shown with a signal: outside
+                    // one, a conversation would hold the reader. Else, the
+                    // lock is still shown and the user tried, or this
+                    // lock never had a conversation of its own: PAM
                     // starts over (a fingerprint module first).
-                    if shown(&lock)
-                        && answered
-                        && !d.unlocked
-                        && !begin(&mut cx, &mut client, &mut running, None)
+                    let again = match next {
+                        Some(p) if !unlocked && (!signalled || shown(&lock)) => Some(Some(p)),
+                        _ if shown(&lock) && (stale || answered && !unlocked) => Some(None),
+                        _ => None,
+                    };
+                    if let Some(p) = again
+                        && !begin(&mut cx, &mut client, &mut running, p)
                     {
                         return Ok(());
                     }
                 }
                 Some(e) = events.recv() => {
-                    if !said(&mut cx, &mut running, e) {
+                    let live_now = running.as_ref().is_some_and(|r| live(&lock, r.tag));
+                    if !said(&mut cx, &mut running, live_now, e) {
                         return Ok(());
                     }
                 }
@@ -464,13 +518,38 @@ impl Auth {
                         lock = None;
                     }
                     if shown(&lock) {
-                        if running.is_none() && !begin(&mut cx, &mut client, &mut running, None) {
-                            return Ok(());
+                        match running.as_mut() {
+                            None => {
+                                if !begin(&mut cx, &mut client, &mut running, None) {
+                                    return Ok(());
+                                }
+                            }
+                            // Begun for a lock session that has ended (the
+                            // signal went false and true again before this
+                            // store saw the false, or that conversation is
+                            // still ending): it ends, what it showed goes,
+                            // and this lock's begins once it has
+                            // (lock-r1-2).
+                            Some(r) if r.tag != session() => {
+                                r.answers = None;
+                                r.next = None;
+                                r.queued = false;
+                                r.asking = false;
+                                if !cx.update(|s| {
+                                    s.busy = false;
+                                    s.message.clear();
+                                    s.prompt.clear();
+                                }) {
+                                    return Ok(());
+                                }
+                            }
+                            Some(_) => {}
                         }
                     } else {
                         // Ends a conversation with no password in it.
                         if let Some(r) = running.as_mut() {
                             r.answers = None;
+                            r.next = None;
                         }
                         if !cx.update(|s| {
                             s.message.clear();
@@ -498,12 +577,21 @@ impl Auth {
                         }
                         let sent = match running.as_mut() {
                             Some(r) => match &r.answers {
-                                Some(a) if a.send(password) => {
-                                    r.queued = !std::mem::take(&mut r.asking);
+                                Some(a) => {
+                                    // `false`: one waits already.
+                                    let sent = a.send(password);
+                                    if sent {
+                                        r.queued = !std::mem::take(&mut r.asking);
+                                    }
+                                    sent
+                                }
+                                // Ending: the next conversation takes it,
+                                // while a lock is shown.
+                                None if shown(&lock) && r.next.is_none() => {
+                                    r.next = Some(password);
                                     true
                                 }
-                                // Ending (the lock went), or one waits.
-                                _ => false,
+                                None => false,
                             },
                             None => {
                                 if !begin(&mut cx, &mut client, &mut running, Some(password)) {

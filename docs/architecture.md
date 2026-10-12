@@ -491,8 +491,11 @@ error text, which ends the conversation), `Password`, `Client` (`new`,
 `with_timeout`, `converse`, `submit`, `helper_pid`, `spawns`,
 `service`; `faults` adds `with_test_env`), `answers() -> (Answers,
 Inbox)` (`Answers::send(Password) -> bool`, one waiting at a time, from
-any thread; dropping it ends a conversation with no password in it,
-`AuthError::Cancelled`), `Said { Message(&str), Prompt(&str) }`,
+any thread; `Answers::take_back() -> Option<Password>`, the one no
+prompt took, which once the conversation has ended is one sent too late
+for it (added in m6-lock's review fixes, lock-r1-5: `send` cannot tell a
+conversation that has just ended from one still running); dropping it
+ends a conversation with no password in it, `AuthError::Cancelled`), `Said { Message(&str), Prompt(&str) }`,
 `Conversed { verdict, answered }`, `refusal(&Password)` (a NUL, or
 longer than PAM takes), `Verdict { Unlocked(UnlockToken), Denied {
 message }, Failed(AuthError) }`, `default_helper()` (beside the

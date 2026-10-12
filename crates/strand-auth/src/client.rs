@@ -154,6 +154,15 @@ impl Answers {
         let _ = (&self.wake).write(&[1]);
         true
     }
+
+    /// Takes back the password still waiting, if no prompt took it. Once
+    /// [`Client::converse`] has returned, that is one sent too late for
+    /// it: `send` cannot tell a conversation that has just ended from
+    /// one still running, so whoever holds the answers asks here when
+    /// the conversation's verdict reaches it (m6-lock).
+    pub fn take_back(&self) -> Option<Password> {
+        self.queue.lock().ok().and_then(|mut q| q.take())
+    }
 }
 
 impl Inbox {

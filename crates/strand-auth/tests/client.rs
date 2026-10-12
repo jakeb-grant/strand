@@ -460,6 +460,28 @@ fn a_password_with_pam_outlives_its_answers() {
     assert!(out.answered);
 }
 
+/// A password sent after the conversation ended (the user's Return as
+/// PAM gave its verdict) reached nobody: `send` still takes it, and
+/// `take_back` gives it back, so its sender can begin the next
+/// conversation with it rather than lose it (m6-lock, lock-r1-5).
+#[test]
+fn a_password_sent_too_late_is_taken_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = talker(
+        dir.path(),
+        r#"hello; frame; info "The account is locked"; verdict 1; sleep 5"#,
+    );
+    let (answers, inbox) = answers().unwrap();
+    let out = c.converse(inbox, &mut |_| {});
+    assert!(matches!(out.verdict, Verdict::Denied { .. }));
+    assert!(!out.answered);
+    assert!(answers.take_back().is_none(), "nothing was sent");
+    assert!(answers.send(Password::from("late".to_string())));
+    let back = answers.take_back().expect("the late password comes back");
+    assert_eq!(back.as_bytes(), b"late");
+    assert!(answers.take_back().is_none(), "taken once");
+}
+
 /// Each prompt takes the next password (a code after the password);
 /// `submit` answers every prompt with its one password, as before.
 #[test]
