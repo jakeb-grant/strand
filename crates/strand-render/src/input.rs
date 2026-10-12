@@ -583,7 +583,11 @@ impl Router {
                     self.middle_down.remove(&s);
                 }
                 self.cancel_drag(scene);
-                self.offer = None;
+                // Another program's drag keeps its surface, with no
+                // target while picking (inspect-r2-4).
+                if let Some(o) = &mut self.offer {
+                    o.target = None;
+                }
             }
         }
         self.flush(scene)
@@ -805,10 +809,17 @@ impl Router {
                 | InputEvent::ClickAway { .. } => return,
                 // A drag (another program's) finds no drop target: the
                 // surface manager declines its offer and no `on drop`
-                // runs.
-                InputEvent::DragEnter { .. }
-                | InputEvent::DragMotion { .. }
-                | InputEvent::DragDrop { .. } => {
+                // runs. The surface it is over is kept, so its motion
+                // finds a target again once pick mode ends
+                // (inspect-r2-4).
+                InputEvent::DragEnter { .. } | InputEvent::DragMotion { .. } => {
+                    self.offer = Some(Offer {
+                        surface,
+                        target: None,
+                    });
+                    return;
+                }
+                InputEvent::DragDrop { .. } => {
                     self.offer = None;
                     return;
                 }

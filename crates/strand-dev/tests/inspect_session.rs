@@ -3,7 +3,10 @@
 //! socket: a pick ends pick mode before the pane is shown and outlined;
 //! `r` resets and shows the pane again; `f` toggles flashing; an event
 //! arriving while the client waits for an answer is handled once the
-//! answer is in (`pick_ended`, then Enter sends nothing; a `picked`);
+//! answer is in (a `picked`), except a `pick_ended` before
+//! `inspect.pick`'s answer, which ended the pick mode before it; one
+//! after it ends pick mode, so Enter sends nothing; an answer that
+//! timed out is discarded when it comes late;
 //! `e` opens the node's origin; a read-only token write-back offers
 //! `$EDITOR` at the token's line, and the next line answers the offer.
 
@@ -172,19 +175,33 @@ fn the_terminal_session_picks_shows_resets_flashes_and_offers_editor() {
     type_line("f");
     sh.answer(flash(false), json!({"ok": true}));
     at = out.wait_for(at, "damage flashing off");
-    // An event that comes while the client waits for an answer is
-    // handled after it: pick mode ended by the shell (a lock)...
+    // A `pick_ended` that comes before `inspect.pick`'s answer ends the
+    // pick mode before it (the shell answers as it acts, and ends the
+    // new mode only after): the new one stays on, so Enter ends it
+    // (inspect-r2-1).
     type_line("p");
     sh.expect(pick(true));
     sh.send(json!({"event": "pick_ended"}));
     sh.ok();
+    at = out.wait_for(at, "picking: click a node");
+    type_line("");
+    sh.answer(pick(false), json!({"ok": true}));
+    // One that comes after the answer ends this pick mode: Enter then
+    // sends nothing, and the next request is `f`'s.
+    type_line("p");
+    sh.answer(pick(true), json!({"ok": true}));
+    at = out.wait_for(at, "picking: click a node");
+    sh.send(json!({"event": "pick_ended"}));
     at = out.wait_for(at, "pick mode ended by the shell");
-    // ... so Enter no longer ends pick mode: the next request is `f`'s.
     type_line("");
     type_line("f");
     sh.answer(flash(true), json!({"ok": true}));
     at = out.wait_for(at, "damage flashing on");
-    // A pick that comes while the client waits is shown once it is in.
+    // Picking, `p` again: a pick made in the pick mode before, which
+    // comes while the client waits, is shown once the answer is in.
+    type_line("p");
+    sh.answer(pick(true), json!({"ok": true}));
+    at = out.wait_for(at, "picking: click a node");
     type_line("p");
     sh.expect(pick(true));
     sh.send(json!({"event": "picked", "surface": 2, "node": "3.0"}));
@@ -210,5 +227,64 @@ fn the_terminal_session_picks_shows_resets_flashes_and_offers_editor() {
     );
     assert_eq!(fs::read_to_string(&theme).unwrap(), theme_text);
     fs::set_permissions(&theme, fs::Permissions::from_mode(0o644)).unwrap();
+    let _ = fs::remove_dir_all(&d);
+}
+
+/// (inspect-r2-5) An answer that comes after its request timed out is
+/// discarded, not read as the next request's: answers come in order and
+/// carry no id, so one late answer would shift every later one.
+#[test]
+fn a_late_answer_is_not_the_next_requests() {
+    use strand_core::ipc::Request;
+    use strand_dev::inspect::client::Connection;
+    let d = std::env::temp_dir().join(format!("strand-dev-late-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(&d).unwrap();
+    let socket = d.join("shell.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut conn = Connection::connect(&socket, None).unwrap();
+    let (s, _) = listener.accept().unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut sh = Shell {
+        r: BufReader::new(s.try_clone().unwrap()),
+        w: s,
+    };
+    let short = Duration::from_millis(50);
+    let node = Request::InspectNode { id: "3.0".into() };
+    let err = conn.ask(&node, short).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    sh.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
+    // The late pane, then the flash's own answer.
+    let wait = Duration::from_secs(10);
+    let flash = Request::InspectFlash { on: true };
+    let asked = std::thread::spawn(move || {
+        let a = conn.ask(&flash, wait).unwrap();
+        (conn, a)
+    });
+    sh.expect(json!({"cmd": "inspect.flash", "on": true}));
+    sh.send(json!({"ok": true, "node": {"id": "3.0"}}));
+    sh.send(json!({"ok": false, "error": "flash refused"}));
+    let (mut conn, a) = asked.join().unwrap();
+    assert_eq!(a, json!({"ok": false, "error": "flash refused"}));
+    // Late again, this time while no request waits: `event` skips it
+    // and the next answer is the next request's.
+    assert_eq!(
+        conn.ask(&node, short).unwrap_err().kind(),
+        std::io::ErrorKind::TimedOut
+    );
+    sh.expect(json!({"cmd": "inspect.node", "id": "3.0"}));
+    sh.send(json!({"ok": true, "node": {"id": "3.0"}}));
+    sh.send(json!({"event": "pick_ended"}));
+    assert_eq!(
+        conn.event(wait).unwrap(),
+        Some(json!({"event": "pick_ended"}))
+    );
+    let asked = std::thread::spawn(move || {
+        conn.ask(&Request::InspectFlash { on: false }, wait)
+            .unwrap()
+    });
+    sh.expect(json!({"cmd": "inspect.flash", "on": false}));
+    sh.ok();
+    assert_eq!(asked.join().unwrap(), json!({"ok": true}));
     let _ = fs::remove_dir_all(&d);
 }

@@ -198,13 +198,19 @@ impl Shell {
     }
 
     /// Main's pick-mode news: a pick goes to the client in pick mode; an
-    /// end it did not ask for is told to it.
+    /// end it did not ask for is told to it. Either is dropped when its
+    /// `seq` is not the last `PickMode`'s: a newer `inspect.pick` (read
+    /// first, from the socket) overtook it.
     pub(in crate::run) fn picked(&mut self, event: PickEvent) {
         let Some(owner) = self.inspector.pick else {
             return;
         };
         match event {
-            PickEvent::Picked { surface, node } => {
+            // A pick main made in a pick mode before the newest
+            // `inspect.pick` belongs to that one, never to the client
+            // that took pick mode since (inspect-r2-2).
+            PickEvent::Picked { seq, .. } if seq != self.inspector.pick_seq => {}
+            PickEvent::Picked { surface, node, .. } => {
                 let node = node.map_or(Json::Null, |n| Json::String(node_ref(n)));
                 let event = json!({"event": "picked", "surface": surface.0, "node": node});
                 self.send_event(owner, &event);

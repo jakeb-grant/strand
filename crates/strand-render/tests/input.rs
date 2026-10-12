@@ -1031,6 +1031,64 @@ fn pick_mode_holds_drops_from_the_handlers() {
     assert!(f.drain().is_empty(), "no handler hears the drop");
 }
 
+/// (S-inspect; inspect-r2-4) A drag that entered while picking finds its
+/// target again once pick mode ends: its next motion over the box that
+/// takes `Files` targets the box, with no leave and enter in between,
+/// and the drop reaches its `on drop`. Pick mode turned on mid-drag
+/// keeps the surface too.
+#[test]
+fn a_drag_entered_while_picking_finds_its_target_after() {
+    let (mut r, [panel, _, _, bin, ..]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    let at = LogicalPoint::new(50.0, 190.0);
+    let motion = InputEvent::DragMotion { surface: s, at };
+    assert!(f.router.set_picking(true, &mut r).is_empty());
+    f.input(
+        &InputEvent::DragEnter {
+            surface: s,
+            at,
+            kinds: vec![DropKind::Files],
+        },
+        &mut r,
+    );
+    f.input(&motion, &mut r);
+    assert_eq!(f.router.drop_target(s), None);
+    let _ = f.router.set_picking(false, &mut r);
+    f.input(&motion, &mut r);
+    assert_eq!(
+        f.router.drop_target(s),
+        Some(bin),
+        "the drag's target is back"
+    );
+    // Pick mode on and off again in the middle of the drag.
+    assert!(f.router.set_picking(true, &mut r).is_empty());
+    assert_eq!(f.router.drop_target(s), None);
+    let _ = f.router.set_picking(false, &mut r);
+    f.input(&motion, &mut r);
+    assert_eq!(f.router.drop_target(s), Some(bin));
+    f.input(
+        &InputEvent::DragDrop {
+            surface: s,
+            at,
+            payload: DropPayload::External {
+                kind: DropKind::Files,
+                files: vec!["/tmp/a.png".into()],
+                text: String::new(),
+                app_id: None,
+            },
+        },
+        &mut r,
+    );
+    let got = f.drain();
+    assert!(
+        got.iter()
+            .any(|i| matches!(i, Intent::Event { node, .. } if *node == bin)),
+        "the drop reaches the box's `on drop`: {got:?}"
+    );
+}
+
 /// (M4) Other programs' drags (`wl_data_device`): files over the box
 /// whose `on drop` takes `Drop` have a target there (the surface manager
 /// accepts the offer then) and none over the `Pin` list; dropped on the

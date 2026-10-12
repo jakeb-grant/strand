@@ -509,8 +509,8 @@ fn a_report_is_mains_snapshot_with_logics_half() {
 /// outline and the flash go to main and belong to the client that asked;
 /// a pick on main reaches it as a `picked` event; `inspect.node` carries
 /// main's layouts; and the client's disconnect ends all three on main.
-/// A second client taking pick mode tells the first it ended; an end
-/// main sent before acting on a newer `inspect.pick` is ignored.
+/// A second client taking pick mode tells the first it ended; an end or
+/// a pick main sent before acting on a newer `inspect.pick` is ignored.
 #[test]
 fn the_inspector_belongs_to_its_client() {
     use std::io::{BufRead as _, Write as _};
@@ -581,6 +581,7 @@ fn the_inspector_belongs_to_its_client() {
         .send(ToLogic::Picked(PickEvent::Picked {
             surface: SurfaceId(4),
             node: Some(target),
+            seq: 1,
         }))
         .unwrap();
     assert_eq!(
@@ -626,11 +627,20 @@ fn the_inspector_belongs_to_its_client() {
     assert_eq!(pane["node"]["id"], id.as_str());
     assert_eq!(pane["node"]["identity"]["id"], "t");
     assert_eq!(pane["layout"], layout);
-    // Another client takes pick mode: the first hears it ended.
+    // Another client takes pick mode: the first hears it ended. A
+    // click main picked in the first's pick mode, read after the second
+    // took it, is stale: it reaches neither (inspect-r2-2).
     let (mut bw, mut br) = connect();
     send(&mut bw, &ipc::Request::InspectPick { on: true });
     assert_eq!(read(&mut br), json!({"ok": true}));
     assert_eq!(read(&mut ar), json!({"event": "pick_ended"}));
+    to_logic
+        .send(ToLogic::Picked(PickEvent::Picked {
+            surface: SurfaceId(4),
+            node: Some(target),
+            seq: 1,
+        }))
+        .unwrap();
     assert!(matches!(
         told(1)[..],
         [ToMain::PickMode { on: true, seq: 2 }]
@@ -658,6 +668,7 @@ fn the_inspector_belongs_to_its_client() {
         .send(ToLogic::Picked(PickEvent::Picked {
             surface: SurfaceId(4),
             node: None,
+            seq: 2,
         }))
         .unwrap();
     assert_eq!(

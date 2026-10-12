@@ -300,9 +300,9 @@ pub enum ToMain {
     /// `inspect.pick{on}`, and `false` when the asking IPC client goes:
     /// the router's pick-mode hook on or off. A pick arrives later, on a
     /// click, as [`ToLogic::Picked`]. `seq` counts logic's `PickMode`
-    /// messages; main's [`PickEvent::Ended`] carries back the last one
-    /// it acted on, so logic ignores an end that a newer `PickMode`
-    /// overtook (the socket and this channel are separate sources).
+    /// messages; main's [`PickEvent::Picked`] and [`PickEvent::Ended`]
+    /// carry back the last one it acted on, so logic ignores a pick or
+    /// an end that a newer `PickMode` overtook (the socket and this channel are separate sources).
     PickMode { on: bool, seq: u64 },
 }
 
@@ -311,9 +311,13 @@ pub enum ToMain {
 pub enum PickEvent {
     /// A click in pick mode, on `surface`: the node under it
     /// (`Renderer::pick`; none: nothing pickable there).
+    /// `seq` is the [`ToMain::PickMode`] main was in, so logic drops a
+    /// pick that a newer `inspect.pick` overtook (it belongs to the
+    /// pick mode before, never to the new owner).
     Picked {
         surface: SurfaceId,
         node: Option<NodeId>,
+        seq: u64,
     },
     /// Pick mode ended on main's side (a surface unmapped, a lock
     /// started), so logic tells the client that asked; `seq` is the

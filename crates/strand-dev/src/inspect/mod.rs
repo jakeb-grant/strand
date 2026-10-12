@@ -187,6 +187,10 @@ impl Session {
             say!(self, "{e}");
             return Ok(());
         }
+        // A `pick_ended` that came before the answer ends the pick mode
+        // before this one: the shell answers `inspect.pick` as it acts
+        // on it, and ends the new mode only after (inspect-r2-1).
+        self.conn.forget("pick_ended");
         self.picking = on;
         if on {
             say!(self, "picking: click a node on any output (Enter stops)");

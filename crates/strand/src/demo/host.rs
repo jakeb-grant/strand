@@ -916,7 +916,8 @@ impl SurfaceHost for Host {
                     _ => {}
                 }
                 if let Some((surface, node)) = self.renderer.pick_input(event) {
-                    f.send(ToLogic::Picked(PickEvent::Picked { surface, node }));
+                    let seq = f.pick_seq;
+                    f.send(ToLogic::Picked(PickEvent::Picked { surface, node, seq }));
                 }
             }
             // (M4) `parallax` and `tilt` follow the router's pointer.
@@ -1995,6 +1996,7 @@ mod tests {
             got.contains(&ToLogic::Picked(PickEvent::Picked {
                 surface: sp,
                 node: Some(inner),
+                seq: 7,
             })),
             "the popup's node is picked on the popup: {got:?}"
         );

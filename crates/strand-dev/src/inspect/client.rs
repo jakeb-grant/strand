@@ -28,6 +28,10 @@ pub struct Connection {
     stream: UnixStream,
     lines: mpsc::Receiver<Line>,
     events: VecDeque<Json>,
+    /// Answers still owed to requests that timed out: each is discarded
+    /// when it comes, so a late answer is never read as the next
+    /// request's (requests carry no id; answers come in order).
+    late: usize,
     closed: bool,
 }
 
@@ -63,19 +67,23 @@ impl Connection {
             stream,
             lines,
             events: VecDeque::new(),
+            late: 0,
             closed: false,
         })
     }
 
     /// Sends `req` and waits (up to `wait`) for its answer; events that
-    /// come first are kept for [`Connection::event`].
+    /// come first are kept for [`Connection::event`]. An answer that
+    /// times out is still owed: it is discarded when it comes.
     pub fn ask(&mut self, req: &Request, wait: Duration) -> io::Result<Json> {
         self.stream.write_all(encode(req).as_bytes())?;
         loop {
             match self.next(wait)? {
                 Some(v) if v.get("event").is_some() => self.events.push_back(v),
+                Some(_) if self.late > 0 => self.late -= 1,
                 Some(v) => return Ok(v),
                 None => {
+                    self.late += 1;
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!("no answer to `{}`", req.cmd()),
@@ -94,11 +102,19 @@ impl Connection {
         loop {
             match self.next(wait)? {
                 Some(v) if v.get("event").is_some() => return Ok(Some(v)),
-                // A stray answer (nothing is asked meanwhile): skipped.
-                Some(_) => continue,
+                // A late answer (nothing is asked meanwhile): skipped.
+                Some(_) => self.late = self.late.saturating_sub(1),
                 None => return Ok(None),
             }
         }
+    }
+
+    /// Forgets the `name` events kept so far. Each came before the
+    /// answer just read, so it refers to the state before that request
+    /// (a `pick_ended` before `inspect.pick`'s `ok` ends the pick mode
+    /// before, never the one just turned on).
+    pub fn forget(&mut self, name: &str) {
+        self.events.retain(|e| e["event"] != name);
     }
 
     /// Whether the shell has closed the connection.

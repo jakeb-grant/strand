@@ -819,14 +819,17 @@ new).**
   (`inspect.pick`, and off when the client that asked disconnects);
   `seq` numbers logic's `PickMode` messages.
   A pick happens later, on a click, so it is not a snapshot: main sends
-  `ToLogic::Picked(PickEvent::Picked { surface, node })` (`node` from
-  `Renderer::pick`, none when nothing pickable is under the click), and
+  `ToLogic::Picked(PickEvent::Picked { surface, node, seq })` (`node`
+  from `Renderer::pick`, none when nothing pickable is under the click;
+  `seq` the `PickMode` main was in), and
   `ToLogic::Picked(PickEvent::Ended { seq })` when pick mode ends on
   main's side (a surface unmapped, a lock started), `seq` being the last
   `PickMode`'s main acted on. The socket and this channel are separate
   sources on logic's loop, so an `Ended` can arrive after a newer
   `inspect.pick` has turned pick mode on again; logic ignores an `Ended`
-  whose `seq` is not its last (decisions.md m5-inspect, inspect-r1-2).
+  whose `seq` is not its last (decisions.md m5-inspect, inspect-r1-2),
+  and a `Picked` likewise, so a click from an earlier pick mode never
+  reaches a client that took pick mode since (inspect-r2-2).
 
 0b landed the snapshot types, and the wave-0 hardening the rest
 (decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request, and
