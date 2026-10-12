@@ -553,6 +553,45 @@ while frame; do echo . >> {begun}; prompt "Password: "; frame; verdict 1; done"#
     assert_eq!(h.prompt(), "Password: ");
     h.stop();
 
+    // (lock-r3-1) Texts that come at once before the prompt, with no
+    // module waiting between them (a `pam_echo` banner; a
+    // `pam_faillock` lockout's texts under `required`, after which PAM
+    // goes on to `pam_unix`): input on the lock leaves that prompt alone,
+    // however much of it there is, rather than killing the helper and
+    // beginning a conversation that says the same and asks again.
+    let begun = dir.join("banner.begun");
+    let banner = script(
+        dir,
+        "banner",
+        &format!(
+            r#"hello 0
+while frame; do
+  echo . >> {begun}
+  info "The account is locked due to 3 failed logins."
+  info "(9 minutes left to unlock)"
+  prompt "Password: "; frame; verdict 1
+done"#,
+            begun = begun.display()
+        ),
+    );
+    let lock = LockSignal::new();
+    let h = Harness::start_with(banner, Some(lock.clone()));
+    show(&lock, true);
+    h.until("the prompt", |h| h.prompt() == "Password: ");
+    for _ in 0..20 {
+        lock.wake();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(count(dir, "banner.begun"), 1, "input began nothing");
+    assert_eq!(h.prompt(), "Password: ", "the prompt stays");
+    assert_eq!(
+        h.message(),
+        "",
+        "the prompt cleared the texts and nothing said them again"
+    );
+    h.stop();
+
     // A stack that ends at once with no prompt (pam_faillock locked out):
     // its text shows, `failed` stays unset, and no conversation follows
     // until a submit, which is refused.

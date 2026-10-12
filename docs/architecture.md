@@ -5099,10 +5099,13 @@ transparent huge pages for life.
     after one that ended with no password only a submit begins the
     next. `LockSignal::wake`, which the binary calls for each key and
     pointer event on a shown lock, ends a conversation waiting on a
-    prompt that came after a text with no password given (the reader
-    ahead of `pam_unix` gave up) and begins the next, so the reader
-    listens again; `LockSignal::wakes` counts them (decisions.md
-    m6-lock, lock-r2-1). The password is a
+    prompt with no password given that PAM asked only after waiting
+    `auth::READER_WAIT` (2 s) or longer since its first text (the reader
+    ahead of `pam_unix` waited and gave up) and begins the next, so the
+    reader listens again; a prompt that followed its texts at once (a
+    banner, a lockout's texts) is left alone. `LockSignal::wakes` counts
+    the wakes (decisions.md m6-lock, lock-r2-1, lock-r3-1; `READER_WAIT`
+    is an interface addition). The password is a
     `strand_auth::Password` from the moment it arrives, wiped once
     sent. A success hands the `strand_auth::UnlockToken` to the
     `auth::UnlockSink` the binary sets with `auth::configure`

@@ -203,9 +203,13 @@ listens again only when the lock is woken: press a key or move the
 pointer, then touch the reader. A password typed while `pam_fprintd`
 waits is tried once it stops waiting, the first key on a lock whose
 reader gave up starts that wait again, and after a wrong password PAM
-starts over with the reader. If you want the password checked at
-once, write the `strand` file with `pam_unix` alone
-(`auth required pam_unix.so` and `account required pam_unix.so`).
+starts over with the reader. Keep `timeout=` under 90 s: a password
+typed while the reader waits must be answered within 90 s (three times
+the helper's 30 s), so a longer wait leaves only the finger, and the
+fallback field, which goes through the same stack, times out too. If
+you want the password checked at once, write the `strand` file with
+`pam_unix` alone (`auth required pam_unix.so` and
+`account required pam_unix.so`).
 
 If strand dies while the session is locked, the compositor keeps it
 locked and a restarted strand shows the password field again, so run

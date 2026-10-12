@@ -311,6 +311,38 @@ fn a_password_typed_early_waits_for_the_prompt_within_the_limit() {
     assert_eq!(std::fs::read(&got).unwrap(), b"early");
 }
 
+/// ...but a module ahead of the prompt that waits longer than the limit
+/// (a `pam_fprintd` whose `timeout=` is 3 times the client's or more:
+/// here 5 s against 4.5 s) makes a password typed during its wait time
+/// out, and `submit` (the fallback's) through the same stack too: only
+/// the module itself can then succeed (lock-r3-2, the limit README and
+/// handoff.md state).
+#[test]
+fn a_reader_wait_past_the_limit_times_out_a_password_typed_early() {
+    let dir = tempfile::tempdir().unwrap();
+    let got = dir.path().join("got");
+    let mut c = talker(
+        dir.path(),
+        &format!(
+            r#"hello; while frame; do info "Place your finger"; sleep 5; prompt "Password: "
+            frame {got}; verdict 0; done"#,
+            got = got.display()
+        ),
+    );
+    let (answers, inbox) = answers().unwrap();
+    assert!(answers.send(Password::from("early".to_string())));
+    let out = c.converse(inbox, &mut |_| {});
+    assert!(
+        matches!(out.verdict, Verdict::Failed(AuthError::Timeout)),
+        "{:?}",
+        out.verdict
+    );
+    assert!(out.answered);
+    let v = c.submit(Password::from("fallback".to_string()));
+    assert!(matches!(v, Verdict::Failed(AuthError::Timeout)), "{v:?}");
+    assert!(!got.exists(), "PAM never asked for either");
+}
+
 /// PAM saying something keeps a check with a password alive past the
 /// timeout (a text every 0.4 s for 2 s against a 1.5 s timeout)...
 #[test]

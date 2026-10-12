@@ -26,9 +26,13 @@
 //! `pam_faillock` lockout, a helper that died) is begun again only by the
 //! next submit, so a stack that fails at once cannot loop. When the lock
 //! is woken ([`LockSignal::wake`]: a key or pointer event on it) while
-//! PAM waits on a prompt that came after a text and with no password (the
-//! fingerprint module ahead of it gave up), that conversation ends and
-//! the next begins, so the reader listens again (lock-r2-1). When the lock
+//! PAM waits on a prompt with no password, and PAM waited [`READER_WAIT`]
+//! or longer between its first text and that prompt (the fingerprint
+//! module ahead of it waited, then gave up), that conversation ends and
+//! the next begins, so the reader listens again (lock-r2-1). A prompt
+//! that came at once after its texts (a `pam_echo` banner, a
+//! `pam_faillock` lockout's texts under `required`) had no reader to
+//! give up, so input leaves it alone (lock-r3-1). When the lock
 //! goes, a conversation with no password in it ends (its helper is
 //! killed), and what it says no longer shows. One begun for a lock
 //! session that has ended while another is shown (the signal went false
@@ -60,7 +64,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_auth::{Answers, Client, Password, Said, UnlockToken, Verdict};
 use tokio::sync::{mpsc, watch};
@@ -123,8 +127,9 @@ impl LockSignal {
 
     /// The user is at the lock (a key, a pointer event on it): when PAM
     /// waits on its password prompt because a module ahead of it (a
-    /// fingerprint reader) gave up, that conversation ends and the next
-    /// begins, so the reader listens again (lock-r2-1). Cheap; the binary
+    /// fingerprint reader) waited and gave up ([`READER_WAIT`]), that
+    /// conversation ends and the next begins, so the reader listens again
+    /// (lock-r2-1, lock-r3-1). Cheap; the binary
     /// calls it for every such event while a lock is shown.
     pub fn wake(&self) {
         self.0.woken.send_modify(|n| *n = n.wrapping_add(1));
@@ -239,10 +244,20 @@ pub struct Auth {
     pub prompt: String,
 }
 
-/// What PAM said, from the checking task to the store.
+/// How long PAM must have waited between a conversation's first text and
+/// its prompt for a wake to begin the conversation again (lock-r2-1,
+/// lock-r3-1): a module ahead of the prompt waited on the user (a
+/// fingerprint reader: 30 s by default, 10 s as Ubuntu sets it) and gave
+/// up. Modules that only speak (a banner, a lockout's texts) reach the
+/// prompt in milliseconds, so their conversations are never restarted by
+/// input, and a restarted one can be restarted again only after its own
+/// wait.
+pub const READER_WAIT: Duration = Duration::from_secs(2);
+
+/// What PAM said, from the checking task to the store, and when.
 enum Event {
-    Message(String),
-    Prompt(String),
+    Message(String, Instant),
+    Prompt(String, Instant),
 }
 
 /// A conversation that ended: the client back, [`deliver`]'s answer,
@@ -315,8 +330,12 @@ struct Running {
     queued: bool,
     /// PAM waits on a prompt no password has answered.
     asking: bool,
-    /// PAM said a text in it (a fingerprint module's "Place your finger").
-    spoke: bool,
+    /// When PAM first said a text in it (a fingerprint module's "Place
+    /// your finger").
+    spoke: Option<Instant>,
+    /// PAM waited [`READER_WAIT`] or longer between its first text and
+    /// the prompt it waits on (a module ahead of it gave up waiting).
+    waited: bool,
     /// A password was given to it.
     given: bool,
     /// Ended by a wake (lock-r2-1): the next begins once it has.
@@ -409,8 +428,8 @@ impl Auth {
             let task = tokio::task::spawn_blocking(move || {
                 let out = c.converse(inbox, &mut |said| {
                     let _ = events.send(match said {
-                        Said::Message(m) => Event::Message(m.to_string()),
-                        Said::Prompt(p) => Event::Prompt(p.to_string()),
+                        Said::Message(m) => Event::Message(m.to_string(), Instant::now()),
+                        Said::Prompt(p) => Event::Prompt(p.to_string(), Instant::now()),
                     });
                 });
                 let d = deliver(&config, out.verdict, out.answered, tag);
@@ -422,7 +441,8 @@ impl Auth {
                 next: None,
                 queued: asked,
                 asking: false,
-                spoke: false,
+                spoke: None,
+                waited: false,
                 given: asked,
                 restart: false,
                 tag,
@@ -438,19 +458,22 @@ impl Auth {
         let said =
             |cx: &mut Cx<Self>, running: &mut Option<Running>, live: bool, event: Event| -> bool {
                 match event {
-                    Event::Message(m) => {
+                    Event::Message(m, at) => {
                         if let Some(r) = running.as_mut() {
-                            r.spoke = true;
+                            r.spoke.get_or_insert(at);
                         }
                         !live || cx.update(|s| s.message = m)
                     }
-                    Event::Prompt(p) => {
+                    Event::Prompt(p, at) => {
                         let Some(r) = running.as_mut() else {
                             return true;
                         };
                         let queued = std::mem::take(&mut r.queued);
                         if !queued {
                             r.asking = true;
+                            r.waited = r
+                                .spoke
+                                .is_some_and(|t| at.saturating_duration_since(t) >= READER_WAIT);
                         }
                         if !live {
                             return true;
@@ -619,16 +642,19 @@ impl Auth {
                         continue;
                     }
                     // (lock-r2-1) The user is back at the lock while PAM
-                    // waits on a prompt that came after a text and no
-                    // password: a module ahead of it (the reader) gave
-                    // up. That conversation ends (no password in it) and
-                    // the next begins, so the reader listens again, as
-                    // when the lock showed.
+                    // waits on a prompt with no password, which it asked
+                    // only after waiting on a module that had spoken (the
+                    // reader) until it gave up. That conversation ends (no
+                    // password in it) and the next begins, so the reader
+                    // listens again, as when the lock showed. A prompt
+                    // that followed its texts at once (a banner, a
+                    // lockout's texts) is left alone, or every key would
+                    // begin a conversation that asks it again (lock-r3-1).
                     let restart = shown(&lock)
                         && running.as_ref().is_some_and(|r| {
                             r.answers.is_some()
                                 && r.asking
-                                && r.spoke
+                                && r.waited
                                 && !r.given
                                 && r.tag == session()
                         });
