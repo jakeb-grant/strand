@@ -121,9 +121,7 @@ fn two_outputs(tag: &str) -> (Desk, support::pointer::Pointer) {
     loop {
         let r = json(&desk.ok(&["report", "--json"]));
         let painted = r["surfaces"].as_array().is_some_and(|s| {
-            s.len() == 2
-                && s.iter()
-                    .all(|s| s["frames"]["presented"].as_u64() > Some(0))
+            s.len() == 2 && s.iter().all(|s| s["frames"]["drawn"].as_u64() > Some(0))
         });
         if painted {
             break;
