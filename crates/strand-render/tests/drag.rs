@@ -198,7 +198,8 @@ fn a_reorder_by_key_springs_from_the_drop_point() {
             node: d.col,
             event: NodeEvent::Drop {
                 payload: DropPayload::Node(d.rows[0]),
-                at: 2
+                at: 2,
+                hidden: None
             }
         }]
     );

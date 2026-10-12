@@ -60,7 +60,8 @@ sizes to the logic thread over a calloop channel (`run::ToLogic`).
 name, text, modifiers }` (a `Key` record made by the service host,
 `args_with`), `Dismiss`; `name()` and the args are what `Instance::event`
 takes); M4 adds `Drop { payload, at }` for `on drop(p: T, at: int)` as a
-new variant of the same message. Input is routed on the main thread by
+new variant of the same message, and M6 its `hidden` field (the rows of
+a windowed list render could not see; see "Drag and drop"). Input is routed on the main thread by
 `strand_render::input::Router` (`handle(&InputEvent, &mut dyn
 InputScene) -> Vec<Intent>`; the `Renderer` is the `InputScene`: hit
 chains, scrolling, the tree): hover and pressed chains, keyboard focus
@@ -1143,9 +1144,29 @@ zero-width span (an insertion) is allowed.
   an overlay's is refused); the value replaced and the value written
   must each be one literal (a number with its unit, a string, a colour,
   a boolean); the write is a temporary file beside the symlink's
-  target, renamed over it only while the target is still the file
-  whose bytes were hashed (same inode, same hash), so an editor's save
-  renamed into place meanwhile is refused.
+  target, swapped with it by `renameat2(RENAME_EXCHANGE)` (M6,
+  m6-edges): the file the exchange took out of place must be the one
+  whose bytes were hashed (same inode, same hash), else the two are
+  swapped back and the edit refused, so an editor's save after the
+  check (renamed into place or written in place) is kept and nothing
+  checked before the swap is trusted after it; saved again before the
+  swap back, the latest save is put in place and the one before it kept
+  at the write's own temporary name, which the refusal names; each
+  exchange of the swap back is checked by what it brings out (inode and
+  text), never by what was found before it (m6-edges review round 2).
+  A file missing at the exchange (`ENOENT`: an editor moving it to a
+  backup before writing it anew) is refused as `Changed`. Where the
+  filesystem has no exchange (`EINVAL`, `ENOSYS`) the target is checked
+  (inode, hash) just before a plain rename, as before M6.
+  `write::write_with(edit, Swap, hook)` is the test hook
+  (`Swap::{Auto, Exchange, Rename}`; `hook(Moment, &Path)` at
+  `Moment::{Before, Window, Back, Again, Missing}`: before the swap,
+  after the last look at the file before it is replaced, before a swap
+  back, before each further exchange that puts a later save in place,
+  and after an exchange that found no file, before its refusal;
+  `Again` added in review round 2 so a test can save in that gap,
+  `Missing` in round 3 so a test can write the file anew there:
+  `ENOENT` alone decides that refusal, never a later look).
 - `strand-dev reference [dir]`: generates `docs/reference/` from the
   builtin and service schemas (`Schema::builtin_with` of every builtin
   service's text, never the plugin schema files, so the pages are the
@@ -2127,6 +2148,26 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     (one pin's icon on another monitor's dock; the first, as `move`
     takes the first equal item out), as it leaves out the source's row
     in its own list, where equal items beside it are counted.
+    (M6, m6-edges; an interface change, proposed for the owner's
+    review) `NodeEvent::Drop` gains `hidden: Option<HiddenRows>`
+    (`strand_render::HiddenRows { list: NodeId, before: u32 }`, the
+    target list and its `row_first` as render held it), and so does
+    `run::NodeEvent::Drop`, which the binary forwards unchanged: render
+    has only a windowed list's mounted rows, so a copy of the dragged
+    item scrolled out above them is counted in `at`. `drop_index` sends
+    `hidden` when the drop is a `drag:` source of another list (its own
+    row is mounted, and left out) on a windowed list with `row_first >
+    0`, and no mounted copy was left out before the pointer (by the
+    copy's middle when it is laid out);
+    `run/lists.rs::drop_args` then asks `Instance::drop_at(value, at,
+    list, before) -> u32`, which leaves out (`at - 1`) an item among the
+    list's first `before` that is a copy by render's test: its row's
+    `drag:` value has the dragged value's typed identity
+    (`strand_scene::drag_identity`), that value read off the mounted
+    rows as the item, its key or one of its fields. Logic, not render, because logic holds every item
+    (`ListWindow::all`; `Ctx::list_windows` now keeps the window beside
+    its setter); render alone would need each row's identity for the
+    whole list sent with every change.
     `Prop::DropRows`
     (`Bool`, compiler-set) marks an element whose direct children
     come from a `for` (m5-fixups round 2: every such element, not only

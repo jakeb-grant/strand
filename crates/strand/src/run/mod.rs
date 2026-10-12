@@ -146,10 +146,13 @@ pub enum NodeEvent {
     /// (M4) Something dropped on the node at insertion index `at`
     /// (`on drop(p, at)`): a `drag:` source's node, whose value the
     /// instance holds, or another program's files, app or text. Its
-    /// arguments need the instance: `lists::drop_args`.
+    /// arguments need the instance: `lists::drop_args`. (M6) `hidden`:
+    /// a windowed list's rows render could not see, among which logic
+    /// leaves out a copy of the dragged item (`Instance::drop_at`).
     Drop {
         payload: strand_scene::DropPayload,
         at: u32,
+        hidden: Option<strand_render::HiddenRows>,
     },
 }
 

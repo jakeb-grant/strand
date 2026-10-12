@@ -6,6 +6,7 @@
 use strand_compiler::instantiate::{Instance, MAX_LIST_WINDOW};
 use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
+use strand_render::HiddenRows;
 use strand_scene::{DropPayload, NodeId};
 
 /// Mounts rows `first .. first + count` of virtualised list `list` (at
@@ -23,20 +24,29 @@ pub(super) fn set_window(inst: &Instance, list: NodeId, first: u32, count: u32) 
 /// gone or holds no value now), or a `Drop` record for another
 /// program's drop, whose `app` is the installed `App` with the dropped
 /// id (null when there is none, or no `apps` service runs). `at` is the
-/// insertion index render worked out (a global row index in a `list`).
+/// insertion index render worked out (a global row index in a `list`),
+/// less one when (M6) a copy of a `drag:` source's value is among the
+/// windowed list's rows render could not see (`hidden`;
+/// `Instance::drop_at`).
 pub(super) fn drop_args(
     inst: &Instance,
     host: &SchemaHost,
     payload: &DropPayload,
     at: u32,
+    hidden: Option<HiddenRows>,
 ) -> Option<Vec<Value>> {
+    let mut at = at;
     let value = match payload {
         DropPayload::Node(source) => {
             let v = inst.drag_value(*source);
             if v.is_none() {
                 log::debug!("drop of {source:?}: the source holds no value now");
             }
-            v?
+            let v = v?;
+            if let Some(h) = hidden {
+                at = inst.drop_at(&v, at, h.list, h.before);
+            }
+            v
         }
         DropPayload::External {
             kind,
@@ -137,7 +147,7 @@ panel P {
         let (_rt, host, inst, mut m) = boot();
         let row = m.of_kind(NodeKind::Row)[0];
         let boxes = m.children(row).to_vec();
-        let args = drop_args(&inst, &host, &DropPayload::Node(boxes[2]), 0).unwrap();
+        let args = drop_args(&inst, &host, &DropPayload::Node(boxes[2]), 0, None).unwrap();
         assert_eq!(args[1], Value::int(0));
         assert!(inst.event(row, "drop", args));
         m.apply(&inst.flush().diff).unwrap();
@@ -150,7 +160,7 @@ panel P {
             text: String::new(),
             app_id: None,
         };
-        let args = drop_args(&inst, &host, &files, 2).unwrap();
+        let args = drop_args(&inst, &host, &files, 2, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "files"), Value::int(2));
@@ -163,11 +173,11 @@ panel P {
             text: String::new(),
             app_id: Some(id.into()),
         };
-        let args = drop_args(&inst, &host, &app("firefox.desktop"), 1).unwrap();
+        let args = drop_args(&inst, &host, &app("firefox.desktop"), 1, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "app"), Value::text("Firefox"));
-        let args = drop_args(&inst, &host, &app("nope.desktop"), 1).unwrap();
+        let args = drop_args(&inst, &host, &app("nope.desktop"), 1, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "app"), Value::text("-"));
@@ -178,12 +188,177 @@ panel P {
             text: "hello".into(),
             app_id: None,
         };
-        let args = drop_args(&inst, &host, &text, 3).unwrap();
+        let args = drop_args(&inst, &host, &text, 3, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "got"), Value::text("hello"));
         // A source that is no node of ours.
         let gone = NodeId::new(9999, 0);
-        assert_eq!(drop_args(&inst, &host, &DropPayload::Node(gone), 0), None);
+        assert_eq!(
+            drop_args(&inst, &host, &DropPayload::Node(gone), 0, None),
+            None
+        );
+    }
+
+    /// (M6) A drop on a windowed `list` whose rows before its mounted
+    /// window render could not see (`HiddenRows`): `at` is one less when
+    /// a copy of the dragged value is among them (as `pins.move` takes
+    /// it out), as it is when there is none, or nothing is hidden. Two
+    /// lists of the same 60 pins: the first shows rows 0.., the second is
+    /// moved to rows 40..60.
+    #[test]
+    fn a_drop_leaves_out_a_copy_render_could_not_see() {
+        let mut src = String::from("type Pin { app: text }\nexport state pins: [Pin] key app = [");
+        for i in 0..60 {
+            src.push_str(&format!("Pin(app: \"p{i}\"), "));
+        }
+        src.push_str(
+            "]\npanel P {\n  col {\n    list { for p in pins { box { drag: p } } }\n    list { on drop(p: Pin, i: int) { pins.move(p.app, i) }\n      for p in pins { box { drag: p } } }\n  }\n}\n",
+        );
+        let mut map = SourceMap::new();
+        map.add("dock.strand", src);
+        let b = Build::compile(None, map).unwrap();
+        let rt = Runtime::new();
+        let host = Rc::new(SchemaHost::mock(&rt, &b.program.types));
+        let inst = Instance::from_build(&rt, &b, host.clone(), Storage::none());
+        let mut m = SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        let lists = m.of_kind(NodeKind::List);
+        let (one, two) = (lists[0], lists[1]);
+        set_window(&inst, two, 40, 20);
+        m.apply(&inst.flush().diff).unwrap();
+        let source = |app: &str| {
+            m.children(one)
+                .iter()
+                .copied()
+                .find(|n| {
+                    inst.drag_value(*n)
+                        .and_then(|v| {
+                            v.as_record()
+                                .and_then(|r| r.fields[0].as_text().map(str::to_string))
+                        })
+                        .as_deref()
+                        == Some(app)
+                })
+                .unwrap()
+        };
+        let at = |app: &str, hidden| {
+            let args =
+                drop_args(&inst, &host, &DropPayload::Node(source(app)), 43, hidden).unwrap();
+            args[1].clone()
+        };
+        let hidden = Some(HiddenRows {
+            list: two,
+            before: 40,
+        });
+        assert_eq!(at("p5", hidden), Value::int(42), "p5 is at row 5");
+        assert_eq!(at("p5", None), Value::int(43), "nothing hidden");
+        assert_eq!(
+            at(
+                "p5",
+                Some(HiddenRows {
+                    list: two,
+                    before: 5
+                })
+            ),
+            Value::int(43),
+            "rows 0..5 hold no p5"
+        );
+        assert_eq!(at("p20", hidden), Value::int(42));
+        // A list that is gone: as render said.
+        let gone = Some(HiddenRows {
+            list: NodeId::new(9999, 0),
+            before: 40,
+        });
+        assert_eq!(at("p5", gone), Value::int(43));
+    }
+
+    /// (M6) A row render could not see is a copy of the dragged item by
+    /// render's own test: its `drag:` value has the dragged value's
+    /// typed identity. Logic reads what each row's `drag:` value is of
+    /// its item off the mounted rows. Three windowed lists of the same
+    /// 60 pins moved to rows 40..60, whose rows drag their pin a level
+    /// down (`box { box { drag: p } }`), nothing, or their pin's app
+    /// (`drag: p.app`, the key); dropped from lists of pins, apps and of
+    /// `Tile`s keyed by the same texts. A pin finds its copy among the
+    /// pins, and an app among the apps; a `Tile` finds none in either
+    /// (another type: render finds none among mounted rows either), nor
+    /// does an app's text among installed `App`s (keyed by that text),
+    /// and nothing does among rows with no `drag:` (render counts none).
+    #[test]
+    fn a_hidden_copy_is_one_by_renders_test() {
+        let mut src = String::from(
+            "type Pin { app: text }\ntype Tile { id: text }\nexport state pins: [Pin] key app = [",
+        );
+        for i in 0..60 {
+            src.push_str(&format!("Pin(app: \"p{i}\"), "));
+        }
+        src.push_str("]\nexport state wins: [text] = [\"w1\", \"w2\"]\nexport state tiles: [Tile] key id = [");
+        for i in 0..60 {
+            src.push_str(&format!("Tile(id: \"p{i}\"), "));
+        }
+        src.push_str(
+            "]\npanel P {\n  col {\n    list { for t in tiles { box { drag: t } } }\n    list { for p in pins { box { drag: p.app } } }\n    list { for p in pins { box { drag: p } } }\n    list { for p in pins { box { box { drag: p } } } }\n    list { for p in pins { box { } } }\n    list { for p in pins { box { drag: p.app } } }\n    list { for a in apps.all { box { drag: a } } }\n    list { for p in pins { col { for w in wins key w { box { drag: w } } box { drag: p } } } }\n  }\n}\n",
+        );
+        let mut map = SourceMap::new();
+        map.add("dock.strand", src);
+        let b = Build::compile(None, map).unwrap();
+        let rt = Runtime::new();
+        let host = Rc::new(SchemaHost::mock(&rt, &b.program.types));
+        let all: Vec<Value> = (0..60)
+            .map(|i| {
+                let id = format!("p{i}");
+                host.record(
+                    "App",
+                    &[
+                        ("id", Value::text(id.as_str())),
+                        ("name", Value::text(id.as_str())),
+                    ],
+                )
+            })
+            .collect();
+        host.set(&rt, "apps.all", Value::list(all)).unwrap();
+        let inst = Instance::from_build(&rt, &b, host.clone(), Storage::none());
+        let mut m = SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        let lists = m.of_kind(NodeKind::List);
+        let [tiles, apps, from, pins, bare, keyed, installed, dotted] = lists[..] else {
+            panic!("{lists:?}");
+        };
+        for l in [pins, bare, keyed, installed, dotted] {
+            set_window(&inst, l, 40, 20);
+        }
+        m.apply(&inst.flush().diff).unwrap();
+        let name = |v: Value| match v.as_record() {
+            Some(r) => r.fields[0].as_text().map(str::to_string),
+            None => v.as_text().map(str::to_string),
+        };
+        let source = |list, app: &str| {
+            m.children(list)
+                .iter()
+                .copied()
+                .find(|n| inst.drag_value(*n).and_then(name).as_deref() == Some(app))
+                .unwrap()
+        };
+        let at = |from, to| {
+            let hidden = Some(HiddenRows {
+                list: to,
+                before: 40,
+            });
+            let args = drop_args(&inst, &host, &DropPayload::Node(from), 43, hidden).unwrap();
+            args[1].clone()
+        };
+        assert_eq!(at(source(from, "p5"), pins), Value::int(42), "a pin");
+        // An installed `App` is keyed by its id: the same text as the
+        // dragged app's, but not the same type.
+        assert_eq!(at(source(apps, "p5"), installed), Value::int(43), "an App");
+        assert_eq!(at(source(tiles, "p5"), pins), Value::int(43), "a Tile");
+        assert_eq!(at(source(apps, "p5"), keyed), Value::int(42), "an app");
+        assert_eq!(at(source(tiles, "p5"), keyed), Value::int(43), "a Tile");
+        assert_eq!(at(source(from, "p5"), bare), Value::int(43), "no row drags");
+        // (edges-r2-1) A dock item whose window dots come before its icon:
+        // the dots are the `for`'s rows (`Prop::DropRows`), not the item's,
+        // and render's test reads only the icon (`Prop::NotRow`).
+        assert_eq!(at(source(from, "p5"), dotted), Value::int(42), "dots first");
     }
 }

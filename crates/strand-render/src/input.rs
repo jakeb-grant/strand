@@ -66,7 +66,26 @@ pub enum NodeEvent {
     Drop {
         payload: strand_scene::DropPayload,
         at: u32,
+        /// (M6) Rows `at` could not see: see [`HiddenRows`].
+        hidden: Option<HiddenRows>,
     },
+}
+
+/// (M6) The rows of a windowed `list` before its mounted window, which a
+/// drop's `at` counted by their number but could not look into (render
+/// has only the mounted rows): sent when the drop is a `drag:` source of
+/// another list and no copy of the dragged item was left out before the
+/// pointer among the mounted rows. Logic, which holds every item, leaves
+/// out the first copy among the first `before` items of `list`, if there
+/// is one (`at` one less; `Instance::drop_at`), so `at` counts every
+/// row as spec.md 6.7 says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HiddenRows {
+    /// The windowed `list` whose rows `at` counts.
+    pub list: NodeId,
+    /// Its rows before the mounted window (`Prop::RowFirst` as render
+    /// held it).
+    pub before: u32,
 }
 
 /// What input asks of logic.
@@ -1055,16 +1074,17 @@ impl Router {
                 };
                 let target = match &carried {
                     Some((kind, n)) => {
-                        self.drop_target_at(scene, surface, *at, Carried::Value(kind, *n))
+                        self.drop_landing_at(scene, surface, *at, Carried::Value(kind, *n))
                     }
-                    None => self.drop_target_at(scene, surface, *at, Carried::Outside),
+                    None => self.drop_landing_at(scene, surface, *at, Carried::Outside),
                 };
-                if let Some((node, at)) = target {
+                if let Some((node, at, hidden)) = target {
                     self.event(
                         node,
                         NodeEvent::Drop {
                             payload: payload.clone(),
                             at,
+                            hidden,
                         },
                     );
                 }
@@ -1154,6 +1174,19 @@ impl Router {
         at: LogicalPoint,
         carried: Carried<'_>,
     ) -> Option<(NodeId, u32)> {
+        self.drop_landing_at(scene, surface, at, carried)
+            .map(|(node, index, _)| (node, index))
+    }
+
+    /// (M6) [`Router::drop_target_at`] with the rows its index could not
+    /// see ([`HiddenRows`]), for the drop itself.
+    fn drop_landing_at(
+        &self,
+        scene: &dyn InputScene,
+        surface: SurfaceId,
+        at: LogicalPoint,
+        carried: Carried<'_>,
+    ) -> Option<(NodeId, u32, Option<HiddenRows>)> {
         let tree = scene.tree()?;
         let inside = |n: NodeId, of: NodeId| {
             let mut cur = Some(n);
@@ -1188,7 +1221,8 @@ impl Router {
             .into_iter()
             .filter(|n| source.is_none_or(|s| !inside(*n, s)))
             .find(|n| takes(*n))?;
-        Some((target, drop_index(tree, scene, surface, target, at, source)))
+        let (index, hidden) = drop_index(tree, scene, surface, target, at, source);
+        Some((target, index, hidden))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1310,19 +1344,20 @@ impl Router {
                         let target = if d.handed {
                             None
                         } else {
-                            self.drop_target_at(
+                            self.drop_landing_at(
                                 scene,
                                 surface,
                                 at,
                                 Carried::Value(&d.kind, d.source),
                             )
                         };
-                        if let Some((node, index)) = target {
+                        if let Some((node, index, hidden)) = target {
                             self.event(
                                 node,
                                 NodeEvent::Drop {
                                     payload: strand_scene::DropPayload::Node(d.source),
                                     at: index,
+                                    hidden,
                                 },
                             );
                         }
@@ -1882,8 +1917,11 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// while a dock item whose icon sits beside its own `for` of window dots
 /// (the icon `Prop::NotRow`) is the icon's row. So a row moved within its own list, or onto
 /// another surface's copy of that list, lands where it is let go,
-/// `pins.move(p.app, at)`. A copy unmounted from a windowed list is
-/// not seen. Rows mounted but not laid out (out
+/// `pins.move(p.app, at)`. (M6) A copy unmounted before a windowed
+/// list's mounted rows is not seen here: the index comes with that
+/// list's [`HiddenRows`] when the drop is from another list and no
+/// mounted copy was left out before the pointer, and logic, which holds
+/// every item, leaves out such a copy. Rows mounted but not laid out (out
 /// of view) count by their place; past the last laid-out row lands after
 /// it, and a target none of whose rows is laid out lands at its end.
 /// Only a `list`, or a target whose children are drag sources, holds
@@ -1898,7 +1936,7 @@ fn drop_index(
     target: NodeId,
     at: LogicalPoint,
     source: Option<NodeId>,
-) -> u32 {
+) -> (u32, Option<HiddenRows>) {
     // (M5) The dragged value's identity: a row holding a `drag:` source
     // with it is a copy of the dragged item (one pin on the dock of each
     // monitor); another list's first copy is left out as the source is
@@ -1977,7 +2015,7 @@ fn drop_index(
     // copy, as `move` takes the first equal item out. A row of an outer
     // list that holds the source's list (a kanban column) is counted.
     // `keep` (a per-item target) is counted.
-    let rows_of = |n: NodeId, keep: Option<NodeId>| -> Vec<NodeId> {
+    let rows_of = |n: NodeId, keep: Option<NodeId>| -> Counted {
         let live: Vec<NodeId> = tree.get(n).map_or_else(Vec::new, |x| {
             x.children
                 .iter()
@@ -1985,18 +2023,54 @@ fn drop_index(
                 .filter(|r| tree.contains_live(*r))
                 .collect()
         });
-        let own = source.and_then(|s| row_in(n, s));
+        let own = source
+            .and_then(|s| row_in(n, s))
+            .filter(|r| live.contains(r));
         let out = own
-            .filter(|r| live.contains(r))
             .or_else(|| live.iter().copied().find(|r| copy(n, *r)))
             .filter(|r| Some(*r) != keep);
-        live.into_iter()
+        let rows = live
+            .iter()
+            .copied()
             .filter(|r| Some(*r) != source && Some(*r) != out)
-            .collect()
+            .collect();
+        Counted {
+            rows,
+            live,
+            out,
+            own: own.is_some(),
+        }
     };
     let first = |n: NodeId| match tree.get(n).and_then(|x| x.get(Prop::RowFirst)) {
         Some(PropValue::Number(f)) if f.is_finite() && *f >= 0.0 => *f as u32,
         _ => 0,
+    };
+    // (M6) The rows of `n` before its mounted window, when `at` (`k` of
+    // `c.rows` before the pointer) may still have to leave out a copy
+    // among them: the drop is a `drag:` source of another list (in its
+    // own list the source's row, mounted, is the one left out), and no
+    // mounted copy was left out before the pointer (a copy before the
+    // window would have been the first, and left out in its place, for
+    // the same count). Whether the copy left out is before the pointer:
+    // by its middle along the rows (`x`) when it is laid out, as the
+    // pointer is placed among the others, else by its place among them
+    // (before the row `k`).
+    let hidden = |n: NodeId, c: &Counted, k: usize, x: Option<bool>| -> Option<HiddenRows> {
+        let before = first(n);
+        if identity.is_none() || c.own || before == 0 {
+            return None;
+        }
+        let place = |r: NodeId| c.live.iter().position(|x| *x == r);
+        let out_before = c.out.is_some_and(|o| {
+            let laid = x.zip(scene.node_rect(surface, o));
+            match (laid, c.rows.get(k)) {
+                (Some((true, r)), _) => at.x > r.x + r.w / 2.0,
+                (Some((false, r)), _) => at.y > r.y + r.h / 2.0,
+                (None, Some(next)) => place(o) < place(*next),
+                (None, None) => true,
+            }
+        });
+        (!out_before).then_some(HiddenRows { list: n, before })
     };
     let rects = |rows: &[NodeId]| -> Vec<LogicalRect> {
         rows.iter()
@@ -2025,7 +2099,8 @@ fn drop_index(
                 tree.contains_live(*c) && tree.get(*c).is_some_and(|n| n.get(Prop::Drag).is_some())
             })
     });
-    let rows = rows_of(target, None);
+    let counted = rows_of(target, None);
+    let rows = &counted.rows;
     if holds_rows {
         // Only the rows in view (and a little overscan) are laid out; a
         // windowed list mounts more on either side. The laid-out ones
@@ -2050,23 +2125,27 @@ fn drop_index(
                 || laid.last().map_or(rows.len(), |(i, _)| i + 1),
                 |(i, _)| *i,
             );
-        return first(target) + i as u32;
+        return (
+            first(target) + i as u32,
+            hidden(target, &counted, i, Some(x)),
+        );
     }
     // A target without rows: its place among its parent's rows.
     let Some(parent) = tree.get(target).and_then(|x| x.parent) else {
-        return 0;
+        return (0, None);
     };
     // The target itself is counted even when it is a copy of the
     // dragged item; dropped on its own copy, the item stays where that
     // copy is.
-    let siblings = rows_of(parent, Some(target));
+    let counted = rows_of(parent, Some(target));
+    let siblings = &counted.rows;
     let Some(i) = siblings.iter().position(|r| *r == target) else {
-        return first(parent);
+        return (first(parent), None);
     };
     if copy(parent, target) {
-        return first(parent) + i as u32;
+        return (first(parent) + i as u32, hidden(parent, &counted, i, None));
     }
-    let rs = rects(&siblings);
+    let rs = rects(siblings);
     let x = along_x(parent, &rs);
     let after = scene.node_rect(surface, target).is_some_and(|r| {
         if x {
@@ -2075,7 +2154,22 @@ fn drop_index(
             at.y > r.y + r.h / 2.0
         }
     });
-    first(parent) + i as u32 + u32::from(after)
+    let k = i + usize::from(after);
+    (
+        first(parent) + k as u32,
+        hidden(parent, &counted, k, Some(x)),
+    )
+}
+
+/// (M6) A list's rows as `drop_index` counts them: `rows` (its `live`
+/// children without the source and `out`), `out` (the copy of the
+/// dragged item left out, or the source's own row) and `own` (whether
+/// the source is one of its rows).
+struct Counted {
+    rows: Vec<NodeId>,
+    live: Vec<NodeId>,
+    out: Option<NodeId>,
+    own: bool,
 }
 
 /// A closed `popup` with a two-way `open` that `node` holds: among its

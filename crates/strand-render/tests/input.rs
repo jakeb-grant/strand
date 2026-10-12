@@ -817,7 +817,8 @@ fn a_drag_past_six_pixels_drops_at_a_global_index() {
             list,
             NodeEvent::Drop {
                 payload: DropPayload::Node(row0),
-                at: 102
+                at: 102,
+                hidden: None
             }
         )],
         "dropped, and no click"
@@ -844,7 +845,8 @@ fn a_drag_past_six_pixels_drops_at_a_global_index() {
             list,
             NodeEvent::Drop {
                 payload: DropPayload::Node(row1),
-                at: 101
+                at: 101,
+                hidden: None
             }
         )]
     );
@@ -935,7 +937,8 @@ fn a_drop_counts_mounted_rows_out_of_view() {
             list,
             NodeEvent::Drop {
                 payload: DropPayload::Node(rows[10]),
-                at: 111
+                at: 111,
+                hidden: None
             }
         )]
     );
@@ -952,7 +955,8 @@ fn a_drop_counts_mounted_rows_out_of_view() {
             list,
             NodeEvent::Drop {
                 payload: DropPayload::Node(rows[9]),
-                at: 108
+                at: 108,
+                hidden: None
             }
         )]
     );
@@ -1137,7 +1141,14 @@ fn other_programs_drops_reach_the_target_that_takes_drop() {
     // The box is its column's second row; past its middle (180): 2.
     assert_eq!(
         events(f.drain()),
-        [(bin, NodeEvent::Drop { payload, at: 2 })]
+        [(
+            bin,
+            NodeEvent::Drop {
+                payload,
+                at: 2,
+                hidden: None
+            }
+        )]
     );
     assert_eq!(f.router.drop_target(s), None);
     f.input(
@@ -1265,7 +1276,14 @@ fn a_per_item_drop_target_with_content_is_placed_among_its_siblings() {
         );
         assert_eq!(
             events(f.drain()),
-            [(items[1], NodeEvent::Drop { payload, at })]
+            [(
+                items[1],
+                NodeEvent::Drop {
+                    payload,
+                    at,
+                    hidden: None
+                }
+            )]
         );
     }
     f.input(&motion(s, 30.0, 30.0, 0), &mut r);
@@ -1283,7 +1301,8 @@ fn a_per_item_drop_target_with_content_is_placed_among_its_siblings() {
             dock,
             NodeEvent::Drop {
                 payload: DropPayload::Node(items[0]),
-                at: 2
+                at: 2,
+                hidden: None
             }
         )]
     );
@@ -1422,7 +1441,8 @@ fn a_drag_carried_to_another_surface_drops_there() {
             list,
             NodeEvent::Drop {
                 payload: DropPayload::Node(row0),
-                at: 101
+                at: 101,
+                hidden: None
             }
         )]
     );
@@ -1537,6 +1557,282 @@ fn a_drop_on_another_surface_leaves_out_its_copy_of_the_item() {
     assert_eq!(across(&mut f, &mut r, rows[0][2], 100.0, 40.0), 1);
     // C at the end: its copy left out, at 2 (after A and B).
     assert_eq!(across(&mut f, &mut r, rows[0][2], 100.0, 118.0), 2);
+}
+
+/// (M6) A drop handed to another surface's windowed `list` whose rows
+/// before the mounted window hold the dragged item's copy: render cannot
+/// see it, so the drop names those rows (`HiddenRows`) for logic, which
+/// holds every item, to leave the copy out (`Instance::drop_at`). The
+/// second surface's list mounts global rows 40..59 (scrolled to row 40);
+/// the first surface shows pins 5, 41 and 45. Let go between rows 42 and
+/// 43: pin 5 (its copy at row 5, unmounted) is at 43 with rows 0..40
+/// hidden, which logic makes 42; pin 41 (its copy mounted before the
+/// pointer, left out here) is at 42 with nothing hidden; pin 45 (its
+/// copy mounted past the pointer) is at 43 with rows 0..40 hidden, among
+/// which logic finds no copy.
+#[test]
+fn a_drop_on_a_windowed_list_names_the_rows_it_could_not_see() {
+    use strand_render::HiddenRows;
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let pin = |k: u32| {
+        PropValue::List(vec![
+            kw("Pin"),
+            PropValue::List(vec![PropValue::Text(format!("pin{k}"))]),
+        ])
+    };
+    let id = |i: u32| NodeId::new(i, 0);
+    let (panel1, list1, panel2, list2) = (id(0), id(1), id(100), id(101));
+    let mut d = SceneDiff::new();
+    for (p, l, n) in [(panel1, list1, 0), (panel2, list2, 1)] {
+        d.create(p, NodeKind::Panel, None, n)
+            .set(p, Prop::Width, PropValue::Number(200.0))
+            .set(p, Prop::Height, PropValue::Number(160.0))
+            .set(p, Prop::Open, PropValue::Bool(true))
+            .set(p, Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(l, NodeKind::List, Some(p), 0)
+            .set(l, Prop::Height, PropValue::Number(160.0))
+            .set(l, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+    }
+    let sources: Vec<NodeId> = [5, 41, 45].iter().map(|k| id(10 + k)).collect();
+    for (i, (row, k)) in sources.iter().zip([5, 41, 45]).enumerate() {
+        d.create(*row, NodeKind::Row, Some(list1), i as u32)
+            .set(*row, Prop::Height, PropValue::Number(40.0))
+            .set(*row, Prop::Drag, pin(k));
+    }
+    // The second list: rows 40..59 of 60 mounted.
+    d.set(list2, Prop::RowFirst, PropValue::Number(40.0)).set(
+        list2,
+        Prop::RowCount,
+        PropValue::Number(60.0),
+    );
+    for k in 40..60u32 {
+        let row = id(200 + k);
+        d.create(row, NodeKind::Row, Some(list2), k - 40)
+            .set(row, Prop::Height, PropValue::Number(40.0))
+            .set(row, Prop::Drag, pin(k));
+    }
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    let mut px = vec![0u8; 200 * 160 * 4];
+    let mut paint = |r: &mut Renderer, s, secs| {
+        let t = PaintTarget::new(&mut px, Size::new(200, 160), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(secs)));
+    };
+    for (s, root) in [(s1, panel1), (s2, panel2)] {
+        r.attach_surface(s, root);
+        f.attached(s, root);
+        paint(&mut r, s, 1);
+    }
+    // Global row 40 starts at 1,600 px: scrolled there, rows 40..43 show.
+    assert_eq!(
+        r.scroll(s2, LogicalPoint::new(50.0, 80.0), 1600.0),
+        Some(list2)
+    );
+    paint(&mut r, s2, 2);
+    assert!(r.node_rect(s2, id(242)).is_some(), "row 42 is laid out");
+    let across = |f: &mut R, r: &mut Renderer, from: usize| {
+        let y_from = 20.0 + 40.0 * from as f32;
+        f.input(&motion(s1, 50.0, y_from, 0), r);
+        f.input(&left(s1, 50.0, y_from, ButtonState::Pressed), r);
+        f.input(&motion(s1, 50.0, y_from + 10.0, 10), r);
+        f.input(&InputEvent::PointerLeave { surface: s1 }, r);
+        f.drain();
+        // Past row 42's middle (y 100), before row 43's (y 140).
+        let at = LogicalPoint::new(50.0, 125.0);
+        f.input(
+            &InputEvent::DragEnter {
+                surface: s2,
+                at,
+                kinds: vec![],
+            },
+            r,
+        );
+        f.input(&InputEvent::DragMotion { surface: s2, at }, r);
+        f.input(
+            &InputEvent::DragDrop {
+                surface: s2,
+                at,
+                payload: DropPayload::Node(sources[from]),
+            },
+            r,
+        );
+        let got = events(f.drain());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, list2);
+        let NodeEvent::Drop { at, hidden, .. } = got[0].1 else {
+            panic!("{got:?}");
+        };
+        (at, hidden)
+    };
+    let hidden = Some(HiddenRows {
+        list: list2,
+        before: 40,
+    });
+    assert_eq!(across(&mut f, &mut r, 0), (43, hidden), "pin 5");
+    assert_eq!(across(&mut f, &mut r, 1), (42, None), "pin 41");
+    assert_eq!(across(&mut f, &mut r, 2), (43, hidden), "pin 45");
+    // Within its own windowed list nothing is hidden: the source's row is
+    // the one left out. Row 41 let go at the same place: rows 40 and 42
+    // before it, at 42.
+    f.input(&motion(s2, 50.0, 60.0, 0), &mut r);
+    f.input(&left(s2, 50.0, 60.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s2, 50.0, 70.0, 10), &mut r);
+    f.input(&motion(s2, 50.0, 125.0, 20), &mut r);
+    f.input(&left(s2, 50.0, 125.0, ButtonState::Released), &mut r);
+    assert_eq!(
+        events(f.drain()),
+        [(
+            list2,
+            NodeEvent::Drop {
+                payload: DropPayload::Node(id(241)),
+                at: 42,
+                hidden: None
+            }
+        )]
+    );
+}
+
+/// (M6) The same on a windowed `list` whose rows are per-item drop
+/// targets with content of their own (a `col` holding a box), so a drop
+/// is placed among the list's rows by the row under the pointer. The
+/// second surface's list mounts global rows 40..59 (scrolled to row 40);
+/// the first surface shows pins 5, 41, 43 and 42. Each is let go on row
+/// 42 (y 80..120): pin 5 (its copy unmounted) past its middle at 43 and
+/// before it at 42, both with rows 0..40 hidden; pin 41 (its copy
+/// mounted above the pointer, left out) at 42 with nothing hidden; pin
+/// 43 (its copy mounted just past the pointer, left out) at 43 with rows
+/// 0..40 hidden, as a copy above them would be the first; and pin 42 on
+/// its own copy at that copy's place, 42, with rows 0..40 hidden.
+#[test]
+fn a_per_item_drop_on_a_windowed_list_names_the_rows_it_could_not_see() {
+    use strand_render::HiddenRows;
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let pin = |k: u32| {
+        PropValue::List(vec![
+            kw("Pin"),
+            PropValue::List(vec![PropValue::Text(format!("pin{k}"))]),
+        ])
+    };
+    let id = |i: u32| NodeId::new(i, 0);
+    let (panel1, list1, panel2, list2) = (id(0), id(1), id(100), id(101));
+    let mut d = SceneDiff::new();
+    for (p, l, n) in [(panel1, list1, 0), (panel2, list2, 1)] {
+        d.create(p, NodeKind::Panel, None, n)
+            .set(p, Prop::Width, PropValue::Number(200.0))
+            .set(p, Prop::Height, PropValue::Number(160.0))
+            .set(p, Prop::Open, PropValue::Bool(true))
+            .set(p, Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(l, NodeKind::List, Some(p), 0)
+            .set(l, Prop::Height, PropValue::Number(160.0));
+    }
+    let pins = [5, 41, 43, 42];
+    let sources: Vec<NodeId> = pins.iter().map(|k| id(10 + k)).collect();
+    for (i, (row, k)) in sources.iter().zip(pins).enumerate() {
+        d.create(*row, NodeKind::Row, Some(list1), i as u32)
+            .set(*row, Prop::Height, PropValue::Number(40.0))
+            .set(*row, Prop::Drag, pin(k));
+    }
+    d.set(list2, Prop::RowFirst, PropValue::Number(40.0)).set(
+        list2,
+        Prop::RowCount,
+        PropValue::Number(60.0),
+    );
+    for k in 40..60u32 {
+        let (row, content) = (id(200 + k), id(300 + k));
+        d.create(row, NodeKind::Col, Some(list2), k - 40)
+            .set(row, Prop::Height, PropValue::Number(40.0))
+            .set(row, Prop::Drag, pin(k))
+            .set(row, Prop::Accepts, PropValue::List(vec![kw("Pin")]))
+            .create(content, NodeKind::Box, Some(row), 0)
+            .set(content, Prop::Width, PropValue::Number(40.0))
+            .set(content, Prop::Height, PropValue::Number(20.0));
+    }
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    let mut px = vec![0u8; 200 * 160 * 4];
+    let mut paint = |r: &mut Renderer, s, secs| {
+        let t = PaintTarget::new(&mut px, Size::new(200, 160), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(secs)));
+    };
+    for (s, root) in [(s1, panel1), (s2, panel2)] {
+        r.attach_surface(s, root);
+        f.attached(s, root);
+        paint(&mut r, s, 1);
+    }
+    assert_eq!(
+        r.scroll(s2, LogicalPoint::new(50.0, 80.0), 1600.0),
+        Some(list2)
+    );
+    paint(&mut r, s2, 2);
+    assert_eq!(
+        r.node_rect(s2, id(242)).map(|b| (b.y, b.h)),
+        Some((80.0, 40.0)),
+        "row 42 at y 80"
+    );
+    let across = |f: &mut R, r: &mut Renderer, from: usize, y: f32| {
+        let y_from = 20.0 + 40.0 * from as f32;
+        f.input(&motion(s1, 50.0, y_from, 0), r);
+        f.input(&left(s1, 50.0, y_from, ButtonState::Pressed), r);
+        f.input(&motion(s1, 50.0, y_from + 10.0, 10), r);
+        f.input(&InputEvent::PointerLeave { surface: s1 }, r);
+        f.drain();
+        let at = LogicalPoint::new(50.0, y);
+        f.input(
+            &InputEvent::DragEnter {
+                surface: s2,
+                at,
+                kinds: vec![],
+            },
+            r,
+        );
+        f.input(&InputEvent::DragMotion { surface: s2, at }, r);
+        f.input(
+            &InputEvent::DragDrop {
+                surface: s2,
+                at,
+                payload: DropPayload::Node(sources[from]),
+            },
+            r,
+        );
+        let got = events(f.drain());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, id(242), "row 42 takes it");
+        let NodeEvent::Drop { at, hidden, .. } = got[0].1 else {
+            panic!("{got:?}");
+        };
+        (at, hidden)
+    };
+    let hidden = Some(HiddenRows {
+        list: list2,
+        before: 40,
+    });
+    assert_eq!(
+        across(&mut f, &mut r, 0, 110.0),
+        (43, hidden),
+        "pin 5, past"
+    );
+    assert_eq!(
+        across(&mut f, &mut r, 0, 90.0),
+        (42, hidden),
+        "pin 5, before"
+    );
+    assert_eq!(across(&mut f, &mut r, 1, 110.0), (42, None), "pin 41");
+    assert_eq!(across(&mut f, &mut r, 2, 110.0), (43, hidden), "pin 43");
+    assert_eq!(across(&mut f, &mut r, 3, 110.0), (42, hidden), "pin 42");
 }
 
 /// (M5) Equal items in one list are separate rows: [a, b, a, c] (two

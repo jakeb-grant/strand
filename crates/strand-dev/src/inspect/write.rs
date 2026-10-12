@@ -13,11 +13,23 @@
 //!   the running program was compiled from (the answer's `files`), so a
 //!   file changed underneath is never overwritten.
 //! - **How:** as a span edit, written atomically (a temporary file in
-//!   the same directory, flushed, renamed over the file, the directory
-//!   flushed), following symlinks so a linked config stays linked. A
-//!   file renamed into place between the hash check and the rename (an
-//!   editor's atomic save) is refused, as is a read-only target (a Nix
-//!   store file), with the reason and an offer to open it in `$EDITOR`.
+//!   the same directory, flushed, swapped with the file, the directory
+//!   flushed), following symlinks so a linked config stays linked. (M6)
+//!   The swap is `renameat2(RENAME_EXCHANGE)`, so nothing is checked
+//!   before it and trusted after: the file it took out of place is then
+//!   checked to be the one hashed (same inode, same hash), and if an
+//!   editor saved in between (a new file renamed into place, or the file
+//!   written in place) the two are swapped back and the edit is refused,
+//!   keeping the editor's text. If the file was saved again before the
+//!   swap back, or the swap back fails, nothing is removed: the latest
+//!   save is put in place where it can be, and the refusal says what the
+//!   file holds and where the other version is kept (each write has a
+//!   temporary name of its own). Where the filesystem has no exchange
+//!   (`EINVAL`, or `ENOSYS` before Linux 3.15) the old way is kept: the
+//!   inode and hash checked just before a plain rename, with that small
+//!   window (decisions.md m6-edges). A read-only target (a Nix store
+//!   file) is refused, with the reason and an offer to open it in
+//!   `$EDITOR`.
 //!   Read-only means this user cannot write the file itself, or the
 //!   rename would change more than its text: a file another user owns
 //!   (the new file would be ours), or one with an ACL (the new file
@@ -30,6 +42,7 @@ use std::io::{Read as _, Write as _};
 use std::ops::Range;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value as Json;
 use strand_compiler::FileId;
@@ -330,14 +343,62 @@ fn current(file: &Path, files: &Json) -> Result<(String, String), Refusal> {
 /// Writes `edit` (see the module docs). Returns the file written (the
 /// symlink's target when the shell's file is a link).
 pub fn write(edit: &Edit) -> Result<PathBuf, Refusal> {
-    write_with(edit, |_| {})
+    write_with(edit, Swap::Auto, |_, _| {})
 }
 
-/// [`write`], calling `between` with the file's real path after its
-/// hash is checked and before the new text is renamed over it (tests
-/// race an editor's save there).
+/// (M6) How [`write_with`] puts the new text in place (tests choose).
 #[doc(hidden)]
-pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, Refusal> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Swap {
+    /// `RENAME_EXCHANGE`, else (unsupported) a checked rename.
+    Auto,
+    /// `RENAME_EXCHANGE` only: unsupported is an error.
+    Exchange,
+    /// The checked rename only.
+    Rename,
+}
+
+/// (M6) Where [`write_with`] calls its hook (tests race an editor's
+/// save there).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moment {
+    /// The new text is written beside the file, which is not swapped
+    /// yet: the path is the file's.
+    Before,
+    /// After the last look at the file before it is replaced. With the
+    /// exchange: the file is swapped out and not yet checked, and the
+    /// path is where it now is (the temporary name). With the plain
+    /// rename: the file is checked and not yet renamed over, and the
+    /// path is the file's.
+    Window,
+    /// (exchange) The file swapped out was found changed and is not yet
+    /// swapped back: the path is the file's, which holds the edit.
+    Back,
+    /// (exchange) The swap back brought out a later save than the edit,
+    /// which is not yet exchanged into place: the path is the file's,
+    /// which holds the save before it (edges-r2-2). Called before each
+    /// such exchange.
+    Again,
+    /// (exchange) The exchange found no file to swap with (`ENOENT`),
+    /// and the refusal is not yet made: the path is the file's, where an
+    /// editor saving by a backup may already have written anew
+    /// (edges-r3-1).
+    Missing,
+}
+
+/// Temporary names made by this process, so each write has its own and
+/// a version kept at one never blocks a later write.
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// [`write`], with `swap` choosing how the new text goes in place and
+/// `hook` called at each [`Moment`].
+#[doc(hidden)]
+pub fn write_with(
+    edit: &Edit,
+    swap: Swap,
+    mut hook: impl FnMut(Moment, &Path),
+) -> Result<PathBuf, Refusal> {
     let io = |file: &Path, e: std::io::Error| Refusal::Io {
         file: file.to_path_buf(),
         why: e.to_string(),
@@ -370,15 +431,9 @@ pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, R
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.strand-dev-{}", std::process::id()));
-    let mut t = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(meta.mode() & 0o7777)
-        .open(&tmp)
-    {
+    let (tmp, mut t) = match temp_beside(&dir, &name, meta.mode() & 0o7777) {
         Ok(t) => t,
-        Err(e)
+        Err((_, e))
             if matches!(
                 e.kind(),
                 std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
@@ -389,7 +444,7 @@ pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, R
                 why: format!("its directory cannot be written: {e}"),
             });
         }
-        Err(e) => return Err(io(&tmp, e)),
+        Err((tmp, e)) => return Err(io(&tmp, e)),
     };
     // Created with our group, or the directory's (setgid): the file's
     // own group is kept, as an owner may give it, or the edit refused.
@@ -414,32 +469,272 @@ pub fn write_with(edit: &Edit, between: impl FnOnce(&Path)) -> Result<PathBuf, R
     let written = t
         .write_all(&out)
         .and_then(|()| t.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o7777)))
-        .and_then(|()| t.sync_all());
+        .and_then(|()| t.sync_all())
+        .and_then(|()| t.metadata());
     drop(t);
-    if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(io(&tmp, e));
+    let ours = match written {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(io(&tmp, e));
+        }
+    };
+    hook(Moment::Before, &real);
+    // The file that was hashed, holding what was hashed (not checked
+    // through a link: the swap moves names, not targets).
+    let hashed = |p: &Path| {
+        fs::symlink_metadata(p)
+            .ok()
+            .filter(|m| m.dev() == meta.dev() && m.ino() == meta.ino())
+            .and_then(|_| fs::read(p).ok())
+            .is_some_and(|now| hash(&now) == edit.hash)
+    };
+    let exchanged = match swap {
+        Swap::Rename => false,
+        Swap::Auto | Swap::Exchange => match exchange(&tmp, &real) {
+            Ok(()) => true,
+            Err(e)
+                if swap == Swap::Auto
+                    && (e == rustix::io::Errno::INVAL || e == rustix::io::Errno::NOSYS) =>
+            {
+                // No exchange on this filesystem: a checked rename.
+                false
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                // `RENAME_EXCHANGE` needs both names: an editor that
+                // moves the file to a backup and then writes it anew
+                // leaves no file for a moment, which is a change, as the
+                // check before a plain rename finds it (edges-r2-4).
+                // `tmp` was just made, so `ENOENT` already says the file
+                // was missing at the exchange; a second look afterwards
+                // could find the editor's new file and call it an I/O
+                // error (edges-r3-1).
+                if e == rustix::io::Errno::NOENT {
+                    hook(Moment::Missing, &real);
+                    return Err(Refusal::Changed(edit.file.clone()));
+                }
+                return Err(io(&real, e.into()));
+            }
+        },
+    };
+    if exchanged {
+        // The new text is in place; what it took out of place is at
+        // `tmp`, and is checked only now, so a save at any moment before
+        // the swap (renamed into place, or written in place) is found.
+        hook(Moment::Window, &tmp);
+        if hashed(&tmp) {
+            let _ = fs::remove_file(&tmp);
+            sync_dir(&dir);
+            return Ok(real);
+        }
+        let ours = Version {
+            dev: ours.dev(),
+            ino: ours.ino(),
+            text: out,
+        };
+        return Err(undo(edit, &real, &tmp, &dir, ours, &mut hook));
     }
-    between(&real);
-    // Still the file that was hashed, holding what was hashed: an
-    // editor's save renamed into place meanwhile is never overwritten.
-    let same = fs::metadata(&real)
-        .ok()
-        .filter(|m| m.dev() == meta.dev() && m.ino() == meta.ino())
-        .and_then(|_| fs::read(&real).ok())
-        .is_some_and(|now| hash(&now) == edit.hash);
-    if !same {
+    // No exchange: still the file that was hashed, holding what was
+    // hashed, just before the rename (an editor's save in the window
+    // between this check and the rename is lost).
+    if !hashed(&real) {
         let _ = fs::remove_file(&tmp);
         return Err(Refusal::Changed(edit.file.clone()));
     }
+    hook(Moment::Window, &real);
     if let Err(e) = fs::rename(&tmp, &real) {
         let _ = fs::remove_file(&tmp);
         return Err(io(&real, e));
     }
-    if let Ok(d) = File::open(&dir) {
+    sync_dir(&dir);
+    Ok(real)
+}
+
+/// A new file beside `name` in `dir`, created with `mode`, at a name no
+/// other write of this process has used (one left by another process
+/// of the same pid is passed over).
+fn temp_beside(
+    dir: &Path,
+    name: &str,
+    mode: u32,
+) -> Result<(PathBuf, File), (PathBuf, std::io::Error)> {
+    let mut tries = 0;
+    loop {
+        let n = WRITES.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.strand-dev-{}-{n}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)
+        {
+            Ok(t) => return Ok((tmp, t)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 64 => tries += 1,
+            Err(e) => return Err((tmp, e)),
+        }
+    }
+}
+
+/// A file as it was seen: its inode and its text.
+struct Version {
+    dev: u64,
+    ino: u64,
+    text: Vec<u8>,
+}
+
+impl Version {
+    /// The file at `p` now (not through a link), or why it cannot be read.
+    fn of(p: &Path) -> std::io::Result<Version> {
+        let m = fs::symlink_metadata(p)?;
+        let text = fs::read(p)?;
+        Ok(Version {
+            dev: m.dev(),
+            ino: m.ino(),
+            text,
+        })
+    }
+
+    /// `p` is this file, holding only this text.
+    fn at(&self, p: &Path) -> bool {
+        fs::symlink_metadata(p).is_ok_and(|m| m.dev() == self.dev && m.ino() == self.ino)
+            && fs::read(p).is_ok_and(|now| now == self.text)
+    }
+}
+
+/// How many exchanges [`undo`] makes before it stops putting a later
+/// save in place (an editor saving without pause).
+const ROUNDS: usize = 8;
+
+/// (M6) The exchange put the edit at `real`, but the file it took out
+/// (now at `tmp`) was not the one hashed: an editor saved meanwhile.
+/// The two are swapped back, and what each exchange brings out of
+/// `real` is checked against what was expected there (the same inode,
+/// holding the same text): the edit, and the edit is refused
+/// (`Changed`) and removed. Anything else is a save made since, newer
+/// than what was just put in place, so it is exchanged in in turn
+/// (edges-r2-2): nothing found before an exchange is trusted after it.
+/// When the latest save is in place, the refusal says so and where the
+/// save before it is kept (each write has its own temporary name, so it
+/// blocks none). Nothing is removed but the edit, checked; a failed
+/// exchange is reported by what is at `real` then (edges-r2-3), or as
+/// nothing there when the file is gone (edges-r3-2).
+fn undo(
+    edit: &Edit,
+    real: &Path,
+    tmp: &Path,
+    dir: &Path,
+    ours: Version,
+    hook: &mut impl FnMut(Moment, &Path),
+) -> Refusal {
+    let kept = |why: String| Refusal::Io {
+        file: edit.file.clone(),
+        why,
+    };
+    let at = tmp.display();
+    // What should be at `real`, and so come out of it.
+    let mut expect = ours;
+    for round in 0..ROUNDS {
+        // `tmp` is this write's own name: what is there goes in place.
+        let going = Version::of(tmp);
+        hook(
+            if round == 0 {
+                Moment::Back
+            } else {
+                Moment::Again
+            },
+            real,
+        );
+        let failed = match &going {
+            Ok(_) => exchange(tmp, real).err().map(|e| e.to_string()),
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(e) = failed {
+            let other = match fs::symlink_metadata(tmp) {
+                Ok(_) => format!("is kept at {at}"),
+                Err(_) => format!("is gone from {at}"),
+            };
+            // Nothing at the file (an editor moved it to a backup, or it
+            // was removed): no save is there to name (edges-r3-2).
+            if fs::symlink_metadata(real).is_err() {
+                return kept(if round == 0 {
+                    format!(
+                        "it changed while the edit was written, and it could not be put back \
+                         ({e}): no file is there now (it was moved or removed after it took the \
+                         edit), and the version saved meanwhile {other}"
+                    )
+                } else {
+                    format!(
+                        "it was saved more than once while the edit was written ({e}): the edit \
+                         is not applied, no file is there now (it was moved or removed since), \
+                         and a save made meanwhile {other}"
+                    )
+                });
+            }
+            let same = expect.at(real);
+            return kept(match (round, same) {
+                (0, true) => format!(
+                    "it changed while the edit was written, and it could not be put back ({e}): \
+                     the file holds the edit, and the version saved meanwhile {other}"
+                ),
+                (0, false) => format!(
+                    "it changed while the edit was written, and it could not be put back ({e}): \
+                     the edit is not applied, the file holds a save made since, and the version \
+                     saved before it {other}"
+                ),
+                (_, true) => format!(
+                    "it was saved more than once while the edit was written, and the latest save \
+                     could not be put in place ({e}): the edit is not applied, the file holds the \
+                     save before it, and the latest {other}"
+                ),
+                (_, false) => format!(
+                    "it was saved more than once while the edit was written ({e}): the edit is not \
+                     applied, the file holds a save made since, and an earlier one {other}"
+                ),
+            });
+        }
+        if expect.at(tmp) {
+            if round == 0 {
+                let _ = fs::remove_file(tmp);
+                sync_dir(dir);
+                return Refusal::Changed(edit.file.clone());
+            }
+            sync_dir(dir);
+            return kept(format!(
+                "it was saved more than once while the edit was written: the edit is not \
+                 applied, the file holds the latest save, and the save before it is kept at {at}"
+            ));
+        }
+        // A save made since, now at `tmp`: what just went in is expected
+        // back from `real` when it goes in in turn.
+        if let Ok(v) = going {
+            expect = v;
+        }
+    }
+    sync_dir(dir);
+    kept(format!(
+        "it kept changing while the edit was written: the edit is not applied, and a version \
+         saved meanwhile is kept at {at}"
+    ))
+}
+
+/// (M6) Swaps the names `a` and `b` atomically (`renameat2` with
+/// `RENAME_EXCHANGE`): both must exist.
+fn exchange(a: &Path, b: &Path) -> rustix::io::Result<()> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        a,
+        rustix::fs::CWD,
+        b,
+        rustix::fs::RenameFlags::EXCHANGE,
+    )
+}
+
+/// Flushes directory `dir`'s entries (best effort).
+fn sync_dir(dir: &Path) {
+    if let Ok(d) = File::open(dir) {
         let _ = d.sync_all();
     }
-    Ok(real)
 }
 
 /// Whether user `uid` may replace the file at `real` (with `meta`, its

@@ -258,8 +258,9 @@ pub(crate) struct Ctx {
     /// `None` only before the boot mounts.
     pub lock: RefCell<Option<Rc<lock::LockTrack>>>,
     /// (M4) Mounted virtualised lists, by `list` node: what moves each
-    /// one's window ([`Instance::set_list_window`]).
-    pub list_windows: RefCell<HashMap<NodeId, Rc<mount::SetWindow>>>,
+    /// one's window ([`Instance::set_list_window`]) and (M6) the window
+    /// itself, every item in order ([`Instance::drop_at`]).
+    pub list_windows: RefCell<HashMap<NodeId, mount::WindowEntry>>,
     /// (M4) The order of each `pages`' pages (directional transitions).
     pub pages: RefCell<mount::PagesOrder>,
     /// (M4) Each mounted `drag:` source's current value, by node: what a
@@ -1619,7 +1620,7 @@ impl Instance {
     pub fn set_list_window(&self, list: NodeId, first: u32, count: u32) -> bool {
         let set = self.ctx.list_windows.borrow().get(&list).cloned();
         match set {
-            Some(set) => {
+            Some((set, _)) => {
                 set(&self.rt, first as usize, count as usize);
                 true
             }

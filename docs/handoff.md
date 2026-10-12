@@ -311,17 +311,25 @@ recorded reason.
 - sway: `win.maximize()` answers `Unsupported` on the adapter (sway has
   no maximize). Through the wlr fallback (adapter off) the reply is
   `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
-- Drag and drop: a drop's `at` in another list does not see that list's
-  copy of the item when the copy is outside a windowed `list`'s mounted
-  rows (render has only the mounted rows), so it is one too high then;
-  spec.md 6.7 states it as a limit of 1.0's implementation, whose fix is
-  a bug fix (decisions.md m5-fixups, m5-integration-w3).
-- Inspector: write-back checks the target's inode and hash just before
-  its rename, but a small window remains between that check and the
-  rename (POSIX has no compare-and-rename; closing it needs a lock
-  editors do not take). An answer to `inspect.pick` means logic told
-  main, not that main has turned pick mode on (decisions.md
-  m5-inspect; architecture.md).
+- Inspector: write-back swaps the file in with `renameat2(RENAME_EXCHANGE)`
+  and checks the file it took out (M6, m6-edges), so an editor's save
+  after the check is kept. Three edges remain: on a filesystem without
+  the exchange (`EINVAL`/`ENOSYS`) it falls back to the check just
+  before a plain rename, with that small window; an editor saving
+  without pause through eight exchanges is refused with a later save
+  kept, not necessarily with the latest in place; and an editor already
+  holding the file open that writes into it after the check of the old
+  file writes into the file being removed (no lock editors take could
+  stop it). An answer to `inspect.pick` means logic told main, not that main
+  has turned pick mode on (decisions.md m5-inspect; architecture.md).
+- Drag and drop: a copy of the dragged item above a windowed `list`'s
+  mounted rows is left out of `at` by logic (M6, m6-edges), which reads
+  each row's own `drag:` values off the mounted rows (render's walk: a
+  `list` or `for` inside the row, such as a dock item's window dots, is
+  not the row's, wherever it sits among the row's children) as its item,
+  its key or one of its fields; rows none of whose own `drag:` values is
+  one of those (or not the same one for every mounted row) are never
+  copies there, so `at` stays one too high for them, as before M6.
 - Notifications: (resolved in M6 by S-services: `Notification.time` has
   its hour and minute; decisions.md m6-services.) Spec 1.2's
   `ActivationToken` is sent since S-platform, M5 wave 3.
