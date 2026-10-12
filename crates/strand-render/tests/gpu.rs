@@ -1063,6 +1063,94 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
     );
 }
 
+/// (M5, m5-tools review) `strand report`'s frame time of a promoted
+/// surface includes the GPU thread's work: a `GpuPresent` frame runs
+/// from its `paint` to its `Presented`, a readback frame from its
+/// `paint` to its `Pixels`, and neither counts before its reply. Needs
+/// no device; the GPU thread's 40 ms is a sleep.
+#[test]
+fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
+    let gpu_work = Duration::from_millis(40);
+    let mut b = Builder::default();
+    b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    assert!(
+        !buf.paint_at(&mut r, S, 0, Duration::from_secs(1))
+            .is_empty()
+    );
+    let cpu = r.frame_summary(S).unwrap();
+    assert_eq!(cpu.presented, 1);
+    assert!(cpu.p99 < gpu_work, "the CPU frame: {:?}", cpu.p99);
+
+    // Presented: timed at the GPU thread's `Presented`.
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    assert!(r.paint_gpu(S, Duration::from_secs(1)).is_some());
+    assert_eq!(
+        r.frame_summary(S).unwrap().presented,
+        1,
+        "counted before its reply"
+    );
+    std::thread::sleep(gpu_work);
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        at: Instant::now(),
+    });
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 2);
+    assert!(f.p99 >= gpu_work, "the GPU's work left out: {:?}", f.p99);
+
+    // Readback: timed at its `Pixels`.
+    r.set_backend(S, Backend::Cpu);
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuReadback);
+    let _ = r.take_backend_changes();
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(2));
+    let id = r
+        .take_gpu_requests()
+        .into_iter()
+        .find_map(|q| match q {
+            GpuRequest::Frame(f) => Some(f.id),
+            _ => None,
+        })
+        .expect("a readback frame sent");
+    assert_eq!(
+        r.frame_summary(S).unwrap().presented,
+        2,
+        "counted before its reply"
+    );
+    std::thread::sleep(gpu_work);
+    r.deliver_gpu(GpuReply::Pixels {
+        surface: S,
+        frame: id,
+        pixels: strand_gpu::Readback {
+            width: 80,
+            height: 40,
+            stride: 320,
+            bytes: vec![0; 320 * 40],
+        },
+    });
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 3);
+    assert!(
+        f.p50 >= gpu_work,
+        "the readback's GPU work left out: {:?}",
+        f.p50
+    );
+}
+
 /// (m4-integration-w2) A surface the GPU thread presents paints its pose
 /// into its frames (architecture.md, "Surface hand-off"): with
 /// compositor poses on, a root's static `opacity: 0.5` is delegated while

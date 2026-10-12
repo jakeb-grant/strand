@@ -65,14 +65,27 @@ pub(crate) fn scaffold(dir: &Path) -> Result<PathBuf, NewError> {
         Err(e) => return Err(NewError::Io(dir.into(), e)),
     }
     let file = dir.join(FILE);
-    // `create_new`: a file that appeared since the check is not replaced.
+    place(&file, |f| f.write_all(TEMPLATE.as_bytes()))?;
+    Ok(file)
+}
+
+/// Creates `file` (`create_new`: a file that appeared since the check is
+/// not replaced) and writes it; a failed write (a full disk) removes the
+/// partial file, so the directory is empty again for a retry.
+fn place(
+    file: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), NewError> {
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&file)
-        .map_err(io(&file))?;
-    f.write_all(TEMPLATE.as_bytes()).map_err(io(&file))?;
-    Ok(file)
+        .open(file)
+        .map_err(|e| NewError::Io(file.into(), e))?;
+    write(&mut f).map_err(|e| {
+        drop(f);
+        let _ = std::fs::remove_file(file);
+        NewError::Io(file.into(), e)
+    })
 }
 
 /// `strand new [dir]`.
@@ -119,6 +132,24 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&f).unwrap(), TEMPLATE);
             let _ = std::fs::remove_dir_all(d.parent().unwrap());
         }
+    }
+
+    /// A write that fails part-way (ENOSPC) leaves no partial file: the
+    /// directory is empty again and `strand new` succeeds on a retry.
+    #[test]
+    fn a_failed_write_leaves_the_dir_empty_for_a_retry() {
+        let d = temp("enospc");
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join(FILE);
+        let got = place(&file, |f| {
+            f.write_all(&TEMPLATE.as_bytes()[..10])?;
+            Err(std::io::Error::from_raw_os_error(28))
+        });
+        assert!(matches!(got, Err(NewError::Io(..))));
+        assert!(!file.exists(), "a partial bar.strand left behind");
+        assert_eq!(scaffold(&d).unwrap(), file);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), TEMPLATE);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

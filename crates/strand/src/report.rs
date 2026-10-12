@@ -135,14 +135,17 @@ fn promotion(b: Backend) -> Option<String> {
 }
 
 /// Logic's half, merged into main's: the strand version, the
-/// compositor's name (from the environment it gives its clients) and
-/// the PSS.
+/// compositor's name (from the environment it gives its clients: its
+/// IPC socket, else `XDG_CURRENT_DESKTOP`) and the PSS.
 pub(crate) fn logic_part(mut data: Json) -> Json {
     let pss = std::fs::read_to_string("/proc/self/smaps_rollup")
         .ok()
         .as_deref()
         .and_then(pss_kb);
-    let name = strand_services::wm::detect().map(|b| b.kind().name());
+    let name = compositor_name(
+        strand_services::wm::detect().map(|b| b.kind().name()),
+        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+    );
     if let Some(o) = data.as_object_mut() {
         o.insert("strand".into(), json!(env!("CARGO_PKG_VERSION")));
         o.insert("memory".into(), json!({"pss_kb": pss}));
@@ -151,6 +154,15 @@ pub(crate) fn logic_part(mut data: Json) -> Json {
         c.insert("name".into(), json!(name));
     }
     data
+}
+
+/// The compositor's name: the one its IPC adapter knows, else the first
+/// entry of `XDG_CURRENT_DESKTOP` (labwc sets `labwc:wlroots`), so a
+/// compositor strand has no adapter for is still named.
+fn compositor_name(detected: Option<&str>, desktop: Option<&str>) -> Option<String> {
+    detected
+        .or_else(|| desktop?.split(':').map(str::trim).find(|d| !d.is_empty()))
+        .map(str::to_string)
 }
 
 /// The `Pss:` line of `/proc/self/smaps_rollup`, in kB.
@@ -271,6 +283,23 @@ pub(crate) fn text(r: &Json) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The adapter's name first, then `XDG_CURRENT_DESKTOP`'s first
+    /// entry; neither is null.
+    #[test]
+    fn the_compositor_is_named_without_an_adapter() {
+        assert_eq!(
+            compositor_name(Some("sway"), Some("GNOME")).as_deref(),
+            Some("sway")
+        );
+        assert_eq!(
+            compositor_name(None, Some("labwc:wlroots")).as_deref(),
+            Some("labwc")
+        );
+        assert_eq!(compositor_name(None, Some("niri")).as_deref(), Some("niri"));
+        assert_eq!(compositor_name(None, Some("")), None);
+        assert_eq!(compositor_name(None, None), None);
+    }
 
     #[test]
     fn pss_is_read_from_the_rollup() {

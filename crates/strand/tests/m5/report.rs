@@ -34,7 +34,7 @@ fn every_section_is_reported_and_the_json_round_trips() {
         return;
     }
     let bar = format!("{}export state label = \"hi\"\n", super::new::template());
-    let desk = super::cli::Desk::start("report", &[("bar.strand", &bar)], &[]);
+    let desk = super::cli::Desk::start_with("report", &[("bar.strand", &bar)], &[], true);
     // A second output, at scale 2.
     let ipc = std::fs::read_dir(desk.root())
         .unwrap()
@@ -74,7 +74,7 @@ fn every_section_is_reported_and_the_json_round_trips() {
     assert_eq!(again, r);
     assert_eq!(r["strand"], env!("CARGO_PKG_VERSION"));
     let c = &r["compositor"];
-    assert!(c.get("name").is_some(), "{r}");
+    assert_eq!(c["name"], "sway", "{r}");
     let globals = c["globals"].as_array().unwrap();
     for want in ["wl_compositor", "zwlr_layer_shell_v1", "wl_shm"] {
         assert!(

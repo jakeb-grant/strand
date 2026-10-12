@@ -920,8 +920,11 @@ an overlay step and a contrast-guard step where they apply.
   p50/p95/p99 over the last 600 frames, presented and discarded
   (`renderer/summary.rs`, S-tools; built: a frame is one `paint`, its
   time the render thread's work in it, presented when it damaged
-  something and discarded when it damaged nothing; nearest-rank
-  percentiles over both; a detached surface's frames go). Beside it,
+  something and discarded when it damaged nothing; a frame a `paint`
+  sends to the GPU (a promoted surface's) runs from that `paint`'s start
+  to the GPU thread's `Presented` (its `at`) or `Pixels`, and counts as
+  presented only then; nearest-rank percentiles over both; a detached
+  surface's frames go). Beside it,
   `Renderer::gpu_lost_devices() -> u32` (0 without the `gpu` feature)
   for the report's lost-device count, and strand-surface's
   `State::globals() -> Vec<(String, u32)>` (each global's interface
@@ -1118,7 +1121,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   and its own rows (the D-Bus front end is `strand-services`'
   `ipc_bus.rs`, not this table), and S-tools changes the three rows
   that already name its commands (`new`, `export`, `report`, which
-  answered "not implemented yet (M5)" until S-tools served them) and adds their dispatch arms,
+  answered "not implemented yet (M5)" until S-tools served them; once
+  every row was served, S-tools' wave-3 review removed that fallback and
+  the table's milestone column, so an unknown command is the only
+  error) and adds their dispatch arms,
   each as one-line entries the integrator merges. S-plugins owns the builder in
   `src/plugin.rs` (registration, `--write-schemas`, the setup check)
   and the single call from `entry.rs` into it, not the table.

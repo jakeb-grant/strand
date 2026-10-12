@@ -178,8 +178,13 @@ impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let started = Instant::now();
         let damage = self.paint_frame(surface, target);
-        // (M5) `strand report`'s frame timing (`summary.rs`).
-        if self.surfaces.contains_key(&surface) {
+        // (M5) `strand report`'s frame timing (`summary.rs`). A frame
+        // sent to the GPU is timed when the GPU thread's reply comes.
+        #[cfg(feature = "gpu")]
+        let sent = self.gpu_frame_sent(surface, started);
+        #[cfg(not(feature = "gpu"))]
+        let sent = false;
+        if !sent && self.surfaces.contains_key(&surface) {
             self.frame_stats
                 .record(surface, started.elapsed(), !damage.is_empty());
         }

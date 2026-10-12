@@ -3,7 +3,12 @@
 //! (docs/architecture.md, "M5 interfaces"). A frame is one `paint`: its
 //! time is the render thread's work in it, and it is presented when it
 //! drew something (the caller commits it), discarded when it damaged
-//! nothing (nothing is committed). The percentiles are over both kinds.
+//! nothing (nothing is committed). A frame sent to the GPU (a promoted
+//! surface's) is timed from its `paint`'s start to the GPU thread's
+//! reply: `Presented` (at its `at`) for a `GpuPresent` frame, `Pixels`
+//! for a readback one, so its time includes the GPU's render; it counts
+//! as presented then, and not at all if no reply comes. The percentiles
+//! are over both kinds.
 
 use std::collections::HashMap;
 use std::time::Duration;

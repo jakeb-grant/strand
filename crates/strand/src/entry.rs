@@ -10,71 +10,49 @@ use std::process::ExitCode;
 use crate::cli;
 use strand_compiler::diagnostic::Style;
 
-/// Subcommands the design commits to, with the milestone that delivers each.
-const COMMANDS: &[(&str, &str, &str)] = &[
+/// Subcommands the design commits to; each is served (`tool`, `one_shot`
+/// or `run`).
+const COMMANDS: &[(&str, &str)] = &[
     (
         "run",
         "run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)",
-        "M1",
     ),
-    ("check", "check the config without running it [dir]", "M1"),
-    (
-        "fmt",
-        "format .strand files in place [--check] [paths]",
-        "M1",
-    ),
-    ("watch", "stream reload events (--json)", "M1"),
-    (
-        "reload",
-        "rescan now (--hard drops non-persisted state)",
-        "M1",
-    ),
+    ("check", "check the config without running it [dir]"),
+    ("fmt", "format .strand files in place [--check] [paths]"),
+    ("watch", "stream reload events (--json)"),
+    ("reload", "rescan now (--hard drops non-persisted state)"),
     (
         "get",
         "read an exported value, a settings field or a token ('$accent') (--json)",
-        "M5",
     ),
     (
         "set",
         "write an exported value (strand set theme.look mocha; '$accent' overlays a token)",
-        "M2",
     ),
-    ("toggle", "flip an exported boolean", "M5"),
+    ("toggle", "flip an exported boolean"),
     (
         "call",
         "invoke a service action (strand call notifications.clear) (--json)",
-        "M5",
     ),
-    (
-        "clear",
-        "drop a runtime overlay (strand clear '$accent')",
-        "M5",
-    ),
+    ("clear", "drop a runtime overlay (strand clear '$accent')"),
     (
         "new",
         "write a starter shell into [dir] (default $XDG_CONFIG_HOME/strand; refuses a non-empty dir)",
-        "M5",
     ),
     (
         "export",
         "write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]",
-        "M5",
     ),
-    (
-        "compositor-rules",
-        "print blur rules for the compositor",
-        "M4",
-    ),
+    ("compositor-rules", "print blur rules for the compositor"),
     (
         "report",
         "dump compositor, protocols, scales, memory, GPU and frame stats (--json)",
-        "M5",
     ),
 ];
 
 fn usage() -> String {
     let mut s = String::from("usage: strand <command> [args]\n\ncommands:\n");
-    for (name, about, _) in COMMANDS {
+    for (name, about) in COMMANDS {
         s.push_str(&format!("  {name:<18}{about}\n"));
     }
     s
@@ -106,12 +84,7 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
             [dir] if !dir.starts_with('-') => Ok(Action::Run(Some(dir.into()))),
             _ => Err("usage: strand run [dir | --demo]".into()),
         },
-        Some(cmd) => match COMMANDS.iter().find(|(name, ..)| *name == cmd) {
-            Some((name, _, milestone)) => {
-                Err(format!("strand {name}: not implemented yet ({milestone})"))
-            }
-            None => Err(format!("strand: unknown command `{cmd}`\n\n{}", usage())),
-        },
+        Some(cmd) => Err(format!("strand: unknown command `{cmd}`\n\n{}", usage())),
     }
 }
 
@@ -255,12 +228,6 @@ mod tests {
                 "`strand {name}` is listed but not served"
             );
         }
-        // The fallback for a listed command no arm serves names its
-        // milestone.
-        assert_eq!(
-            run(&["new"]).unwrap_err(),
-            "strand new: not implemented yet (M5)"
-        );
     }
 
     #[test]
