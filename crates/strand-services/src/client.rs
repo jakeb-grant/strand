@@ -606,45 +606,59 @@ type Bounced<S> = Arc<Mutex<std::collections::VecDeque<(Msg<S>, Option<String>)>
 
 impl<S: Service> ClientInner<S> {
     /// Sends the actions [`ClientInner::bounced`] holds through
-    /// [`ClientInner::with_run`], in order. One the run still in place
-    /// cannot take (its body ended and its `Ended` is not in yet) stays,
-    /// with those after it, for the next pump; one that cannot be sent
-    /// at all (a body waiting out its retry backoff, as [`Client::act`]
-    /// refuses) is dropped with a warning.
+    /// [`ClientInner::with_run`], in order, under the queue's lock so a
+    /// held action that goes meanwhile on the shared runtime waits for
+    /// them and goes after them. One the run in place cannot take (its
+    /// body ended and its `Ended` is not in yet) stays, with those after
+    /// it, for the next pump; one that cannot be sent at all (a body
+    /// waiting out its retry backoff, as [`Client::act`] refuses) is
+    /// dropped with a warning.
     fn redeliver(&self, rt: &Runtime) -> bool {
         let Some(me) = self.me.upgrade() else {
             return false;
         };
         let mut any = false;
         loop {
-            let next = match self.bounced.lock() {
-                Ok(mut b) => b.pop_front(),
-                Err(e) => e.into_inner().pop_front(),
-            };
-            let Some(msg) = next else {
+            if lock(&self.bounced).is_empty() {
                 return any;
-            };
-            any = true;
-            let sent = me.with_run(rt, |run| {
-                // The message back when the run cannot take it.
-                let back = run.tx.send(msg).err().map(|e| e.0);
-                run.poke();
-                back
-            });
-            match sent {
-                Ok(None) => {}
-                Ok(Some(msg)) => {
-                    let mut b = self.bounced.lock().unwrap_or_else(|e| e.into_inner());
-                    b.push_front(msg);
-                    return any;
-                }
-                Err(e) => log::warn!(
-                    "service `{}`: an action held for its activation token was lost: {e}",
-                    self.name
-                ),
             }
+            any = true;
+            let run = me.with_run(rt, |run| {
+                (run.tx.clone(), run.notify.clone(), run.stopped.clone())
+            });
+            let (tx, notify, stopped) = match run {
+                Ok(r) => r,
+                Err(e) => {
+                    lock(&self.bounced).pop_front();
+                    log::warn!(
+                        "service `{}`: an action held for its activation token was lost: {e}",
+                        self.name
+                    );
+                    continue;
+                }
+            };
+            // Lock order: the queue, then the run's `stopped` (as the
+            // held actions' `deliver` takes them).
+            let mut b = lock(&self.bounced);
+            // Runs stop only on this thread: the run just given is up.
+            if !*lock(&stopped) {
+                while let Some(msg) = b.pop_front() {
+                    if let Err(e) = tx.send(msg) {
+                        b.push_front(e.0);
+                        break;
+                    }
+                }
+            }
+            drop(b);
+            poke(&notify);
+            return any;
         }
     }
+}
+
+/// A lock that a panic elsewhere does not poison for us.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl<S: Service> ClientInner<S> {
@@ -1381,29 +1395,33 @@ impl<S: Service> Client<S> {
         let (tx, notify, stopped) = self.0.with_run(rt, |run| {
             (run.tx.clone(), run.notify.clone(), run.stopped.clone())
         })?;
-        // Queued behind a token wait, the run may end or be stopped
-        // before this runs: the action goes back to the logic thread
-        // ([`ClientInner::bounced`]), which sends it to the run up then.
+        // Sent now (`later` false, on this thread), a run that cannot take
+        // it is the caller's error, as before tokens. Queued behind a
+        // token wait, the run may end or be stopped before this runs: the
+        // action goes back to the logic thread ([`ClientInner::bounced`]),
+        // which sends it to the run up then; and while anything is handed
+        // back, the actions after it join it there (one of the same
+        // invocation that took a newer run must not overtake it).
         let bounced = self.0.bounced.clone();
         let wake = self.0.reg.upgrade().map(|r| r.wake.clone());
-        let deliver: crate::activation::Deliver = Box::new(move |token| {
+        let deliver: crate::activation::Deliver = Box::new(move |token, later| {
             let msg = (Msg::Action(action), token);
-            let back = {
-                let stopped = stopped.lock().unwrap_or_else(|e| e.into_inner());
-                if *stopped {
-                    Err(msg)
-                } else {
-                    tx.send(msg).map_err(|e| e.0)
-                }
+            if !later {
+                let ok = !*lock(&stopped) && tx.send(msg).is_ok();
+                poke(&notify);
+                return ok;
+            }
+            let mut b = lock(&bounced);
+            let back = if !b.is_empty() || *lock(&stopped) {
+                Some(msg)
+            } else {
+                tx.send(msg).err().map(|e| e.0)
             };
-            if let Err(back) = back {
-                bounced
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push_back(back);
-                if let Some(w) = &wake {
-                    w.wake();
-                }
+            let handed_back = back.is_some();
+            b.extend(back);
+            drop(b);
+            if handed_back && let Some(w) = &wake {
+                w.wake();
             }
             poke(&notify);
             true
@@ -1412,7 +1430,7 @@ impl<S: Service> Client<S> {
             Some(reg) => reg
                 .order
                 .submit(ctx, token, deliver, &|job| reg.shared_spawn(job)),
-            None => deliver(None),
+            None => deliver(None, false),
         };
         if sent {
             Ok(())

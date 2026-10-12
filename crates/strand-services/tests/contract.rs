@@ -1398,3 +1398,92 @@ fn an_action_held_for_its_token_reaches_the_run_up_when_it_goes() {
     );
     s.shutdown();
 }
+
+/// (M5, S-platform) The invocation's later action, submitted after the
+/// run it would have gone to was stopped (so it was handed the new run),
+/// still follows the held one: it does not overtake it while the held
+/// one goes back through the logic thread.
+#[test]
+fn a_later_action_on_a_new_run_does_not_overtake_a_held_one() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let (answers_tx, answers) = std::sync::mpsc::channel();
+    let answers_tx = Mutex::new(answers_tx);
+    s.set_token_source(Some(Arc::new(move |_, _| {
+        let (answer, fut) = strand_services::activation::token_reply();
+        answers_tx.lock().unwrap().send(answer).unwrap();
+        fut
+    })));
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let ctx = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 1,
+            serial: 2,
+        }),
+        invocation: 32,
+    };
+    probe.act_with(&rt, ProbeAction::Bump, ctx, true).unwrap();
+    let answer = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The run is stopped while the first waits for its token; the
+    // handler goes on (after an `await`) and its next action starts a
+    // new run.
+    probe.stop_now(&rt);
+    let sc2 = script_again();
+    probe
+        .act_with(&rt, ProbeAction::Rename("x".into(), 1), ctx, false)
+        .unwrap();
+    assert_eq!(probe.starts(), 2);
+    assert_eq!(sc2.next(), "start visible=true");
+    answer.send(Some("tok".into()));
+    until(&rt, &s, "both actions", || {
+        sc2.seen
+            .recv_timeout(Duration::ZERO)
+            .is_ok_and(|l| match l.as_str() {
+                // The old run's body going away.
+                "stopped" => false,
+                l => {
+                    assert_eq!(l, "action Bump", "the later action overtook");
+                    true
+                }
+            })
+    });
+    assert_eq!(
+        sc2.next(),
+        format!("action {:?}", ProbeAction::Rename("x".into(), 1))
+    );
+    s.shutdown();
+}
+
+/// (M5, S-platform) A plain action (no token wait) sent to a run whose
+/// body has ended, before its `Ended` is pumped, is the caller's error,
+/// not an `Ok` that a retry backoff then drops.
+#[test]
+fn a_plain_action_to_an_ended_body_is_refused_not_lost() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    sc.cmd(Cmd::Fail("gone".into()));
+    // Not pumped: the run is still in place, its body gone.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if probe.act(&rt, ProbeAction::Bump).is_err() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an action to an ended body was never refused"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    s.shutdown();
+}

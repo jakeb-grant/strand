@@ -64,9 +64,12 @@ pub fn token_reply() -> (TokenAnswer, TokenFuture) {
     )
 }
 
-/// Hands an action to its service, with its token if it got one.
-/// Returns false when the service's run is gone.
-pub(crate) type Deliver = Box<dyn FnOnce(Option<String>) -> bool + Send>;
+/// Hands an action to its service, with its token if it got one. The
+/// flag says it went later, from a token wait (on the shared runtime):
+/// then a run that is gone hands it back to the logic thread and it
+/// returns true. Sent now (on the logic thread, the flag false), it
+/// returns false when the service's run is gone, for the caller.
+pub(crate) type Deliver = Box<dyn FnOnce(Option<String>, bool) -> bool + Send>;
 
 /// A job for the shared runtime (`client.rs`'s `Job`).
 pub(crate) type Spawn<'a> =
@@ -138,7 +141,7 @@ impl Order {
             return true;
         };
         if step.token.is_none() {
-            return (step.deliver)(None);
+            return (step.deliver)(None, false);
         }
         let line: Shared = Arc::new(Mutex::new(Line {
             steps: VecDeque::from([step]),
@@ -153,7 +156,7 @@ impl Order {
             let steps = std::mem::take(&mut lock(&line).steps);
             lock(&line).done = true;
             for s in steps {
-                (s.deliver)(None);
+                (s.deliver)(None, true);
             }
         }
         true
@@ -182,7 +185,7 @@ async fn drain(line: Shared) {
                 .flatten(),
             None => None,
         };
-        if !(step.deliver)(token) {
+        if !(step.deliver)(token, true) {
             log::debug!("an action queued behind a token wait found its service gone");
         }
     }
@@ -198,7 +201,7 @@ mod tests {
 
     fn deliver(log: &Log, what: &str) -> Deliver {
         let (log, what) = (log.clone(), what.to_string());
-        Box::new(move |t| {
+        Box::new(move |t, _| {
             log.lock().unwrap().push((what, t));
             true
         })
