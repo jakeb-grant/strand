@@ -54,9 +54,14 @@ step in that order to one config directory and checks it as
 block that does not check, or that `strand fmt` would change, fails the
 build. It also holds the copies of design.md's blocks to the accepted
 fixtures, and runs the dock and the control centre on mock services.
-The newcomer test (M5 wave 3, `crates/strand/tests/m5/newcomer.rs`)
-will go further for levels 1 to 3, applying the blocks to a running
-shell on two monitors and checking each step's frame.
+`crates/strand-dev/tests/ladder.rs` holds every step to the ladder: no
+block uses a construct placed above its level, and each construct is
+first written (or, for the few taught in prose, named) at its own
+level. The newcomer test (`crates/strand/tests/m5/newcomer.rs`) goes
+further for levels 1 to 3: it runs `strand new`, saves each block into
+a running shell on two monitors, and checks after every step that
+`strand check` is clean, which state cells the save kept, and each
+monitor's bar against a reference picture.
 
 A step can also need a file that is not `.strand`, such as level 5's
 template. Its block is tagged with its own language and the same
@@ -87,6 +92,6 @@ Then start at [level 1](level-1.md).
 - The language itself, in full: [`docs/spec.md`](../spec.md) for what
   each construct means, [`docs/grammar.md`](../grammar.md) for how it
   is written.
-- Still to come: every element, prop and service field in
-  `docs/reference/`, generated from the schemas (M5 wave 3; not built
-  yet).
+- Every element, prop, service, type, function and token, with its
+  doc: [`docs/reference/`](../reference/README.md), generated from the
+  schemas by `strand-dev reference`.

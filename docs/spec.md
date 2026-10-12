@@ -1,13 +1,11 @@
 # The Strand language specification
 
-Status: **draft text** (M5 wave 1, S-docs; brought in line with what
-M5 wave 2 built). The section list, the
-construct index (section 3) and the compatibility policy (section 14)
-are fixed. The text below is complete for every section but is not yet
-frozen: it is frozen by the last commit of M5's wave 3 (m5-plan,
-"Language spec frozen"). A point marked **(unverified)** is one no
-test or decision was found to pin down; the freeze review settles each
-one. The theming hub (hue roles, the palette's extras and identity,
+Status: **frozen** (M5, wave 3). This file and `docs/grammar.md` are
+the language 1.x promises: from the freeze on, a change to either needs
+a decisions.md paragraph that cites the compatibility policy (section
+14); typo fixes are exempt. The freeze review settled every point the
+draft left open, each with a test (decisions.md m5-docs, "the freeze
+review"). The theming hub (hue roles, the palette's extras and identity,
 templates, the `file` element and `strand export`; sections 4.1, 9 and
 13) is owner-approved design (decisions.md m5-tools), built in M5 wave 2
 (decisions.md m5-palette, m5-tools); the text here follows the code as
@@ -475,16 +473,24 @@ filling the monitor, the keyboard always).
 - Using an `Async<T>` where a `T` is expected is a load error, except
   for the reads through an `Async` list that section 8.6 lists.
 
-**(unverified)** "a bare number is px" for lengths: design.md writes
-`height: 36` and `width: 90` for logical pixels; the schema's length
-props accept bare numbers. The freeze review confirms the wording.
+A bare number where a length is expected is logical pixels: `width: 90`
+is `width: 90px`. Where an angle is expected it is degrees, and where a
+duration is expected it is a load error (`200ms`, `1s`: durations need
+units).
 
 ### 7.2 Operators and calls
 
 - Precedence and associativity are grammar.md's. `==` and `!=` compare
   values; `<`, `<=`, `>`, `>=` compare ordered values (numbers, lengths,
-  angles, durations). `&&` and `||` short-circuit. **(unverified)**:
-  which mixed-unit comparisons are accepted.
+  angles, durations, percentages). `&&` and `||` short-circuit.
+- An ordering comparison takes two plain numbers, or two values of the
+  same kind (`10px < 20px`, `1s < 500ms`), or a length, angle or
+  percentage beside a plain number, which is read in the other side's
+  unit (`10px < 20`, `90deg > 45`, `40% < 50`), or a length beside a
+  percentage, whose numbers are compared as written (a percentage is
+  not resolved against a size). A duration compares only with a
+  duration, and other units never mix (`1s < 2`, `90deg < 10px`): a load
+  error.
 - `a ?. f` is `null` when `a` is `null`, else `a.f`. `a ?? b` is `b`
   when `a` is `null`, or an `Async` that has no value: its first load
   still pending, or a failure with no earlier value kept. An `Async`
@@ -945,8 +951,9 @@ new program with the running one.
 
 - **`@reset`** on a `state` declaration resets that cell to its default
   (and removes its persisted value) when a reload commits it; the other
-  cells are untouched. **(unverified)**: whether a later reload that
-  keeps the attribute resets the cell again.
+  cells are untouched. It resets the cell again on every later reload
+  while the attribute stays (an edit of any file reloads the program),
+  so it is meant to be removed after one save.
 - **Reset subtree** (the inspector, IPC `reset{node}`) resets the state
   under one node, as `strand reload --hard` does for the whole shell.
   Settings are untouched.
@@ -984,8 +991,8 @@ people can edit by hand.
   last good value with a diagnostic; the other fields still apply. A
   TOML syntax error keeps every last good value. A deleted key springs
   back to its default. The first write creates a file that does not
-  exist yet, and its missing directories. **(unverified)**: a file that
-  does not exist yet gives every field its default.
+  exist yet, and its missing directories. A file that does not exist
+  yet gives every field its default, and reading it creates nothing.
 - Edits to the file apply live, as per-field writes.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,

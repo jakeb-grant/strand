@@ -232,9 +232,8 @@ new default simply applies. If you did, Strand keeps your value, and the
 reload overlay says it kept it. To throw your value away and start
 from the new default, put `@reset` in front of the declaration,
 `@reset export state dnd = true persist`, and save: that cell, and
-only that cell, starts over. Then take `@reset` out again. (Whether a
-later save that still has `@reset` resets the cell again is not yet
-pinned down by a test; taking it out makes the question moot.)
+only that cell, starts over. Then take `@reset` out again: while it is
+there, every save (of any file) resets the cell again.
 
 ### Clear them all, one by one
 
