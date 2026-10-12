@@ -1981,8 +1981,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     `apps` service when it builds the `Drop` value (null when no
     installed app has that id).
     `strand_render::input::NodeEvent` gains `Drop { payload, at: u32 }`
-    (`at` a global row index, with the dragged source and every copy of
-    the dragged item left out) for `on drop(p, at)`. As built
+    (`at` a global row index, with the dragged source's row left out of
+    its own list and another list's first copy of the dragged item out
+    of that list) for `on drop(p, at)`. As built
     (m4-lists wave 2): the Router turns a press on a `drag:` node into a
     drag past `DRAG_THRESHOLD` (6 px), draws the source at the pointer
     through `InputScene::lift(node, Option<LogicalPoint>)`
@@ -2001,11 +2002,15 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     form, and nothing else may look inside the prop. As built
     (m5-fixups): the instance always sends the `List`, its last item
     `List [Text(identity)]`, a hash of the value's type and identity (a
-    keyed record's key, else the value) that is equal for equal values;
+    keyed record's key, else the value, encoded losslessly) that is
+    equal exactly when the values are (`==`);
     `strand_scene::drag_identity` reads it, `drag_export` ignores it, and
-    `drop_index` leaves out every row holding a `drag:` source of the
-    dragged one's identity (one pin's icon on another monitor's dock), as
-    it leaves out the source. `Prop::DropRows`
+    `drop_index` leaves out, in another list than the source's, its
+    first row holding a `drag:` source of the dragged one's identity
+    (one pin's icon on another monitor's dock; the first, as `move`
+    takes the first equal item out), as it leaves out the source's row
+    in its own list, where equal items beside it are counted.
+    `Prop::DropRows`
     (`Bool`, compiler-set) marks an `on drop` target whose direct children
     come from a `for`, so render places drops among those items even when
     they are not `drag:` sources. `Renderer::drag_image(surface, node) ->

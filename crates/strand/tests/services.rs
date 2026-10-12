@@ -766,7 +766,8 @@ bar Top {{
 /// A config's own `from dbus` service's `rw` field written from the
 /// language (spec.md 5.6, 8.1): `on change` assigns `ppd.profile`, and
 /// dbusmock's power-profiles-daemon holds the new profile, which the bar
-/// then shows (green); assigning it back sets the bus again (blue).
+/// then shows (green); assigning it back sets the bus again (blue); and
+/// `strand set ppd.profile power-saver` writes it from the command line.
 #[test]
 fn a_config_services_rw_field_is_written_to_the_bus() {
     let config = "\
@@ -832,6 +833,17 @@ bar Top {
     setup.wait("balanced again (blue)", |img| close(img.px(1270, 20), blue));
     let deadline = Instant::now() + Duration::from_secs(10);
     while on_bus() != "balanced" {
+        assert!(Instant::now() < deadline, "{}", setup.log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // `strand set` writes the config service's `rw` field too (spec.md
+    // 13), as it does a builtin's.
+    setup.cli(&["set", "ppd.profile", "power-saver"]);
+    setup.wait("power-saver from the CLI (green)", |img| {
+        close(img.px(1270, 20), GREEN)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while on_bus() != "power-saver" {
         assert!(Instant::now() < deadline, "{}", setup.log());
         std::thread::sleep(Duration::from_millis(50));
     }

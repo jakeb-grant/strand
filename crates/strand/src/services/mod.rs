@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use strand_compiler::schema::{Schema, plugins};
-use strand_compiler::ty::TypeTable;
+use strand_compiler::ty::{RecordId, TypeTable};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_services::{Builtin, Buses, Services};
@@ -165,7 +165,7 @@ fn handed_out(
     service: &str,
     claimed: &std::collections::BTreeSet<String>,
 ) -> Vec<String> {
-    use strand_compiler::ty::{RecordId, Ty};
+    use strand_compiler::ty::Ty;
     fn push(ty: &Ty, todo: &mut Vec<RecordId>) {
         match ty {
             Ty::Record(id) => todo.push(*id),
@@ -262,15 +262,46 @@ pub fn set_text_with(
     path: &str,
     text: &str,
 ) -> Result<(), String> {
+    let service = path.split('.').next().unwrap_or_default();
+    let Some(&record) = s.services.get(service) else {
+        return Err(format!("nothing is exported as `{path}`"));
+    };
+    set_field_text(&s.types, record, host, rt, types, path, text)
+}
+
+/// The config's own service (`service ppd from dbus …`) that `path`
+/// (`ppd.profile`) names a field of, by its record in the program's
+/// types: `strand set` writes its `rw` fields as it does a builtin's
+/// (decisions.md m5-fixups).
+pub fn config_service(prog: &strand_compiler::lower::Program, path: &str) -> Option<RecordId> {
+    let mut parts = path.split('.');
+    let (Some(service), Some(_)) = (parts.next(), parts.next()) else {
+        return None;
+    };
+    prog.services
+        .values()
+        .find(|s| s.name == service)
+        .map(|s| s.record)
+}
+
+/// [`set_text`] of a field of the service whose record is `record` in
+/// `decls` (the served schema's types for a builtin or plugin service,
+/// the program's for the config's own).
+pub fn set_field_text(
+    decls: &TypeTable,
+    record: RecordId,
+    host: &dyn strand_compiler::vm::ServiceHost,
+    rt: &Runtime,
+    types: &TypeTable,
+    path: &str,
+    text: &str,
+) -> Result<(), String> {
     use strand_compiler::ty::{Prim, Ty};
     use strand_compiler::vm::Value;
     use strand_compiler::vm::host::PathSeg;
     let mut parts = path.split('.');
     let service = parts.next().unwrap_or_default();
     let fields: Vec<&str> = parts.collect();
-    let Some(&record) = s.services.get(service) else {
-        return Err(format!("nothing is exported as `{path}`"));
-    };
     if fields.is_empty() {
         return Err(format!("`{path}` names a service, not a field"));
     }
@@ -278,8 +309,7 @@ pub fn set_text_with(
     let mut rec = record;
     let mut leaf = None;
     for (i, f) in fields.iter().enumerate() {
-        let def = s
-            .types
+        let def = decls
             .record(rec)
             .fields
             .iter()
@@ -343,7 +373,7 @@ pub fn set_text_with(
         },
         Ty::Prim(Prim::Text | Prim::Path) => Value::text(text),
         Ty::Enum(e) => {
-            let def = s.types.enum_(*e);
+            let def = decls.enum_(*e);
             let v = def
                 .variant(text)
                 .ok_or_else(|| format!("`{text}` is not a {}", def.name))?;

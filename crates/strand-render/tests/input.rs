@@ -1442,6 +1442,114 @@ fn a_drop_on_another_surface_leaves_out_its_copy_of_the_item() {
     assert_eq!(across(&mut f, &mut r, rows[0][2], 100.0, 118.0), 2);
 }
 
+/// (M5) Equal items in one list are separate rows: [a, b, a, c] (two
+/// rows of one identity) on two surfaces. Within its own list a drag
+/// leaves out only its own row, so `pins.move(it, at)` (which takes the
+/// first equal item out) lands where it is let go: the first `a` let go
+/// at the end is at 3 (giving [b, a, c, a]), the second `a` let go
+/// between the first and `b` at 1. Handed to the other surface, only
+/// that list's first copy is left out: the first `a` let go at its end
+/// is at 3 too.
+#[test]
+fn equal_items_in_one_list_are_counted_apart() {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::new();
+    let mut lists = Vec::new();
+    let mut rows = Vec::new();
+    for p in 0..2u32 {
+        let id = |i: u32| NodeId::new(p * 100 + i, 0);
+        let (panel, list) = (id(0), id(1));
+        d.create(panel, NodeKind::Panel, None, p)
+            .set(panel, Prop::Width, PropValue::Number(200.0))
+            .set(panel, Prop::Height, PropValue::Number(160.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(list, NodeKind::List, Some(panel), 0)
+            .set(list, Prop::Height, PropValue::Number(160.0))
+            .set(list, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+        let mut mine = Vec::new();
+        for (k, item) in ["a", "b", "a", "c"].into_iter().enumerate() {
+            let row = id(10 + k as u32);
+            d.create(row, NodeKind::Row, Some(list), k as u32)
+                .set(row, Prop::Height, PropValue::Number(40.0))
+                .set(
+                    row,
+                    Prop::Drag,
+                    PropValue::List(vec![
+                        kw("Pin"),
+                        PropValue::List(vec![PropValue::Text(item.into())]),
+                    ]),
+                );
+            mine.push(row);
+        }
+        lists.push(list);
+        rows.push(mine);
+    }
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    for (s, root) in [(s1, NodeId::new(0, 0)), (s2, NodeId::new(100, 0))] {
+        r.attach_surface(s, root);
+        f.attached(s, root);
+        let mut px = vec![0u8; 200 * 160 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(200, 160), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    }
+    let only_drop = |f: &mut R, list: NodeId| {
+        let got = events(f.drain());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, list);
+        let NodeEvent::Drop { at, .. } = got[0].1 else {
+            panic!("{got:?}");
+        };
+        at
+    };
+    let within = |f: &mut R, r: &mut Renderer, y_from: f32, y: f32| {
+        f.input(&motion(s1, 50.0, y_from, 0), r);
+        f.input(&left(s1, 50.0, y_from, ButtonState::Pressed), r);
+        f.input(&motion(s1, 50.0, y_from + 10.0, 10), r);
+        f.input(&motion(s1, 50.0, y, 20), r);
+        f.input(&left(s1, 50.0, y, ButtonState::Released), r);
+        only_drop(f, lists[0])
+    };
+    // The first `a` at the end: past b, the other a and c.
+    assert_eq!(within(&mut f, &mut r, 20.0, 158.0), 3);
+    // The second `a` between the first and `b`.
+    assert_eq!(within(&mut f, &mut r, 100.0, 38.0), 1);
+    // The first `a` handed to the second surface, let go at its end.
+    let from = rows[0][0];
+    f.input(&motion(s1, 50.0, 20.0, 0), &mut r);
+    f.input(&left(s1, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s1, 50.0, 30.0, 10), &mut r);
+    f.input(&InputEvent::PointerLeave { surface: s1 }, &mut r);
+    f.drain();
+    let at = LogicalPoint::new(50.0, 158.0);
+    f.input(
+        &InputEvent::DragEnter {
+            surface: s2,
+            at,
+            kinds: vec![],
+        },
+        &mut r,
+    );
+    f.input(&InputEvent::DragMotion { surface: s2, at }, &mut r);
+    f.input(
+        &InputEvent::DragDrop {
+            surface: s2,
+            at,
+            payload: DropPayload::Node(from),
+        },
+        &mut r,
+    );
+    assert_eq!(only_drop(&mut f, lists[1]), 3);
+}
+
 /// A focused `input` that logic removes loses focus at once, although
 /// it still plays its exit pose (a ghost): keys no longer reach its id.
 #[test]

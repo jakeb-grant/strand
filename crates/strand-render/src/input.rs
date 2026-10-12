@@ -1796,11 +1796,14 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// (M4) Where a drop at `at` lands in `target`: the global index among
 /// its rows (its live children; a windowed list's `row_first` added) of
 /// the first row whose middle is past the pointer, counted without the
-/// dragged `source` and (M5) without every copy of the dragged item (a
+/// dragged item: in the source's own list, the row that is or holds the
+/// `source` (equal items beside it are counted: `move` leaves them in
+/// place); (M5) in another list, its first copy of the dragged item (a
 /// row holding a `drag:` source of the same `drag_identity`, as the
-/// same pin on another monitor's dock): a row moved within its own list,
-/// or onto another surface's copy of that list, lands where it is let
-/// go, `pins.move(p.app, at)`. A copy unmounted from a windowed list is
+/// same pin on another monitor's dock; the first, as `move` takes the
+/// first equal item out). So a row moved within its own list, or onto
+/// another surface's copy of that list, lands where it is let go,
+/// `pins.move(p.app, at)`. A copy unmounted from a windowed list is
 /// not seen. Rows mounted but not laid out (out
 /// of view) count by their place; past the last laid-out row lands after
 /// it, and a target none of whose rows is laid out lands at its end.
@@ -1819,8 +1822,9 @@ fn drop_index(
 ) -> u32 {
     // (M5) The dragged value's identity: a row holding a `drag:` source
     // with it is a copy of the dragged item (one pin on the dock of each
-    // monitor), left out as the source is, so a drop handed to another
-    // surface counts what `pins.move` counts.
+    // monitor); another list's first copy is left out as the source is
+    // in its own, so a drop handed to another surface counts what
+    // `pins.move` counts.
     let identity = source
         .and_then(|s| tree.get(s)?.get(Prop::Drag))
         .and_then(strand_scene::drag_identity);
@@ -1840,16 +1844,38 @@ fn drop_index(
         }
         false
     };
+    // Whether row `r` is, or holds, the dragged source.
+    let holds_source = |r: NodeId| -> bool {
+        let mut n = source;
+        while let Some(x) = n {
+            if x == r {
+                return true;
+            }
+            n = tree.get(x).and_then(|y| y.parent);
+        }
+        false
+    };
+    // A list's rows without the dragged item: in the source's own list,
+    // the row that holds the source (an equal item beside it is another
+    // row, which `move` leaves in place); in another list (the same
+    // pins on another monitor's dock), its first copy, as `move` takes
+    // the first equal item out. `keep` (a per-item target) is counted.
     let rows_of = |n: NodeId, keep: Option<NodeId>| -> Vec<NodeId> {
-        tree.get(n).map_or_else(Vec::new, |x| {
+        let live: Vec<NodeId> = tree.get(n).map_or_else(Vec::new, |x| {
             x.children
                 .iter()
                 .copied()
-                .filter(|r| {
-                    tree.contains_live(*r) && Some(*r) != source && (Some(*r) == keep || !copy(*r))
-                })
+                .filter(|r| tree.contains_live(*r))
                 .collect()
-        })
+        });
+        let out = match live.iter().copied().find(|r| holds_source(*r)) {
+            Some(own) => Some(own),
+            None => live.iter().copied().find(|r| copy(*r)),
+        }
+        .filter(|r| Some(*r) != keep);
+        live.into_iter()
+            .filter(|r| Some(*r) != source && Some(*r) != out)
+            .collect()
     };
     let first = |n: NodeId| match tree.get(n).and_then(|x| x.get(Prop::RowFirst)) {
         Some(PropValue::Number(f)) if f.is_finite() && *f >= 0.0 => *f as u32,

@@ -12,10 +12,11 @@
 //! - the guide's profile block is the workspace's.
 //!
 //! The examples are built beside this binary: `cargo test` of the whole
-//! package builds them, and a filtered run (`--test m5`, which does not)
-//! has the cargo running it build them once, into the same target
-//! directory and profile (decisions.md m5-fixups). Skipped, loudly,
-//! without sway (CI sets `STRAND_REQUIRE_SWAY`).
+//! package or workspace builds them, and a filtered run (`--test m5`,
+//! which does not) has the cargo running it build them once, into the
+//! same target directory and profile, only when one is missing or older
+//! than a source it was built from (decisions.md m5-fixups). Skipped,
+//! loudly, without sway (CI sets `STRAND_REQUIRE_SWAY`).
 
 use std::io::BufRead as _;
 use std::os::unix::fs::PermissionsExt;
@@ -57,14 +58,24 @@ fn example(name: &str) -> PathBuf {
 /// Builds `plugin_hello` and `plugin_bare` once per test process with the
 /// cargo running this test, into the target directory and profile
 /// `strand` (`target/<dir>/<profile>/strand`) was built in, with this
-/// build's features: up to date, it does nothing, and after a filtered
-/// `cargo test --test m5` (which builds no examples) it builds them.
+/// build's features, when one is missing or stale ([`fresh`]). A
+/// package or workspace run built them already and runs no cargo: a
+/// nested `cargo build -p strand` resolves features without the other
+/// members' dev-dependencies, so in a workspace run it would rebuild
+/// much of the graph under new hashes while the other tests run.
 fn build_examples(strand: &Path) -> Result<(), String> {
     static BUILT: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
             let profile_dir = strand.parent().ok_or("no profile directory")?;
             let target_dir = profile_dir.parent().ok_or("no target directory")?;
+            let examples = profile_dir.join("examples");
+            if ["plugin_hello", "plugin_bare"]
+                .iter()
+                .all(|n| fresh(&examples.join(n)))
+            {
+                return Ok(());
+            }
             let profile = match profile_dir.file_name().and_then(|n| n.to_str()) {
                 Some("debug") => "dev",
                 Some(p) => p,
@@ -81,6 +92,17 @@ fn build_examples(strand: &Path) -> Result<(), String> {
             if !cfg!(feature = "gpu") {
                 cmd.arg("--no-default-features");
             }
+            let features: Vec<&str> = [
+                ("gpu", cfg!(feature = "gpu")),
+                ("speed-bench", cfg!(feature = "speed-bench")),
+                ("faults", cfg!(feature = "faults")),
+            ]
+            .into_iter()
+            .filter_map(|(f, on)| on.then_some(f))
+            .collect();
+            if !features.is_empty() {
+                cmd.arg("--features").arg(features.join(","));
+            }
             let out = cmd.output().map_err(|e| format!("cargo: {e}"))?;
             if !out.status.success() {
                 let err = String::from_utf8_lossy(&out.stderr);
@@ -90,6 +112,30 @@ fn build_examples(strand: &Path) -> Result<(), String> {
             Ok(())
         })
         .clone()
+}
+
+/// Whether the example `bin` is built and newer than every source file
+/// its dep-info (`<bin>.d`, the workspace's sources it was built from)
+/// names.
+fn fresh(bin: &Path) -> bool {
+    let Ok(built) = std::fs::metadata(bin).and_then(|m| m.modified()) else {
+        return false;
+    };
+    let Ok(info) = std::fs::read_to_string(bin.with_extension("d")) else {
+        return false;
+    };
+    // `<bin>: <src> <src> …`, a space in a path escaped as `\ `.
+    let Some((_, deps)) = info.split_once(": ") else {
+        return false;
+    };
+    let deps = deps.replace("\\\n", " ").replace("\\ ", "\0");
+    deps.split_whitespace()
+        .map(|d| PathBuf::from(d.replace('\0', " ")))
+        .all(|src| {
+            std::fs::metadata(&src)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t <= built)
+        })
 }
 
 /// A command whose child starts with THP back on: the test binary turned

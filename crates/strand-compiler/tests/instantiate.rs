@@ -4348,6 +4348,42 @@ bar B {
     assert_eq!(shell.scene.prop(row, Prop::DropRows), None, "no `on drop`");
 }
 
+/// (M5) A drag source's identity (`strand_scene::drag_identity`) is
+/// equal exactly when the values are (`==`): equal items in one list
+/// share it, and values whose text shows the same but which differ
+/// (`["a, b"]` and `["a", "b"]`, once shown "a, b" both) do not
+/// (decisions.md m5-fixups).
+#[test]
+fn a_drag_identity_is_the_values_equality() {
+    let src = r#"bar B {
+  row {
+    on drop(x: [text], at: int) { }
+    box { drag: ["a, b"] }
+    box { drag: ["a", "b"] }
+    box { drag: ["a, b"] }
+  }
+}
+"#;
+    let shell = boot(&[("dock.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let ids: Vec<String> = shell
+        .scene
+        .children(row)
+        .iter()
+        .map(|b| {
+            let drag = shell.scene.prop(*b, Prop::Drag).expect("a drag source");
+            strand_scene::drag_identity(drag)
+                .expect("an identity")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids[0], ids[2], "equal values, one identity");
+    assert_ne!(ids[0], ids[1], "values that show alike are not equal");
+}
+
 /// (M4) Drag and drop's logic side: a `drag:` source reaches render as
 /// its value's type name and an `on drop` target as the types its
 /// handlers take (`Prop::Accepts`: `Drop` for other programs' drops,

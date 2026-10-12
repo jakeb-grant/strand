@@ -449,10 +449,12 @@ filling the monitor, the keyboard always).
 - **Drag and drop.** `drag: value` on a source; `on drop(v: T, at: int)`
   on a target. `at` is where it lands among the target's rows (for a
   target that is itself a row, among its siblings), counted without the
-  dragged item or any copy of it (the same value drawn by another
-  monitor's surface), so `list.move(key, at)` puts it where it was let
-  go. Values from other programs (files, apps, text) arrive as typed
-  `Drop` values.
+  dragged item: in its own list, without its own row (an equal item
+  beside it is another row); in another list, without that list's first
+  copy of it (the same value drawn by another monitor's surface). So
+  `list.move(key, at)`, which moves the first item with that key, puts
+  it where it was let go. Values from other programs (files, apps,
+  text) arrive as typed `Drop` values.
 - **`pages`** shows one `page` at a time, with directional transitions;
   hidden pages unmount, so their service subscriptions stop.
 
@@ -1033,7 +1035,8 @@ people can edit by hand.
     token (`$accent`); service fields are not read;
   - `strand set path value` writes an exported `state` or a field of one
     (an ordinary write), a settings field, a token (a runtime overlay;
-    section 8.8), or an `rw` service field. The value is text read by
+    section 8.8), or an `rw` service field (a builtin's, a plugin's or
+    the config's own `service … from`). The value is text read by
     the target's type: an enum variant by name, `true`/`false`, a number
     with its unit, `#rrggbb`, `null` for an optional. For a service
     field, a signed number or percentage (`+5%`) is a step from the

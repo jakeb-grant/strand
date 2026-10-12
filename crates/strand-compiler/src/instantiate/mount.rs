@@ -1987,7 +1987,8 @@ impl Ctx {
                     // (M4) With what other programs get when the
                     // compositor carries it out (`strand_scene::drag_export`),
                     // and (M5) the value's identity last, so a drop can
-                    // leave out every copy of it (`drag_identity`).
+                    // leave out another list's copy of it
+                    // (`drag_identity`).
                     let mut items = drag_export(types, &v).unwrap_or_default();
                     items.insert(0, name);
                     items.push(PropValue::List(vec![PropValue::Text(drag_identity(
@@ -3756,16 +3757,86 @@ pub(crate) fn drag_type(types: &crate::ty::TypeTable, v: &Value) -> String {
 
 /// (M5) A dragged value's identity in `Prop::Drag`
 /// (`strand_scene::drag_identity`): an FNV-1a hash, in hex, of its type
-/// name and of its identity (a keyed record's key, else itself) as it
-/// shows. Equal values (one pin drawn on the dock of each monitor) have
-/// equal identities, the same on every build.
+/// name and of its identity (a keyed record's key, else itself) in a
+/// lossless encoding ([`identity_bytes`]), so values the language calls
+/// equal (`==`, what `move` finds; one pin drawn on the dock of each
+/// monitor) have equal identities, the same on every build, and values
+/// it does not (`["a, b"]` and `["a", "b"]`) differ.
 fn drag_identity(types: &crate::ty::TypeTable, v: &Value) -> String {
-    let shown = v.identity(types).show(types);
+    let mut bytes = drag_type(types, v).into_bytes();
+    bytes.push(0);
+    identity_bytes(&v.identity(types), &mut bytes);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in drag_type(types, v).bytes().chain([0]).chain(shown.bytes()) {
+    for b in bytes {
         h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
     format!("{h:016x}")
+}
+
+/// `v` as bytes, tagged and length-prefixed, equal exactly when the
+/// language's `==` (`builtins::equal`) holds: a number by its value
+/// whatever its unit, a record by its type and fields, a function or an
+/// element by which one it is (the language compares those by
+/// reference), anything else by its debug form.
+fn identity_bytes(v: &Value, out: &mut Vec<u8>) {
+    let text = |out: &mut Vec<u8>, t: &str| {
+        out.extend((t.len() as u64).to_le_bytes());
+        out.extend(t.bytes());
+    };
+    let many = |out: &mut Vec<u8>, tag: u8, xs: &[Value]| {
+        out.push(tag);
+        out.extend((xs.len() as u64).to_le_bytes());
+        for x in xs {
+            identity_bytes(x, out);
+        }
+    };
+    match v {
+        Value::Null => out.push(0),
+        Value::Unit => out.push(1),
+        Value::Bool(b) => out.extend([2, u8::from(*b)]),
+        Value::Num(n, _) => {
+            out.push(3);
+            let n = if *n == 0.0 { 0.0 } else { *n };
+            out.extend(n.to_bits().to_le_bytes());
+        }
+        Value::Text(t) => {
+            out.push(4);
+            text(out, t);
+        }
+        Value::Color(c) => {
+            out.push(5);
+            out.extend(c.to_rgba8());
+        }
+        Value::Enum(e, i) => {
+            out.push(6);
+            out.extend(e.0.to_le_bytes());
+            out.extend(i.to_le_bytes());
+        }
+        Value::Record(r) => {
+            out.push(7);
+            out.extend(r.ty.0.to_le_bytes());
+            many(out, 8, &r.fields);
+        }
+        Value::List(xs) => many(out, 9, xs),
+        Value::Commas(xs) => many(out, 10, xs),
+        Value::Spaced(xs) => many(out, 11, xs),
+        Value::Fn(f) => {
+            out.push(12);
+            out.extend((Rc::as_ptr(f) as usize as u64).to_le_bytes());
+        }
+        Value::Node(n) => {
+            out.push(13);
+            out.extend((Rc::as_ptr(n) as usize as u64).to_le_bytes());
+        }
+        Value::Service(s) => {
+            out.push(14);
+            text(out, s);
+        }
+        other => {
+            out.push(15);
+            text(out, &format!("{other:?}"));
+        }
+    }
 }
 
 /// (M4) What a dragged value gives other programs, after its type name
