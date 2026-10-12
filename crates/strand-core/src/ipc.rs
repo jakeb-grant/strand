@@ -184,8 +184,10 @@ pub fn parse(line: &str) -> Result<Request, String> {
         // (M5, S-ipc) `get`, `toggle`, `call`, `clear`, and the
         // inspector's `inspect.node` and `inspect.dump`.
         // (M5 wave 2, S-tools) `export` and `report`.
+        // (M5 wave 3, S-inspect) `inspect.pick`, `inspect.highlight` and
+        // `inspect.flash`.
         "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" | "export"
-        | "report" => {
+        | "report" | "inspect.pick" | "inspect.highlight" | "inspect.flash" => {
             return parse_m5(cmd, &v);
         }
         other => return Err(format!("unknown command `{other}`")),
@@ -698,6 +700,9 @@ mod tests {
                 | Request::Clear { .. }
                 | Request::InspectNode { .. }
                 | Request::InspectDump { .. }
+                | Request::InspectPick { .. }
+                | Request::InspectHighlight { .. }
+                | Request::InspectFlash { .. }
                 | Request::Export { .. }
                 | Request::Report
         )

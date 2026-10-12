@@ -15,7 +15,7 @@ use strand_scene::{
 };
 use strand_surface::{Monitor, SurfaceHost};
 
-use crate::run::{NodeEvent, ScreenInfo, ToLogic};
+use crate::run::{NodeEvent, PickEvent, ScreenInfo, ToLogic};
 
 #[derive(Debug)]
 pub struct Host {
@@ -98,6 +98,9 @@ pub(crate) struct Forward {
     surfaces: HashMap<SurfaceId, NodeId>,
     /// Hover, press, focus, selection and edits.
     router: Router,
+    /// (M5) In pick mode, the surface the pointer is over: pick mode
+    /// ends when it unmaps.
+    picking_on: Option<SurfaceId>,
 }
 
 impl Forward {
@@ -107,6 +110,7 @@ impl Forward {
             monitors: Vec::new(),
             surfaces: HashMap::new(),
             router: Router::new(),
+            picking_on: None,
         }
     }
 
@@ -457,6 +461,57 @@ impl Host {
         }
     }
 
+    /// (M5) Pick mode on or off (`inspect.pick`): the router passes
+    /// pointer input to no handler and the renderer outlines the node
+    /// under the pointer (at once, where the pointer already is); off,
+    /// the outline goes.
+    pub(crate) fn set_picking(&mut self, on: bool) {
+        let Some(f) = &mut self.logic else {
+            return;
+        };
+        for intent in f.router.set_picking(on, &mut self.renderer) {
+            if let Some(msg) = to_logic(intent) {
+                f.send(msg);
+            }
+        }
+        if !on {
+            f.picking_on = None;
+            self.renderer.pick_ended();
+            return;
+        }
+        let under = f
+            .surfaces
+            .keys()
+            .find_map(|s| Some((*s, f.router.pointer(*s)?)));
+        if let Some((surface, position)) = under {
+            f.picking_on = Some(surface);
+            self.renderer.pick_input(&InputEvent::PointerMotion {
+                surface,
+                position,
+                time: 0,
+            });
+        }
+    }
+
+    /// (M5) Pick mode ends on main's side (the surface picked on
+    /// unmapped, a lock): logic is told.
+    fn end_pick(&mut self) {
+        if !self.logic.as_ref().is_some_and(|f| f.router.picking()) {
+            return;
+        }
+        self.set_picking(false);
+        if let Some(f) = &self.logic {
+            f.send(ToLogic::Picked(PickEvent::Ended));
+        }
+    }
+
+    /// (M5) A lock is asked for or held: pick mode ends and nothing is
+    /// outlined.
+    pub(crate) fn lock_started(&mut self) {
+        self.end_pick();
+        self.renderer.set_highlight(None);
+    }
+
     /// Logic's next diff, before the renderer applies it: `input` texts
     /// it sets answer (or override) the router's edits in flight.
     pub(crate) fn observe(&mut self, diff: &SceneDiff) {
@@ -752,6 +807,14 @@ impl SurfaceHost for Host {
         self.origins.remove(&surface);
         self.outputs.remove(&surface);
         self.blur_fallback.regions.remove(&surface);
+        // (M5) Pick mode ends with the surface it picks on.
+        if self
+            .logic
+            .as_ref()
+            .is_some_and(|f| f.picking_on == Some(surface))
+        {
+            self.end_pick();
+        }
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -837,6 +900,18 @@ impl SurfaceHost for Host {
         }
         if let Some(f) = &mut self.logic {
             f.input(event, &mut self.renderer);
+            // (M5) Pick mode: the inspector has the pointer.
+            if f.router.picking() {
+                match event {
+                    InputEvent::PointerEnter { surface, .. }
+                    | InputEvent::PointerMotion { surface, .. } => f.picking_on = Some(*surface),
+                    InputEvent::PointerLeave { .. } => f.picking_on = None,
+                    _ => {}
+                }
+                if let Some((surface, node)) = self.renderer.pick_input(event) {
+                    f.send(ToLogic::Picked(PickEvent::Picked { surface, node }));
+                }
+            }
             // (M4) `parallax` and `tilt` follow the router's pointer.
             let s = event.surface();
             self.renderer.set_pointer(s, f.router.pointer(s));

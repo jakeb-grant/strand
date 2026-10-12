@@ -110,6 +110,9 @@ pub(super) struct Shell {
     pub(super) reports: Vec<(SnapshotId, super::request::Caller)>,
     /// (M5) The next `SnapshotId`.
     pub(super) next_snapshot: u64,
+    /// (M5, S-inspect) Pick mode's, the outline's and the flash's
+    /// clients, and `inspect.node`s waiting for layouts.
+    pub(super) inspector: super::request::Inspector,
 }
 
 /// A surface's `blur` nodes as `ToLogic::BlurFallback` carries them.
@@ -198,12 +201,22 @@ impl Shell {
                 self.set_blur_notices(all);
             }
             ToLogic::GpuStatus(status) => self.gpu_status(status),
-            ToLogic::LockState(state) => self.lock_state(state),
+            ToLogic::LockState(state) => {
+                self.lock_state(state);
+                // (M5, S-inspect) Pick mode and the outline end.
+                if self.inst.lock_shown() {
+                    self.inspector_locked();
+                }
+            }
             ToLogic::Beat(seq) => super::lock::beat(seq),
-            // (M5) `strand report`'s half from main (S-tools).
+            // (M5) An `inspect.node`'s layouts (S-inspect), else `strand
+            // report`'s half from main (S-tools).
+            ToLogic::Snapshot(snap) if self.inspector.waits_for(snap.reply) => {
+                self.layout_answered(snap)
+            }
             ToLogic::Snapshot(snap) => self.snapshot_answered(snap),
-            // Nothing turns pick mode on yet (S-inspect).
-            ToLogic::Picked(_) => {}
+            // (M5, S-inspect) A pick, or pick mode ended on main's side.
+            ToLogic::Picked(event) => self.picked(event),
             ToLogic::Shutdown => {}
         }
     }

@@ -419,6 +419,29 @@ fn source_hash_is_the_compiled_text() {
     assert_eq!(shell.inst.source_hash(FileId(0)), Some(hash(b)));
 }
 
+/// (M5 wave 3) A node's pane and a dump hash every file the program was
+/// compiled from, not only the nodes' own: write-back checks a token's
+/// defining file, which no node's origin names.
+#[test]
+fn every_compiled_file_is_hashed_in_an_answer() {
+    let bar = "bar B { bg: $probe.c\n text \"a\" }\n";
+    let theme = "tokens base { probe.c: #112233 }\n";
+    let shell = boot(
+        &[("bar.strand", bar), ("theme.strand", theme)],
+        Storage::none(),
+        &["DP-1"],
+    );
+    let hash = |s: &str| blake3::hash(s.as_bytes()).to_hex().to_string();
+    let root = shell.scene.roots()[0];
+    for answer in [
+        shell.inst.inspect_node(root).unwrap(),
+        shell.inst.dump(None).unwrap(),
+    ] {
+        assert_eq!(answer["files"]["bar.strand"], hash(bar), "{answer}");
+        assert_eq!(answer["files"]["theme.strand"], hash(theme), "{answer}");
+    }
+}
+
 /// The dump: every node in tree order with its origin, identity, props,
 /// cells and token chains; a password input's value never appears.
 #[test]

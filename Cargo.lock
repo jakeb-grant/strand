@@ -2897,6 +2897,7 @@ dependencies = [
 name = "strand-dev"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "crossbeam-channel",
  "lsp-server",
  "lsp-types",

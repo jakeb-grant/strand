@@ -1,5 +1,5 @@
 //! Developer tooling kept out of the runtime binary: the language server
-//! (and, in M5, the inspector). It shares the parser, checker and
+//! and the inspector's terminal client (`inspect`). It shares the parser, checker and
 //! formatter with the runtime through `strand-compiler`.
 //!
 //! See `docs/design.md`, "Developer experience": diagnostics, completion
@@ -10,6 +10,7 @@ mod completion;
 mod ctx;
 mod describe;
 mod diag;
+pub mod inspect;
 mod nav;
 pub mod refactor;
 pub mod server;

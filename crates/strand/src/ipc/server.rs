@@ -243,6 +243,12 @@ impl Server {
         self.send(id, v);
     }
 
+    /// (M5) Whether client `id` is still connected (the inspector's
+    /// pick mode, outline and flash end with the client that asked).
+    pub fn has(&self, id: ClientId) -> bool {
+        self.clients.contains_key(&id)
+    }
+
     /// How many clients watch.
     pub fn watchers(&self) -> usize {
         self.clients.values().filter(|c| c.watching).count()

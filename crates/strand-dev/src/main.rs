@@ -1,5 +1,5 @@
-//! `strand-dev`: the language server (`strand-dev lsp`, over stdio) and,
-//! later, the inspector.
+//! `strand-dev`: the language server (`strand-dev lsp`, over stdio) and
+//! the inspector's terminal client (`strand-dev inspect [socket]`).
 
 use std::process::ExitCode;
 
@@ -7,7 +7,7 @@ fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         None | Some("help" | "-h" | "--help") => {
             println!(
-                "usage: strand-dev <lsp | inspect>\n\n  lsp      the language server, over stdio\n  inspect  the inspector (M5)"
+                "usage: strand-dev <lsp | inspect>\n\n  lsp      the language server, over stdio\n  inspect  the inspector, over the shell's socket ($STRAND_SOCKET or the default)"
             );
             ExitCode::SUCCESS
         }
@@ -23,8 +23,13 @@ fn main() -> ExitCode {
             }
         },
         Some("inspect") => {
-            eprintln!("strand-dev inspect: not implemented yet (M5)");
-            ExitCode::FAILURE
+            match strand_dev::inspect::run(std::env::args_os().nth(2).map(Into::into)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("strand-dev inspect: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Some(cmd) => {
             eprintln!("strand-dev: unknown command `{cmd}`");

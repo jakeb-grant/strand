@@ -503,6 +503,157 @@ fn a_report_is_mains_snapshot_with_logics_half() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (S-inspect, wave 3) The inspector over the socket: pick mode, the
+/// outline and the flash go to main and belong to the client that asked;
+/// a pick on main reaches it as a `picked` event; `inspect.node` carries
+/// main's layouts; and the client's disconnect ends all three on main.
+/// A second client taking pick mode tells the first it ended.
+#[test]
+fn the_inspector_belongs_to_its_client() {
+    use std::io::{BufRead as _, Write as _};
+    let dir = temp_dir("inspector");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  box { id: t\n    width: 20 }\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let socket = dir.join("ipc.sock");
+    let (to_main, from_logic) = calloop::channel::channel::<ToMain>();
+    let live = Live {
+        socket: Some(socket.clone()),
+        to_main: Some(to_main),
+        ..Live::default()
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(program, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| !s.of_kind(NodeKind::Box).is_empty());
+    let target = m.scene.of_kind(NodeKind::Box)[0];
+    let id = strand_compiler::instantiate::inspect::node_ref(target);
+    let mut main = calloop::EventLoop::<Vec<ToMain>>::try_new().unwrap();
+    main.handle()
+        .insert_source(from_logic, |e, _, got| {
+            if let Event::Msg(msg) = e {
+                got.push(msg);
+            }
+        })
+        .unwrap();
+    let mut got = Vec::new();
+    let mut told = |n: usize| -> Vec<ToMain> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while got.len() < n {
+            assert!(Instant::now() < deadline, "main was told only {got:?}");
+            main.dispatch(Some(Duration::from_millis(20)), &mut got)
+                .unwrap();
+        }
+        std::mem::take(&mut got)
+    };
+    let connect = || {
+        let s = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        (s.try_clone().unwrap(), std::io::BufReader::new(s))
+    };
+    let send = |w: &mut std::os::unix::net::UnixStream, req: &ipc::Request| {
+        w.write_all(ipc::encode(req).as_bytes()).unwrap();
+    };
+    let read = |r: &mut std::io::BufReader<std::os::unix::net::UnixStream>| -> Json {
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let (mut aw, mut ar) = connect();
+    send(&mut aw, &ipc::Request::InspectPick { on: true });
+    assert_eq!(read(&mut ar), json!({"ok": true}));
+    assert!(matches!(told(1)[..], [ToMain::PickMode(true)]));
+    // A pick on main: the client hears it.
+    to_logic
+        .send(ToLogic::Picked(PickEvent::Picked {
+            surface: SurfaceId(4),
+            node: Some(target),
+        }))
+        .unwrap();
+    assert_eq!(
+        read(&mut ar),
+        json!({"event": "picked", "surface": 4, "node": id})
+    );
+    send(
+        &mut aw,
+        &ipc::Request::InspectHighlight {
+            id: Some(id.clone()),
+        },
+    );
+    assert_eq!(read(&mut ar), json!({"ok": true}));
+    send(&mut aw, &ipc::Request::InspectFlash { on: true });
+    assert_eq!(read(&mut ar), json!({"ok": true}));
+    let msgs = told(2);
+    assert!(
+        matches!(msgs[..], [ToMain::Highlight(Some(n)), ToMain::DamageFlash(true)] if n == target),
+        "{msgs:?}"
+    );
+    // `inspect.node`: the pane, with main's layouts.
+    send(&mut aw, &ipc::Request::InspectNode { id: id.clone() });
+    let msgs = told(1);
+    let [
+        ToMain::Snapshot {
+            kind: SnapshotKind::Layout { node },
+            reply,
+        },
+    ] = msgs[..]
+    else {
+        panic!("{msgs:?}");
+    };
+    assert_eq!(node, target);
+    let layout = json!([{"surface": 4, "x": 0.0, "y": 0.0, "width": 20.0, "height": 30.0}]);
+    to_logic
+        .send(ToLogic::Snapshot(Snapshot {
+            reply,
+            data: layout.clone(),
+        }))
+        .unwrap();
+    let pane = read(&mut ar);
+    assert_eq!(pane["ok"], true, "{pane}");
+    assert_eq!(pane["node"]["id"], id.as_str());
+    assert_eq!(pane["node"]["identity"]["id"], "t");
+    assert_eq!(pane["layout"], layout);
+    // Another client takes pick mode: the first hears it ended.
+    let (mut bw, mut br) = connect();
+    send(&mut bw, &ipc::Request::InspectPick { on: true });
+    assert_eq!(read(&mut br), json!({"ok": true}));
+    assert_eq!(read(&mut ar), json!({"event": "pick_ended"}));
+    assert!(matches!(told(1)[..], [ToMain::PickMode(true)]));
+    // The first goes: its outline and flash end; pick mode is the
+    // second's and stays.
+    drop((aw, ar));
+    let msgs = told(2);
+    assert!(
+        matches!(
+            msgs[..],
+            [ToMain::Highlight(None), ToMain::DamageFlash(false)]
+        ),
+        "{msgs:?}"
+    );
+    // Main ends pick mode (a lock, an unmap): the second hears it, and
+    // its going then tells main nothing more.
+    to_logic.send(ToLogic::Picked(PickEvent::Ended)).unwrap();
+    assert_eq!(read(&mut br), json!({"event": "pick_ended"}));
+    drop((bw, br));
+    let mut rest = Vec::new();
+    let quiet = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < quiet {
+        main.dispatch(Some(Duration::from_millis(20)), &mut rest)
+            .unwrap();
+    }
+    assert!(rest.is_empty(), "{rest:?}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Live reload without Wayland: the watcher and the compiler worker
 /// feed the logic thread. A prop edit and an added node keep the
 /// bar's state; a broken save keeps the last good tree and, after
@@ -770,19 +921,30 @@ fn saves_reload_live_with_state_kept() {
         ans,
         json!({"ok": false, "error": "no display thread to report on"})
     );
-    for (req, cmd) in [
-        (ipc::Request::InspectPick { on: true }, "inspect.pick"),
+    // (S-inspect, wave 3) Pick mode, the outline and the flash are
+    // served; with no main thread to draw them, they say so.
+    for (req, why) in [
+        (
+            ipc::Request::InspectPick { on: true },
+            "no display thread to pick on",
+        ),
         (
             ipc::Request::InspectHighlight { id: None },
-            "inspect.highlight",
+            "no display thread to draw on",
         ),
-        (ipc::Request::InspectFlash { on: false }, "inspect.flash"),
+        (
+            ipc::Request::InspectHighlight {
+                id: Some("999999.0".into()),
+            },
+            "no node `999999.0`",
+        ),
+        (
+            ipc::Request::InspectFlash { on: false },
+            "no display thread to draw on",
+        ),
     ] {
         let ans = ipc::request(&mut client, &req, Duration::from_secs(10)).unwrap();
-        assert_eq!(
-            ans,
-            json!({"ok": false, "error": format!("unknown command `{cmd}`")})
-        );
+        assert_eq!(ans, json!({"ok": false, "error": why}), "{req:?}");
     }
     // (S-ipc, wave 2) The inspector's `inspect.node`, `inspect.dump` and
     // `reset{node}` are served: a node they cannot read or find is
