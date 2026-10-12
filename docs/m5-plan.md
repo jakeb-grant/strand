@@ -184,7 +184,7 @@ allocations.
 | `strand report` (snapshot hop, smaps_rollup, frame summary ring) | 10–25 KB | 20 KB | |
 | xdg-activation (Dispatch impls, handler input context, ordered action queue, launch env) | 8–20 KB | 20 KB | |
 | Theming hub, S-palette: 13 hue roles and extras and identity (4–6), the `json` and `base24` writers (3–4) | 7–10 KB | 10 KB | |
-| Theming hub, S-tools: template IR and formats with the other-mode evaluation (8–12), the `file` element and its output host (10–14), `strand new`'s code (1–2; its template is `.rodata`, which is not gated), the `export` CLI and IPC request | 19–28 KB | 28 KB | |
+| Theming hub, S-tools: template IR and formats with the other-mode evaluation (8–12), the `file` element and its output host (10–14), `strand new`'s code (1–2; its template is `.rodata`, which is not gated), the `export` CLI and IPC request | 19–28 KB | 28 KB | **297,088 B** measured on `laptop/m5-tools` against `6a33477` (GPU 296,768 B): over its line and over both gates on the branch (CPU-only by 175,511 B); open for the integrator and the owner (decisions.md m5-tools, wave 2 review round 1, item 13) |
 | Plugins: the schema-file reader and applier, `--write-schemas`, the builder's validation and the process-setup check (decisions.md m5-plugins, "size and speed") | 4–8 KB | 8 KB | |
 | tree-sitter grammar (S-lsp; linked only into strand-dev's tests) | 0 B in `strand` | 0 | |
 | Reserve for review-fix rounds (M4's cost 2–9 KB each), held by the integrator | — | 61,001 B | |
