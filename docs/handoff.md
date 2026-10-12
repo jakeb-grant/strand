@@ -105,12 +105,15 @@ measured numbers.
   `strand::Builder`); the guide notes that `strand new` and `strand
   report` are not built yet; features.md adds S-tools' and S-docs'
   evidence under their open boxes.
-- **Sizes on the merged tree: not measured yet.** The streams measured
-  against different bases, so their figures do not simply add, but
-  together they are far past the ledger's headroom (CPU-only 272,937 B
-  under the gate after wave 1; S-tools' branch alone crossed both
-  gates). Expect CI's `budgets` job to fail on `laptop/m5-w2` until the
-  owner rules (open item 1).
+- **Sizes on the merged tree: measured after the merge** (decisions.md
+  m5-size, wave 2; m5-plan's "Measured after wave 2"). The streams
+  measured against different bases, so their figures do not simply
+  add; `scripts/size-report.sh` on `laptop/m5-w2` at `db85876` gives
+  CPU-only 18,485,143 B (+408,000 over wave 1's merged tree; 135,063 B
+  over the 18,350,080 B gate) and GPU 22,382,423 B (+407,744; 100,183 B
+  over the 22,282,240 B gate). The size pass found no gross verbosity
+  and cut nothing. Expect CI's `budgets` job to fail on `laptop/m5-w2`
+  until the gates are re-based to the measured tree (open item 1).
 - **Full checks have not run on the merged head**: only crate-scoped
   tests, fmt and workspace clippy ran per merge. `run.sh ci`,
   `matrix.sh`, the lock VM scenarios, `gpu.sh` and GitHub CI are next.
@@ -200,8 +203,10 @@ m4-owner-3; summarised under "M4 owner items" below).
 ## Budgets now
 
 These are the figures after wave 1 (the last tree the budgets job
-measured). Wave 2's merged tree is not measured yet; the streams'
-own figures are under "State" and open item 1.
+measured). Wave 2's merged tree was measured by the size pass, not yet
+by the budgets job: CPU-only 18,485,143 B and GPU 22,382,423 B at
+`db85876`, both over the gates below (decisions.md m5-size, wave 2;
+"State" above); the streams' own figures are in open item 1.
 
 - **`.text`**, from budgets.rs's gate test (the ledger line; Δ is
   against M4's merged figures 15,657,671 / 19,041,095 B), the merged
