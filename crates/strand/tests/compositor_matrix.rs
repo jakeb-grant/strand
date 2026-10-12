@@ -2007,16 +2007,71 @@ const LAUNCH_SHELL: &str = r#"bar Launch {
 /// `activation_helper`'s body.
 const HELPER_DIR: &str = "STRAND_MATRIX_ACTIVATION_HELPER";
 
-/// Waits up to 60 s for the file `path`.
+/// Waits (at most 60 s) for `path` to exist; false at once when its
+/// directory is gone (the test that made it has ended: the activation
+/// helper must not outlive it with its window mapped, which covered the
+/// next tests' pixels, m6-integration-w1).
 fn wait_file(path: &std::path::Path) -> bool {
     let deadline = Instant::now() + Duration::from_secs(60);
     while !path.exists() {
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || path.parent().is_some_and(|d| !d.exists()) {
             return false;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     true
+}
+
+/// Whether process `pid` has ended (a zombie counts: nothing reaps an
+/// orphan in the CI container).
+fn ended(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with(['Z', 'X'])),
+    }
+}
+
+/// The app the launch test launched, ended with the test, passed or not:
+/// told `done`, waited for by its pid (from its `env` file) and killed
+/// should it linger, before its directory goes. A helper that missed
+/// `done` (the directory was removed within its 20 ms poll) kept its
+/// window mapped for its 60 s wait, over the next tests' pixels: niri's
+/// wallpaper "never showed" (m6-integration-w1).
+struct Launched {
+    dir: PathBuf,
+    helper: PathBuf,
+    pid: Option<i32>,
+}
+
+impl Launched {
+    /// Says `done` and waits for the app to exit; false (and the app
+    /// killed) when it is still running after [`PATIENCE`].
+    fn end(&mut self) -> bool {
+        let _ = std::fs::write(self.helper.join("done"), "");
+        let Some(pid) = self.pid.take() else {
+            return true;
+        };
+        let deadline = Instant::now() + PATIENCE;
+        while !ended(pid) {
+            if Instant::now() >= deadline {
+                if let Some(p) = rustix::process::Pid::from_raw(pid) {
+                    let _ = rustix::process::kill_process(p, rustix::process::Signal::KILL);
+                }
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+}
+
+impl Drop for Launched {
+    fn drop(&mut self) {
+        self.end();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// The app `a_launched_app_is_activated_with_its_token` launches (this
@@ -2034,7 +2089,11 @@ fn activation_helper() {
     let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
     let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").unwrap());
     let window = TestWindow::open(&socket, "strand-activated", "launched");
-    std::fs::write(dir.join("env.tmp"), format!("{token}\n{startup}\n")).unwrap();
+    std::fs::write(
+        dir.join("env.tmp"),
+        format!("{token}\n{startup}\n{}\n", std::process::id()),
+    )
+    .unwrap();
     std::fs::rename(dir.join("env.tmp"), dir.join("env")).unwrap();
     for (go, with) in [("go-bogus", "strand-no-such-token"), ("go", token.as_str())] {
         if !wait_file(&dir.join(go)) {
@@ -2085,6 +2144,11 @@ fn a_launched_app_is_activated_with_its_token() {
         Kind::Hyprland => Policy::hyprland("misc", "focus_on_activate", "true", "false"),
         Kind::Niri => None,
     };
+    let mut app = Launched {
+        dir: dir.clone(),
+        helper: helper.clone(),
+        pid: None,
+    };
     let mut bar = Bar::launch_shell(
         &live,
         &dir.join("strand"),
@@ -2129,6 +2193,8 @@ fn a_launched_app_is_activated_with_its_token() {
     let env = std::fs::read_to_string(helper.join("env")).unwrap();
     let mut lines = env.lines();
     let (token, startup) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
+    app.pid = lines.next().and_then(|p| p.parse().ok());
+    assert!(app.pid.is_some(), "the app's pid: {env:?}");
     eprintln!(
         "matrix: {:?} launched the app with token {token:?}",
         live.kind
@@ -2175,10 +2241,20 @@ fn a_launched_app_is_activated_with_its_token() {
             .ok_or(format!("{real}"))
     });
     bar.keep(&live.output, "activated");
-    std::fs::write(helper.join("done"), "").unwrap();
     drop(other);
+    // The app ends here, its window with it: none is left to the next
+    // tests.
+    assert!(
+        app.end(),
+        "the launched app was still running {PATIENCE:?} after `done`"
+    );
+    until("the launched window closed", || {
+        let real = live.real();
+        (real.window.is_none() && real.workspaces.iter().all(|w| !w.occupied))
+            .then_some(())
+            .ok_or(format!("{real}"))
+    });
     drop(bar);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A compositor setting the activation test changes, put back on drop.
