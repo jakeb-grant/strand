@@ -33,6 +33,7 @@ mod toggle;
 mod watch;
 
 pub(in crate::run) use export::Waiting;
+pub(in crate::run) use inspect::Inspector;
 
 /// Who asked, and where the answer goes.
 #[derive(Debug)]
@@ -53,6 +54,10 @@ impl Shell {
             Request::ResetNode { node } => self.reset_node_request(from, &node),
             Request::InspectNode { id } => self.inspect_node_request(from, &id),
             Request::InspectDump { surface } => self.inspect_dump_request(from, surface.as_deref()),
+            // (M5 wave 3, S-inspect) Socket requests only.
+            Request::InspectPick { on } => self.inspect_pick_request(from, on),
+            Request::InspectHighlight { id } => self.inspect_highlight_request(from, id.as_deref()),
+            Request::InspectFlash { on } => self.inspect_flash_request(from, on),
             Request::Set { path, value } => self.set_request(from, &path, &value),
             Request::Get { path } => self.get_request(from, &path),
             Request::Toggle { path } => self.toggle_request(from, &path),

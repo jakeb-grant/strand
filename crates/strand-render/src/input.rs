@@ -406,6 +406,9 @@ pub struct Router {
     offer: Option<Offer>,
     /// Intents of the event being handled.
     out: Vec<Intent>,
+    /// (M5) Pick mode: pointer input goes to the inspector, not to
+    /// handlers ([`Router::set_picking`]).
+    picking: bool,
 }
 
 impl Router {
@@ -556,6 +559,43 @@ impl Router {
     /// The hovered chain of `surface`, innermost first.
     pub fn hovered(&self, surface: SurfaceId) -> &[NodeId] {
         self.hovered.get(&surface).map_or(&[], Vec::as_slice)
+    }
+
+    /// (M5) Pick mode on or off (the inspector, `inspect.pick`). While
+    /// it is on, pointer input (motion, buttons, scrolls, a click away)
+    /// reaches no handler: the host gives it to
+    /// [`Renderer::pick_input`] instead; the keyboard routes as before
+    /// and no surface's keyboard interactivity changes. Turning it on
+    /// ends every hover and press (their flags go off), a slider drag, a
+    /// selection by pointer and a drag in flight; turning it off leaves
+    /// the next pointer event to rebuild the hover. Returns what logic
+    /// hears of it.
+    pub fn set_picking(&mut self, on: bool, scene: &mut dyn InputScene) -> Vec<Intent> {
+        if self.picking != on {
+            self.picking = on;
+            if on {
+                let surfaces: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
+                for s in surfaces {
+                    self.hover(s, Vec::new());
+                    self.release(s);
+                    self.end_drags(scene, s);
+                    self.right_down.remove(&s);
+                    self.middle_down.remove(&s);
+                }
+                self.cancel_drag(scene);
+                // Another program's drag keeps its surface, with no
+                // target while picking (inspect-r2-4).
+                if let Some(o) = &mut self.offer {
+                    o.target = None;
+                }
+            }
+        }
+        self.flush(scene)
+    }
+
+    /// (M5) Whether pick mode is on ([`Router::set_picking`]).
+    pub fn picking(&self) -> bool {
+        self.picking
     }
 
     /// Routes one input event; returns what logic hears of it.
@@ -752,6 +792,40 @@ impl Router {
         let Some(&root) = self.surfaces.get(&surface) else {
             return;
         };
+        // (M5) Pick mode: the pointer is the inspector's.
+        if self.picking {
+            match event {
+                InputEvent::PointerEnter { position, .. }
+                | InputEvent::PointerMotion { position, .. } => {
+                    self.pointer.insert(surface, *position);
+                    return;
+                }
+                InputEvent::PointerLeave { .. } => {
+                    self.pointer.remove(&surface);
+                    return;
+                }
+                InputEvent::PointerButton { .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::ClickAway { .. } => return,
+                // A drag (another program's) finds no drop target: the
+                // surface manager declines its offer and no `on drop`
+                // runs. The surface it is over is kept, so its motion
+                // finds a target again once pick mode ends
+                // (inspect-r2-4).
+                InputEvent::DragEnter { .. } | InputEvent::DragMotion { .. } => {
+                    self.offer = Some(Offer {
+                        surface,
+                        target: None,
+                    });
+                    return;
+                }
+                InputEvent::DragDrop { .. } => {
+                    self.offer = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
         self.prune(scene.tree());
         let chain = |scene: &dyn InputScene, at: LogicalPoint| {
             let c = scene.hit(surface, at);

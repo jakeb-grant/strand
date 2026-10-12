@@ -648,7 +648,21 @@ impl Instance {
         let table = self.token_table();
         let mut files = Map::new();
         let n = self.node_json(node, &table, &secrets, &mut files)?;
+        self.every_file(&mut files);
         Some(obj(vec![("node", n), ("files", Json::Object(files))]))
+    }
+
+    /// (M5 wave 3) Every file the running program was compiled from, with
+    /// its hash, beside the nodes' own: write-back checks a token's
+    /// defining file too, which no node's origin names.
+    fn every_file(&self, files: &mut Map<String, Json>) {
+        let sources = self.inspect.sources.borrow();
+        for (_, f) in sources.iter().flat_map(|m| m.iter()) {
+            if !files.contains_key(&f.name) {
+                let hash = blake3::hash(f.text.as_bytes()).to_hex().to_string();
+                files.insert(f.name.clone(), Json::String(hash));
+            }
+        }
     }
 
     /// The inspector's dump (`inspect.dump`) of the tree under the
@@ -682,6 +696,7 @@ impl Instance {
             .into_iter()
             .filter_map(|n| self.node_json(n, &table, &secrets, &mut files))
             .collect();
+        self.every_file(&mut files);
         Some(obj(vec![
             ("nodes", Json::Array(nodes)),
             ("files", Json::Object(files)),

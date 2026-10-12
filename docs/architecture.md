@@ -8,7 +8,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Thread | Crates | Owns | Never does |
 | --- | --- | --- | --- |
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
-| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `inspect.node`, `inspect.dump`, `reset{node}`, `export` and `report`; `inspect.pick`, `inspect.highlight` and `inspect.flash` are not served yet) is a source on this loop, as is the request channel from the D-Bus front end; it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
+| Logic (`strand-logic`) | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, `set`, `reset`, and M5's commands as 0a lists them: `get`, `toggle`, `call`, `clear`, `inspect.node`, `inspect.dump`, `reset{node}`, `export` and `report`, and since M5 wave 3 `inspect.pick`, `inspect.highlight` and `inspect.flash`, on the socket only) is a source on this loop, as is the request channel from the D-Bus front end; it also renders the `file` outputs after each tick's diff is sent ("The theming hub") | Touch Wayland or pixels |
 | Compiler worker (`strand-compile`) | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker (`strand-text`) | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Image worker (`strand-image`, one per renderer; one that cannot start stops the shell) | `strand-render` (`image.rs`, `media/`) | Image and icon decodes (an animated GIF, APNG or WebP's player kept between its frames), the `svg` and `lottie` file jobs (`ImageStore::load_file`: read through a bounded read and parsed here, a Lottie's assets with it), and `set_idle_hook`'s allocator trim; each result pings the render loop | Block render: a frame draws nothing, or a stand-in of the same image at another size, until the decode arrives; read a file without a size bound |
@@ -688,8 +688,12 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     the inspector's own answers spell (S-inspect picks the spelling);
     `call`'s `args` are a list of strings, each read by the action
     parameter's type as `set`'s value is.
-  - A command the shell does not serve yet is answered exactly as an
-    unknown one (`unknown command `x``), so 0b changes no answer;
+  - Every command above is served on the socket since M5 wave 3.
+    Where one is not served (the D-Bus front end has no `Export`
+    method, and answers `inspect.pick`, `inspect.highlight` and
+    `inspect.flash`, which are socket-only, through `not_served`) it is
+    answered exactly as an unknown one (`unknown command `x``), so 0b
+    changes no answer;
     `reset{node}` is answered "`reset` needs a `path`", M4's answer,
     from the socket and from the request channel alike.
     `Request` has every command's variant and `encode` writes each, but
@@ -811,13 +815,21 @@ new).**
   and one root shows on several surfaces (a bar per output). So no
   logic→main message carries a `SurfaceId`; a node chosen from a dump or
   typed into the terminal client is resolved on main.
-- `ToMain::PickMode(bool)`: the router's pick-mode hook on or off
-  (`inspect.pick`, and off when the client that asked disconnects).
+- `ToMain::PickMode { on, seq }`: the router's pick-mode hook on or off
+  (`inspect.pick`, and off when the client that asked disconnects);
+  `seq` numbers logic's `PickMode` messages.
   A pick happens later, on a click, so it is not a snapshot: main sends
-  `ToLogic::Picked(PickEvent::Picked { surface, node })` (`node` from
-  `Renderer::pick`, none when nothing pickable is under the click), and
-  `ToLogic::Picked(PickEvent::Ended)` when pick mode ends on main's side
-  (a surface unmapped, a lock started).
+  `ToLogic::Picked(PickEvent::Picked { surface, node, seq })` (`node`
+  from `Renderer::pick`, none when nothing pickable is under the click;
+  `seq` the `PickMode` main was in), and
+  `ToLogic::Picked(PickEvent::Ended { seq })` when pick mode ends on
+  main's side (a surface unmapped, a lock started), `seq` being the last
+  `PickMode`'s main acted on. The socket and this channel are separate
+  sources on logic's loop, so an `Ended` can arrive after a newer
+  `inspect.pick` has turned pick mode on again; logic ignores an `Ended`
+  whose `seq` is not its last (decisions.md m5-inspect, inspect-r1-2),
+  and a `Picked` likewise, so a click from an earlier pick mode never
+  reaches a client that took pick mode since (inspect-r2-2).
 
 0b landed the snapshot types, and the wave-0 hardening the rest
 (decisions.md m5-w0-harden; 0b had a `SnapshotKind::Pick` request, and
@@ -948,20 +960,61 @@ an overlay step and a contrast-guard step where they apply.
   and version, sorted, no global names); the outputs are the existing
   `State::monitors()`, so no `outputs()` was added.
 
-0b lands these inert: `pick` is `None`, `node_layout` the default
-`LayoutInfo { rect: None }`, `frame_summary` `None` (until S-tools); the highlight and
-flash are only kept (`Renderer::highlight`, `damage_flash`), in
-`src/inspect/` (S-inspect).
+0b landed these inert; S-inspect's wave 3 built them in `src/inspect/`
+(decisions.md m5-inspect, wave 3): `pick` is the topmost node of the
+surface's last painted frame under the point (none on a lock surface);
+`LayoutInfo { rect: Option<LogicalRect> }` is the node's box as that
+frame drew it, in logical pixels, after paint offsets, scrolling and
+any transform (their bounding box), without `hit: grow(n)`; the outline
+is a 2 px ring inside the node's rounded box, under its transform and
+its ancestors' clip; the flash tints each frame's own repaint, fading
+over 300 ms, and only frames with a presentation time (never a lock
+surface's). Both are display
+items appended to the frame's list after flattening, so the CPU raster
+and the GPU's lowering draw them unchanged. Pick mode's two calls,
+beside them:
+- `Router::set_picking(on, scene) -> Vec<Intent>` and
+  `Router::picking()`: while picking, pointer events reach no handler
+  (the pointer's position is still tracked), and neither does another
+  program's drag (no drop target, so its offer is declined, and no
+  `on drop`); turning it on ends hovers, presses and drags as a leave
+  would, forgets an offer, and returns their intents;
+- `Renderer::pick_input(&InputEvent) -> Option<(SurfaceId,
+  Option<NodeId>)>`, fed the pointer events the router held back: the
+  node under the pointer is outlined on whichever surface it is over
+  (in place of the highlight while picking), and a left press answers
+  the surface and the node picked; `Renderer::pick_ended()` drops that
+  outline.
 
 Highlight and flash draw on CPU and `GpuPresent` surfaces alike; they
 are the only inspector UI the shell draws (m5-owner Q9: the panel is
 `strand-dev inspect`'s, in a terminal). The router gains a pick-mode
 hook that captures pointer events while picking. Pick mode needs no
 keyboard and no surface changes its keyboard interactivity: the terminal
-client ends it (Escape or Ctrl-C there sends `inspect.pick{on:false}`),
-a click picks, and pick mode also ends on the IPC client's disconnect,
-on surface unmap and when a lock starts. Lock surfaces are never
-pickable, and `inspect.pick` is refused while locked.
+client ends it (Enter, or Escape then Enter, there sends
+`inspect.pick{on:false}`; Ctrl-C ends the client, and its disconnect
+ends pick mode), a click picks, and pick mode also ends on the IPC
+client's disconnect, on the unmap of the surface picked on and when a
+lock starts. Lock surfaces are never pickable, and `inspect.pick` is
+refused while locked, as is `inspect.highlight` of a node. An outline
+asked before the lock is hidden while it lasts (main clears it) and
+drawn again after the unlock, still its client's.
+
+As served (S-inspect, wave 3): `inspect.pick`, `inspect.highlight` and
+`inspect.flash` are socket requests only (the D-Bus front end has no
+methods for them) and each belongs to the client that asked: its
+disconnect ends pick mode, the outline and the flash. One client picks
+at a time; another taking pick mode ends the first's, which hears
+`{"event": "pick_ended"}`, as it does when main ends it. A pick reaches
+the client in pick mode as `{"event": "picked", "surface": n, "node":
+"12.0" | null}` on its connection, between answers; pick mode stays on
+until it is ended. An answer to `inspect.pick` means logic has told
+main, not that main has turned it on. `inspect.node`'s answer gains
+`layout`: main's `node_layout` on each surface showing the node, `[{
+"surface", "x", "y", "width", "height" }]` (empty when none draws it),
+through the snapshot hop; its `files` and `inspect.dump`'s hash every
+file the program was compiled from, not only the nodes' own, so
+write-back can check a token's defining file.
 
 **Handler input context (`strand-compiler`, cross-crate, new).**
 - The VM records the input event that started a handler, `InputCtx {
@@ -1039,6 +1092,19 @@ zero-width span (an insertion) is allowed.
   still hash to `source_hash`, atomically, following symlinks; a
   read-only target is refused with the reason and an offer to open it
   in `$EDITOR` (m5-owner Q11).
+  Built (wave 3) as `strand_dev::inspect` (`client`, `pane`, `write`):
+  a line-mode terminal session (`p` pick, `r` reset, `e` edit, `set
+  <prop> <value>`, `token <path> <value>`, `f` flash, `q`), and
+  `write::{prop_edit, token_edit, write}`: a prop is found on the
+  node's own element (the innermost element at its `origin` span), a
+  token in the `tokens <name>` block or component `tokens { }` its
+  provenance step's origin names (a palette's, the built-in theme's or
+  an overlay's is refused); the value replaced and the value written
+  must each be one literal (a number with its unit, a string, a colour,
+  a boolean); the write is a temporary file beside the symlink's
+  target, renamed over it only while the target is still the file
+  whose bytes were hashed (same inode, same hash), so an editor's save
+  renamed into place meanwhile is refused.
 - `strand-dev reference`: generates `docs/reference/` from the builtin
   and service schemas.
 - **tree-sitter layout.** `crates/strand-dev/tree-sitter-strand/` is a

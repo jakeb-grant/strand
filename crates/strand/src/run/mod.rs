@@ -274,7 +274,6 @@ pub enum ToLogic {
     Snapshot(Snapshot),
     /// (M5) Pick mode, from main (S-inspect): a click picked a node, or
     /// pick mode ended without logic asking.
-    #[allow(dead_code, reason = "(M5 0b) pick mode is wired by S-inspect")]
     Picked(PickEvent),
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
@@ -284,11 +283,8 @@ pub enum ToLogic {
 /// (M5) What logic tells or asks the main thread (docs/architecture.md,
 /// "M5 interfaces": the snapshot hop and the inspector's messages).
 /// The channel carrying these is wired (S-tools' `report`); S-inspect's
-/// layouts, highlight, flash and pick mode reuse it.
-#[allow(
-    dead_code,
-    reason = "(M5 0b) the inspector's messages are sent by S-inspect"
-)]
+/// layouts, highlight, flash and pick mode reuse it (handled on main by
+/// `crate::ipc::inspect`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToMain {
     /// Main answers from its own state between frames with
@@ -306,27 +302,34 @@ pub enum ToMain {
     DamageFlash(bool),
     /// `inspect.pick{on}`, and `false` when the asking IPC client goes:
     /// the router's pick-mode hook on or off. A pick arrives later, on a
-    /// click, as [`ToLogic::Picked`].
-    PickMode(bool),
+    /// click, as [`ToLogic::Picked`]. `seq` counts logic's `PickMode`
+    /// messages; main's [`PickEvent::Picked`] and [`PickEvent::Ended`]
+    /// carry back the last one it acted on, so logic ignores a pick or
+    /// an end that a newer `PickMode` overtook (the socket and this channel are separate sources).
+    PickMode { on: bool, seq: u64 },
 }
 
 /// (M5) What main tells logic about pick mode ([`ToLogic::Picked`]).
-#[allow(dead_code, reason = "(M5 0b) pick mode is wired by S-inspect")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickEvent {
     /// A click in pick mode, on `surface`: the node under it
     /// (`Renderer::pick`; none: nothing pickable there).
+    /// `seq` is the [`ToMain::PickMode`] main was in, so logic drops a
+    /// pick that a newer `inspect.pick` overtook (it belongs to the
+    /// pick mode before, never to the new owner).
     Picked {
         surface: SurfaceId,
         node: Option<NodeId>,
+        seq: u64,
     },
     /// Pick mode ended on main's side (a surface unmapped, a lock
-    /// started), so logic tells the client that asked.
-    Ended,
+    /// started), so logic tells the client that asked; `seq` is the
+    /// last [`ToMain::PickMode`]'s main acted on (stale when logic has
+    /// sent a newer one since).
+    Ended { seq: u64 },
 }
 
 /// (M5) Which snapshot logic asks main for.
-#[allow(dead_code, reason = "(M5 0b) `Layout` is asked for by S-inspect")]
 #[derive(Clone, Debug, PartialEq)]
 pub enum SnapshotKind {
     /// `strand report`: the compositor's globals with versions, outputs
@@ -627,13 +630,18 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let answer = to_logic.clone();
     handle
         .insert_source(from_logic, move |event, _, state| {
-            if let Event::Msg(ToMain::Snapshot {
-                kind: SnapshotKind::Report,
-                reply,
-            }) = event
-            {
-                let data = crate::report::main_part(state);
-                let _ = answer.send(ToLogic::Snapshot(Snapshot { reply, data }));
+            match event {
+                Event::Msg(ToMain::Snapshot {
+                    kind: SnapshotKind::Report,
+                    reply,
+                }) => {
+                    let data = crate::report::main_part(state);
+                    let _ = answer.send(ToLogic::Snapshot(Snapshot { reply, data }));
+                }
+                // (M5, S-inspect) Layouts, the outline, the flash and
+                // pick mode.
+                Event::Msg(msg) => crate::ipc::inspect::on_main(state, msg, &answer),
+                Event::Closed => {}
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
@@ -674,6 +682,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             signalled.get(),
             &to_logic,
         );
+        // (M5) A lock asked for ends pick mode and the outline.
+        crate::ipc::inspect::lock_guard(mgr.state_mut());
         let held = guard.holds(mgr.state());
         if signalled.get() && !held {
             break End::Done;

@@ -4,7 +4,8 @@
 # panic and stall, text worker death, the PAM helper crashing, hanging,
 # answering garbage or missing, a runtime fault in the lock, no first
 # frame, SIGTERM, SIGKILL and SIGABRT with a restart, `finished` after
-# `locked` (through a Wayland proxy), a refused lock and hotplug. Each
+# `locked` (through a Wayland proxy), a refused lock, hotplug and the
+# inspector's pick refused while locked (M5). Each
 # asserts the session stayed locked, the built-in password field showed
 # and only the right password unlocked. One test at a time: each starts
 # its own sway.

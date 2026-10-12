@@ -184,8 +184,10 @@ pub fn parse(line: &str) -> Result<Request, String> {
         // (M5, S-ipc) `get`, `toggle`, `call`, `clear`, and the
         // inspector's `inspect.node` and `inspect.dump`.
         // (M5 wave 2, S-tools) `export` and `report`.
+        // (M5 wave 3, S-inspect) `inspect.pick`, `inspect.highlight` and
+        // `inspect.flash`.
         "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" | "export"
-        | "report" => {
+        | "report" | "inspect.pick" | "inspect.highlight" | "inspect.flash" => {
             return parse_m5(cmd, &v);
         }
         other => return Err(format!("unknown command `{other}`")),
@@ -698,6 +700,9 @@ mod tests {
                 | Request::Clear { .. }
                 | Request::InspectNode { .. }
                 | Request::InspectDump { .. }
+                | Request::InspectPick { .. }
+                | Request::InspectHighlight { .. }
+                | Request::InspectFlash { .. }
                 | Request::Export { .. }
                 | Request::Report
         )
@@ -821,14 +826,10 @@ mod tests {
                 r#"{"cmd":"set","path":"a.b"}"#,
                 "`set` needs a `path` and a `value`",
             ),
-            (
-                r#"{"cmd":"inspect.pick"}"#,
-                "unknown command `inspect.pick`",
-            ),
         ] {
             assert_eq!(parse(line), Err(why.to_string()), "{line}");
         }
-        // S-ipc's commands, served: `parse` reads them with `parse_m5`.
+        // S-ipc's and S-inspect's commands, served: `parse` reads them with `parse_m5`.
         for (line, why) in [
             (r#"{"cmd":"get"}"#, "`get` needs `path`"),
             (r#"{"cmd":"toggle","path":""}"#, "`toggle` needs `path`"),
@@ -842,6 +843,10 @@ mod tests {
             (
                 r#"{"cmd":"call","target":"a.b","args":[1]}"#,
                 "`call`'s `args` are a list of strings",
+            ),
+            (
+                r#"{"cmd":"inspect.pick"}"#,
+                "`inspect.pick` needs `on` (true or false)",
             ),
         ] {
             assert_eq!(parse(line), Err(why.to_string()), "{line}");
@@ -863,6 +868,19 @@ mod tests {
         assert_eq!(
             parse(r#"{"cmd":"inspect.dump","surface":""}"#),
             Ok(Request::InspectDump { surface: None })
+        );
+        // (S-inspect, wave 3) Pick mode, the outline and the flash.
+        assert_eq!(
+            parse(r#"{"cmd":"inspect.pick","on":true}"#),
+            Ok(Request::InspectPick { on: true })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"inspect.highlight"}"#),
+            Ok(Request::InspectHighlight { id: None })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"inspect.flash","on":false}"#),
+            Ok(Request::InspectFlash { on: false })
         );
         // M4 read a `reset` with a `node` beside its `path` as the path.
         assert_eq!(

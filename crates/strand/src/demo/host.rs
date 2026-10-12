@@ -15,7 +15,7 @@ use strand_scene::{
 };
 use strand_surface::{Monitor, SurfaceHost};
 
-use crate::run::{NodeEvent, ScreenInfo, ToLogic};
+use crate::run::{NodeEvent, PickEvent, ScreenInfo, ToLogic};
 
 #[derive(Debug)]
 pub struct Host {
@@ -98,6 +98,13 @@ pub(crate) struct Forward {
     surfaces: HashMap<SurfaceId, NodeId>,
     /// Hover, press, focus, selection and edits.
     router: Router,
+    /// (M5) In pick mode, the surface the pointer is over: pick mode
+    /// ends when it unmaps.
+    picking_on: Option<SurfaceId>,
+    /// (M5) The sequence number of the last `ToMain::PickMode` logic
+    /// sent, which a `PickEvent::Ended` carries back so logic can tell
+    /// an end it has since overtaken.
+    pick_seq: u64,
 }
 
 impl Forward {
@@ -107,6 +114,8 @@ impl Forward {
             monitors: Vec::new(),
             surfaces: HashMap::new(),
             router: Router::new(),
+            picking_on: None,
+            pick_seq: 0,
         }
     }
 
@@ -457,6 +466,59 @@ impl Host {
         }
     }
 
+    /// (M5) Pick mode on or off (`inspect.pick`): the router passes
+    /// pointer input to no handler and the renderer outlines the node
+    /// under the pointer (at once, where the pointer already is); off,
+    /// the outline goes. `seq` is the `ToMain::PickMode`'s.
+    pub(crate) fn set_picking(&mut self, on: bool, seq: u64) {
+        let Some(f) = &mut self.logic else {
+            return;
+        };
+        f.pick_seq = seq;
+        for intent in f.router.set_picking(on, &mut self.renderer) {
+            if let Some(msg) = to_logic(intent) {
+                f.send(msg);
+            }
+        }
+        if !on {
+            f.picking_on = None;
+            self.renderer.pick_ended();
+            return;
+        }
+        let under = f
+            .surfaces
+            .keys()
+            .find_map(|s| Some((*s, f.router.pointer(*s)?)));
+        if let Some((surface, position)) = under {
+            f.picking_on = Some(surface);
+            self.renderer.pick_input(&InputEvent::PointerMotion {
+                surface,
+                position,
+                time: 0,
+            });
+        }
+    }
+
+    /// (M5) Pick mode ends on main's side (the surface picked on
+    /// unmapped, a lock): logic is told.
+    fn end_pick(&mut self) {
+        if !self.logic.as_ref().is_some_and(|f| f.router.picking()) {
+            return;
+        }
+        let seq = self.logic.as_ref().map_or(0, |f| f.pick_seq);
+        self.set_picking(false, seq);
+        if let Some(f) = &self.logic {
+            f.send(ToLogic::Picked(PickEvent::Ended { seq }));
+        }
+    }
+
+    /// (M5) A lock is asked for or held: pick mode ends and nothing is
+    /// outlined.
+    pub(crate) fn lock_started(&mut self) {
+        self.end_pick();
+        self.renderer.set_highlight(None);
+    }
+
     /// Logic's next diff, before the renderer applies it: `input` texts
     /// it sets answer (or override) the router's edits in flight.
     pub(crate) fn observe(&mut self, diff: &SceneDiff) {
@@ -752,6 +814,14 @@ impl SurfaceHost for Host {
         self.origins.remove(&surface);
         self.outputs.remove(&surface);
         self.blur_fallback.regions.remove(&surface);
+        // (M5) Pick mode ends with the surface it picks on.
+        if self
+            .logic
+            .as_ref()
+            .is_some_and(|f| f.picking_on == Some(surface))
+        {
+            self.end_pick();
+        }
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
@@ -837,6 +907,19 @@ impl SurfaceHost for Host {
         }
         if let Some(f) = &mut self.logic {
             f.input(event, &mut self.renderer);
+            // (M5) Pick mode: the inspector has the pointer.
+            if f.router.picking() {
+                match event {
+                    InputEvent::PointerEnter { surface, .. }
+                    | InputEvent::PointerMotion { surface, .. } => f.picking_on = Some(*surface),
+                    InputEvent::PointerLeave { .. } => f.picking_on = None,
+                    _ => {}
+                }
+                if let Some((surface, node)) = self.renderer.pick_input(event) {
+                    let seq = f.pick_seq;
+                    f.send(ToLogic::Picked(PickEvent::Picked { surface, node, seq }));
+                }
+            }
             // (M4) `parallax` and `tilt` follow the router's pointer.
             let s = event.surface();
             self.renderer.set_pointer(s, f.router.pointer(s));
@@ -1835,6 +1918,136 @@ mod tests {
             "the resting dots are unchanged: no frame follows"
         );
         assert_eq!(tapped(&host), [(spectrum, Want::Spectrum(42))]);
+    }
+
+    /// (M5, S-inspect; inspect-r1-7) Pick mode follows the pointer from
+    /// a bar onto its popup: the popup's node is outlined and picked
+    /// there, the pick naming the popup's surface. The popup unmapping
+    /// while the pointer is on the bar leaves pick mode on; unmapping
+    /// while the pointer is on it ends pick mode, and logic is told with
+    /// the last `PickMode`'s sequence number.
+    #[test]
+    fn pick_mode_follows_the_pointer_onto_a_popup_and_ends_with_it() {
+        use std::time::Duration;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, mut el) = setup_channel();
+        let mut host = Host::new(renderer, false).forwarding(tx);
+        let num = strand_scene::PropValue::Number;
+        let (bar, popup, inner, again) = (
+            NodeId::new(0, 0),
+            NodeId::new(1, 0),
+            NodeId::new(2, 0),
+            NodeId::new(3, 0),
+        );
+        let mut d = SceneDiff::new();
+        d.create(bar, strand_scene::NodeKind::Bar, None, 0)
+            .set(bar, Prop::Height, num(40.0))
+            .create(popup, strand_scene::NodeKind::Popup, None, 1)
+            .set(popup, Prop::Width, num(100.0))
+            .set(popup, Prop::Height, num(100.0))
+            .create(inner, strand_scene::NodeKind::Box, Some(popup), 0)
+            .set(inner, Prop::X, num(20.0))
+            .set(inner, Prop::Y, num(20.0))
+            .set(inner, Prop::Width, num(40.0))
+            .set(inner, Prop::Height, num(40.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let (sb, sp) = (SurfaceId(1), SurfaceId(2));
+        host.surface_attached(sb, bar, None);
+        host.surface_configured(sb, Size::new(100, 40), Scale::ONE);
+        host.surface_attached(sp, popup, None);
+        host.surface_configured(sp, Size::new(100, 100), Scale::ONE);
+        let mut px = vec![0u8; 100 * 100 * 4];
+        let mut paint = |host: &mut Host, s: SurfaceId, h: u32| {
+            let t = PaintTarget::new(
+                &mut px[..(100 * h * 4) as usize],
+                Size::new(100, h),
+                400,
+                Scale::ONE,
+                0,
+            )
+            .unwrap();
+            let mut t = t.at(Duration::from_millis(1000));
+            host.paint(s, &mut t);
+        };
+        paint(&mut host, sb, 40);
+        paint(&mut host, sp, 100);
+        let _ = drain_channel(&mut el);
+        host.set_picking(true, 7);
+        let at = LogicalPoint::new(30.0, 30.0);
+        host.input(&InputEvent::PointerEnter {
+            surface: sp,
+            position: at,
+        });
+        let press = |state| InputEvent::PointerButton {
+            surface: sp,
+            position: at,
+            button: button::LEFT,
+            state,
+            time: 1,
+        };
+        host.input(&press(ButtonState::Pressed));
+        host.input(&press(ButtonState::Released));
+        let got = drain_channel(&mut el);
+        assert!(
+            got.contains(&ToLogic::Picked(PickEvent::Picked {
+                surface: sp,
+                node: Some(inner),
+                seq: 7,
+            })),
+            "the popup's node is picked on the popup: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|m| matches!(m, ToLogic::Event { .. })),
+            "no handler hears the pick: {got:?}"
+        );
+        // Back on the bar, the popup closes: pick mode stays.
+        host.input(&InputEvent::PointerLeave { surface: sp });
+        host.input(&InputEvent::PointerEnter {
+            surface: sb,
+            position: LogicalPoint::new(5.0, 5.0),
+        });
+        host.surface_detached(sp);
+        let got = drain_channel(&mut el);
+        assert!(
+            !got.iter()
+                .any(|m| matches!(m, ToLogic::Picked(PickEvent::Ended { .. }))),
+            "{got:?}"
+        );
+        assert!(host.logic.as_ref().is_some_and(|f| f.router.picking()));
+        // A popup again, the pointer on it when it closes: pick mode ends.
+        host.renderer.apply({
+            let mut d = SceneDiff::new();
+            d.create(again, strand_scene::NodeKind::Popup, None, 2)
+                .set(again, Prop::Width, num(100.0))
+                .set(again, Prop::Height, num(100.0));
+            d
+        });
+        let sq = SurfaceId(3);
+        host.surface_attached(sq, again, None);
+        host.surface_configured(sq, Size::new(100, 100), Scale::ONE);
+        host.input(&InputEvent::PointerLeave { surface: sb });
+        host.input(&InputEvent::PointerEnter {
+            surface: sq,
+            position: at,
+        });
+        host.surface_detached(sq);
+        let got = drain_channel(&mut el);
+        assert!(
+            got.contains(&ToLogic::Picked(PickEvent::Ended { seq: 7 })),
+            "{got:?}"
+        );
+        assert!(!host.logic.as_ref().is_some_and(|f| f.router.picking()));
+    }
+
+    fn drain_channel(el: &mut calloop::EventLoop<'static, Vec<ToLogic>>) -> Vec<ToLogic> {
+        let mut out = Vec::new();
+        el.dispatch(Some(std::time::Duration::ZERO), &mut out)
+            .unwrap();
+        out
     }
 
     fn setup_channel() -> (

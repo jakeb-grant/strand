@@ -296,7 +296,7 @@ impl Renderer {
             self.sample_tokens(target.time, true);
         }
         self.anim.begin(target.time, prev, true);
-        let f = match cached {
+        let mut f = match cached {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
@@ -377,13 +377,28 @@ impl Renderer {
         }
         #[cfg(feature = "gpu")]
         frame.union_clipped(&clocked, bounds);
+        // (M5) The inspector's outline and repaint flash, drawn after the
+        // frame's own items: where they changed is repainted too, and
+        // only the frame's own repaint (`frame` so far) is tinted.
+        let lock = self
+            .tree
+            .get(root)
+            .is_some_and(|n| n.kind == strand_scene::NodeKind::Lock);
+        let overlay =
+            self.inspect
+                .overlay(surface, &f.hits, lock, &frame, target.time, s.scale, bounds);
+        #[cfg(feature = "gpu")]
+        let inspected = overlay.as_ref().is_some_and(|o| !o.damage.is_empty());
+        if let Some(o) = &overlay {
+            frame.union_clipped(&o.damage, bounds);
+        }
         // (M4) Promotion's input, and whether a GPU-drawn surface must
         // send this frame.
         #[cfg(feature = "gpu")]
         let stats = (
             frame.area(),
             animating,
-            animating || !clocked.is_empty() || s.records != f.records,
+            animating || inspected || !clocked.is_empty() || s.records != f.records,
         );
         s.records = f.records.clone();
         s.hits = f.hits.clone();
@@ -421,6 +436,12 @@ impl Renderer {
         s.query_hold = None;
         s.query_held = false;
         let scale = s.scale;
+        // The inspector's items join the frame's for drawing only: the
+        // flattened scene kept for the next frame is the frame's own.
+        let own = f.items.len();
+        if let Some(o) = overlay {
+            f.items.extend(o.items);
+        }
         // (M4) A promoted surface: its pixels come from the GPU (or the
         // CPU draws it in full until they do). A presented frame is
         // lowered, crossfade included, so nothing is drawn into `target`.
@@ -456,6 +477,7 @@ impl Renderer {
         {
             self.blend_fade(surface, w, target);
         }
+        f.items.truncate(own);
         // Nothing changed since flattening: the next paint can reuse it.
         // Stamped once the frame is drawn: a slow raster does not age the
         // surface into looking idle.
@@ -476,9 +498,12 @@ impl Renderer {
         // not painted yet holds its first frame for its text, up to its
         // deadline.
         self.frame_deadline(surface).is_none()
-            && self
-                .surfaces
-                .get(&surface)
-                .is_some_and(|s| s.dirty || !s.valid || s.animating || self.clocks.wants(surface))
+            && self.surfaces.get(&surface).is_some_and(|s| {
+                s.dirty
+                    || !s.valid
+                    || s.animating
+                    || self.clocks.wants(surface)
+                    || self.inspect.wants(surface)
+            })
     }
 }

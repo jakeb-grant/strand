@@ -264,6 +264,7 @@ impl Renderer {
         self.facts_sent.retain(|(s, _), _| *s != surface);
         self.last_damage.remove(&surface);
         self.frame_stats.forget(surface);
+        self.inspect.forget(surface);
         self.raster.set_surfaces(self.surfaces.len());
         self.prune_scales();
         self.prune_texts();
@@ -302,5 +303,23 @@ impl Renderer {
             }
         }
         chain
+    }
+
+    /// (M5, the inspector) `surface`'s root node, scale and the hit
+    /// shapes of its last painted frame, in paint order (`crate::inspect`).
+    pub(crate) fn painted_hits(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<(NodeId, strand_scene::Scale, &[crate::flatten::HitBox])> {
+        let s = self.surfaces.get(&surface)?;
+        Some((s.root, s.scale, &s.hits))
+    }
+
+    /// (M5, the inspector) Every surface paints again (the outline or
+    /// the flash changed); what each frame flattened stays good.
+    pub(crate) fn repaint_all(&mut self) {
+        for s in self.surfaces.values_mut() {
+            s.dirty = true;
+        }
     }
 }

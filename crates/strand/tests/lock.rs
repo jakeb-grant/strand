@@ -35,7 +35,8 @@
 //! never sends it); the compositor refusing the lock (another locker
 //! holds it: not a fault, nothing shows, the run goes on); an output
 //! plugged in while locked; a config write of `false` while locked
-//! (only a password unlocks). A run under `STRAND_MOCK` never locks.
+//! (only a password unlocks). A run under `STRAND_MOCK` never locks. The
+//! inspector cannot pick while locked (M5).
 //!
 //! No assertion depends on how long anything took: each wait is for
 //! what grim shows, bounded only to fail instead of hanging.
@@ -2128,6 +2129,59 @@ fn a_refused_lock_is_not_a_fault() {
         |shot| near(shot.corner(), LOCK_BG),
     );
     vm.lock_passwords();
+    assert!(vm.strand.running());
+}
+
+/// (M5, S-inspect) The inspector cannot pick while locked: pick mode
+/// ends when a lock starts (its client hears `pick_ended`), and
+/// `inspect.pick` is refused while the lock shows; after the unlock it
+/// is served again.
+#[test]
+fn the_inspector_cannot_pick_while_locked() {
+    use std::io::BufRead as _;
+    let test = "inspect";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    let socket = strand_core::ipc::socket_path_from(
+        None,
+        Some(vm.sway.dir.clone().into()),
+        Some(vm.sway.display.clone().into()),
+    )
+    .unwrap();
+    let stream = UnixStream::connect(&socket).unwrap();
+    stream.set_read_timeout(Some(WAIT)).unwrap();
+    let mut w = stream.try_clone().unwrap();
+    let mut r = std::io::BufReader::new(stream);
+    let mut line = || {
+        let mut l = String::new();
+        r.read_line(&mut l).unwrap();
+        serde_json::from_str::<serde_json::Value>(&l).unwrap()
+    };
+    let pick = |w: &mut UnixStream, on: bool| {
+        w.write_all(
+            strand_core::ipc::encode(&strand_core::ipc::Request::InspectPick { on }).as_bytes(),
+        )
+        .unwrap();
+    };
+    pick(&mut w, true);
+    assert_eq!(line(), serde_json::json!({"ok": true}));
+    vm.lock();
+    vm.content();
+    assert_eq!(line(), serde_json::json!({"event": "pick_ended"}));
+    pick(&mut w, true);
+    let refused = line();
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("locked")),
+        "{refused}"
+    );
+    vm.lock_passwords();
+    pick(&mut w, true);
+    assert_eq!(line(), serde_json::json!({"ok": true}));
     assert!(vm.strand.running());
 }
 

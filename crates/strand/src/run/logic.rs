@@ -271,6 +271,7 @@ pub fn logic(
         to_main: live.to_main,
         reports: Vec::new(),
         next_snapshot: 0,
+        inspector: Default::default(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -335,6 +336,8 @@ pub fn logic(
         if let Some(s) = shell.server.as_mut() {
             s.flush(&handle);
         }
+        // (M5) The inspector's modes end with the client that asked.
+        shell.inspector_clients_gone();
         let now = Instant::now();
         // A structural burst arms the trim; any wake while armed pushes
         // it back.

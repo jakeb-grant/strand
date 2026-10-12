@@ -48,6 +48,7 @@
 mod call;
 mod cli;
 mod describe;
+pub(crate) mod inspect;
 mod overlay;
 mod query;
 mod server;
