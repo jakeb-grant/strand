@@ -310,17 +310,21 @@ recorded reason.
 - sway: `win.maximize()` answers `Unsupported` on the adapter (sway has
   no maximize). Through the wlr fallback (adapter off) the reply is
   `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
-- Drag and drop: a drop's `at` in another list does not see that list's
-  copy of the item when the copy is outside a windowed `list`'s mounted
-  rows (render has only the mounted rows), so it is one too high then;
-  spec.md 6.7 states it as a limit of 1.0's implementation, whose fix is
-  a bug fix (decisions.md m5-fixups, m5-integration-w3).
-- Inspector: write-back checks the target's inode and hash just before
-  its rename, but a small window remains between that check and the
-  rename (POSIX has no compare-and-rename; closing it needs a lock
-  editors do not take). An answer to `inspect.pick` means logic told
-  main, not that main has turned pick mode on (decisions.md
-  m5-inspect; architecture.md).
+- Inspector: write-back swaps the file in with `renameat2(RENAME_EXCHANGE)`
+  and checks the file it took out (M6, m6-edges), so an editor's save
+  after the check is kept. Two edges remain: on a filesystem without the
+  exchange (`EINVAL`/`ENOSYS`) it falls back to the check just before a
+  plain rename, with that small window; and an editor already holding
+  the file open that writes into it after the check of the old file
+  writes into the file being removed (no lock editors take could stop
+  it). An answer to `inspect.pick` means logic told main, not that main
+  has turned pick mode on (decisions.md m5-inspect; architecture.md).
+- Drag and drop: a copy of the dragged item above a windowed `list`'s
+  mounted rows is left out of `at` by logic (M6, m6-edges), which reads
+  each row's `drag:` value off the mounted rows as its item, its key or
+  one of its fields; rows whose `drag:` value is none of those (or not
+  the same one for every mounted row) are never copies there, so `at`
+  stays one too high for them, as before M6.
 - Notifications: `Notification.time` has no time of day yet (spec 1.2's
   `ActivationToken` is sent since S-platform, M5 wave 3).
 - Tray: Activate and ContextMenu get the press's output-logical point

@@ -12,8 +12,8 @@ use strand_compiler::{SourceMap, lower};
 use strand_core::Runtime;
 use strand_render::{Renderer, TextBackend};
 use strand_scene::{
-    Anchor, Edge, Keyboard, Layer, PaintTarget, Painter, Scale, Screens, Size, SurfaceChange,
-    SurfaceId,
+    Anchor, Edge, InputEvent, Keyboard, Layer, PaintTarget, Painter, Scale, Screens, Size,
+    SurfaceChange, SurfaceId,
 };
 use strand_text::{FontConfig, TextEngine, test_font_path};
 
@@ -778,4 +778,218 @@ fn rice_now_renders_at_fixed_times() {
     at += Duration::from_millis(500);
     paint(&mut r, &mut pixels, at);
     assert!(before == shot(&pixels), "paused: the cover holds still");
+}
+
+/// (M6) A drop handed from one monitor's dock to another's lands where
+/// it is let go when the other dock's `list` is windowed and its copy of
+/// the dragged pin is scrolled out above the mounted rows: render's
+/// `at` counts that copy (it cannot see it) and names the rows it could
+/// not see, and `Instance::drop_at` leaves the copy out (spec.md 6.7).
+/// Sixty pins, a `list` on each of two monitors; DP-2's scrolled to row
+/// 40; `p5` dragged from DP-1 and let go between DP-2's `p42` and `p43`
+/// lands between them (at 42, not 43).
+#[test]
+fn a_drop_on_a_scrolled_windowed_list_is_exact() {
+    let mut src = String::from(
+        "type Pin { app: text }\nexport state got = -1\nexport state pins: [Pin] key app = [",
+    );
+    for i in 0..60 {
+        src.push_str(&format!("Pin(app: \"p{i}\"), "));
+    }
+    src.push_str(
+        "]\nbar Dock { edge: left; width: 200\n  list { grow: 1\n    on drop(p: Pin, i: int) { got = i; pins.move(p.app, i) }\n    for p in pins { box { height: 40; drag: p } }\n  }\n}\n",
+    );
+    let mut map = SourceMap::new();
+    map.add("dock.strand", src);
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screens = ["DP-1", "DP-2"]
+        .iter()
+        .map(|n| {
+            host.record(
+                "Screen",
+                &[
+                    ("id", Value::text(format!("Mock | {n}"))),
+                    ("name", Value::text(*n)),
+                ],
+            )
+        })
+        .collect();
+    host.set(&rt, "screens.all", Value::list(screens)).unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bars: Vec<strand_scene::NodeId> = r
+        .take_surface_changes()
+        .iter()
+        .filter_map(|(id, c)| match c {
+            SurfaceChange::Created(s) if s.kind == strand_scene::NodeKind::Bar => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars.len(), 2);
+    let size = Size::new(200, 400);
+    let mut pixels = vec![0u8; (size.w * size.h * 4) as usize];
+    let surfaces = [SurfaceId(1), SurfaceId(2)];
+    let mut router = strand_render::Router::new();
+    for (s, bar) in surfaces.iter().zip(&bars) {
+        r.attach_surface(*s, *bar);
+        r.configure_surface(*s, size, Scale::ONE);
+        router.attached(*s, *bar);
+    }
+    // Paints both, answering render's window requests and layout facts
+    // until it asks for nothing more.
+    let mut settle = |r: &mut Renderer| {
+        for _ in 0..8 {
+            for s in surfaces {
+                let mut t = PaintTarget::new(&mut pixels, size, size.w * 4, Scale::ONE, 0).unwrap();
+                r.paint(s, &mut t);
+            }
+            answer_if_any(r, &inst);
+            let windows = r.take_list_windows();
+            if windows.is_empty() {
+                break;
+            }
+            for (list, rows) in windows {
+                inst.set_list_window(list, rows.start, rows.end - rows.start);
+            }
+            let mut diff = inst.flush().diff;
+            diff.layout_seen = Some(r.layout_seq());
+            r.apply(diff);
+        }
+    };
+    settle(&mut r);
+    let list_of = |r: &Renderer, bar: strand_scene::NodeId| {
+        let tree = r.tree();
+        let mut stack = vec![bar];
+        while let Some(n) = stack.pop() {
+            let node = tree.get(n).unwrap();
+            if node.kind == strand_scene::NodeKind::List {
+                return n;
+            }
+            stack.extend(node.children.iter().copied());
+        }
+        panic!("no list under {bar:?}");
+    };
+    let (list1, list2) = (list_of(&r, bars[0]), list_of(&r, bars[1]));
+    // DP-2's list scrolled to global row 40 (1,600 px).
+    let mid = strand_scene::LogicalPoint::new(100.0, 200.0);
+    assert_eq!(r.scroll(surfaces[1], mid, 1600.0), Some(list2));
+    settle(&mut r);
+    let app_of = |r: &Renderer, n: strand_scene::NodeId| {
+        let _ = r;
+        inst.drag_value(n).and_then(|v| {
+            v.as_record()
+                .and_then(|rec| rec.fields[0].as_text().map(str::to_string))
+        })
+    };
+    let row_of = |r: &Renderer, list, app: &str| {
+        r.tree()
+            .get(list)
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|n| app_of(r, *n).as_deref() == Some(app))
+    };
+    assert!(
+        row_of(&r, list2, "p5").is_none(),
+        "DP-2's p5 is not mounted"
+    );
+    let source = row_of(&r, list1, "p5").expect("DP-1 shows p5");
+    let rect = |s, n| r.boxes(s).unwrap().rects[&n];
+    let from = rect(surfaces[0], source);
+    let (l, rr) = (
+        rect(surfaces[1], row_of(&r, list2, "p42").unwrap()),
+        rect(surfaces[1], row_of(&r, list2, "p43").unwrap()),
+    );
+    let centre = |b: strand_scene::LogicalRect| {
+        strand_scene::LogicalPoint::new(b.x + b.w / 2.0, b.y + b.h / 2.0)
+    };
+    let to = strand_scene::LogicalPoint::new(centre(l).x, (centre(l).y + centre(rr).y) / 2.0);
+    let (s1, s2) = (surfaces[0], surfaces[1]);
+    let mut intents = Vec::new();
+    for e in [
+        InputEvent::PointerMotion {
+            surface: s1,
+            position: centre(from),
+            time: 0,
+        },
+        InputEvent::PointerButton {
+            surface: s1,
+            position: centre(from),
+            button: strand_scene::input::button::LEFT,
+            state: strand_scene::ButtonState::Pressed,
+            time: 0,
+        },
+        InputEvent::PointerMotion {
+            surface: s1,
+            position: strand_scene::LogicalPoint::new(centre(from).x, centre(from).y + 10.0),
+            time: 10,
+        },
+        InputEvent::PointerLeave { surface: s1 },
+        InputEvent::DragEnter {
+            surface: s2,
+            at: to,
+            kinds: vec![],
+        },
+        InputEvent::DragMotion {
+            surface: s2,
+            at: to,
+        },
+        InputEvent::DragDrop {
+            surface: s2,
+            at: to,
+            payload: strand_scene::DropPayload::Node(source),
+        },
+    ] {
+        intents.extend(router.handle(&e, &mut r));
+    }
+    let drops: Vec<_> = intents
+        .into_iter()
+        .filter_map(|i| match i {
+            strand_render::Intent::Event {
+                node,
+                event: strand_render::NodeEvent::Drop { at, hidden, .. },
+            } => Some((node, at, hidden)),
+            _ => None,
+        })
+        .collect();
+    let [(node, at, hidden)] = drops[..] else {
+        panic!("one drop: {drops:?}");
+    };
+    assert_eq!(node, list2);
+    // As `strand run`'s logic thread makes the handler's arguments.
+    let value = inst.drag_value(source).unwrap();
+    let hidden = hidden.expect("rows above DP-2's window were not seen");
+    assert_eq!(at, 43, "render counts the copy it cannot see");
+    let at = inst.drop_at(&value, at, hidden.list, hidden.before);
+    assert!(inst.event(node, "drop", vec![value, Value::int(i64::from(at))]));
+    inst.flush();
+    assert_eq!(inst.get("dock.got").unwrap(), Value::int(42));
+    let pins: Vec<String> = inst
+        .get("dock.pins")
+        .unwrap()
+        .as_list()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            p.as_record().unwrap().fields[0]
+                .as_text()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(&pins[41..44], ["p42", "p5", "p43"], "let go between them");
 }

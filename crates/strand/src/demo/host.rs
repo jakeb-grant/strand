@@ -310,7 +310,15 @@ fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Opt
                     modifiers,
                 },
                 RouteEvent::Dismiss => NodeEvent::Dismiss,
-                RouteEvent::Drop { payload, at } => NodeEvent::Drop { payload, at },
+                RouteEvent::Drop {
+                    payload,
+                    at,
+                    hidden,
+                } => NodeEvent::Drop {
+                    payload,
+                    at,
+                    hidden,
+                },
             },
         },
         Intent::Write { node, prop, value } => ToLogic::Write { node, prop, value },
@@ -1365,16 +1373,21 @@ mod tests {
     }
 
     /// (M4) A drop the Router found a target for reaches logic as
-    /// `on drop`, payload and index unchanged.
+    /// `on drop`, payload, index and (M6) hidden rows unchanged.
     #[test]
     fn drops_are_forwarded_to_logic() {
         let node = strand_scene::NodeId::new(1, 0);
         let payload = strand_scene::DropPayload::Node(strand_scene::NodeId::new(2, 0));
+        let hidden = Some(strand_render::HiddenRows {
+            list: node,
+            before: 40,
+        });
         let drop = Intent::Event {
             node,
             event: RouteEvent::Drop {
                 payload: payload.clone(),
                 at: 3,
+                hidden,
             },
         };
         assert_eq!(
@@ -1382,7 +1395,11 @@ mod tests {
             Some(ToLogic::Event {
                 input: None,
                 node,
-                event: NodeEvent::Drop { payload, at: 3 },
+                event: NodeEvent::Drop {
+                    payload,
+                    at: 3,
+                    hidden
+                },
             })
         );
     }
@@ -2004,7 +2021,8 @@ mod tests {
                 node: col,
                 event: NodeEvent::Drop {
                     payload: DropPayload::Node(rows[0]),
-                    at: 1
+                    at: 1,
+                    hidden: None
                 }
             }),
             "{sent:?}"

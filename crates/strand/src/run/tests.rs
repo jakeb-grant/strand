@@ -3268,3 +3268,62 @@ fn the_token_source_asks_main_and_hears_its_answer() {
     asks.lock().unwrap().clear();
     assert_eq!(rt.block_on(token), None);
 }
+
+/// (M6, m6-edges) A drop that names the rows render could not see
+/// (`HiddenRows`) reaches the handler through the logic thread as the
+/// binary sends it (`ToLogic::Event` with `NodeEvent::Drop`), its `at`
+/// made exact there: two windowed lists of 60 pins, the second moved
+/// to rows 40..60; `p5` of the first, dropped with render's 43 and rows
+/// 0..40 hidden, reaches `on drop` as 42, as its copy at row 5 is left
+/// out.
+#[test]
+fn a_drop_reaches_its_handler_with_the_hidden_rows_judged() {
+    let dir = temp_dir("drop-hidden");
+    let mut pins = String::new();
+    for i in 0..60 {
+        pins.push_str(&format!("Pin(app: \"p{i}\"), "));
+    }
+    let src = format!(
+        "type Pin {{ app: text }}\nbar Top {{\n  state pins: [Pin] key app = [{pins}]\n  state got = -1\n  col {{\n    text join(\" \", \"got\", got)\n    list {{ for p in pins {{ box {{ height: 10; drag: p }} }} }}\n    list {{\n      on drop(p: Pin, i: int) {{ got = i }}\n      for p in pins {{ box {{ height: 10; drag: p }} }}\n    }}\n  }}\n}}\n"
+    );
+    std::fs::write(dir.join("bar.strand"), src).unwrap();
+    let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+    m.until("the bar", |s| s.texts() == ["got -1"]);
+    let lists = m.scene.of_kind(NodeKind::List);
+    let [one, two] = lists[..] else {
+        panic!("{lists:?}\n{}", m.scene.render());
+    };
+    to_logic
+        .send(ToLogic::ListWindow {
+            list: two,
+            first: 40,
+            count: 20,
+        })
+        .unwrap();
+    m.until("the window", |s| {
+        s.prop(two, Prop::RowFirst) == Some(&PropValue::Number(40.0))
+    });
+    let source = m.scene.children(one)[5];
+    let dropped = |hidden| ToLogic::Event {
+        input: None,
+        node: two,
+        event: NodeEvent::Drop {
+            payload: strand_scene::DropPayload::Node(source),
+            at: 43,
+            hidden,
+        },
+    };
+    to_logic
+        .send(dropped(Some(strand_render::HiddenRows {
+            list: two,
+            before: 40,
+        })))
+        .unwrap();
+    m.until("the drop", |s| s.texts() == ["got 42"]);
+    to_logic.send(dropped(None)).unwrap();
+    m.until("the drop with nothing hidden", |s| s.texts() == ["got 43"]);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(dir);
+}

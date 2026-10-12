@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value as Json, json};
-use strand_dev::inspect::write::{self, Refusal, hash, prop_edit, token_edit};
+use strand_dev::inspect::write::{self, Moment, Refusal, Swap, hash, prop_edit, token_edit};
 
 fn dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("strand-dev-inspect-{name}-{}", std::process::id()));
@@ -227,7 +227,10 @@ fn is_root() -> bool {
 
 /// An editor's atomic save (a new file renamed into place) between the
 /// hash check and the write is refused, keeping the editor's text, even
-/// when it saved the very same bytes.
+/// when it saved the very same bytes: (M6) found after the exchange
+/// (`RENAME_EXCHANGE`) in the file it took out of place, and swapped
+/// back; and on a filesystem without the exchange, by the check just
+/// before the rename.
 #[test]
 fn a_rename_into_place_between_hash_and_write_is_refused() {
     let d = dir("race");
@@ -235,22 +238,193 @@ fn a_rename_into_place_between_hash_and_write_is_refused() {
     fs::write(&f, BAR).unwrap();
     let (node, files) = answer(&f, BAR);
     let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
-    for saved in [BAR.replace("width: 40", "width: 50"), BAR.to_string()] {
-        fs::write(&f, BAR).unwrap();
-        let mut called = false;
-        let r = write::write_with(&edit, |real| {
-            let tmp = real.with_extension("swp");
-            fs::write(&tmp, &saved).unwrap();
-            fs::rename(&tmp, real).unwrap();
-            called = true;
-        });
-        assert!(called);
-        assert_eq!(r, Err(Refusal::Changed(f.clone())));
-        assert_eq!(fs::read_to_string(&f).unwrap(), saved);
-        let left: Vec<_> = fs::read_dir(&d)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(left.len(), 1, "{left:?}");
+    for swap in [Swap::Exchange, Swap::Rename] {
+        for saved in [BAR.replace("width: 40", "width: 50"), BAR.to_string()] {
+            fs::write(&f, BAR).unwrap();
+            let mut called = false;
+            let r = write::write_with(&edit, swap, |m, real| {
+                if m == Moment::Before {
+                    let tmp = real.with_extension("swp");
+                    fs::write(&tmp, &saved).unwrap();
+                    fs::rename(&tmp, real).unwrap();
+                    called = true;
+                }
+            });
+            assert!(called);
+            assert_eq!(r, Err(Refusal::Changed(f.clone())), "{swap:?}");
+            assert_eq!(fs::read_to_string(&f).unwrap(), saved, "{swap:?}");
+            assert_eq!(left(&d), 1, "{swap:?}");
+        }
     }
+}
+
+/// The names in `d`.
+fn left(d: &Path) -> usize {
+    fs::read_dir(d).unwrap().count()
+}
+
+/// The names in `d` other than `keep`, with their text.
+fn others(d: &Path, keep: &Path) -> Vec<(PathBuf, String)> {
+    fs::read_dir(d)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p != keep)
+        .map(|p| {
+            let text = fs::read_to_string(&p).unwrap();
+            (p, text)
+        })
+        .collect()
+}
+
+/// (M6) The write-back race is closed with `renameat2(RENAME_EXCHANGE)`:
+/// nothing checked before the swap is trusted after it. An editor that
+/// holds the file open writes into it after the last look the write
+/// takes at it before it is replaced (`Moment::Window`): with the
+/// exchange that is after the swap, and the file swapped out is found
+/// changed (its hash) and swapped back, so the editor's text stays, in
+/// the same file (inode), and no temporary file is left. With the plain
+/// rename (where the filesystem has no exchange) it is after the check,
+/// and the write is lost: the window the exchange closes. With no writer
+/// the edit is in place and only the file is left.
+#[test]
+fn a_save_after_the_check_is_swapped_back_and_kept() {
+    use std::io::{Seek as _, Write as _};
+    use std::os::unix::fs::MetadataExt as _;
+    let d = dir("exchange");
+    let f = d.join("bar.strand");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let saved = BAR.replace("width: 40", "width: 50");
+    let edited = BAR.replace("#f38ba8", "#a6e3a1");
+    for swap in [Swap::Exchange, Swap::Rename] {
+        fs::write(&f, BAR).unwrap();
+        let ino = fs::metadata(&f).unwrap().ino();
+        let mut editor = fs::OpenOptions::new().write(true).open(&f).unwrap();
+        let mut wrote = false;
+        let r = write::write_with(&edit, swap, |m, _| {
+            if m == Moment::Window {
+                // In place, through the editor's own descriptor.
+                editor.set_len(0).unwrap();
+                editor.rewind().unwrap();
+                editor.write_all(saved.as_bytes()).unwrap();
+                editor.sync_all().unwrap();
+                wrote = true;
+            }
+        });
+        assert!(wrote, "{swap:?}");
+        if swap == Swap::Exchange {
+            assert_eq!(r, Err(Refusal::Changed(f.clone())));
+            assert_eq!(fs::read_to_string(&f).unwrap(), saved, "kept");
+            assert_eq!(fs::metadata(&f).unwrap().ino(), ino, "the editor's file");
+        } else {
+            assert_eq!(r, Ok(fs::canonicalize(&f).unwrap()));
+            assert_eq!(fs::read_to_string(&f).unwrap(), edited, "the save is lost");
+        }
+        assert_eq!(left(&d), 1, "{swap:?}");
+    }
+    // Unraced: written, by the exchange.
+    fs::write(&f, BAR).unwrap();
+    assert_eq!(
+        write::write_with(&edit, Swap::Exchange, |_, _| {}),
+        Ok(fs::canonicalize(&f).unwrap())
+    );
+    assert_eq!(fs::read_to_string(&f).unwrap(), edited);
+    assert_eq!(left(&d), 1);
+}
+
+/// (M6) The file is saved once after the exchange (written in place,
+/// found changed) and again before the swap back (`Moment::Back`: a new
+/// file renamed over the edit, or the edit written into). Nothing is
+/// removed: the latest save is put back in place, the one before it is
+/// kept at the write's temporary name, and the refusal says so. That
+/// name is the write's own, so the next edit of the file is written.
+#[test]
+fn a_second_save_before_the_swap_back_is_kept_in_place() {
+    let d = dir("twice");
+    let f = d.join("bar.strand");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let first = BAR.replace("width: 40", "width: 50");
+    let latest = BAR.replace("width: 40", "width: 60");
+    for renamed in [true, false] {
+        fs::write(&f, BAR).unwrap();
+        let mut moments = Vec::new();
+        let r = write::write_with(&edit, Swap::Exchange, |m, p| {
+            moments.push(m);
+            match m {
+                Moment::Window => fs::write(p, &first).unwrap(),
+                Moment::Back if renamed => {
+                    let swp = p.with_extension("swp");
+                    fs::write(&swp, &latest).unwrap();
+                    fs::rename(&swp, p).unwrap();
+                }
+                Moment::Back => fs::write(p, &latest).unwrap(),
+                Moment::Before => {}
+            }
+        });
+        assert_eq!(moments, [Moment::Before, Moment::Window, Moment::Back]);
+        assert_eq!(
+            fs::read_to_string(&f).unwrap(),
+            latest,
+            "renamed: {renamed}"
+        );
+        let kept = others(&d, &f);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].1, first, "the save before it");
+        let Err(Refusal::Io { file, why }) = r else {
+            panic!("{r:?}");
+        };
+        assert_eq!(file, f);
+        assert!(why.contains("saved twice"), "{why}");
+        assert!(why.contains("the edit is not applied"), "{why}");
+        assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
+        // The next edit is not blocked by the version kept.
+        let (node, files) = answer(&f, &latest);
+        let next = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+        assert_eq!(write::write(&next), Ok(fs::canonicalize(&f).unwrap()));
+        assert_eq!(
+            fs::read_to_string(&f).unwrap(),
+            latest.replace("#f38ba8", "#a6e3a1")
+        );
+        fs::remove_file(&kept[0].0).unwrap();
+        assert_eq!(left(&d), 1);
+    }
+}
+
+/// (M6) A swap back that fails (the directory made read-only before
+/// it) leaves the edit in place and the editor's save at the write's
+/// temporary name, and the refusal says both.
+#[test]
+fn a_swap_back_that_fails_says_the_edit_is_in_place() {
+    if is_root() {
+        return;
+    }
+    let d = dir("noback");
+    let f = d.join("bar.strand");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let saved = BAR.replace("width: 40", "width: 50");
+    let r = write::write_with(&edit, Swap::Exchange, |m, p| match m {
+        Moment::Window => fs::write(p, &saved).unwrap(),
+        Moment::Back => {
+            fs::set_permissions(p.parent().unwrap(), fs::Permissions::from_mode(0o555)).unwrap()
+        }
+        Moment::Before => {}
+    });
+    fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        fs::read_to_string(&f).unwrap(),
+        BAR.replace("#f38ba8", "#a6e3a1")
+    );
+    let kept = others(&d, &f);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].1, saved);
+    let Err(Refusal::Io { why, .. }) = r else {
+        panic!("{r:?}");
+    };
+    assert!(why.contains("the file holds the edit"), "{why}");
+    assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
 }

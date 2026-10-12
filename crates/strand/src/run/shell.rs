@@ -146,8 +146,14 @@ impl Shell {
                     }
                     return;
                 }
-                if let NodeEvent::Drop { payload, at } = &event {
-                    if let Some(args) = super::lists::drop_args(inst, &self.host, payload, *at) {
+                if let NodeEvent::Drop {
+                    payload,
+                    at,
+                    hidden,
+                } = &event
+                {
+                    let args = super::lists::drop_args(inst, &self.host, payload, *at, *hidden);
+                    if let Some(args) = args {
                         inst.event(node, "drop", args);
                     }
                     return;
