@@ -25,6 +25,8 @@ use crate::ty::Ty;
 use crate::vm::value::{NodeState, Slot, Value, ValueKey};
 use crate::vm::{Env, EventCtx, Frame};
 
+mod probe;
+
 /// The element a handler or timer sits on.
 #[derive(Clone)]
 pub(crate) struct ElemCtx {
@@ -222,9 +224,11 @@ struct Keyed {
     reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
     /// (M4) The `list` scene node whose direct child the `for` is: only
     /// the rows of its window are mounted ([`Instance::set_list_window`]).
+    /// (M6) With the `for`'s body, so a row not mounted can be probed
+    /// ([`probe::RowProbe`]).
     ///
     /// [`Instance::set_list_window`]: super::Instance::set_list_window
-    window: Option<strand_scene::NodeId>,
+    window: Option<(strand_scene::NodeId, Arc<Vec<Node>>)>,
 }
 
 /// Rows a virtualised list mounts before render has asked for a window
@@ -249,6 +253,8 @@ pub(crate) struct ListWindow {
     /// The global index of the first mounted row (the window clamped to
     /// the list): mounted item `i` is `all[shown + i]`.
     shown: Cell<usize>,
+    /// (M6) What its rows are made from, for a drop's `at`.
+    probe: probe::RowProbe,
 }
 
 /// The `for` of a `list` whose only content is that `for` (handlers,
@@ -2630,7 +2636,16 @@ impl Ctx {
         };
         let apply: Rc<KeyedApply> = match window {
             None => plain,
-            Some(list) => self.windowed(rt, list, frag, items, leave, arrive),
+            Some((list, nodes)) => {
+                let probe = probe::RowProbe {
+                    env: env.clone(),
+                    binding,
+                    owned: owned.clone(),
+                    nodes,
+                    prefix: prefix.clone(),
+                };
+                self.windowed(rt, list, frag, items, leave, arrive, probe)
+            }
         };
         let r = read.clone();
         match rt.untrack(|rt| r(rt, None)) {
@@ -2670,6 +2685,7 @@ impl Ctx {
     /// (not ones the data added or removed) are marked `window`, so render
     /// plays no pose or FLIP for them; `row_count` and `row_first` on the
     /// list say where the mounted rows are.
+    #[allow(clippy::too_many_arguments)]
     fn windowed(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -2678,6 +2694,7 @@ impl Ctx {
         items: Rc<RefCell<Vec<Item>>>,
         leave: Rc<Leave>,
         arrive: Rc<Arrive>,
+        probe: probe::RowProbe,
     ) -> Rc<KeyedApply> {
         let win = Rc::new(ListWindow {
             list,
@@ -2685,6 +2702,7 @@ impl Ctx {
             first: Cell::new(0),
             count: Cell::new(DEFAULT_LIST_WINDOW),
             shown: Cell::new(0),
+            probe,
         });
         // The cells of rows the window unmounted, by key: one scope per
         // row that had any, under one disposed with the list.
@@ -2992,7 +3010,7 @@ impl Ctx {
                 ),
                 at: (f.file, f.span),
                 park: false,
-                window,
+                window: window.map(|w| (w, f.body.nodes.clone())),
                 tag: format!("f{}", self.sid(f.file, f.span)),
                 reads: (
                     std::iter::once(f.iter)
@@ -3785,135 +3803,31 @@ impl super::Instance {
     /// it holds a `drag:` source whose typed identity
     /// (`strand_scene::drag_identity`: the type's name, then a keyed
     /// record's key or else the value) is the dragged one's. A row not
-    /// mounted has no `drag:` value, so it is read off the mounted rows
-    /// ([`row_drag`]): what one of each row's own `drag:` values
-    /// ([`row_drags`], render's walk) is of its item, the item itself,
-    /// its key or one of its fields, the same for every mounted row; the
-    /// hidden items are judged by that. Rows with no `drag:`, or none of
-    /// whose `drag:` values is one of those, are never copies, as render
-    /// counts none of them while mounted either; a mounted window says
-    /// nothing of the rows before it only when no one way fits all its
-    /// rows (decisions.md m6-edges). Render
-    /// sends `before` only when it left out no mounted copy before the
-    /// pointer and the source is not one of the list's rows. A list
-    /// that is gone leaves `at` as it is.
+    /// mounted has no `drag:` value, so its own are worked out from its
+    /// item: its tree is walked and each `drag:` source in it evaluated
+    /// as if it were mounted ([`probe::RowProbe`]; decisions.md m6-edges,
+    /// m6-integration-w1). Render sends `before` only when it left out
+    /// no mounted copy before the pointer and the source is not one of
+    /// the list's rows. A list that is gone leaves `at` as it is.
     pub fn drop_at(&self, value: &Value, at: u32, list: strand_scene::NodeId, before: u32) -> u32 {
         let win = match self.ctx.list_windows.borrow().get(&list) {
             Some((_, win)) => win.clone(),
             None => return at,
         };
         let types = &self.ctx.vm.prog.types;
-        let all = win.all.borrow();
-        let mounted: Vec<(Value, Vec<Value>)> = {
-            let em = self.ctx.em.borrow();
-            let drags = self.ctx.drags.borrow();
-            let shown = win.shown.get();
-            em.children_of(Some(list))
-                .iter()
-                .enumerate()
-                .filter_map(|(i, row)| {
-                    let (_, item) = all.get(shown + i)?;
-                    let held = row_drags(&em, &drags, *row);
-                    (!held.is_empty()).then(|| (item.clone(), held))
-                })
-                .collect()
-        };
-        let Some(of) = row_drag(types, &mounted) else {
-            return at;
-        };
         let id = drag_identity(types, value);
-        let hidden = &all[..(before as usize).min(all.len())];
-        if hidden.iter().any(|(_, item)| {
-            of.apply(types, item)
-                .is_some_and(|d| drag_identity(types, &d) == id)
-        }) {
-            at.saturating_sub(1)
-        } else {
-            at
-        }
+        let hidden: Vec<(ValueKey, Value)> = {
+            let all = win.all.borrow();
+            all[..(before as usize).min(all.len())].to_vec()
+        };
+        let copy = hidden.iter().any(|(key, item)| {
+            self.ctx
+                .probe_row(&self.rt, &win.probe, key, item)
+                .iter()
+                .any(|d| drag_identity(types, d) == id)
+        });
+        if copy { at.saturating_sub(1) } else { at }
     }
-}
-
-/// (M6) The `drag:` values a row with scene node `row` holds as its
-/// list's item, by render's own walk (`drop_index`'s `copy`): every
-/// `drag:` source in the row, nearest first, except under another list
-/// inside it (a `list`, or an element holding a `for`'s rows,
-/// `Prop::DropRows`), where only that element's own content
-/// (`Prop::NotRow`) is the row's. So a dock item's window dots, the
-/// rows of its `for`, are not its `drag:` values whether they come
-/// before or after its icon (edges-r2-1).
-fn row_drags(
-    em: &super::emit::Emitter,
-    drags: &HashMap<strand_scene::NodeId, Value>,
-    row: strand_scene::NodeId,
-) -> Vec<Value> {
-    let flag = |n: strand_scene::NodeId, p: SceneProp| {
-        matches!(
-            em.sent.get(&n).and_then(|m| m.get(&p)),
-            Some(PropValue::Bool(true))
-        )
-    };
-    let boundary = |n: strand_scene::NodeId| {
-        em.nodes.get(&n).is_some_and(|e| e.kind == NodeKind::List) || flag(n, SceneProp::DropRows)
-    };
-    let mut out = Vec::new();
-    let mut level = vec![row];
-    while !level.is_empty() {
-        out.extend(level.iter().filter_map(|n| drags.get(n)).cloned());
-        level = level
-            .iter()
-            .flat_map(|&n| {
-                let inner = boundary(n);
-                em.children_of(Some(n))
-                    .iter()
-                    .copied()
-                    .filter(move |&c| !inner || flag(c, SceneProp::NotRow))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-    }
-    out
-}
-
-/// (M6) What a list row's `drag:` value is of its item.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum RowDrag {
-    /// The item.
-    Item,
-    /// Its identity (a keyed record's key).
-    Key,
-    /// A field of a record item.
-    Field(usize),
-}
-
-impl RowDrag {
-    /// The `drag:` value a row of `item` would hold.
-    fn apply(self, types: &crate::ty::TypeTable, item: &Value) -> Option<Value> {
-        match self {
-            RowDrag::Item => Some(item.clone()),
-            RowDrag::Key => Some(item.identity(types)),
-            RowDrag::Field(i) => item.as_record()?.fields.get(i).cloned(),
-        }
-    }
-}
-
-/// (M6) The one [`RowDrag`] that gives one of each mounted row's `drag:`
-/// values (by typed identity, as render compares them) from its item,
-/// as `(item, drags)` pairs: the item before its key before a field.
-/// `None` when no row has a `drag:`, or none fits every row.
-fn row_drag(types: &crate::ty::TypeTable, mounted: &[(Value, Vec<Value>)]) -> Option<RowDrag> {
-    let (first, _) = mounted.first()?;
-    let fields = first.as_record().map_or(0, |r| r.fields.len());
-    let mut ways = vec![RowDrag::Item, RowDrag::Key];
-    ways.extend((0..fields).map(RowDrag::Field));
-    ways.into_iter().find(|way| {
-        mounted.iter().all(|(item, drags)| {
-            way.apply(types, item).is_some_and(|d| {
-                let id = drag_identity(types, &d);
-                drags.iter().any(|g| drag_identity(types, g) == id)
-            })
-        })
-    })
 }
 
 /// A type's name as drag and drop matches it: the checker's display

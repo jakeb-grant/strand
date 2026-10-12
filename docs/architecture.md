@@ -468,7 +468,10 @@ the helper and runs `pre_exec` in the child between fork and exec;
 conversation whose texts and prompts arrive as PAM says them and whose
 prompts take the passwords sent through its `Answers`;
 `submit(password) -> Verdict`, a conversation whose every prompt gets
-that password; deadlines, respawn on a dead helper, with the same hook),
+that password, and (M6, m6-integration-w1) `submit_saying(password,
+&mut dyn FnMut(Said)) -> Verdict`, the same with each text and prompt
+told as PAM says it, which the fallback lock's checker uses to show
+PAM's text while its check runs; deadlines, respawn on a dead helper, with the same hook),
 password buffers that zeroize on drop, and `UnlockToken`:
 a value only `Client` mints, from a success reply, which is `Send` and
 neither `Clone` nor constructible elsewhere. `strand-surface` releases
@@ -655,7 +658,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `offscreen.rs` (M4: cached offscreen groups and CPU raster nodes),
   `clock.rs` (M4: per-node clocks with frame caps), `time.rs` (M4: `t`,
   `wave`, `noise` evaluated per node), `lock_fallback.rs` (the built-in
-  fallback lock, drawn with no text worker).
+  fallback lock, drawn with no text worker; (M6, m6-integration-w1)
+  with PAM's text below its field in a 5×7 bitmap font of its own,
+  `lock_fallback/font.rs`: `LockFallback::set_message(&str) -> bool`,
+  and `lock_fallback::paint(target, dots, state, message)` takes the
+  text as its new last argument).
 - `shapes/` (S-effects): `mod.rs` (the shape library as outlines and
   paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
   morphs, held by the `Animator`), `stroke.rs` (stroke styles: trim,
@@ -2188,9 +2195,19 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     `run/lists.rs::drop_args` then asks `Instance::drop_at(value, at,
     list, before) -> u32`, which leaves out (`at - 1`) an item among the
     list's first `before` that is a copy by render's test: its row's
-    `drag:` value has the dragged value's typed identity
-    (`strand_scene::drag_identity`), that value read off the mounted
-    rows as the item, its key or one of its fields. Logic, not render, because logic holds every item
+    `drag:` values include one with the dragged value's typed identity
+    (`strand_scene::drag_identity`). A row not mounted has none, so
+    logic works them out from its item (m6-integration-w1, replacing
+    S-edges' guess from the mounted rows): `ListWindow` keeps the
+    `for`'s body, binding and scope (`mount::probe::RowProbe`), and
+    `Ctx::probe_row` walks the row's tree as mounting would (`if`,
+    `match`, components and their slots, `let`s, a `state` read from
+    the cell the row keeps while scrolled out or else its initial
+    value), evaluating each `drag:` source (its last holding `when`,
+    a laid-out size read as before layout) in a scope disposed after,
+    with render's boundaries (a nested `list`'s or `for`'s rows are not
+    the row's); nothing reaches the scene, the registry or the
+    services. Logic, not render, because logic holds every item
     (`ListWindow::all`; `Ctx::list_windows` now keeps the window beside
     its setter); render alone would need each row's identity for the
     whole list sent with every change.

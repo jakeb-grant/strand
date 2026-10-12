@@ -15,6 +15,10 @@
 //! signed distances (antialiased, at any scale), holding one dot per
 //! character typed; the field's border says idle, checking or refused.
 //!
+//! (M6) Below the field it shows PAM's last text ("Place your finger on
+//! the fingerprint reader"), in a 5×7 bitmap font of its own (`font`):
+//! printable ASCII, anything else as a box, at most three lines.
+//!
 //! The typed bytes live in one buffer sized once to PAM's limit and wiped
 //! (volatile writes) whenever they are cleared or handed out and when the
 //! fallback is dropped, so no reallocation leaves a copy behind. A
@@ -22,6 +26,8 @@
 //! (decisions.md, m4-lock-w1).
 
 use strand_scene::{ButtonState, Color, Damage, KeyInput, PaintTarget};
+
+mod font;
 
 /// The most bytes a password may have: PAM's response limit less its
 /// NUL (`strand_auth::protocol::MAX_PASSWORD`; render does not depend on
@@ -31,6 +37,12 @@ pub const MAX_PASSWORD: usize = 511;
 
 /// Dots shown at most; more characters keep the field full.
 pub const MAX_DOTS: usize = 24;
+
+/// (M6) The most characters of PAM's text kept; more is cut.
+pub const MAX_MESSAGE: usize = 240;
+
+/// Lines of PAM's text shown at most.
+const MESSAGE_LINES: usize = 3;
 
 /// The field's state, shown by its border (and a tint when refused).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -61,6 +73,8 @@ pub struct LockFallback {
     /// More was typed than [`MAX_PASSWORD`] holds.
     too_long: bool,
     state: FieldState,
+    /// (M6) What PAM last said, shown below the field ("" for nothing).
+    message: String,
 }
 
 impl std::fmt::Debug for LockFallback {
@@ -68,6 +82,7 @@ impl std::fmt::Debug for LockFallback {
         // Never the password, nor its length.
         f.debug_struct("LockFallback")
             .field("state", &self.state)
+            .field("message", &self.message)
             .finish_non_exhaustive()
     }
 }
@@ -94,7 +109,30 @@ impl LockFallback {
             secret: Vec::with_capacity(MAX_PASSWORD + 4),
             too_long: false,
             state: FieldState::Idle,
+            message: String::new(),
         }
+    }
+
+    /// (M6) What PAM last said, as shown below the field.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// (M6) Shows `message` below the field (PAM's text as it said it;
+    /// "" shows none), its control characters but line breaks as spaces
+    /// and cut to [`MAX_MESSAGE`] characters. True when it changed.
+    pub fn set_message(&mut self, message: &str) -> bool {
+        let clean: String = message
+            .trim()
+            .chars()
+            .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
+            .take(MAX_MESSAGE)
+            .collect();
+        if clean == self.message {
+            return false;
+        }
+        self.message = clean;
+        true
     }
 
     pub fn state(&self) -> FieldState {
@@ -149,6 +187,8 @@ impl LockFallback {
                     return Action::Changed;
                 }
                 self.state = FieldState::Checking;
+                // A new check: what PAM said about the last one goes.
+                self.message.clear();
                 let mut out = Vec::with_capacity(MAX_PASSWORD + 4);
                 out.extend_from_slice(&self.secret);
                 self.clear();
@@ -214,7 +254,7 @@ impl LockFallback {
     /// Paints the whole frame into `target` and returns its damage (all
     /// of it).
     pub fn paint(&self, target: &mut PaintTarget<'_>) -> Damage {
-        paint(target, self.chars(), self.state)
+        paint(target, self.chars(), self.state, &self.message)
     }
 }
 
@@ -237,6 +277,7 @@ const BORDER_IDLE: Color = rgb(0x58, 0x5b, 0x70);
 const BORDER_CHECKING: Color = rgb(0x89, 0xb4, 0xfa);
 const BORDER_FAILED: Color = rgb(0xf3, 0x8b, 0xa8);
 const DOT: Color = rgb(0xcd, 0xd6, 0xf4);
+const MESSAGE: Color = rgb(0xba, 0xc2, 0xde);
 
 /// The field's size, border, dot radius and dot pitch in logical pixels.
 const FIELD_W: f32 = 320.0;
@@ -244,10 +285,19 @@ const FIELD_H: f32 = 48.0;
 const BORDER: f32 = 2.0;
 const DOT_R: f32 = 5.0;
 const DOT_PITCH: f32 = 12.0;
+/// PAM's text: one font pixel's size, and the gap above it.
+const FONT_PX: f32 = 2.0;
+const MESSAGE_GAP: f32 = 16.0;
 
 /// Paints the fallback with `dots` characters typed in `state` into
-/// `target`: the background over every pixel, the field centred.
-pub fn paint(target: &mut PaintTarget<'_>, dots: usize, state: FieldState) -> Damage {
+/// `target`: the background over every pixel, the field centred, and
+/// (M6) `message` (PAM's text) centred below it.
+pub fn paint(
+    target: &mut PaintTarget<'_>,
+    dots: usize,
+    state: FieldState,
+    message: &str,
+) -> Damage {
     let (w, h) = (target.size.w as usize, target.size.h as usize);
     let stride = target.stride as usize;
     let s = target.scale.as_f32();
@@ -308,7 +358,52 @@ pub fn paint(target: &mut PaintTarget<'_>, dots: usize, state: FieldState) -> Da
             }
         }
     }
+    paint_message(target, message, fw, cy + fh / 2.0 + MESSAGE_GAP * s);
     Damage::full(target.size)
+}
+
+/// Draws `text` in the fallback's font, each line centred, as wide as
+/// `width` at most, from `top` down (clipped to the target).
+fn paint_message(target: &mut PaintTarget<'_>, text: &str, width: f32, top: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let (w, h) = (target.size.w as usize, target.size.h as usize);
+    let stride = target.stride as usize;
+    // Whole device pixels per font pixel: crisp at any scale.
+    let k = (FONT_PX * target.scale.as_f32()).round().max(1.0) as usize;
+    let advance = (font::W + 1) * k;
+    let per_line = (width as usize + k) / advance;
+    let top = top.round().max(0.0) as usize;
+    for (n, line) in font::wrap::<MESSAGE_LINES>(text, per_line)
+        .iter()
+        .enumerate()
+    {
+        let Some(line) = line else {
+            break;
+        };
+        let chars = line.chars().count();
+        let span = (chars * advance).saturating_sub(k);
+        let left = w.saturating_sub(span) / 2;
+        let y0 = top + n * (font::H + 3) * k;
+        for (i, c) in line.chars().enumerate() {
+            let x0 = left + i * advance;
+            for (row, bits) in font::glyph(c).iter().enumerate() {
+                for col in 0..font::W {
+                    if bits & (1 << (font::W - 1 - col)) == 0 {
+                        continue;
+                    }
+                    let (px, py) = (x0 + col * k, y0 + row * k);
+                    for y in py..(py + k).min(h) {
+                        for x in px..(px + k).min(w) {
+                            let i = y * stride + x * 4;
+                            over(&mut target.pixels[i..i + 4], MESSAGE, 1.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The signed distance from (`x`, `y`) to a rounded rectangle centred at
@@ -459,6 +554,21 @@ mod tests {
             Action::Submit(b) => assert_eq!(b.len(), MAX_PASSWORD),
             a => panic!("{a:?}"),
         }
+    }
+
+    /// (M6) PAM's text is kept cleaned and cut, and a new check clears it.
+    #[test]
+    fn pams_text_is_kept_until_the_next_check() {
+        let mut f = LockFallback::new();
+        assert!(f.set_message("  Place your finger\ton the reader\n"));
+        assert_eq!(f.message(), "Place your finger on the reader");
+        assert!(!f.set_message("Place your finger on the reader"));
+        assert!(f.set_message(&"x".repeat(MAX_MESSAGE + 10)));
+        assert_eq!(f.message().len(), MAX_MESSAGE);
+        f.key(&press("a", "a"));
+        assert_eq!(f.message().len(), MAX_MESSAGE, "typing keeps it");
+        assert!(matches!(f.key(&press("Return", "\r")), Action::Submit(_)));
+        assert_eq!(f.message(), "", "a new check clears it");
     }
 
     /// The buffer never reallocates, and cleared bytes are zero in its

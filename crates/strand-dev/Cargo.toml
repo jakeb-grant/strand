@@ -43,6 +43,9 @@ strand-text.workspace = true
 # layout").
 tree-sitter = "0.27.0"
 tree-sitter-strand = { path = "tree-sitter-strand" }
+# `tests/inspect.rs` makes `renameat2(RENAME_EXCHANGE)` fail in one test
+# thread (a seccomp filter), as on a filesystem without the exchange.
+libc = "0.2.190"
 
 [lints]
 workspace = true

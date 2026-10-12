@@ -430,6 +430,9 @@ pub(crate) enum LockMsg {
     AuthFailed(String, u64),
     /// The fallback's own check answered.
     Checked(u64, Verdict),
+    /// (M6) PAM said a text during the fallback's own check ("Place your
+    /// finger on the fingerprint reader"): the field shows it.
+    Said(u64, String),
 }
 
 /// The fallback while it is shown.
@@ -461,8 +464,14 @@ impl Checker {
                         client = strand_auth::default_helper()
                             .map(|h| Client::new(h, strand_services::child::restore_in_child));
                     }
+                    let told = reply.clone();
+                    let mut said = |s: strand_auth::Said<'_>| {
+                        if let strand_auth::Said::Message(m) = s {
+                            let _ = told.send(LockMsg::Said(session, m.to_string()));
+                        }
+                    };
                     let verdict = match client.as_mut() {
-                        Some(c) => c.submit(password),
+                        Some(c) => c.submit_saying(password, &mut said),
                         None => Verdict::Failed(AuthError::Spawn(io::Error::new(
                             io::ErrorKind::NotFound,
                             "no `strand-auth` helper is installed",
@@ -725,6 +734,23 @@ impl LockScreen {
                 None
             }
             LockMsg::Checked(tag, v) => self.checked(tag, v),
+            LockMsg::Said(tag, text) => {
+                self.said(tag, &text);
+                None
+            }
+        }
+    }
+
+    /// (M6) PAM said `text` during the fallback's check begun in lock
+    /// session `tag`: the field shows it below itself.
+    pub(crate) fn said(&mut self, tag: u64, text: &str) {
+        if !self.current(tag, "PAM's text") {
+            return;
+        }
+        if let Some(f) = self.fallback.as_mut()
+            && f.field.set_message(text)
+        {
+            f.dirty = true;
         }
     }
 
@@ -749,9 +775,16 @@ impl LockScreen {
                 Some(token)
             }
             Verdict::Denied { message } => {
-                if let Some(m) = message {
+                if let Some(m) = &message {
                     log::info!("lock: refused: {m}");
                 }
+                // What PAM said last (the denial's own text, after what
+                // it said on the way), or nothing.
+                let last = message
+                    .as_deref()
+                    .and_then(|m| m.lines().rev().find(|l| !l.trim().is_empty()))
+                    .unwrap_or("");
+                f.field.set_message(last);
                 f.field.set_state(FieldState::Failed);
                 None
             }
@@ -1652,6 +1685,59 @@ mod tests {
         s.show("test again");
         assert!(s.checked(now, Verdict::Denied { message: None }).is_none());
         assert_eq!(field(&s), Some(FieldState::Failed));
+    }
+
+    /// (M6, m6-integration-w1) What PAM says during the fallback's own
+    /// check shows below its field ("Place your finger on the fingerprint
+    /// reader" while the reader waits), repainting it; a text from an
+    /// ended lock session is dropped; a refusal shows PAM's last line of
+    /// it, and none when it gave none.
+    #[test]
+    fn the_fallback_shows_what_pam_says() {
+        let mut s = LockScreen::default();
+        s.changed(LockState::Locked);
+        s.show("test");
+        // The session begins on the first sight of the lock.
+        s.see(true);
+        let now = s.generation();
+        let shown = |s: &LockScreen| {
+            s.fallback
+                .as_ref()
+                .map(|f| (f.field.message().to_string(), f.dirty))
+        };
+        if let Some(f) = s.fallback.as_mut() {
+            f.dirty = false;
+        }
+        let finger = "Place your finger on the fingerprint reader";
+        assert!(
+            s.answer(LockMsg::Said(now, finger.to_string()), true)
+                .is_none()
+        );
+        assert_eq!(shown(&s), Some((finger.to_string(), true)));
+        assert!(
+            s.answer(
+                LockMsg::Checked(
+                    now,
+                    Verdict::Denied {
+                        message: Some(format!("{finger}\nAuthentication failure\n")),
+                    },
+                ),
+                true,
+            )
+            .is_none()
+        );
+        assert_eq!(
+            shown(&s).map(|m| m.0),
+            Some("Authentication failure".to_string())
+        );
+        s.checked(now, Verdict::Denied { message: None });
+        assert_eq!(shown(&s).map(|m| m.0), Some(String::new()));
+        // A text from a lock that has ended.
+        s.changed(LockState::Unlocked);
+        s.changed(LockState::Locked);
+        s.show("again");
+        s.said(now, finger);
+        assert_eq!(shown(&s).map(|m| m.0), Some(String::new()));
     }
 
     /// (m4-audit) A check begun while no lock was active (an

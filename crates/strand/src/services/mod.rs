@@ -640,6 +640,40 @@ mod tests {
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.
+    /// (M6, m6-integration-w1) The compiler's provisional stub of each
+    /// service (what a tool holding only `Schema::builtin()` checks a
+    /// config against) has the members its service schema declares:
+    /// the same fields (name, type, writable), methods and actions, and
+    /// events, so a config that uses one (`auth.message`) is not
+    /// rejected there.
+    #[test]
+    fn each_builtin_stub_has_its_service_schemas_members() {
+        let full = schema();
+        let stub = Schema::builtin();
+        let members = |s: &Schema, name: &str| {
+            let rec = s.types.record(s.services[name]);
+            let fields: Vec<(String, String, bool)> = rec
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), s.types.show(&f.ty).to_string(), f.rw))
+                .collect();
+            let methods: Vec<String> = rec.methods.iter().map(|m| m.name.clone()).collect();
+            let events: Vec<String> = rec.events.iter().map(|e| e.name.clone()).collect();
+            (fields, methods, events)
+        };
+        let mut drift = Vec::new();
+        for name in &stub.provisional {
+            if !stub.services.contains_key(name) || !full.services.contains_key(name) {
+                continue;
+            }
+            let (a, b) = (members(stub, name), members(full, name));
+            if a != b {
+                drift.push(format!("{name}:\n  stub   {a:?}\n  schema {b:?}"));
+            }
+        }
+        assert!(drift.is_empty(), "{}", drift.join("\n"));
+    }
+
     #[test]
     fn service_schemas_extend_the_builtin_one() {
         // Every text applies (a failing one would leave `schema()` on the

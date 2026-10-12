@@ -625,3 +625,123 @@ fn a_failed_swap_back_with_no_file_says_none_is_there() {
     assert!(why.contains("no file is there now"), "{why}");
     assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
 }
+
+/// Makes `renameat2` with `RENAME_EXCHANGE` fail with `errno` in this
+/// thread only (a seccomp filter; every other call, plain renames
+/// included, goes through), as a filesystem without the exchange
+/// answers it (`EINVAL`, or `ENOSYS` before Linux 3.15). False where
+/// the filter cannot be installed.
+fn no_exchange_in_this_thread(errno: i32) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: u32 = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: u32 = 0xc000_00b7;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    return false;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        const LD_W_ABS: u16 = 0x20;
+        const JEQ_K: u16 = 0x15;
+        const JSET_K: u16 = 0x45;
+        const RET_K: u16 = 0x06;
+        const RET_ALLOW: u32 = 0x7fff_0000;
+        const RET_ERRNO: u32 = 0x0005_0000;
+        const RENAME_EXCHANGE: u32 = 2;
+        let op = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+        let filter = [
+            // seccomp_data: nr at 0, arch at 4, args[4] (the flags) at 48.
+            op(LD_W_ABS, 0, 0, 4),
+            op(JEQ_K, 0, 5, ARCH),
+            op(LD_W_ABS, 0, 0, 0),
+            op(JEQ_K, 0, 3, libc::SYS_renameat2 as u32),
+            op(LD_W_ABS, 0, 0, 48),
+            op(JSET_K, 0, 1, RENAME_EXCHANGE),
+            op(RET_K, 0, 0, RET_ERRNO | errno as u32),
+            op(RET_K, 0, 0, RET_ALLOW),
+        ];
+        let prog = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr().cast_mut(),
+        };
+        // SAFETY: plain prctl calls; `prog` outlives them and the kernel
+        // copies the filter. Without TSYNC the filter is this thread's.
+        unsafe {
+            libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0
+                && libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &prog as *const libc::sock_fprog,
+                ) == 0
+        }
+    }
+}
+
+/// (M6, m6-integration-w1, sweep-7) Where the filesystem has no
+/// `RENAME_EXCHANGE` (`EINVAL`, or `ENOSYS` before Linux 3.15), `write`
+/// (`Swap::Auto`) falls back to the checked rename: the edit is written,
+/// the window's look is at the file itself (the rename's, not the
+/// exchange's temporary name), and a save renamed into place before the
+/// check is refused as `Changed`. Any other failure of the exchange is
+/// an error, not a fallback, and `Swap::Exchange` never falls back. The
+/// exchange is made to fail by a seccomp filter on the test's thread.
+#[test]
+fn a_filesystem_without_the_exchange_falls_back_to_the_checked_rename() {
+    let d = dir("noexchange");
+    let f = d.join("bar.strand");
+    fs::write(&f, BAR).unwrap();
+    let real = fs::canonicalize(&f).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let edited = BAR.replace("#f38ba8", "#a6e3a1");
+    let saved = BAR.replace("width: 40", "width: 50");
+    for (errno, falls_back) in [
+        (libc::EINVAL, true),
+        (libc::ENOSYS, true),
+        (libc::EPERM, false),
+    ] {
+        let (d, f, real, edit) = (d.clone(), f.clone(), real.clone(), edit.clone());
+        let (edited, saved) = (edited.clone(), saved.clone());
+        std::thread::spawn(move || {
+            assert!(no_exchange_in_this_thread(errno), "the seccomp filter");
+            fs::write(&f, BAR).unwrap();
+            let mut moments = Vec::new();
+            let r = write::write_with(&edit, Swap::Auto, |m, p| moments.push((m, p.to_path_buf())));
+            if !falls_back {
+                assert!(matches!(r, Err(Refusal::Io { .. })), "errno {errno}: {r:?}");
+                assert_eq!(fs::read_to_string(&f).unwrap(), BAR, "errno {errno}");
+                assert_eq!(left(&d), 1, "errno {errno}");
+                return;
+            }
+            assert_eq!(r, Ok(real.clone()), "errno {errno}");
+            assert_eq!(fs::read_to_string(&f).unwrap(), edited, "errno {errno}");
+            assert_eq!(
+                moments,
+                [
+                    (Moment::Before, real.clone()),
+                    (Moment::Window, real.clone())
+                ],
+                "errno {errno}: the checked rename's moments"
+            );
+            assert_eq!(left(&d), 1, "errno {errno}");
+            // The check before the rename still refuses a save.
+            fs::write(&f, BAR).unwrap();
+            let r = write::write_with(&edit, Swap::Auto, |m, p| {
+                if m == Moment::Before {
+                    let tmp = p.with_extension("swp");
+                    fs::write(&tmp, &saved).unwrap();
+                    fs::rename(&tmp, p).unwrap();
+                }
+            });
+            assert_eq!(r, Err(Refusal::Changed(f.clone())), "errno {errno}");
+            assert_eq!(fs::read_to_string(&f).unwrap(), saved, "errno {errno}");
+            assert_eq!(left(&d), 1, "errno {errno}");
+            // `Exchange` alone never falls back.
+            fs::write(&f, BAR).unwrap();
+            let r = write::write_with(&edit, Swap::Exchange, |_, _| {});
+            assert!(matches!(r, Err(Refusal::Io { .. })), "errno {errno}: {r:?}");
+            assert_eq!(fs::read_to_string(&f).unwrap(), BAR, "errno {errno}");
+        })
+        .join()
+        .unwrap();
+    }
+}

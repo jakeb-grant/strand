@@ -1,71 +1,62 @@
-# Handoff: M5 closing (updated 2026-10-12)
+# Handoff: M6 wave 1 (updated 2026-10-12)
 
-M5's work is done on the integration branch `laptop/m5-w3`: every
-stream of waves 0–3 is merged, the integrator's sweep closed what the
-waves left, all ten of M5's feature boxes are ticked, the language is
-frozen, and GitHub CI is green on every job at the head. What is left
-is the owner's: the newcomer trials (or Q15's fallback), the close gate,
-one proposed interface field, and the fast-forward of `main`. Read this
-first when picking the repo up cold, then `docs/m5-report.md` (what M5
-delivered, sizes, memory, timing, rulings, what remains),
-`docs/m5-plan.md` (streams, ledger, closing checks), `docs/decisions.md`
-(the `## m5-*` sections; the integrator's `## m5-integration`,
-`-w1`, `-w2` and `-w3` hold the merges and the sweep) and
-`docs/features.md`. `docs/m4-report.md` has M4's numbers.
+M5 is closed on `main` (`361296e`). M6 wave 1 (hardening, approved by
+the owner 2026-10-12) is on the integration branch `laptop/m6-w1`: its
+four streams are merged and the integrator's sweep has closed what they
+left. Read this first when picking the repo up cold, then
+`docs/features.md` ("M6 Hardening"), `docs/decisions.md` (the
+`## m6-*` sections; `## m6-integration-w1` holds the merges and the
+sweep), and for M5's numbers `docs/m5-report.md`.
 
-## State after M5
+## State after M6 wave 1
 
-- **M0–M4 are complete; M5 is complete but for its newcomer exit.**
-  features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14, M4 18/18, **M5
-  11/12** (ten boxes and the freeze exit ticked; the newcomer exit
-  waits on the owner).
-- **Branches.** `main` is at `aa3053c` (waves 0–2). `laptop/m5-w3`
-  (from `aa3053c`) holds wave 3, the sweep, the freeze and the closing
-  paperwork; it is what the owner fast-forwards `main` to.
-- **Wave 3** (decisions.md m5-integration-w3): S-fixups (wave 2's
-  stragglers, `strand report`'s grim reference PNGs), S-inspect's render
-  and binary half (pick, outline, flash, `strand-dev inspect` with
-  write-back), S-platform (xdg-activation), S-docs (ladder test,
-  generated reference, newcomer test, agent-proxy harness, spec review),
-  each reviewed in up to three rounds before its merge; then the
-  integrator's sweep (Hyprland's activation policy through `hyprctl
-  eval`, the `run:` THP restore, the equality rule, canvas paint order,
-  the shader "why" line, the GPU box on hardware, a strand-auth flake)
-  and the freeze commit (`672b114`). m5-report.md lists every wave.
-- **No stragglers.** Every item handoff.md deferred from wave 2 (the
-  inspector's render half, S-platform, S-docs' wave-3 work, and the
-  five proposed fixes for other owners: `drop_index`, `rw_root`,
-  `Document::parse`, the tray `open()` doc, the plugins' leftover-file
-  log level, kept at `info` with its reason) is built or ruled on
-  (m5-fixups, m5-integration-w3). Nothing wave 3 left is unowned:
-  S-inspect's deferred shader "why" was built in the sweep and S-docs'
-  proposed equality change landed.
-- **Checks on the head.** GitHub CI run 38220728825 at `672b114`: lint,
-  test, budgets, acceptance, timing, compositors (Hyprland 0.56.2
-  included) and lock-vm all green. Locally in the sweep: the lock VM's
-  `scenarios/all.sh`, the hardware `gpu.sh` leg, the
-  `--no-default-features` clippy and build; at close,
-  `scripts/size-report.sh` and the release budgets test (11 passed).
-  **Not yet run on the head**: the laptop's `run.sh ci` and `matrix.sh`
-  (the closing tasks were held to crate-scoped tests); the standing
-  fast-forward approval needs both.
+- **M0–M4 are complete; M5 is complete but for its newcomer exit**
+  (features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14, M4 18/18, M5
+  11/12, the newcomer exit waiting on the owner). **M6 Hardening** has
+  ten boxes, all ticked.
+- **Branches.** `main` is at `361296e` (M5's close). `laptop/m6-w1`
+  (from `361296e`) holds wave 1: S-services (`laptop/m6-services`,
+  fast-forwarded), S-edges (`laptop/m6-edges`), S-lock
+  (`laptop/m6-lock`) and S-flakes (`laptop/m6-flakes`), merged in that
+  order, then the integrator's sweep. It is what the owner
+  fast-forwards `main` to.
+- **What wave 1 did** (decisions.md m6-services, m6-edges, m6-lock,
+  m6-flakes, m6-integration-w1): remote media art fetched and cached;
+  enterprise and WEP joins; `Notification.time` with its time of day;
+  `StepVolume` removed; a drop's `at` exact in a windowed `list` (the
+  sweep made it exact for every row shape: logic works out a hidden
+  row's `drag:` values from its item); inspector write-back by
+  `renameat2(RENAME_EXCHANGE)`; PAM's texts and prompts in the lock
+  (`auth.message`, `auth.prompt`), and in the sweep in the built-in
+  fallback too; the CI flakes fixed at their causes; the compiler's
+  provisional service stubs brought level with the service schemas.
+- **Budgets re-based** in wave 1: remote media art links an HTTPS stack
+  (ureq, rustls), so both `.text` gates moved to 19,922,944 B (CPU-only)
+  and 23,855,104 B (GPU), measured plus 64 KiB rounded up to 256 KiB
+  (decisions.md m6-integration-w1, the S-services merge).
+- **Checks.** Each merge and the sweep ran fmt, workspace clippy and
+  the touched crates' tests in the container, and the lock VM's
+  `scenarios/all.sh` where lock code changed. **Not yet run on the
+  head**: the laptop's `run.sh ci` and `matrix.sh`, and GitHub CI on the
+  pushed head; the standing fast-forward approval needs all three.
 
 ## Next
 
-1. **The laptop's full set on the closing head**, one at a time:
-   `scripts/container/run.sh ci`, then `scripts/container/matrix.sh`.
-   With GitHub CI already green, that meets the standing approval for
-   the owner's fast-forward of `main` to `laptop/m5-w3`.
-2. **The owner's open items** below; the human trials' results go in
-   m5-report.md's "Human trials" table.
-3. **After the fast-forward**: delete the merged wave-3 branches
+1. **The laptop's full set on the head of `laptop/m6-w1`**, one at a
+   time: `scripts/container/run.sh ci`, then
+   `scripts/container/matrix.sh`; and GitHub CI green on the same
+   commit. That meets the standing approval for the fast-forward of
+   `main`.
+2. **The owner's open items** below.
+3. **After the fast-forward**: delete the merged branches
+   (`laptop/m6-w1`, `m6-services`, `m6-edges`, `m6-lock`, `m6-flakes`)
+   from the remote, as earlier waves' were; M5's wave-3 branches
    (`laptop/m5-w3`, `m5-fixups`, `m5-inspect`, `m5-platform`,
-   `m5-docs3`) from the remote, as earlier waves' were.
-4. **M6 or later** is not planned in features.md. The candidates are
-   m5-report.md's "What remains" and the known limits below; the 1.0
-   release is the owner's call once Strand has been used for a while
-   (Q20). From here a change to grammar.md or spec.md needs a
-   decisions.md paragraph citing spec.md 14's compatibility policy.
+   `m5-docs3`) too if they are still there.
+4. **Later M6 waves** are the owner's to plan; candidates are the known
+   limits below and m5-report.md's "What remains". The language is
+   frozen: a change to grammar.md or spec.md needs a decisions.md
+   paragraph citing spec.md 14's compatibility policy.
 
 ## Open items for the owner
 
@@ -82,8 +73,10 @@ Each has its paragraph in decisions.md.
    `.text` gates (18,874,368 / 22,806,528 B; the speed rule reproduces
    them); the alternative is m5-plan's original "next 64 KiB above"
    (18,743,296 / 22,675,456 B). The gate test keeps today's values until
-   the owner says. (M6 wave 1 re-based both to 19,922,944 / 23,855,104
-   B for remote media art's HTTPS stack; decisions.md m6-integration-w1.)
+   the owner says. (Superseded in M6 wave 1: remote media art's HTTPS
+   stack moved both to 19,922,944 / 23,855,104 B, decisions.md
+   m6-integration-w1; the owner may still choose between the M5
+   values as the base those grew from.)
 3. **Wave 3's `.text` overruns, accepted by the integrator** under the
    standing policy (S-platform +94,272 B against 20 KB, S-inspect
    +35,008 B against 20 KB; decisions.md m5-integration-w3, sweep-3).
@@ -94,6 +87,13 @@ Each has its paragraph in decisions.md.
    **proposed** in architecture.md: the `why` field of `inspect.node`'s
    answer for a `shader` node.
 5. **The fast-forward of `main`** once item 1 of "Next" is green.
+6. **M6 wave 1's interface changes** (architecture.md, each with its
+   reason): `strand_render::NodeEvent::Drop`'s `hidden` (S-edges),
+   `strand-dev`'s write-back hooks (S-edges), helper protocol version 2
+   and `auth.message`/`auth.prompt` (S-lock), `strand-introspect`'s
+   drop log (S-flakes), and from the sweep
+   `strand_auth::Client::submit_saying` and
+   `lock_fallback::paint`'s `message` argument.
 
 Answered and standing: the owner deferred `strand report`'s grim
 reference PNGs to the integrator (2026-10-11), who made them,
@@ -105,7 +105,10 @@ Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
 
-At `672b114` (m5-report.md has the tables). Size and memory gates are
+M5's figures at `672b114` (m5-report.md has the tables); M6 wave 1's
+`.text` after the last merge (`d221f7d`) was 19,684,823 B CPU-only and
+23,602,455 B GPU, inside the re-based gates above (decisions.md
+m6-integration-w1). Size and memory gates are
 regression tripwires, never caps on a user's shell: growth past them is
 read by its cause and re-based or cut with a recorded reason.
 
@@ -261,7 +264,10 @@ recorded reason.
     ended, and is taken again if it began within 2 s of a minute boundary
     or a minute tick fell in it (a loaded runner holding the test
     thread). The cause of
-    the one CI failure is not proven.
+    the one CI failure is not proven; the fixed test passed 30 of 30
+    runs (20 loaded), the reloads test 15 of 15 and the image worker's
+    tests 200 of 200 in the sweep's stress (decisions.md
+    m6-integration-w1, sweep-6).
   - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
     (read before `max_delay`): the test's writes are stamped ahead of
     the clock, so a stall between write and read no longer makes them
@@ -328,21 +334,21 @@ recorded reason.
   and checks the file it took out (M6, m6-edges), so an editor's save
   after the check is kept. Three edges remain: on a filesystem without
   the exchange (`EINVAL`/`ENOSYS`) it falls back to the check just
-  before a plain rename, with that small window; an editor saving
+  before a plain rename, with that small window (the fallback is
+  tested by failing the exchange in a seccomp filter, m6-integration-w1); an editor saving
   without pause through eight exchanges is refused with a later save
   kept, not necessarily with the latest in place; and an editor already
   holding the file open that writes into it after the check of the old
   file writes into the file being removed (no lock editors take could
   stop it). An answer to `inspect.pick` means logic told main, not that main
   has turned pick mode on (decisions.md m5-inspect; architecture.md).
-- Drag and drop: a copy of the dragged item above a windowed `list`'s
-  mounted rows is left out of `at` by logic (M6, m6-edges), which reads
-  each row's own `drag:` values off the mounted rows (render's walk: a
-  `list` or `for` inside the row, such as a dock item's window dots, is
-  not the row's, wherever it sits among the row's children) as its item,
-  its key or one of its fields; rows none of whose own `drag:` values is
-  one of those (or not the same one for every mounted row) are never
-  copies there, so `at` stays one too high for them, as before M6.
+- Drag and drop: (resolved in M6: a copy of the dragged item above a
+  windowed `list`'s mounted rows is left out of `at` by logic, which
+  works out a hidden row's `drag:` values from its item by walking the
+  row as mounting would; decisions.md m6-edges, m6-integration-w1.)
+  What the walk cannot know of a row never laid out: a `when` on its
+  laid-out size (`self.width`) reads it as 0, as before a mounted row's
+  first layout, and a `let` awaiting a service method is not fetched.
 - Notifications: (resolved in M6 by S-services: `Notification.time` has
   its hour and minute; decisions.md m6-services.) Spec 1.2's
   `ActivationToken` is sent since S-platform, M5 wave 3.
@@ -367,9 +373,9 @@ recorded reason.
   restarted, lock-r3-1), a reader wait of 90 s or more (`timeout=`
   past three times the client's 30 s) leaves a typed password, the
   fallback's too, to time out, so only the finger unlocks (lock-r3-2;
-  README says to keep it under 90 s), and
-  the fallback field shows no PAM text (it has no text; its password
-  still goes through the same stack).
+  README says to keep it under 90 s). The fallback field shows PAM's
+  text (its own bitmap font; m6-integration-w1) but not its prompts:
+  it answers every prompt with the password typed, as before.
 - Network: (resolved in M6 by S-services: a join is a task; an
   enterprise (802.1X) network with a profile saved in NetworkManager
   joins with `connect()`; WEP joins with its key like a WPA personal

@@ -493,6 +493,14 @@ impl Client {
     /// ([`refusal`]) is denied without asking. A denial's or an error's
     /// message joins what PAM said on the way.
     pub fn submit(&mut self, password: Password) -> Verdict {
+        self.submit_saying(password, &mut |_| {})
+    }
+
+    /// (M6) [`Client::submit`], with each text and prompt also going to
+    /// `told` as PAM says it, while the check runs (the fallback lock
+    /// shows "Place your finger on the fingerprint reader" while the
+    /// reader waits).
+    pub fn submit_saying(&mut self, password: Password, told: &mut dyn FnMut(Said<'_>)) -> Verdict {
         if let Some(why) = refusal(&password) {
             return Verdict::Denied { message: Some(why) };
         }
@@ -500,6 +508,7 @@ impl Client {
         let result = self.run(
             &mut Source::Repeat(password),
             &mut |s| {
+                told(s);
                 if let Said::Message(m) = s {
                     said.push(m.to_string());
                 }

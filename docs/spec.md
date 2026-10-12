@@ -461,15 +461,12 @@ filling the monitor, the keyboard always).
   row of an outer list that holds the item's list (a kanban column
   holding the dragged card) is counted. So `list.move(key, at)`, which
   moves the first item with that key, puts it where it was let go,
-  in a windowed `list` too, whose rows not mounted count as well
-  (decisions.md m5-fixups, m6-edges). Known limit of the
-  implementation, not of the language: a copy among a windowed list's
-  rows not mounted is seen only when one of each row's own `drag:`
-  values (not those of a `list` or `for` inside the row, such as a dock
-  item's window dots) is its item, its key or one of its fields (the
-  same one for every row), so for
-  other rows `at` is one too high when the copy is scrolled out above
-  the drop point. Values from other programs (files, apps, text)
+  in a windowed `list` too, whose rows not mounted count as well: a
+  row not mounted is a copy when the `drag:` values it would hold
+  mounted (its own, not those of a `list` or `for` inside it, such as a
+  dock item's window dots) include the dragged item, whatever its
+  `drag:` is of its item (decisions.md m5-fixups, m6-edges,
+  m6-integration-w1). Values from other programs (files, apps, text)
   arrive as typed `Drop` values.
 - **`pages`** shows one `page` at a time, with directional transitions;
   hidden pages unmount, so their service subscriptions stop.

@@ -102,3 +102,50 @@ fn checking_and_refused_tint_the_field() {
         assert_matches_ref(&format!("lock_fallback_failed_{name}"), &failed, TOLERANCE);
     }
 }
+
+/// (M6) PAM's text shows below the field in the fallback's own bitmap
+/// font, centred and wrapped at the field's width ("Place your finger on
+/// the fingerprint reader" while a check waits on the reader), on the
+/// opaque background, nothing of it on the field; a character the font
+/// lacks draws as a box.
+#[test]
+fn pams_text_shows_below_the_field() {
+    for (num, name) in [(120, "1x"), (150, "1_25x")] {
+        let scale = Scale::new(num).unwrap();
+        let s = scale.as_f32();
+        let mut f = LockFallback::new();
+        for c in ["p", "w"] {
+            f.key(&press(c, c));
+        }
+        assert!(matches!(f.key(&press("Return", "\r")), Action::Submit(_)));
+        let quiet = paint(&f, scale);
+        assert!(f.set_message("Place your finger on the fingerprint reader"));
+        let told = paint(&f, scale);
+        assert_opaque(&told);
+        let below = (told.size.h as f32 / 2.0 + 24.0 * s) as u32;
+        let changed: Vec<(u32, u32)> = (0..told.size.h)
+            .flat_map(|y| (0..told.size.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| told.px(x, y) != quiet.px(x, y))
+            .collect();
+        assert!(!changed.is_empty(), "{name}: the text draws");
+        assert!(
+            changed.iter().all(|&(_, y)| y > below),
+            "{name}: only below the field"
+        );
+        let rows: std::collections::BTreeSet<u32> = changed.iter().map(|p| p.1).collect();
+        let lines = rows
+            .iter()
+            .zip(rows.iter().skip(1))
+            .filter(|(a, b)| **b > **a + 1)
+            .count()
+            + 1;
+        assert!(
+            lines >= 2,
+            "{name}: wrapped at the field's width ({lines} runs)"
+        );
+        assert_matches_ref(&format!("lock_fallback_told_{name}"), &told, TOLERANCE);
+        // A text the font lacks still shows, as boxes.
+        assert!(f.set_message("Empreinte non reconnue: réessayez"));
+        assert_ne!(paint(&f, scale).pixels, told.pixels);
+    }
+}

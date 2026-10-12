@@ -361,4 +361,137 @@ panel P {
         // and render's test reads only the icon (`Prop::NotRow`).
         assert_eq!(at(source(from, "p5"), dotted), Value::int(42), "dots first");
     }
+
+    /// (M6, m6-integration-w1) A row render could not see is judged by
+    /// its own `drag:` values, worked out from its item as if it were
+    /// mounted, whatever the row's `drag:` is of its item: a value built
+    /// from it, a nested field, one chosen by a `when`, one held by a
+    /// `let` or a `state` of the row, or a component's. Each target list
+    /// is moved to rows 40..60; `Grab`s, `Meta` ids and pins from the
+    /// first rows of the source lists find their copy among the rows
+    /// hidden above, and a `Grab` of a row past them (`p50`) finds none.
+    #[test]
+    fn a_hidden_copy_is_found_whatever_the_row_drags() {
+        let mut src = String::from(
+            "type Meta { id: text }\ntype Pin { app: text; meta: Meta }\ntype Grab { app: text }\nexport state pins: [Pin] key app = [",
+        );
+        for i in 0..60 {
+            src.push_str(&format!("Pin(app: \"p{i}\", meta: Meta(id: \"m{i}\")), "));
+        }
+        src.push_str(
+            "]\ncomponent Item(p: Pin) {\n  box { drag: Grab(app: p.app) }\n}\npanel P {\n  col {\n    list { for p in pins { box { drag: Grab(app: p.app) } } }\n    list { for p in pins { box { drag: p.meta.id } } }\n    list { for p in pins { box { drag: Grab(app: p.app) } } }\n    list { for p in pins { box { drag: p.meta.id } } }\n    list { for p in pins { box { drag: p\n      when p.app != \"\" { drag: Grab(app: p.app) } } } }\n    list { for p in pins { box { let g = Grab(app: p.app)\n      drag: g } } }\n    list { for p in pins { box { state a = p.app\n      drag: Grab(app: a)\n      on click { a = \"zz\" } } } }\n    list { for p in pins { Item p } }\n    list { for p in pins { box { drag: Grab(app: p.app) } } }\n  }\n}\n",
+        );
+        let mut map = SourceMap::new();
+        map.add("dock.strand", src);
+        let b = Build::compile(None, map).unwrap();
+        let rt = Runtime::new();
+        let host = Rc::new(SchemaHost::mock(&rt, &b.program.types));
+        let inst = Instance::from_build(&rt, &b, host.clone(), Storage::none());
+        let mut m = SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        let lists = m.of_kind(NodeKind::List);
+        let [
+            grabs,
+            ids,
+            built,
+            nested,
+            when,
+            held,
+            stated,
+            component,
+            late,
+        ] = lists[..]
+        else {
+            panic!("{lists:?}");
+        };
+        for l in [built, nested, when, held, component, late] {
+            set_window(&inst, l, 40, 20);
+        }
+        m.apply(&inst.flush().diff).unwrap();
+        // `p7`'s row in `stated` changes its `state` while mounted, then
+        // is scrolled out: its kept cell is what it would drag.
+        let p7 = m
+            .children(stated)
+            .iter()
+            .copied()
+            .find(|n| {
+                inst.drag_value(*n)
+                    .and_then(|v| {
+                        v.as_record()
+                            .and_then(|r| r.fields[0].as_text().map(str::to_string))
+                    })
+                    .as_deref()
+                    == Some("p7")
+            })
+            .unwrap();
+        assert!(inst.event(p7, "click", Vec::new()));
+        m.apply(&inst.flush().diff).unwrap();
+        set_window(&inst, stated, 40, 20);
+        m.apply(&inst.flush().diff).unwrap();
+        let grab = |app: &str| host.record("Grab", &[("app", Value::text(app))]);
+        assert_eq!(
+            inst.drop_at(&grab("zz"), 43, stated, 40),
+            42,
+            "p7's kept state"
+        );
+        assert_eq!(inst.drop_at(&grab("p7"), 43, stated, 40), 43, "p7 drags zz");
+        // The probe left the kept cell where it was: back in the window,
+        // the row still drags `zz`.
+        set_window(&inst, stated, 0, 20);
+        m.apply(&inst.flush().diff).unwrap();
+        let back = m.children(stated).iter().any(|n| {
+            inst.drag_value(*n)
+                .and_then(|v| {
+                    v.as_record()
+                        .and_then(|r| r.fields[0].as_text().map(str::to_string))
+                })
+                .as_deref()
+                == Some("zz")
+        });
+        assert!(back, "p7 came back with its state");
+        set_window(&inst, stated, 40, 20);
+        m.apply(&inst.flush().diff).unwrap();
+        let name = |v: Value| match v.as_record() {
+            Some(r) => r.fields[0].as_text().map(str::to_string),
+            None => v.as_text().map(str::to_string),
+        };
+        let source = |list, app: &str| {
+            m.children(list)
+                .iter()
+                .copied()
+                .find(|n| inst.drag_value(*n).and_then(name).as_deref() == Some(app))
+                .unwrap()
+        };
+        let at = |from, to| {
+            let hidden = Some(HiddenRows {
+                list: to,
+                before: 40,
+            });
+            let args = drop_args(&inst, &host, &DropPayload::Node(from), 43, hidden).unwrap();
+            args[1].clone()
+        };
+        for (to, what) in [
+            (built, "a value built from the item"),
+            (when, "a `when`'s"),
+            (held, "a `let`'s"),
+            (stated, "a `state`'s"),
+            (component, "a component's"),
+        ] {
+            assert_eq!(at(source(grabs, "p5"), to), Value::int(42), "{what}");
+            assert_eq!(at(source(grabs, "p30"), to), Value::int(42), "{what}");
+        }
+        assert_eq!(
+            at(source(ids, "m5"), nested),
+            Value::int(42),
+            "a nested field"
+        );
+        // Another type, or a value no hidden row holds: no copy.
+        assert_eq!(at(source(ids, "m5"), built), Value::int(43), "a text");
+        assert_eq!(at(source(grabs, "p5"), nested), Value::int(43), "a Grab");
+        assert_eq!(
+            at(source(late, "p50"), built),
+            Value::int(43),
+            "p50 is not hidden"
+        );
+    }
 }

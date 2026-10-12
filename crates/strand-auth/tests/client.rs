@@ -611,6 +611,40 @@ fn submit_joins_what_pam_said_into_a_denial() {
     assert_eq!(message.as_deref(), Some("1 failed attempt\nno!"));
 }
 
+/// (M6, m6-integration-w1) `submit_saying` tells what PAM says while the
+/// check runs, not only with its verdict: the helper says its text, then
+/// waits for a file the callback makes on hearing it before it prompts
+/// and answers, as a reader waits for a finger.
+#[test]
+fn submit_saying_tells_pams_text_while_the_check_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let heard = dir.path().join("heard");
+    let mut c = talker(
+        dir.path(),
+        &format!(
+            r#"hello; frame; info "Place your finger on the fingerprint reader"
+            i=0; while [ ! -e {heard} ]; do i=$((i + 1)); [ $i -lt 200 ] || exit 1; sleep 0.05; done
+            prompt "Password: "; frame; verdict 0; sleep 5"#,
+            heard = heard.display()
+        ),
+    );
+    let mut told = Vec::new();
+    let v = c.submit_saying(Password::from("pw".to_string()), &mut |s| {
+        if let Said::Message(_) = s {
+            std::fs::write(&heard, b"").unwrap();
+        }
+        told.push(format!("{s:?}"));
+    });
+    assert!(v.is_unlocked(), "{v:?}");
+    assert_eq!(
+        told,
+        [
+            "Message(\"Place your finger on the fingerprint reader\")",
+            "Prompt(\"Password: \")"
+        ]
+    );
+}
+
 /// A conversation that cannot start says whether a password was in it:
 /// the `auth` store shows the fallback only for one that was.
 #[test]

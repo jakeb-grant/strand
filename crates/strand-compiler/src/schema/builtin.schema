@@ -409,6 +409,39 @@ provisional service calendar {
   fn days(month: Date) -> [Day]
 }
 
+/// A power source UPower reports besides the combined battery, keyed by
+/// `id`.
+provisional record PowerDevice key id {
+  /// Its UPower object path.
+  id: text
+  /// Its model name.
+  name: text
+  /// What it is: `battery`, `mouse`, `headset` and so on.
+  kind: text
+  /// Charge, 0 to 1.
+  percent: float
+  /// It is charging.
+  charging: bool
+  /// An icon name for its charge and state.
+  icon: text
+}
+
+/// A Wi-Fi network in range, keyed by `ssid`.
+provisional record AccessPoint key ssid {
+  /// The network's name.
+  ssid: text
+  /// Signal strength, 0 to 1.
+  strength: float
+  /// It needs a password.
+  secure: bool
+  /// It is the network joined.
+  active: bool
+  /// Joins it.
+  action connect()
+  /// Joins a `secure` network with `password`.
+  action connect_with(password: text)
+}
+
 /// The battery, from UPower.
 provisional service battery {
   /// A battery is present: `if battery.present { Battery }`.
@@ -423,6 +456,8 @@ provisional service battery {
   icon: text
   /// Power draw in watts.
   power: float
+  /// Every power source but line power, keyed by `id`.
+  devices: [PowerDevice]
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.
@@ -480,6 +515,9 @@ provisional service notifications {
   all: [Notification]
   /// How many notifications are kept.
   count: int
+  /// Do not disturb: new notifications that are not critical skip the
+  /// popups. Writable.
+  dnd: bool rw
   /// Dismisses every notification.
   action clear()
   /// A notification arrived. Events are lossless queues:
@@ -513,6 +551,8 @@ provisional service media {
   elapsed: duration
   /// The track's length, when known.
   length: duration?
+  /// The active player's name; null when no player runs.
+  player: text?
   /// Plays or pauses.
   action play_pause()
   /// Skips to the next track.
@@ -583,6 +623,10 @@ provisional service network {
   strength: float
   /// The Wi-Fi radio is on. Writable.
   wifi: bool rw
+  /// The Wi-Fi networks in range, keyed by `ssid`.
+  access_points: [AccessPoint]
+  /// Joining a network failed: `on network.failed(ssid, error) { … }`.
+  event failed(ssid: text, error: text)
 }
 
 /// Bluetooth, from BlueZ.
@@ -591,14 +635,22 @@ provisional service bluetooth {
   powered: bool rw
   /// Paired devices, keyed by `address`.
   devices: [BluetoothDevice]
+  /// Connecting or disconnecting a device failed:
+  /// `on bluetooth.failed(address, error) { … }`.
+  event failed(address: text, error: text)
 }
 
 /// The lock screen's PAM helper.
 provisional service auth {
   /// A password is being checked.
   busy: bool
-  /// The last password was wrong.
+  /// The last password was refused, or could not be checked.
   failed: bool
+  /// What PAM last told the user, as it said it; "" once PAM next asks
+  /// for a password.
+  message: text
+  /// The hidden prompt PAM waits on, or "" while it waits on none.
+  prompt: text
   /// Checks `password`.
   action submit(password: text)
 }

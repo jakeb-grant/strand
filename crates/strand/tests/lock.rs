@@ -82,6 +82,8 @@ const LOCK_TYPED: [u8; 3] = [0x20, 0xa0, 0x50];
 const FALLBACK_BG: [u8; 3] = [0x11, 0x11, 0x1b];
 const FIELD: [u8; 3] = [0x1e, 0x1e, 0x2e];
 const FIELD_REFUSED: [u8; 3] = [0x3b, 0x20, 0x2c];
+/// (M6) PAM's text below the fallback's field.
+const FALLBACK_TEXT: [u8; 3] = [0xba, 0xc2, 0xde];
 /// Another locker's colour.
 const OTHER: [u8; 3] = [0x00, 0xff, 0x00];
 
@@ -393,6 +395,13 @@ impl Shot {
             .chunks_exact(3)
             .position(|p| near([p[0], p[1], p[2]], DESKTOP))
             .map(|i| (i % self.w, i / self.w))
+    }
+
+    /// (M6) PAM's text shows below the fallback's field.
+    fn text_below_field(&self) -> bool {
+        let top = (self.h / 2 + 30).min(self.h);
+        let bottom = (self.h / 2 + 160).min(self.h);
+        (top..bottom).any(|y| (0..self.w).any(|x| self.px(x, y) == FALLBACK_TEXT))
     }
 
     fn fallback(&self) -> bool {
@@ -1587,14 +1596,35 @@ fn fingerprint_a_password_typed_while_the_reader_waits_unlocks_after_it() {
 }
 
 /// The fallback's field checks passwords through the same stack: each
-/// waits for the reader, then only the right one unlocks.
+/// waits for the reader, then only the right one unlocks. (M6) While
+/// the reader waits, PAM's text shows below the field (the check still
+/// running: the field not refused), and the refusal's own text after.
 #[test]
 fn fingerprint_stack_in_the_fallback() {
     let Some(mut vm) = fallback_scenario("fp_fallback", "logic_panic", None) else {
         return;
     };
     finger();
-    vm.fallback_passwords();
+    assert!(
+        !vm.sway.shot("HEADLESS-1").text_below_field(),
+        "no text before a check"
+    );
+    vm.keys.enter(WRONG);
+    vm.until_locked(
+        "HEADLESS-1",
+        "PAM's text below the fallback's field while the reader waits",
+        true,
+        |s| near(s.corner(), FALLBACK_BG) && near(s.field(), FIELD) && s.text_below_field(),
+    );
+    vm.until_locked("HEADLESS-1", "the wrong password refused", true, |s| {
+        near(s.corner(), FALLBACK_BG) && near(s.field(), FIELD_REFUSED)
+    });
+    vm.keys.enter(PASSWORD);
+    vm.until(
+        "HEADLESS-1",
+        "unlocked by the right password",
+        Shot::desktop,
+    );
 }
 
 /// The other outputs show the config's lock colour, the fallback's
