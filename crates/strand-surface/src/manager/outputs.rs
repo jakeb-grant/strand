@@ -50,6 +50,35 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.reconcile_all();
     }
 
+    /// (m6-integration-w1) Output `global`'s scale or size changed: a
+    /// surface on it the compositor has not shown a frame of yet takes
+    /// its scale from the output again, as at creation. The compositor
+    /// told it its preferred scale when it was made, and may not tell it
+    /// again before it is mapped: sway 1.9 re-sends it on a scale change
+    /// only to the surfaces it has mapped, so a bar made on a new monitor
+    /// just before kanshi (or `swaymsg output … scale`) scales it stayed
+    /// blurry at the old scale. A preference sent after this still wins.
+    pub(super) fn rescale_unshown_on(&mut self, global: u32) {
+        let unshown: Vec<(SurfaceId, bool)> = self
+            .surfaces
+            .values()
+            .filter(|s| s.output == Some(global) && !s.shown())
+            .map(|s| (s.id, s.is_fractional()))
+            .collect();
+        for (id, fractional) in unshown {
+            let (scale, integer_scale) = self.initial_scale(Some(global), fractional);
+            let Some(s) = self.surfaces.get_mut(&id) else {
+                continue;
+            };
+            if s.scale != scale || s.integer_scale != integer_scale {
+                s.scale = scale;
+                s.integer_scale = integer_scale;
+                // Resolved with the next paint (see `update_geometry`).
+                self.mark(id);
+            }
+        }
+    }
+
     pub(super) fn arm_expiry(&mut self) {
         if self.expiry_timer.is_some() {
             return;
@@ -143,6 +172,7 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
             self.output_removed(&output);
             self.output_added(output);
         } else if let Some(monitor) = self.monitors.set_geometry(global, output_geometry(&info)) {
+            self.rescale_unshown_on(global);
             self.host.monitor_changed(&monitor);
             self.place_layers_on(&monitor.id);
         }

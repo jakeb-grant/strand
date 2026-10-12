@@ -627,6 +627,12 @@ impl Surface {
         self.commit_seq > 0
     }
 
+    /// The compositor has answered a frame of it (presented, discarded or
+    /// called back), so it has seen the surface mapped.
+    fn shown(&self) -> bool {
+        self.stats.presented + self.stats.discarded + self.stats.frames_done > 0
+    }
+
     /// The scale buffers are painted at: the fractional one, or the
     /// integer buffer scale on the fallback path.
     fn effective_scale(&self) -> Scale {

@@ -451,6 +451,75 @@ fn fractional_scale_buffers_and_viewport() {
     assert_eq!(mgr.state().host().configured.len(), 3);
 }
 
+/// (m6-integration-w1) A bar the compositor has seen created but not yet
+/// mapped when its output's scale changes, as kanshi does right after a
+/// hotplug: sway 1.9 sent its preferred scale when the layer surface was
+/// made (1.0) and re-sends it on a scale change only to the surfaces it
+/// has mapped, so the new scale reaches it only through the output's
+/// events. Its first frame and every one after are still at the new
+/// scale, on both scale paths.
+fn scale_change_before_the_first_frame(test: &str, fractional: bool) {
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let conn = sway.connect();
+    let config = Config {
+        fractional_scale: fractional,
+        ..Config::default()
+    };
+    let mut mgr =
+        strand_surface::SurfaceManager::with_connection(conn.clone(), TestHost::default(), config)
+            .unwrap();
+    assert_eq!(mgr.state().fractional_available(), fractional);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.monitors().len() == 1)
+        .unwrap();
+    assert!(ok, "no monitor");
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    // sway has the layer surface (and answered with scale 1 and its
+    // configure, read but not dispatched): no buffer is committed yet.
+    conn.roundtrip().unwrap();
+    assert_eq!(mgr.state().surfaces().len(), 1);
+    assert_eq!(mgr.state().surfaces()[0].stats.commits, 0);
+    sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            let i = &s.surfaces()[0];
+            i.logical_size == (960, 36) && i.stats.commits > 0
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    // Give a compositor that re-sends its preference the time to.
+    pump(&mut mgr, Duration::from_millis(300));
+    let info = mgr.state().surfaces()[0].clone();
+    assert_eq!(info.scale, Scale::from_integer(2).unwrap(), "{info:?}");
+    assert_eq!(info.buffer_size, Size::new(1920, 72), "{info:?}");
+    assert_eq!(
+        mgr.state().host().paints.last().map(|p| (p.size, p.scale)),
+        Some((Size::new(1920, 72), Scale::from_integer(2).unwrap()))
+    );
+    assert_configured_sizes_painted(mgr.state().host());
+    settle(&mut mgr);
+    // On screen the bar covers 72 physical rows.
+    let shot = sway.grim("HEADLESS-1");
+    assert_eq!(shot.rgb(10, 71), BLUE);
+    assert_ne!(shot.rgb(10, 72), BLUE);
+}
+
+#[test]
+fn a_scale_set_before_the_first_frame_is_kept() {
+    scale_change_before_the_first_frame("a_scale_set_before_the_first_frame_is_kept", true);
+}
+
+#[test]
+fn a_scale_set_before_the_first_frame_is_kept_on_the_integer_path() {
+    scale_change_before_the_first_frame(
+        "a_scale_set_before_the_first_frame_is_kept_on_the_integer_path",
+        false,
+    );
+}
+
 /// Checks every pixel of the first and last `cols` columns of `rows` rows
 /// against the 1-px checkerboard, and that the row below is not the bar.
 fn assert_checker(shot: &Image, rows: u32, cols: u32, what: &str) {
