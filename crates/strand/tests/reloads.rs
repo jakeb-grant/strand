@@ -29,8 +29,9 @@
 //! - no connection is made to the bus (dbus-daemon numbers its
 //!   connections in order: no number falls between a probe connection
 //!   before and one after the reloads), but `strand-introspect`'s
-//!   reconnect after an `Introspect` got no answer within its timeout (a
-//!   starved runner's mock; it says only `Hello` and `Introspect`); the
+//!   reconnect after it dropped a connection whose `Introspect` got no
+//!   answer within its timeout (a starved runner's mock; it says only
+//!   `Hello` and `Introspect`, and strand's log names the drop); the
 //!   `from dbus` check asks again
 //!   once its answer is 10 s old over the connection `strand-introspect`
 //!   keeps for the process (a bus monitor counts those `Introspect`
@@ -879,127 +880,91 @@ fn pw_new_of(text: &str, pid: u32, serial: u64) -> Vec<String> {
 /// What each connection sent on the bus, by its unique name's number
 /// (`:1.N`), as `type interface.member`: a monitor's view
 /// (`BecomeMonitor`), kept from when it starts, in the bus's order. With
-/// it, each `Introspect` call and its answer, to tell
-/// `strand-introspect`'s reconnect after it dropped a connection from a
-/// connection made for nothing (see [`Seen::unexplained`]).
+/// strand's log ([`Drops`]), it tells `strand-introspect`'s reconnect
+/// after it dropped a connection from a connection made for nothing (see
+/// [`Seen::unexplained`]).
 #[derive(Clone, Default)]
 struct BusLog(Arc<std::sync::Mutex<Seen>>);
 
 const INTROSPECT: &str = "MethodCall org.freedesktop.DBus.Introspectable.Introspect";
 const HELLO: &str = "MethodCall org.freedesktop.DBus.Hello";
 
-/// One `Introspect` call as the monitor saw it.
-#[derive(Clone, Copy, Debug)]
-struct Call {
-    /// Its place in the bus's order.
-    seq: u64,
-    /// When the monitor saw it, and its answer (a return or an error).
-    asked: Instant,
-    answered: Option<Instant>,
-}
-
 #[derive(Clone, Default)]
 struct Seen {
     sent: BTreeMap<u64, Vec<String>>,
-    /// The bus's order: one number per message the monitor saw.
-    seq: u64,
-    /// Where each connection's first and last messages fall in it.
-    first: HashMap<u64, u64>,
-    last: HashMap<u64, u64>,
-    /// Each `Introspect` call, by its sender and serial.
-    introspects: BTreeMap<(u64, u32), Call>,
+}
+
+/// The connections `strand-introspect` gave up on, as strand's log says
+/// (decisions.md m6-flakes): each is followed by one new connection at
+/// the next question, or at once when it is asked again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Drops {
+    /// Connections it dropped, by number (`dropped its connection :1.N`):
+    /// a question got no answer in time, or failed without one.
+    named: BTreeSet<u64>,
+    /// Connects it gave up on (`gave up connecting`), each of which may
+    /// leave a connection the bus numbered that never asked anything.
+    abandoned: usize,
+}
+
+impl Drops {
+    /// How many: each may replace one socket of strand's.
+    fn count(&self) -> usize {
+        self.named.len() + self.abandoned
+    }
+
+    /// The drops in strand's log (`STRAND_LOG` at `warn` or finer).
+    fn parse(log: &str) -> Drops {
+        let mut drops = Drops::default();
+        for line in log.lines() {
+            if let Some((_, rest)) = line.split_once("strand_introspect: dropped its connection :")
+                && let Some(n) = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(|name| name.rsplit('.').next())
+                    .and_then(|n| n.parse().ok())
+            {
+                drops.named.insert(n);
+            } else if line.contains("strand_introspect: gave up connecting") {
+                drops.abandoned += 1;
+            }
+        }
+        drops
+    }
 }
 
 impl Seen {
     /// Connection `n` sent `what`.
     fn record(&mut self, n: u64, what: String) {
-        self.seq += 1;
-        self.first.entry(n).or_insert(self.seq);
-        self.last.insert(n, self.seq);
         self.sent.entry(n).or_default().push(what);
-    }
-
-    /// Connection `n` sent `Introspect` with `serial`, seen at `at`.
-    fn call(&mut self, n: u64, serial: u32, at: Instant) {
-        self.record(n, INTROSPECT.into());
-        let seq = self.seq;
-        self.introspects.insert(
-            (n, serial),
-            Call {
-                seq,
-                asked: at,
-                answered: None,
-            },
-        );
-    }
-
-    /// An answer to connection `n`'s call `serial`, seen at `at` (the
-    /// first counts).
-    fn answer(&mut self, n: u64, serial: u32, at: Instant) {
-        if let Some(c) = self.introspects.get_mut(&(n, serial)) {
-            c.answered.get_or_insert(at);
-        }
-    }
-
-    /// Its connection sent nothing after it: `strand-introspect` dropped
-    /// the connection (or it was the last question asked).
-    fn last_word(&self, n: u64, call: &Call) -> bool {
-        self.last.get(&n).is_none_or(|&l| l <= call.seq)
-    }
-
-    /// The `Introspect` calls after which `strand-introspect` dropped
-    /// its connection, in the bus's order: its connection never spoke
-    /// again, and the call went unanswered (it failed with no answer,
-    /// and the question is asked again at once on a new connection) or
-    /// its answer took at least half of `strand_introspect::TIMEOUT`
-    /// (it timed out, and the next question connects again). Half: the
-    /// monitor's times carry its own scheduling, and the deadline starts
-    /// before the call is written, so an answer the monitor saw 1.9 s
-    /// after the call can still be one strand gave up on; a healthy
-    /// bus answers in milliseconds.
-    fn dropped(&self) -> Vec<(u64, Call)> {
-        let late = strand_introspect::TIMEOUT / 2;
-        let mut dropped: Vec<(u64, Call)> = self
-            .introspects
-            .iter()
-            .filter(|((n, _), call)| {
-                self.last_word(*n, call)
-                    && call
-                        .answered
-                        .is_none_or(|a| a.duration_since(call.asked) >= late)
-            })
-            .map(|(&(n, _), &call)| (n, call))
-            .collect();
-        dropped.sort_by_key(|(_, c)| c.seq);
-        dropped
     }
 
     /// The connections numbered between two probes (`from`, `to`), with
     /// what each sent, but `strand-introspect`'s reconnects (decisions.md
-    /// m6-flakes): a connection that said only `Hello` and `Introspect`,
-    /// first speaking after a call in [`Seen::dropped`] by an older
-    /// connection. Each dropped call explains one reconnect, the
-    /// earliest it can, so a connection made per question cannot hide
-    /// behind one missed answer.
-    fn unexplained(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
-        let mut dropped = self.dropped();
+    /// m6-flakes, review 3): a connection that said nothing but `Hello`
+    /// and `Introspect`, numbered after a connection strand's log says it
+    /// dropped (`drops`), one reconnect per drop, the earliest it can. A
+    /// connection that never asked is one too (its connect ran past the
+    /// deadline, or it had not asked yet when the probe connected), and
+    /// while the log has connects given up on, each such connection is
+    /// itself a drop that explains one later reconnect. Nothing here is
+    /// timed: the bus numbers connections in order, and strand writes a
+    /// drop to its log before it connects again.
+    fn unexplained(&self, from: u64, to: u64, drops: &Drops) -> Vec<(u64, Vec<String>)> {
+        let mut pool: Vec<u64> = drops.named.iter().copied().collect();
+        let mut abandoned = drops.abandoned;
         let mut out = Vec::new();
         for n in from + 1..to {
             let sent = self.sent.get(&n).cloned().unwrap_or_default();
-            let only_introspects = sent.iter().any(|s| s == INTROSPECT)
-                && sent.iter().all(|s| s == INTROSPECT || s == HELLO);
-            let explains = self
-                .first
-                .get(&n)
-                .filter(|_| only_introspects)
-                .and_then(|&began| {
-                    dropped
-                        .iter()
-                        .position(|(m, call)| *m < n && call.seq < began)
-                });
-            match explains {
+            let shaped = !sent.is_empty() && sent.iter().all(|s| s == INTROSPECT || s == HELLO);
+            match pool.iter().position(|&m| m < n).filter(|_| shaped) {
                 Some(i) => {
-                    dropped.remove(i);
+                    pool.remove(i);
+                    if !sent.iter().any(|s| s == INTROSPECT) && abandoned > 0 {
+                        abandoned -= 1;
+                        pool.push(n);
+                        pool.sort_unstable();
+                    }
                 }
                 None => out.push((n, sent)),
             }
@@ -1009,24 +974,13 @@ impl Seen {
 
     /// How many connections between two probes were
     /// `strand-introspect`'s reconnects (see [`Seen::unexplained`]).
-    fn reconnects(&self, from: u64, to: u64) -> usize {
+    fn reconnects(&self, from: u64, to: u64, drops: &Drops) -> usize {
         (from + 1..to).filter(|n| self.sent.contains_key(n)).count()
             - self
-                .unexplained(from, to)
+                .unexplained(from, to, drops)
                 .iter()
                 .filter(|(n, _)| self.sent.contains_key(n))
                 .count()
-    }
-
-    /// The `Introspect` calls the monitor saw no answer to though their
-    /// connection spoke again: none, unless the monitor misses answers
-    /// (which would make kept connections look dropped).
-    fn unanswered_but_kept(&self) -> Vec<(u64, u32)> {
-        self.introspects
-            .iter()
-            .filter(|((n, _), call)| call.answered.is_none() && !self.last_word(*n, call))
-            .map(|(&k, _)| k)
-            .collect()
     }
 }
 
@@ -1051,22 +1005,13 @@ impl BusLog {
         });
         let l = log.clone();
         tokio.spawn(async move {
-            let number = |name: &str| name.rsplit('.').next().and_then(|n| n.parse().ok());
             let mut messages = zbus::MessageStream::from(&conn);
             while let Some(Ok(m)) = messages.next().await {
-                let at = Instant::now();
                 let h = m.header();
-                let Ok(mut seen) = l.0.lock() else {
-                    continue;
-                };
-                // An answer to an `Introspect` (from a mock or the bus).
-                if let (Some(to), Some(serial)) = (
-                    h.destination().and_then(|d| number(d.as_str())),
-                    h.reply_serial(),
-                ) {
-                    seen.answer(to, serial.get(), at);
-                }
-                let Some(n) = h.sender().and_then(|s| number(s.as_str())) else {
+                let Some(n) = h
+                    .sender()
+                    .and_then(|s| s.as_str().rsplit('.').next().and_then(|n| n.parse().ok()))
+                else {
                     continue;
                 };
                 let what = format!(
@@ -1075,9 +1020,7 @@ impl BusLog {
                     h.interface().map(|i| i.to_string()).unwrap_or_default(),
                     h.member().map(|m| m.to_string()).unwrap_or_default()
                 );
-                if what == INTROSPECT {
-                    seen.call(n, h.primary().serial_num().get(), at);
-                } else {
+                if let Ok(mut seen) = l.0.lock() {
                     seen.record(n, what);
                 }
             }
@@ -1091,16 +1034,17 @@ impl BusLog {
 
     /// The connections numbered between two probes (`from`, `to`, see
     /// [`next_connection`]), with what each sent: there should be none
-    /// but `strand-introspect`'s reconnects ([`Seen::unexplained`]).
-    /// The `from dbus` check asks the bus again on a reload once its
-    /// answer is 10 s old (`strand_introspect::TTL`, decisions.md
-    /// wave4-a3), over the one connection per bus `strand-introspect`
-    /// keeps for the process (decisions.md laptop-services), and a
-    /// service never connects anew (decisions.md m6-flakes).
-    fn connections_between(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
+    /// but `strand-introspect`'s reconnects after the drops in strand's
+    /// log ([`Seen::unexplained`]). The `from dbus` check asks the bus
+    /// again on a reload once its answer is 10 s old
+    /// (`strand_introspect::TTL`, decisions.md wave4-a3), over the one
+    /// connection per bus `strand-introspect` keeps for the process
+    /// (decisions.md laptop-services), and a service never connects anew
+    /// (decisions.md m6-flakes).
+    fn connections_between(&self, from: u64, to: u64, drops: &Drops) -> Vec<(u64, Vec<String>)> {
         // The monitor sees a message a moment after it is sent.
         std::thread::sleep(Duration::from_millis(200));
-        self.seen().unexplained(from, to)
+        self.seen().unexplained(from, to, drops)
     }
 
     /// How many `Introspect` calls connections numbered below `below`
@@ -1117,99 +1061,108 @@ impl BusLog {
 }
 
 /// (m6-flakes) The bus check's classification: a connection that only
-/// introspects is `strand-introspect`'s reconnect when it follows an
-/// older connection's last `Introspect` that went unanswered or was
-/// answered late, one reconnect per such call; any other connection is
-/// never explained, nor is one after a prompt answer.
+/// introspects is `strand-introspect`'s reconnect when strand's log says
+/// it dropped an older connection, one reconnect per drop, however long
+/// the dropped call's answer took (the monitor's timing is not used);
+/// any other connection is never explained, nor is one with no drop
+/// logged.
 #[test]
-fn a_reconnect_after_an_unanswered_introspect_is_explained() {
-    let t0 = Instant::now();
-    let at = |ms: u64| t0 + Duration::from_millis(ms);
+fn a_reconnect_after_a_logged_drop_is_explained() {
     let both = || vec![HELLO.to_string(), INTROSPECT.to_string()];
-    // Connection `n` says `Hello` and asks with serial 2 at `ms`.
-    let introspecting = |seen: &mut Seen, n: u64, ms: u64| {
+    let hello = || vec![HELLO.to_string()];
+    // Connection `n` says `Hello` and asks.
+    let introspecting = |seen: &mut Seen, n: u64| {
         seen.record(n, HELLO.into());
-        seen.call(n, 2, at(ms));
+        seen.record(n, INTROSPECT.into());
     };
-    // The kept connection, :1.5, answered at once; then :1.10 connects.
-    let mut seen = Seen::default();
-    introspecting(&mut seen, 5, 0);
-    seen.answer(5, 2, at(3));
-    let healthy = seen.clone();
-    introspecting(&mut seen, 10, 10_000);
-    seen.answer(10, 2, at(10_002));
+    let none = Drops::default();
+    // The kept connection, :1.5, asked; then :1.10 connects and asks,
+    // and :1.11 only says `Hello`.
+    let mut healthy = Seen::default();
+    introspecting(&mut healthy, 5);
+    let mut seen = healthy.clone();
+    introspecting(&mut seen, 10);
     seen.record(11, HELLO.into());
     assert_eq!(
-        seen.unexplained(7, 12),
-        vec![
-            (8, vec![]),
-            (9, vec![]),
-            (10, both()),
-            (11, vec![HELLO.to_string()])
-        ],
+        seen.unexplained(7, 12, &none),
+        vec![(8, vec![]), (9, vec![]), (10, both()), (11, hello())],
         "made for nothing"
     );
-    assert_eq!(seen.reconnects(7, 12), 0);
-    assert!(seen.unanswered_but_kept().is_empty());
-    // :1.5's refresh got no answer, or one the monitor saw 1.88 s late
-    // (strand's deadline, which starts before the call is written, had
-    // passed): :1.10 is its reconnect, made at the next refresh or, after
-    // a failure with no answer, a moment later.
-    for (answered, reconnect) in [
-        (None, 8_005),
-        (Some(8_000 + 2_500), 18_000),
-        (Some(8_000 + 1_880), 18_000),
-    ] {
-        let mut late = healthy.clone();
-        late.call(5, 3, at(8_000));
-        if let Some(a) = answered {
-            late.answer(5, 3, at(a));
+    assert_eq!(seen.reconnects(7, 12, &none), 0);
+
+    // Strand's log says it dropped :1.5. The monitor's view of the call
+    // does not matter: when it was stalled, it read the call and its
+    // late answer back to back (flakes-r3-1). :1.10 is the reconnect.
+    let drops = Drops::parse(
+        "strand: INFO strand::services: service `ppd` started (run 1)\n\
+         strand: WARN strand_introspect: dropped its connection :1.5 to the bus \
+         (no answer within 2s)\n",
+    );
+    assert_eq!(
+        drops,
+        Drops {
+            named: BTreeSet::from([5]),
+            abandoned: 0
         }
-        introspecting(&mut late, 10, reconnect);
-        late.answer(10, 2, at(reconnect + 2));
-        late.record(11, HELLO.into());
-        assert_eq!(
-            late.unexplained(9, 12),
-            vec![(11, vec![HELLO.to_string()])],
-            "only the reconnect is explained ({answered:?})"
-        );
-        assert_eq!(late.reconnects(9, 12), 1);
-        assert!(late.unanswered_but_kept().is_empty());
-        // One late call explains one reconnect: a new connection per
-        // question after it is not explained.
-        let mut again = late.clone();
-        introspecting(&mut again, 12, reconnect + 10_000);
-        again.answer(12, 2, at(reconnect + 10_002));
-        assert_eq!(again.unexplained(9, 13).len(), 2, "{answered:?}");
-        // One that did more than introspect is not.
-        late.record(
-            10,
-            "MethodCall org.freedesktop.DBus.Properties.GetAll".into(),
-        );
-        assert_eq!(late.unexplained(9, 11).len(), 1);
-    }
-    // A late call whose connection spoke again was not dropped: the
-    // reconnect after it is not explained, and an unanswered one says
-    // the monitor missed an answer.
-    for answered in [None, Some(8_000 + 2_500)] {
-        let mut kept = healthy.clone();
-        kept.call(5, 3, at(8_000));
-        if let Some(a) = answered {
-            kept.answer(5, 3, at(a));
-        }
-        kept.call(5, 4, at(18_000));
-        kept.answer(5, 4, at(18_002));
-        introspecting(&mut kept, 10, 28_000);
-        assert_eq!(kept.unexplained(9, 11), vec![(10, both())], "{answered:?}");
-        assert_eq!(
-            kept.unanswered_but_kept(),
-            if answered.is_none() {
-                vec![(5, 3)]
-            } else {
-                vec![]
+    );
+    let mut late = healthy.clone();
+    introspecting(&mut late, 10);
+    assert_eq!(late.unexplained(9, 11, &drops), vec![]);
+    assert_eq!(late.reconnects(9, 11, &drops), 1);
+    // One drop explains one reconnect: a new connection per question
+    // after it is not explained.
+    let mut again = late.clone();
+    introspecting(&mut again, 11);
+    assert_eq!(again.unexplained(9, 12, &drops), vec![(11, both())]);
+    // A drop explains no connection made before it.
+    let mut before = Seen::default();
+    introspecting(&mut before, 5);
+    introspecting(&mut before, 6);
+    let six =
+        Drops::parse("strand: WARN strand_introspect: dropped its connection :1.6 to the bus (x)");
+    assert_eq!(
+        before.unexplained(4, 7, &six),
+        vec![(5, both()), (6, both())]
+    );
+    // One that did more than introspect is not.
+    let mut more = late.clone();
+    more.record(
+        10,
+        "MethodCall org.freedesktop.DBus.Properties.GetAll".into(),
+    );
+    assert_eq!(more.unexplained(9, 11, &drops).len(), 1);
+
+    // flakes-r3-2: after the drop of :1.5, the retry's connect ran past
+    // the deadline (:1.10 says only `Hello`), and the next question
+    // reconnects (:1.11). Without the log's connect given up on, :1.11
+    // has nothing to follow.
+    let mut abandoned = healthy.clone();
+    abandoned.record(10, HELLO.into());
+    introspecting(&mut abandoned, 11);
+    assert_eq!(abandoned.unexplained(9, 12, &drops), vec![(11, both())]);
+    let given_up = Drops::parse(
+        "strand: WARN strand_introspect: dropped its connection :1.5 to the bus \
+         (no answer within 2s)\n\
+         strand: WARN strand_introspect: gave up connecting to the bus \
+         (no answer within 2s)\n",
+    );
+    assert_eq!(given_up.abandoned, 1);
+    assert_eq!(abandoned.unexplained(9, 12, &given_up), vec![]);
+    assert_eq!(abandoned.reconnects(9, 12, &given_up), 2);
+    // A connection that never asked still needs a drop before it.
+    let mut bare = healthy.clone();
+    bare.record(10, HELLO.into());
+    assert_eq!(
+        bare.unexplained(
+            9,
+            11,
+            &Drops {
+                named: BTreeSet::new(),
+                abandoned: 1
             }
-        );
-    }
+        ),
+        vec![(10, hello())]
+    );
 }
 
 /// The socket inodes among a process's open files.
@@ -1225,26 +1178,61 @@ fn sockets(pid: u32) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Asserts a process's sockets are `baseline` again within a second. A
-/// socket open only for a moment is not caught here: the bus monitor
-/// (no connection at all), sway's accept log and pw-mon account for
-/// those. A difference that persists fails, naming the inodes.
-fn same_sockets(pid: u32, baseline: &BTreeSet<String>, after: &str) {
+/// Whether `now` is `baseline` but for `drops` sockets
+/// `strand-introspect` replaced: each connection it dropped or connect it
+/// gave up on (its log, since the baseline) opens at most one socket for
+/// the reconnect and closes at most one, perhaps not yet (decisions.md
+/// m6-flakes, review 3).
+fn sockets_explained(baseline: &BTreeSet<String>, now: &BTreeSet<String>, drops: usize) -> bool {
+    now.difference(baseline).count() <= drops && baseline.difference(now).count() <= drops
+}
+
+/// Asserts a process's sockets are `baseline` again within a second, but
+/// for those `strand-introspect`'s reconnects replaced (`drops`, read
+/// from strand's log: how many drops it logged since the baseline; see
+/// [`sockets_explained`]). A socket open only for a moment is not caught
+/// here: the bus monitor (no connection at all), sway's accept log and
+/// pw-mon account for those. A difference that persists fails, naming
+/// the inodes.
+fn same_sockets(pid: u32, baseline: &BTreeSet<String>, drops: impl Fn() -> usize, after: &str) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let now = sockets(pid);
-        if &now == baseline {
+        let drops = drops();
+        if sockets_explained(baseline, &now, drops) {
             return;
         }
         if Instant::now() >= deadline {
             panic!(
-                "strand's sockets changed by {after}: opened {:?}, closed {:?}",
+                "strand's sockets changed by {after}: opened {:?}, closed {:?} \
+                 ({drops} drops in strand-introspect's log)",
                 now.difference(baseline).collect::<Vec<_>>(),
                 baseline.difference(&now).collect::<Vec<_>>()
             );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// (m6-flakes) A socket `strand-introspect` replaced after a drop in its
+/// log is not a reconnect of the reloads; any other change is.
+#[test]
+fn a_socket_replaced_after_a_logged_drop_is_explained() {
+    let set = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+    let base = set(&["socket:[1]", "socket:[2]"]);
+    let replaced = set(&["socket:[1]", "socket:[3]"]);
+    let both = set(&["socket:[1]", "socket:[2]", "socket:[3]"]);
+    assert!(sockets_explained(&base, &base, 0));
+    assert!(!sockets_explained(&base, &replaced, 0));
+    assert!(!sockets_explained(&base, &both, 0));
+    // The reconnect's socket, with the dropped one closed or not yet.
+    assert!(sockets_explained(&base, &replaced, 1));
+    assert!(sockets_explained(&base, &both, 1));
+    assert!(!sockets_explained(
+        &base,
+        &set(&["socket:[3]", "socket:[4]"]),
+        1
+    ));
 }
 
 /// PipeWire's client objects of a process, by `object.serial` (a new
@@ -1803,6 +1791,14 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "a zbus mock was never read: {zbus_before:?}"
     );
     let socks = sockets(pid);
+    // `strand-introspect`'s drops so far: a reconnect after a later one
+    // may replace a socket (see `sockets_explained`).
+    let drops_before = Drops::parse(&log_text()).count();
+    let drops_since = || {
+        Drops::parse(&log_text())
+            .count()
+            .saturating_sub(drops_before)
+    };
     // Wayland, the bus, sway's IPC and PipeWire at least: an empty set
     // (an unreadable /proc/<pid>/fd) would make every check below vacuous.
     assert!(
@@ -1933,7 +1929,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             );
         }
         alive(&format!("after reload {i}"));
-        same_sockets(pid, &socks, &format!("reload {i}"));
+        same_sockets(pid, &socks, drops_since, &format!("reload {i}"));
     }
     eprintln!("{RELOADS} reloads in {:.1} s", t0.elapsed().as_secs_f64());
     // Past the 5 s stop grace: a reader released by a reload and not
@@ -1965,36 +1961,23 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "strand connected to PipeWire or created objects there during the reloads: {pw_new:?}"
     );
     let last = next_connection(&tokio, &bus);
-    let made = bus_log.connections_between(first, last);
+    // strand writes a drop to its log before it connects again, so the
+    // log read after the probe has every drop a reconnect below it follows.
+    let drops = Drops::parse(&log_text());
+    let made = bus_log.connections_between(first, last, &drops);
     let refreshed = bus_log.introspections_below(first);
-    let seen = bus_log.seen();
-    let reconnects = seen.reconnects(first, last);
-    // The monitor sees the answers: else kept connections would look
-    // dropped, and their calls would explain connections.
-    let answered = seen
-        .introspects
-        .values()
-        .filter(|c| c.answered.is_some())
-        .count();
-    let missed = seen.unanswered_but_kept();
-    assert!(
-        missed.is_empty(),
-        "the bus monitor saw no answer to `Introspect` calls (by sender and \
-         serial) whose connection spoke again: {missed:?}"
-    );
+    let reconnects = bus_log.seen().reconnects(first, last, &drops);
     assert!(
         made.is_empty(),
         "connections were made to the bus during the reloads (each with what \
          it sent; the `from dbus` check asked {refreshed} times over the \
-         connection it keeps, and reconnected {reconnects} times after it \
-         dropped a connection whose `Introspect` went unanswered or was \
-         answered late): {made:?}"
+         connection it keeps, and reconnected {reconnects} times after the \
+         drops its log names, {drops:?}): {made:?}"
     );
     eprintln!(
         "the `from dbus` check asked the bus {refreshed} times during the reloads, \
-         over the connection it keeps; {reconnects} reconnects after a dropped connection; \
-         {answered} of {} `Introspect` calls answered",
-        seen.introspects.len()
+         over the connection it keeps; {reconnects} reconnects after the drops its \
+         log names ({drops:?})"
     );
     let after = mock_calls(&mocks);
     for (name, before) in &calls {
@@ -2013,7 +1996,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             "the {name} answered calls during the reloads"
         );
     }
-    same_sockets(pid, &socks, "the reloads");
+    same_sockets(pid, &socks, drops_since, "the reloads");
     assert_eq!(
         pipewire_clients(&pw, pid),
         clients,
@@ -2057,7 +2040,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "the declaration's edit restarted more than `mood`"
     );
     let control = next_connection(&tokio, &bus);
-    let made = bus_log.connections_between(last, control);
+    let made = bus_log.connections_between(last, control, &Drops::parse(&log_text()));
     assert!(
         made.is_empty(),
         "the declaration's edit connected to the bus: {made:?}"

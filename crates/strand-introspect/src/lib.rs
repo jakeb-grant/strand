@@ -217,9 +217,16 @@ impl Shared {
         Ok(conn)
     }
 
-    /// Forgets `conn` as `bus`'s connection (it broke, or hung). Never
+    /// Forgets `conn` as `bus`'s connection (it broke, or hung), and
+    /// says so in the log with its unique name and `why`: the next
+    /// question connects again, and the log tells that reconnect from a
+    /// connection made for nothing (decisions.md m6-flakes). Never
     /// waits: a connection being made elsewhere does not hold the map.
-    fn forget(&self, bus: &Bus, conn: &zbus::Connection) {
+    fn forget(&self, bus: &Bus, conn: &zbus::Connection, why: &str) {
+        match conn.unique_name() {
+            Some(name) => log::warn!("dropped its connection {name} to the bus ({why})"),
+            None => log::warn!("dropped its connection to the bus ({why})"),
+        }
         let mut conns = self.conns();
         if conns
             .get(bus)
@@ -244,21 +251,27 @@ impl Shared {
         let late = || format!("no answer within {TIMEOUT:?}");
         let mut retried = false;
         loop {
-            let conn = tokio::time::timeout_at(deadline, self.connection(bus))
-                .await
-                .map_err(|_| late())??;
+            let conn = match tokio::time::timeout_at(deadline, self.connection(bus)).await {
+                Ok(conn) => conn?,
+                Err(_) => {
+                    // A connection the bus numbered may be left behind,
+                    // never asked over (decisions.md m6-flakes).
+                    log::warn!("gave up connecting to the bus ({})", late());
+                    return Err(late());
+                }
+            };
             match tokio::time::timeout_at(deadline, introspect(&conn, name, path)).await {
                 Err(_) => {
-                    self.forget(bus, &conn);
+                    self.forget(bus, &conn, &late());
                     return Err(late());
                 }
                 Ok(Err(e)) if !answered(&e) && !retried => {
-                    self.forget(bus, &conn);
+                    self.forget(bus, &conn, &e.to_string());
                     retried = true;
                 }
                 Ok(Err(e)) => {
                     if !answered(&e) {
-                        self.forget(bus, &conn);
+                        self.forget(bus, &conn, &e.to_string());
                     }
                     return Err(e.to_string());
                 }

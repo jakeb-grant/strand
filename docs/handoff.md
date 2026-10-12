@@ -275,10 +275,11 @@ recorded reason.
   audio loop 3 s: it fails before the fix and passes after.
 - `crates/strand/tests/reloads.rs` allows no bus connection during the
   reloads now that `strand-introspect` keeps one connection per bus,
-  but its reconnect after it dropped a connection whose `Introspect`
-  went unanswered or was answered late (a starved runner's mock), one
-  reconnect per such call, and counts the `from dbus` refreshes on the
-  kept connection (decisions.md m6-flakes).
+  but its reconnect after a drop strand's log names (`strand-introspect`
+  logs each connection it drops and each connect it gives up on; a
+  starved runner's mock), one reconnect per drop and nothing timed, and
+  counts the `from dbus` refreshes on the kept connection (decisions.md
+  m6-flakes).
 - Done in M5's wave 0 (decisions.md m5-infra): the two functional tests
   that bounded wall-clock time now check work done and order, and
   `compositor_matrix.rs` sends Hyprland's Lua dispatch form first (its

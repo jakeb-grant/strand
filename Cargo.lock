@@ -2948,6 +2948,7 @@ version = "0.0.0"
 name = "strand-introspect"
 version = "0.0.0"
 dependencies = [
+ "log",
  "tokio",
  "zbus",
 ]

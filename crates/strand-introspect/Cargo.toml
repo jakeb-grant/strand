@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+log = "0.4.34"
 tokio = { version = "1.53", features = ["rt", "sync", "time"] }
 
 [lints]
