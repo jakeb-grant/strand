@@ -247,7 +247,7 @@ notifications and so on. For the rest, you declare one. Make
 ```strand level=5 file=services.strand
 // services.strand: services Strand does not ship
 service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
-service os from file "/etc/os-release" { name: text = PRETTY_NAME }
+service host from file "/etc/hostname" { name: text }
 service temps from poll ["sensors", "-j", "coretemp-*"] every 5s { cpu: float = temp1_input }
 permit exec "sensors"
 ```
@@ -267,10 +267,16 @@ introspection, so a misspelt property is an error with a
 did-you-mean. If the daemon is not running, that is a
 warning: your config is not broken because a daemon is down.
 
-**`from file`** reads a file and watches it. A JSON file, or `key=value`
-lines such as `/etc/os-release`, are read by key: `name` is its
-`PRETTY_NAME` line, quotes removed. A field without `= key` reads the
-key with its own name.
+**`from file`** reads a file and watches it. `/etc/hostname` holds one
+word, your computer's name, and a file that is neither JSON nor
+`key=value` lines is read whole, whatever the key: `host.name` is that
+word, and it follows the file when you rename the machine. A JSON file
+is read by key. So is a file of `key=value` (or `key: value`) lines,
+with double quotes around a value removed, but only when every line is
+a pair: one `#` comment or other line makes the whole file text again,
+and every field reads all of it. That is why this step does not read
+`PRETTY_NAME` from `/etc/os-release`, which on some systems has
+comments. A field without `= key` reads the key with its own name.
 
 **`from poll … every T`** reads again every `T`, and only while
 something showing reads it. Given a file path (`"/sys/class/…"`), it
@@ -284,8 +290,11 @@ first one found is not always the CPU's. `"coretemp-*"` asks for
 Intel's CPU sensor only, whose `temp1_input` is the whole package. On
 an AMD processor write `"k10temp-*"` instead (its `temp1_input` is
 `Tctl`). Run `sensors` in a terminal to see the chip names your
-machine has; with no chip of that name, the service fails, says so in
-`strand watch`, and `temps.cpu` stays `0`.
+machine has. With no chip of that name, `sensors` fails every 5 s and
+`temps.cpu` stays `0`. Nothing marks the service failed and `strand
+watch` shows nothing; the only trace is a line in the terminal running
+`strand run` each time, ``strand: WARN strand_services::custom: `sensors`
+failed (exit status: 1)``.
 
 **`permit exec` lists the programs your config may run.** A service
 that runs a command (`from poll` of a command, or `from listen`) is an
@@ -329,7 +338,7 @@ panel Control {
         bg: $surface.alpha(0.86); blur: 32; shadow: $elevation.xl
     set { $surface: $surface.mix($accent, 4%) }    // a tinted surface for this panel
     row { align: center; gap: $space.2
-      text os.name { grow: 1; weight: 600; ellipsis: end }
+      text host.name { grow: 1; weight: 600; ellipsis: end }
       text degrees(temps.cpu) { font: $font.mono; color: $fg.muted }
     }
     pages current: view {
@@ -547,7 +556,7 @@ into your own `strand` binary. [The plugin page](plugins.md) shows how.
 | --- | --- |
 | `theme.strand` | `Look`, the settings, your token sets and `accent.txt` |
 | `colors.strand` and `colors.css.tmpl` | your colours as CSS custom properties |
-| `services.strand` | `ppd`, `os` and `temps` |
+| `services.strand` | `ppd`, `host` and `temps` |
 | `control.strand` | the `Control` panel and `Tile` |
 | `dock.strand` | `Pin`, the pins and the `Dock` bar |
 

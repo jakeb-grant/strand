@@ -2904,6 +2904,8 @@ dependencies = [
  "strand-compiler",
  "strand-core",
  "strand-introspect",
+ "strand-scene",
+ "strand-services",
  "strand-services-schema",
  "tree-sitter",
  "tree-sitter-strand",

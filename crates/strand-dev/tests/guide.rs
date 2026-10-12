@@ -25,13 +25,14 @@ use std::time::Duration;
 
 use strand_compiler::SourceMap;
 use strand_compiler::diagnostic::{Style, render};
-use strand_compiler::instantiate::{Instance, SceneMirror, Storage};
+use strand_compiler::instantiate::{Instance, SceneMirror, Storage, show_expr};
 use strand_compiler::lower;
 use strand_compiler::schema::Schema;
 use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_dev::workspace::{Analysis, ConfigKey, Input};
+use strand_scene::{Prop, PropValue};
 use support::guide;
 
 /// A fresh directory for one config.
@@ -390,8 +391,10 @@ fn the_guide_dock_reorders_every_pin_and_keeps_the_order() {
 
 /// The control centre's `set { $Tile.pad: $space.2 }` reaches the tiles
 /// in its row and no other (decisions.md m5-docs, unverified item 4):
-/// the row carries the override for its subtree, and the tiles read
-/// `$Tile.pad` under it.
+/// the row carries the override for its subtree, the tiles read
+/// `$Tile.pad` under it, and resolved as render resolves it (the global
+/// table, then each ancestor's `tokens=` level, nearest last) a tile in
+/// the row is `$space.2` and one outside it `$space.3`.
 #[test]
 fn the_guide_control_centre_overrides_a_component_token() {
     let schema = builtin_schema();
@@ -435,4 +438,132 @@ fn the_guide_control_centre_overrides_a_component_token() {
         tokens.lines().any(|l| l == "Tile.pad := $space.3"),
         "{tokens}"
     );
+    // Resolved: every tile's `pad`, in the scope render gives its node.
+    let top = [&scene.tokens];
+    let global = strand_scene::TokenScope::new(&top);
+    let tight = global.lookup("space.2").unwrap();
+    let loose = global.lookup("space.3").unwrap();
+    assert_ne!(tight, loose);
+    let (mut inside, mut outside) = (0, 0);
+    for id in scene.walk() {
+        let Some(pad @ PropValue::Token(_)) = scene.prop(id, Prop::Pad) else {
+            continue;
+        };
+        if !matches!(pad, PropValue::Token(e) if show_expr(e) == "$Tile.pad") {
+            continue;
+        }
+        // The levels from the root down to the node itself.
+        let mut chain = vec![id];
+        while let Some(p) = scene.parent(*chain.last().unwrap()) {
+            chain.push(p);
+        }
+        let mut levels: Vec<&strand_scene::TokenTable> = vec![&scene.tokens];
+        let mut overridden = false;
+        for n in chain.iter().rev() {
+            if let Some(PropValue::Tokens(t)) = scene.prop(*n, Prop::Tokens) {
+                overridden |=
+                    t.derived.contains_key("Tile.pad") || t.tokens.contains_key("Tile.pad");
+                levels.push(t);
+            }
+        }
+        let got = strand_scene::TokenScope::new(&levels)
+            .resolve(pad)
+            .map(|v| v.into_owned());
+        if overridden {
+            inside += 1;
+            assert_eq!(got.as_ref(), Some(&tight), "a tile in the row: {shown}");
+        } else {
+            outside += 1;
+            assert_eq!(got.as_ref(), Some(&loose), "a tile outside it: {shown}");
+        }
+    }
+    // The Volume tile (and Brightness, with a backlight) in the row; the
+    // rest outside it.
+    assert!(inside >= 1, "{shown}");
+    assert!(outside >= 1, "{shown}");
+}
+
+/// What each file level 5's `from file` services read looks like on a
+/// real system, the awkward cases included (decisions.md m5-docs, review
+/// round 2 item 1).
+const FILE_SAMPLES: &[(&str, &str)] = &[
+    ("/etc/hostname", "mylaptop\n"),
+    // openSUSE Tumbleweed's, which carries a comment line.
+    (
+        "/etc/os-release",
+        "NAME=\"openSUSE Tumbleweed\"\n# VERSION=\"20240101\"\nID=\"opensuse-tumbleweed\"\nPRETTY_NAME=\"openSUSE Tumbleweed\"\n",
+    ),
+];
+
+/// Every field of a level-5 `from file` service reads one value from its
+/// file, on the samples above: one line, no quotes (a field that read a
+/// whole multi-line file, or a value still in quotes, would show as such
+/// in the control centre).
+#[test]
+fn the_guide_file_services_read_one_value() {
+    let text = last_block("services.strand");
+    let mut seen = 0;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("service ") else {
+            continue;
+        };
+        let Some((_, rest)) = rest.split_once(" from file \"") else {
+            continue;
+        };
+        seen += 1;
+        let (path, rest) = rest.split_once('"').unwrap();
+        let sample = FILE_SAMPLES
+            .iter()
+            .find(|(p, _)| *p == path)
+            .unwrap_or_else(|| panic!("no sample of {path}: add one to FILE_SAMPLES"))
+            .1;
+        let doc = strand_services::custom::Document::parse(sample);
+        let body = rest.split_once('{').unwrap().1.rsplit_once('}').unwrap().0;
+        for field in body.split(',') {
+            let (name, ty) = field.split_once(':').unwrap();
+            let key = match ty.split_once('=') {
+                Some((_, k)) => k.trim(),
+                None => name.trim(),
+            };
+            let key: Vec<String> = key.split('.').map(str::to_string).collect();
+            let got = doc
+                .get(&key)
+                .unwrap_or_else(|| panic!("{line}: no {key:?} in {path}"));
+            let strand_services::Data::Text(got) = got else {
+                panic!("{line}: reads {got:?} from {path}");
+            };
+            assert!(
+                !got.is_empty() && !got.contains(['\n', '"', '\'']),
+                "{line}: reads {got:?} from {path}"
+            );
+        }
+    }
+    assert!(seen >= 1, "level 5 has no `from file` service:\n{text}");
+}
+
+/// The limit level 5 states for `key=value` files: one line that is not
+/// a pair (a `#` comment) makes the whole file text, which every field
+/// reads; double quotes around a value are removed and single ones kept.
+/// When strand-services lifts it, this fails and the page changes with it.
+#[test]
+fn the_guide_states_the_pairs_limit() {
+    use strand_services::custom::Document;
+    let commented = FILE_SAMPLES
+        .iter()
+        .find(|(p, _)| *p == "/etc/os-release")
+        .unwrap()
+        .1;
+    assert!(matches!(Document::parse(commented), Document::Text(_)));
+    let Document::Pairs(p) = Document::parse("A=\"x\"\nB='y'\n") else {
+        panic!("not pairs");
+    };
+    assert_eq!(p, [("A".into(), "x".into()), ("B".into(), "'y'".into())]);
+    let page = std::fs::read_to_string(guide::root().join("docs/guide/level-5.md")).unwrap();
+    let page = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for said in [
+        "with double quotes around a value removed, but only when every line is a pair",
+        "one `#` comment or other line makes the whole file text again",
+    ] {
+        assert!(page.contains(said), "level-5.md no longer says: {said}");
+    }
 }
