@@ -746,6 +746,119 @@ fn enterprise_networks_join_only_through_a_saved_profile() {
     s.shutdown();
 }
 
+/// (m6-services, services-r3-3) A key retyped for a saved shared-key WEP
+/// network is saved into its profile's security section, which keeps
+/// what else it said: its `auth-alg` and transmit key (the key written at
+/// that index), not a section of the key alone.
+#[test]
+fn a_new_key_keeps_the_saved_profile_s_security_settings() {
+    use std::collections::HashMap;
+    use zbus::zvariant::{OwnedValue, Value};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, _) = wifi_home(&tokio, &conn);
+    let legacy = add_ap(&tokio, &conn, &dev, "Mock_Legacy", "Legacy", 50);
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &legacy,
+        "UpdateProperties",
+        &(
+            "org.freedesktop.NetworkManager.AccessPoint",
+            HashMap::from([
+                ("Flags", Value::from(1u32)),
+                ("WpaFlags", Value::from(0u32)),
+                ("RsnFlags", Value::from(0u32)),
+            ]),
+        ),
+    );
+    // Saved in the system's settings: shared-key auth, transmitting with
+    // key 1.
+    let profile: HashMap<&str, HashMap<&str, Value>> = HashMap::from([
+        (
+            "connection",
+            HashMap::from([
+                ("id", Value::from("Legacy")),
+                ("type", Value::from("802-11-wireless")),
+            ]),
+        ),
+        (
+            "802-11-wireless",
+            HashMap::from([("ssid", Value::from(b"Legacy".to_vec()))]),
+        ),
+        (
+            "802-11-wireless-security",
+            HashMap::from([
+                ("key-mgmt", Value::from("none")),
+                ("auth-alg", Value::from("shared")),
+                ("wep-tx-keyidx", Value::from(1u32)),
+            ]),
+        ),
+    ]);
+    let saved: zbus::zvariant::OwnedObjectPath = call(
+        &tokio,
+        &conn,
+        NM,
+        "/org/freedesktop/NetworkManager/Settings",
+        "org.freedesktop.NetworkManager.Settings",
+        "AddConnection",
+        &(profile,),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let item = AccessPoint {
+        ssid: "Legacy".into(),
+        strength: 0.5,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(
+            &rt,
+            "connect_with",
+            Some(&item.to_data()),
+            &[Data::Text("abcde".into())],
+            Default::default(),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let updated = loop {
+        if let Some(c) = mock_calls(&tokio, &conn, NM, saved.as_str(), "Update")
+            .into_iter()
+            .next()
+        {
+            break c;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the profile was never updated"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    type Settings = HashMap<String, HashMap<String, OwnedValue>>;
+    let settings: Settings = updated[0].try_clone().unwrap().try_into().unwrap();
+    let sec = &settings["802-11-wireless-security"];
+    let text = |s: &str| OwnedValue::try_from(Value::from(s)).unwrap();
+    assert_eq!(sec["auth-alg"], text("shared"), "{sec:?}");
+    assert_eq!(sec["wep-tx-keyidx"], OwnedValue::from(1u32));
+    assert_eq!(sec["wep-key1"], text("abcde"));
+    assert_eq!(sec["key-mgmt"], text("none"));
+    s.shutdown();
+}
+
 /// A NetworkManager of the test's own, for what python-dbusmock cannot
 /// do (it answers one call at a time): take its time over the saved
 /// connections while answering everything else at once.

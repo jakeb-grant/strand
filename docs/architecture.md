@@ -4615,8 +4615,13 @@ transparent huge pages for life.
   kept, LRU, at most `art::KEPT_BYTES` (16 MiB) of files together, since
   they are tmpfs memory, the one shown last never dropped; six fetches at once, the shown URL's and skipped tracks'
   still running; a failed URL not asked again for 5 min) lives in the media body, which
-  leaves it, the shown file only, to the next body (`media::Kept`), so the store's
-  `art` path never names a removed file (m6-services, services-r2-3/-4). `art::agent(roots)` and
+  leaves it, the shown file only, to the next body on its services thread
+  (`media::Kept`, a per-thread slot, so another runtime's body never
+  takes it), so the store's `art` path never names a removed file; the
+  fetches still running are left with it, counted, and their ends come
+  to the next body over a channel (a file that comes in while no body
+  runs is not kept: `art::Cache::abandon`), so six at once holds across
+  bodies (m6-services, services-r2-3/-4, services-r3-1/-2). `art::agent(roots)` and
   `art::fetch_with` take other roots (tests).
   `apps` (wave 4, a3): desktop entries (`freedesktop-desktop-entry`;
   `NoDisplay`, `Hidden`, `OnlyShowIn`/`NotShowIn`, `TryExec`, the first

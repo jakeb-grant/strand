@@ -249,14 +249,20 @@ impl Cache {
         });
     }
 
-    /// Only the URL shown last is kept, and nothing counts as being
-    /// fetched: what a media body leaves to the next (its fetches are
-    /// not followed any more), so the file the store still shows lives on
-    /// (services-r2-4).
+    /// A fetch of `url` ended with nothing to keep (it came in while no
+    /// media body ran): it no longer counts as being fetched, and is
+    /// neither kept nor failed.
+    pub fn abandon(&mut self, url: &str) {
+        self.fetching.remove(url);
+    }
+
+    /// Only the URL shown last is kept: what a media body leaves to the
+    /// next, so the file the store still shows lives on (services-r2-4).
+    /// The fetches running still count: they run on, and their ends come
+    /// to the next body (services-r3-1).
     pub fn keep_shown(&mut self) {
         let shown = self.shown.clone();
         self.drop_kept(|u| Some(u) != shown.as_deref());
-        self.fetching.clear();
     }
 
     /// The URL shown last, if its file is kept.
@@ -378,8 +384,8 @@ mod tests {
         assert!(c.start("https://x/y", t0));
     }
 
-    /// (m6-services, services-r2-4) What a body leaves to the next: the
-    /// shown file only, and no fetch counted as running.
+    /// (m6-services, services-r2-4, services-r3-1) What a body leaves to
+    /// the next: the shown file only, with the fetches still running.
     #[test]
     fn the_cache_left_to_the_next_body_keeps_only_the_shown_file() {
         let t0 = Instant::now();
@@ -395,10 +401,15 @@ mod tests {
         let shown = c.file("https://a/0").unwrap();
         assert!(c.start("https://a/2", t0));
         c.keep_shown();
-        assert_eq!((c.kept(), c.in_flight()), (1, 0));
+        assert_eq!((c.kept(), c.in_flight()), (1, 1));
         assert_eq!(c.shown(), Some("https://a/0"));
         assert_eq!(c.file("https://a/0"), Some(shown));
-        assert!(c.start("https://a/2", t0), "fetched again by the next body");
+        // (services-r3-1) The running fetch still counts: not fetched
+        // again beside itself; once it ends with nothing kept, it may be.
+        assert!(!c.start("https://a/2", t0), "fetched twice at once");
+        c.abandon("https://a/2");
+        assert_eq!(c.in_flight(), 0);
+        assert!(c.start("https://a/2", t0));
     }
 
     /// (m6-services, services-r1-3) The kept files are bounded by their

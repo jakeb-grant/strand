@@ -431,73 +431,140 @@ async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> 
 /// The body's tasks: reads (answers to apply) and actions (nothing).
 type Tasks = tokio::task::JoinSet<Option<Read>>;
 
-/// Remote art fetches: the URL and its file, or why not.
-type Fetches = tokio::task::JoinSet<(String, Result<art::Art, String>)>;
+/// A remote art fetch's end: its URL, and its file (`None` when it came
+/// in while no media body ran: only the shown file is kept then), or why
+/// not.
+type Fetched = (String, Result<Option<art::Art>, String>);
 
-/// The art cache the last media body left: the file of the art it
-/// showed, kept for the next (services-r2-4).
-static LEFT: std::sync::Mutex<Option<art::Cache>> = std::sync::Mutex::new(None);
+/// What a media body hands the next on this services thread: its art
+/// cache, and the fetches it started, which run on (a blocking fetch is
+/// not cancelled) and report here.
+struct Left {
+    cache: art::Cache,
+    tx: tokio::sync::mpsc::UnboundedSender<Fetched>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Fetched>,
+    /// Whether a body runs (its fetches' files are kept).
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
-/// A media body's art cache. Fetched art's file lives only while the
-/// cache keeps it, and the store's `art` holds just its path, which it
-/// still publishes after the body ends (a restart after an error, or the
-/// stop when nothing reads `media`) until the next body publishes: so
-/// the body takes the cache the last one left, and leaves its own (the
-/// file shown only) however it ends. A newly built `image media.art`
-/// meanwhile reads a file that is there, and the next body shows it
-/// without fetching it again.
-struct Kept(art::Cache);
+impl Default for Left {
+    fn default() -> Left {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        Left {
+            cache: art::Cache::default(),
+            tx,
+            rx,
+            running: Default::default(),
+        }
+    }
+}
+
+thread_local! {
+    /// What the last media body of this services thread left
+    /// (services-r2-4). Per thread, so per services runtime: the bodies
+    /// of another runtime in the process (another test's) never take or
+    /// replace it (services-r3-2).
+    static LEFT: std::cell::RefCell<Option<Left>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A media body's art cache and fetches. Fetched art's file lives only
+/// while the cache keeps it, and the store's `art` holds just its path,
+/// which it still publishes after the body ends (a restart after an
+/// error, or the stop when nothing reads `media`) until the next body
+/// publishes: so the body takes what the last one left, and leaves its
+/// own (the file shown only) however it ends. A newly built
+/// `image media.art` meanwhile reads a file that is there, and the next
+/// body shows it without fetching it again. The fetches still running
+/// are left with it, counted as running, and their ends come to the next
+/// body: [`art::IN_FLIGHT`] holds across bodies, a URL still being
+/// fetched is not fetched again beside itself, and a failure is
+/// remembered (services-r3-1).
+struct Kept(Left);
 
 impl Kept {
     fn take() -> Kept {
-        let left = LEFT.lock().unwrap_or_else(|e| e.into_inner()).take();
-        Kept(left.unwrap_or_default())
+        let left = LEFT
+            .try_with(|l| l.borrow_mut().take())
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        left.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Kept(left)
+    }
+
+    /// Fetch `url` with `fetch` on the blocking pool; its end comes to
+    /// [`Kept::ended`] (this body's or the next's).
+    fn fetch(
+        &self,
+        url: String,
+        fetch: impl FnOnce(&str) -> Result<art::Art, String> + Send + 'static,
+    ) {
+        let tx = self.0.tx.clone();
+        let running = self.0.running.clone();
+        tokio::task::spawn_blocking(move || {
+            // A panic in a decoder of the network's bytes is a failed
+            // fetch, never a URL counted as fetching for good.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch(&url)))
+                .unwrap_or_else(|_| Err("the fetch panicked".into()));
+            // Came in while no body runs: the file goes (only the shown
+            // one is kept meanwhile), the URL stops counting as fetched.
+            let r = r.map(|a| {
+                running
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    .then_some(a)
+            });
+            let _ = tx.send((url, r));
+        });
+    }
+
+    /// The next fetch to end.
+    async fn ended(&mut self) -> Option<Fetched> {
+        self.0.rx.recv().await
+    }
+
+    /// Apply a fetch's end at `now`.
+    fn done(&mut self, fetched: Fetched, now: Instant) {
+        apply(&mut self.0.cache, fetched, now);
+    }
+}
+
+/// Apply a fetch's end to `cache` at `now`.
+fn apply(cache: &mut art::Cache, (url, r): Fetched, now: Instant) {
+    match r {
+        Ok(Some(a)) => cache.done(url, Ok(a), now),
+        Ok(None) => cache.abandon(&url),
+        Err(e) => cache.done(url, Err(e), now),
     }
 }
 
 impl Drop for Kept {
     fn drop(&mut self) {
-        let mut cache = std::mem::take(&mut self.0);
-        cache.keep_shown();
-        // The one left before (another body's, in a test process) goes.
-        let _ = LEFT
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(cache);
-    }
-}
-
-impl std::ops::Deref for Kept {
-    type Target = art::Cache;
-    fn deref(&self) -> &art::Cache {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Kept {
-    fn deref_mut(&mut self) -> &mut art::Cache {
-        &mut self.0
+        let mut left = std::mem::take(&mut self.0);
+        left.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // Ends already in but not applied: kept no more than those still
+        // to come (the shown file was applied when it was shown).
+        while let Ok((url, r)) = left.rx.try_recv() {
+            apply(&mut left.cache, (url, r.map(|_| None)), Instant::now());
+        }
+        left.cache.keep_shown();
+        let _ = LEFT.try_with(|l| l.borrow_mut().replace(left));
     }
 }
 
 /// The state to show: `players`' with remote art replaced by its fetched
 /// file (null until it is in, or when it failed), starting its fetch on
 /// the blocking pool when it is due.
-fn shown(players: &Players, cache: &mut art::Cache, fetches: &mut Fetches, now: Instant) -> Media {
+fn shown(players: &Players, kept: &mut Kept, now: Instant) -> Media {
     let mut m = players.state(now);
     if let Some(url) = m.art.take() {
         if !art::is_remote(&url) {
             m.art = Some(url);
-        } else if let Some(file) = cache.file(&url) {
+        } else if let Some(file) = kept.0.cache.file(&url) {
             m.art = Some(file);
-        } else if cache.start(&url, now) {
-            fetches.spawn_blocking(move || {
-                // A panic in a decoder of the network's bytes is a failed
-                // fetch, never a URL counted as fetching for good.
-                let r = std::panic::catch_unwind(|| art::fetch(&url))
-                    .unwrap_or_else(|_| Err("the fetch panicked".into()));
-                (url, r)
-            });
+        } else if kept.0.cache.start(&url, now) {
+            kept.fetch(url, art::fetch);
         }
     }
     m
@@ -587,9 +654,8 @@ impl Media {
                 None => break,
             }
         }
-        let mut cache = Kept::take();
-        let mut fetches = Fetches::new();
-        let state = shown(&players, &mut cache, &mut fetches, Instant::now());
+        let mut kept = Kept::take();
+        let state = shown(&players, &mut kept, Instant::now());
         if !cx.update(|s| *s = state) {
             return Ok(());
         }
@@ -606,17 +672,11 @@ impl Media {
                     Ok(Some(r)) => players.answer(r, Instant::now()),
                     _ => false,
                 },
-                Some(done) = fetches.join_next(), if !fetches.is_empty() => match done {
-                    Ok((url, r)) => {
-                        cache.done(url, r, Instant::now());
-                        true
-                    }
-                    // Cancelled (the runtime is going away).
-                    Err(e) => {
-                        log::debug!("media: an art fetch ended: {e}");
-                        false
-                    }
-                },
+                // Never closed: `kept` holds a sender.
+                Some(done) = kept.ended() => {
+                    kept.done(done, Instant::now());
+                    true
+                }
                 o = owners.next() => {
                     let Some(Ok(m)) = o else {
                         return Err(ServiceError("the session bus connection ended".into()));
@@ -673,7 +733,7 @@ impl Media {
                 },
             };
             if changed {
-                let state = shown(&players, &mut cache, &mut fetches, Instant::now());
+                let state = shown(&players, &mut kept, Instant::now());
                 if !cx.update(|s| *s = state) {
                     return Ok(());
                 }
@@ -789,6 +849,112 @@ impl Players {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fetched picture's file, distinct by `i`.
+    fn art_file(i: u8) -> art::Art {
+        art::Art {
+            file: crate::pixmap::write_file(&[0x89, b'P', b'N', b'G', i, 7], "png").unwrap(),
+            bytes: 6,
+        }
+    }
+
+    /// (m6-services, services-r3-1) A body ends while its fetches run (a
+    /// blocking fetch is not cancelled): the next body counts them, so
+    /// the URL is not fetched again beside itself and IN_FLIGHT holds
+    /// across bodies; a failure that ends after the body is remembered by
+    /// the next; and a picture that comes in while no body runs is not
+    /// kept (only the shown file is), its URL free to be fetched again.
+    #[test]
+    fn fetches_running_when_a_body_ends_are_counted_by_the_next() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _enter = rt.enter();
+        let t0 = Instant::now();
+        let (fail, failing) = std::sync::mpsc::channel::<()>();
+        let (finish, finishing) = std::sync::mpsc::channel::<()>();
+        let (bad, slow) = ("https://a/bad", "https://a/slow");
+        let file = std::sync::Arc::new(std::sync::Mutex::new(None));
+        {
+            let mut kept = Kept::take();
+            assert!(kept.0.cache.start(bad, t0));
+            kept.fetch(bad.into(), move |_| {
+                let _ = failing.recv();
+                Err("refused".into())
+            });
+            assert!(kept.0.cache.start(slow, t0));
+            let f = file.clone();
+            kept.fetch(slow.into(), move |_| {
+                let _ = finishing.recv();
+                let a = art_file(1);
+                *f.lock().unwrap() = Some(a.file.text());
+                Ok(a)
+            });
+        }
+        let mut kept = Kept::take();
+        assert_eq!(kept.0.cache.in_flight(), 2, "the running fetches counted");
+        assert!(!kept.0.cache.start(bad, t0), "fetched again beside itself");
+        drop(kept);
+
+        // Both end while no body runs.
+        fail.send(()).unwrap();
+        finish.send(()).unwrap();
+        let ended = || LEFT.with(|l| l.borrow().as_ref().map_or(0, |l| l.rx.len()));
+        let t = Instant::now();
+        while ended() < 2 {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "the fetches never ended"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut kept = Kept::take();
+        for _ in 0..2 {
+            let ended = rt.block_on(kept.ended()).unwrap();
+            kept.done(ended, t0);
+        }
+        assert_eq!(kept.0.cache.in_flight(), 0);
+        assert!(!kept.0.cache.start(bad, t0), "the failure remembered");
+        assert_eq!(kept.0.cache.kept(), 0, "nothing kept while stopped");
+        let path = file.lock().unwrap().clone().unwrap();
+        assert!(!std::path::Path::new(&path).exists(), "its file went");
+        assert!(kept.0.cache.start(slow, t0));
+    }
+
+    /// (m6-services, services-r3-2) What a media body leaves is its
+    /// services runtime's (one thread each): a body of another runtime in
+    /// the process ending meanwhile neither takes it nor replaces it.
+    #[test]
+    fn another_runtime_s_body_does_not_take_what_this_one_left() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _enter = rt.enter();
+        let t0 = Instant::now();
+        let url = "https://a/shown";
+        {
+            let mut kept = Kept::take();
+            assert!(kept.0.cache.start(url, t0));
+            kept.done((url.into(), Ok(Some(art_file(2)))), t0);
+            assert!(kept.0.cache.file(url).is_some());
+        }
+        std::thread::spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let _enter = rt.enter();
+            drop(Kept::take());
+        })
+        .join()
+        .unwrap();
+        let mut kept = Kept::take();
+        let file = kept
+            .0
+            .cache
+            .file(url)
+            .expect("the shown file is still left");
+        assert!(std::path::Path::new(&file).exists());
+    }
 
     /// Two reads in flight, a change signalled between their answers, and
     /// the older read answering last: the change stands.

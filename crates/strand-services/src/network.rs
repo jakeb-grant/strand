@@ -791,6 +791,44 @@ fn security(kind: Kind, password: &str) -> zbus::Result<Option<HashMap<&'static 
     })
 }
 
+/// A saved profile's `802-11-wireless-security` section (`had`) with the
+/// new password's `secret` ([`security`]) saved in it (services-r3-3):
+/// the profile's other keys stay (a shared-key WEP `auth-alg`, its
+/// `wep-tx-keyidx`, a WPA `proto` or `pmf`, the secret's flags), and only
+/// `key-mgmt`, `psk` or the WEP key and its type are written. A WEP key
+/// goes where the profile transmits with (`wep-key<wep-tx-keyidx>`). A
+/// section of the other kind (a WEP profile now asked a WPA password, or
+/// the other way) has nothing to keep and is replaced.
+fn merged_security(
+    had: Option<HashMap<String, OwnedValue>>,
+    secret: &HashMap<&'static str, OwnedValue>,
+) -> zbus::Result<HashMap<String, OwnedValue>> {
+    // WEP's `key-mgmt` is `none`; a personal network's `wpa-psk` or `sae`.
+    let wep = |m: &HashMap<_, OwnedValue>| {
+        m.get("key-mgmt")
+            .and_then(|v| <&str>::try_from(v).ok())
+            .is_some_and(|k| k == "none")
+    };
+    let secret_wep = secret.contains_key("wep-key0");
+    let mut sec = had
+        .filter(|h| h.contains_key("key-mgmt") && wep(h) == secret_wep)
+        .unwrap_or_default();
+    let tx = sec
+        .get("wep-tx-keyidx")
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|i| *i <= 3)
+        .unwrap_or(0);
+    for (k, v) in secret {
+        let k = if *k == "wep-key0" {
+            format!("wep-key{tx}")
+        } else {
+            k.to_string()
+        };
+        sec.insert(k, v.try_clone()?);
+    }
+    Ok(sec)
+}
+
 /// NetworkManager's `wep-key-type` for a WEP `key`: 1 (the key itself,
 /// 5 or 13 characters, or 10 or 26 hex digits) or 2 (a passphrase it
 /// hashes into one).
@@ -1011,11 +1049,11 @@ async fn connect(
     };
     if let Some((path, mut settings)) = saved {
         if let Some(secret) = &secret {
-            // The new password, saved in it.
-            let mut sec = HashMap::new();
-            for (k, v) in secret {
-                sec.insert(k.to_string(), v.try_clone()?);
-            }
+            // The new password, saved in it: merged into the section the
+            // profile has, so what else it says (a shared-key WEP
+            // `auth-alg`, its transmit key, `proto`, `pmf`) stays.
+            let had = settings.remove("802-11-wireless-security");
+            let sec = merged_security(had, secret)?;
             settings.insert("802-11-wireless-security".into(), sec);
             dbus::timed_for(
                 dbus::READ_TIMEOUT,
@@ -1123,6 +1161,55 @@ async fn saved_connection(
 mod tests {
     use super::*;
     use zbus::zvariant::{OwnedValue, Value};
+
+    /// (m6-services, services-r3-3) A new password is merged into a saved
+    /// profile's security section: a shared-key WEP profile keeps its
+    /// `auth-alg` and transmit key (the key written at that index), a
+    /// WPA profile its `proto` and `pmf`; a section of the other kind is
+    /// replaced.
+    #[test]
+    fn a_new_password_keeps_the_saved_profile_s_security_settings() {
+        let text = |s: &str| OwnedValue::try_from(Value::from(s.to_string())).unwrap();
+        let wep_profile = HashMap::from([
+            ("key-mgmt".to_string(), text("none")),
+            ("auth-alg".to_string(), text("shared")),
+            ("wep-tx-keyidx".to_string(), OwnedValue::from(1u32)),
+            ("wep-key-type".to_string(), OwnedValue::from(1u32)),
+        ]);
+        let sec = merged_security(
+            Some(wep_profile.clone()),
+            &security(Kind::Wep, "abcde").unwrap().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sec["auth-alg"], text("shared"));
+        assert_eq!(sec["wep-tx-keyidx"], OwnedValue::from(1u32));
+        assert_eq!(sec["wep-key1"], text("abcde"));
+        assert!(!sec.contains_key("wep-key0"));
+        assert_eq!(sec["key-mgmt"], text("none"));
+
+        let wpa_profile = HashMap::from([
+            ("key-mgmt".to_string(), text("wpa-psk")),
+            (
+                "proto".to_string(),
+                OwnedValue::try_from(Value::from(vec!["rsn"])).unwrap(),
+            ),
+            ("pmf".to_string(), OwnedValue::from(3i32)),
+        ]);
+        let personal = security(Kind::Personal("wpa-psk"), "hunter22")
+            .unwrap()
+            .unwrap();
+        let sec = merged_security(Some(wpa_profile.clone()), &personal).unwrap();
+        assert_eq!(sec["pmf"], OwnedValue::from(3i32));
+        assert!(sec.contains_key("proto"));
+        assert_eq!(sec["psk"], text("hunter22"));
+
+        // The other kind: nothing of the old section is kept.
+        let sec = merged_security(Some(wep_profile), &personal).unwrap();
+        assert!(!sec.contains_key("auth-alg"));
+        assert_eq!(sec.len(), 2);
+        let sec = merged_security(None, &personal).unwrap();
+        assert_eq!(sec.len(), 2);
+    }
 
     fn ap(flags: u32, wpa: u32, rsn: u32) -> Props {
         let n = |v: u32| OwnedValue::try_from(Value::from(v)).unwrap();
