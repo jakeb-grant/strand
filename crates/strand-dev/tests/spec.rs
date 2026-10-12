@@ -147,12 +147,106 @@ fn mixed_unit_comparisons() {
     for cmp in rejected {
         assert_eq!(codes(&file(cmp)), ["check::type_mismatch"], "{cmp}");
     }
-    // A bare number is degrees where an angle is expected, and never a
-    // duration.
+    // A bare number is never a duration: the one diagnostic is the type
+    // mismatch, where `2ms` checks clean.
     let prop = |p: &str| format!("bar Top {{\n  box {{ {p} }}\n}}\n");
-    assert_eq!(codes(&prop("rotate: 45")), Vec::<String>::new());
-    assert_ne!(codes(&prop("stagger: 2")), Vec::<String>::new());
+    assert_eq!(codes(&prop("stagger: 2")), [STAGGER_BARE]);
     assert_eq!(codes(&prop("stagger: 2ms")), Vec::<String>::new());
+}
+
+/// The code `stagger: 2` is refused with.
+const STAGGER_BARE: &str = "check::type_mismatch";
+
+/// One bar of `src` on the mock services, laid out 120x64 and painted
+/// with the renderer `strand run` uses: its pixels.
+fn paint(src: &str) -> Vec<u8> {
+    use strand_scene::{PaintTarget, Painter as _, Scale, Size, SurfaceId};
+    let rt = Runtime::new();
+    let first = build(None, &[("bar.strand", src)]);
+    let host = Rc::new(SchemaHost::mock(&rt, &first.program.types));
+    let screen = host.record(
+        "Screen",
+        &[
+            ("id", Value::text("Mock | DP-1 | Display")),
+            ("name", Value::text("DP-1")),
+            ("make", Value::text("Mock")),
+            ("model", Value::text("DP-1")),
+            ("description", Value::text("Display")),
+        ],
+    );
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let inst = Instance::from_build(&rt, &first, host, Storage::none());
+    let u = inst.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let mut scene = SceneMirror::new();
+    scene.apply(&u.diff).unwrap();
+    let font = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(font),
+    ]));
+    let mut render =
+        strand_render::Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+    assert!(render.apply(u.diff).is_empty());
+    let bar = scene.roots()[0];
+    let (w, h) = (120, 64);
+    render.attach_surface(SurfaceId(1), bar);
+    render.configure_surface(SurfaceId(1), Size::new(w, h), Scale::ONE);
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    let target = PaintTarget::new(&mut px, Size::new(w, h), w * 4, Scale::ONE, 0).unwrap();
+    render.paint(
+        SurfaceId(1),
+        &mut target.at(std::time::Duration::from_secs(1)),
+    );
+    drop(inst);
+    px
+}
+
+/// spec.md 7.1: where an angle is expected a bare number is degrees:
+/// `rotate: 45` paints what `rotate: 45deg` paints (radians or turns
+/// would not), and not what `rotate: 0` or `rotate: 90deg` paints.
+#[test]
+fn a_bare_number_for_an_angle_is_degrees() {
+    let bar = |r: &str| {
+        paint(&format!(
+            "bar Top {{\n  bg: #ffffff\n  box {{ x: 30; y: 12; width: 60; height: 12; \
+             bg: #ff0000; rotate: {r} }}\n}}\n"
+        ))
+    };
+    let bare = bar("45");
+    assert!(bare == bar("45deg"), "rotate: 45 is not rotate: 45deg");
+    assert!(bare != bar("0"), "rotate: 45 did not turn the box");
+    assert!(bare != bar("90deg"));
+}
+
+/// spec.md 7.2: lengths in different units (`px`, `ch`, `%`) compare by
+/// their numbers as written; a comparison resolves neither a `ch` against
+/// a font nor a percentage against a size, so `2ch < 10px` is true
+/// although 2ch is wider than 10px in any text font.
+#[test]
+fn lengths_in_different_units_compare_as_written() {
+    for cmp in ["2ch < 10px", "10px > 2ch", "2ch < 10%", "4ch < 5ch"] {
+        assert_eq!(
+            codes(&format!("bar Top {{\n  text {cmp} ? \"a\" : \"b\"\n}}\n")),
+            Vec::<String>::new(),
+            "{cmp}"
+        );
+    }
+    let shell = Shell::boot(
+        &[(
+            "bar.strand",
+            "bar Top {\n  text 2ch < 10px ? \"ch-as-written\" : \"ch-resolved\"\n  \
+             text 30px < 2ch ? \"px-resolved\" : \"px-as-written\"\n}\n",
+        )],
+        Storage::none(),
+    );
+    assert!(
+        shell.scene.find_text("ch-as-written").is_some()
+            && shell.scene.find_text("px-as-written").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    drop(shell.rt);
 }
 
 /// spec.md 10.4: `@reset` resets its cell on the reload that adds it, and

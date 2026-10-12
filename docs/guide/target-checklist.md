@@ -7,11 +7,14 @@ session gets the guide and nothing else, builds the bar in its own
 config directory, and `scripts/agent-proxy/score.sh` runs that config
 on a headless sway with two outputs (`HEADLESS-1` 2560x1440 at scale 1,
 `HEADLESS-2` 1920x1080 at 1.25) and the deterministic mock services
-(`STRAND_MOCK=acceptance`), opens the calendar with a click at the top
-centre of `HEADLESS-1`, and reads the inspector's dump
-(`inspect.dump`). The score is never a pixel comparison: it reads what
-the shell shows, not how the files are written, so any file layout and
-any component names pass.
+(`STRAND_MOCK=acceptance`), reads the inspector's dump
+(`inspect.dump`), then clicks along `HEADLESS-1`'s bar (the top centre
+first, then outwards) until a dump shows the calendar, wherever the
+clock is. Every item but the calendar is scored on the dump taken
+before any click. The score is never a pixel comparison: it reads what
+the shell shows, not how the files are written or laid out, so any file
+layout, any component names, any arrangement along the bar and any way
+of drawing a dot pass.
 
 The mock's desktop: four workspaces on `HEADLESS-1` (the second
 focused), two on `HEADLESS-2`; the focused window "strand —
@@ -27,7 +30,7 @@ checked on a known good result.
 - **`bar-per-output`**: one surface along the top edge on each output,
   and no more (a `bar` is on every monitor).
 - **`dots`**: a dot per workspace on its own monitor's bar, keyed by the
-  workspace (four on `HEADLESS-1`, two on `HEADLESS-2`).
+  workspace (four on `HEADLESS-1`, two on `HEADLESS-2`), drawn any way.
 - **`title`**: the focused window's title on both bars.
 - **`clock`**: the day and time on both bars ("Mon 05  09:41").
 - **`calendar`**: clicking the clock opens a popup with the month's

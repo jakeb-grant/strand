@@ -1041,8 +1041,11 @@ zero-width span (an insertion) is allowed.
   service's text, never the plugin schema files, so the pages are the
   same on every machine) and their `///` docs: `README.md`,
   `elements.md`, `services.md`, `types.md`, `functions.md` and
-  `tokens.md` (`strand_dev::reference::{schema, pages, write}`). The
-  pages are committed; `reference::tests::the_reference_is_current`
+  `tokens.md` (`strand_dev::reference::{schema, pages, write}`).
+  `write` replaces or removes only pages that open with the generated
+  note and refuses a directory holding any other `.md` file; with no
+  directory named, the CLI needs `./docs/reference` to exist
+  (decisions.md m5-docs3). The pages are committed; `reference::tests::the_reference_is_current`
   fails on any difference, so CI fails on a schema edit without its
   pages (built in M5 wave 3, m5-docs).
 - **tree-sitter layout.** `crates/strand-dev/tree-sitter-strand/` is a

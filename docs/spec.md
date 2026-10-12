@@ -1,11 +1,13 @@
 # The Strand language specification
 
-Status: **frozen** (M5, wave 3). This file and `docs/grammar.md` are
-the language 1.x promises: from the freeze on, a change to either needs
-a decisions.md paragraph that cites the compatibility policy (section
-14); typo fixes are exempt. The freeze review settled every point the
-draft left open, each with a test (decisions.md m5-docs, "the freeze
-review"). The theming hub (hue roles, the palette's extras and identity,
+Status: **reviewed for the freeze, not yet frozen** (M5 wave 3). The
+freeze review settled every point the draft left open, each with a test
+(decisions.md m5-docs, "the freeze review"). The freeze itself is the
+last commit of M5's wave 3, the integrator's, after every stream that
+could add a schema entry (m5-plan, "Language spec frozen"); from then
+on this file and `docs/grammar.md` are the language 1.x promises, and a
+change to either needs a decisions.md paragraph that cites the
+compatibility policy (section 14); typo fixes are exempt. The theming hub (hue roles, the palette's extras and identity,
 templates, the `file` element and `strand export`; sections 4.1, 9 and
 13) is owner-approved design (decisions.md m5-tools), built in M5 wave 2
 (decisions.md m5-palette, m5-tools); the text here follows the code as
@@ -486,11 +488,12 @@ units).
 - An ordering comparison takes two plain numbers, or two values of the
   same kind (`10px < 20px`, `1s < 500ms`), or a length, angle or
   percentage beside a plain number, which is read in the other side's
-  unit (`10px < 20`, `90deg > 45`, `40% < 50`), or a length beside a
-  percentage, whose numbers are compared as written (a percentage is
-  not resolved against a size). A duration compares only with a
-  duration, and other units never mix (`1s < 2`, `90deg < 10px`): a load
-  error.
+  unit (`10px < 20`, `90deg > 45`, `40% < 50`), or two lengths in
+  different units (`px`, `ch`, a percentage), whose numbers are compared
+  as written: a comparison resolves neither a `ch` against a font nor a
+  percentage against a size, so `2ch < 10px` is true. A duration
+  compares only with a duration, and other units never mix (`1s < 2`,
+  `90deg < 10px`): a load error.
 - `a ?. f` is `null` when `a` is `null`, else `a.f`. `a ?? b` is `b`
   when `a` is `null`, or an `Async` that has no value: its first load
   still pending, or a failure with no earlier value kept. An `Async`

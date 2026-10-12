@@ -39,7 +39,20 @@ fn main() -> ExitCode {
 /// into `dir` (default `docs/reference`, from the repository's root).
 fn reference(dir: Option<String>) -> ExitCode {
     use strand_dev::reference;
-    let dir = std::path::PathBuf::from(dir.unwrap_or_else(|| "docs/reference".into()));
+    let dir = match dir {
+        Some(d) => std::path::PathBuf::from(d),
+        // The default is relative, so it means the committed pages only
+        // from the repository's root; anywhere else it would make a stray
+        // `docs/reference`.
+        None if std::path::Path::new("docs/reference").is_dir() => "docs/reference".into(),
+        None => {
+            eprintln!(
+                "strand-dev reference: no docs/reference here; run it from the repository's \
+                 root or name the directory"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let schema = match reference::schema() {
         Ok(s) => s,
         Err(e) => {

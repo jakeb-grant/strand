@@ -8,8 +8,14 @@
 #   guide/       the published guide (docs/guide/ without the scorer's
 #                checklist), and nothing else of the repository;
 #   config/      the empty config directory the session builds in;
+#   home/        the session's $HOME, whose .config/strand is config/, so
+#                `strand new` and a bare `strand check` or `strand fmt`
+#                act on config/;
 #   bin/strand   `strand check`, `strand fmt` and `strand new` through the
-#                container's debug build (`strand run` is the scorer's);
+#                container's debug build, run in the caller's directory
+#                with HOME and XDG_CONFIG_HOME under home/ (`strand run`
+#                is the scorer's: the session has no compositor, and the
+#                two headless outputs are score.sh's);
 #   PROMPT.md    the task, given to the session as its only instruction.
 # Then start a fresh model session in OUT with PROMPT.md and no other
 # context (scripts/agent-proxy/run.sh does, with AGENT_PROXY_CMD), and
@@ -26,19 +32,29 @@ case "$OUT" in
 esac
 [ ! -e "$OUT" ] || { echo "prepare.sh: $OUT exists" >&2; exit 2; }
 
-mkdir -p "$OUT/guide" "$OUT/config" "$OUT/bin"
+mkdir -p "$OUT/guide" "$OUT/config" "$OUT/bin" "$OUT/home/.config"
+ln -s "$OUT/config" "$OUT/home/.config/strand"
 cp -r "$ROOT/docs/guide/." "$OUT/guide/"
 rm -f "$OUT/guide/target-checklist.md"
 
 "$ROOT/scripts/container/run.sh" cargo build -q -p strand --bin strand
 cat > "$OUT/bin/strand" <<WRAP
 #!/usr/bin/env bash
-# The container's strand, for the commands that need no compositor.
+# The container's strand, for the commands that need no compositor. The
+# container mounts only the checkout and starts in its root with a
+# throwaway HOME, so this runs strand in the caller's directory with
+# HOME and XDG_CONFIG_HOME in $OUT/home: strand new writes into
+# $OUT/config, and relative paths resolve where the session stands.
 case "\${1:-}" in
   check|fmt|new|help|--help|-h) ;;
   *) echo "strand \${1:-}: not available here; this rehearsal runs your shell when it is scored" >&2; exit 2 ;;
 esac
-exec "$ROOT/scripts/container/run.sh" "$ROOT/target/container/debug/strand" "\$@"
+case "\$PWD/" in
+  "$ROOT"/*) ;;
+  *) echo "strand: run it from inside $ROOT (the container mounts only the checkout)" >&2; exit 2 ;;
+esac
+exec "$ROOT/scripts/container/run.sh" env HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config" \\
+  bash -c 'cd "\$1" && shift && exec "\$@"' bash "\$PWD" "$ROOT/target/container/debug/strand" "\$@"
 WRAP
 chmod +x "$OUT/bin/strand"
 

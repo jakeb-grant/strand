@@ -18,7 +18,8 @@
 //!   checklist (`docs/guide/target-checklist.md`) scores the result in
 //!   full, which proves the scorer on the guide's own bar. The whole test
 //!   is meant to take 120 s or less in the container: a `timing gate
-//!   missed` panic at its end says by how much it did not.
+//!   missed` panic at its end says by how much it did not. It runs in
+//!   the strict `test` step (not a timing step), so a miss fails there.
 //! - `agent_proxy_score` (layer 2, advisory, ignored): scores another
 //!   config directory against the same checklist, for the agent-proxy
 //!   harness (`scripts/agent-proxy/`): `STRAND_PROXY_CONFIG=<dir>`.
@@ -788,6 +789,9 @@ fn the_guide_builds_bar_a_on_two_outputs() {
         shots(&mut desk, n);
     }
 
+    // Every item but the calendar is scored before any click (a click
+    // may focus a workspace or mute the speaker).
+    let before = desk.dump();
     // Bar (a) runs: the calendar opens from the clock on HEADLESS-1.
     let mut pointer = desk.pointer();
     // (A new virtual pointer's first buttons reach no surface.)
@@ -801,7 +805,7 @@ fn the_guide_builds_bar_a_on_two_outputs() {
 
     // The agent proxy's checklist passes in full on the guide's own bar.
     let dump = desk.dump();
-    let score = score(&dump);
+    let score = with_calendar(score(&before), &dump);
     let failed: Vec<_> = score.iter().filter(|s| !s.ok).collect();
     if !failed.is_empty() {
         let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/newcomer");
@@ -915,28 +919,25 @@ fn score(dump: &Json) -> Vec<Scored> {
                 .all(|m| found.iter().any(|n| monitor(n).as_ref() == Some(m)))
     };
 
-    // Workspace dots: a node per workspace on its own monitor, keyed by
-    // the workspace's id.
-    let dots_on = |i: usize| -> Vec<&Json> {
-        ns.iter()
-            .filter(|n| {
-                mons.get(i).is_some_and(|m| monitor(n).as_ref() == Some(m))
-                    && n["identity"]["key"]
-                        .as_str()
-                        .is_some_and(|k| k.parse::<u32>().is_ok())
-                    && prop(n, "radius").is_some()
-            })
-            .collect()
+    // Workspace dots: a row per workspace on its own monitor, keyed by
+    // the workspace's id, however each dot is drawn (a box, a glyph, an
+    // icon, several nodes): the distinct numeric keys on each monitor.
+    let dots_on = |i: usize| -> Vec<&str> {
+        let mut keys: Vec<&str> = ns
+            .iter()
+            .filter(|n| mons.get(i).is_some_and(|m| monitor(n).as_ref() == Some(m)))
+            .filter_map(|n| n["identity"]["key"].as_str())
+            .filter(|k| k.parse::<u32>().is_ok())
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
     };
     let (d1, d2) = (dots_on(0), dots_on(1));
     item(
         "dots",
         d1.len() == 4 && d2.len() == 2,
-        format!(
-            "{} keyed dots on HEADLESS-1 (want 4), {} on HEADLESS-2 (want 2)",
-            d1.len(),
-            d2.len()
-        ),
+        format!("workspace keys {d1:?} on HEADLESS-1 (want 4), {d2:?} on HEADLESS-2 (want 2)"),
     );
 
     let title = texts(&|t| t.contains("docs/design.md"));
@@ -1016,6 +1017,90 @@ fn score(dump: &Json) -> Vec<Scored> {
     out
 }
 
+/// Whether `dump` shows the calendar: the month's title and the 5th.
+fn calendar_shown(dump: &Json) -> bool {
+    score(dump).iter().any(|s| s.id == "calendar" && s.ok)
+}
+
+/// `scored` (taken before any click) with its `calendar` item replaced by
+/// the one scored on `after` (taken with the calendar opened).
+fn with_calendar(mut scored: Vec<Scored>, after: &Json) -> Vec<Scored> {
+    if let (Some(at), Some(cal)) = (
+        scored.iter().position(|s| s.id == "calendar"),
+        score(after).into_iter().find(|s| s.id == "calendar"),
+    ) {
+        scored[at] = cal;
+    }
+    scored
+}
+
+/// The points a click tries on `HEADLESS-1`'s bar to open the calendar,
+/// in order: the guide's clock (the top centre) first, then outwards in
+/// both directions, each row in turn. The scorer knows no layout: the
+/// clock may be anywhere along the bar.
+fn bar_points() -> Vec<(u32, u32)> {
+    const STEP: u32 = 40;
+    let mut xs = vec![1280];
+    for i in 1..=(1280 - 8) / STEP {
+        xs.extend([1280 - i * STEP, 1280 + i * STEP]);
+    }
+    [26, 16, 36, 8]
+        .into_iter()
+        .flat_map(|y| xs.iter().map(move |&x| (x, y)))
+        .collect()
+}
+
+/// Clicks along `HEADLESS-1`'s bar ([`bar_points`]) until the dump shows
+/// the calendar, dismissing any other popup a click opened; the point
+/// that opened it, or `None`.
+fn open_calendar(desk: &mut Desk) -> Option<(u32, u32)> {
+    let mut pointer = desk.pointer();
+    // (A new virtual pointer's first buttons reach no surface.)
+    pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
+    std::thread::sleep(Duration::from_millis(200));
+    let mut found = None;
+    for (x, y) in bar_points() {
+        let surfaces = desk.surface_count();
+        pointer.click(x, y, LAYOUT.0, LAYOUT.1);
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while found.is_none() && Instant::now() < deadline {
+            if calendar_shown(&desk.dump()) {
+                found = Some((x, y));
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        if found.is_some() {
+            break;
+        }
+        desk.assert_alive();
+        if desk.surface_count() > surfaces {
+            // Some other popup (a tray menu): a click on the desktop
+            // closes it before the next try.
+            pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+    pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
+    found
+}
+
+/// The proxy's score of the config running on `desk`: every item but the
+/// calendar on a dump taken before any click, then the calendar opened
+/// wherever the clock is ([`open_calendar`]) and scored on a second dump.
+fn proxy_score(desk: &mut Desk) -> Vec<Scored> {
+    let before = desk.dump();
+    let at = open_calendar(desk);
+    std::thread::sleep(Duration::from_millis(300));
+    let mut scored = with_calendar(score(&before), &desk.dump());
+    if let Some(s) = scored.iter_mut().find(|s| s.id == "calendar") {
+        s.why = match at {
+            Some((x, y)) => format!("{}; opened by a click at {x},{y}", s.why),
+            None => format!("{}; no click along the bar opened it", s.why),
+        };
+    }
+    scored
+}
+
 /// The checklist page names every item the scorer has, in order, and no
 /// other.
 #[test]
@@ -1032,10 +1117,69 @@ fn the_checklist_page_names_every_item() {
     assert_eq!(ids, ITEMS, "docs/guide/target-checklist.md's items");
 }
 
+/// The guide's bar laid out and drawn otherwise passes in full: the clock
+/// in the end section, top right (so the guide's top-centre click lands on
+/// empty bar), and the dots drawn as glyphs with no `radius`. The scorer
+/// depends on what the shell shows, never on layout or how a dot is
+/// drawn (decisions.md m5-docs3).
+#[test]
+fn the_scorer_passes_a_bar_laid_out_otherwise() {
+    if !tools() {
+        return;
+    }
+    let mut desk = Desk::start("other");
+    let config = desk.dir.join("other");
+    std::fs::create_dir_all(&config).unwrap();
+    for b in steps() {
+        std::fs::write(config.join(&b.file), &b.text).unwrap();
+    }
+    let bar = std::fs::read_to_string(config.join("bar.strand")).unwrap();
+    let moved = bar.replace("    center { Clock }\n", "").replace(
+        "    end { gap: $space.3\n",
+        "    end { gap: $space.3\n      Clock\n",
+    );
+    assert!(
+        moved != bar && !moved.contains("center {") && moved.contains("      Clock\n"),
+        "the guide's last bar.strand changed: move its clock again\n{bar}"
+    );
+    std::fs::write(config.join("bar.strand"), moved).unwrap();
+    std::fs::write(
+        config.join("dot.strand"),
+        "component Dot(ws: Workspace) {\n  text \"●\" { color: $fg.muted\n    \
+         when ws.focused { color: $accent }\n    on click { ws.focus() }\n  }\n}\n",
+    )
+    .unwrap();
+    desk.run(Some(&config));
+    assert!(desk.errors().is_empty(), "{:?}", desk.errors());
+    let score = proxy_score(&mut desk);
+    for s in &score {
+        eprintln!("{} {}: {}", if s.ok { "PASS" } else { "FAIL" }, s.id, s.why);
+    }
+    let failed: Vec<_> = score.iter().filter(|s| !s.ok).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    let calendar = score.iter().find(|s| s.id == "calendar").unwrap();
+    assert!(
+        !calendar.why.contains("at 1280,26"),
+        "the clock is not at the top centre: {}",
+        calendar.why
+    );
+}
+
+/// The marker the newcomer test's budget miss starts with is the one
+/// `scripts/container/gate-misses.sh` reads, and that file names this
+/// test among the markers' owners (its miss fails the strict `test` step
+/// all the same: decisions.md m5-docs3).
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
+    assert!(check.contains("strand/tests/m5/newcomer.rs"));
+}
+
 /// The agent proxy's score of another config (`STRAND_PROXY_CONFIG`, the
-/// directory a proxy session wrote), on the same desk and mock: started,
-/// the calendar opened from the clock at the top centre of `HEADLESS-1`,
-/// dumped and scored. It prints every item and fails when one fails.
+/// directory a proxy session wrote), on the same desk and mock: started
+/// and scored by [`proxy_score`], which finds the clock by clicking along
+/// the bar. It prints every item and fails when one fails.
 /// Advisory: run by `scripts/agent-proxy/score.sh`, never in CI.
 #[test]
 #[ignore = "the agent proxy's scorer: STRAND_PROXY_CONFIG=<dir>"]
@@ -1049,13 +1193,7 @@ fn agent_proxy_score() {
     let mut desk = Desk::start("proxy");
     desk.run(Some(Path::new(&config)));
     std::thread::sleep(Duration::from_secs(2));
-    let mut pointer = desk.pointer();
-    pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
-    std::thread::sleep(Duration::from_millis(200));
-    pointer.click(1280, 26, LAYOUT.0, LAYOUT.1);
-    pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
-    std::thread::sleep(Duration::from_secs(2));
-    let score = score(&desk.dump());
+    let score = proxy_score(&mut desk);
     for s in &score {
         println!("{} {}: {}", if s.ok { "PASS" } else { "FAIL" }, s.id, s.why);
     }
