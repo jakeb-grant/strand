@@ -312,14 +312,14 @@ recorded reason.
   `Ok` though sway ignores `set_maximized`; the wlr protocol cannot tell.
 - Inspector: write-back swaps the file in with `renameat2(RENAME_EXCHANGE)`
   and checks the file it took out (M6, m6-edges), so an editor's save
-  after the check is kept. Two edges remain: on a filesystem without the
-  exchange (`EINVAL`/`ENOSYS`) it falls back to the check just before a
-  plain rename, with that small window; an editor saving without pause
-  through eight exchanges is refused with a later save kept, not
-  necessarily with the latest in place; and an editor already holding
-  the file open that writes into it after the check of the old file
-  writes into the file being removed (no lock editors take could stop
-  it). An answer to `inspect.pick` means logic told main, not that main
+  after the check is kept. Three edges remain: on a filesystem without
+  the exchange (`EINVAL`/`ENOSYS`) it falls back to the check just
+  before a plain rename, with that small window; an editor saving
+  without pause through eight exchanges is refused with a later save
+  kept, not necessarily with the latest in place; and an editor already
+  holding the file open that writes into it after the check of the old
+  file writes into the file being removed (no lock editors take could
+  stop it). An answer to `inspect.pick` means logic told main, not that main
   has turned pick mode on (decisions.md m5-inspect; architecture.md).
 - Drag and drop: a copy of the dragged item above a windowed `list`'s
   mounted rows is left out of `at` by logic (M6, m6-edges), which reads

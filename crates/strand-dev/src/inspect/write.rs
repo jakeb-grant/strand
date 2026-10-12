@@ -380,6 +380,11 @@ pub enum Moment {
     /// which holds the save before it (edges-r2-2). Called before each
     /// such exchange.
     Again,
+    /// (exchange) The exchange found no file to swap with (`ENOENT`),
+    /// and the refusal is not yet made: the path is the file's, where an
+    /// editor saving by a backup may already have written anew
+    /// (edges-r3-1).
+    Missing,
 }
 
 /// Temporary names made by this process, so each write has its own and
@@ -501,7 +506,12 @@ pub fn write_with(
                 // moves the file to a backup and then writes it anew
                 // leaves no file for a moment, which is a change, as the
                 // check before a plain rename finds it (edges-r2-4).
-                if e == rustix::io::Errno::NOENT && fs::symlink_metadata(&real).is_err() {
+                // `tmp` was just made, so `ENOENT` already says the file
+                // was missing at the exchange; a second look afterwards
+                // could find the editor's new file and call it an I/O
+                // error (edges-r3-1).
+                if e == rustix::io::Errno::NOENT {
+                    hook(Moment::Missing, &real);
                     return Err(Refusal::Changed(edit.file.clone()));
                 }
                 return Err(io(&real, e.into()));
@@ -607,7 +617,8 @@ const ROUNDS: usize = 8;
 /// When the latest save is in place, the refusal says so and where the
 /// save before it is kept (each write has its own temporary name, so it
 /// blocks none). Nothing is removed but the edit, checked; a failed
-/// exchange is reported by what is at `real` then (edges-r2-3).
+/// exchange is reported by what is at `real` then (edges-r2-3), or as
+/// nothing there when the file is gone (edges-r3-2).
 fn undo(
     edit: &Edit,
     real: &Path,
@@ -643,6 +654,23 @@ fn undo(
                 Ok(_) => format!("is kept at {at}"),
                 Err(_) => format!("is gone from {at}"),
             };
+            // Nothing at the file (an editor moved it to a backup, or it
+            // was removed): no save is there to name (edges-r3-2).
+            if fs::symlink_metadata(real).is_err() {
+                return kept(if round == 0 {
+                    format!(
+                        "it changed while the edit was written, and it could not be put back \
+                         ({e}): no file is there now (it was moved or removed after it took the \
+                         edit), and the version saved meanwhile {other}"
+                    )
+                } else {
+                    format!(
+                        "it was saved more than once while the edit was written ({e}): the edit \
+                         is not applied, no file is there now (it was moved or removed since), \
+                         and a save made meanwhile {other}"
+                    )
+                });
+            }
             let same = expect.at(real);
             return kept(match (round, same) {
                 (0, true) => format!(

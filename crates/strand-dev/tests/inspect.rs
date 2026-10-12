@@ -361,7 +361,7 @@ fn a_second_save_before_the_swap_back_is_kept_in_place() {
                     fs::rename(&swp, p).unwrap();
                 }
                 Moment::Back => fs::write(p, &latest).unwrap(),
-                Moment::Before | Moment::Again => {}
+                Moment::Before | Moment::Again | Moment::Missing => {}
             }
         });
         assert_eq!(
@@ -415,7 +415,7 @@ fn a_swap_back_that_fails_says_the_edit_is_in_place() {
         Moment::Back => {
             fs::set_permissions(p.parent().unwrap(), fs::Permissions::from_mode(0o555)).unwrap()
         }
-        Moment::Before | Moment::Again => {}
+        Moment::Before | Moment::Again | Moment::Missing => {}
     });
     fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(
@@ -469,7 +469,7 @@ fn a_third_save_before_the_latest_goes_in_place_is_not_hidden() {
                     }
                 }
             }
-            Moment::Before => {}
+            Moment::Before | Moment::Missing => {}
         });
         assert_eq!(fs::read_to_string(&f).unwrap(), third, "renamed: {renamed}");
         let kept = others(&d, &f);
@@ -508,7 +508,7 @@ fn a_failed_swap_back_says_what_the_file_holds() {
             fs::rename(&swp, p).unwrap();
             fs::set_permissions(p.parent().unwrap(), fs::Permissions::from_mode(0o555)).unwrap()
         }
-        Moment::Before | Moment::Again => {}
+        Moment::Before | Moment::Again | Moment::Missing => {}
     });
     fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(fs::read_to_string(&f).unwrap(), latest);
@@ -550,4 +550,78 @@ fn a_file_missing_at_the_swap_is_refused_as_changed() {
         assert_eq!(left(&d), 1, "{swap:?}");
         fs::remove_file(&bak).unwrap();
     }
+}
+
+/// (M6, edges-r3-1) An editor saving by a backup moves the file away
+/// and writes it anew; the exchange in the gap finds no file, and by
+/// the time the refusal is made the new file is there
+/// (`Moment::Missing`). `ENOENT` alone says the file was missing at the
+/// exchange (the temporary file was just made), so the edit is refused
+/// as `Changed`, not as an opaque I/O error by a second look that finds
+/// the new file, and the editor's new file is left as it wrote it.
+#[test]
+fn a_file_written_anew_after_a_missed_swap_is_refused_as_changed() {
+    let d = dir("anew");
+    let f = d.join("bar.strand");
+    let bak = d.join("bar.strand~");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let saved = BAR.replace("width: 40", "width: 50");
+    for swap in [Swap::Auto, Swap::Exchange] {
+        fs::write(&f, BAR).unwrap();
+        let mut moments = Vec::new();
+        let r = write::write_with(&edit, swap, |m, p| {
+            moments.push(m);
+            match m {
+                Moment::Before => fs::rename(p, &bak).unwrap(),
+                Moment::Missing => fs::write(p, &saved).unwrap(),
+                _ => {}
+            }
+        });
+        assert_eq!(moments, [Moment::Before, Moment::Missing], "{swap:?}");
+        assert_eq!(r, Err(Refusal::Changed(f.clone())), "{swap:?}");
+        assert_eq!(fs::read_to_string(&f).unwrap(), saved, "{swap:?}");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), BAR, "{swap:?}");
+        assert_eq!(left(&d), 2, "{swap:?}");
+        fs::remove_file(&bak).unwrap();
+    }
+}
+
+/// (M6, edges-r3-2) The file swapped out was changed, and before the
+/// swap back the editor moves the file (now holding the edit) to a
+/// backup. The swap back finds no file (`ENOENT`): the refusal says no
+/// file is there and where the editor's save is kept, never that the
+/// file holds a save made since.
+#[test]
+fn a_failed_swap_back_with_no_file_says_none_is_there() {
+    let d = dir("noback-gone");
+    let f = d.join("bar.strand");
+    let bak = d.join("bar.strand~");
+    fs::write(&f, BAR).unwrap();
+    let (node, files) = answer(&f, BAR);
+    let edit = prop_edit(&node, &files, "bg", "#a6e3a1").unwrap();
+    let saved = BAR.replace("width: 40", "width: 50");
+    let r = write::write_with(&edit, Swap::Exchange, |m, p| match m {
+        Moment::Window => fs::write(p, &saved).unwrap(),
+        Moment::Back => fs::rename(p, &bak).unwrap(),
+        Moment::Before | Moment::Again | Moment::Missing => {}
+    });
+    assert!(!f.exists());
+    assert_eq!(
+        fs::read_to_string(&bak).unwrap(),
+        BAR.replace("#f38ba8", "#a6e3a1")
+    );
+    let kept: Vec<_> = others(&d, &f)
+        .into_iter()
+        .filter(|(p, _)| *p != bak)
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].1, saved);
+    let Err(Refusal::Io { why, .. }) = r else {
+        panic!("{r:?}");
+    };
+    assert!(!why.contains("the file holds"), "{why}");
+    assert!(why.contains("no file is there now"), "{why}");
+    assert!(why.contains(&kept[0].0.display().to_string()), "{why}");
 }

@@ -1159,10 +1159,13 @@ zero-width span (an insertion) is allowed.
   (inode, hash) just before a plain rename, as before M6.
   `write::write_with(edit, Swap, hook)` is the test hook
   (`Swap::{Auto, Exchange, Rename}`; `hook(Moment, &Path)` at
-  `Moment::{Before, Window, Back, Again}`: before the swap, after the
-  last look at the file before it is replaced, before a swap back, and
-  before each further exchange that puts a later save in place;
-  `Again` added in review round 2 so a test can save in that gap).
+  `Moment::{Before, Window, Back, Again, Missing}`: before the swap,
+  after the last look at the file before it is replaced, before a swap
+  back, before each further exchange that puts a later save in place,
+  and after an exchange that found no file, before its refusal;
+  `Again` added in review round 2 so a test can save in that gap,
+  `Missing` in round 3 so a test can write the file anew there:
+  `ENOENT` alone decides that refusal, never a later look).
 - `strand-dev reference [dir]`: generates `docs/reference/` from the
   builtin and service schemas (`Schema::builtin_with` of every builtin
   service's text, never the plugin schema files, so the pages are the
