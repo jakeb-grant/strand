@@ -4590,14 +4590,31 @@ transparent huge pages for life.
   `SetBrightness`; `brightness::set_backlight_root` /
   `STRAND_BACKLIGHT_DIR` point it at fake backlights in tests), `network`
   (NetworkManager; `access_points` is a stream field: read, followed and
-  scanned only while watched), `bluetooth` (BlueZ's object manager),
-  `notifications` (our own `org.freedesktop.Notifications` server),
+  scanned only while watched; a join is a task of the body's own, M6,
+  one per network at a time and stopped when NetworkManager is
+  replaced, and an enterprise (802.1X) or WEP network joins only through a profile
+  saved in NetworkManager), `bluetooth` (BlueZ's object manager),
+  `notifications` (our own `org.freedesktop.Notifications` server;
+  `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
-  while watched) and `tray` (StatusNotifierItem host, its own watcher
+  while watched; remote `https`/`http` art fetched by `art`, below) and
+  `tray` (StatusNotifierItem host, its own watcher
   when the session has none, DBusMenu model), and (wave 4, wm) the
   compositor's `workspaces`, `windows` and `wm` and PipeWire's `audio`
   (below). The D-Bus services are all on our own zbus calls
   (decisions.md, wave4-a2), with `logind-zbus` for `SetBrightness`.
+  (M6, m6-services) `art`: `art::fetch(url) -> Result<art::Art,
+  String>` (`Art { file: pixmap::Pinned, bytes: u64 }`; blocking; the media body runs it on the runtime's blocking
+  pool) fetches with `ureq` over rustls/ring and the system's
+  certificates (`rustls-native-certs`), at most `art::MAX_BYTES` (8 MiB)
+  within `art::TIMEOUT` (10 s), checks the bytes are a PNG, JPEG, GIF or
+  WebP and writes them with `pixmap::write_file(bytes, ext)` (the
+  content-addressed, pinned files `write_png` already made); the
+  renderer decodes them as any local picture. `art::Cache` (16 URLs
+  kept, LRU, at most `art::KEPT_BYTES` (16 MiB) of files together, since
+  they are tmpfs memory, the one shown last never dropped; two fetches at once; a failed URL not asked again for
+  5 min) lives in the media body. `art::agent(roots)` and
+  `art::fetch_with` take other roots (tests).
   `apps` (wave 4, a3): desktop entries (`freedesktop-desktop-entry`;
   `NoDisplay`, `Hidden`, `OnlyShowIn`/`NotShowIn`, `TryExec`, the first
   `applications/` directory holding an id deciding it), icons checked
@@ -4940,8 +4957,8 @@ transparent huge pages for life.
   `audio::SCHEMA` (`strand_services_schema::AUDIO`) is the text the
   store serves, which is exactly the provisional stub. `audio::Mirror`
   applies the stream.
-  `request(AudioAction::{SetVolume(DeviceRef, f64), StepVolume(DeviceRef,
-  f64), SetMuted(DeviceRef, bool), MakeDefault(DeviceRef)}) ->
+  `request(AudioAction::{SetVolume(DeviceRef, f64), SetMuted(DeviceRef,
+  bool), MakeDefault(DeviceRef)}) ->
   AudioReply` (a future to `.await` inside a runtime, or `wait()` on a
   plain thread outside any runtime) answers `Ok`
   once PipeWire has been asked (the change comes through the stream) or
@@ -4989,10 +5006,9 @@ transparent huge pages for life.
   example (d)), which wave4/core's `services::set_text` resolves
   generically by reading the current value through `ServiceHost` and
   writing an absolute one with `ServiceHost::write` (its optimistic
-  tagged cell makes quick steps compound). `StepVolume` adds its delta on
-  the audio thread, to the last volume written while its echo is
-  pending; it is kept only for callers holding the `Audio` handle
-  directly (none on the language path). Volume and mute go to the
+  tagged cell makes quick steps compound). There is no relative action:
+  `StepVolume`, which no language path sent, was removed in M6
+  (decisions.md, m6-services). Volume and mute go to the
   card's active `Route` (`save: true`) when the node has one, else to
   the node's `Props`.
   `set_levels(targets)` replaces the set of peak meters

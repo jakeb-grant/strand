@@ -321,13 +321,17 @@ recorded reason.
   editors do not take). An answer to `inspect.pick` means logic told
   main, not that main has turned pick mode on (decisions.md
   m5-inspect; architecture.md).
-- Notifications: `Notification.time` has no time of day yet (spec 1.2's
-  `ActivationToken` is sent since S-platform, M5 wave 3).
+- Notifications: (resolved in M6 by S-services: `Notification.time` has
+  its hour and minute; decisions.md m6-services.) Spec 1.2's
+  `ActivationToken` is sent since S-platform, M5 wave 3.
 - Tray: Activate and ContextMenu get the press's output-logical point
   (`demo/host.rs::a_press_sets_the_tray_click_point`); (0, 0) only before
   the first press and for actions no press caused (`dismiss`, `scroll`,
   `drop`).
-- Media: remote (https) art is not fetched.
+- Media: (resolved in M6 by S-services: remote `https`/`http` art is
+  fetched and cached; decisions.md m6-services.) An enterprise proxy that
+  needs a login, or a private CA outside the system's certificates, leaves
+  remote art null.
 - Lock: PAM's info and error texts reach the lock only with the verdict,
   inside one 30 s client timeout. A stack with `pam_fprintd` before
   `pam_unix` (30 s default wait) never shows "Place your finger" and
@@ -336,10 +340,13 @@ recorded reason.
   message and a lock prompt design.md does not have; moved past M4
   (decisions.md m4-audit, round 3). README asks for a password-only
   stack meanwhile.
-- Network: `connect()` is awaited inline (bounded: 5 s per settings call,
-  25 s for activation); enterprise (802.1X) and WEP networks are refused.
-- Audio: `StepVolume` has no caller on the language path. Without an
-  inotify instance the audio thread reconnects on its 10 s timer (no other
+- Network: (resolved in M6 by S-services: a join is a task; an
+  enterprise (802.1X) or WEP network with a profile saved in
+  NetworkManager joins with `connect()`; decisions.md m6-services.) An
+  unsaved enterprise or WEP network is refused: design.md has no prompt
+  for an EAP login, so it is set up in the system's network settings.
+- Audio: (`StepVolume` was removed in M6, decisions.md m6-services.)
+  Without an inotify instance the audio thread reconnects on its 10 s timer (no other
   unprivileged signal exists) and makes its socket watch again as soon as
   inotify gives one.
 - Audio: an item kept past its device leaving is told apart from the

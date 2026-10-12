@@ -14,7 +14,9 @@ use std::fmt::Write as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::format::{Item, StrftimeItems};
-use chrono::{DateTime, Datelike, FixedOffset, Local, Months, NaiveDate, Utc};
+use chrono::{
+    DateTime, Datelike, FixedOffset, Local, Months, NaiveDate, NaiveDateTime, Timelike, Utc,
+};
 use strand_core::{Error, Runtime, Signal};
 
 use super::value::Value;
@@ -113,6 +115,15 @@ where
     }
 }
 
+impl FormatItems for NaiveDateTime {
+    fn with_items<'a>(
+        &self,
+        items: std::vec::IntoIter<Item<'a>>,
+    ) -> chrono::format::DelayedFormat<std::vec::IntoIter<Item<'a>>> {
+        self.format_with_items(items)
+    }
+}
+
 impl FormatItems for NaiveDate {
     fn with_items<'a>(
         &self,
@@ -182,15 +193,26 @@ impl Clock {
         self.datetime(secs).map(|d| d.date_naive())
     }
 
-    /// `clock.today` / `clock.now` (a `Date`), tracked on the minute.
+    /// `clock.today` (a `Date` without a time of day) / `clock.now` (one
+    /// with the hour and minute), tracked on the minute.
     pub fn read(&self, rt: &Runtime, field: &str) -> Result<Value, Error> {
         match field {
-            "today" | "now" => {
+            "today" => {
                 let m = self.minute.get(rt)?;
                 let d = self
                     .today_at(m)
                     .ok_or_else(|| fail("the clock is out of range"))?;
                 Ok(self.date_value(d))
+            }
+            "now" => {
+                let m = self.minute.get(rt)?;
+                let d = self
+                    .datetime(m)
+                    .ok_or_else(|| fail("the clock is out of range"))?;
+                Ok(match self.date {
+                    Some(r) => datetime_record(r, d.naive_local()),
+                    None => Value::Null,
+                })
             }
             _ => Err(fail(format!("`clock` has no field `{field}`"))),
         }
@@ -251,23 +273,48 @@ impl Clock {
     }
 }
 
-/// A `Date` record: year, month, day, weekday (Monday 1 … Sunday 7).
+/// A `Date` record without a time of day: year, month, day, weekday
+/// (Monday 1 … Sunday 7), `hour` and `minute` null.
 pub fn date_record(r: RecordId, d: NaiveDate) -> Value {
-    Value::record(
-        r,
-        vec![
-            Value::int(d.year() as i64),
-            Value::int(d.month() as i64),
-            Value::int(d.day() as i64),
-            Value::int(d.weekday().number_from_monday() as i64),
-        ],
-    )
+    Value::record(r, date_fields(d, None))
+}
+
+/// A `Date` record with its time of day (hour and minute; seconds are
+/// dropped).
+pub fn datetime_record(r: RecordId, d: NaiveDateTime) -> Value {
+    Value::record(r, date_fields(d.date(), Some((d.hour(), d.minute()))))
+}
+
+/// A `Date`'s fields in the schema's order.
+fn date_fields(d: NaiveDate, time: Option<(u32, u32)>) -> Vec<Value> {
+    let (hour, minute) = match time {
+        Some((h, m)) => (Value::int(h as i64), Value::int(m as i64)),
+        None => (Value::Null, Value::Null),
+    };
+    vec![
+        Value::int(d.year() as i64),
+        Value::int(d.month() as i64),
+        Value::int(d.day() as i64),
+        Value::int(d.weekday().number_from_monday() as i64),
+        hour,
+        minute,
+    ]
 }
 
 /// The date a `Date` record holds.
 pub fn date_of(types: &TypeTable, v: &Value) -> Option<NaiveDate> {
     let n = |f: &str| v.field(types, f).and_then(Value::as_f64);
     NaiveDate::from_ymd_opt(n("year")? as i32, n("month")? as u32, n("day")? as u32)
+}
+
+/// The time of day a `Date` record holds, if it has one (`hour` set; a
+/// null `minute` is 0). Out of range is none.
+fn time_of(types: &TypeTable, v: &Value) -> Option<(u32, u32)> {
+    let n = |f: &str| v.field(types, f).and_then(Value::as_f64);
+    let hour = n("hour")?;
+    let minute = n("minute").unwrap_or(0.0);
+    ((0.0..24.0).contains(&hour) && (0.0..60.0).contains(&minute))
+        .then_some((hour as u32, minute as u32))
 }
 
 /// `d.month_start()`, `d.add(months: -1)`, `d.format("%B %Y")`.
@@ -280,6 +327,7 @@ pub(crate) fn date_method(
     let (Some(d), Some(Value::Record(r))) = (date_of(types, recv), Some(recv)) else {
         return Err(fail("not a date"));
     };
+    let time = time_of(types, recv);
     let arg = |i: usize| args.get(i).and_then(Value::as_f64).unwrap_or(0.0) as i64;
     let out_of_range = || fail("date out of range");
     match name {
@@ -309,12 +357,17 @@ pub(crate) fn date_method(
                         d.checked_sub_days(chrono::Days::new(days.unsigned_abs()))
                     }
                 })
-                .map(|d| date_record(r.ty, d))
+                .map(|d| Value::record(r.ty, date_fields(d, time)))
                 .ok_or_else(|| fail("date out of range"))
         }
         "format" => {
             let p = args.first().and_then(Value::as_text).unwrap_or("");
-            Ok(Value::text(format_with(&d, p)?))
+            // A time of day formats `%H:%M`; without one, a pattern
+            // asking for it is an error, as before.
+            match time.and_then(|(h, m)| d.and_hms_opt(h, m, 0)) {
+                Some(dt) => Ok(Value::text(format_with(&dt, p)?)),
+                None => Ok(Value::text(format_with(&d, p)?)),
+            }
         }
         _ => Err(fail(format!("`Date` has no method `{name}`"))),
     }
@@ -409,6 +462,43 @@ mod tests {
         assert_eq!(date_of(&t, &prev), NaiveDate::from_ymd_opt(2026, 9, 5));
         let f = date_method(&t, &prev, "format", &[Value::text("%B %Y")]).unwrap();
         assert_eq!(f, Value::text("September 2026"));
+    }
+
+    /// (m6-services) `clock.now` and a notification's `time` carry the
+    /// hour and minute; `clock.today` and a calendar's days do not, so
+    /// `d.date == clock.today` still holds on today's cell.
+    #[test]
+    fn a_date_can_have_a_time_of_day() {
+        let rt = Runtime::new();
+        let t = types();
+        let utc = Zone::Fixed(FixedOffset::east_opt(0).unwrap());
+        // 2026-10-05 09:41:07 UTC.
+        let clock = Clock::new(&rt, &t, utc, at(1_791_193_267));
+        let now = clock.read(&rt, "now").unwrap();
+        assert_eq!(now.field(&t, "hour"), Some(&Value::int(9)));
+        assert_eq!(now.field(&t, "minute"), Some(&Value::int(41)));
+        let hm = date_method(&t, &now, "format", &[Value::text("%H:%M")]).unwrap();
+        assert_eq!(hm, Value::text("09:41"));
+        // Moving keeps the time of day; the month's start is a date.
+        let tomorrow = date_method(&t, &now, "add", &[Value::int(1)]).unwrap();
+        assert_eq!(date_of(&t, &tomorrow), NaiveDate::from_ymd_opt(2026, 10, 6));
+        assert_eq!(
+            date_method(&t, &tomorrow, "format", &[Value::text("%a %H:%M")]).unwrap(),
+            Value::text("Tue 09:41")
+        );
+        let start = date_method(&t, &now, "month_start", &[]).unwrap();
+        assert_eq!(start.field(&t, "hour"), Some(&Value::Null));
+        // Today has none, as the calendar's days have none.
+        let today = clock.read(&rt, "today").unwrap();
+        assert_eq!(today.field(&t, "hour"), Some(&Value::Null));
+        assert_eq!(today.field(&t, "minute"), Some(&Value::Null));
+        assert!(date_method(&t, &today, "format", &[Value::text("%H:%M")]).is_err());
+        let days = clock.days(&rt, &t, &today).unwrap();
+        let days = days.as_list().unwrap();
+        assert!(
+            days.iter().any(|d| d.field(&t, "date") == Some(&today)),
+            "today's cell equals clock.today"
+        );
     }
 
     #[test]

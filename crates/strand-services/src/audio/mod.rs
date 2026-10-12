@@ -148,13 +148,10 @@ pub enum AudioAction {
     /// `audio.sink.volume = v`: every channel to `v` on the perceptual
     /// scale, clamped to 0..1 (or to the current volume, when another
     /// program amplified it past 1: a write never raises it further).
+    /// A step (`audio.sink.volume -= dy * 0.05`, `strand set
+    /// audio.sink.volume +5%`) arrives as this too: the language side
+    /// resolves it against its optimistic value (decisions.md, m6-services).
     SetVolume(DeviceRef, f64),
-    /// `audio.sink.volume += d` (`strand set audio.sink.volume +5%`): the
-    /// step is added to the device's volume on the audio thread when the
-    /// action runs (to the last volume written there, if PipeWire has not
-    /// echoed it yet), so quick steps never read the same value and lose
-    /// one. Clamped as `SetVolume`.
-    StepVolume(DeviceRef, f64),
     /// `audio.sink.muted = m`.
     SetMuted(DeviceRef, bool),
     /// `dev.make_default()`: writes the `default` metadata's

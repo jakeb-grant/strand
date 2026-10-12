@@ -103,7 +103,7 @@ read changes.
 | Field | Type | |
 | --- | --- | --- |
 | `today` | `Date` | Today's date: `clock.today.month_start()`. |
-| `now` | `Date` | The current date and time. |
+| `now` | `Date` | The current date and time, to the minute. |
 
 | Method | |
 | --- | --- |

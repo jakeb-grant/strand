@@ -12,13 +12,20 @@
 //! match rule for them). NetworkManager restarting is read afresh;
 //! missing, it is "offline".
 //!
-//! Joining (`ap.connect()`, `ap.connect_with(password)`) follows the
-//! active connection NetworkManager answers with until it is up; if it
-//! is deactivated first (`StateChanged` to DEACTIVATED, a missing or
-//! wrong password, a timeout) or the call itself fails, `failed(ssid,
-//! error)` says why.
+//! Joining (`ap.connect()`, `ap.connect_with(password)`) is asked in a
+//! task of its own, so the radio, NetworkManager's signals and other
+//! joins go on while NetworkManager takes its time; the active connection
+//! it answers with is followed until it is up. If it is deactivated first
+//! (`StateChanged` to DEACTIVATED, a missing or wrong password, a
+//! timeout) or the call itself fails, `failed(ssid, error)` says why.
+//! A personal network (WPA/WPA2/WPA3) joins with a password or its saved
+//! profile; an enterprise (802.1X) or WEP network joins only through a
+//! profile saved in NetworkManager (`connect()`), and without one is
+//! refused with an error saying so (decisions.md, m6-services).
 
 use std::collections::{BTreeMap, HashMap};
+
+use tokio::task::JoinSet;
 
 use zbus::zvariant::OwnedValue;
 
@@ -116,6 +123,37 @@ struct Joining {
     /// It was listed among the active connections (once gone from them
     /// before it came up, it failed).
     seen: bool,
+}
+
+/// How the active connections no join follows yet ended (activated or
+/// deactivated, with the reason), the last [`Ended::KEEP`]: a join's
+/// answer can come after its connection's `StateChanged`.
+#[derive(Debug, Default)]
+struct Ended(std::collections::VecDeque<(String, u32, u32)>);
+
+impl Ended {
+    const KEEP: usize = 32;
+
+    fn note(&mut self, path: String, state: u32, reason: u32) {
+        if state != ACTIVATED && state != DEACTIVATED {
+            return;
+        }
+        self.0.retain(|(p, ..)| *p != path);
+        if self.0.len() == Self::KEEP {
+            self.0.pop_front();
+        }
+        self.0.push_back((path, state, reason));
+    }
+
+    /// How `path` ended, if it did.
+    fn take(&mut self, path: &str) -> Option<(u32, u32)> {
+        let i = self.0.iter().position(|(p, ..)| p == path)?;
+        self.0.remove(i).map(|(_, state, reason)| (state, reason))
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// A state change of an active connection: its path, state and reason
@@ -395,6 +433,14 @@ impl Network {
         daemon.subscribe("manager", dbus::path_rule(ROOT)?).await?;
         let mut nm = Nm::default();
         let mut joining: BTreeMap<String, Joining> = BTreeMap::new();
+        // Joins asked for and not answered yet (each a task of its own,
+        // one per network at a time): the active connection each made, or
+        // why not.
+        let mut asking: JoinSet<zbus::Result<String>> = JoinSet::new();
+        let mut asked = Asked::default();
+        // How active connections no join followed yet ended, while joins
+        // are asked: an answer naming one settles at once.
+        let mut ended = Ended::default();
         let mut scanning = cx.watched("access_points");
         let mut used = None;
         // A scan is asked for when scanning starts and when a new
@@ -426,27 +472,39 @@ impl Network {
                         None => return Err(ServiceError("the system bus connection ended".into())),
                         Some(DaemonEvent::Owner) => {
                             want_scan = scanning;
-                            // Its activations went with it.
-                            for (_, j) in std::mem::take(&mut joining) {
-                                if !cx.emit(NetworkEvent::Failed((j.ssid, "NetworkManager stopped".into()))) {
+                            ended.clear();
+                            // Its activations went with it, and the joins
+                            // still asking stop here: their next call would
+                            // reach the new NetworkManager, whose answer
+                            // this would not follow.
+                            asking.shutdown().await;
+                            let stopped = asked.clear().into_iter().chain(
+                                std::mem::take(&mut joining).into_values().map(|j| j.ssid),
+                            );
+                            for ssid in stopped {
+                                if !cx.emit(NetworkEvent::Failed((ssid, "NetworkManager stopped".into()))) {
                                     return Ok(());
                                 }
                             }
                             break 'follow;
                         }
                         Some(DaemonEvent::Signal(m)) => {
-                            if let Some((path, state, reason)) = active_state(&m)
-                                && let Some(j) = joining.get(&path)
-                            {
-                                let ssid = j.ssid.clone();
-                                if state == ACTIVATED {
-                                    joining.remove(&path);
-                                } else if state == DEACTIVATED {
-                                    joining.remove(&path);
-                                    log::info!("network: joining {ssid} failed: reason {reason}");
-                                    if !cx.emit(NetworkEvent::Failed((ssid, reason_text(reason)))) {
-                                        return Ok(());
+                            if let Some((path, state, reason)) = active_state(&m) {
+                                if let Some(j) = joining.get(&path) {
+                                    let ssid = j.ssid.clone();
+                                    if state == ACTIVATED {
+                                        joining.remove(&path);
+                                    } else if state == DEACTIVATED {
+                                        joining.remove(&path);
+                                        log::info!("network: joining {ssid} failed: reason {reason}");
+                                        if !cx.emit(NetworkEvent::Failed((ssid, reason_text(reason)))) {
+                                            return Ok(());
+                                        }
                                     }
+                                } else if !asking.is_empty() {
+                                    // Perhaps a join whose answer is still
+                                    // on its way.
+                                    ended.note(path, state, reason);
                                 }
                             }
                             match nm.signal(&daemon, &m, scanning).await {
@@ -460,6 +518,56 @@ impl Network {
                             }
                         }
                     },
+                    Some(done) = asking.join_next_with_id(), if !asking.is_empty() => {
+                        let (id, answer) = match done {
+                            Ok((id, answer)) => (id, answer),
+                            Err(e) => (e.id(), Err(zbus::Error::Failure("the join stopped".into()))),
+                        };
+                        let Some((ssid, next)) = asked.answered(id) else {
+                            continue;
+                        };
+                        let failure = match answer {
+                            Ok(active) => match ended.take(&active) {
+                                Some((ACTIVATED, _)) => None,
+                                Some((_, reason)) => {
+                                    log::info!("network: joining {ssid} failed: reason {reason}");
+                                    Some(reason_text(reason))
+                                }
+                                None => {
+                                    // Followed until it is up (or not).
+                                    let seen = nm.active.contains_key(&active);
+                                    joining.insert(active, Joining { ssid: ssid.clone(), seen });
+                                    if !settle_joins(&mut cx, &nm, &mut joining) {
+                                        return Ok(());
+                                    }
+                                    None
+                                }
+                            },
+                            Err(e) => {
+                                log::warn!("network: not joining {ssid}: {e}");
+                                Some(match e {
+                                    zbus::Error::MethodError(_, Some(text), _) => text,
+                                    zbus::Error::Failure(text) => text,
+                                    e => e.to_string(),
+                                })
+                            }
+                        };
+                        if asking.is_empty() {
+                            ended.clear();
+                        }
+                        if let Some(error) = failure
+                            && !cx.emit(NetworkEvent::Failed((ssid.clone(), error)))
+                        {
+                            return Ok(());
+                        }
+                        // A join of this network asked meanwhile (another
+                        // password): asked now, so it finds the profile
+                        // this one may have saved.
+                        if let Some(password) = next {
+                            let id = ask(&mut asking, daemon.conn(), &nm, ssid.clone(), password.clone());
+                            asked.started(ssid, id, password.as_deref());
+                        }
+                    }
                     m = cx.recv() => match m {
                         None => return Ok(()),
                         Some(Msg::Watch { field: "access_points", on }) => {
@@ -487,21 +595,13 @@ impl Network {
                                 NetworkAction::Connect { item } => (item, None),
                                 NetworkAction::ConnectWith { item, password } => (item, Some(password)),
                             };
-                            match connect(&daemon, &nm, &item.ssid, password.as_deref()).await {
-                                Ok(active) => {
-                                    // Followed until it is up (or not).
-                                    joining.insert(active, Joining { ssid: item.ssid, seen: false });
-                                }
-                                Err(e) => {
-                                    log::warn!("network: not joining {}: {e}", item.ssid);
-                                    let error = match e {
-                                        zbus::Error::MethodError(_, Some(text), _) => text,
-                                        e => e.to_string(),
-                                    };
-                                    if !cx.emit(NetworkEvent::Failed((item.ssid.clone(), error))) {
-                                        return Ok(());
-                                    }
-                                }
+                            // Asked in a task (up to 25 s for the
+                            // activation): NetworkManager's signals, the
+                            // radio and other joins go on meanwhile. One
+                            // network is asked one join at a time.
+                            if asked.ask(&item.ssid, password.as_deref()) {
+                                let id = ask(&mut asking, daemon.conn(), &nm, item.ssid.clone(), password.clone());
+                                asked.started(item.ssid, id, password.as_deref());
                             }
                         }
                         Some(_) => {}
@@ -596,31 +696,78 @@ fn settle_joins(cx: &mut Cx<Network>, nm: &Nm, joining: &mut BTreeMap<String, Jo
     failed.into_iter().all(|f| cx.emit(NetworkEvent::Failed(f)))
 }
 
-/// The `802-11-wireless-security` settings for joining access point `p`
-/// with `password`: WPA/WPA2 personal (`wpa-psk`) or WPA3 personal
-/// (`sae`). Enterprise and WEP networks are refused.
-fn security(p: &Props, password: &str) -> zbus::Result<HashMap<&'static str, OwnedValue>> {
-    // NM_802_11_AP_SEC_KEY_MGMT_PSK, _802_1X, _SAE.
-    let mgmt = |k| dbus::number(p, k).map_or(0, |n| n as u32);
-    let flags = mgmt("WpaFlags") | mgmt("RsnFlags");
-    let key_mgmt = if flags & 0x100 != 0 {
-        "wpa-psk"
-    } else if flags & 0x400 != 0 {
-        "sae"
-    } else if flags & 0x200 != 0 {
-        return Err(zbus::Error::Failure(
-            "an enterprise network: join it from the system's network settings".into(),
-        ));
+/// How an access point is joined: its key management.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// No key.
+    Open,
+    /// WPA/WPA2 personal (`wpa-psk`) or WPA3 personal (`sae`): a password.
+    Personal(&'static str),
+    /// WPA enterprise (802.1X): a login NetworkManager's saved profile
+    /// holds (an EAP method, identity, certificates).
+    Enterprise,
+    /// WEP: `Flags` has PRIVACY and there is no WPA or RSN key management.
+    Wep,
+}
+
+/// How access point `p` is joined. A personal key wins over 802.1X when
+/// both are offered (as NetworkManager's own choice for a password does).
+fn kind(p: &Props) -> Kind {
+    let n = |k| dbus::number(p, k).map_or(0, |n| n as u32);
+    // NM_802_11_AP_SEC_KEY_MGMT_PSK (0x100), _802_1X (0x200), _SAE
+    // (0x400), _OWE (0x800), _OWE_TM (0x1000), _EAP_SUITE_B_192 (0x2000).
+    let mgmt = n("WpaFlags") | n("RsnFlags");
+    if mgmt & 0x100 != 0 {
+        Kind::Personal("wpa-psk")
+    } else if mgmt & 0x400 != 0 {
+        Kind::Personal("sae")
+    } else if mgmt & (0x200 | 0x2000) != 0 {
+        Kind::Enterprise
+    } else if mgmt & (0x800 | 0x1000) == 0 && n("Flags") & 0x1 != 0 {
+        // NM_802_11_AP_FLAGS_PRIVACY without WPA key management.
+        Kind::Wep
     } else {
-        return Err(zbus::Error::Failure(
-            "not a WPA network with a password".into(),
-        ));
-    };
+        // Open, or Enhanced Open (OWE): no key to give.
+        Kind::Open
+    }
+}
+
+/// The `802-11-wireless-security` settings for joining with `password`
+/// (WPA/WPA2 or WPA3 personal).
+fn security(key_mgmt: &str, password: &str) -> zbus::Result<HashMap<&'static str, OwnedValue>> {
     let text = |s: &str| OwnedValue::try_from(zbus::zvariant::Value::from(s.to_string()));
     Ok(HashMap::from([
         ("key-mgmt", text(key_mgmt)?),
         ("psk", text(password)?),
     ]))
+}
+
+/// Why `name` (an access point of `kind`) cannot be joined the way it was
+/// asked, before anything is sent: `saved` it has a saved connection,
+/// `password` one was given. Enterprise (802.1X) and WEP networks join
+/// only through a profile saved in NetworkManager (made in the system's
+/// network settings), which holds what they need; a password is for a
+/// personal network.
+fn refusal(name: &str, kind: Kind, saved: bool, password: bool) -> Option<String> {
+    match (kind, saved, password) {
+        (Kind::Enterprise, true, true) => Some(format!(
+            "`{name}` is an enterprise (802.1X) network: its saved profile holds the login, \
+             so join it with `connect()`, not a password"
+        )),
+        (Kind::Enterprise, false, _) => Some(format!(
+            "`{name}` is an enterprise (802.1X) network with no saved profile: \
+             add it in the system's network settings first"
+        )),
+        (Kind::Wep, true, true) => Some(format!(
+            "`{name}` is a WEP network: join its saved profile with `connect()`, not a password"
+        )),
+        (Kind::Wep, false, _) => Some(format!(
+            "`{name}` is a WEP network with no saved profile: WEP is not offered here; \
+             add it in the system's network settings first"
+        )),
+        (Kind::Open, _, true) => Some(format!("`{name}` is an open network: it takes no password")),
+        _ => None,
+    }
 }
 
 /// Ask every Wi-Fi device for a fresh scan (NetworkManager rate-limits
@@ -646,30 +793,136 @@ async fn request_scan(daemon: &Daemon, nm: &Nm) -> bool {
     !nm.wifi_devices.is_empty()
 }
 
+/// What a join needs from the last read, taken along by its task.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    /// The Wi-Fi devices.
+    devices: Vec<String>,
+    /// The access points read.
+    aps: BTreeMap<String, Props>,
+}
+
+impl Snapshot {
+    fn of(nm: &Nm) -> Snapshot {
+        Snapshot {
+            devices: nm.wifi_devices.keys().cloned().collect(),
+            aps: nm.aps.clone(),
+        }
+    }
+}
+
+/// Ask NetworkManager to join `ssid` in a task of `asking` with what the
+/// last read knew; the task's id.
+fn ask(
+    asking: &mut JoinSet<zbus::Result<String>>,
+    conn: &zbus::Connection,
+    nm: &Nm,
+    ssid: String,
+    password: Option<String>,
+) -> tokio::task::Id {
+    let conn = conn.clone();
+    let known = Snapshot::of(nm);
+    asking
+        .spawn(async move { connect(&conn, &known, &ssid, password.as_deref()).await })
+        .id()
+}
+
+/// The joins being asked, one per network at a time (decisions.md,
+/// m6-services). Each join is a task, so without this two joins of one
+/// unsaved network (a double click) would both find no saved profile and
+/// both add one: NetworkManager would keep two, and the second activation
+/// would end the first. A join asked again with the same password while
+/// it is asked is a repeat and dropped; with another password it waits
+/// for the answer (the last one asked), then is asked, and finds the
+/// profile the first saved. So there is at most one task per network
+/// name, and one waiting join.
+#[derive(Debug, Default)]
+struct Asked {
+    /// By network name: the task asking and its password's fingerprint.
+    asking: BTreeMap<String, (tokio::task::Id, u64)>,
+    /// By network name: the join to ask when its answer comes.
+    waiting: BTreeMap<String, Option<String>>,
+}
+
+impl Asked {
+    /// A join of `ssid` with `password` is wanted: whether to ask it now
+    /// (then [`Asked::started`] records it). If not, it is a repeat of
+    /// the join being asked (dropped, and any join waiting with it) or
+    /// waits for its answer.
+    fn ask(&mut self, ssid: &str, password: Option<&str>) -> bool {
+        let Some((_, asked_with)) = self.asking.get(ssid) else {
+            return true;
+        };
+        if *asked_with == fingerprint(password) {
+            log::debug!("network: already joining {ssid}");
+            self.waiting.remove(ssid);
+        } else {
+            self.waiting
+                .insert(ssid.to_string(), password.map(str::to_string));
+        }
+        false
+    }
+
+    /// The join of `ssid` with `password` is asked by task `id`.
+    fn started(&mut self, ssid: String, id: tokio::task::Id, password: Option<&str>) {
+        self.asking.insert(ssid, (id, fingerprint(password)));
+    }
+
+    /// Task `id` answered: its network, and the join of it to ask now,
+    /// if one waited.
+    fn answered(&mut self, id: tokio::task::Id) -> Option<(String, Option<Option<String>>)> {
+        let ssid = self
+            .asking
+            .iter()
+            .find(|(_, (task, _))| *task == id)
+            .map(|(ssid, _)| ssid.clone())?;
+        self.asking.remove(&ssid);
+        let next = self.waiting.remove(&ssid);
+        Some((ssid, next))
+    }
+
+    /// Everything forgotten (its tasks are stopped by the caller): the
+    /// networks that were being asked.
+    fn clear(&mut self) -> Vec<String> {
+        self.waiting.clear();
+        std::mem::take(&mut self.asking).into_keys().collect()
+    }
+}
+
+/// A password's fingerprint, to tell a repeated join from a new one
+/// without keeping the password.
+fn fingerprint(password: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    password.hash(&mut h);
+    h.finish()
+}
+
 /// Join the network named `ssid`: its strongest access point, with a
 /// saved connection for that name if there is one (given `password`, it
 /// is saved in it first), else a new one. The active connection
-/// NetworkManager made for it.
+/// NetworkManager made for it. Runs as a task of its own (every call
+/// bounded: [`dbus::READ_TIMEOUT`] each, [`ACTIVATE_TIMEOUT`] for the
+/// activation), so the service goes on following NetworkManager and
+/// answering the shell meanwhile.
 async fn connect(
-    daemon: &Daemon,
-    nm: &Nm,
+    conn: &zbus::Connection,
+    known: &Snapshot,
     name: &str,
     password: Option<&str>,
 ) -> zbus::Result<String> {
     use zbus::zvariant::ObjectPath;
-    let conn = daemon.conn();
     // The devices' access point lists and the access points read now:
     // outside a scan neither is followed (the menu may just have closed).
     let mut best: Option<(String, String, Props, f64)> = None;
-    let devices: Vec<String> = nm.wifi_devices.keys().cloned().collect();
-    for dev in devices {
-        let listed = match dbus::get(conn, NM, &dev, WIRELESS, "AccessPoints").await {
+    for dev in &known.devices {
+        let listed = match dbus::get(conn, NM, dev, WIRELESS, "AccessPoints").await {
             Ok(v) => v.try_into().map(dbus::paths).unwrap_or_default(),
             Err(e) if dbus::is_timeout(&e) => return Err(e),
             Err(_) => continue,
         };
         for ap in listed {
-            let p = match nm.aps.get(&ap) {
+            let p = match known.aps.get(&ap) {
                 Some(p) => p.clone(),
                 None => match dbus::get_all(conn, NM, &ap, AP).await {
                     Ok(p) => p,
@@ -689,85 +942,51 @@ async fn connect(
     let Some((dev, ap, ap_props, _)) = best else {
         return Err(zbus::Error::Failure(format!("`{name}` is not in range")));
     };
-    let secret = match password {
-        Some(pw) => Some(security(&ap_props, pw)?),
-        None => None,
-    };
+    let kind = kind(&ap_props);
     let dev = ObjectPath::try_from(dev.as_str())?;
     let ap = ObjectPath::try_from(ap.as_str())?;
-    // A saved connection for the name?
-    let saved: Vec<zbus::zvariant::OwnedObjectPath> = dbus::timed_for(
-        dbus::READ_TIMEOUT,
-        conn.call_method(
-            Some(NM),
-            SETTINGS,
-            Some(SETTINGS_IFACE),
-            "ListConnections",
-            &(),
-        ),
-    )
-    .await?
-    .body()
-    .deserialize()?;
-    type Settings = HashMap<String, HashMap<String, OwnedValue>>;
-    for path in saved {
-        let reply = dbus::timed_for(
-            dbus::READ_TIMEOUT,
-            conn.call_method(
-                Some(NM),
-                path.as_str(),
-                Some(CONNECTION_IFACE),
-                "GetSettings",
-                &(),
-            ),
-        )
-        .await;
-        let reply = match reply {
-            Ok(r) => r,
-            Err(e) if dbus::is_timeout(&e) => return Err(e),
-            Err(_) => continue,
-        };
-        let Ok(mut settings) = reply.body().deserialize::<Settings>() else {
-            continue;
-        };
-        let matches = settings
-            .get("802-11-wireless")
-            .is_some_and(|w| ssid_at(w, "ssid").as_deref() == Some(name));
-        if matches {
-            if let Some(secret) = &secret {
-                // The new password, saved in it.
-                let mut sec = HashMap::new();
-                for (k, v) in secret {
-                    sec.insert(k.to_string(), v.try_clone()?);
-                }
-                settings.insert("802-11-wireless-security".into(), sec);
-                dbus::timed_for(
-                    dbus::READ_TIMEOUT,
-                    conn.call_method(
-                        Some(NM),
-                        path.as_str(),
-                        Some(CONNECTION_IFACE),
-                        "Update",
-                        &(settings,),
-                    ),
-                )
-                .await?;
+    let saved = saved_connection(conn, name).await?;
+    if let Some(why) = refusal(name, kind, saved.is_some(), password.is_some()) {
+        return Err(zbus::Error::Failure(why));
+    }
+    let secret = match (kind, password) {
+        (Kind::Personal(key_mgmt), Some(pw)) => Some(security(key_mgmt, pw)?),
+        _ => None,
+    };
+    if let Some((path, mut settings)) = saved {
+        if let Some(secret) = &secret {
+            // The new password, saved in it.
+            let mut sec = HashMap::new();
+            for (k, v) in secret {
+                sec.insert(k.to_string(), v.try_clone()?);
             }
-            let active: zbus::zvariant::OwnedObjectPath = dbus::timed_for(
-                ACTIVATE_TIMEOUT,
+            settings.insert("802-11-wireless-security".into(), sec);
+            dbus::timed_for(
+                dbus::READ_TIMEOUT,
                 conn.call_method(
                     Some(NM),
-                    ROOT,
-                    Some(NM),
-                    "ActivateConnection",
-                    &(path.as_ref(), &dev, &ap),
+                    path.as_str(),
+                    Some(CONNECTION_IFACE),
+                    "Update",
+                    &(settings,),
                 ),
             )
-            .await?
-            .body()
-            .deserialize()?;
-            return Ok(active.to_string());
+            .await?;
         }
+        let active: zbus::zvariant::OwnedObjectPath = dbus::timed_for(
+            ACTIVATE_TIMEOUT,
+            conn.call_method(
+                Some(NM),
+                ROOT,
+                Some(NM),
+                "ActivateConnection",
+                &(path.as_ref(), &dev, &ap),
+            ),
+        )
+        .await?
+        .body()
+        .deserialize()?;
+        return Ok(active.to_string());
     }
     let mut new: HashMap<&str, HashMap<&str, OwnedValue>> = HashMap::new();
     if let Some(secret) = secret {
@@ -790,6 +1009,58 @@ async fn connect(
     .body()
     .deserialize()?;
     Ok(active.to_string())
+}
+
+/// A connection's settings, as `GetSettings` answers them.
+type Settings = HashMap<String, HashMap<String, OwnedValue>>;
+
+/// The saved connection for the Wi-Fi network `name`, with its settings
+/// (no secrets), if there is one.
+async fn saved_connection(
+    conn: &zbus::Connection,
+    name: &str,
+) -> zbus::Result<Option<(zbus::zvariant::OwnedObjectPath, Settings)>> {
+    let saved: Vec<zbus::zvariant::OwnedObjectPath> = dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        conn.call_method(
+            Some(NM),
+            SETTINGS,
+            Some(SETTINGS_IFACE),
+            "ListConnections",
+            &(),
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()?;
+    for path in saved {
+        let reply = dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            conn.call_method(
+                Some(NM),
+                path.as_str(),
+                Some(CONNECTION_IFACE),
+                "GetSettings",
+                &(),
+            ),
+        )
+        .await;
+        let reply = match reply {
+            Ok(r) => r,
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
+            Err(_) => continue,
+        };
+        let Ok(settings) = reply.body().deserialize::<Settings>() else {
+            continue;
+        };
+        if settings
+            .get("802-11-wireless")
+            .is_some_and(|w| ssid_at(w, "ssid").as_deref() == Some(name))
+        {
+            return Ok(Some((path, settings)));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -815,5 +1086,108 @@ mod tests {
         assert!(secure(&ap(0x1 | 0x2, 0, 0x188)), "WPA2 with WPS");
         assert!(secure(&ap(0, 0x108, 0)), "WPA");
         assert!(secure(&ap(0, 0, 0x400)), "WPA3 (SAE)");
+    }
+
+    /// (m6-services) How each network is joined, and what is refused
+    /// before NetworkManager is asked to activate anything.
+    #[test]
+    fn enterprise_and_wep_networks_join_only_through_a_saved_profile() {
+        assert_eq!(kind(&ap(0, 0, 0)), Kind::Open);
+        assert_eq!(kind(&ap(0x1, 0, 0x188)), Kind::Personal("wpa-psk"));
+        assert_eq!(kind(&ap(0x1, 0, 0x400)), Kind::Personal("sae"));
+        assert_eq!(kind(&ap(0x1, 0, 0x288)), Kind::Enterprise);
+        assert_eq!(kind(&ap(0x1, 0, 0x2000)), Kind::Enterprise, "Suite B");
+        // A transition network offering both: the password.
+        assert_eq!(kind(&ap(0x1, 0, 0x300)), Kind::Personal("wpa-psk"));
+        assert_eq!(kind(&ap(0x1, 0, 0)), Kind::Wep);
+        assert_eq!(kind(&ap(0x1, 0x1, 0x1)), Kind::Wep, "pairwise WEP only");
+        assert_eq!(kind(&ap(0x1, 0, 0x800)), Kind::Open, "Enhanced Open");
+        // Saved: joined with connect(); a password is for a personal one.
+        for k in [
+            Kind::Enterprise,
+            Kind::Wep,
+            Kind::Personal("sae"),
+            Kind::Open,
+        ] {
+            assert_eq!(refusal("n", k, true, false), None, "{k:?}");
+        }
+        assert!(
+            refusal("n", Kind::Enterprise, true, true).is_some_and(|e| e.contains("connect()"))
+        );
+        assert!(refusal("n", Kind::Wep, true, true).is_some_and(|e| e.contains("connect()")));
+        assert_eq!(refusal("n", Kind::Personal("wpa-psk"), true, true), None);
+        // Not saved: enterprise and WEP are refused, with or without one.
+        for pw in [false, true] {
+            let e = refusal("Corp", Kind::Enterprise, false, pw).unwrap();
+            assert!(
+                e.contains("enterprise (802.1X)") && e.contains("no saved profile"),
+                "{e}"
+            );
+            let e = refusal("Old", Kind::Wep, false, pw).unwrap();
+            assert!(e.contains("WEP") && e.contains("no saved profile"), "{e}");
+        }
+        assert_eq!(refusal("n", Kind::Personal("wpa-psk"), false, true), None);
+        assert_eq!(refusal("n", Kind::Personal("wpa-psk"), false, false), None);
+        assert_eq!(refusal("n", Kind::Open, false, false), None);
+        assert!(refusal("n", Kind::Open, false, true).is_some());
+    }
+
+    /// (m6-services, services-r1-1) One join per network at a time: a
+    /// repeat is dropped, another password waits for the answer (the last
+    /// one asked), and other networks are asked at once.
+    #[test]
+    fn a_network_is_asked_one_join_at_a_time() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _in = rt.enter();
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        let mut id = || tasks.spawn(async {}).id();
+        let mut a = Asked::default();
+        assert!(a.ask("Home", Some("pw")));
+        let home = id();
+        a.started("Home".into(), home, Some("pw"));
+        // A double click: the same join again is dropped.
+        assert!(!a.ask("Home", Some("pw")));
+        assert!(a.waiting.is_empty());
+        // Another network is asked at once.
+        assert!(a.ask("Cafe", None));
+        let cafe = id();
+        a.started("Cafe".into(), cafe, None);
+        // Another password waits; the last one asked wins.
+        assert!(!a.ask("Home", Some("typo")));
+        assert!(!a.ask("Home", Some("fixed")));
+        assert_eq!(a.asking.len(), 2, "one task per network");
+        assert_eq!(
+            a.answered(home),
+            Some(("Home".into(), Some(Some("fixed".into()))))
+        );
+        assert!(a.ask("Home", Some("again")), "answered: asked at once");
+        // A repeat of the join being asked drops the one waiting.
+        assert!(!a.ask("Cafe", Some("pw")));
+        assert!(!a.ask("Cafe", None));
+        assert_eq!(a.answered(cafe), Some(("Cafe".into(), None)));
+        assert_eq!(a.answered(cafe), None, "answered once");
+        let x = id();
+        a.started("X".into(), x, None);
+        assert!(!a.ask("X", Some("pw")));
+        assert_eq!(a.clear(), vec!["X".to_string()]);
+        assert!(a.waiting.is_empty() && a.ask("X", Some("pw")));
+    }
+
+    #[test]
+    fn a_join_answered_after_its_connection_ended_is_settled_from_the_signal() {
+        let mut e = Ended::default();
+        e.note("/a/1".into(), 1, 0);
+        assert_eq!(e.take("/a/1"), None, "still activating: not an end");
+        e.note("/a/1".into(), DEACTIVATED, 9);
+        e.note("/a/2".into(), ACTIVATED, 0);
+        assert_eq!(e.take("/a/1"), Some((DEACTIVATED, 9)));
+        assert_eq!(e.take("/a/1"), None, "taken once");
+        for i in 0..100 {
+            e.note(format!("/b/{i}"), ACTIVATED, 0);
+        }
+        assert_eq!(e.0.len(), Ended::KEEP, "bounded");
+        assert_eq!(e.take("/a/2"), None, "the oldest went");
     }
 }

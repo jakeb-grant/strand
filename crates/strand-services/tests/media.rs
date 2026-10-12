@@ -25,6 +25,8 @@ struct Track {
     /// Its position (and so `GetAll`) does not answer: a player whose
     /// main loop is blocked.
     frozen: bool,
+    /// Its `mpris:artUrl`.
+    art: String,
 }
 
 struct Player(Arc<Mutex<Track>>);
@@ -78,7 +80,7 @@ impl Player {
             ("mpris:length".to_string(), OwnedValue::from(200_000_000i64)),
             (
                 "mpris:artUrl".to_string(),
-                OwnedValue::try_from(Value::from("file:///tmp/art.png")).unwrap(),
+                OwnedValue::try_from(Value::from(t.art.as_str())).unwrap(),
             ),
         ])
     }
@@ -138,6 +140,7 @@ fn player_with(
         calls: Vec::new(),
         rate: 1.0,
         frozen: false,
+        art: "file:///tmp/art.png".into(),
     };
     f(&mut t);
     let track = Arc::new(Mutex::new(t));
@@ -360,5 +363,190 @@ fn a_frozen_player_does_not_hold_up_the_others() {
     );
     assert_eq!(a.lock().unwrap().calls, ["PlayPause"]);
     assert_eq!(cells.player.get_untracked(&rt), Ok(Some("mpv".into())));
+    s.shutdown();
+}
+
+/// The player on `conn` sends `art` as its art (`PropertiesChanged` with
+/// its whole `Metadata`, as players do).
+fn set_art(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    track: &Arc<Mutex<Track>>,
+    art: &str,
+) {
+    track.lock().unwrap().art = art.into();
+    tokio.block_on(async {
+        let iface = conn
+            .object_server()
+            .interface::<_, Player>(media::PATH)
+            .await
+            .unwrap();
+        iface
+            .get()
+            .await
+            .metadata_changed(iface.signal_emitter())
+            .await
+            .unwrap();
+    });
+}
+
+/// A 1x1 PNG of `rgba`.
+fn png(rgba: [u8; 4]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, 1, 1);
+        enc.set_color(png::ColorType::Rgba);
+        let mut w = enc.write_header().unwrap();
+        w.write_image_data(&rgba).unwrap();
+    }
+    out
+}
+
+/// An HTTP server on 127.0.0.1 (a thread per connection) answering
+/// `GET path` with `pages(path)`: a delay and a response. Its port and
+/// the paths asked for, in order.
+fn http_server(
+    pages: impl Fn(&str) -> (Duration, Vec<u8>) + Send + Sync + 'static,
+) -> (u16, Arc<Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let a = asked.clone();
+    let pages = Arc::new(pages);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let pages = pages.clone();
+            let a = a.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    return;
+                }
+                let path = line.split(' ').nth(1).unwrap_or("/").to_string();
+                loop {
+                    let mut l = String::new();
+                    match reader.read_line(&mut l) {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) if l == "\r\n" => break,
+                        Ok(_) => {}
+                    }
+                }
+                a.lock().unwrap().push(path.clone());
+                let (delay, reply) = pages(&path);
+                std::thread::sleep(delay);
+                let _ = stream.write_all(&reply);
+            });
+        }
+    });
+    (port, asked)
+}
+
+fn ok(body: &[u8]) -> Vec<u8> {
+    let mut r = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    r.extend_from_slice(body);
+    r
+}
+
+/// (m6-services) Remote art is fetched (here over plain HTTP from a local
+/// server; HTTPS is `art`'s own test), shown as a file once it is in,
+/// cached by URL and fetched again when the URL changes; a URL that is not
+/// a picture leaves the art null and is asked once however often the
+/// player repeats it; and a fetch that takes its time holds up nothing.
+#[test]
+fn remote_art_is_fetched_cached_and_never_stalls_the_player() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let (a_png, b_png) = (png([255, 0, 0, 255]), png([0, 0, 255, 255]));
+    let (a, b) = (a_png.clone(), b_png.clone());
+    let (port, asked) = http_server(move |path| match path {
+        "/a.png" => (Duration::ZERO, ok(&a)),
+        "/b.png" => (Duration::ZERO, ok(&b)),
+        "/page" => (Duration::ZERO, ok(b"<!doctype html><p>a web page")),
+        "/slow.png" => (Duration::from_secs(4), ok(&a)),
+        _ => (
+            Duration::ZERO,
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        ),
+    });
+    let url = |p: &str| format!("http://127.0.0.1:{port}{p}");
+    let count = |p: &str| asked.lock().unwrap().iter().filter(|x| *x == p).count();
+    let tokio = tokio();
+    let first = url("/a.png");
+    let (conn, track) = player_with(&tokio, &bus.address, "spotify", "Playing", "Song", 0, |t| {
+        t.art = first.clone()
+    });
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let shows = |bytes: &[u8]| match cells.art.get_untracked(&rt) {
+        Ok(Some(path)) => std::fs::read(&path).is_ok_and(|b| b == bytes),
+        _ => false,
+    };
+    until(&rt, &s, "the remote art", || shows(&a_png));
+    let a_file = cells.art.get_untracked(&rt).unwrap().unwrap();
+    assert!(!a_file.starts_with("http"), "a file, not the URL: {a_file}");
+    assert_eq!(count("/a.png"), 1);
+
+    // Not a picture: no art, and asked once however often it is sent.
+    set_art(&tokio, &conn, &track, &url("/page"));
+    until(&rt, &s, "the page asked for", || count("/page") == 1);
+    for _ in 0..5 {
+        set_art(&tokio, &conn, &track, &url("/page"));
+        std::thread::sleep(Duration::from_millis(50));
+        s.pump(&rt);
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(cells.art.get_untracked(&rt), Ok(None));
+    assert_eq!(count("/page"), 1, "no retry storm");
+    // A missing one: no art either.
+    set_art(&tokio, &conn, &track, &url("/gone.png"));
+    until(&rt, &s, "the missing one asked for", || {
+        count("/gone.png") == 1
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(cells.art.get_untracked(&rt), Ok(None));
+
+    // Another URL: fetched; the first again: from the cache, at once.
+    set_art(&tokio, &conn, &track, &url("/b.png"));
+    until(&rt, &s, "the new art", || shows(&b_png));
+    set_art(&tokio, &conn, &track, &url("/a.png"));
+    until(&rt, &s, "the first art again", || {
+        cells.art.get_untracked(&rt) == Ok(Some(a_file.clone()))
+    });
+    assert_eq!(count("/a.png"), 1, "cached by URL");
+
+    // A server that takes 4 s: the player is answered meanwhile.
+    set_art(&tokio, &conn, &track, &url("/slow.png"));
+    until(&rt, &s, "the slow one asked for", || {
+        count("/slow.png") == 1
+    });
+    let pressed = std::time::Instant::now();
+    b.media
+        .dynamic()
+        .action(&rt, "play_pause", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "paused", || {
+        cells.playing.get_untracked(&rt) == Ok(false)
+    });
+    assert!(
+        pressed.elapsed() < Duration::from_millis(1500),
+        "the player waited for the art: {:?}",
+        pressed.elapsed()
+    );
+    assert_eq!(cells.art.get_untracked(&rt), Ok(None), "not in yet");
+    until(&rt, &s, "the slow art", || shows(&a_png));
+    assert_eq!(b.media.starts(), 1);
     s.shutdown();
 }

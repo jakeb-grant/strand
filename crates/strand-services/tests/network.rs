@@ -505,3 +505,606 @@ fn a_join_that_fails_later_is_reported() {
     );
     s.shutdown();
 }
+
+/// The failures `failed` has reported, as (ssid, error).
+fn failures_of(
+    b: &strand_services::Builtin,
+) -> std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> {
+    let failures = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let f = failures.clone();
+    b.network.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a
+            && let [Data::Text(ssid), Data::Text(error)] = args.as_slice()
+        {
+            f.lock()
+                .unwrap()
+                .push((ssid.to_string(), error.to_string()));
+        }
+    }));
+    failures
+}
+
+/// (m6-services) An enterprise (802.1X) network with a profile saved in
+/// NetworkManager joins with `connect()`, through that profile; one
+/// without a saved profile, and a WEP network, are refused with an error
+/// that says why, and NetworkManager is not asked to add anything.
+#[test]
+fn enterprise_and_wep_networks_join_only_through_a_saved_profile() {
+    use zbus::zvariant::{OwnedObjectPath, Value};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, _) = wifi_home(&tokio, &conn);
+    // The template saves only personal networks: Corp is saved as one,
+    // then its access point says it is 802.1X (as the profile the
+    // system's settings made would be).
+    let corp = add_ap(&tokio, &conn, &dev, "Mock_Corp", "Corp", 70);
+    let corp_saved: String = mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddWiFiConnection",
+        &(dev.as_str(), "Mock_CorpCon", "Corp", "wpa-eap"),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    // NM_802_11_AP_SEC_KEY_MGMT_802_1X with CCMP.
+    let eap = 0x200u32 | 0x8 | 0x80;
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &corp,
+        "UpdateProperties",
+        &(
+            "org.freedesktop.NetworkManager.AccessPoint",
+            std::collections::HashMap::from([
+                ("WpaFlags", Value::from(0u32)),
+                ("RsnFlags", Value::from(eap)),
+            ]),
+        ),
+    );
+    // Office: 802.1X, never saved. Legacy: WEP (privacy, no WPA).
+    let office = add_ap(&tokio, &conn, &dev, "Mock_Office", "Office", 60);
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &office,
+        "UpdateProperties",
+        &(
+            "org.freedesktop.NetworkManager.AccessPoint",
+            std::collections::HashMap::from([
+                ("WpaFlags", Value::from(0u32)),
+                ("RsnFlags", Value::from(eap)),
+            ]),
+        ),
+    );
+    let legacy = add_ap(&tokio, &conn, &dev, "Mock_Legacy", "Legacy", 50);
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &legacy,
+        "UpdateProperties",
+        &(
+            "org.freedesktop.NetworkManager.AccessPoint",
+            std::collections::HashMap::from([
+                ("Flags", Value::from(1u32)),
+                ("WpaFlags", Value::from(0u32)),
+                ("RsnFlags", Value::from(0u32)),
+            ]),
+        ),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let join = |ssid: &str, password: Option<&str>| {
+        let item = AccessPoint {
+            ssid: ssid.into(),
+            strength: 0.5,
+            secure: true,
+            active: false,
+        };
+        let (name, args) = match password {
+            Some(p) => ("connect_with", vec![Data::Text(p.into())]),
+            None => ("connect", vec![]),
+        };
+        b.network
+            .dynamic()
+            .action(&rt, name, Some(&item.to_data()), &args, Default::default())
+            .unwrap();
+    };
+    let failed = |n: usize| {
+        until(&rt, &s, "a failure", || failures.lock().unwrap().len() >= n);
+        failures.lock().unwrap()[n - 1].clone()
+    };
+
+    // Saved Corp: its profile is activated.
+    join("Corp", None);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let activated = loop {
+        if let Some(c) = mock_calls(&tokio, &conn, NM, ROOT, "ActivateConnection")
+            .into_iter()
+            .next()
+        {
+            break c;
+        }
+        assert!(std::time::Instant::now() < deadline, "Corp never joined");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let path: OwnedObjectPath = activated[0].try_clone().unwrap().try_into().unwrap();
+    assert_eq!(path.as_str(), corp_saved);
+    let ap: OwnedObjectPath = activated[2].try_clone().unwrap().try_into().unwrap();
+    assert_eq!(ap.as_str(), corp);
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    // A password for it: refused (the profile holds the login).
+    join("Corp", Some("hunter22"));
+    let (ssid, error) = failed(1);
+    assert_eq!(ssid, "Corp");
+    assert!(
+        error.contains("enterprise (802.1X)") && error.contains("`connect()`"),
+        "{error}"
+    );
+
+    // Unsaved Office, with and without a password: refused.
+    join("Office", None);
+    let (ssid, error) = failed(2);
+    assert_eq!(ssid, "Office");
+    assert!(
+        error.contains("enterprise (802.1X)") && error.contains("no saved profile"),
+        "{error}"
+    );
+    join("Office", Some("hunter22"));
+    assert!(failed(3).1.contains("no saved profile"));
+    // Unsaved Legacy (WEP): refused.
+    join("Legacy", None);
+    let (ssid, error) = failed(4);
+    assert_eq!(ssid, "Legacy");
+    assert!(
+        error.contains("WEP") && error.contains("no saved profile"),
+        "{error}"
+    );
+    // NetworkManager was asked to add nothing, and Corp's profile was not
+    // rewritten.
+    assert!(mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").is_empty());
+    assert!(mock_calls(&tokio, &conn, NM, &corp_saved, "Update").is_empty());
+    assert_eq!(
+        mock_calls(&tokio, &conn, NM, ROOT, "ActivateConnection").len(),
+        1
+    );
+    assert_eq!(b.network.starts(), 1);
+    s.shutdown();
+}
+
+/// A NetworkManager of the test's own, for what python-dbusmock cannot
+/// do (it answers one call at a time): take its time over the saved
+/// connections while answering everything else at once.
+mod slow_nm {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+
+    pub const DEV: &str = "/org/freedesktop/NetworkManager/Devices/1";
+    pub const AP: &str = "/org/freedesktop/NetworkManager/AccessPoint/1";
+
+    fn path(p: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(p).unwrap()
+    }
+
+    pub struct Manager {
+        pub wifi: bool,
+        pub added: Arc<AtomicUsize>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl Manager {
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            70
+        }
+        #[zbus(property)]
+        fn wireless_enabled(&self) -> bool {
+            self.wifi
+        }
+        #[zbus(property)]
+        fn set_wireless_enabled(&mut self, on: bool) {
+            self.wifi = on;
+        }
+        #[zbus(property)]
+        fn active_connections(&self) -> Vec<OwnedObjectPath> {
+            Vec::new()
+        }
+        #[zbus(property)]
+        fn devices(&self) -> Vec<OwnedObjectPath> {
+            vec![path(DEV)]
+        }
+        fn add_and_activate_connection(
+            &self,
+            _settings: HashMap<String, HashMap<String, OwnedValue>>,
+            _dev: ObjectPath<'_>,
+            _ap: ObjectPath<'_>,
+        ) -> (OwnedObjectPath, OwnedObjectPath) {
+            self.added.fetch_add(1, Ordering::SeqCst);
+            (
+                path("/org/freedesktop/NetworkManager/Settings/1"),
+                path("/org/freedesktop/NetworkManager/ActiveConnection/1"),
+            )
+        }
+    }
+
+    pub struct Device;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
+    impl Device {
+        #[zbus(property)]
+        fn device_type(&self) -> u32 {
+            2
+        }
+    }
+
+    pub struct Wireless;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.Wireless")]
+    impl Wireless {
+        #[zbus(property)]
+        fn access_points(&self) -> Vec<OwnedObjectPath> {
+            vec![path(AP)]
+        }
+        fn request_scan(&self, _options: HashMap<String, OwnedValue>) {}
+    }
+
+    pub struct AccessPoint;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.AccessPoint")]
+    impl AccessPoint {
+        #[zbus(property)]
+        fn ssid(&self) -> Vec<u8> {
+            b"Slow".to_vec()
+        }
+        #[zbus(property)]
+        fn strength(&self) -> u8 {
+            60
+        }
+        #[zbus(property)]
+        fn flags(&self) -> u32 {
+            1
+        }
+        #[zbus(property)]
+        fn wpa_flags(&self) -> u32 {
+            0
+        }
+        #[zbus(property)]
+        fn rsn_flags(&self) -> u32 {
+            0x188
+        }
+    }
+
+    pub struct Settings {
+        pub delay: Duration,
+        pub asked: Arc<AtomicUsize>,
+    }
+
+    /// One served on the bus at `address`, its saved connections listed
+    /// after `delay`; counting the `ListConnections` (`asked`) and
+    /// `AddAndActivateConnection` (`added`) calls. Named NetworkManager
+    /// if `own`, else without a name (it asks for it when it wants).
+    pub fn serve(
+        tokio: &tokio::runtime::Runtime,
+        address: &str,
+        delay: Duration,
+        asked: &Arc<AtomicUsize>,
+        added: &Arc<AtomicUsize>,
+        own: bool,
+    ) -> zbus::Connection {
+        tokio.block_on(async {
+            let mut b = zbus::connection::Builder::address(address).unwrap();
+            if own {
+                b = b.name(super::NM).unwrap();
+            }
+            b.serve_at(
+                super::ROOT,
+                Manager {
+                    wifi: true,
+                    added: added.clone(),
+                },
+            )
+            .unwrap()
+            .serve_at(DEV, Device)
+            .unwrap()
+            .serve_at(DEV, Wireless)
+            .unwrap()
+            .serve_at(AP, AccessPoint)
+            .unwrap()
+            .serve_at(
+                "/org/freedesktop/NetworkManager/Settings",
+                Settings {
+                    delay,
+                    asked: asked.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+        })
+    }
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
+    impl Settings {
+        async fn list_connections(&self) -> Vec<OwnedObjectPath> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            Vec::new()
+        }
+    }
+}
+
+/// (m6-services) A join is asked in a task of its own: while
+/// NetworkManager takes its time over it (here 4 s over the saved
+/// connections, within the 5 s bound), the radio is switched at once.
+/// Awaited inline, the switch waited for the join.
+#[test]
+fn a_slow_join_does_not_hold_up_the_radio() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let _nm = slow_nm::serve(
+        &tokio,
+        &bus.address,
+        Duration::from_secs(4),
+        &asked,
+        &added,
+        true,
+    );
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.wifi.get_untracked(&rt), Ok(true));
+
+    let item = AccessPoint {
+        ssid: "Slow".into(),
+        strength: 0.6,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(
+            &rt,
+            "connect_with",
+            Some(&item.to_data()),
+            &[Data::Text("hunter22".into())],
+            Default::default(),
+        )
+        .unwrap();
+    until(&rt, &s, "the join asking for the saved connections", || {
+        asked.load(Ordering::SeqCst) == 1
+    });
+
+    // The radio, switched off while NetworkManager is still on the join.
+    let asked_at = std::time::Instant::now();
+    b.network
+        .dynamic()
+        .write(&rt, 3, &[], Data::Bool(false))
+        .unwrap();
+    rt.flush();
+    loop {
+        s.pump(&rt);
+        rt.flush();
+        let on = tokio
+            .block_on(conn.call_method(
+                Some(NM),
+                ROOT,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &(NM, "WirelessEnabled"),
+            ))
+            .unwrap();
+        let on: zbus::zvariant::OwnedValue = on.body().deserialize().unwrap();
+        if on == zbus::zvariant::OwnedValue::from(false) {
+            break;
+        }
+        assert!(
+            asked_at.elapsed() < Duration::from_millis(2500),
+            "the radio waited for the join"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(added.load(Ordering::SeqCst), 0, "the join is still asking");
+    // The join goes on and is asked of NetworkManager in the end.
+    until(&rt, &s, "the join", || added.load(Ordering::SeqCst) == 1);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// `ap.connect_with(password)` on "Slow" (the slow NetworkManager's one
+/// network).
+fn join_slow(rt: &Runtime, b: &strand_services::Builtin, password: &str) {
+    let item = AccessPoint {
+        ssid: "Slow".into(),
+        strength: 0.6,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(
+            rt,
+            "connect_with",
+            Some(&item.to_data()),
+            &[Data::Text(password.into())],
+            Default::default(),
+        )
+        .unwrap();
+}
+
+/// (m6-services, services-r1-1) Joins are tasks, but one network is
+/// asked one join at a time: a double click on an unsaved network makes
+/// one profile, not two (both would find none saved and add one, and the
+/// second activation would end the first), and a join with another
+/// password waits for the first's answer.
+#[test]
+fn two_joins_of_one_network_add_one_profile() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let _nm = slow_nm::serve(
+        &tokio,
+        &bus.address,
+        Duration::from_secs(2),
+        &asked,
+        &added,
+        true,
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    join_slow(&rt, &b, "hunter22");
+    join_slow(&rt, &b, "hunter22");
+    join_slow(&rt, &b, "other-password");
+    until(&rt, &s, "the first join asking", || {
+        asked.load(Ordering::SeqCst) >= 1
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(800) {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "one join of Slow at a time"
+    );
+    assert_eq!(added.load(Ordering::SeqCst), 0);
+    // The first answers; then the other password is asked, once.
+    until(&rt, &s, "the waiting join", || {
+        added.load(Ordering::SeqCst) == 2
+    });
+    assert_eq!(asked.load(Ordering::SeqCst), 2, "the repeat was not asked");
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(500) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(added.load(Ordering::SeqCst), 2);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// (m6-services, services-r1-4) A join still asking when NetworkManager
+/// is replaced stops there: its next call would reach the new
+/// NetworkManager, which would activate a network the service no longer
+/// follows while it reported the join as failed.
+#[test]
+fn a_join_stops_when_networkmanager_is_replaced() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let old = slow_nm::serve(
+        &tokio,
+        &bus.address,
+        Duration::from_secs(2),
+        &asked,
+        &added,
+        true,
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    join_slow(&rt, &b, "hunter22");
+    until(&rt, &s, "the join asking", || {
+        asked.load(Ordering::SeqCst) == 1
+    });
+    // A new NetworkManager queues for the name and takes it from the old
+    // one, which still answers the join's call (with no saved profile).
+    let new_asked = Arc::new(AtomicUsize::new(0));
+    let new_added = Arc::new(AtomicUsize::new(0));
+    let new = slow_nm::serve(
+        &tokio,
+        &bus.address,
+        Duration::ZERO,
+        &new_asked,
+        &new_added,
+        false,
+    );
+    tokio.block_on(async {
+        new.request_name_with_flags(NM, zbus::fdo::RequestNameFlags::AllowReplacement.into())
+            .await
+            .unwrap();
+        old.release_name(NM).await.unwrap();
+    });
+    until(&rt, &s, "the join failing", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    // Past the old one's answer: nothing more is asked of either.
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        new_added.load(Ordering::SeqCst),
+        0,
+        "the new NetworkManager was asked to join"
+    );
+    assert_eq!(added.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *failures.lock().unwrap(),
+        vec![("Slow".to_string(), "NetworkManager stopped".to_string())]
+    );
+    s.shutdown();
+}

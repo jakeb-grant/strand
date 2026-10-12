@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Datelike;
+use chrono::{Datelike, Timelike};
 use tokio::sync::mpsc;
 use zbus::fdo::RequestNameReply;
 use zbus::zvariant::OwnedValue;
@@ -97,7 +97,8 @@ pub enum Urgency {
     Critical,
 }
 
-/// A `Date` (the clock's record): year, month, day, weekday (Monday 1).
+/// A `Date` (the clock's record): year, month, day, weekday (Monday 1),
+/// and the time of day to the minute (null for a date alone).
 #[derive(crate::Data, Clone, Debug, Default, PartialEq)]
 #[data(name = "Date")]
 pub struct Date {
@@ -105,17 +106,26 @@ pub struct Date {
     pub month: i64,
     pub day: i64,
     pub weekday: i64,
+    pub hour: Option<i64>,
+    pub minute: Option<i64>,
 }
 
 impl Date {
-    /// Today, in the local zone.
-    pub fn today() -> Date {
-        let d = chrono::Local::now().date_naive();
+    /// Now, to the minute, in the local zone: a notification's `time`.
+    pub fn now() -> Date {
+        Date::at(chrono::Local::now().naive_local())
+    }
+
+    /// `t` to the minute.
+    pub fn at(t: chrono::NaiveDateTime) -> Date {
+        let d = t.date();
         Date {
             year: i64::from(d.year()),
             month: i64::from(d.month()),
             day: i64::from(d.day()),
             weekday: i64::from(d.weekday().number_from_monday()),
+            hour: Some(i64::from(t.hour())),
+            minute: Some(i64::from(t.minute())),
         }
     }
 }
@@ -386,7 +396,7 @@ impl Server {
                 // `persistent` (decisions.md, wave4-a2).
                 timeout: (expire_timeout > 0).then(|| Duration::from_millis(expire_timeout as u64)),
                 persistent: expire_timeout == 0,
-                time: Date::today(),
+                time: Date::now(),
                 actions: buttons,
             },
             image,

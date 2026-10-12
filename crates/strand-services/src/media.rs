@@ -27,7 +27,7 @@ use zbus::message::Type as MessageType;
 use zbus::zvariant::OwnedValue;
 
 use crate::dbus::{self, Props};
-use crate::{Call, Cx, Msg, ServiceError, Store, service};
+use crate::{Call, Cx, Msg, ServiceError, Store, art, service};
 
 /// The schema the `media` service serves.
 pub const SCHEMA: &str = strand_services_schema::MEDIA;
@@ -62,9 +62,12 @@ pub struct Media {
     pub artist: Option<String>,
     /// The track's album.
     pub album: Option<String>,
-    /// The album art: `image media.art { fit: cover }`. Local art only (a
-    /// `file://` URL or a path); null when the player sent none or a remote
-    /// URL, so `media.art ?? "audio-x-generic"` falls back.
+    /// The album art: `image media.art { fit: cover }`. Local art (a
+    /// `file://` URL or a path) as the player sent it; remote (`https://`,
+    /// `http://`) art fetched and shown as a file once it is in
+    /// ([`crate::art`]). Null when the player sent none, while remote art
+    /// loads, or when it failed, so `media.art ?? "audio-x-generic"` falls
+    /// back.
     pub art: Option<String>,
     /// Fraction of the track played, 0 to 1.
     #[store(stream)]
@@ -271,7 +274,7 @@ impl Players {
             title: text("xesam:title"),
             artist: artist(&meta),
             album: text("xesam:album"),
-            art: text("mpris:artUrl").filter(|u| local_art(u)),
+            art: text("mpris:artUrl").filter(|u| local_art(u) || art::is_remote(u)),
             position: match length {
                 Some(l) if !l.is_zero() => {
                     (elapsed.as_secs_f64() / l.as_secs_f64()).clamp(0.0, 1.0)
@@ -355,10 +358,8 @@ impl Players {
     }
 }
 
-/// Art `image` can show: a `file://` URL or a path. Remote art (the
-/// `https://` URLs some players send) is left out, so a shell's fallback
-/// (`media.art ?? "audio-x-generic"`) shows instead of a blank picture
-/// (decisions.md, wave4-a2).
+/// Art `image` can show as sent: a `file://` URL or a path. Remote art
+/// is fetched first ([`crate::art`]; decisions.md, m6-services).
 fn local_art(url: &str) -> bool {
     url.starts_with("file://") || url.starts_with('/')
 }
@@ -429,6 +430,32 @@ async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> 
 
 /// The body's tasks: reads (answers to apply) and actions (nothing).
 type Tasks = tokio::task::JoinSet<Option<Read>>;
+
+/// Remote art fetches: the URL and its file, or why not.
+type Fetches = tokio::task::JoinSet<(String, Result<art::Art, String>)>;
+
+/// The state to show: `players`' with remote art replaced by its fetched
+/// file (null until it is in, or when it failed), starting its fetch on
+/// the blocking pool when it is due.
+fn shown(players: &Players, cache: &mut art::Cache, fetches: &mut Fetches, now: Instant) -> Media {
+    let mut m = players.state(now);
+    if let Some(url) = m.art.take() {
+        if !art::is_remote(&url) {
+            m.art = Some(url);
+        } else if let Some(file) = cache.file(&url) {
+            m.art = Some(file);
+        } else if cache.start(&url, now) {
+            fetches.spawn_blocking(move || {
+                // A panic in a decoder of the network's bytes is a failed
+                // fetch, never a URL counted as fetching for good.
+                let r = std::panic::catch_unwind(|| art::fetch(&url))
+                    .unwrap_or_else(|_| Err("the fetch panicked".into()));
+                (url, r)
+            });
+        }
+    }
+    m
+}
 
 /// A player appeared (or restarted): follow it and read it whole.
 fn arrived(
@@ -514,7 +541,10 @@ impl Media {
                 None => break,
             }
         }
-        if !cx.update(|s| *s = players.state(Instant::now())) {
+        let mut cache = art::Cache::default();
+        let mut fetches = Fetches::new();
+        let state = shown(&players, &mut cache, &mut fetches, Instant::now());
+        if !cx.update(|s| *s = state) {
             return Ok(());
         }
         cx.ready();
@@ -529,6 +559,17 @@ impl Media {
                 Some(done) = tasks.join_next(), if !tasks.is_empty() => match done {
                     Ok(Some(r)) => players.answer(r, Instant::now()),
                     _ => false,
+                },
+                Some(done) = fetches.join_next(), if !fetches.is_empty() => match done {
+                    Ok((url, r)) => {
+                        cache.done(url, r, Instant::now());
+                        true
+                    }
+                    // Cancelled (the runtime is going away).
+                    Err(e) => {
+                        log::debug!("media: an art fetch ended: {e}");
+                        false
+                    }
                 },
                 o = owners.next() => {
                     let Some(Ok(m)) = o else {
@@ -585,8 +626,11 @@ impl Media {
                     Some(_) => true,
                 },
             };
-            if changed && !cx.update(|s| *s = players.state(Instant::now())) {
-                return Ok(());
+            if changed {
+                let state = shown(&players, &mut cache, &mut fetches, Instant::now());
+                if !cx.update(|s| *s = state) {
+                    return Ok(());
+                }
             }
         }
     }
@@ -743,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn only_local_art_is_shown() {
+    fn local_art_is_shown_as_sent() {
         assert!(local_art("file:///tmp/a.png"));
         assert!(local_art("/tmp/a.png"));
         assert!(!local_art("https://i.scdn.co/image/ab67"));

@@ -112,11 +112,13 @@ A date and time of day, such as `clock.today`.
 | `month` | `int` | The month, 1 to 12. |
 | `day` | `int` | The day of the month, 1 to 31. |
 | `weekday` | `int` | The day of the week. |
+| `hour` | `int?` | The hour, 0 to 23; null for a date without a time of day (`clock.today`, a calendar's days). `clock.now` and a notification's `time` have one: `n.time.format("%H:%M")`. |
+| `minute` | `int?` | The minute, 0 to 59; null when `hour` is. |
 
 | Method | |
 | --- | --- |
 | `fn month_start() -> Date` | The first day of its month: `clock.today.month_start()`. |
-| `fn add(days: int = 0, months: int = 0, years: int = 0) -> Date` | Moves by days, months and years: `month.add(months: -1)`. |
+| `fn add(days: int = 0, months: int = 0, years: int = 0) -> Date` | Moves by days, months and years, keeping its time of day: `month.add(months: -1)`. |
 | `fn format(pattern: text) -> text` | Formats with a strftime pattern: `month.format("%B %Y")`. |
 
 ### `Day`

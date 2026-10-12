@@ -543,14 +543,6 @@ struct Echoes {
     /// Each write: the volume, its linear channel volumes, and whether it
     /// went through a card's route (its echo may be quantized).
     written: VecDeque<(f64, Vec<f32>, bool)>,
-    /// The last write, until PipeWire has reported it (or another
-    /// volume, after the write was applied): a step adds to this, not to
-    /// a volume it is replacing.
-    pending: Option<f64>,
-    /// The core sync issued after the last write, until it comes back:
-    /// a report before then that matches no write is an older state
-    /// (the echo of a mute, say), not another program's volume.
-    wait: Option<i32>,
 }
 
 impl Echoes {
@@ -559,18 +551,10 @@ impl Echoes {
             self.written.pop_front();
         }
         self.written.push_back((volume, linear, quantized));
-        self.pending = Some(volume);
-    }
-
-    /// PipeWire has applied the last write (its sync came back).
-    fn synced(&mut self, seq: i32) {
-        if self.wait.is_some_and(|w| seq >= w) {
-            self.wait = None;
-        }
     }
 
     /// The volume to show for reported linear channel volumes.
-    fn read(&mut self, reported: &[f32]) -> Option<f64> {
+    fn read(&self, reported: &[f32]) -> Option<f64> {
         let shown = perceptual(reported);
         let hit = self
             .written
@@ -591,17 +575,7 @@ impl Echoes {
                     .min_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
                     .map(|(i, _)| i)
             });
-        let last = hit.is_some_and(|i| i + 1 == self.written.len());
-        if last || (hit.is_none() && self.wait.is_none()) {
-            // The last write landed, or another program set it after it.
-            self.pending = None;
-        }
         hit.map(|i| self.written[i].0).or(shown)
-    }
-
-    /// The volume a step starts from.
-    fn base(&self, shown: f64) -> f64 {
-        self.pending.unwrap_or(shown)
     }
 }
 
@@ -930,7 +904,6 @@ impl Driver<'_> {
                         if !n.ready && seq >= n.sync {
                             n.ready = true;
                         }
-                        n.echoes.synced(seq);
                     }
                     self.dirty = true;
                     self.meters_dirty = true;
@@ -1455,14 +1428,12 @@ impl Driver<'_> {
     fn action(&mut self, action: AudioAction) -> Result<(), AudioError> {
         let s = self.session.as_mut().ok_or(AudioError::NotConnected)?;
         match action {
-            AudioAction::SetVolume(d, v) | AudioAction::StepVolume(d, v) => {
+            AudioAction::SetVolume(d, v) => {
                 if !v.is_finite() {
                     return Err(AudioError::InvalidVolume(v));
                 }
-                let step = matches!(action, AudioAction::StepVolume(..));
                 let n = node_mut(s, d)?;
                 let current = n.device.volume;
-                let v = if step { n.echoes.base(current) + v } else { v };
                 // Never raised past 1 by us, nor past a volume another
                 // program amplified it to.
                 let v = v.clamp(0.0, current.max(1.0));
@@ -1484,16 +1455,6 @@ impl Driver<'_> {
                 let via = write(s, id, &props)?;
                 if let Some(n) = s.nodes.get_mut(&id) {
                     n.echoes.wrote(v, lin, via == Written::Route);
-                }
-                // Its echo comes before this sync returns: a report until
-                // then that matches no write is an older state.
-                match s.core.sync(0) {
-                    Ok(seq) => {
-                        if let Some(n) = s.nodes.get_mut(&id) {
-                            n.echoes.wait = Some(seq.seq());
-                        }
-                    }
-                    Err(e) => log::debug!("audio: cannot sync after a write: {e}"),
                 }
                 Ok(())
             }
@@ -2114,18 +2075,13 @@ mod tests {
         for v in [0.3, 0.31, 0.32] {
             e.wrote(v, vec![linear(v); 2], false);
         }
-        assert_eq!(e.base(0.5), 0.32);
         // The echoes come back one by one, each as written.
         assert_eq!(e.read(&[linear(0.3); 2]), Some(0.3));
-        assert_eq!(e.base(0.3), 0.32, "the last write is still pending");
         assert_eq!(e.read(&[linear(0.31); 2]), Some(0.31));
         assert_eq!(e.read(&[linear(0.32); 2]), Some(0.32));
-        assert_eq!(e.base(0.32), 0.32);
-        assert_eq!(e.pending, None);
-        // Another program's volume ends the pending write.
+        // Another program's volume reads as it is.
         e.wrote(0.9, vec![linear(0.9)], false);
         assert_eq!(e.read(&[0.008]), perceptual(&[0.008]));
-        assert_eq!(e.base(0.2), 0.2);
     }
 
     #[test]
@@ -2140,18 +2096,11 @@ mod tests {
             e.wrote(*v, vec![linear(*v); 2], false);
         }
         assert_eq!(e.written.len(), ECHOES);
-        // The sync issued after the last write is out.
-        e.wait = Some(1);
         // The oldest writes are forgotten, and their echoes still read as
         // written (not 0.3000000025939058).
-        for v in &grid[..10] {
+        for v in &grid {
             assert_eq!(e.read(&[linear(*v); 2]), Some(*v));
         }
-        assert_eq!(e.pending, Some(grid[grid.len() - 1]));
-        for v in &grid[10..] {
-            assert_eq!(e.read(&[linear(*v); 2]), Some(*v));
-        }
-        assert_eq!(e.pending, None);
         // Off the grid: any of the last ECHOES reads as written.
         let off: Vec<f64> = (0..ECHOES as u32)
             .map(|i| 0.2 + f64::from(i) * 0.001_234_567)
@@ -2165,40 +2114,12 @@ mod tests {
     }
 
     #[test]
-    fn an_older_report_before_a_write_is_applied_keeps_the_step_base() {
-        let mut e = Echoes::default();
-        // Mute, then +5% from 0.5: the volume write waits for sync 7.
-        e.wrote(0.55, vec![linear(0.55); 2], false);
-        e.wait = Some(7);
-        // The mute's echo carries the old volume: shown, but a second
-        // step still adds to the write, not to it.
-        assert_eq!(e.read(&[0.125, 0.125]), Some(0.5));
-        assert_eq!(e.base(0.5), 0.55);
-        e.synced(6);
-        assert_eq!(e.read(&[0.125, 0.125]), Some(0.5));
-        assert_eq!(e.base(0.5), 0.55);
-        // The write's echo, then its sync.
-        assert_eq!(e.read(&[linear(0.55); 2]), Some(0.55));
-        assert_eq!(e.pending, None);
-        e.synced(7);
-        assert_eq!(e.wait, None);
-        // Once a write is applied, a volume matching none of the writes
-        // is another program's, and ends a pending write.
-        e.wrote(0.6, vec![linear(0.6); 2], false);
-        e.wait = Some(9);
-        e.synced(9);
-        assert_eq!(e.read(&[0.008, 0.008]), perceptual(&[0.008]));
-        assert_eq!(e.base(0.2), 0.2);
-    }
-
-    #[test]
     fn a_quantized_echo_reads_as_written() {
         // A card's route moves the mixer in steps: its echo is close to,
         // not exactly, the volume written.
         let mut e = Echoes::default();
         e.wrote(0.37, vec![linear(0.37); 2], true);
         assert_eq!(e.read(&[linear(0.3681); 2]), Some(0.37));
-        assert_eq!(e.pending, None);
         // Farther than that is another volume.
         let other = e.read(&[linear(0.38); 2]).unwrap();
         assert!((other - 0.38).abs() < 1e-6, "{other}");

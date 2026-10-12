@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use futures_lite::StreamExt;
 use strand_core::Runtime;
-use strand_services::notifications::{NAME, Notification, PATH, Urgency};
+use strand_services::notifications::{Date, NAME, Notification, PATH, Urgency};
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Data, ToData};
 use support::*;
@@ -165,6 +165,7 @@ fn the_server_serves_the_spec_and_the_store() {
         3i32,
         vec![255u8, 0, 0, 0, 255, 0, 0, 0],
     ));
+    let before = chrono::Local::now().naive_local();
     let id = notify(
         &tokio,
         &conn,
@@ -184,6 +185,20 @@ fn the_server_serves_the_spec_and_the_store() {
     assert_eq!(n.app.icon, "mail-unread");
     assert_eq!(n.urgency, Urgency::Critical);
     assert_eq!(n.timeout, Some(Duration::from_millis(4000)));
+    // When it arrived, with its time of day to the minute (a
+    // notification centre's "12:04"; m6-services).
+    let after = chrono::Local::now().naive_local();
+    let moment = |d: &Date| (d.year, d.month, d.day, d.hour, d.minute);
+    assert!(
+        n.time.hour.is_some() && n.time.minute.is_some(),
+        "{:?}",
+        n.time
+    );
+    assert!(
+        moment(&Date::at(before)) <= moment(&n.time) && moment(&n.time) <= moment(&Date::at(after)),
+        "{:?} not between {before} and {after}",
+        n.time
+    );
     assert_eq!(n.actions.len(), 1, "the default action is not a button");
     assert_eq!(n.actions[0].id, "reply");
     assert_eq!(n.actions[0].label, "Reply");

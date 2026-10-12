@@ -139,6 +139,21 @@ opt-level = "z"
 [profile.release.package.libspa]
 opt-level = "z"
 
+# Remote media art (decisions.md, m6-services): one GET in the
+# background per new cover, which no frame or handler waits on. ring
+# (the handshake's crypto, mostly assembly) stays at the default.
+[profile.release.package.ureq]
+opt-level = "z"
+
+[profile.release.package.ureq-proto]
+opt-level = "z"
+
+[profile.release.package.rustls]
+opt-level = "z"
+
+[profile.release.package.rustls-native-certs]
+opt-level = "z"
+
 # resvg, tiny-skia and tiny-skia-path, usvg and the rest of the SVG
 # parse (svgtypes, simplecss, data-url, roxmltree), velato, serde_json,
 # the image decoders, wayland-client, wayland-backend,

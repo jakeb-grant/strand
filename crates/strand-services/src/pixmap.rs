@@ -7,7 +7,8 @@
 //! allocated, a side above [`MAX_SIDE`] is refused, and a picture larger
 //! than [`SIDE`] on a side is sampled down to it (an icon or a toast's
 //! picture is shown far smaller), which bounds both the memory and the
-//! PNG encoding of one picture.
+//! PNG encoding of one picture. Remote album art ([`crate::art`]) is
+//! kept here too, as fetched (`<hash>.jpg`, `.png`, `.gif`, `.webp`).
 //!
 //! Files are content-addressed (`<hash>.png`) under
 //! `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (without one, under
@@ -242,10 +243,16 @@ pub fn write_png(bytes: &[u8]) -> Result<Pinned, String> {
     if bytes.len() > MAX_PNG || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(format!("not a PNG of at most {MAX_PNG} bytes"));
     }
+    write_file(bytes, "png")
+}
+
+/// An encoded picture (checked by the caller) as a content-addressed
+/// `<hash>.<ext>` file, kept while the handle lives; or why not.
+pub fn write_file(bytes: &[u8], ext: &str) -> Result<Pinned, String> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     let dir = dir()?;
-    let path = dir.join(format!("{:016x}.png", h.finish()));
+    let path = dir.join(format!("{:016x}.{ext}", h.finish()));
     let pinned = Pinned::pin(path.clone());
     if path.exists() {
         return Ok(pinned);

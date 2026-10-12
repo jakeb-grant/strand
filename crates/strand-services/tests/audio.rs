@@ -523,30 +523,14 @@ fn writes_land_where_wpctl_reads_them() {
     });
     assert_eq!(w.sink("strand-sink-a").volume, 0.0);
 
-    // `strand set audio.sink.volume +5%`, twice before PipeWire echoes the
-    // first: the second adds to the first, none is lost.
-    let steps = [
-        w.audio
-            .request(AudioAction::StepVolume(DeviceRef::DefaultSink, 0.05)),
-        w.audio
-            .request(AudioAction::StepVolume(DeviceRef::DefaultSink, 0.05)),
-    ];
-    for s in steps {
-        s.wait().unwrap();
-    }
-    w.until(5, "b at 0.7", |m| {
-        m.sink_named("strand-sink-b")
-            .is_some_and(|d| (d.volume - 0.7).abs() < 1e-9)
-    });
-    assert_eq!(pw.volume(b.id).0, 0.7);
-    // Steps clamp as writes do.
-    w.act(AudioAction::StepVolume(DeviceRef::id(b.id), 5.0))
+    // Writes clamp to 0..1.
+    w.act(AudioAction::SetVolume(DeviceRef::id(b.id), 5.0))
         .unwrap();
     w.until(5, "b at 1", |m| {
         m.sink_named("strand-sink-b")
             .is_some_and(|d| d.volume == 1.0)
     });
-    w.act(AudioAction::StepVolume(DeviceRef::id(b.id), -5.0))
+    w.act(AudioAction::SetVolume(DeviceRef::id(b.id), -5.0))
         .unwrap();
     w.until(5, "b at 0", |m| {
         m.sink_named("strand-sink-b")
@@ -687,7 +671,6 @@ fn a_reference_never_reaches_a_device_that_reused_its_id() {
     for action in [
         AudioAction::SetMuted(stale, true),
         AudioAction::SetVolume(stale, 0.2),
-        AudioAction::StepVolume(stale, -0.5),
         AudioAction::MakeDefault(stale),
     ] {
         assert_eq!(
