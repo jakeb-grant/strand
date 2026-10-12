@@ -13,7 +13,9 @@
 //! dumps the tree under it (any node's subtree, read the same way).
 //! `inspect.node` adds the node's `layout` on each surface showing it,
 //! from main (`[{"surface", "x", "y", "width", "height"}]`, logical
-//! pixels; empty when no surface draws it).
+//! pixels; empty when no surface draws it), and for a `shader` node that
+//! draws nothing, `why` (the GPU's status: unavailable and its reason,
+//! or starting).
 //!
 //! Pick mode, the outline and the flash belong to the socket client that
 //! asked (a socket request only, as `report`): each ends when that client
@@ -74,6 +76,20 @@ fn gone(id: NodeId) -> Json {
     proto::refused(format!("no node `{}`", node_ref(id)))
 }
 
+/// Why a `shader` node draws nothing (design.md, Paint: "the inspector
+/// and `strand report` say why"), from the GPU status main last told
+/// logic, or `None` while the GPU draws it (or nothing has asked for
+/// one). The reason is the one `strand report` gives.
+fn shader_why(gpu: &strand_scene::GpuStatus) -> Option<String> {
+    match gpu {
+        strand_scene::GpuStatus::Unavailable { reason } => Some(format!(
+            "draws nothing: no GPU ({reason}); the CPU draws everything else"
+        )),
+        strand_scene::GpuStatus::Starting => Some("draws nothing yet: the GPU is starting".into()),
+        strand_scene::GpuStatus::Up(_) | strand_scene::GpuStatus::Unused => None,
+    }
+}
+
 /// The library's answer object with `"ok": true` added.
 fn ok(v: Json) -> Json {
     match v {
@@ -100,6 +116,11 @@ impl Shell {
             Ok(v) => v,
             Err(e) => return self.answer(from, e),
         };
+        if pane["node"]["kind"] == "shader"
+            && let Some(why) = shader_why(&self.gpu)
+        {
+            pane["why"] = Json::String(why);
+        }
         let reply = SnapshotId(self.next_snapshot);
         self.next_snapshot += 1;
         let asked = self.to_main.as_ref().is_some_and(|tx| {

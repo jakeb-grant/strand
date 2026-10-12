@@ -1014,7 +1014,13 @@ main, not that main has turned it on. `inspect.node`'s answer gains
 "surface", "x", "y", "width", "height" }]` (empty when none draws it),
 through the snapshot hop; its `files` and `inspect.dump`'s hash every
 file the program was compiled from, not only the nodes' own, so
-write-back can check a token's defining file.
+write-back can check a token's defining file. (Proposed in the wave-3
+sweep, decisions.md m5-integration-w3, for the owner's review.) For a
+`shader` node that draws nothing it also gains `why`, a string from the
+GPU status main last sent logic (`ToLogic::GpuStatus`; no main hop):
+`Unavailable { reason }` and `Starting` each say so, `Up` and `Unused`
+add nothing; `strand-dev inspect`'s pane prints it under the title
+line.
 
 **Handler input context (`strand-compiler`, cross-crate; built by
 S-platform in M5 wave 3, decisions.md m5-platform).**

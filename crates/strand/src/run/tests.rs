@@ -510,6 +510,91 @@ fn a_report_is_mains_snapshot_with_logics_half() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (M5, design.md Paint) `inspect.node` on a `shader` node that draws
+/// nothing says why, from the GPU status main told logic: no device and
+/// its reason, or the device starting; once the GPU is up it says
+/// nothing, and a node that is not a shader never does.
+#[test]
+fn a_shader_node_pane_says_why_it_draws_nothing() {
+    let dir = temp_dir("inspect-shader-why");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  shader \"still.wgsl\" { width: 20; height: 20 }\n  box { width: 20 }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("still.wgsl"),
+        "@fragment\nfn main(v: StrandVertex) -> @location(0) vec4<f32> {\n    \
+         return vec4<f32>(0.5, 0.25, 0.0, 0.5);\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let socket = dir.join("ipc.sock");
+    let live = Live {
+        socket: Some(socket.clone()),
+        ..Live::default()
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    to_logic
+        .send(ToLogic::GpuStatus(strand_scene::GpuStatus::Unavailable {
+            reason: "no Vulkan adapter".into(),
+        }))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(program, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| {
+        !s.of_kind(NodeKind::Shader).is_empty() && !s.of_kind(NodeKind::Box).is_empty()
+    });
+    let node = |k| strand_compiler::instantiate::inspect::node_ref(m.scene.of_kind(k)[0]);
+    let (shader, boxed) = (node(NodeKind::Shader), node(NodeKind::Box));
+    let mut c = std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let mut pane = |id: &str| -> Json {
+        let req = ipc::Request::InspectNode { id: id.into() };
+        let ans = ipc::request(&mut c, &req, Duration::from_secs(10)).unwrap();
+        assert_eq!(ans["ok"], true, "{ans}");
+        ans
+    };
+    assert_eq!(
+        pane(&shader)["why"],
+        "draws nothing: no GPU (no Vulkan adapter); the CPU draws everything else"
+    );
+    assert_eq!(pane(&boxed).get("why"), None);
+    // The GPU starting, then up (main's status reaches logic on its own
+    // channel: asked again until it has).
+    let mut until = |status: strand_scene::GpuStatus, want: Option<&str>| {
+        to_logic.send(ToLogic::GpuStatus(status)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let got = pane(&shader);
+            if got.get("why").and_then(Json::as_str) == want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never {want:?}: {got}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    until(
+        strand_scene::GpuStatus::Starting,
+        Some("draws nothing yet: the GPU is starting"),
+    );
+    until(
+        strand_scene::GpuStatus::Up(strand_scene::AdapterInfo {
+            name: "a GPU".into(),
+            driver: "a driver".into(),
+            software: false,
+        }),
+        None,
+    );
+    drop(c);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// (S-inspect, wave 3) The inspector over the socket: pick mode, the
 /// outline and the flash go to main and belong to the client that asked;
 /// a pick on main reaches it as a `picked` event; `inspect.node` carries

@@ -1,5 +1,6 @@
-//! The node pane as text: identity, layout, props, the provenance chain
-//! of each token the node reads, and the kept-state badges of its cells.
+//! The node pane as text: why a `shader` node draws nothing (when it
+//! does not), identity, layout, props, the provenance chain of each
+//! token the node reads, and the kept-state badges of its cells.
 
 use std::fmt::Write as _;
 
@@ -21,6 +22,9 @@ pub fn pane(answer: &Json) -> String {
         None => "(no source)".into(),
     };
     let _ = writeln!(out, "{} {}  {at}", s(&n["kind"]), s(&n["id"]));
+    if let Some(why) = answer["why"].as_str() {
+        let _ = writeln!(out, "  why       {why}");
+    }
     let id = &n["identity"];
     let mut who = Vec::new();
     if let Some(p) = id["instance_path"].as_str().filter(|p| !p.is_empty()) {
@@ -134,5 +138,25 @@ mod tests {
         assert!(p.contains("layout    surface 2: 0,0 200×40"), "{p}");
         assert!(p.contains("bg ← $probe.c (base) = #f38ba8"), "{p}");
         assert!(p.contains("bar.clicks [kept]"), "{p}");
+        assert!(!p.contains("why"), "{p}");
+    }
+
+    /// A `shader` node that draws nothing says why under its title line.
+    #[test]
+    fn a_shader_that_draws_nothing_says_why() {
+        let answer = json!({
+            "ok": true,
+            "node": {"id": "5.0", "kind": "shader", "identity": {}},
+            "files": {},
+            "layout": [],
+            "why": "draws nothing: no GPU (no Vulkan adapter); the CPU draws everything else",
+        });
+        let p = pane(&answer);
+        assert!(
+            p.contains(
+                "shader 5.0  (no source)\n  why       draws nothing: no GPU (no Vulkan adapter)"
+            ),
+            "{p}"
+        );
     }
 }
