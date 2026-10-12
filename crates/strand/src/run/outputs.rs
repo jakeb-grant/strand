@@ -685,7 +685,10 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 /// the command backgrounds (`dunst &`), or one that left the group with
 /// `setsid`, inherits the pipe and may hold it open for good. (M5) Like
 /// every program strand starts, it does not inherit the xdg-activation
-/// token strand was started with (`child::activation_env`).
+/// token strand was started with (`child::activation_env`), and it gets
+/// back the transparent huge page setting strand inherited
+/// (`child::restore_in_child`): a daemon a `run:` restarts would
+/// otherwise run with THP off for life.
 fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
     let (prog, args) = argv.split_first()?;
     let mut cmd = Command::new(prog);
@@ -695,6 +698,14 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         .stderr(Stdio::piped())
         .process_group(0);
     strand_services::child::activation_env(&mut cmd, None);
+    // SAFETY: `restore_in_child` makes only async-signal-safe calls (an
+    // atomic load, `prctl`), as `pre_exec` requires.
+    unsafe {
+        cmd.pre_exec(|| {
+            strand_services::child::restore_in_child();
+            Ok(())
+        });
+    }
     let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
@@ -989,6 +1000,43 @@ mod tests {
         )
         .unwrap();
         assert!(why.len() < STDERR_TAIL + 200, "{}", why.len());
+    }
+
+    /// A `run:` command gets back the THP setting strand inherited, like
+    /// every program strand starts: `process_setup!` turned THP off for
+    /// this test binary only. The command asks the kernel itself
+    /// (`PR_GET_THP_DISABLE`, through Python's ctypes): `THP_enabled:` in
+    /// `/proc/<pid>/status` reads 1 for THP off except advised regions
+    /// (decisions.md m5-speed-thp), so it cannot tell the two apart.
+    #[test]
+    fn a_run_gets_back_the_inherited_thp_setting() {
+        let parent = format!("/proc/{}/status", std::os::unix::process::parent_id());
+        let parent_on = std::fs::read_to_string(parent)
+            .ok()
+            .and_then(|s| strand_services::child::thp_enabled(&s));
+        if parent_on != Some(true) {
+            eprintln!("skipped: the test's parent has THP off, or no THP_enabled");
+            return;
+        }
+        if Command::new("python3").arg("-V").output().is_err() {
+            eprintln!("skipped: no python3 to ask PR_GET_THP_DISABLE");
+            return;
+        }
+        // SAFETY: `prctl` with integer arguments only.
+        let own = unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) };
+        assert!(own > 0, "THP is off for the test binary: {own}");
+        let out = std::env::temp_dir().join(format!("strand-run-thp-{}", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let ask = format!(
+            "import ctypes; open({:?}, 'w').write(str(ctypes.CDLL(None).prctl({}, 0, 0, 0, 0)))",
+            out.display().to_string(),
+            libc::PR_GET_THP_DISABLE
+        );
+        let argv = vec!["python3".to_string(), "-I".into(), "-c".into(), ask];
+        assert_eq!(run_once(&argv, RUN_TIMEOUT), None);
+        let got = std::fs::read_to_string(&out).unwrap_or_default();
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(got.trim(), "0", "the `run:` kept strand's THP off ({own})");
     }
 
     /// (M5, S-platform) A `run:` command does not inherit the

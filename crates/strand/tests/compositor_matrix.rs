@@ -284,7 +284,8 @@ fn hypr_dispatch_ok(reply: &str) -> bool {
         || r.contains("dispatch in lua is a shorthand"))
 }
 
-/// Not a compositor test: the Hyprland dispatch forms the matrix sends.
+/// Not a compositor test: the Hyprland dispatch and option forms the
+/// matrix sends, and how it reads their answers.
 #[test]
 fn hyprland_dispatch_forms_use_the_current_syntax_first() {
     assert_eq!(
@@ -298,6 +299,25 @@ fn hyprland_dispatch_forms_use_the_current_syntax_first() {
     assert_eq!(hypr_focus_workspace("2", false), ["workspace", "2"]);
     assert!(hypr_wants_classic("Invalid dispatcher\n"));
     assert!(!hypr_wants_classic("ok"));
+    assert_eq!(
+        hypr_set_option("misc", "focus_on_activate", "true", true),
+        ["eval", "hl.config({ misc = { focus_on_activate = true } })"]
+    );
+    assert_eq!(
+        hypr_set_option("misc", "focus_on_activate", "false", false),
+        ["keyword", "misc:focus_on_activate", "false"]
+    );
+    assert!(hypr_wants_eval(
+        "keyword can't work with non-legacy parsers. Use eval.\n"
+    ));
+    assert!(!hypr_wants_eval("ok"));
+    let on = r#"{"option": "misc:focus_on_activate", "bool": true, "set": true }"#;
+    assert!(hypr_option_is(on, true) && !hypr_option_is(on, false));
+    assert!(hypr_option_is(
+        r#"{"option": "x", "int": 0, "set": false }"#,
+        false
+    ));
+    assert!(!hypr_option_is("no such option", true));
     assert!(hypr_dispatch_ok("ok"));
     assert!(!hypr_dispatch_ok("Invalid dispatcher"));
     assert!(!hypr_dispatch_ok(
@@ -2062,12 +2082,7 @@ fn a_launched_app_is_activated_with_its_token() {
     // the test ends, passed or not).
     let _policy = match live.kind {
         Kind::Sway => Policy::set("swaymsg", ["focus_on_window_activation"], "focus", "urgent"),
-        Kind::Hyprland => Policy::set(
-            "hyprctl",
-            ["keyword", "misc:focus_on_activate"],
-            "true",
-            "false",
-        ),
+        Kind::Hyprland => Policy::hyprland("misc", "focus_on_activate", "true", "false"),
         Kind::Niri => None,
     };
     let mut bar = Bar::launch_shell(
@@ -2169,8 +2184,8 @@ fn a_launched_app_is_activated_with_its_token() {
 /// A compositor setting the activation test changes, put back on drop.
 struct Policy {
     program: &'static str,
-    args: Vec<&'static str>,
-    back: &'static str,
+    /// The arguments that put the setting back.
+    back: Vec<String>,
 }
 
 impl Policy {
@@ -2187,19 +2202,99 @@ impl Policy {
             .stdin(Stdio::null())
             .output();
         eprintln!("matrix: {program} {args:?} {to}: {out:?}");
+        let back = args.iter().chain([&back]).map(|a| a.to_string()).collect();
+        Some(Policy { program, back })
+    }
+
+    /// Hyprland's `section:option` set to `to` (a Lua or hyprlang
+    /// literal, `true` or `false`), and checked to have taken: a Lua
+    /// config (0.55 on) refuses `hyprctl keyword` with an exit status of
+    /// 0 ("keyword can't work with non-legacy parsers. Use eval.", which
+    /// left the activation test running under the default policy on
+    /// every m5-platform CI run), so the setting goes through `eval` as
+    /// `hl.config({ section = { option = to } })` there, and
+    /// `getoption` proves it either way.
+    fn hyprland(
+        section: &str,
+        option: &str,
+        to: &'static str,
+        back: &'static str,
+    ) -> Option<Policy> {
+        let name = format!("{section}:{option}");
+        let mut args = hypr_set_option(section, option, to, false);
+        let mut said = hyprctl_said(&args);
+        if hypr_wants_eval(&said) {
+            args = hypr_set_option(section, option, to, true);
+            said = hyprctl_said(&args);
+        }
+        eprintln!("matrix: hyprctl {args:?}: {said:?}");
+        let got = hyprctl_said(&["-j".into(), "getoption".into(), name.clone()]);
+        assert!(
+            hypr_option_is(&got, to == "true"),
+            "hyprctl {args:?} did not set {name} to {to}: it said {said:?}, getoption says {got:?}"
+        );
+        let lua = args[0] == "eval";
         Some(Policy {
-            program,
-            args,
-            back,
+            program: "hyprctl",
+            back: hypr_set_option(section, option, back, lua),
         })
+    }
+}
+
+/// The `hyprctl` arguments that set `section:option` to `to`: the Lua
+/// form through `eval`, or hyprlang's `keyword`.
+fn hypr_set_option(section: &str, option: &str, to: &str, lua: bool) -> Vec<String> {
+    if lua {
+        vec![
+            "eval".into(),
+            format!("hl.config({{ {section} = {{ {option} = {to} }} }})"),
+        ]
+    } else {
+        vec!["keyword".into(), format!("{section}:{option}"), to.into()]
+    }
+}
+
+/// Whether a `hyprctl keyword` reply is a Lua config's refusal.
+fn hypr_wants_eval(reply: &str) -> bool {
+    reply.contains("non-legacy") || reply.contains("Use eval")
+}
+
+/// Whether `hyprctl -j getoption`'s answer is a bool or int option that
+/// is `on`: 0.56.2 answers `{"option": …, "bool": true, "set": …}` or
+/// `"int": 1` (`HyprCtl.cpp`'s option formats).
+fn hypr_option_is(answer: &str, on: bool) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(answer) else {
+        return false;
+    };
+    if let Some(b) = v.get("bool").and_then(Value::as_bool) {
+        return b == on;
+    }
+    if let Some(i) = v.get("int").and_then(Value::as_i64) {
+        return (i != 0) == on;
+    }
+    false
+}
+
+/// `hyprctl ARGS…`'s stdout and stderr, whatever its exit status.
+fn hyprctl_said(args: &[String]) -> String {
+    match Command::new("hyprctl")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(out) => format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(e) => format!("hyprctl: {e}"),
     }
 }
 
 impl Drop for Policy {
     fn drop(&mut self) {
         let _ = Command::new(self.program)
-            .args(&self.args)
-            .arg(self.back)
+            .args(&self.back)
             .stdin(Stdio::null())
             .output();
     }
