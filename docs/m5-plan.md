@@ -542,7 +542,10 @@ Per-file ownership in shared crates:
   tree-sitter grammar follows it), `Instance::take_outputs`
   (the first text's `Update.outputs`), `Instance::palette`/`hold_other_mode`, the offline mount and `vm/theme.rs`'s
   public path; S-palette adds one line in `check/tokens.rs` for the
-  reserved names. The handler input context's types
+  reserved names. The equality rule in `check/expr.rs` (`common_unit`,
+  spec.md 7.2) was proposed by S-docs and landed by the integrator in
+  wave 3's sweep, after S-lsp's stream had ended (decisions.md
+  m5-integration-w3). The handler input context's types
   (`ActionCtx`, `InputCtx`, `ServiceHost::action`'s parameter) landed in
   0b, defined in `strand_core::action` since m5-w0-harden so
   strand-services can name them; its route from the seat to the VM and the token channel are

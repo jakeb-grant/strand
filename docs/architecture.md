@@ -4416,8 +4416,9 @@ The tree-sitter package (`crates/strand-dev/tree-sitter-strand/`) joined
 it in M5 wave 2 (it was not built in M1, `docs/decisions.md`,
 wave2-lsp; m5-lsp). The reference generator (`strand-dev reference`,
 `src/reference.rs`) joined it in M5 wave 3 (m5-docs). The inspector
-client (`strand-dev inspect`) joins it later in M5 (see "M5 interfaces
-(wave 0a)"); it is not built yet.
+client (`strand-dev inspect`, `src/inspect/{client,pane,write}.rs`)
+joined it in M5 wave 3 (m5-inspect; "M5 interfaces (wave 0a)" gives its
+protocol and write-back).
 
 ### `strand-services`
 

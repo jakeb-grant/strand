@@ -295,16 +295,11 @@ fn equality_compares_numbers_as_written() {
     drop(shell.rt);
 }
 
-/// The rule proposed for spec.md 7.2 (decisions.md m5-docs3, round 3):
-/// `==` and `!=` take numbers by the ordering rule, so units that never
-/// mix are a load error for equality as for order. Today's checker
-/// accepts any two numbers and the VM compares them unit-blind
-/// (`90deg == 90px` and `1s == 1000px` check clean and are true); the
-/// change is strand-compiler's `check/expr.rs`, which S-docs does not
-/// own, so this test waits for it to land there under its owner's
-/// review, and is un-ignored in the same commit.
+/// spec.md 7.2: `==` and `!=` take numbers by the ordering rule, so units
+/// that never mix are a load error for equality as for order (the checker
+/// change proposed in decisions.md m5-docs3, round 3, landed by the
+/// integrator: m5-integration-w3).
 #[test]
-#[ignore = "awaits the equality checker change proposed in decisions.md m5-docs3"]
 fn equality_takes_numbers_by_the_ordering_rule() {
     for cmp in [
         "90deg == 90px",
