@@ -634,6 +634,10 @@ impl Vm {
         let mut input = ctx
             .as_ref()
             .is_some_and(|c| INPUT_EVENTS.contains(&c.event.as_str()));
+        // (M5) Numbered for its whole run; its press only until the
+        // first `await` (docs/architecture.md, "Handler input context").
+        let invocation = INVOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut press = ctx.as_ref().and_then(|c| c.input);
         async move {
             let mut m = exec::Machine::new(chunk, env, frame, None, ctx);
             loop {
@@ -643,6 +647,10 @@ impl Vm {
                     };
                     // Only the first stretch is the input's.
                     let _input = std::mem::take(&mut input).then(InputHandler::enter);
+                    let _acting = Acting::enter(ActionCtx {
+                        input: press.take(),
+                        invocation,
+                    });
                     m.run(&vm, &rt)?
                 };
                 match step {
@@ -813,6 +821,47 @@ thread_local! {
 /// [`Vm::handler`]): the tray takes the press's point only then.
 pub fn in_input_handler() -> bool {
     INPUT_HANDLERS.with(|c| c.get() > 0)
+}
+
+/// (M5) The next handler invocation's number (`ActionCtx::invocation`):
+/// one count for the process, from 1, so no two invocations share one,
+/// whichever instance or reload ran them; 0 is an action outside any
+/// handler.
+static INVOCATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+thread_local! {
+    /// (M5) The context of the handler stretch running on this thread
+    /// ([`action_ctx`]).
+    static ACTION_CTX: std::cell::Cell<ActionCtx> = const {
+        std::cell::Cell::new(ActionCtx {
+            input: None,
+            invocation: 0,
+        })
+    };
+}
+
+/// (M5) What an action called now knows of the handler running it: its
+/// invocation's number and, until the handler's first `await`, the press
+/// that started it (`Instance::event_with`); a `fn` the handler calls
+/// shares it. Outside any handler, `ActionCtx::default()`.
+pub fn action_ctx() -> ActionCtx {
+    ACTION_CTX.with(std::cell::Cell::get)
+}
+
+/// Sets [`action_ctx`] while a handler stretch runs, restoring the one
+/// before when dropped (a handler run from inside another's stretch).
+struct Acting(ActionCtx);
+
+impl Acting {
+    fn enter(ctx: ActionCtx) -> Self {
+        Acting(ACTION_CTX.with(|c| c.replace(ctx)))
+    }
+}
+
+impl Drop for Acting {
+    fn drop(&mut self) {
+        ACTION_CTX.with(|c| c.set(self.0));
+    }
 }
 
 /// Marks a handler of an input event running until dropped.

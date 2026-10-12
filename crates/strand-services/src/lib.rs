@@ -37,6 +37,7 @@
 
 extern crate self as strand_services;
 
+pub mod activation;
 pub mod apps;
 #[cfg(feature = "pipewire")]
 pub mod audio;

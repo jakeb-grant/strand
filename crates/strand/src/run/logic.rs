@@ -44,6 +44,20 @@ pub struct Live {
     /// (M5) Where logic asks the main thread for snapshots (`strand
     /// report`). `None`: no main thread, and `report` is refused.
     pub to_main: Option<Sender<ToMain>>,
+    /// (M5) Where the real services ask the main thread for an
+    /// xdg-activation token for a press (`run::tokens`). `None`: no
+    /// tokens (actions that raise an app go without one).
+    pub tokens: Option<Tokens>,
+}
+
+/// (M5) The services' xdg-activation token source (`Live::tokens`).
+#[derive(Clone)]
+pub struct Tokens(pub strand_services::activation::TokenSource);
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Tokens")
+    }
 }
 
 #[cfg(test)]
@@ -162,6 +176,8 @@ pub fn logic(
             services_ping.ping()
         });
         real.custom.set_config_dir(storage.config_dir.clone());
+        real.services
+            .set_token_source(live.tokens.clone().map(|t| t.0));
         real
     });
     // (M5) The D-Bus front end, on the services' runtime: it owns

@@ -1711,12 +1711,23 @@ impl<'a> Bar<'a> {
     /// `strand run` with design.md's bar (one instance per output) in a
     /// home of its own under `dir`.
     fn launch(live: &'a Live, dir: &std::path::Path) -> Self {
+        Self::launch_shell(live, dir, &FILES, &[])
+    }
+
+    /// `strand run` with the shell `files` and the extra environment
+    /// `envs`, in a home of its own under `dir`.
+    fn launch_shell(
+        live: &'a Live,
+        dir: &std::path::Path,
+        files: &[(&str, &str)],
+        envs: &[(&str, std::ffi::OsString)],
+    ) -> Self {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
         let home = dir.join("home");
         let config = home.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
-        for (name, text) in FILES {
+        for (name, text) in files {
             std::fs::write(config.join(name), text).unwrap();
         }
         // The bar's other services (the tray, the portal) on a bus of
@@ -1733,6 +1744,7 @@ impl<'a> Bar<'a> {
             .env("PIPEWIRE_RUNTIME_DIR", dir.join("no-pipewire"))
             .env_remove("PIPEWIRE_REMOTE")
             .env_remove("STRAND_MOCK")
+            .envs(envs.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null());
         match &bus {
             Some(bus) => drop(cmd.envs(bus.env())),
@@ -1954,6 +1966,243 @@ fn the_design_bar_shows_the_live_compositor() {
     }
     drop(bar);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- xdg-activation (M5, S-platform) -----------------------------------------
+
+/// The launch test's shell: one red button per app at the top-left of
+/// every output, which launches it.
+const LAUNCH_SHELL: &str = r#"bar Launch {
+  edge: top; height: 40
+  row {
+    for a in apps.all {
+      box { width: 200; height: 40; bg: #ff0000; on click { a.launch() } }
+    }
+  }
+}
+"#;
+
+/// Set (to a directory) only in the environment of the `strand` the
+/// launch test starts, so only the app it launches runs
+/// `activation_helper`'s body.
+const HELPER_DIR: &str = "STRAND_MATRIX_ACTIVATION_HELPER";
+
+/// Waits up to 60 s for the file `path`.
+fn wait_file(path: &std::path::Path) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// The app `a_launched_app_is_activated_with_its_token` launches (this
+/// test binary, run by `apps.launch` with `--exact` this test): nothing
+/// unless `HELPER_DIR` is set. It says which activation variables it
+/// got (`env`), maps a window, and on the test's word activates it with
+/// a token nobody issued (`go-bogus`), then with its own (`go`).
+#[test]
+fn activation_helper() {
+    let Some(dir) = std::env::var_os(HELPER_DIR).map(PathBuf::from) else {
+        return;
+    };
+    let token = std::env::var("XDG_ACTIVATION_TOKEN").unwrap_or_default();
+    let startup = std::env::var("DESKTOP_STARTUP_ID").unwrap_or_default();
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").unwrap());
+    let window = TestWindow::open(&socket, "strand-activated", "launched");
+    std::fs::write(dir.join("env.tmp"), format!("{token}\n{startup}\n")).unwrap();
+    std::fs::rename(dir.join("env.tmp"), dir.join("env")).unwrap();
+    for (go, with) in [("go-bogus", "strand-no-such-token"), ("go", token.as_str())] {
+        if !wait_file(&dir.join(go)) {
+            return;
+        }
+        assert!(window.activate(with));
+        std::fs::write(dir.join(format!("{go}-sent")), "").unwrap();
+    }
+    wait_file(&dir.join("done"));
+}
+
+/// (M5, S-platform) A click on a launcher in `strand run` launches the
+/// app with an xdg-activation token for that click (and never the token
+/// strand itself was started with), and the compositor focuses the
+/// app's window when it activates with it, though another window took
+/// the focus in between; a token nobody issued does not. The
+/// compositor's activation policy is set to focus where it has one
+/// (sway's `focus_on_window_activation focus`, Hyprland's
+/// `misc:focus_on_activate`; niri focuses on a valid token).
+#[test]
+fn a_launched_app_is_activated_with_its_token() {
+    let Some(live) = live() else {
+        skipped("the xdg-activation launch test");
+        return;
+    };
+    if !offers(&live, "xdg_activation_v1") {
+        eprintln!(
+            "matrix: {:?} offers no xdg_activation_v1: activation is not tested here",
+            live.kind
+        );
+        return;
+    }
+    let Some(mut pointer) = pointer(&live) else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("strand-matrix-act-{}", std::process::id()));
+    let helper = dir.join("helper");
+    let apps = dir.join("data/applications");
+    let exe = std::env::current_exe().unwrap();
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=Activated\nExec={} --exact activation_helper --nocapture --test-threads=1\n",
+        exe.display()
+    );
+    // Policy: focus on a valid activation (the default restored when
+    // the test ends, passed or not).
+    let _policy = match live.kind {
+        Kind::Sway => Policy::set("swaymsg", ["focus_on_window_activation"], "focus", "urgent"),
+        Kind::Hyprland => Policy::set(
+            "hyprctl",
+            ["keyword", "misc:focus_on_activate"],
+            "true",
+            "false",
+        ),
+        Kind::Niri => None,
+    };
+    let mut bar = Bar::launch_shell(
+        &live,
+        &dir.join("strand"),
+        &[("launch.strand", LAUNCH_SHELL)],
+        &[
+            (HELPER_DIR, helper.clone().into()),
+            ("XDG_DATA_HOME", dir.join("data").into()),
+            ("XDG_DATA_DIRS", dir.join("no-system-data").into()),
+            // strand's own token: spent, never an app's.
+            ("XDG_ACTIVATION_TOKEN", "strand-own-stale".into()),
+        ],
+    );
+    std::fs::create_dir_all(&helper).unwrap();
+    std::fs::create_dir_all(&apps).unwrap();
+    std::fs::write(apps.join("activated.desktop"), entry).unwrap();
+    // The button drawn (red at its middle).
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        if let Ok(Some(status)) = bar.strand.0.try_wait() {
+            panic!("strand exited ({status}): {}", bar.log_text());
+        }
+        if bar
+            .shot(&live.output)
+            .is_some_and(|img| dist(img.px(100, 20), [255, 0, 0]) < 60)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never: the launcher drawn\n{}",
+            bar.log_text()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bar.keep(&live.output, "launcher");
+    click_on(&mut pointer, &live, &live.output, 100, 20);
+    assert!(
+        wait_file(&helper.join("env")),
+        "the app never started\n{}",
+        bar.log_text()
+    );
+    let env = std::fs::read_to_string(helper.join("env")).unwrap();
+    let mut lines = env.lines();
+    let (token, startup) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
+    eprintln!(
+        "matrix: {:?} launched the app with token {token:?}",
+        live.kind
+    );
+    assert!(
+        !token.is_empty(),
+        "no XDG_ACTIVATION_TOKEN\n{}",
+        bar.log_text()
+    );
+    assert_ne!(token, "strand-own-stale", "strand's own token passed on");
+    assert_eq!(startup, token, "DESKTOP_STARTUP_ID is the same token");
+    let launched = focused("strand-activated", "launched");
+    until("the launched window mapped", || {
+        let real = live.real();
+        (real.window == launched)
+            .then_some(())
+            .ok_or(format!("{real}"))
+    });
+    // Another window takes the focus.
+    let other = TestWindow::open(&live.socket, "strand-other", "other");
+    let elsewhere = focused("strand-other", "other");
+    until("the other window focused", || {
+        let real = live.real();
+        (real.window == elsewhere)
+            .then_some(())
+            .ok_or(format!("{real}"))
+    });
+    // A token nobody issued: nothing moves.
+    std::fs::write(helper.join("go-bogus"), "").unwrap();
+    assert!(wait_file(&helper.join("go-bogus-sent")));
+    std::thread::sleep(Duration::from_millis(1000));
+    let real = live.real();
+    assert_eq!(
+        real.window, elsewhere,
+        "a bogus token moved the focus: {real}"
+    );
+    // The launch's token: the app's window comes forward.
+    std::fs::write(helper.join("go"), "").unwrap();
+    assert!(wait_file(&helper.join("go-sent")));
+    until("the launched window activated with its token", || {
+        let real = live.real();
+        (real.window == launched)
+            .then_some(())
+            .ok_or(format!("{real}"))
+    });
+    bar.keep(&live.output, "activated");
+    std::fs::write(helper.join("done"), "").unwrap();
+    drop(other);
+    drop(bar);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A compositor setting the activation test changes, put back on drop.
+struct Policy {
+    program: &'static str,
+    args: Vec<&'static str>,
+    back: &'static str,
+}
+
+impl Policy {
+    fn set(
+        program: &'static str,
+        args: impl IntoIterator<Item = &'static str>,
+        to: &'static str,
+        back: &'static str,
+    ) -> Option<Policy> {
+        let args: Vec<&'static str> = args.into_iter().collect();
+        let out = Command::new(program)
+            .args(&args)
+            .arg(to)
+            .stdin(Stdio::null())
+            .output();
+        eprintln!("matrix: {program} {args:?} {to}: {out:?}");
+        Some(Policy {
+            program,
+            args,
+            back,
+        })
+    }
+}
+
+impl Drop for Policy {
+    fn drop(&mut self) {
+        let _ = Command::new(self.program)
+            .args(&self.args)
+            .arg(self.back)
+            .stdin(Stdio::null())
+            .output();
+    }
 }
 
 // ---- a second output ---------------------------------------------------------

@@ -87,7 +87,7 @@ mod shell;
 mod sleep;
 mod trim;
 
-pub use logic::{Live, OwnWrites, Switched, logic};
+pub use logic::{Live, OwnWrites, Switched, Tokens, logic};
 pub use trim::trim;
 use trim::{Trimmer, structural};
 
@@ -206,8 +206,16 @@ pub enum ToLogic {
     /// A monitor unplugged 30 s ago did not come back.
     Forget(String),
     /// An input event on a node (`on click`, `on scroll(dy, dx)`, …),
-    /// delivered to its nearest handler.
-    Event { node: NodeId, event: NodeEvent },
+    /// delivered to its nearest handler; (M5) `input` is the press that
+    /// caused it, its surface and compositor serial (none for a scroll,
+    /// a drop or a dismiss with no press of its own), which the
+    /// handler's actions ask an xdg-activation token with
+    /// (`Instance::event_with`).
+    Event {
+        node: NodeId,
+        event: NodeEvent,
+        input: Option<strand_compiler::vm::InputCtx>,
+    },
     /// A surface's node is hovered or pressed (`on`) or no longer.
     Flag {
         node: NodeId,
@@ -276,6 +284,34 @@ pub enum ToLogic {
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,
+}
+
+/// (M5) A services' request for an xdg-activation token, to the main
+/// thread: the press's surface and serial, and where the token goes.
+#[derive(Debug)]
+pub struct TokenAsk {
+    surface: u32,
+    serial: u32,
+    answer: strand_services::activation::TokenAnswer,
+}
+
+/// (M5) The services' token source over `tx` (the main thread's
+/// `TokenAsk` channel): main gone, the future answers `None`.
+pub(crate) fn token_source(
+    tx: calloop::channel::Sender<TokenAsk>,
+) -> strand_services::activation::TokenSource {
+    let tx = std::sync::Mutex::new(tx);
+    std::sync::Arc::new(move |surface, serial| {
+        let (answer, token) = strand_services::activation::token_reply();
+        if let Ok(tx) = tx.lock() {
+            let _ = tx.send(TokenAsk {
+                surface,
+                serial,
+                answer,
+            });
+        }
+        token
+    })
 }
 
 /// (M5) What logic tells or asks the main thread (docs/architecture.md,
@@ -524,6 +560,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         events_to: None,
         own_writes: compiler.own_write_hook(),
         to_main: None,
+        tokens: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
@@ -561,6 +598,11 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // frames (`strand report`).
     let (to_main, from_logic) = calloop::channel::channel::<ToMain>();
     live.to_main = Some(to_main);
+    // (M5) xdg-activation tokens: the services ask from the logic
+    // thread, main asks the compositor and answers (`State::
+    // activation_token`).
+    let (token_tx, token_rx) = calloop::channel::channel::<TokenAsk>();
+    live.tokens = Some(Tokens(token_source(token_tx)));
     // (M4) The GPU thread's replies wake the loop; the loop pumps them
     // after every dispatch (`run/gpu.rs`).
     #[cfg(feature = "gpu")]
@@ -620,6 +662,15 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
                 Ok(PostAction::Continue)
             },
         )
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(token_rx, |event, _, state| {
+            if let Event::Msg(ask) = event {
+                state.activation_token(SurfaceId(ask.surface), ask.serial, move |t| {
+                    ask.answer.send(t)
+                });
+            }
+        })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let answer = to_logic.clone();
     handle

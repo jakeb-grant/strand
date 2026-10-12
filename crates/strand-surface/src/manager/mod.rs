@@ -76,6 +76,10 @@ use crate::placement::{
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 use strand_scene::{KeyInput, Modifiers};
 
+// (M5) xdg-activation is S-platform's file, `src/activation.rs`, but
+// part of the manager like `dnd.rs`.
+#[path = "../activation.rs"]
+mod activation;
 mod catcher;
 mod commit;
 // (M4) Drag and drop is the lists stream's file, `src/dnd.rs`, but part
@@ -245,6 +249,14 @@ pub trait SurfaceHost: Painter {
     fn drag_image(&mut self, surface: SurfaceId, node: NodeId) -> Option<strand_scene::DragImage> {
         let _ = (surface, node);
         None
+    }
+    /// (M5) The compositor serial of a button or key press on one of
+    /// the surfaces (not a key repeat), told just before
+    /// [`SurfaceHost::input`] is told the press: the host keeps it for
+    /// the handler the press starts (`strand_core::InputCtx`), whose
+    /// actions ask [`State::activation_token`] with it.
+    fn press_serial(&mut self, serial: u32) {
+        let _ = serial;
     }
 }
 
@@ -804,6 +816,8 @@ pub struct State<H: SurfaceHost + 'static> {
     gpu: gpu_handoff::HandOffs,
     /// (M4) Drag and drop over `wl_data_device` (`src/dnd.rs`).
     dnd: dnd::Dnd,
+    /// (M5) xdg-activation tokens (`src/activation.rs`).
+    activation: activation::Activation,
 }
 
 impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
@@ -945,6 +959,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         // `capabilities` among them), before any surface is configured.
         handle.insert_idle(|state: &mut State<H>| state.report_caps());
         let dnd = dnd::Dnd::bind(&globals, &qh);
+        let activation = activation::Activation::bind(&globals, &qh);
         let state = State {
             host,
             conn,
@@ -1003,6 +1018,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             session_lock: session_lock::SessionLock::new(session_lock),
             gpu: gpu_handoff::HandOffs::default(),
             dnd,
+            activation,
         };
         Ok(Self {
             event_loop,

@@ -1508,24 +1508,55 @@ fn actions_know_whether_input_called_them() {
         "the call after the await"
     );
     assert!(!strand_compiler::vm::in_input_handler());
-    // (M5 0b) Every action gets the empty context until the VM records
-    // handler input (S-platform).
+    // (M5, S-platform) The press's context reaches the click handler's
+    // actions until its first `await`; every handler invocation has a
+    // number of its own (the `on change` it causes too), which it keeps
+    // across the `await`.
+    let press = strand_core::InputCtx {
+        surface: 3,
+        serial: 42,
+    };
+    assert!(
+        shell
+            .inst
+            .event_with(target, "click", Vec::new(), Some(press))
+    );
+    shell.flush();
+    shell.flush();
+    let ctxs: Vec<strand_core::ActionCtx> =
+        shell.host.take_actions().iter().map(|a| a.ctx).collect();
+    assert_eq!(ctxs.len(), 2, "{ctxs:?}");
+    let click = ctxs[0];
+    assert_eq!(click.input, Some(press));
+    assert!(click.invocation > 0);
+    assert_eq!(ctxs[1].input, None, "`on change n` has no press");
+    assert!(ctxs[1].invocation > 0 && ctxs[1].invocation != click.invocation);
+    shell.at(4.0);
+    let after: Vec<strand_core::ActionCtx> =
+        shell.host.take_actions().iter().map(|a| a.ctx).collect();
+    assert_eq!(
+        after,
+        [strand_core::ActionCtx {
+            input: None,
+            invocation: click.invocation
+        }],
+        "after the `await`: the same invocation, no press"
+    );
+    // A click without a press (`Instance::event`) is a new invocation
+    // with no input; outside any handler the context is the empty one.
     shell.inst.event(target, "click", Vec::new());
     shell.flush();
-    let ctxs: Vec<_> = shell.host.take_actions().iter().map(|a| a.ctx).collect();
+    let ctxs: Vec<strand_core::ActionCtx> =
+        shell.host.take_actions().iter().map(|a| a.ctx).collect();
     assert!(!ctxs.is_empty());
-    assert!(
-        ctxs.iter()
-            .all(|c| *c == strand_compiler::vm::ActionCtx::default() && c.input.is_none())
+    assert!(ctxs[0].input.is_none() && ctxs[0].invocation > click.invocation);
+    assert_eq!(
+        strand_compiler::vm::action_ctx(),
+        strand_compiler::vm::ActionCtx::default()
     );
     // The context the VM passes is strand-core's, the type strand-services
     // (which depends only on strand-core) takes at the other end.
-    let core: strand_core::ActionCtx = ctxs[0];
-    let _: strand_compiler::vm::host::InputCtx = strand_core::InputCtx {
-        surface: 1,
-        serial: 2,
-    };
-    assert_eq!(core, strand_core::ActionCtx::default());
+    let _: strand_compiler::vm::host::InputCtx = press;
 }
 
 /// (M4) Only the events a press just set the tray's click point for run

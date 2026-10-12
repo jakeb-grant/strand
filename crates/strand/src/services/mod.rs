@@ -1554,7 +1554,13 @@ service shelf {
             assert_eq!(inst.value_of("svc", "darks").unwrap(), Value::int(0));
             shelf
                 .dynamic()
-                .action(&rt, "add", None, &[strand_services::Data::Text("c".into())])
+                .action(
+                    &rt,
+                    "add",
+                    None,
+                    &[strand_services::Data::Text("c".into())],
+                    Default::default(),
+                )
                 .unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             while !step(&mut inst).contains(&"3 false".to_string()) {
@@ -1689,6 +1695,7 @@ service shelf {
                         "add",
                         None,
                         &[strand_services::Data::Text(name.into())],
+                        Default::default(),
                     )
                     .unwrap();
             }

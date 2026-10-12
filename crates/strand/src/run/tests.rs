@@ -225,16 +225,19 @@ fn the_logic_thread_follows_the_monitors() {
     // A right click runs `on secondary` (not `on click`), and a
     // scroll runs `on scroll(dy, dx)` with its deltas in that order.
     send(ToLogic::Event {
+        input: None,
         node: a,
         event: NodeEvent::Secondary,
     });
     m.until("a right click", |s| s.texts() == ["DP-1 0 0 secondary"]);
     send(ToLogic::Event {
+        input: None,
         node: a,
         event: NodeEvent::Scroll { dy: 1.5, dx: -2.5 },
     });
     m.until("a scroll", |s| s.texts() == ["DP-1 0 0 1.5,-2.5"]);
     send(ToLogic::Event {
+        input: None,
         node: a,
         event: NodeEvent::Click,
     });
@@ -244,6 +247,7 @@ fn the_logic_thread_follows_the_monitors() {
     m.until("B's bar", |s| s.roots().len() == 2);
     let b = *m.scene.roots().iter().find(|&&r| r != a).unwrap();
     send(ToLogic::Event {
+        input: None,
         node: b,
         event: NodeEvent::Click,
     });
@@ -438,6 +442,7 @@ fn a_report_is_mains_snapshot_with_logics_half() {
     let live = Live {
         socket: Some(socket.clone()),
         to_main: Some(to_main),
+        tokens: None,
         ..Live::default()
     };
     let (to_logic, from_main) = calloop::channel::channel();
@@ -549,6 +554,7 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -625,6 +631,7 @@ fn saves_reload_live_with_state_kept() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -637,6 +644,7 @@ fn saves_reload_live_with_state_kept() {
     let root = m.scene.roots()[0];
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: root,
             event: NodeEvent::Click,
         })
@@ -851,6 +859,7 @@ fn saves_reload_live_with_state_kept() {
     m.until("the kept row", |s| kept_row(s));
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: root,
             event: NodeEvent::Click,
         })
@@ -948,6 +957,7 @@ fn spawn_live_quiet(
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1068,6 +1078,7 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: lock,
             event: NodeEvent::Click,
         })
@@ -1114,6 +1125,7 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
     let bar = m.scene.of_kind(strand_scene::NodeKind::Bar)[0];
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: bar,
             event: NodeEvent::Click,
         })
@@ -1247,6 +1259,7 @@ fn an_unlock_replay_keeps_the_newer_errors() {
     let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: lock,
             event: NodeEvent::Click,
         })
@@ -1310,6 +1323,7 @@ fn a_replayed_hard_reload_reports_the_newer_errors() {
     let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: lock,
             event: NodeEvent::Click,
         })
@@ -1592,6 +1606,7 @@ fn a_monitor_change_is_in_the_next_diff() {
     let a = m.scene.roots()[0];
     to_logic
         .send(ToLogic::Event {
+            input: None,
             node: a,
             event: NodeEvent::Click,
         })
@@ -1742,6 +1757,7 @@ fn five_save_styles_land_on_a_cold_boot() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2351,6 +2367,7 @@ fn main_thread_notices_reach_watchers_that_come_later() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2421,6 +2438,7 @@ fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2533,6 +2551,7 @@ fn an_unavailable_gpu_is_a_notice_once() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2608,6 +2627,7 @@ fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
         let text = m.scene.of_kind(NodeKind::Text)[0];
         to_logic
             .send(ToLogic::Event {
+                input: None,
                 node: text,
                 event: NodeEvent::Click,
             })
@@ -2642,6 +2662,7 @@ fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2708,6 +2729,7 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
         let text = m.scene.of_kind(NodeKind::Text)[0];
         to_logic
             .send(ToLogic::Event {
+                input: None,
                 node: text,
                 event: NodeEvent::Click,
             })
@@ -2741,6 +2763,7 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
         })),
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2817,4 +2840,37 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
     assert_eq!(t.join().unwrap(), Ok(()));
     drop(compiler);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (M5, S-platform) The services' token source asks the main thread over
+/// its channel with the press's surface and serial, and the token main
+/// answers is what the services' future gives; main gone (the channel
+/// closed, or the ask dropped unanswered), the future gives `None`.
+#[test]
+fn the_token_source_asks_main_and_hears_its_answer() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (tx, rx) = calloop::channel::channel::<TokenAsk>();
+    let source = token_source(tx);
+    let token = source(3, 99);
+    let mut el = calloop::EventLoop::<Vec<TokenAsk>>::try_new().unwrap();
+    el.handle()
+        .insert_source(rx, |e, _, asks: &mut Vec<TokenAsk>| {
+            if let Event::Msg(a) = e {
+                asks.push(a);
+            }
+        })
+        .unwrap();
+    let mut asks = Vec::new();
+    el.dispatch(Some(Duration::ZERO), &mut asks).unwrap();
+    assert_eq!(asks.len(), 1);
+    let ask = asks.remove(0);
+    assert_eq!((ask.surface, ask.serial), (3, 99));
+    ask.answer.send(Some("tok".into()));
+    assert_eq!(rt.block_on(token).as_deref(), Some("tok"));
+    // Asked, then dropped unanswered (main's loop gone with it).
+    let token = source(3, 100);
+    drop(el);
+    assert_eq!(rt.block_on(token), None);
 }

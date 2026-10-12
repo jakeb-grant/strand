@@ -2681,3 +2681,128 @@ fn layer_surfaces_are_placed_past_our_zones_in_layout_coordinates() {
         .apply_surface_change(BAR, SurfaceChange::Removed);
     wait_origin(&mut mgr, PANEL, vec![Some((1520, 0))]);
 }
+
+/// (M5, S-platform) Sway 1.9 issues an xdg-activation token for a click
+/// on a layer surface (the m5-infra spike): the token is asked with the
+/// press's serial, which the host was told before the press.
+#[test]
+fn an_activation_token_comes_from_a_click_on_sway() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let Some(sway) = Sway::start("an_activation_token_comes_from_a_click_on_sway") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    assert!(
+        mgr.state().activation_supported(),
+        "sway offers xdg_activation_v1"
+    );
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    wait_for_bars(&mut mgr, 1);
+    let id = mgr.state().surfaces_of(BAR)[0];
+    let mut pointer = VirtualPointer::new(&sway);
+    pump(&mut mgr, Duration::from_millis(200));
+    pointer.click(150, 15, 1920, 1080);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().input.iter().any(|e| {
+                matches!(
+                    e,
+                    InputEvent::PointerButton {
+                        state: ButtonState::Released,
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the click reached the bar: {:?}",
+        mgr.state().host().input
+    );
+    let serial = *mgr
+        .state()
+        .host()
+        .press_serials
+        .last()
+        .expect("the press's serial");
+    assert_eq!(mgr.state().last_button_serial(), Some(serial));
+    let got = Rc::new(RefCell::new(None));
+    let put = got.clone();
+    mgr.state_mut()
+        .activation_token(id, serial, move |t| *put.borrow_mut() = Some(t));
+    let ok = mgr
+        .dispatch_until(WAIT, |_| got.borrow().is_some())
+        .unwrap();
+    assert!(ok, "sway answered the token request");
+    let token = got.borrow_mut().take().flatten();
+    assert!(token.as_deref().is_some_and(|t| !t.is_empty()), "{token:?}");
+    assert_eq!(mgr.state().activation_tokens_issued(), 1);
+}
+
+/// A virtual pointer on sway's seat (`zwlr_virtual_pointer_v1`).
+struct VirtualPointer {
+    queue: wayland_client::EventQueue<VpClient>,
+    pointer: wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    time: u32,
+}
+
+struct VpClient;
+
+impl
+    wayland_client::Dispatch<
+        wayland_client::protocol::wl_registry::WlRegistry,
+        wayland_client::globals::GlobalListContents,
+    > for VpClient
+{
+    fn event(
+        _: &mut Self,
+        _: &wayland_client::protocol::wl_registry::WlRegistry,
+        _: wayland_client::protocol::wl_registry::Event,
+        _: &wayland_client::globals::GlobalListContents,
+        _: &wayland_client::Connection,
+        _: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+wayland_client::delegate_noop!(VpClient: ignore wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1);
+wayland_client::delegate_noop!(VpClient: ignore wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1);
+
+impl VirtualPointer {
+    fn new(sway: &Sway) -> Self {
+        use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
+        let conn = sway.connect();
+        let (globals, mut queue) =
+            wayland_client::globals::registry_queue_init::<VpClient>(&conn).unwrap();
+        let qh = queue.handle();
+        let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+        let pointer = manager.create_virtual_pointer(None, &qh, ());
+        queue.roundtrip(&mut VpClient).unwrap();
+        VirtualPointer {
+            queue,
+            pointer,
+            time: 0,
+        }
+    }
+
+    /// A left click at layout position (`x`, `y`) of a `w`×`h` layout.
+    fn click(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        use wayland_client::protocol::wl_pointer::ButtonState as B;
+        self.time += 10;
+        self.pointer.motion_absolute(self.time, x, y, w, h);
+        self.pointer.frame();
+        for state in [B::Pressed, B::Released] {
+            self.time += 10;
+            self.pointer.button(self.time, 0x110, state);
+            self.pointer.frame();
+        }
+        self.queue.roundtrip(&mut VpClient).unwrap();
+    }
+}

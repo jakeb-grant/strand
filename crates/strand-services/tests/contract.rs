@@ -668,16 +668,28 @@ fn writes_actions_and_async_calls_reach_the_service() {
     assert_eq!(probe.cells().focus.get_untracked(&rt).unwrap().id, 5);
     assert_eq!(sc.next(), "write focus.id 5");
     // Actions, typed.
-    dynamic.action(&rt, "bump", None, &[]).unwrap();
+    dynamic
+        .action(&rt, "bump", None, &[], Default::default())
+        .unwrap();
     assert_eq!(sc.next(), "action Bump");
     dynamic
-        .action(&rt, "focus", Some(&ws(4, "d").to_data()), &[])
+        .action(
+            &rt,
+            "focus",
+            Some(&ws(4, "d").to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     assert_eq!(
         sc.next(),
         format!("action {:?}", ProbeAction::Focus { item: ws(4, "d") })
     );
-    assert!(dynamic.action(&rt, "rename", None, &[]).is_err());
+    assert!(
+        dynamic
+            .action(&rt, "rename", None, &[], Default::default())
+            .is_err()
+    );
     // An async call completes with the service's answer.
     let fut = dynamic.fetch(&rt, "echo", &[Data::text("hi")]);
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -781,7 +793,9 @@ fn writes_and_actions_start_a_stopped_service_for_a_moment() {
     assert_eq!(probe.readers(), 0);
     assert!(probe.running());
     // Still inside its grace: the action goes to the running service.
-    dynamic.action(&rt, "bump", None, &[]).unwrap();
+    dynamic
+        .action(&rt, "bump", None, &[], Default::default())
+        .unwrap();
     assert_eq!(sc.next(), "action Bump");
     assert_eq!(probe.starts(), 1);
     at(STOP_GRACE + Duration::from_millis(1));

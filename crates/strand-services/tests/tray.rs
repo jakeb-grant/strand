@@ -347,25 +347,62 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     let d = b.tray.dynamic();
     use strand_services::tray::input_scope as input;
     strand_services::tray::set_click_point(1830, 36);
-    input(|| d.action(&rt, "activate", Some(&it.to_data()), &[])).unwrap();
+    input(|| {
+        d.action(
+            &rt,
+            "activate",
+            Some(&it.to_data()),
+            &[],
+            Default::default(),
+        )
+    })
+    .unwrap();
     wait_call(&state, "Activate at 1830,36");
     strand_services::tray::set_click_point(-4, 1052);
-    input(|| d.action(&rt, "secondary", Some(&it.to_data()), &[])).unwrap();
+    input(|| {
+        d.action(
+            &rt,
+            "secondary",
+            Some(&it.to_data()),
+            &[],
+            Default::default(),
+        )
+    })
+    .unwrap();
     wait_call(&state, "SecondaryActivate at -4,1052");
     // Called by no input (a timer, an IPC write): the point when none is
     // known, never the last press's.
-    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    d.action(
+        &rt,
+        "activate",
+        Some(&it.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     wait_call(&state, "Activate at 0,0");
-    d.action(&rt, "scroll", Some(&it.to_data()), &[Data::Float(-2.0)])
-        .unwrap();
+    d.action(
+        &rt,
+        "scroll",
+        Some(&it.to_data()),
+        &[Data::Float(-2.0)],
+        Default::default(),
+    )
+    .unwrap();
     // Two notches up: 120 a notch, positive up (as KDE's host sends).
     wait_call(&state, "Scroll 240 vertical");
 
     // The menu opens: the app is told, updates it, and the entry shows;
     // the store says it is open (a popup's `open: item.menu.opened`).
     assert!(!it.menu.opened);
-    d.action(&rt, "open", Some(&it.menu.to_data()), &[])
-        .unwrap();
+    d.action(
+        &rt,
+        "open",
+        Some(&it.menu.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     wait_call(&state, "Event 0 opened");
     until(&rt, &s, "the menu opened", || items(&b, &rt)[0].menu.opened);
     until(&rt, &s, "the extra entry", || {
@@ -377,20 +414,33 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     });
     // A submenu opens, and the menu closes: the app is told.
     let sub = items(&b, &rt)[0].menu.items[3].clone();
-    d.action(&rt, "open", Some(&sub.to_data()), &[]).unwrap();
+    d.action(&rt, "open", Some(&sub.to_data()), &[], Default::default())
+        .unwrap();
     wait_call(&state, "AboutToShow 4");
     wait_call(&state, "Event 4 opened");
     assert!(items(&b, &rt)[0].menu.opened, "a submenu leaves it open");
-    d.action(&rt, "close", Some(&it.menu.to_data()), &[])
-        .unwrap();
+    d.action(
+        &rt,
+        "close",
+        Some(&it.menu.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     wait_call(&state, "Event 0 closed");
     until(&rt, &s, "the menu closed", || {
         !items(&b, &rt)[0].menu.opened
     });
     // An entry is chosen.
     let check = items(&b, &rt)[0].menu.items[2].clone();
-    d.action(&rt, "activate", Some(&check.to_data()), &[])
-        .unwrap();
+    d.action(
+        &rt,
+        "activate",
+        Some(&check.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     wait_call(&state, "Event 3 clicked");
     // The item's two activates above, and no third.
     assert!(
@@ -538,7 +588,13 @@ fn a_frozen_app_does_not_hold_up_the_tray() {
     let first = items(&b, &rt).remove(0);
     b.tray
         .dynamic()
-        .action(&rt, "activate", Some(&first.to_data()), &[])
+        .action(
+            &rt,
+            "activate",
+            Some(&first.to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     wait_call(&frozen_state, "Activate");
     // Another app's item registers and changes its icon meanwhile: shown
@@ -786,7 +842,14 @@ fn a_menu_only_item_opens_its_menu_on_activate() {
     until(&rt, &s, "the item", || items(&b, &rt).len() == 1);
     let it = items(&b, &rt).remove(0);
     assert!(!it.menu.opened);
-    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    d.action(
+        &rt,
+        "activate",
+        Some(&it.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     until(&rt, &s, "the menu opened", || items(&b, &rt)[0].menu.opened);
     wait_call(&state, "AboutToShow 0");
     wait_call(&state, "Event 0 opened");
@@ -794,8 +857,14 @@ fn a_menu_only_item_opens_its_menu_on_activate() {
         !state.lock().unwrap().calls.iter().any(|c| c == "Activate"),
         "an ItemIsMenu item is not sent Activate"
     );
-    d.action(&rt, "close", Some(&it.menu.to_data()), &[])
-        .unwrap();
+    d.action(
+        &rt,
+        "close",
+        Some(&it.menu.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     until(&rt, &s, "the menu closed", || {
         !items(&b, &rt)[0].menu.opened
     });
@@ -818,7 +887,14 @@ fn a_menu_only_item_opens_its_menu_on_activate() {
     until(&rt, &s, "the item read again", || {
         items(&b, &rt)[0].icon == "other-icon"
     });
-    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    d.action(
+        &rt,
+        "activate",
+        Some(&it.to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
     wait_call(&state, "Activate");
     until(&rt, &s, "the menu opened on the refusal", || {
         items(&b, &rt)[0].menu.opened

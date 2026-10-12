@@ -505,6 +505,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         events_to: None,
         own_writes: None,
         to_main: None,
+        tokens: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping().unwrap();
     let font = std::fs::read(strand_text::test_font_path()).unwrap();

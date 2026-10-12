@@ -43,8 +43,12 @@ fn ids(rt: &Runtime, d: &dyn DynService) -> Vec<String> {
         .collect()
 }
 
+/// The tests here set `apps`' process-wide config: one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn apps_lists_searches_launches_and_follows_entries() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = std::env::temp_dir().join(format!("strand-apps-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let user = root.join("home/applications");
@@ -225,7 +229,10 @@ fn apps_lists_searches_launches_and_follows_entries() {
     assert!(stored.ends_with(" 1 kde-viewer\n"), "{stored:?}");
     assert_eq!(search("")[0].0, "kde-viewer");
     // Through the dynamic view, as the language calls it.
-    assert!(d.action(&rt, "launch", Some(&Data::Null), &[]).is_err());
+    assert!(
+        d.action(&rt, "launch", Some(&Data::Null), &[], Default::default())
+            .is_err()
+    );
 
     // A new entry, a removed one: read again once told.
     write(
@@ -246,5 +253,77 @@ fn apps_lists_searches_launches_and_follows_entries() {
     s.shutdown();
     apps::set_config(None);
     strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// (M5, S-platform) A launch from a handler a press started gives the
+/// app the press's xdg-activation token, in `XDG_ACTIVATION_TOKEN` and
+/// `DESKTOP_STARTUP_ID`; a launch with no token (no press) gives it
+/// neither, not even the token strand itself was started with.
+#[test]
+fn a_launch_carries_the_token_and_not_an_inherited_one() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: the tests of this binary run one at a time (`SERIAL`), and
+    // nothing else here reads the environment while this one sets it.
+    unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", "strand-own-stale") };
+    let root = std::env::temp_dir().join(format!("strand-apps-token-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    let marker = root.join("env");
+    let script = root.join("env.sh");
+    write(
+        &script,
+        &format!(
+            "#!/bin/sh\necho \"[$XDG_ACTIVATION_TOKEN] [$DESKTOP_STARTUP_ID]\" > {0}.tmp\nmv {0}.tmp {0}\n",
+            marker.display()
+        ),
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(
+        &dir.join("env.desktop"),
+        &desktop("Env", &script.display().to_string(), ""),
+    );
+    apps::set_config(Some(Config {
+        dirs: vec![dir],
+        desktops: vec![],
+        state: None,
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    s.set_token_source(Some(std::sync::Arc::new(|surface, serial| {
+        Box::pin(async move { Some(format!("tok-{surface}-{serial}")) })
+    })));
+    let b = Builtin::register(&s, &rt);
+    let d = b.apps.dynamic();
+    b.apps.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    rt.flush();
+    let app = d.keyed_items(&rt, 0).unwrap()[0].clone();
+    let launched = |ctx: strand_core::ActionCtx| -> String {
+        let _ = std::fs::remove_file(&marker);
+        d.action(&rt, "launch", Some(&app), &[], ctx).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "never launched");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::read_to_string(&marker).unwrap().trim().to_string()
+    };
+    let pressed = strand_core::ActionCtx {
+        input: Some(strand_core::InputCtx {
+            surface: 4,
+            serial: 321,
+        }),
+        invocation: 1,
+    };
+    assert_eq!(launched(pressed), "[tok-4-321] [tok-4-321]");
+    assert_eq!(launched(strand_core::ActionCtx::default()), "[] []");
+    s.shutdown();
+    apps::set_config(None);
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("XDG_ACTIVATION_TOKEN") };
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -960,57 +960,76 @@ a click picks, and pick mode also ends on the IPC client's disconnect,
 on surface unmap and when a lock starts. Lock surfaces are never
 pickable, and `inspect.pick` is refused while locked.
 
-**Handler input context (`strand-compiler`, cross-crate, new).**
+**Handler input context (`strand-compiler`, cross-crate; built by
+S-platform in M5 wave 3, decisions.md m5-platform).**
 - The VM records the input event that started a handler, `InputCtx {
   surface, serial }`, available to its actions until the handler's
-  first `await`. Its route (S-platform's, wave 2; none of it exists at
-  0b):
-  - strand-render's router returns, with each `NodeEvent` a button or
-    key press makes, the press's compositor serial (strand-surface's
-    seat tracks `button_serial` and, from S-platform, key serials);
-    `ToLogic::Event` gains `input: Option<InputCtx>` (none for scrolls,
-    synthetic events and the demo);
-  - `Instance::event(node, event, args)` gains `input:
-    Option<InputCtx>`; the VM keeps it in the handler invocation's
+  first `await`. Its route:
+  - strand-surface tracks every button and key press's serial with its
+    seat (`manager/seat.rs`, `State::note_press`) and tells the host
+    before the press itself through a new defaulted hook,
+    `SurfaceHost::press_serial(serial)`. The binary's host
+    (`demo/host.rs`'s `Forward`) keeps the last one and joins it to the
+    node events a press causes: a button's press or release, a key
+    press (or repeat), a click away; none for scrolls, drags, key
+    releases, settled intents and the demo. strand-render's router is
+    unchanged (`Intent::Event` keeps its shape; the join is in the
+    host, which already turns intents into `ToLogic`).
+    `ToLogic::Event` gains `input: Option<InputCtx>`;
+  - `Instance::event_with(node, event, args, input: Option<InputCtx>)`
+    is added beside `Instance::event(node, event, args)`, which stays
+    and passes `None`. The VM keeps `input` in the handler invocation's
     frame until the first `await` and numbers every handler invocation,
-    with input or without, from a per-`Instance` counter starting at 1
-    (`ActionCtx::invocation`). The number stays in the frame for the
-    invocation's whole run, across every `await`; only `input` is
+    with input or without, from one process-wide counter starting at 1
+    (`ActionCtx::invocation`; process-wide, not per `Instance`, so
+    numbers never repeat across a reload's new instance while an old
+    invocation's actions still wait). The number stays in the frame for
+    the invocation's whole run, across every `await`; only `input` is
     cleared at the first one. Invocation 0 is `ActionCtx::default()`,
     an action outside any handler (an IPC `call`, a test): it is
-    unordered, queued behind nothing and nothing behind it;
-  - strand-services' `DynService::action` gains the `ActionCtx`
-    (`strand_core::ActionCtx`, which strand-services, depending only on
-    strand-core, can name), and the ordering queue (one queue on the
-    services thread shared by every service, keyed by invocation, since
-    one invocation's actions may span services) asks the main thread
-    for a token through a token source the binary hands strand-services
-    when it starts them: a `Fn(u32, u32)` (the surface's number, as in
-    `InputCtx::surface`, and the serial) returning a one-shot future like
-    `strand_core::ipc::Reply`'s, sent over a services→main calloop
-    channel, on which main calls `strand_surface::activation_token` and
-    completes the one-shot (the services thread cannot call
-    `SurfaceHost`, the manager's callback trait on main).
-- `ServiceHost::action` gains an `ActionCtx` argument (the `InputCtx`,
+    unordered, queued behind nothing and nothing behind it. The host
+    reads the running stretch's context through
+    `strand_compiler::vm::action_ctx()`;
+  - strand-services' `DynService::action` takes the `ActionCtx` as its
+    last parameter (`strand_core::ActionCtx`). A service names the
+    actions that want a token with `Service::ACTIVATION` (the
+    `#[service(activation = &["invoke", "activate"])]` macro option)
+    and reads a delivered action's token with
+    `Cx::activation_token()`. The ordering queue
+    (`strand_services::activation`, one for every service, keyed by
+    invocation, since one invocation's actions may span services)
+    waits on the services' shared runtime. It asks the main thread for
+    a token through the `TokenSource` the binary hands
+    `Services::set_token_source`: an `Arc<dyn Fn(u32, u32) ->
+    TokenFuture>` (the surface's number, as in `InputCtx::surface`, and
+    the serial), whose one-shot (`token_reply()`) the binary sends over
+    a services→main calloop channel (`run::TokenAsk`); main calls
+    `State::activation_token` and completes the one-shot (the services
+    thread cannot call `SurfaceHost`, the manager's callback trait on
+    main).
+- `ServiceHost::action` takes an `ActionCtx` argument (the `InputCtx`,
   if any, and the handler invocation's id), as its last parameter:
   `ActionCtx { input: Option<InputCtx>, invocation: u64 }`, `InputCtx {
   surface: u32, serial: u32 }` (`surface` is the `strand_scene::SurfaceId`'s
   number), defined in `strand_core::action` and re-exported from
   `strand_compiler::vm::host`, so the VM and strand-services name one
   type without strand-services depending on strand-compiler or
-  strand-scene (changed in m5-w0-harden from "in
-  `strand_compiler::vm::host`" with a `SurfaceId`, which strand-services
-  could not name; decisions.md m5-w0-harden). 0b
-  threads the empty `ActionCtx::default()` through every host
-  (`SchemaHost`, which records it in `ActionCall::ctx`, and the
-  binary's composite, store and custom hosts); strand-services'
-  `DynService::action` does not take it yet (S-platform's).
-- `strand_surface::activation_token(surface, serial) -> async
-  Option<String>`, called on the main thread (the token source above
-  reaches it); key-press serials are tracked beside `button_serial`
-  (`manager/seat.rs`).
+  strand-scene (decisions.md m5-w0-harden). The binary's services
+  adapter passes it to `DynService::action`.
+- `State::activation_token(surface, serial, done: impl FnOnce(Option<String>))`
+  on the main thread (`strand-surface/src/activation.rs`): a callback,
+  not an `async fn`, since main has no executor. It sets the press's
+  serial with the seat it came from, and the surface while it is still
+  mapped. Without `xdg_activation_v1`, `done(None)` runs before it
+  returns; a token never answered is dropped (`done(None)`) after 5 s.
+- **Launches.** A launched program gets the press's token in
+  `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`
+  (`strand_services::apps::spawn_launched`), and never the token strand
+  inherited: every program strand starts (launches, `exec` sources, the
+  editor) goes through `strand_services::child::activation_env`, which
+  removes both on the `Command` before `fork`.
 - **Ordering rule.** An action that needs a token (notification
-  `invoke`, an app launch) waits up to 200 ms for it, then goes ahead
+  `invoke` and `activate`, an app launch) waits up to 200 ms for it, then goes ahead
   without one (m5-owner Q14). Every later action from the same handler
   invocation queues behind it, whichever service it goes to and whether
   or not an `await` came between, so `n.invoke("default"); n.dismiss()`

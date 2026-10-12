@@ -222,7 +222,9 @@ impl<S: Service> fmt::Debug for Msg<S> {
 pub struct Cx<S: Service> {
     state: S,
     out: Out<S::Patch>,
-    msgs: mpsc::UnboundedReceiver<Msg<S>>,
+    msgs: mpsc::UnboundedReceiver<(Msg<S>, Option<String>)>,
+    /// (M5) The xdg-activation token the last message came with.
+    token: Option<String>,
     visible: bool,
     /// Per field: a visible reader reads it (meaningful for stream
     /// fields).
@@ -246,7 +248,7 @@ impl<S: Service> Cx<S> {
     pub(crate) fn new(
         state: S,
         out: Out<S::Patch>,
-        msgs: mpsc::UnboundedReceiver<Msg<S>>,
+        msgs: mpsc::UnboundedReceiver<(Msg<S>, Option<String>)>,
         buses: Buses,
         notify: Notify,
         watched: Vec<bool>,
@@ -255,6 +257,7 @@ impl<S: Service> Cx<S> {
             state,
             out,
             msgs,
+            token: None,
             visible: true,
             watched,
             ready: false,
@@ -420,25 +423,20 @@ impl<S: Service> Cx<S> {
     /// stopped; return from the body.
     pub async fn recv(&mut self) -> Option<Msg<S>> {
         let m = self.msgs.recv().await;
-        self.seen(&m);
-        m
+        self.seen(m)
     }
 
     /// The next message, blocking (a service on its own thread). `None`:
     /// stopped.
     pub fn blocking_recv(&mut self) -> Option<Msg<S>> {
         let m = self.msgs.blocking_recv();
-        self.seen(&m);
-        m
+        self.seen(m)
     }
 
     /// The next message if one is waiting. `Err(true)`: stopped.
     pub fn try_recv(&mut self) -> Result<Msg<S>, bool> {
         match self.msgs.try_recv() {
-            Ok(m) => {
-                self.note(&m);
-                Ok(m)
-            }
+            Ok(m) => Ok(self.take(m)),
             Err(mpsc::error::TryRecvError::Empty) => Err(false),
             Err(mpsc::error::TryRecvError::Disconnected) => Err(true),
         }
@@ -449,10 +447,22 @@ impl<S: Service> Cx<S> {
         self.msgs.is_closed() && self.msgs.is_empty()
     }
 
-    fn seen(&mut self, m: &Option<Msg<S>>) {
-        if let Some(m) = m {
-            self.note(m);
-        }
+    /// (M5) The xdg-activation token the action just received came with
+    /// (one of [`Service::ACTIVATION`]'s, from a handler a press started,
+    /// answered within `TOKEN_WAIT`), for the app it raises: `None` for
+    /// every other message, and when no token came.
+    pub fn activation_token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
+    fn seen(&mut self, m: Option<(Msg<S>, Option<String>)>) -> Option<Msg<S>> {
+        m.map(|m| self.take(m))
+    }
+
+    fn take(&mut self, (m, token): (Msg<S>, Option<String>)) -> Msg<S> {
+        self.token = token;
+        self.note(&m);
+        m
     }
 
     fn note(&mut self, m: &Msg<S>) {

@@ -1169,6 +1169,8 @@ impl Proc {
             .stdout(std::process::Stdio::piped())
             .process_group(0)
             .kill_on_drop(false);
+        // (M5) Never strand's own inherited activation token.
+        crate::child::activation_env(cmd.as_std_mut(), None);
         // Its own group keeps it from the terminal's signals, and a crash
         // or SIGKILL of strand skips `Drop`: the kernel sends it SIGTERM
         // when the thread that started it ends (the shared services

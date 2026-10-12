@@ -317,6 +317,8 @@ pub struct TestHost {
     pub placed: Vec<(SurfaceId, (i32, i32))>,
     /// What [`SurfaceHost::input`] saw.
     pub input: Vec<InputEvent>,
+    /// (M5) What [`SurfaceHost::press_serial`] was told, in order.
+    pub press_serials: Vec<u32>,
     pub configured: Vec<(SurfaceId, Size, Scale)>,
     pub detached: Vec<SurfaceId>,
     /// (M4) What [`SurfaceHost::gpu_release`] was told.
@@ -520,6 +522,10 @@ impl SurfaceHost for TestHost {
 
     fn input(&mut self, event: &InputEvent) {
         self.input.push(event.clone());
+    }
+
+    fn press_serial(&mut self, serial: u32) {
+        self.press_serials.push(serial);
     }
 
     fn surface_configured(&mut self, surface: SurfaceId, size: Size, scale: Scale) {

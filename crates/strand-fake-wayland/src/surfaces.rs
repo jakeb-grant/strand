@@ -73,6 +73,13 @@ pub struct SurfaceGlobals {
     /// and waits on the feedback instead, which the other tests do not
     /// expect.
     pub presentation: bool,
+    /// (M5) `xdg_activation_v1`: tokens asked for are recorded
+    /// ([`crate::Fake::activation_requests`]) and answered.
+    pub activation: bool,
+    /// (M5) The seats offer a pointer too ([`crate::Cmd::Click`]). Off by
+    /// default: the manager then sets a cursor on every enter, which the
+    /// other tests do not expect.
+    pub pointer: bool,
 }
 
 impl Default for SurfaceGlobals {
@@ -86,6 +93,8 @@ impl Default for SurfaceGlobals {
             output_size: (1920, 1080),
             xdg_output: false,
             presentation: false,
+            activation: true,
+            pointer: false,
         }
     }
 }
@@ -309,6 +318,19 @@ impl Surfaces {
                     .is_some_and(|r| r.namespace.as_deref() == Some(namespace))
             })
             .map(|l| l.wl.clone())
+    }
+
+    /// (M5) The layer namespace of the live surface `wl` (`""`: not a
+    /// layer surface).
+    pub(crate) fn namespace_of(&self, wl: &wl_surface::WlSurface) -> Option<String> {
+        let live = self.live.get(&wl.id())?;
+        let records = self.records.lock().ok()?;
+        Some(
+            records
+                .get(live.index)
+                .and_then(|r| r.namespace.clone())
+                .unwrap_or_default(),
+        )
     }
 
     /// Sends new capability flags to every bound effect manager.
@@ -1157,6 +1179,9 @@ pub(crate) fn create_globals(dh: &DisplayHandle, g: &SurfaceGlobals) {
     }
     if g.presentation {
         dh.create_global::<Server, WpPresentation, ()>(1, ());
+    }
+    if g.activation {
+        crate::activation::create_global(dh);
     }
 }
 

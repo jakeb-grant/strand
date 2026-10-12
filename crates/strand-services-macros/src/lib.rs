@@ -971,6 +971,7 @@ struct ServiceAttr {
     call: Option<Type>,
     fns: Option<Path>,
     thread: bool,
+    activation: Option<Expr>,
 }
 
 /// `#[service(name = "cpu")]` on a `Store` struct, its schema text the
@@ -983,7 +984,9 @@ struct ServiceAttr {
 /// `action = T` and `call = T` (`#[derive(Call)]` enums of its actions
 /// and async methods) and `fns = path` (its `fn` methods, computed on
 /// the logic thread: `fn(&Cells, &Runtime, &str, &[Data]) ->
-/// Option<Result<Data, Error>>`).
+/// Option<Result<Data, Error>>`), and (M5) `activation = &["launch"]`,
+/// its actions sent with an xdg-activation token
+/// (`Service::ACTIVATION`).
 #[proc_macro_attribute]
 pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut attr = ServiceAttr::default();
@@ -1000,8 +1003,12 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             attr.fns = Some(m.value()?.parse()?);
         } else if m.path.is_ident("thread") {
             attr.thread = true;
+        } else if m.path.is_ident("activation") {
+            attr.activation = Some(m.value()?.parse()?);
         } else {
-            return Err(m.error("expected `name`, `schema`, `action`, `call`, `fns` or `thread`"));
+            return Err(m.error(
+                "expected `name`, `schema`, `action`, `call`, `fns`, `thread` or `activation`",
+            ));
         }
         Ok(())
     });
@@ -1033,6 +1040,11 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     });
+    let activation = attr.activation.map(|e| {
+        quote! {
+            const ACTIVATION: &'static [&'static str] = #e;
+        }
+    });
     let start = if attr.thread {
         quote!(#sv::Start::thread(move || #ty::run(cx)))
     } else {
@@ -1045,6 +1057,7 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             const NAME: &'static str = #name;
             type Action = #action;
             type Call = #call;
+            #activation
 
             fn schema() -> &'static str {
                 #schema

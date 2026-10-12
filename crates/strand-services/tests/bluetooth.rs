@@ -87,12 +87,24 @@ fn bluetooth_follows_bluez() {
     // The shell connects it: BlueZ's `Connect` (the mock reports it).
     b.bluetooth
         .dynamic()
-        .action(&rt, "connect", Some(&d[0].to_data()), &[])
+        .action(
+            &rt,
+            "connect",
+            Some(&d[0].to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     until(&rt, &s, "connected", || devices(&b, &rt)[0].connected);
     b.bluetooth
         .dynamic()
-        .action(&rt, "disconnect", Some(&d[0].to_data()), &[])
+        .action(
+            &rt,
+            "disconnect",
+            Some(&d[0].to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     until(&rt, &s, "disconnected", || !devices(&b, &rt)[0].connected);
 
@@ -121,7 +133,13 @@ fn bluetooth_follows_bluez() {
     );
     b.bluetooth
         .dynamic()
-        .action(&rt, "connect", Some(&d[0].to_data()), &[])
+        .action(
+            &rt,
+            "connect",
+            Some(&d[0].to_data()),
+            &[],
+            Default::default(),
+        )
         .unwrap();
     until(&rt, &s, "the failure", || {
         !failures.lock().unwrap().is_empty()

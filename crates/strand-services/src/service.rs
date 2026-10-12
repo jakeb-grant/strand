@@ -27,6 +27,11 @@ pub trait Service: Store {
     /// Its async methods (`apps.search(q) -> Async<[Hit]>`), answered
     /// with a [`Reply`](crate::Reply) ([`NoCall`] for none).
     type Call: FromCall + Send + 'static;
+    /// (M5) Its actions that raise an app (`invoke`, `launch`): each is
+    /// sent with an xdg-activation token for the press that started its
+    /// handler, read with [`Cx::activation_token`](crate::Cx::activation_token)
+    /// (`#[service(activation = &["…"])]`; the `activation` module).
+    const ACTIVATION: &'static [&'static str] = &[];
     /// Its declarations in the schema language (the service, and the
     /// records only it hands out): `Schema::extend` input, replacing the
     /// builtin schema's provisional stubs of the same names.

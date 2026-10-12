@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use strand_core::{Error, NodeId, Runtime, Scope, Timer};
+use strand_core::{ActionCtx, Error, NodeId, Runtime, Scope, Timer};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Buses;
@@ -233,6 +233,8 @@ struct Registry {
     anchor: Scope,
     /// Why services failed, not yet taken by the host.
     diagnostics: RefCell<Vec<ServiceDiagnostic>>,
+    /// (M5) Actions held behind an xdg-activation token wait.
+    order: crate::activation::Order,
 }
 
 /// A service's run failed (its body returned an error, or panicked), or
@@ -314,7 +316,16 @@ impl Services {
             members: RefCell::new(Vec::new()),
             anchor,
             diagnostics: RefCell::new(Vec::new()),
+            order: crate::activation::Order::default(),
         }))
+    }
+
+    /// (M5) Where actions that raise an app ([`crate::Service::ACTIVATION`])
+    /// get their xdg-activation token: the binary's channel to the main
+    /// thread (`None`: no tokens; such actions go at once without one).
+    /// See the `activation` module.
+    pub fn set_token_source(&self, source: Option<crate::activation::TokenSource>) {
+        self.0.order.set_source(source);
     }
 
     /// The buses services use.
@@ -511,7 +522,8 @@ fn join_all(threads: Vec<JoinHandle<()>>) {
 /// One run of a service: its channels.
 struct Run<S: Service> {
     rx: std::sync::mpsc::Receiver<Envelope<S::Patch>>,
-    tx: mpsc::UnboundedSender<Msg<S>>,
+    /// Messages, each with the xdg-activation token it carries.
+    tx: mpsc::UnboundedSender<(Msg<S>, Option<String>)>,
     /// Ends the body on the shared runtime.
     stop: Option<oneshot::Sender<()>>,
     notify: Notify,
@@ -527,17 +539,22 @@ struct Run<S: Service> {
 
 impl<S: Service> Run<S> {
     fn send(&self, m: Msg<S>) -> bool {
-        let ok = self.tx.send(m).is_ok();
+        let ok = self.tx.send((m, None)).is_ok();
         self.poke();
         ok
     }
 
     fn poke(&self) {
-        if let Ok(n) = self.notify.lock()
-            && let Some(f) = n.as_ref()
-        {
-            f();
-        }
+        poke(&self.notify);
+    }
+}
+
+/// Wakes a service on a thread of its own for a message just sent.
+fn poke(notify: &Notify) {
+    if let Ok(n) = notify.lock()
+        && let Some(f) = n.as_ref()
+    {
+        f();
     }
 }
 
@@ -1278,9 +1295,38 @@ impl<S: Service> Client<S> {
 
     /// Send an action (a stopped service starts for it).
     pub fn act(&self, rt: &Runtime, action: S::Action) -> Result<(), Error> {
-        match self.0.with_run(rt, |run| run.send(Msg::Action(action)))? {
-            true => Ok(()),
-            false => Err(not_running(&self.0.name)),
+        self.act_with(rt, action, ActionCtx::default(), false)
+    }
+
+    /// (M5) [`Client::act`] from the handler `ctx` describes: sent now,
+    /// or behind its invocation's xdg-activation token wait, with a
+    /// token of its own when `token` (one of [`Service::ACTIVATION`])
+    /// and the handler has a press (the `activation` module).
+    pub fn act_with(
+        &self,
+        rt: &Runtime,
+        action: S::Action,
+        ctx: ActionCtx,
+        token: bool,
+    ) -> Result<(), Error> {
+        let (tx, notify) = self
+            .0
+            .with_run(rt, |run| (run.tx.clone(), run.notify.clone()))?;
+        let deliver: crate::activation::Deliver = Box::new(move |token| {
+            let ok = tx.send((Msg::Action(action), token)).is_ok();
+            poke(&notify);
+            ok
+        });
+        let sent = match self.0.reg.upgrade() {
+            Some(reg) => reg
+                .order
+                .submit(ctx, token, deliver, &|job| reg.shared_spawn(job)),
+            None => deliver(None),
+        };
+        if sent {
+            Ok(())
+        } else {
+            Err(not_running(&self.0.name))
         }
     }
 
@@ -1377,13 +1423,16 @@ pub trait DynService {
         path: &[Step],
         value: Data,
     ) -> Result<(), Error>;
-    /// Run action `name` (on `item` for an item's action).
+    /// Run action `name` (on `item` for an item's action), from the
+    /// handler `ctx` describes (M5: its order and xdg-activation token,
+    /// the `activation` module).
     fn action(
         &self,
         rt: &Runtime,
         name: &str,
         item: Option<&Data>,
         args: &[Data],
+        ctx: ActionCtx,
     ) -> Result<(), Error>;
     /// A `fn` method, computed on the logic thread; `None`: none such.
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>>;
@@ -1576,10 +1625,11 @@ impl<S: Service> DynService for Client<S> {
         name: &str,
         item: Option<&Data>,
         args: &[Data],
+        ctx: ActionCtx,
     ) -> Result<(), Error> {
         let a = <S::Action as FromCall>::from_call(name, item, args)
             .map_err(|e| Error::failed(format!("{}.{name}: {e}", S::NAME)))?;
-        self.act(rt, a)
+        self.act_with(rt, a, ctx, S::ACTIVATION.contains(&name))
     }
 
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>> {
