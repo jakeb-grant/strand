@@ -1,7 +1,8 @@
-//! The guide's steps: every ```` ```strand level=N file=NAME ```` block in
-//! `docs/guide/level-N.md`, in page order, level 1 first (docs/guide,
-//! "How to read the code blocks"). Shared by `guide.rs` and
-//! `tree_sitter.rs`.
+//! The guide's steps: every ```` ```<lang> level=N file=NAME ```` block
+//! in `docs/guide/level-N.md`, in page order, level 1 first (docs/guide,
+//! "How to read the code blocks"): `strand` blocks, and the files beside
+//! them a step needs (level 5's ```` ```css ```` template). Shared by
+//! `guide.rs` and `tree_sitter.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -11,8 +12,18 @@ pub struct Block {
     /// `level-N.md:LINE`, where the fence opens.
     pub at: String,
     pub level: u32,
+    /// The fence's language: `strand`, or another for a file that is not
+    /// `.strand` (decisions.md m5-docs, "a step's file that is not
+    /// `.strand`").
+    pub lang: String,
     pub file: String,
     pub text: String,
+}
+
+impl Block {
+    pub fn is_strand(&self) -> bool {
+        self.lang == "strand"
+    }
 }
 
 /// The repository's root.
@@ -31,7 +42,9 @@ pub fn pages() -> Vec<(u32, PathBuf)> {
 }
 
 /// Every step, in page order. A ```` ```strand ```` block on a level page
-/// must say its level (that page's) and its file; a block nested in a
+/// must say its level (that page's) and its file; a block in another
+/// language is a step when it says both, and is not one (a command, a
+/// keybind line, a TOML sample) when it says neither. A block nested in a
 /// longer fence (an example of the tag, as the README shows) is not a step.
 pub fn blocks() -> Vec<Block> {
     let mut out = Vec::new();
@@ -40,7 +53,9 @@ pub fn blocks() -> Vec<Block> {
         let text = std::fs::read_to_string(&page).unwrap();
         for (line, info, body) in fences(&text) {
             let mut words = info.split_whitespace();
-            if words.next() != Some("strand") {
+            let lang = words.next().unwrap_or("").to_string();
+            let strand = lang == "strand";
+            if !strand && !info.contains('=') {
                 continue;
             }
             let at = format!("{name}:{line}");
@@ -57,12 +72,14 @@ pub fn blocks() -> Vec<Block> {
             let file = file.unwrap_or_else(|| panic!("{at}: no file=NAME"));
             assert_eq!(block_level, level, "{at}: a level-{level} page's step");
             assert!(
-                file.ends_with(".strand") && !file.contains('/'),
-                "{at}: file={file} is not a .strand file in the config directory"
+                file.ends_with(".strand") == strand && !file.contains('/'),
+                "{at}: file={file} is not a {} file in the config directory",
+                if strand { ".strand" } else { "non-.strand" }
             );
             out.push(Block {
                 at,
                 level,
+                lang,
                 file,
                 text: body,
             });

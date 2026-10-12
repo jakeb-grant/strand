@@ -422,8 +422,19 @@ key:
 bindsym $mod+Escape exec strand set lock.locked true
 ```
 
-An idle daemon can run the same command: with swayidle,
-`swayidle before-sleep 'strand set lock.locked true'`. Press the key:
+An idle daemon can run the same command. Locking before the machine
+sleeps needs care: `strand set` returns as soon as `locked` is written,
+and the compositor puts the lock up a moment later. If the machine
+suspends in between, your unlocked desktop shows for an instant when it
+wakes. With swayidle, `-w` makes it wait for the command before the
+machine sleeps, and a short pause after `strand set` gives the lock
+time to come up:
+
+```
+swayidle -w before-sleep 'strand set lock.locked true && sleep 1'
+```
+
+Press the key:
 every monitor is covered, with the time and a password field. Type your
 password and press Return: "Checking..." counts its dots while the
 password is checked, and the session unlocks. A wrong password says so

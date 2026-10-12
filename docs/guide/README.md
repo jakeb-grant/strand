@@ -48,11 +48,15 @@ component Dot(ws: Workspace) { … }
 ````
 
 Steps run in page order, level 1 first. A file a step does not show
-stays as it was. The guide's test, still to come (M5 wave 3,
-`crates/strand/tests/m5/newcomer.rs`), will apply the blocks in the
-same order to a running shell on two monitors and check each step's
-frame, so that a block that is wrong fails the build. Until it lands,
-nothing checks the blocks automatically.
+stays as it was. `crates/strand-dev/tests/guide.rs` applies every
+step in that order to one config directory and checks it as
+`strand check` does after each one (`every_guide_block_checks`), so a
+block that does not check, or that `strand fmt` would change, fails the
+build. It also holds the copies of design.md's blocks to the accepted
+fixtures, and runs the dock and the control centre on mock services.
+The newcomer test (M5 wave 3, `crates/strand/tests/m5/newcomer.rs`)
+will go further for levels 1 to 3, applying the blocks to a running
+shell on two monitors and checking each step's frame.
 
 A step can also need a file that is not `.strand`, such as level 5's
 template. Its block is tagged with its own language and the same
@@ -76,12 +80,12 @@ are not steps.
 
 Then start at [level 1](level-1.md).
 
-## Pages still to come
+## More pages
 
-- Plugins: a service written in Rust and built into your own `strand`
-  binary (level 5, section 7), with the plugin builder (M5 wave 2).
+- [Plugins](plugins.md): a service written in Rust and built into your
+  own `strand` binary (level 5, section 7).
 - The language itself, in full: [`docs/spec.md`](../spec.md) for what
   each construct means, [`docs/grammar.md`](../grammar.md) for how it
   is written.
-- Every element, prop and service field: `docs/reference/`, generated
-  from the schemas (M5 wave 2).
+- Still to come: every element, prop and service field in
+  `docs/reference/`, generated from the schemas (M5 wave 2).

@@ -120,7 +120,7 @@ fn every_accepted_file_and_guide_block_parses_without_errors() {
     );
     let blocks = guide::blocks();
     assert!(!blocks.is_empty(), "no guide blocks found");
-    for b in &blocks {
+    for b in blocks.iter().filter(|b| b.is_strand()) {
         assert_eq!(
             syntax_errors(&b.text),
             Vec::<&str>::new(),

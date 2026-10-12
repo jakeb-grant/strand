@@ -11,14 +11,6 @@ can read, services Strand does not ship, a control centre and a dock.
 This is the last level. After it you have met every construct in the
 language; [`docs/spec.md`](../spec.md) has the full rules for each.
 
-**Not yet verifiable.** Two things on this page land in M5 wave 2, after
-this text: the `file` element with its templates and `strand export`
-(section 2), and the hue roles `$red` … `$bright_magenta` (section 1).
-Until they land, `strand check` reports a top-level `file` as a
-misplaced element and does not know the hue roles, so section 2's
-blocks cannot be checked yet. Everything else on this page uses what
-Strand already has.
-
 ## 1. A theme of your own
 
 Until now your shell has used the built-in theme. Make `theme.strand`:
@@ -56,6 +48,7 @@ tokens base {
 }
 tokens compact extends base { override space { 1: 2px; 2: 4px; 3: 8px; 4: 12px } }
 use tokens prefs.compact ? compact : base, palette scheme
+file "~/.cache/strand/accent.txt" { text: $accent }   // kept in step with every switch
 ```
 
 Little changes at first: these are the built-in theme's values, written
@@ -95,9 +88,9 @@ it, or point the setting at another, and the theme follows. Until the
 new palette is ready the old one stays, so the screen never flashes
 default colours.
 
-**Hue roles** (M5 wave 2). Beside the Material roles, every palette
-has thirteen colours for things that must stay recognisably coloured,
-such as a green "charged" or a red "recording": `$red`, `$orange`,
+**Hue roles.** Beside the Material roles, every palette has thirteen
+colours for things that must stay recognisably coloured, such as a
+green "charged" or a red "recording": `$red`, `$orange`,
 `$yellow`, `$green`, `$cyan`, `$blue`, `$magenta`, and `$bright_red`
 through `$bright_magenta` (no bright orange). A scheme that has these
 hues (base16, Catppuccin) gives its own; a seed or a wallpaper gets
@@ -145,6 +138,10 @@ file, and so would a `<->` binding or a handler assigning
 **A theme switcher anywhere** is one line, which the control centre in
 section 4 uses: `segmented { options: Look; value: <-> theme.look }`.
 
+**The last line keeps a file in step with the theme.** Open
+`~/.cache/strand/accent.txt`: it holds your accent colour, `#rrggbb`,
+and every switch of the look rewrites it. Section 2 explains `file`.
+
 **Trying a colour without saving it.** `strand set '$accent' '#ff5555'`
 sets a token for the running shell only, over whatever the theme says,
 and `strand clear '$accent'` takes it off. (Quote both: a shell reads
@@ -152,16 +149,11 @@ and `strand clear '$accent'` takes it off. (Quote both: a shell reads
 over your files, and when a save changes what it hides, the reload
 overlay says so and offers to clear it.
 
-## 2. Your colours for other programs (M5 wave 2)
+## 2. Your colours for other programs
 
 Strand ships no themes for other programs. It writes your palette in
 forms any program, or any of the community's base16/base24 templates,
 can use.
-
-**Unverified:** the `file` element, templates and `strand export` land
-in M5 wave 2. The two blocks below follow the design (design.md,
-"Wallpaper palettes"; spec.md sections 9.7 and 9.8) and are checked
-when that code lands.
 
 Make the template, `colors.css.tmpl`, in your config directory. It is
 not a `.strand` file: it is the text to write, with holes.
@@ -213,15 +205,16 @@ Templates can read a little more than props can:
   names.
 
 **`file "path" { … }`** keeps one file in step. It may stand at the top
-level of any `.strand` file, as here, since it draws nothing. It writes
+level of any `.strand` file, as here and in `theme.strand`, since it
+draws nothing. Two `file`s may not write the same path. It writes
 only when the text would change, atomically, and catches up when the
 shell starts. It never overwrites a file it did not write: if
 `colors.css` already exists, Strand asks first. Removing the `file`
 stops the updates and leaves the file where it is. Editing
 `colors.css.tmpl` rewrites it at once.
 
-For one line, `text:` replaces the template file:
-`file "~/.cache/strand/accent" { text: hex($accent) }`.
+For one line, `text:` replaces the template file, as in the last line
+of `theme.strand`: `file "~/.cache/strand/accent.txt" { text: $accent }`.
 
 To tell a program its colours changed, add `run:`, a command run 200 ms
 after the file is written. Running a program needs your permission,
@@ -255,7 +248,7 @@ notifications and so on. For the rest, you declare one. Make
 // services.strand: services Strand does not ship
 service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
 service os from file "/etc/os-release" { name: text = PRETTY_NAME }
-service temps from poll ["sensors", "-j"] every 5s { cpu: float = temp1_input }
+service temps from poll ["sensors", "-j", "coretemp-*"] every 5s { cpu: float = temp1_input }
 permit exec "sensors"
 ```
 
@@ -265,10 +258,13 @@ seconds after the last reader goes, as the built-in ones do.
 
 **`from dbus`** reads a D-Bus object. `ppd` is the power profiles
 daemon on the system bus, and its `profile` field is the daemon's
-`ActiveProfile` property. `rw` makes it writable: assigning
-`ppd.profile = "power-saver"` sets the property. Strand checks every
-field against the object's introspection, so a misspelt property is
-an error with a did-you-mean. If the daemon is not running, that is a
+`ActiveProfile` property. `rw` marks it writable, so assigning
+`ppd.profile = "power-saver"` in a handler would set the property.
+`strand check` rejects that assignment today, which is a bug in the
+checker; until it is fixed, the control centre below only shows the
+profile. Strand checks every field against the object's
+introspection, so a misspelt property is an error with a
+did-you-mean. If the daemon is not running, that is a
 warning: your config is not broken because a daemon is down.
 
 **`from file`** reads a file and watches it. A JSON file, or `key=value`
@@ -281,6 +277,15 @@ something showing reads it. Given a file path (`"/sys/class/…"`), it
 reads the file. Given a command, it runs it: `sensors -j` prints JSON,
 and `= temp1_input` finds the first `temp1_input` in it, however deep.
 Values are converted to the declared type.
+
+`sensors` alone lists every chip it knows (the ACPI thermal zone, the
+graphics card, the disks), each with its own `temp1_input`, and the
+first one found is not always the CPU's. `"coretemp-*"` asks for
+Intel's CPU sensor only, whose `temp1_input` is the whole package. On
+an AMD processor write `"k10temp-*"` instead (its `temp1_input` is
+`Tctl`). Run `sensors` in a terminal to see the chip names your
+machine has; with no chip of that name, the service fails, says so in
+`strand watch`, and `temps.cpu` stays `0`.
 
 **`permit exec` lists the programs your config may run.** A service
 that runs a command (`from poll` of a command, or `from listen`) is an
@@ -336,12 +341,11 @@ panel Control {
             Tile "Volume" { slider { value: <-> audio.sink.volume } }
             if brightness.available { Tile "Brightness" { slider { value: <-> brightness.level } } }
           }
-          Tile "Power" {
+          Tile "Power profile" {
             row { gap: $space.1
               for p in ["power-saver", "balanced", "performance"] key p {
-                button p { grow: 1
-                  when ppd.profile == p { bg: $accent; color: $on_accent }
-                  on click { ppd.profile = p }
+                text p { grow: 1; font: $font.caption; color: $fg.muted
+                  when ppd.profile == p { color: $accent; weight: 600 }
                 }
               }
             }
@@ -378,9 +382,9 @@ panel Control {
 
 Bind a key to `strand toggle control.open` and press it. A panel slides
 in at the top right: your system's name and CPU temperature, then tiles
-for the look, volume, brightness (on a laptop), the power profile and
-Bluetooth. Pick "mocha" and the panel itself changes colour as you
-watch. "Devices ›" slides to a second page that lists your Bluetooth
+for the look, volume, brightness (on a laptop), the power profile in
+use and Bluetooth. Pick "mocha" and the panel itself changes colour as
+you watch. "Devices ›" slides to a second page that lists your Bluetooth
 devices; "‹" slides back.
 
 **`pages current: view { page main { … }; page devices { … } }`** shows
@@ -446,13 +450,13 @@ bar Dock {
   row { grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      for app in apps.all.filter(a => a.id == p.app) {   // the installed app, or none
-        image app.icon { size: 44; drag: p; tooltip: p.label
-          enter { scale: 0; opacity: 0 }
-          when hover { scale: 1.15 ~ $motion.bouncy }
-          on click     { app.launch(); play hop }
-          on secondary { pins.remove_key(p.app) }
-        }
+      let app = apps.all.find(a => a.id == p.app)   // the installed app, or null
+      image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
+        enter { scale: 0; opacity: 0 }
+        when app == null { opacity: 0.4 }
+        when hover { scale: 1.15 ~ $motion.bouncy }
+        on click     { app?.launch(); play hop }
+        on secondary { pins.remove_key(p.app) }
       }
     }
   }
@@ -465,7 +469,8 @@ icon along the dock and the others glide out of its way. Right-click
 one to unpin it. Your order is kept across restarts.
 
 An app id is its desktop file's name without `.desktop`
-(`org.gnome.Nautilus`). A pin whose app is not installed draws nothing.
+(`org.gnome.Nautilus`). A pin whose app is not installed shows a faded
+generic icon, so you can still drag it or right-click it away.
 
 **`type Pin { app: AppId; label: text }` declares a record**, a value
 with named fields. Build one with its name and named arguments:
@@ -495,9 +500,17 @@ fixed time, `~ ease(out_back, 300ms)` with an easing curve, and
 the icon is 10 px up, at 0% and 100% where it belongs. `play hop` in a
 handler plays it once on the node the handler is on.
 
-**`for app in apps.all.filter(a => a.id == p.app)`** finds the installed
-app with the pin's id: a list of one, or of none when it is not
-installed. You need the app itself, not its id, to call `app.launch()`.
+**`let app = apps.all.find(a => a.id == p.app)`** finds the installed
+app with the pin's id, or `null` when it is not installed. You need the
+app itself, not its id, to call `launch()`. `app?.icon` is `null` when
+`app` is, and `?? "application-x-executable"` puts the generic icon in
+its place; `app?.launch()` does nothing when `app` is `null`.
+
+Every pin draws exactly one icon, the missing ones included, and that
+matters for drag and drop: the `at` a drop reports counts the icons
+drawn in the row, and `pins.move` counts the pins. Were a missing pin to
+draw nothing, the two would disagree and a dragged icon would land one
+place off.
 
 ## 6. Escape hatches
 
@@ -526,14 +539,13 @@ steps.
 
 When no `from dbus`, `from file`, `from poll` or `from listen` service
 can describe what you need, a service can be written in Rust and built
-into your own `strand` binary. The plugin page, written with the plugin
-builder in M5 wave 2, is still to come.
+into your own `strand` binary. [The plugin page](plugins.md) shows how.
 
 ## What you have
 
 | File | Holds |
 | --- | --- |
-| `theme.strand` | `Look`, the settings and your token sets |
+| `theme.strand` | `Look`, the settings, your token sets and `accent.txt` |
 | `colors.strand` and `colors.css.tmpl` | your colours as CSS custom properties |
 | `services.strand` | `ppd`, `os` and `temps` |
 | `control.strand` | the `Control` panel and `Tile` |
