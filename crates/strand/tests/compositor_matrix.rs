@@ -2805,6 +2805,43 @@ fn registry(socket: &std::path::Path) -> Vec<String> {
         .with_list(|l| l.iter().map(|g| g.interface.clone()).collect())
 }
 
+/// A PNG of `output` (or the whole layout) in `$STRAND_SHOTS`, named
+/// `matrix-<kind>-<name>.png`, for a failure's record.
+fn shoot(kind: &str, output: Option<&str>, name: &str) {
+    let Some(shots) = std::env::var_os("STRAND_SHOTS") else {
+        return;
+    };
+    let mut cmd = Command::new("grim");
+    if let Some(o) = output {
+        cmd.args(["-o", o]);
+    }
+    let _ = cmd
+        .arg(PathBuf::from(shots).join(format!("matrix-{kind}-{name}.png")))
+        .status();
+}
+
+/// The windows and layer surfaces the compositor `kind` says it shows,
+/// as its own CLI prints them (labwc has none), for a failure's message.
+fn on_screen(kind: &str) -> String {
+    let asks: &[(&str, &[&str])] = match kind {
+        "niri" => &[("niri", &["msg", "windows"]), ("niri", &["msg", "layers"])],
+        "sway" => &[("swaymsg", &["-t", "get_tree"])],
+        "hyprland" => &[("hyprctl", &["clients"]), ("hyprctl", &["layers"])],
+        _ => &[],
+    };
+    asks.iter()
+        .map(|(program, args)| {
+            let out = Command::new(program)
+                .args(*args)
+                .stdin(Stdio::null())
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_else(|e| format!("({e})"));
+            format!("$ {program} {}\n{out}", args.join(" "))
+        })
+        .collect()
+}
+
 /// The whole layout as grim captures it (labwc has one output), or one
 /// output.
 fn grab(output: Option<&str>, dir: &std::path::Path) -> Option<Img> {
@@ -2926,13 +2963,23 @@ fn surfaces_meet_the_live_compositor() {
     let before = loop {
         let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
         let img = grab(output.as_deref(), dir.path()).expect("grim");
-        if dist(img.px(ow / 4, oh * 3 / 4), [0x20, 0x60, 0xe0]) <= 9 {
+        let got = img.px(ow / 4, oh * 3 / 4);
+        if dist(got, [0x20, 0x60, 0xe0]) <= 9 {
             break img;
         }
-        assert!(
-            Instant::now() < deadline,
-            "{kind}: the wallpaper never showed"
-        );
+        if Instant::now() >= deadline {
+            shoot(&kind, output.as_deref(), "surfaces-no-wallpaper");
+            panic!(
+                "{kind}: the wallpaper never showed: ({}, {}) of the {}x{} grab is {got:?}, \
+                 not [32, 96, 224]\nsurfaces: {:?}\n{}",
+                ow / 4,
+                oh * 3 / 4,
+                img.w,
+                img.h,
+                mgr.state().surfaces(),
+                on_screen(&kind)
+            );
+        }
     };
     // `panel Matrix { anchor: top_right; 300 × 200; scrim: black 30 % }`,
     // asking for blur behind its box with 16 px corners.
@@ -2999,30 +3046,14 @@ fn surfaces_meet_the_live_compositor() {
             break;
         }
         if Instant::now() >= deadline {
-            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
-                let mut cmd = Command::new("grim");
-                if let Some(o) = &output {
-                    cmd.args(["-o", o]);
-                }
-                let _ = cmd
-                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-surfaces-failed.png")))
-                    .status();
-            }
+            shoot(&kind, output.as_deref(), "surfaces-failed");
             panic!(
                 "{kind}: the desktop at ({sx}, {sy}) is {got:?} (was {base:?}, want {want:?}); \
                  the panel at ({px}, {py}) is {panel:?}"
             );
         }
     }
-    if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
-        let mut cmd = Command::new("grim");
-        if let Some(o) = &output {
-            cmd.args(["-o", o]);
-        }
-        let _ = cmd
-            .arg(PathBuf::from(shots).join(format!("matrix-{kind}-surfaces-scrim.png")))
-            .status();
-    }
+    shoot(&kind, output.as_deref(), "surfaces-scrim");
     mgr.state_mut()
         .apply_surface_change(PANEL, SurfaceChange::Removed);
     mgr.state_mut().host_mut().blur.clear();
@@ -3089,15 +3120,7 @@ fn surfaces_meet_the_live_compositor() {
             break;
         }
         if Instant::now() >= deadline {
-            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
-                let mut cmd = Command::new("grim");
-                if let Some(o) = &output {
-                    cmd.args(["-o", o]);
-                }
-                let _ = cmd
-                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-popup-scrim-failed.png")))
-                    .status();
-            }
+            shoot(&kind, output.as_deref(), "popup-scrim-failed");
             panic!(
                 "{kind}: a popup's scrim: the desktop at ({sx}, {sy}) is {got:?} (want {want:?}); \
                  the panel at ({hx}, {hy}) is {panel:?}; the popup at ({mx}, {my}) is {popup:?}"
@@ -3170,15 +3193,7 @@ fn surfaces_meet_the_live_compositor() {
             break;
         }
         if Instant::now() >= deadline {
-            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
-                let mut cmd = Command::new("grim");
-                if let Some(o) = &output {
-                    cmd.args(["-o", o]);
-                }
-                let _ = cmd
-                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-bar-scrim-failed.png")))
-                    .status();
-            }
+            shoot(&kind, output.as_deref(), "bar-scrim-failed");
             panic!(
                 "{kind}: a shadowed bar's popup scrim: the desktop at ({sx}, {sy}) is {got:?} \
                  (want {want:?}); the bar at ({bx}, {by}) is {bar:?}; its shadow at ({bx}, {shy}) \
@@ -3295,15 +3310,7 @@ fn surfaces_meet_the_live_compositor() {
                 break;
             }
             if Instant::now() >= deadline {
-                if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
-                    let mut cmd = Command::new("grim");
-                    if let Some(o) = &output {
-                        cmd.args(["-o", o]);
-                    }
-                    let _ = cmd
-                        .arg(PathBuf::from(shots).join(format!("matrix-{kind}-pose-failed.png")))
-                        .status();
-                }
+                shoot(&kind, output.as_deref(), "pose-failed");
                 panic!(
                     "{kind}: the posed panel: inside {inside:?} is {ins:?} (want {half:?}),                      outside {outside:?} is {outs:?} (want the wallpaper's {blue:?}); {:?}",
                     mgr.state().surface(id)
@@ -3571,15 +3578,7 @@ fn a_posed_panel_looks_the_same_on_every_compositor() {
             break;
         }
         if Instant::now() >= deadline {
-            if let Some(shots) = std::env::var_os("STRAND_SHOTS") {
-                let mut cmd = Command::new("grim");
-                if let Some(o) = &output {
-                    cmd.args(["-o", o]);
-                }
-                let _ = cmd
-                    .arg(PathBuf::from(shots).join(format!("matrix-{kind}-run-pose-failed.png")))
-                    .status();
-            }
+            shoot(&kind, output.as_deref(), "run-pose-failed");
             panic!(
                 "{kind} ({path}): the posed panel: inside {inside:?} is {ins:?} (want \
                  {want_in:?}), outside {outside:?} is {outs:?} (want {want_out:?})\n{}",
