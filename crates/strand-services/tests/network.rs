@@ -526,11 +526,14 @@ fn failures_of(
 
 /// (m6-services) An enterprise (802.1X) network with a profile saved in
 /// NetworkManager joins with `connect()`, through that profile; one
-/// without a saved profile, and a WEP network, are refused with an error
-/// that says why, and NetworkManager is not asked to add anything.
+/// without a saved profile is refused with an error that says why, and
+/// NetworkManager is not asked to add anything for it. (services-r2-1) A
+/// WEP network is `secure` and joins like a personal one: unsaved,
+/// `connect()` asks NetworkManager (whose secret agent asks for the key)
+/// and `connect_with(key)` carries the key.
 #[test]
-fn enterprise_and_wep_networks_join_only_through_a_saved_profile() {
-    use zbus::zvariant::{OwnedObjectPath, Value};
+fn enterprise_networks_join_only_through_a_saved_profile() {
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -608,6 +611,35 @@ fn enterprise_and_wep_networks_join_only_through_a_saved_profile() {
     let failures = failures_of(&b);
     b.network.acquire(&rt);
     assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    // `secure` is where a password joins: Home (WPA2) and Legacy (WEP),
+    // not the 802.1X networks.
+    let field = network::Network::FIELDS
+        .iter()
+        .position(|f| f.name == "access_points")
+        .unwrap();
+    b.network.acquire_field(field);
+    until(&rt, &s, "the access points", || names(&b, &rt).len() == 4);
+    let mut secure: Vec<(String, bool)> = b
+        .network
+        .cells()
+        .access_points
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, a)| (a.ssid.clone(), a.secure))
+        .collect();
+    secure.sort();
+    assert_eq!(
+        secure,
+        [
+            ("Corp".to_string(), false),
+            ("Home".to_string(), true),
+            ("Legacy".to_string(), true),
+            ("Office".to_string(), false),
+        ]
+    );
+    b.network.release_field(field);
     let join = |ssid: &str, password: Option<&str>| {
         let item = AccessPoint {
             ssid: ssid.into(),
@@ -672,18 +704,40 @@ fn enterprise_and_wep_networks_join_only_through_a_saved_profile() {
     );
     join("Office", Some("hunter22"));
     assert!(failed(3).1.contains("no saved profile"));
-    // Unsaved Legacy (WEP): refused.
-    join("Legacy", None);
-    let (ssid, error) = failed(4);
-    assert_eq!(ssid, "Legacy");
-    assert!(
-        error.contains("WEP") && error.contains("no saved profile"),
-        "{error}"
-    );
     // NetworkManager was asked to add nothing, and Corp's profile was not
     // rewritten.
+    std::thread::sleep(Duration::from_millis(200));
     assert!(mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").is_empty());
     assert!(mock_calls(&tokio, &conn, NM, &corp_saved, "Update").is_empty());
+
+    // Unsaved Legacy (WEP), with its key: a new connection carrying it.
+    join("Legacy", Some("abcde"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let added = loop {
+        if let Some(c) = mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection")
+            .into_iter()
+            .next()
+        {
+            break c;
+        }
+        assert!(std::time::Instant::now() < deadline, "Legacy never joined");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    type Settings =
+        std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>;
+    let settings: Settings = added[0].try_clone().unwrap().try_into().unwrap();
+    let sec = &settings["802-11-wireless-security"];
+    assert_eq!(
+        sec["key-mgmt"],
+        OwnedValue::try_from(Value::from("none")).unwrap()
+    );
+    assert_eq!(
+        sec["wep-key0"],
+        OwnedValue::try_from(Value::from("abcde")).unwrap()
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(failures.lock().unwrap().len(), 3, "Legacy joined");
     assert_eq!(
         mock_calls(&tokio, &conn, NM, ROOT, "ActivateConnection").len(),
         1
@@ -1105,6 +1159,128 @@ fn a_join_stops_when_networkmanager_is_replaced() {
     assert_eq!(
         *failures.lock().unwrap(),
         vec![("Slow".to_string(), "NetworkManager stopped".to_string())]
+    );
+    s.shutdown();
+}
+
+/// (m6-services, services-r2-2) A join asked again once NetworkManager
+/// has answered the first (its activation under way) is a repeat too: a
+/// second click does not activate the network again, which would end the
+/// first activation and report it as failed while the network came up.
+/// A join with another password is asked, and the activation it
+/// replaces ending is not a failure; the new one is still followed.
+#[test]
+fn a_repeat_while_the_join_is_activating_is_dropped() {
+    use zbus::zvariant::Value;
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, _) = wifi_home(&tokio, &conn);
+    add_ap(&tokio, &conn, &dev, "Mock_AP2", "Cafe", 60);
+    // Each join makes an active connection that stays activating.
+    let iface = "org.freedesktop.NetworkManager.Connection.Active";
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddMethod",
+        &(
+            NM,
+            "AddAndActivateConnection",
+            "a{sa{sv}}oo",
+            "oo",
+            format!(
+                "self.joins = getattr(self, 'joins', 0) + 1\n\
+                 p = '/org/freedesktop/NetworkManager/ActiveConnection/8%d' % self.joins\n\
+                 self.AddObject(p, '{iface}', {{'State': dbus.UInt32(1)}}, [])\n\
+                 ret = (dbus.ObjectPath('/org/freedesktop/NetworkManager/Settings/88'), \
+                 dbus.ObjectPath(p))"
+            ),
+        ),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let join = |password: &str| {
+        let item = AccessPoint {
+            ssid: "Cafe".into(),
+            strength: 0.6,
+            secure: true,
+            active: false,
+        };
+        b.network
+            .dynamic()
+            .action(
+                &rt,
+                "connect_with",
+                Some(&item.to_data()),
+                &[Data::Text(password.into())],
+                Default::default(),
+            )
+            .unwrap();
+    };
+    let added = || mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").len();
+    let settle = |ms: u64| {
+        let t = std::time::Instant::now();
+        while t.elapsed() < Duration::from_millis(ms) {
+            s.pump(&rt);
+            rt.flush();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+
+    join("hunter22");
+    until(&rt, &s, "the first join", || added() == 1);
+    // Its answer is in: the join is activating, no task asks it.
+    settle(300);
+    join("hunter22");
+    settle(500);
+    assert_eq!(added(), 1, "the repeat activated Cafe again");
+
+    // Another password: asked, replacing the first activation.
+    join("other-password");
+    until(&rt, &s, "the second join", || added() == 2);
+    settle(300);
+    let state_changed = |path: &str, reason: u32| {
+        mock(
+            &tokio,
+            &conn,
+            NM,
+            path,
+            "EmitSignal",
+            &(
+                iface,
+                "StateChanged",
+                "uu",
+                vec![Value::from(4u32), Value::from(reason)],
+            ),
+        );
+    };
+    // NetworkManager ends the replaced activation (the device
+    // disconnected): not a failure.
+    state_changed("/org/freedesktop/NetworkManager/ActiveConnection/81", 3);
+    settle(300);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    // The new one is followed: its end is reported.
+    state_changed("/org/freedesktop/NetworkManager/ActiveConnection/82", 9);
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        *failures.lock().unwrap(),
+        vec![("Cafe".to_string(), network::reason_text(9))]
     );
     s.shutdown();
 }

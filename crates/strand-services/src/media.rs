@@ -434,6 +434,52 @@ type Tasks = tokio::task::JoinSet<Option<Read>>;
 /// Remote art fetches: the URL and its file, or why not.
 type Fetches = tokio::task::JoinSet<(String, Result<art::Art, String>)>;
 
+/// The art cache the last media body left: the file of the art it
+/// showed, kept for the next (services-r2-4).
+static LEFT: std::sync::Mutex<Option<art::Cache>> = std::sync::Mutex::new(None);
+
+/// A media body's art cache. Fetched art's file lives only while the
+/// cache keeps it, and the store's `art` holds just its path, which it
+/// still publishes after the body ends (a restart after an error, or the
+/// stop when nothing reads `media`) until the next body publishes: so
+/// the body takes the cache the last one left, and leaves its own (the
+/// file shown only) however it ends. A newly built `image media.art`
+/// meanwhile reads a file that is there, and the next body shows it
+/// without fetching it again.
+struct Kept(art::Cache);
+
+impl Kept {
+    fn take() -> Kept {
+        let left = LEFT.lock().unwrap_or_else(|e| e.into_inner()).take();
+        Kept(left.unwrap_or_default())
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        let mut cache = std::mem::take(&mut self.0);
+        cache.keep_shown();
+        // The one left before (another body's, in a test process) goes.
+        let _ = LEFT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(cache);
+    }
+}
+
+impl std::ops::Deref for Kept {
+    type Target = art::Cache;
+    fn deref(&self) -> &art::Cache {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Kept {
+    fn deref_mut(&mut self) -> &mut art::Cache {
+        &mut self.0
+    }
+}
+
 /// The state to show: `players`' with remote art replaced by its fetched
 /// file (null until it is in, or when it failed), starting its fetch on
 /// the blocking pool when it is due.
@@ -541,7 +587,7 @@ impl Media {
                 None => break,
             }
         }
-        let mut cache = art::Cache::default();
+        let mut cache = Kept::take();
         let mut fetches = Fetches::new();
         let state = shown(&players, &mut cache, &mut fetches, Instant::now());
         if !cx.update(|s| *s = state) {

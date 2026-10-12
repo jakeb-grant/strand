@@ -548,5 +548,27 @@ fn remote_art_is_fetched_cached_and_never_stalls_the_player() {
     assert_eq!(cells.art.get_untracked(&rt), Ok(None), "not in yet");
     until(&rt, &s, "the slow art", || shows(&a_png));
     assert_eq!(b.media.starts(), 1);
+
+    // (services-r2-4) The body ends (here stopped; a restart after an
+    // error ends it the same way) while the store still holds the path:
+    // the file is still there for an `image media.art` built meanwhile,
+    // and the next body shows it without fetching it again.
+    let shown = cells.art.get_untracked(&rt).unwrap().unwrap();
+    b.media.stop_now(&rt);
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(1000) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(cells.art.get_untracked(&rt), Ok(Some(shown.clone())));
+    assert!(
+        std::path::Path::new(&shown).exists(),
+        "the store shows a file the ended body removed"
+    );
+    b.media.release(&rt);
+    b.media.acquire(&rt);
+    until(&rt, &s, "the next body", || b.media.starts() == 2);
+    until(&rt, &s, "the art again", || shows(&a_png));
+    assert_eq!(count("/slow.png"), 1, "fetched again");
     s.shutdown();
 }

@@ -341,10 +341,12 @@ recorded reason.
   (decisions.md m4-audit, round 3). README asks for a password-only
   stack meanwhile.
 - Network: (resolved in M6 by S-services: a join is a task; an
-  enterprise (802.1X) or WEP network with a profile saved in
-  NetworkManager joins with `connect()`; decisions.md m6-services.) An
-  unsaved enterprise or WEP network is refused: design.md has no prompt
-  for an EAP login, so it is set up in the system's network settings.
+  enterprise (802.1X) network with a profile saved in NetworkManager
+  joins with `connect()`; WEP joins with its key like a WPA personal
+  network, and `secure` is true exactly for those two; decisions.md
+  m6-services.) An unsaved enterprise network is refused: design.md has
+  no prompt for an EAP login, so it is set up in the system's network
+  settings.
 - Audio: (`StepVolume` was removed in M6, decisions.md m6-services.)
   Without an inotify instance the audio thread reconnects on its 10 s timer (no other
   unprivileged signal exists) and makes its socket watch again as soon as

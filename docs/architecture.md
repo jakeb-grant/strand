@@ -4592,8 +4592,9 @@ transparent huge pages for life.
   (NetworkManager; `access_points` is a stream field: read, followed and
   scanned only while watched; a join is a task of the body's own, M6,
   one per network at a time and stopped when NetworkManager is
-  replaced, and an enterprise (802.1X) or WEP network joins only through a profile
-  saved in NetworkManager), `bluetooth` (BlueZ's object manager),
+  replaced, an enterprise (802.1X) network joins only through a profile
+  saved in NetworkManager, and `AccessPoint.secure` is true exactly
+  where `connect_with(password)` joins: WPA personal or WEP), `bluetooth` (BlueZ's object manager),
   `notifications` (our own `org.freedesktop.Notifications` server;
   `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
@@ -4612,8 +4613,10 @@ transparent huge pages for life.
   content-addressed, pinned files `write_png` already made); the
   renderer decodes them as any local picture. `art::Cache` (16 URLs
   kept, LRU, at most `art::KEPT_BYTES` (16 MiB) of files together, since
-  they are tmpfs memory, the one shown last never dropped; two fetches at once; a failed URL not asked again for
-  5 min) lives in the media body. `art::agent(roots)` and
+  they are tmpfs memory, the one shown last never dropped; six fetches at once, the shown URL's and skipped tracks'
+  still running; a failed URL not asked again for 5 min) lives in the media body, which
+  leaves it, the shown file only, to the next body (`media::Kept`), so the store's
+  `art` path never names a removed file (m6-services, services-r2-3/-4). `art::agent(roots)` and
   `art::fetch_with` take other roots (tests).
   `apps` (wave 4, a3): desktop entries (`freedesktop-desktop-entry`;
   `NoDisplay`, `Hidden`, `OnlyShowIn`/`NotShowIn`, `TryExec`, the first

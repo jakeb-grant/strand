@@ -18,7 +18,8 @@
 //! file with its last handle; the one shown last never is): the files are
 //! on `$XDG_RUNTIME_DIR`, a tmpfs, so they are memory outside the
 //! process's own, and the bound keeps it to a few covers. It runs at most
-//! [`IN_FLIGHT`] fetches at once, and remembers failures: a URL that
+//! [`IN_FLIGHT`] fetches at once (the URL shown, and those of tracks
+//! skipped that are still running), and remembers failures: a URL that
 //! failed is not asked again for [`RETRY_AFTER`], however often a player
 //! repeats it, so a broken URL costs one request, not a storm. While a
 //! URL is fetched, or after it failed, `art` is null and a shell's
@@ -42,8 +43,14 @@ pub const CACHED: usize = 16;
 /// The kept files' bytes together (on a tmpfs: memory): two of the
 /// largest pictures, or many covers of the usual 100 KB–2 MB.
 pub const KEPT_BYTES: u64 = 2 * MAX_BYTES;
-/// Fetches at once.
-pub const IN_FLIGHT: usize = 2;
+/// Fetches at once. [`Cache::start`] is asked only for the URL shown, so
+/// the others running are for URLs shown before (a skipped track's): a
+/// blocking fetch is not cancelled, so those run on until they end (kept
+/// for a skip back) or [`TIMEOUT`]. The bound is the threads stalled
+/// hosts may hold, not a queue the shown URL waits in: it waits only
+/// after this many skips within [`TIMEOUT`], each across a stalled host
+/// (services-r2-3).
+pub const IN_FLIGHT: usize = 6;
 /// Failed URLs remembered.
 pub const FAILED: usize = 64;
 /// How long a failed URL is not asked again.
@@ -242,6 +249,22 @@ impl Cache {
         });
     }
 
+    /// Only the URL shown last is kept, and nothing counts as being
+    /// fetched: what a media body leaves to the next (its fetches are
+    /// not followed any more), so the file the store still shows lives on
+    /// (services-r2-4).
+    pub fn keep_shown(&mut self) {
+        let shown = self.shown.clone();
+        self.drop_kept(|u| Some(u) != shown.as_deref());
+        self.fetching.clear();
+    }
+
+    /// The URL shown last, if its file is kept.
+    pub fn shown(&self) -> Option<&str> {
+        let shown = self.shown.as_deref()?;
+        self.kept.iter().any(|(u, _)| u == shown).then_some(shown)
+    }
+
     /// Fetches running.
     pub fn in_flight(&self) -> usize {
         self.fetching.len()
@@ -305,7 +328,6 @@ mod tests {
         assert!(c.start("https://a/1", t0));
         assert!(!c.start("https://a/1", t0), "already being fetched");
         assert!(c.start("https://a/2", t0));
-        assert!(!c.start("https://a/3", t0), "two at once at most");
         c.done("https://a/1".into(), Ok(file()), t0);
         assert!(c.file("https://a/1").is_some());
         assert!(!c.start("https://a/1", t0), "kept");
@@ -334,6 +356,49 @@ mod tests {
             f.done(u, Err("gone".into()), t0);
         }
         assert_eq!(f.failed.len(), FAILED, "failures bounded too");
+    }
+
+    /// (m6-services, services-r2-3) Fetches of URLs no longer shown (the
+    /// tracks skipped, their hosts stalled) do not keep the shown one
+    /// waiting: two skips across stalled hosts and the third track's art
+    /// starts at once. The bound holds after IN_FLIGHT of them.
+    #[test]
+    fn stalled_fetches_of_skipped_tracks_do_not_hold_up_the_shown_art() {
+        let t0 = Instant::now();
+        let mut c = Cache::default();
+        assert!(c.start("https://stalled/a", t0));
+        assert!(c.start("https://stalled/b", t0));
+        assert!(c.start("https://fast/c", t0), "the shown art waited");
+        for i in 3..IN_FLIGHT {
+            assert!(c.start(&format!("https://stalled/{i}"), t0));
+        }
+        assert_eq!(c.in_flight(), IN_FLIGHT);
+        assert!(!c.start("https://x/y", t0), "bounded");
+        c.done("https://stalled/a".into(), Err("timed out".into()), t0);
+        assert!(c.start("https://x/y", t0));
+    }
+
+    /// (m6-services, services-r2-4) What a body leaves to the next: the
+    /// shown file only, and no fetch counted as running.
+    #[test]
+    fn the_cache_left_to_the_next_body_keeps_only_the_shown_file() {
+        let t0 = Instant::now();
+        let mut c = Cache::default();
+        for (i, u) in ["https://a/0", "https://a/1"].into_iter().enumerate() {
+            assert!(c.start(u, t0));
+            let art = Art {
+                file: pixmap::write_file(&[0x89, b'P', b'N', b'G', i as u8, 3], "png").unwrap(),
+                bytes: 6,
+            };
+            c.done(u.into(), Ok(art), t0);
+        }
+        let shown = c.file("https://a/0").unwrap();
+        assert!(c.start("https://a/2", t0));
+        c.keep_shown();
+        assert_eq!((c.kept(), c.in_flight()), (1, 0));
+        assert_eq!(c.shown(), Some("https://a/0"));
+        assert_eq!(c.file("https://a/0"), Some(shown));
+        assert!(c.start("https://a/2", t0), "fetched again by the next body");
     }
 
     /// (m6-services, services-r1-3) The kept files are bounded by their

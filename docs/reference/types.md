@@ -18,13 +18,13 @@ Keyed by `ssid`.
 | --- | --- | --- |
 | `ssid` | `text` | The network's name. |
 | `strength` | `float` | Signal strength, 0 to 1. |
-| `secure` | `bool` | It needs a password. |
+| `secure` | `bool` | It needs a password: a WPA, WPA2 or WPA3 personal or a WEP network, which `connect_with` joins (a network menu's password field). An open or Enhanced Open network takes none, and an enterprise (802.1X) one joins through its saved profile, with `connect()`. |
 | `active` | `bool` | It is the network joined. |
 
 | Method | |
 | --- | --- |
-| `action connect()` | Joins it: with its saved connection if there is one, else a new one (NetworkManager asks its secret agent for a password); a failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
-| `action connect_with(password: text)` | Joins it with `password` (WPA personal), saved in its connection: a network menu's password field. A failure is `network.failed`. |
+| `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
+| `action connect_with(password: text)` | Joins a `secure` network with `password` (its WPA key or WEP key), saved in its connection: a network menu's password field. On any other network it fails. A failure is `network.failed`. |
 
 ### `App`
 

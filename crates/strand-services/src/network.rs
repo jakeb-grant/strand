@@ -18,10 +18,14 @@
 //! it answers with is followed until it is up. If it is deactivated first
 //! (`StateChanged` to DEACTIVATED, a missing or wrong password, a
 //! timeout) or the call itself fails, `failed(ssid, error)` says why.
-//! A personal network (WPA/WPA2/WPA3) joins with a password or its saved
-//! profile; an enterprise (802.1X) or WEP network joins only through a
-//! profile saved in NetworkManager (`connect()`), and without one is
-//! refused with an error saying so (decisions.md, m6-services).
+//! A personal network (WPA/WPA2/WPA3) or a WEP one joins with a password
+//! (`secure`), its saved profile, or NetworkManager's secret agent; an
+//! enterprise (802.1X) network joins only through a profile saved in
+//! NetworkManager (`connect()`), and without one is refused with an
+//! error saying so; an open one takes no password (decisions.md,
+//! m6-services). A join of a network already being joined with the same
+//! password is a repeat, dropped, whether it is still being asked or
+//! already activating.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -123,6 +127,34 @@ struct Joining {
     /// It was listed among the active connections (once gone from them
     /// before it came up, it failed).
     seen: bool,
+    /// The fingerprint of the password it was asked with ([`fingerprint`]).
+    asked_with: u64,
+}
+
+/// A join of `ssid` with the password whose fingerprint is `asked_with`
+/// is wanted while no task asks one (services-r2-2): whether it repeats
+/// the join already activating (dropped: asked again, NetworkManager
+/// would end that activation and start another, and its end would be
+/// reported as a failure while the network came up). A join with another
+/// password is asked, and the activation it replaces is followed no
+/// more, so its end is not a failure.
+fn repeats_joining(joining: &mut BTreeMap<String, Joining>, ssid: &str, asked_with: u64) -> bool {
+    let Some(path) = joining
+        .iter()
+        .find(|(_, j)| j.ssid == ssid)
+        .map(|(path, _)| path.clone())
+    else {
+        return false;
+    };
+    if joining
+        .get(&path)
+        .is_some_and(|j| j.asked_with == asked_with)
+    {
+        log::debug!("network: already joining {ssid}");
+        return true;
+    }
+    joining.remove(&path);
+    false
 }
 
 /// How the active connections no join follows yet ended (activated or
@@ -190,12 +222,13 @@ fn strength(p: &Props) -> f64 {
     (dbus::number(p, "Strength").unwrap_or(0.0) / 100.0).clamp(0.0, 1.0)
 }
 
-/// It asks for a key: `Flags` has PRIVACY (WEP), or it has WPA or RSN
-/// flags. `Flags`' WPS bits (0x2, 0x4, 0x8) say nothing about a key: an
-/// open network may offer WPS.
+/// It needs a password, which `connect_with` takes: a personal
+/// (WPA/WPA2/WPA3) or WEP network ([`kind`]). An open or Enhanced Open
+/// (OWE) one has none to give, and an enterprise (802.1X) one a login
+/// its saved profile holds (services-r2-1). `Flags`' WPS bits (0x2, 0x4,
+/// 0x8) say nothing about a key: an open network may offer WPS.
 fn secure(p: &Props) -> bool {
-    let n = |k| dbus::number(p, k).map_or(0, |n| n as u32);
-    n("Flags") & 0x1 != 0 || n("WpaFlags") != 0 || n("RsnFlags") != 0
+    matches!(kind(p), Kind::Personal(_) | Kind::Wep)
 }
 
 fn object_paths(p: &Props, name: &str) -> Vec<String> {
@@ -523,7 +556,7 @@ impl Network {
                             Ok((id, answer)) => (id, answer),
                             Err(e) => (e.id(), Err(zbus::Error::Failure("the join stopped".into()))),
                         };
-                        let Some((ssid, next)) = asked.answered(id) else {
+                        let Some((ssid, asked_with, next)) = asked.answered(id) else {
                             continue;
                         };
                         let failure = match answer {
@@ -536,7 +569,7 @@ impl Network {
                                 None => {
                                     // Followed until it is up (or not).
                                     let seen = nm.active.contains_key(&active);
-                                    joining.insert(active, Joining { ssid: ssid.clone(), seen });
+                                    joining.insert(active, Joining { ssid: ssid.clone(), seen, asked_with });
                                     if !settle_joins(&mut cx, &nm, &mut joining) {
                                         return Ok(());
                                     }
@@ -562,8 +595,11 @@ impl Network {
                         }
                         // A join of this network asked meanwhile (another
                         // password): asked now, so it finds the profile
-                        // this one may have saved.
-                        if let Some(password) = next {
+                        // this one may have saved, and the activation it
+                        // replaces is followed no more.
+                        if let Some(password) = next
+                            && !repeats_joining(&mut joining, &ssid, fingerprint(password.as_deref()))
+                        {
                             let id = ask(&mut asking, daemon.conn(), &nm, ssid.clone(), password.clone());
                             asked.started(ssid, id, password.as_deref());
                         }
@@ -598,8 +634,11 @@ impl Network {
                             // Asked in a task (up to 25 s for the
                             // activation): NetworkManager's signals, the
                             // radio and other joins go on meanwhile. One
-                            // network is asked one join at a time.
-                            if asked.ask(&item.ssid, password.as_deref()) {
+                            // network is asked one join at a time, and a
+                            // repeat of one activating is dropped.
+                            if asked.ask(&item.ssid, password.as_deref())
+                                && !repeats_joining(&mut joining, &item.ssid, fingerprint(password.as_deref()))
+                            {
                                 let id = ask(&mut asking, daemon.conn(), &nm, item.ssid.clone(), password.clone());
                                 asked.started(item.ssid, id, password.as_deref());
                             }
@@ -707,6 +746,7 @@ enum Kind {
     /// holds (an EAP method, identity, certificates).
     Enterprise,
     /// WEP: `Flags` has PRIVACY and there is no WPA or RSN key management.
+    /// A key (`wep-key0`).
     Wep,
 }
 
@@ -732,22 +772,44 @@ fn kind(p: &Props) -> Kind {
     }
 }
 
-/// The `802-11-wireless-security` settings for joining with `password`
-/// (WPA/WPA2 or WPA3 personal).
-fn security(key_mgmt: &str, password: &str) -> zbus::Result<HashMap<&'static str, OwnedValue>> {
+/// The `802-11-wireless-security` settings for joining a network of
+/// `kind` with `password`: a WPA/WPA2 or WPA3 personal `psk`, or a WEP
+/// key (`wep-key0`), none if `kind` takes no password.
+fn security(kind: Kind, password: &str) -> zbus::Result<Option<HashMap<&'static str, OwnedValue>>> {
     let text = |s: &str| OwnedValue::try_from(zbus::zvariant::Value::from(s.to_string()));
-    Ok(HashMap::from([
-        ("key-mgmt", text(key_mgmt)?),
-        ("psk", text(password)?),
-    ]))
+    Ok(match kind {
+        Kind::Personal(key_mgmt) => Some(HashMap::from([
+            ("key-mgmt", text(key_mgmt)?),
+            ("psk", text(password)?),
+        ])),
+        Kind::Wep => Some(HashMap::from([
+            ("key-mgmt", text("none")?),
+            ("wep-key0", text(password)?),
+            ("wep-key-type", OwnedValue::from(wep_key_type(password))),
+        ])),
+        Kind::Open | Kind::Enterprise => None,
+    })
+}
+
+/// NetworkManager's `wep-key-type` for a WEP `key`: 1 (the key itself,
+/// 5 or 13 characters, or 10 or 26 hex digits) or 2 (a passphrase it
+/// hashes into one).
+fn wep_key_type(key: &str) -> u32 {
+    let hex = key.chars().all(|c| c.is_ascii_hexdigit());
+    match key.len() {
+        5 | 13 if key.is_ascii() => 1,
+        10 | 26 if hex => 1,
+        _ => 2,
+    }
 }
 
 /// Why `name` (an access point of `kind`) cannot be joined the way it was
 /// asked, before anything is sent: `saved` it has a saved connection,
-/// `password` one was given. Enterprise (802.1X) and WEP networks join
-/// only through a profile saved in NetworkManager (made in the system's
-/// network settings), which holds what they need; a password is for a
-/// personal network.
+/// `password` one was given. An enterprise (802.1X) network joins only
+/// through a profile saved in NetworkManager (made in the system's
+/// network settings), which holds its login; a password is for a
+/// personal or WEP network (`secure`), and without one NetworkManager's
+/// secret agent is asked for it.
 fn refusal(name: &str, kind: Kind, saved: bool, password: bool) -> Option<String> {
     match (kind, saved, password) {
         (Kind::Enterprise, true, true) => Some(format!(
@@ -756,13 +818,6 @@ fn refusal(name: &str, kind: Kind, saved: bool, password: bool) -> Option<String
         )),
         (Kind::Enterprise, false, _) => Some(format!(
             "`{name}` is an enterprise (802.1X) network with no saved profile: \
-             add it in the system's network settings first"
-        )),
-        (Kind::Wep, true, true) => Some(format!(
-            "`{name}` is a WEP network: join its saved profile with `connect()`, not a password"
-        )),
-        (Kind::Wep, false, _) => Some(format!(
-            "`{name}` is a WEP network with no saved profile: WEP is not offered here; \
              add it in the system's network settings first"
         )),
         (Kind::Open, _, true) => Some(format!("`{name}` is an open network: it takes no password")),
@@ -868,17 +923,18 @@ impl Asked {
         self.asking.insert(ssid, (id, fingerprint(password)));
     }
 
-    /// Task `id` answered: its network, and the join of it to ask now,
-    /// if one waited.
-    fn answered(&mut self, id: tokio::task::Id) -> Option<(String, Option<Option<String>>)> {
+    /// Task `id` answered: its network, its password's fingerprint, and
+    /// the join of it to ask now, if one waited.
+    #[allow(clippy::type_complexity)]
+    fn answered(&mut self, id: tokio::task::Id) -> Option<(String, u64, Option<Option<String>>)> {
         let ssid = self
             .asking
             .iter()
             .find(|(_, (task, _))| *task == id)
             .map(|(ssid, _)| ssid.clone())?;
-        self.asking.remove(&ssid);
+        let (_, asked_with) = self.asking.remove(&ssid)?;
         let next = self.waiting.remove(&ssid);
-        Some((ssid, next))
+        Some((ssid, asked_with, next))
     }
 
     /// Everything forgotten (its tasks are stopped by the caller): the
@@ -949,9 +1005,9 @@ async fn connect(
     if let Some(why) = refusal(name, kind, saved.is_some(), password.is_some()) {
         return Err(zbus::Error::Failure(why));
     }
-    let secret = match (kind, password) {
-        (Kind::Personal(key_mgmt), Some(pw)) => Some(security(key_mgmt, pw)?),
-        _ => None,
+    let secret = match password {
+        Some(pw) => security(kind, pw)?,
+        None => None,
     };
     if let Some((path, mut settings)) = saved {
         if let Some(secret) = &secret {
@@ -1088,10 +1144,77 @@ mod tests {
         assert!(secure(&ap(0, 0, 0x400)), "WPA3 (SAE)");
     }
 
+    /// (m6-services, services-r2-1) `secure` is what the schema says: the
+    /// network needs a password, so a shell's password field
+    /// (`connect_with`) is offered exactly where it joins. Enhanced Open
+    /// and 802.1X have RSN flags but take no password.
+    #[test]
+    fn secure_is_exactly_the_networks_a_password_joins() {
+        for (flags, wpa, rsn) in [
+            (0, 0, 0),
+            (0x1, 0, 0x800),
+            (0x1, 0, 0x1000),
+            (0x1, 0, 0x288),
+            (0x1, 0x288, 0),
+            (0x1, 0, 0x2000),
+            (0x1, 0, 0x188),
+            (0x1, 0, 0x400),
+            (0x1, 0, 0x300),
+            (0x1, 0, 0),
+        ] {
+            let p = ap(flags, wpa, rsn);
+            let takes = refusal("n", kind(&p), false, true).is_none();
+            assert_eq!(secure(&p), takes, "{flags:#x} {wpa:#x} {rsn:#x}");
+        }
+        assert!(!secure(&ap(0x1, 0, 0x800)), "Enhanced Open");
+        assert!(!secure(&ap(0x1, 0, 0x288)), "802.1X");
+        // A WEP key, as NetworkManager takes it: the key itself (5 or 13
+        // characters, 10 or 26 hex digits), else a passphrase.
+        assert_eq!(wep_key_type("abcde"), 1);
+        assert_eq!(wep_key_type("0123456789"), 1);
+        assert_eq!(wep_key_type("0123456789abcdef0123456789"), 1);
+        assert_eq!(wep_key_type("0123456789abcdef012345678g"), 2);
+        assert_eq!(wep_key_type("a longer passphrase"), 2);
+        let wep = security(Kind::Wep, "abcde").unwrap().unwrap();
+        assert_eq!(
+            wep["key-mgmt"],
+            OwnedValue::try_from(Value::from("none")).unwrap()
+        );
+        assert_eq!(wep["wep-key-type"], OwnedValue::from(1u32));
+        assert!(security(Kind::Open, "x").unwrap().is_none());
+        assert!(security(Kind::Enterprise, "x").unwrap().is_none());
+    }
+
+    /// (m6-services, services-r2-2) A join of a network whose activation
+    /// is under way (its task has answered) with the same password is a
+    /// repeat and dropped; with another it is asked, and the activation
+    /// it replaces is followed no more (its end is not a failure).
+    #[test]
+    fn a_repeat_of_a_join_activating_is_dropped() {
+        let mut joining = BTreeMap::new();
+        let pw = fingerprint(Some("pw"));
+        joining.insert(
+            "/a/5".to_string(),
+            Joining {
+                ssid: "Home".into(),
+                seen: false,
+                asked_with: pw,
+            },
+        );
+        assert!(repeats_joining(&mut joining, "Home", pw));
+        assert!(joining.contains_key("/a/5"), "still followed");
+        assert!(
+            !repeats_joining(&mut joining, "Cafe", pw),
+            "another network"
+        );
+        assert!(!repeats_joining(&mut joining, "Home", fingerprint(None)));
+        assert!(joining.is_empty(), "the replaced activation is let go");
+    }
+
     /// (m6-services) How each network is joined, and what is refused
     /// before NetworkManager is asked to activate anything.
     #[test]
-    fn enterprise_and_wep_networks_join_only_through_a_saved_profile() {
+    fn enterprise_networks_join_only_through_a_saved_profile() {
         assert_eq!(kind(&ap(0, 0, 0)), Kind::Open);
         assert_eq!(kind(&ap(0x1, 0, 0x188)), Kind::Personal("wpa-psk"));
         assert_eq!(kind(&ap(0x1, 0, 0x400)), Kind::Personal("sae"));
@@ -1102,7 +1225,8 @@ mod tests {
         assert_eq!(kind(&ap(0x1, 0, 0)), Kind::Wep);
         assert_eq!(kind(&ap(0x1, 0x1, 0x1)), Kind::Wep, "pairwise WEP only");
         assert_eq!(kind(&ap(0x1, 0, 0x800)), Kind::Open, "Enhanced Open");
-        // Saved: joined with connect(); a password is for a personal one.
+        // Saved: joined with connect(); a password is for a personal or
+        // WEP one.
         for k in [
             Kind::Enterprise,
             Kind::Wep,
@@ -1114,17 +1238,17 @@ mod tests {
         assert!(
             refusal("n", Kind::Enterprise, true, true).is_some_and(|e| e.contains("connect()"))
         );
-        assert!(refusal("n", Kind::Wep, true, true).is_some_and(|e| e.contains("connect()")));
+        assert_eq!(refusal("n", Kind::Wep, true, true), None);
         assert_eq!(refusal("n", Kind::Personal("wpa-psk"), true, true), None);
-        // Not saved: enterprise and WEP are refused, with or without one.
+        // Not saved: enterprise is refused, with or without one; WEP is
+        // asked of NetworkManager (its secret agent asks for the key).
         for pw in [false, true] {
             let e = refusal("Corp", Kind::Enterprise, false, pw).unwrap();
             assert!(
                 e.contains("enterprise (802.1X)") && e.contains("no saved profile"),
                 "{e}"
             );
-            let e = refusal("Old", Kind::Wep, false, pw).unwrap();
-            assert!(e.contains("WEP") && e.contains("no saved profile"), "{e}");
+            assert_eq!(refusal("Old", Kind::Wep, false, pw), None);
         }
         assert_eq!(refusal("n", Kind::Personal("wpa-psk"), false, true), None);
         assert_eq!(refusal("n", Kind::Personal("wpa-psk"), false, false), None);
@@ -1160,13 +1284,20 @@ mod tests {
         assert_eq!(a.asking.len(), 2, "one task per network");
         assert_eq!(
             a.answered(home),
-            Some(("Home".into(), Some(Some("fixed".into()))))
+            Some((
+                "Home".into(),
+                fingerprint(Some("pw")),
+                Some(Some("fixed".into()))
+            ))
         );
         assert!(a.ask("Home", Some("again")), "answered: asked at once");
         // A repeat of the join being asked drops the one waiting.
         assert!(!a.ask("Cafe", Some("pw")));
         assert!(!a.ask("Cafe", None));
-        assert_eq!(a.answered(cafe), Some(("Cafe".into(), None)));
+        assert_eq!(
+            a.answered(cafe),
+            Some(("Cafe".into(), fingerprint(None), None))
+        );
         assert_eq!(a.answered(cafe), None, "answered once");
         let x = id();
         a.started("X".into(), x, None);
