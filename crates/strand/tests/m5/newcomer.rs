@@ -1050,26 +1050,62 @@ fn bar_points() -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// How long a click that raised no surface is watched for the calendar.
+const QUICK_LOOK: Duration = Duration::from_millis(250);
+/// How long a click that painted a new surface is watched for the
+/// calendar before the surface is taken for another popup (the wait the
+/// fixed top-centre click had): on a loaded runner the calendar's surface
+/// can be painted before the dump shows it, or after the quick look.
+const POPUP_LOOK: Duration = Duration::from_secs(2);
+
+/// Watches the dump for the calendar after a click made at `start`, when
+/// `surfaces` surfaces had been painted: [`QUICK_LOOK`] while no new
+/// surface has been painted, [`POPUP_LOOK`] once one has.
+fn calendar_after_click(desk: &Desk, start: Instant, surfaces: usize) -> bool {
+    loop {
+        if calendar_shown(&desk.dump()) {
+            return true;
+        }
+        let grew = desk.surface_count() > surfaces;
+        let look = if grew { POPUP_LOOK } else { QUICK_LOOK };
+        if start.elapsed() >= look {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
 /// Clicks along `HEADLESS-1`'s bar ([`bar_points`]) until the dump shows
 /// the calendar, dismissing any other popup a click opened; the point
-/// that opened it, or `None`.
+/// that opened it, or `None`. A click that paints a new surface is given
+/// [`POPUP_LOOK`] to show the calendar before that surface is closed as
+/// another popup's, so a calendar painted late is never dismissed.
 fn open_calendar(desk: &mut Desk) -> Option<(u32, u32)> {
     let mut pointer = desk.pointer();
     // (A new virtual pointer's first buttons reach no surface.)
     pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
     std::thread::sleep(Duration::from_millis(200));
     let mut found = None;
+    let mut last = None;
     for (x, y) in bar_points() {
+        // A calendar that showed after the last click's look ended is
+        // found before the next click could close it.
+        if let Some(at) = last
+            && calendar_shown(&desk.dump())
+        {
+            found = Some(at);
+            break;
+        }
+        last = Some((x, y));
         let surfaces = desk.surface_count();
         pointer.click(x, y, LAYOUT.0, LAYOUT.1);
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while found.is_none() && Instant::now() < deadline {
-            if calendar_shown(&desk.dump()) {
-                found = Some((x, y));
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        if found.is_some() {
+        let start = Instant::now();
+        // Twice: a surface painted just as the quick look ended gets its
+        // full look too, before it is dismissed.
+        if calendar_after_click(desk, start, surfaces)
+            || (desk.surface_count() > surfaces && calendar_after_click(desk, start, surfaces))
+        {
+            found = Some((x, y));
             break;
         }
         desk.assert_alive();

@@ -4,7 +4,9 @@
 //! checker and the runtime do, and spec.md states it.
 //!
 //! - 7.1: a bare number where a length is expected is logical pixels;
-//! - 7.2: which comparisons of numbers with units are accepted;
+//! - 7.2: which comparisons of numbers with units are accepted, for
+//!   order and for equality alike;
+//! - 6.5: a number key keeps its unit;
 //! - 10.4: `@reset` resets its cell on every reload that commits the
 //!   declaration with the attribute, not only the first;
 //! - 11: a settings file that does not exist gives every field its
@@ -246,6 +248,74 @@ fn lengths_in_different_units_compare_as_written() {
         "{}",
         shell.scene.render()
     );
+    drop(shell.rt);
+}
+
+/// spec.md 7.2: `==` and `!=` take numbers by the ordering rule, so units
+/// that never mix are a load error for equality too (the checker once
+/// accepted any two numbers and the VM compared them unit-blind, so
+/// `90deg == 90px` and `1s == 1000px` showed true), and lengths in
+/// different units are equal by their numbers as written.
+#[test]
+fn equality_takes_numbers_by_the_ordering_rule() {
+    let file = |cmp: &str| format!("bar Top {{\n  text {cmp} ? \"a\" : \"b\"\n}}\n");
+    for cmp in [
+        "1 == 1.0",
+        "10px == 10",
+        "10px != 20px",
+        "2ch == 2px",
+        "50% == 50px",
+        "50% == 50",
+        "90deg == 90",
+        "1s == 1000ms",
+        "1s != 2s",
+    ] {
+        assert_eq!(codes(&file(cmp)), Vec::<String>::new(), "{cmp}");
+    }
+    for cmp in [
+        "90deg == 90px",
+        "90px != 90deg",
+        "1s == 1000",
+        "1000 == 1s",
+        "1s == 1000px",
+        "1s != 1000%",
+        "40% == 90deg",
+    ] {
+        assert_eq!(codes(&file(cmp)), ["check::type_mismatch"], "{cmp}");
+    }
+    let shell = Shell::boot(
+        &[(
+            "bar.strand",
+            "bar Top {\n  text 2ch == 2px ? \"ch-eq\" : \"ch-ne\"\n  \
+             text 50% != 50px ? \"pct-ne\" : \"pct-eq\"\n  \
+             text 1s == 1000ms ? \"s-eq\" : \"s-ne\"\n  \
+             text 10px == 10 ? \"bare-eq\" : \"bare-ne\"\n}\n",
+        )],
+        Storage::none(),
+    );
+    for want in ["ch-eq", "pct-eq", "s-eq", "bare-eq"] {
+        assert!(
+            shell.scene.find_text(want).is_some(),
+            "{want}: {}",
+            shell.scene.render()
+        );
+    }
+    drop(shell.rt);
+}
+
+/// spec.md 6.5: a key is an identity, not an equality: a number key keeps
+/// its unit, so `2px` and `2ch` mount two copies although `2ch == 2px`.
+#[test]
+fn a_number_key_keeps_its_unit() {
+    let shell = Shell::boot(
+        &[(
+            "bar.strand",
+            "bar Top {\n  for w in [2px, 2ch] key w {\n    text \"copy\"\n  }\n}\n",
+        )],
+        Storage::none(),
+    );
+    let copies = shell.scene.texts().iter().filter(|t| *t == "copy").count();
+    assert_eq!(copies, 2, "{}", shell.scene.render());
     drop(shell.rt);
 }
 

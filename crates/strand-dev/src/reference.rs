@@ -664,30 +664,83 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference")
     }
 
+    /// What keeps `dir` from being exactly `pages`, split by its fix:
+    /// what `strand-dev reference` mends (a page that differs or is
+    /// missing, a generated page no longer generated), and what only a
+    /// hand can (anything [`write`] leaves alone or refuses: a file that is
+    /// not a `.md`, a directory, a `.md` without the generated note).
+    fn audit(dir: &Path, pages: &Pages) -> (Vec<String>, Vec<String>) {
+        let (mut regenerate, mut by_hand) = (Vec::new(), Vec::new());
+        for (name, text) in pages {
+            let on_disk = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+            if on_disk != *text {
+                regenerate.push(format!("{name} differs"));
+            }
+        }
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.ends_with(".md") || !path.is_file() {
+                by_hand.push(format!("{name} is not a page"));
+            } else if !is_generated(&path) {
+                by_hand.push(format!("{name} is not generated"));
+            } else if !pages.contains_key(name.as_str()) {
+                regenerate.push(format!("{name} is no longer generated"));
+            }
+        }
+        by_hand.sort();
+        (regenerate, by_hand)
+    }
+
     /// The committed pages are what `strand-dev reference` writes, and
     /// nothing else is there: CI fails on a schema edit without its pages.
+    /// A file the command would not mend is named with its own fix.
     #[test]
     fn the_reference_is_current() {
-        let pages = pages(&schema().unwrap());
-        let mut stale = Vec::new();
-        for (name, text) in &pages {
-            let on_disk = std::fs::read_to_string(dir().join(name)).unwrap_or_default();
-            if on_disk != *text {
-                stale.push(format!("{name} differs"));
-            }
-        }
-        for e in std::fs::read_dir(dir()).unwrap() {
-            let name = e.unwrap().file_name().to_string_lossy().into_owned();
-            if !pages.contains_key(name.as_str()) {
-                stale.push(format!("{name} is not generated"));
-            }
-        }
+        let (regenerate, by_hand) = audit(&dir(), &pages(&schema().unwrap()));
         assert!(
-            stale.is_empty(),
+            by_hand.is_empty(),
+            "docs/reference/ holds only generated pages ({}); remove these by hand \
+             (`strand-dev reference` leaves them alone or refuses the directory), \
+             then regenerate if anything else is reported",
+            by_hand.join(", ")
+        );
+        assert!(
+            regenerate.is_empty(),
             "docs/reference/ is out of date ({}); run `scripts/container/run.sh cargo run -p \
              strand-dev -- reference` from the repository's root and commit the pages",
-            stale.join(", ")
+            regenerate.join(", ")
         );
+    }
+
+    /// `the_reference_is_current` tells each stray file by its fix: a
+    /// `.gitkeep`, a directory or a hand-written `.md` is for a hand, and
+    /// after [`write`] only those are left, so the advice to regenerate
+    /// is given only where regenerating mends it.
+    #[test]
+    fn the_currency_check_names_the_fix_that_works() {
+        let d = std::env::temp_dir().join(format!("strand-ref-audit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("sub.md")).unwrap();
+        std::fs::write(d.join(".gitkeep"), "").unwrap();
+        std::fs::write(d.join("old.md"), format!("{GENERATED}x")).unwrap();
+        let p = pages(&schema().unwrap());
+        let (regenerate, by_hand) = audit(&d, &p);
+        assert!(regenerate.contains(&"old.md is no longer generated".to_string()));
+        assert!(regenerate.contains(&"elements.md differs".to_string()));
+        assert_eq!(by_hand, [".gitkeep is not a page", "sub.md is not a page"]);
+        // Regenerating mends what it is advised for and leaves the rest.
+        write(&d, &p).unwrap();
+        let (regenerate, by_hand) = audit(&d, &p);
+        assert!(regenerate.is_empty(), "{regenerate:?}");
+        assert_eq!(by_hand, [".gitkeep is not a page", "sub.md is not a page"]);
+        // A hand-written page is for a hand too (`write` would refuse).
+        std::fs::write(d.join("notes.md"), "# Notes\n").unwrap();
+        let (regenerate, by_hand) = audit(&d, &p);
+        assert!(regenerate.is_empty(), "{regenerate:?}");
+        assert!(by_hand.contains(&"notes.md is not generated".to_string()));
+        assert!(write(&d, &p).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Every documented entry reaches a page: each element, service,

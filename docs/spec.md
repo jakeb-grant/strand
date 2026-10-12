@@ -383,7 +383,9 @@ filling the monitor, the keyboard always).
   keyed collections bring their own (a workspace by its `id`, a
   notification by its `id`). For plain data, write `key e`:
   `for p in pins key p.app { … }`. A `for` over plain data without a
-  key is a load error.
+  key is a load error. A key is an identity, not an equality: a number
+  key keeps its unit, so `2px` and `2ch` are two keys although
+  `2ch == 2px` (section 7.2).
 - When `xs` changes, copies whose key stays are kept with their state
   and move to their new place (they glide there, section 6.6); copies
   whose key goes play `exit` and unmount; new keys mount and play
@@ -494,6 +496,12 @@ units).
   percentage against a size, so `2ch < 10px` is true. A duration
   compares only with a duration, and other units never mix (`1s < 2`,
   `90deg < 10px`): a load error.
+- `==` and `!=` take numbers by the same rule: two numbers are
+  comparable for equality exactly when they are for order, and are equal
+  when their numbers are, read the same way (`10px == 10`, `2ch == 2px`
+  and `50% == 50px` are true; `1s == 1000ms` is true). Numbers whose
+  units never mix are a load error here too (`90deg == 90px`,
+  `1s == 1000`, `1s == 1000px`).
 - `a ?. f` is `null` when `a` is `null`, else `a.f`. `a ?? b` is `b`
   when `a` is `null`, or an `Async` that has no value: its first load
   still pending, or a failure with no earlier value kept. An `Async`
