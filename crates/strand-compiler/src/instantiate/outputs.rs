@@ -427,6 +427,20 @@ impl Instance {
     pub fn output_count(&self) -> usize {
         self.ctx.outputs.borrow().len()
     }
+
+    /// (M5) Calls `each` with every path a mounted `file` writes now:
+    /// the outputs whose last [`Instance::take_outputs`] change was a
+    /// write (one pending since keeps its target). A removed `file`, one
+    /// whose path changed and one that fails have no target here, so the
+    /// writer lets go of what it was still trying to write there
+    /// (spec.md 9.7, "Removing a `file` stops its updates").
+    pub fn output_targets(&self, mut each: impl FnMut(&Path)) {
+        for s in self.ctx.outputs.borrow().iter() {
+            if let Some(Content::Ready { path, .. }) = s.last.borrow().as_ref() {
+                each(path);
+            }
+        }
+    }
 }
 
 /// Two mounted `file`s with one path: both fail, each naming the other

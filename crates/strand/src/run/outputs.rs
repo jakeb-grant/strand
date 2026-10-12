@@ -35,6 +35,7 @@ use strand_compiler::diagnostic::{Style, render, render_short};
 use strand_compiler::instantiate::{OutputChange, OutputContent};
 use strand_compiler::source::SourceMap;
 
+use super::logic::OwnWrites;
 use super::shell::Shell;
 use crate::overlay;
 
@@ -66,6 +67,12 @@ enum Job {
     },
     /// The user's `[replace]`: `path` is Strand's now, written at once.
     Replace(PathBuf),
+    /// The paths the mounted `file`s write now: a write still being
+    /// tried, or a `run:` still due, anywhere else is dropped (a removed
+    /// `file`, a changed path, a failing render).
+    Keep(Vec<PathBuf>),
+    /// The shell is gone: the thread ends.
+    Stop,
 }
 
 /// What the writer tells logic.
@@ -80,24 +87,65 @@ pub(super) enum Outcome {
     Unowned(PathBuf, String),
 }
 
-/// The writer thread, started with the first output.
+/// The writer thread, started with the first output, ended when this
+/// is dropped (with the shell).
 pub(super) struct Files {
     ping: calloop::ping::Ping,
     manifest: Option<PathBuf>,
+    own_writes: Option<OwnWrites>,
     tx: Option<Sender<Job>>,
     rx: Option<Receiver<Outcome>>,
+    /// The targets last sent as [`Job::Keep`].
+    targets: Vec<PathBuf>,
+}
+
+impl Drop for Files {
+    fn drop(&mut self) {
+        // The writer holds a sender of its own job channel (for its
+        // runs' endings), so dropping ours would never end it.
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(Job::Stop);
+        }
+    }
 }
 
 impl Files {
     /// `manifest`: `$XDG_STATE_HOME/strand/files` (none: nothing is
-    /// owned across restarts).
-    pub(super) fn new(ping: calloop::ping::Ping, manifest: Option<PathBuf>) -> Files {
+    /// owned across restarts); `own_writes`: registers each write with
+    /// the config watcher before it lands.
+    pub(super) fn new(
+        ping: calloop::ping::Ping,
+        manifest: Option<PathBuf>,
+        own_writes: Option<OwnWrites>,
+    ) -> Files {
         Files {
             ping,
             manifest,
+            own_writes,
             tx: None,
             rx: None,
+            targets: Vec::new(),
         }
+    }
+
+    /// Tells the writer the paths `inst`'s outputs write now, when they
+    /// changed since last told.
+    fn keep(&mut self, inst: &strand_compiler::instantiate::Instance) {
+        if self.tx.is_none() {
+            return;
+        }
+        let (mut count, mut same) = (0, true);
+        inst.output_targets(|p| {
+            count += 1;
+            same &= self.targets.iter().any(|t| t == p);
+        });
+        if same && count == self.targets.len() {
+            return;
+        }
+        let mut now = Vec::with_capacity(count);
+        inst.output_targets(|p| now.push(p.to_path_buf()));
+        self.targets.clone_from(&now);
+        self.send(Job::Keep(now));
     }
 
     fn send(&mut self, job: Job) -> bool {
@@ -107,9 +155,14 @@ impl Files {
             let ping = self.ping.clone();
             let manifest = self.manifest.clone();
             let back = tx.clone();
+            let hook = self.own_writes.take();
             let spawned = std::thread::Builder::new()
                 .name("strand-files".into())
-                .spawn(move || Writer::new(manifest, out, ping, back).run(jobs));
+                .spawn(move || {
+                    let mut w = Writer::new(manifest, out, ping, back);
+                    w.own_writes = hook;
+                    w.run(jobs)
+                });
             if let Err(e) = spawned {
                 log::warn!("file outputs are not written: no writer thread: {e}");
                 return false;
@@ -142,6 +195,7 @@ impl Shell {
         for change in self.inst.take_outputs() {
             self.output(change);
         }
+        self.files.keep(&self.inst);
         for o in self.files.outcomes() {
             match o {
                 Outcome::Written(path) => self.output_ok(&path),
@@ -247,6 +301,8 @@ struct Writer {
     retries: HashMap<PathBuf, Retry>,
     /// How long `run:` may take ([`RUN_TIMEOUT`]; tests shorten it).
     timeout: Duration,
+    /// Registers a write with the config watcher before it lands.
+    own_writes: Option<OwnWrites>,
 }
 
 impl Writer {
@@ -270,6 +326,7 @@ impl Writer {
             runs: HashMap::new(),
             retries: HashMap::new(),
             timeout: RUN_TIMEOUT,
+            own_writes: None,
         }
     }
 
@@ -305,11 +362,18 @@ impl Writer {
                     self.write(path, bytes, run, last);
                 }
                 Some(Job::Replace(path)) => {
-                    self.own(&path, 0);
+                    // The file it names, a link followed: what is written.
+                    match real(&path) {
+                        Ok(target) if is_strand(&target) => {}
+                        Ok(target) => self.own(&target, 0),
+                        Err(why) => log::warn!("file {}: {why}", path.display()),
+                    }
                     if let Some(r) = self.retries.get_mut(&path) {
                         r.at = Instant::now();
                     }
                 }
+                Some(Job::Keep(paths)) => self.keep(&paths),
+                Some(Job::Stop) => return,
                 Some(Job::Ran { path, failed }) => {
                     if let Some(why) = failed {
                         self.tell(Outcome::Failed(path.clone(), why));
@@ -357,7 +421,7 @@ impl Writer {
                     });
                 }
                 // A `.strand` target never becomes writable.
-                if path.extension().is_some_and(|e| e == "strand") {
+                if why.starts_with(STRAND_REFUSED) {
                     return None;
                 }
                 self.retries.insert(
@@ -373,6 +437,20 @@ impl Writer {
                 Some(RETRY_FIRST)
             }
         }
+    }
+
+    /// Lets go of the writes and `run:`s of paths no `file` writes now;
+    /// a run already going ends on its own.
+    fn keep(&mut self, paths: &[PathBuf]) {
+        self.retries.retain(|p, _| paths.contains(p));
+        self.runs.retain(|p, r| {
+            if paths.contains(p) {
+                return true;
+            }
+            r.due = None;
+            r.queued = false;
+            r.running
+        });
     }
 
     /// Tries again the writes whose time has come, waiting twice as
@@ -403,25 +481,25 @@ impl Writer {
 
     /// Writes `bytes` to `path` unless it holds them already: whether it
     /// wrote.
+    ///
+    /// Everything is decided on the file written, not the name given: a
+    /// link is followed (the link kept), and its target must be Strand's
+    /// and not a `.strand` file, so a path Strand once wrote that is now
+    /// a link into the user's dotfiles is refused like any file Strand
+    /// did not write. The manifest names the files written, links
+    /// followed.
     fn write_file(&mut self, path: &Path, bytes: &[u8]) -> Result<bool, String> {
-        if path.extension().is_some_and(|e| e == "strand") {
-            return Err("refused: Strand never writes a `.strand` file".into());
+        let target = real(path)?;
+        if is_strand(path) || is_strand(&target) {
+            return Err(format!(
+                "{STRAND_REFUSED}{}",
+                match is_strand(path) {
+                    true => String::new(),
+                    false => format!(" (it is a link to {})", target.display()),
+                }
+            ));
         }
         let hash = fnv(bytes);
-        // Following a link: the target is written, the link kept. A link
-        // to nothing is refused, never replaced by a file.
-        let target = match std::fs::symlink_metadata(path) {
-            Ok(m) if m.file_type().is_symlink() => match std::fs::canonicalize(path) {
-                Ok(t) => t,
-                Err(e) => {
-                    return Err(format!(
-                        "refused: it is a link to a missing file ({e}); Strand writes \
-                         through a link, never over it"
-                    ));
-                }
-            },
-            _ => path.to_path_buf(),
-        };
         let meta = std::fs::metadata(&target).ok();
         if let Some(m) = &meta {
             if !m.is_file() {
@@ -430,10 +508,10 @@ impl Writer {
             // Already what it should hold (boot's catch-up, an unchanged
             // flip): nothing is written, and the file is Strand's.
             if std::fs::read(&target).is_ok_and(|b| b == bytes) {
-                self.own(path, hash);
+                self.own(&target, hash);
                 return Ok(false);
             }
-            if !self.owned.contains_key(path) {
+            if !self.owned.contains_key(&target) {
                 return Err(format!(
                     "{UNOWNED}; [replace] it, or move it away (or delete it), and Strand \
                      writes it"
@@ -443,8 +521,14 @@ impl Writer {
                 return Err("refused: the file is read-only".into());
             }
         }
+        if let Some(hook) = &self.own_writes {
+            (hook.0)(&target, bytes);
+            if target != path {
+                (hook.0)(path, bytes);
+            }
+        }
         write_atomic(&target, bytes, meta.as_ref()).map_err(|e| format!("not written: {e}"))?;
-        self.own(path, hash);
+        self.own(&target, hash);
         Ok(true)
     }
 
@@ -500,6 +584,41 @@ impl Writer {
 
 /// The start of an unowned target's refusal.
 const UNOWNED: &str = "refused: Strand did not write this file";
+/// A `.strand` target's refusal (never tried again).
+const STRAND_REFUSED: &str = "refused: Strand never writes a `.strand` file";
+
+fn is_strand(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "strand")
+}
+
+/// The file `path` names: a link followed (one to nothing is refused,
+/// never replaced by a file), a file's own links in its directories
+/// resolved, and for a file not there yet its nearest existing
+/// directory's, so one file has one name in the manifest however it is
+/// reached.
+fn real(path: &Path) -> Result<PathBuf, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path).map_err(|e| {
+            format!(
+                "refused: it is a link to a missing file ({e}); Strand writes through a \
+                 link, never over it"
+            )
+        }),
+        Ok(_) => Ok(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
+        Err(_) => {
+            let mut rest = Vec::new();
+            let mut at = path;
+            while let (Some(dir), Some(name)) = (at.parent(), at.file_name()) {
+                rest.push(name);
+                if let Ok(d) = std::fs::canonicalize(dir) {
+                    return Ok(rest.iter().rev().fold(d, |p, n| p.join(n)));
+                }
+                at = dir;
+            }
+            Ok(path.to_path_buf())
+        }
+    }
+}
 
 /// Runs `argv` in a process group of its own, at most `timeout`: why it
 /// failed, with the last [`STDERR_TAIL`] bytes of its stderr. Stderr is
@@ -959,6 +1078,152 @@ mod tests {
                 .is_symlink()
         );
         assert!(!dir.join("dotfiles/colors.ini").exists());
+    }
+
+    /// (Review round 2, item 1) A `file` no longer mounted (or moved,
+    /// or failing) stops its updates: its refused write is not tried
+    /// again and its `run:` never runs, even once the target frees up.
+    #[test]
+    fn a_removed_file_stops_its_retries() {
+        let dir = temp("keep");
+        let mine = dir.join("colors.conf");
+        let log = dir.join("runs.log");
+        std::fs::write(&mine, "the user's").unwrap();
+        let (jobs, rx) = spawned(&dir, RUN_TIMEOUT);
+        jobs.send(Job::Write {
+            path: mine.clone(),
+            bytes: b"stale".to_vec(),
+            run: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                format!("echo x >> {}", log.display()),
+            ]),
+        })
+        .unwrap();
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Outcome::Unowned(..)
+        ));
+        // The `file` is removed from the config: no target is left.
+        jobs.send(Job::Keep(Vec::new())).unwrap();
+        std::fs::remove_file(&mine).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!mine.exists(), "the removed `file` was written");
+        assert!(!log.exists(), "the removed `file`'s `run:` ran");
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// (Review round 2, item 2) Ownership is the written file's: a path
+    /// Strand wrote that is now a link into the user's dotfiles is
+    /// refused, and a link named `x.css` to a `.strand` file is refused
+    /// as the `.strand` file it writes, `[replace]` or not.
+    #[test]
+    fn a_link_is_judged_by_the_file_it_names() {
+        let dir = temp("link-owner");
+        let (mut w, _rx) = writer(&dir);
+        let colors = dir.join("colors.ini");
+        assert_eq!(w.write_file(&colors, b"strand's"), Ok(true));
+        let dotfile = dir.join("dotfiles/colors.ini");
+        std::fs::create_dir_all(dotfile.parent().unwrap()).unwrap();
+        std::fs::write(&dotfile, "the user's").unwrap();
+        std::fs::remove_file(&colors).unwrap();
+        std::os::unix::fs::symlink(&dotfile, &colors).unwrap();
+        let why = w.write_file(&colors, b"strand's, newer").unwrap_err();
+        assert!(why.starts_with(UNOWNED), "{why}");
+        assert_eq!(std::fs::read_to_string(&dotfile).unwrap(), "the user's");
+        // A link to a `.strand` file, even handed over.
+        let theme = dir.join("theme.strand");
+        std::fs::write(&theme, "use palette p\n").unwrap();
+        let css = dir.join("x.css");
+        std::os::unix::fs::symlink(&theme, &css).unwrap();
+        let why = w.write_file(&css, b"a").unwrap_err();
+        assert!(why.starts_with(STRAND_REFUSED), "{why}");
+        let (jobs, rx) = spawned(&dir, RUN_TIMEOUT);
+        let write = || {
+            jobs.send(Job::Write {
+                path: css.clone(),
+                bytes: b"a".to_vec(),
+                run: None,
+            })
+            .unwrap();
+        };
+        write();
+        jobs.send(Job::Replace(css.clone())).unwrap();
+        write();
+        let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(&first, Outcome::Failed(_, why) if why.starts_with(STRAND_REFUSED)),
+            "{first:?}"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            rx.try_iter().all(|o| !matches!(o, Outcome::Written(_))),
+            "written through the link"
+        );
+        assert_eq!(std::fs::read_to_string(&theme).unwrap(), "use palette p\n");
+    }
+
+    /// (Review round 2, item 4) Dropping `Files` (with the shell) ends
+    /// the `strand-files` thread, a refused write still pending or not.
+    #[test]
+    fn the_writer_ends_with_the_shell() {
+        let dir = temp("ends");
+        let mine = dir.join("mine.css");
+        std::fs::write(&mine, "the user's").unwrap();
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, Some(dir.join("state/files")), None);
+        assert!(files.send(Job::Write {
+            path: mine.clone(),
+            bytes: b"strand's".to_vec(),
+            run: None,
+        }));
+        let rx = files.rx.take().unwrap();
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Outcome::Unowned(..)
+        ));
+        drop(files);
+        // The thread's end drops its outcome sender.
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Err(RecvTimeoutError::Disconnected)
+        );
+    }
+
+    /// (Review round 2, item 6) Each write is registered with the
+    /// watcher before it lands, the link and the file it names both, and
+    /// a write that does not happen registers nothing.
+    #[test]
+    fn writes_are_registered_before_they_land() {
+        use std::sync::{Arc, Mutex};
+        let dir = temp("own-writes");
+        let out = dir.join("a.css");
+        type Seen = Vec<(PathBuf, Vec<u8>, bool)>;
+        let seen: Arc<Mutex<Seen>> = Arc::default();
+        let (mut w, _rx) = writer(&dir);
+        let log = seen.clone();
+        w.own_writes = Some(OwnWrites(Box::new(move |p, b| {
+            // Whether the bytes had landed already.
+            let landed = std::fs::read(p).is_ok_and(|on| on == b);
+            log.lock()
+                .unwrap()
+                .push((p.to_path_buf(), b.to_vec(), landed));
+        })));
+        assert_eq!(w.write_file(&out, b"one"), Ok(true));
+        assert_eq!(w.write_file(&out, b"one"), Ok(false));
+        let link = dir.join("link.css");
+        std::os::unix::fs::symlink(&out, &link).unwrap();
+        assert_eq!(w.write_file(&link, b"two"), Ok(true));
+        let real = std::fs::canonicalize(&out).unwrap();
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                (real.clone(), b"one".to_vec(), false),
+                (real, b"two".to_vec(), false),
+                (link, b"two".to_vec(), false),
+            ]
+        );
     }
 
     #[test]

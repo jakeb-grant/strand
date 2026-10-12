@@ -36,6 +36,11 @@ pub struct Live {
     /// logic thread, socket or not (S-ipc's D-Bus `Changed` signal;
     /// tests).
     pub events_to: Option<ipc::EventSink>,
+    /// (M5) Registers a write of `file` outputs with the config watcher
+    /// before it lands (path, bytes), so the change never comes back as
+    /// an external one ([`crate::live::Worker::own_write_hook`]). `None`:
+    /// nothing is registered.
+    pub own_writes: Option<OwnWrites>,
 }
 
 #[cfg(test)]
@@ -53,6 +58,18 @@ pub struct RequestsTo(pub Box<dyn FnOnce(ipc::IpcRequests) + Send>);
 impl std::fmt::Debug for RequestsTo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RequestsTo")
+    }
+}
+
+/// What [`OwnWrites`] calls: the path about to be written, and its bytes.
+pub type OwnWrite = dyn Fn(&std::path::Path, &[u8]) + Send;
+
+/// A callback for [`Live::own_writes`].
+pub struct OwnWrites(pub Box<OwnWrite>);
+
+impl std::fmt::Debug for OwnWrites {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnWrites")
     }
 }
 
@@ -96,6 +113,7 @@ pub fn logic(
     let rt = Runtime::new();
     let services_ping = ping.clone();
     let files_ping = ping.clone();
+    let own_writes = live.own_writes;
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
     // The D-Bus front end (`strand_services::ipc_bus`, below) and
@@ -245,7 +263,7 @@ pub fn logic(
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
         exports: Vec::new(),
-        files: super::outputs::Files::new(files_ping, manifest),
+        files: super::outputs::Files::new(files_ping, manifest, own_writes),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -331,6 +349,9 @@ pub fn logic(
                 .deadline()
                 .map(|d| d.saturating_duration_since(now)),
         );
+        // (M5) An `export` waiting for its other mode is answered at its
+        // deadline even when nothing else wakes the loop.
+        also(shell.exports_wait(now));
         // A step that closed the lock: the deferred load commits now
         // (no polling while it stays shown: only a step can unlock).
         if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {

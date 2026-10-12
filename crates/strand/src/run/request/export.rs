@@ -60,6 +60,12 @@ impl Pending {
         }
     }
 
+    /// How long until it is answered whatever its other mode does: the
+    /// logic loop wakes by then, so an idle shell still answers at 30 s.
+    fn wait(&self, now: Instant) -> Duration {
+        (self.since + PENDING_WAIT).saturating_duration_since(now)
+    }
+
     /// The answer, its hold let go, once the other mode is ready (or
     /// failed, or waited too long); else itself, to wait.
     fn settle(self, inst: &Instance) -> Result<proto::Answer, Pending> {
@@ -139,6 +145,12 @@ impl Shell {
                 pending,
             }),
         }
+    }
+
+    /// When the logic loop must wake for a waiting export's deadline
+    /// (none waiting: `None`).
+    pub(in crate::run) fn exports_wait(&self, now: Instant) -> Option<Duration> {
+        self.exports.iter().map(|w| w.pending.wait(now)).min()
     }
 
     /// After a tick's diff is sent: the exports waiting for their other
@@ -227,6 +239,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(text.as_bytes(), offline);
+    }
+
+    /// (Review round 2, item 5) A waiting request's deadline is when the
+    /// loop must wake, so an idle shell answers at 30 s.
+    #[test]
+    fn a_waiting_export_wakes_the_loop_at_its_deadline() {
+        let (_rt, inst) = mount(THEME);
+        let (s, t) = source("{{ $surface.light() }}");
+        let p = Pending::begin(&inst, s, t);
+        assert_eq!(p.wait(p.since), PENDING_WAIT);
+        assert_eq!(p.wait(p.since + PENDING_WAIT), Duration::ZERO);
+        let _ = p.settle(&inst);
     }
 
     /// A request waiting across a reload lets go of its own hold only.

@@ -2262,7 +2262,11 @@ table.
     `OutputContent::Failed { diags, template: Option<(name, text)> }`
     (the diagnostics point into the template when it is given). A
     pending palette hands out nothing; one path mounted from two places
-    is `file::twice` on both. `Instance::output_count()` counts them.
+    is `file::twice` on both. `Instance::output_count()` counts them,
+    and `Instance::output_targets(each: impl FnMut(&Path))` names the
+    paths they write now (each output whose last handed-out change was
+    a write; a removed `file`, a changed path and a failing render have
+    none), so the writer drops what it still tries elsewhere.
 - **strand-core** (S-tools). A read-only `PersistStore` (reads cells, never
   writes) for the offline mount.
 - **strand (binary)** (S-tools).
@@ -2279,7 +2283,8 @@ table.
     `export::produce` as the offline mount; when its template reads the
     other mode it holds it (`Instance::hold_other_mode`) until its reply
     is built, and one whose other palette is still loading waits (tried
-    again after each tick's diff, at most 30 s). The CLI falls back to
+    again after each tick's diff, at most 30 s, the deadline among the
+    logic loop's wake-ups so an idle shell answers). The CLI falls back to
     the offline mount when no shell answers, when the shell predates
     `export`, or when the template is too large for one request line.
   - The output host (`run/outputs.rs`) lives on the logic side. After
@@ -2288,16 +2293,26 @@ table.
     and, when the template reads it, the other mode; a render error is
     that output's notice and writes nothing. The rendered bytes go to
     the file output writer thread (`strand-files`, Threads), so logic
-    never waits on a disk or a child process. No main-side channel is
-    added: main never sees an output.
+    never waits on a disk or a child process. After the changes, logic
+    sends the writer the outputs' targets when they changed
+    (`Instance::output_targets`), and the writer drops the retries and
+    due `run:`s of every other path (spec.md 9.7, "Removing a `file`
+    stops its updates"). No main-side channel is added: main never sees
+    an output.
   - The writer thread writes atomically (temp file and rename,
     following symlinks and keeping the file's mode; the latest bytes per
     path win), and Strand's own writes are registered with the watcher
-    in advance. It keeps a manifest of written files in
+    in advance (`Live::own_writes`, an `OwnWrites` hook the binary takes
+    from `Worker::own_write_hook`; the link and the file it names both).
+    It keeps a manifest of written files in
     `$XDG_STATE_HOME/strand/files` (a `#` comment line, then one
     `<hash> <path>` line per file, the hash FNV-1a 64 of the bytes as 16
-    hex digits), and refuses unowned and `.strand` targets, a read-only
-    file and a link to a missing file. A refused or failed write is
+    hex digits; the path is the file written, links followed, and the
+    hash only spares rewriting the manifest), and refuses unowned and
+    `.strand` targets, a read-only file and a link to a missing file,
+    each judged on the file a link names, not the link. The thread ends
+    when the shell's `Files` is dropped (a `Stop` job: its runs'
+    threads hold senders of its queue). A refused or failed write is
     tried again (after 1 s, doubling to 10 s) until it lands or newer
     content replaces it; an unowned target's notice offers `[replace]`
     (`overlay::Click::Replace`), which hands the file to Strand.

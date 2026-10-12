@@ -384,3 +384,48 @@ fn a_failing_palette_fails_the_output() {
     let why = failed(&c[0]);
     assert!(why.contains("no palette") && why.contains("nope"), "{why}");
 }
+
+fn targets(shell: &Shell) -> Vec<PathBuf> {
+    let mut t = Vec::new();
+    shell.inst.output_targets(|p| t.push(p.to_path_buf()));
+    t.sort();
+    t
+}
+
+/// (Review round 2, item 1) The targets the writer keeps: a removed
+/// `file`, one whose path changed and one that fails leave them, so
+/// nothing is still tried there (spec.md 9.7, "Removing a `file` stops
+/// its updates").
+#[test]
+fn a_removed_or_failed_file_has_no_target() {
+    let dir = temp_dir("targets");
+    let src = "export state on = true\n\
+               export state name = \"a\"\n\
+               export state broken = false\n\
+               bar Top { if on { file \"out/l.txt\" { text: $accent } } }\n\
+               file join(\"\", \"out/\", name, \".txt\") { text: $fg }\n\
+               file \"out/b.txt\" { template: broken ? \"missing.tmpl\" : \"b.tmpl\" }\n";
+    std::fs::write(dir.join("b.tmpl"), "{{ $fg }}\n").unwrap();
+    let shell = boot(&[("a.strand", src)], &dir);
+    assert!(targets(&shell).is_empty(), "nothing handed out yet");
+    assert_eq!(shell.take().len(), 3);
+    let at = |n: &str| dir.join("out").join(n);
+    assert_eq!(targets(&shell), vec![at("a.txt"), at("b.txt"), at("l.txt")]);
+    // Removed: its scope goes.
+    shell.inst.set("a.on", Value::Bool(false)).unwrap();
+    shell.flush();
+    let _ = shell.take();
+    assert_eq!(targets(&shell), vec![at("a.txt"), at("b.txt")]);
+    // A new path: the old one is no target.
+    shell.inst.set("a.name", Value::text("c")).unwrap();
+    shell.flush();
+    assert_eq!(shell.take().len(), 1);
+    assert_eq!(targets(&shell), vec![at("b.txt"), at("c.txt")]);
+    // Failing: no target until it renders again.
+    shell.inst.set("a.broken", Value::Bool(true)).unwrap();
+    shell.flush();
+    let c = shell.take();
+    assert_eq!(c.len(), 1);
+    let _ = failed(&c[0]);
+    assert_eq!(targets(&shell), vec![at("c.txt")]);
+}
