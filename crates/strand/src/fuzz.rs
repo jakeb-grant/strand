@@ -1432,6 +1432,7 @@ impl Shell {
             requests_to: None,
             events_to: None,
             own_writes: None,
+            to_main: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();

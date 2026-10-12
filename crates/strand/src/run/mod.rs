@@ -268,10 +268,6 @@ pub enum ToLogic {
     /// The lock's watchdog: logic answers by taking it (`lock.rs`).
     Beat(u64),
     /// (M5) Main's answer to a [`ToMain::Snapshot`].
-    #[allow(
-        dead_code,
-        reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
-    )]
     Snapshot(Snapshot),
     /// (M5) Pick mode, from main (S-inspect): a click picked a node, or
     /// pick mode ended without logic asking.
@@ -284,12 +280,11 @@ pub enum ToLogic {
 
 /// (M5) What logic tells or asks the main thread (docs/architecture.md,
 /// "M5 interfaces": the snapshot hop and the inspector's messages).
-/// Logic sends only `SceneDiff`s today; the channel carrying these is
-/// wired by the first stream that sends one (S-tools' `report`,
-/// S-inspect's layouts and pick mode), and the other reuses it.
+/// The channel carrying these is wired (S-tools' `report`); S-inspect's
+/// layouts, highlight, flash and pick mode reuse it.
 #[allow(
     dead_code,
-    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
+    reason = "(M5 0b) the inspector's messages are sent by S-inspect"
 )]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToMain {
@@ -328,10 +323,7 @@ pub enum PickEvent {
 }
 
 /// (M5) Which snapshot logic asks main for.
-#[allow(
-    dead_code,
-    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
-)]
+#[allow(dead_code, reason = "(M5 0b) `Layout` is asked for by S-inspect")]
 #[derive(Clone, Debug, PartialEq)]
 pub enum SnapshotKind {
     /// `strand report`: the compositor's globals with versions, outputs
@@ -346,19 +338,11 @@ pub enum SnapshotKind {
 }
 
 /// (M5) Which [`ToMain::Snapshot`] an answer is for (logic's numbering).
-#[allow(
-    dead_code,
-    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SnapshotId(pub u64);
 
 /// (M5) Main's answer to a [`ToMain::Snapshot`]: the snapshot as the
 /// JSON its IPC answer carries.
-#[allow(
-    dead_code,
-    reason = "(M5 0b) the snapshot hop is wired by S-tools and S-inspect"
-)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub reply: SnapshotId,
@@ -539,6 +523,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         requests_to: None,
         events_to: None,
         own_writes: compiler.own_write_hook(),
+        to_main: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
@@ -572,6 +557,10 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         let _ = icons_tx.send(CacheKind::Icons);
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
+    // (M5) The snapshot hop: main answers from its own state between
+    // frames (`strand report`).
+    let (to_main, from_logic) = calloop::channel::channel::<ToMain>();
+    live.to_main = Some(to_main);
     // (M4) The GPU thread's replies wake the loop; the loop pumps them
     // after every dispatch (`run/gpu.rs`).
     #[cfg(feature = "gpu")]
@@ -631,6 +620,19 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
                 Ok(PostAction::Continue)
             },
         )
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    let answer = to_logic.clone();
+    handle
+        .insert_source(from_logic, move |event, _, state| {
+            if let Event::Msg(ToMain::Snapshot {
+                kind: SnapshotKind::Report,
+                reply,
+            }) = event
+            {
+                let data = crate::report::main_part(state);
+                let _ = answer.send(ToLogic::Snapshot(Snapshot { reply, data }));
+            }
+        })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
     let storage = storage(dir);

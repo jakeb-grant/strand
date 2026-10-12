@@ -424,6 +424,85 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (S-tools) `strand report` goes through the snapshot hop: logic asks
+/// main, main's half comes back, and the socket's answer is it with
+/// logic's half added (the PSS, the version, the compositor's name); an
+/// answer no request waits for is dropped.
+#[test]
+fn a_report_is_mains_snapshot_with_logics_half() {
+    let dir = temp_dir("report");
+    std::fs::write(dir.join("bar.strand"), "bar Top {\n  text \"hi\"\n}\n").unwrap();
+    let program = load(&dir);
+    let socket = dir.join("ipc.sock");
+    let (to_main, from_logic) = calloop::channel::channel::<ToMain>();
+    let live = Live {
+        socket: Some(socket.clone()),
+        to_main: Some(to_main),
+        ..Live::default()
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(program, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["hi"]);
+    let client = std::thread::spawn(move || {
+        let mut c =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        ipc::request(&mut c, &ipc::Request::Report, Duration::from_secs(10)).unwrap()
+    });
+    // Main: takes the snapshot it is asked for.
+    let mut main = calloop::EventLoop::<Vec<ToMain>>::try_new().unwrap();
+    main.handle()
+        .insert_source(from_logic, |e, _, got| {
+            if let Event::Msg(msg) = e {
+                got.push(msg);
+            }
+        })
+        .unwrap();
+    let mut got = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while got.is_empty() {
+        assert!(Instant::now() < deadline, "main was never asked");
+        main.dispatch(Some(Duration::from_millis(50)), &mut got)
+            .unwrap();
+    }
+    let ToMain::Snapshot {
+        kind: SnapshotKind::Report,
+        reply,
+    } = got.remove(0)
+    else {
+        panic!("{got:?}");
+    };
+    let mains = json!({"compositor": {"globals": [{"interface": "wl_output", "version": 4}]},
+                       "outputs": [], "surfaces": [], "gpu": {"status": "unused"}});
+    to_logic
+        .send(ToLogic::Snapshot(Snapshot { reply, data: mains }))
+        .unwrap();
+    let ans = client.join().unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    let r = &ans["report"];
+    assert_eq!(r["compositor"]["globals"][0]["interface"], "wl_output");
+    assert_eq!(r["gpu"]["status"], "unused");
+    assert!(r["compositor"].get("name").is_some(), "{ans}");
+    assert!(
+        r["memory"]["pss_kb"].as_u64().is_some_and(|kb| kb > 0),
+        "{ans}"
+    );
+    assert_eq!(r["strand"], env!("CARGO_PKG_VERSION"));
+    to_logic
+        .send(ToLogic::Snapshot(Snapshot {
+            reply,
+            data: json!({}),
+        }))
+        .unwrap();
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Live reload without Wayland: the watcher and the compiler worker
 /// feed the logic thread. A prop edit and an added node keep the
 /// bar's state; a broken save keeps the last good tree and, after
@@ -469,6 +548,7 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
         requests_to: None,
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -544,6 +624,7 @@ fn saves_reload_live_with_state_kept() {
         }))),
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -682,8 +763,14 @@ fn saves_reload_live_with_state_kept() {
         let said = ans["error"].as_str().unwrap();
         assert!(said.contains(why), "{req:?}: {said}");
     }
+    // (S-tools) `report` is served; with no main thread to ask, it says
+    // so.
+    let ans = ipc::request(&mut client, &ipc::Request::Report, Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        ans,
+        json!({"ok": false, "error": "no display thread to report on"})
+    );
     for (req, cmd) in [
-        (ipc::Request::Report, "report"),
         (ipc::Request::InspectPick { on: true }, "inspect.pick"),
         (
             ipc::Request::InspectHighlight { id: None },
@@ -860,6 +947,7 @@ fn spawn_live_quiet(
         requests_to: None,
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1653,6 +1741,7 @@ fn five_save_styles_land_on_a_cold_boot() {
         requests_to: None,
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2261,6 +2350,7 @@ fn main_thread_notices_reach_watchers_that_come_later() {
         requests_to: None,
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2330,6 +2420,7 @@ fn each_blur_box_says_where_it_is_and_why_it_fell_back() {
         requests_to: None,
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2441,6 +2532,7 @@ fn an_unavailable_gpu_is_a_notice_once() {
         requests_to: None,
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2549,6 +2641,7 @@ fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
         }))),
         events_to: None,
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2647,6 +2740,7 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
             let _ = heard.lock().unwrap().send(ev.clone());
         })),
         own_writes: None,
+        to_main: None,
     };
     let (to_logic, from_main) = calloop::channel::channel();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();

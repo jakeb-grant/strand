@@ -183,8 +183,9 @@ pub fn parse(line: &str) -> Result<Request, String> {
         "mock" => Request::Mock(v),
         // (M5, S-ipc) `get`, `toggle`, `call`, `clear`, and the
         // inspector's `inspect.node` and `inspect.dump`.
-        // (M5 wave 2, S-tools) `export`.
-        "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" | "export" => {
+        // (M5 wave 2, S-tools) `export` and `report`.
+        "get" | "toggle" | "call" | "clear" | "inspect.node" | "inspect.dump" | "export"
+        | "report" => {
             return parse_m5(cmd, &v);
         }
         other => return Err(format!("unknown command `{other}`")),
@@ -698,6 +699,7 @@ mod tests {
                 | Request::InspectNode { .. }
                 | Request::InspectDump { .. }
                 | Request::Export { .. }
+                | Request::Report
         )
     }
 
@@ -819,7 +821,6 @@ mod tests {
                 r#"{"cmd":"set","path":"a.b"}"#,
                 "`set` needs a `path` and a `value`",
             ),
-            (r#"{"cmd":"report"}"#, "unknown command `report`"),
             (
                 r#"{"cmd":"inspect.pick"}"#,
                 "unknown command `inspect.pick`",

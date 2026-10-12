@@ -50,7 +50,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "drop a runtime overlay (strand clear '$accent')",
         "M5",
     ),
-    ("new", "scaffold a working shell", "M5"),
+    (
+        "new",
+        "write a starter shell into [dir] (default $XDG_CONFIG_HOME/strand; refuses a non-empty dir)",
+        "M5",
+    ),
     (
         "export",
         "write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]",
@@ -63,7 +67,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "report",
-        "dump compositor, protocols, scales and frame stats",
+        "dump compositor, protocols, scales, memory, GPU and frame stats (--json)",
         "M5",
     ),
 ];
@@ -114,6 +118,36 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
 /// A subcommand that reports through stderr text and a pass/fail flag.
 type Tool = fn(&[String], Style) -> (String, bool);
 
+fn tool(cmd: &str) -> Option<Tool> {
+    match cmd {
+        "check" => Some(cli::check),
+        "fmt" => Some(cli::fmt),
+        _ => None,
+    }
+}
+
+/// A subcommand that prints its text on stdout, or why it failed on
+/// stderr: the socket's commands, `new` and `compositor-rules` (printed
+/// for the user to paste; never applied to the session).
+type OneShot = fn(&[String]) -> Result<String, String>;
+
+fn one_shot(cmd: &str) -> Option<OneShot> {
+    Some(match cmd {
+        "get" => cli::get_cli,
+        "toggle" => cli::toggle_cli,
+        "call" => cli::call_cli,
+        "clear" => cli::clear_cli,
+        "export" => cli::export_cli,
+        "reload" => cli::reload_cli,
+        "set" => cli::set_cli,
+        "new" => cli::new_cli,
+        "report" => cli::report_cli,
+        "compositor-rules" => cli::compositor_rules,
+        "watch" => |a| cli::watch_cli(a, &mut std::io::stdout()).map(|()| String::new()),
+        _ => return None,
+    })
+}
+
 /// `main`'s body: the idle hooks, then the command line.
 pub fn main() -> ExitCode {
     // A text worker that goes quiet after shaping keeps the allocator's
@@ -126,12 +160,7 @@ pub fn main() -> ExitCode {
     if args.first().is_some_and(|a| a == "--write-schemas") {
         return crate::plugin::write_schemas_main(&args[1..]);
     }
-    let tool: Option<Tool> = match args.first().map(String::as_str) {
-        Some("check") => Some(cli::check),
-        Some("fmt") => Some(cli::fmt),
-        _ => None,
-    };
-    if let Some(tool) = tool {
+    if let Some(tool) = args.first().and_then(|a| tool(a)) {
         let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         let style = if color { Style::Color } else { Style::Plain };
         let (text, ok) = tool(&args[1..], style);
@@ -142,17 +171,7 @@ pub fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    // The socket's one-shot commands: text on stdout, why on stderr.
-    type OneShot = fn(&[String]) -> Result<String, String>;
-    let ipc: Option<OneShot> = match args.first().map(String::as_str) {
-        Some("get") => Some(cli::get_cli),
-        Some("toggle") => Some(cli::toggle_cli),
-        Some("call") => Some(cli::call_cli),
-        Some("clear") => Some(cli::clear_cli),
-        Some("export") => Some(cli::export_cli),
-        _ => None,
-    };
-    if let Some(command) = ipc {
+    if let Some(command) = args.first().and_then(|a| one_shot(a)) {
         return match command(&args[1..]) {
             Ok(text) => {
                 print!("{text}");
@@ -163,55 +182,6 @@ pub fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
-    }
-    match args.first().map(String::as_str) {
-        Some("reload") => {
-            return match cli::reload_cli(&args[1..]) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("strand reload: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some("set") => {
-            return match cli::set_cli(&args[1..]) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("strand set: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some("compositor-rules") => {
-            // Printed for the user to paste; never applied to the session.
-            return match cli::compositor_rules(&args[1..]) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("strand compositor-rules: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some("watch") => {
-            return match cli::watch_cli(&args[1..], &mut std::io::stdout()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("strand watch: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        _ => {}
     }
     match dispatch(&args) {
         Ok(Action::Print(out)) => {
@@ -275,8 +245,18 @@ mod tests {
         }
     }
 
+    /// Every command the help lists is served: `run`, a tool or a
+    /// one-shot (none answers "not implemented yet" any more).
     #[test]
-    fn known_commands_name_their_milestone() {
+    fn known_commands_are_all_served() {
+        for (name, ..) in COMMANDS {
+            assert!(
+                *name == "run" || tool(name).is_some() || one_shot(name).is_some(),
+                "`strand {name}` is listed but not served"
+            );
+        }
+        // The fallback for a listed command no arm serves names its
+        // milestone.
         assert_eq!(
             run(&["new"]).unwrap_err(),
             "strand new: not implemented yet (M5)"

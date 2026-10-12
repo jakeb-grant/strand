@@ -291,6 +291,11 @@ impl Device {
         false
     }
 
+    /// (M5) Devices lost so far in this process (`strand report`).
+    pub fn losses(&self) -> u32 {
+        self.lost
+    }
+
     /// True once the GPU is off for the rest of the process.
     pub fn is_off(&self) -> bool {
         self.state == State::Off

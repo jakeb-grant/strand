@@ -1122,6 +1122,20 @@ impl<H: SurfaceHost + 'static> State<H> {
         Some(info)
     }
 
+    /// (M5) The compositor's globals as the registry lists them now:
+    /// each interface with its version, sorted, one entry per global (two
+    /// outputs are two `wl_output`s). Global names are left out: they
+    /// are the compositor's numbering, not a fact about it.
+    pub fn globals(&self) -> Vec<(String, u32)> {
+        let mut v: Vec<(String, u32)> = self
+            .registry
+            .globals()
+            .map(|g| (g.interface.clone(), g.version))
+            .collect();
+        v.sort();
+        v
+    }
+
     /// Plugged-in monitors.
     pub fn monitors(&self) -> Vec<Monitor> {
         let mut v: Vec<Monitor> = self.monitors.present().cloned().collect();

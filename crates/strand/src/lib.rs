@@ -18,8 +18,10 @@ mod ipc;
 mod live;
 mod logging;
 mod mock;
+mod new;
 mod overlay;
 mod plugin;
+mod report;
 mod rules;
 mod run;
 mod services;
@@ -45,6 +47,8 @@ pub mod cli {
         call_cli, clear_cli, get_cli, reload_cli, set_cli, toggle_cli, watch_cli,
     };
     pub use crate::logging::LogConfig;
+    pub use crate::new::new_cli;
+    pub use crate::report::report_cli;
     pub use crate::rules::run as compositor_rules;
     pub use crate::run::{run, trim};
 }

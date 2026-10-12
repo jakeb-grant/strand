@@ -660,6 +660,11 @@ impl Renderer {
         self.gpu.device.is_off()
     }
 
+    /// (M5) Devices lost so far in this process (`strand report`).
+    pub fn gpu_lost_devices(&self) -> u32 {
+        self.gpu.device.losses()
+    }
+
     /// (M4) Unavailable reasons logged as warnings so far (tests).
     #[doc(hidden)]
     pub fn gpu_warnings(&self) -> u64 {

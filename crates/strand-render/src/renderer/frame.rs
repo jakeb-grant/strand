@@ -176,7 +176,13 @@ pub(super) fn diff_records(
 
 impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        let started = Instant::now();
         let damage = self.paint_frame(surface, target);
+        // (M5) `strand report`'s frame timing (`summary.rs`).
+        if self.surfaces.contains_key(&surface) {
+            self.frame_stats
+                .record(surface, started.elapsed(), !damage.is_empty());
+        }
         // Exits the frame finished: ghosts unmount (their siblings glide
         // into the gap from the next frame), closing surfaces close, and
         // a surface that settled shrinks: the specs are refreshed here so
