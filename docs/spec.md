@@ -2,9 +2,10 @@
 
 Status: **reviewed for the freeze, not yet frozen** (M5 wave 3). The
 freeze review settled every point the draft left open, each with a test
-(decisions.md m5-docs, "the freeze review"). The freeze itself is the
-last commit of M5's wave 3, the integrator's, after every stream that
-could add a schema entry (m5-plan, "Language spec frozen"); from then
+(decisions.md m5-docs, "the freeze review"), but one: equality across
+units (7.2), whose stricter rule waits on a checker change. The freeze
+itself is the last commit of M5's wave 3, the integrator's, after every
+stream that could add a schema entry (m5-plan, "Language spec frozen"); from then
 on this file and `docs/grammar.md` are the language 1.x promises, and a
 change to either needs a decisions.md paragraph that cites the
 compatibility policy (section 14); typo fixes are exempt. The theming hub (hue roles, the palette's extras and identity,
@@ -496,12 +497,16 @@ units).
   percentage against a size, so `2ch < 10px` is true. A duration
   compares only with a duration, and other units never mix (`1s < 2`,
   `90deg < 10px`): a load error.
-- `==` and `!=` take numbers by the same rule: two numbers are
-  comparable for equality exactly when they are for order, and are equal
-  when their numbers are, read the same way (`10px == 10`, `2ch == 2px`
-  and `50% == 50px` are true; `1s == 1000ms` is true). Numbers whose
-  units never mix are a load error here too (`90deg == 90px`,
-  `1s == 1000`, `1s == 1000px`).
+- `==` and `!=` compare two numbers by their numbers as written, read
+  the same way as for order (`10px == 10`, `2ch == 2px` and
+  `50% == 50px` are true; `1s == 1000ms` is true). Open until the
+  freeze: today they take any two numbers, so `90deg == 90px` and
+  `1s == 1000px` check clean and are true. The rule proposed for 1.x
+  (decisions.md m5-docs3, round 3) is that two numbers are comparable
+  for equality exactly when they are for order, so units that never mix
+  are a load error here too (`90deg == 90px`, `1s == 1000`); it is a
+  checker change that lands under the checker's owner, and the freeze
+  commit keeps whichever rule the checker then has.
 - `a ?. f` is `null` when `a` is `null`, else `a.f`. `a ?? b` is `b`
   when `a` is `null`, or an `Async` that has no value: its first load
   still pending, or a failure with no earlier value kept. An `Async`

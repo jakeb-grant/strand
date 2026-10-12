@@ -1050,74 +1050,279 @@ fn bar_points() -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// How long a click that raised no surface is watched for the calendar.
-const QUICK_LOOK: Duration = Duration::from_millis(250);
-/// How long a click that painted a new surface is watched for the
-/// calendar before the surface is taken for another popup (the wait the
-/// fixed top-centre click had): on a loaded runner the calendar's surface
-/// can be painted before the dump shows it, or after the quick look.
-const POPUP_LOOK: Duration = Duration::from_secs(2);
+/// How long the scan watches each click for the calendar.
+struct Looks {
+    /// A click that raised no surface.
+    quick: Duration,
+    /// A click that painted a new surface, before the surface is taken for
+    /// another popup (the wait the fixed top-centre click had), and every
+    /// click of the slow pass: on a loaded runner the calendar can show
+    /// after the quick look, or be painted before the dump shows it.
+    popup: Duration,
+    /// After a click on the desktop that closes another popup.
+    settle: Duration,
+    /// Between two looks at the dump.
+    poll: Duration,
+    /// The slow pass's whole run, so a bar with no clock fails in bounded
+    /// time.
+    slow: Duration,
+}
 
-/// Watches the dump for the calendar after a click made at `start`, when
-/// `surfaces` surfaces had been painted: [`QUICK_LOOK`] while no new
-/// surface has been painted, [`POPUP_LOOK`] once one has.
-fn calendar_after_click(desk: &Desk, start: Instant, surfaces: usize) -> bool {
-    loop {
-        if calendar_shown(&desk.dump()) {
-            return true;
-        }
-        let grew = desk.surface_count() > surfaces;
-        let look = if grew { POPUP_LOOK } else { QUICK_LOOK };
-        if start.elapsed() >= look {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(40));
+/// The scan's looks on the real desk.
+const LOOKS: Looks = Looks {
+    quick: Duration::from_millis(250),
+    popup: Duration::from_secs(2),
+    settle: Duration::from_millis(150),
+    poll: Duration::from_millis(40),
+    slow: Duration::from_secs(150),
+};
+
+/// What [`open_calendar_on`] clicks and watches: the running shell
+/// ([`DeskBar`]) or, in its own test, a simulated one.
+trait Bar {
+    /// Whether the shell shows the calendar now.
+    fn calendar_shown(&self) -> bool;
+    /// How many surfaces have ever been painted (it never falls).
+    fn surfaces(&self) -> usize;
+    /// A click at `at` on `HEADLESS-1`.
+    fn click(&mut self, at: (u32, u32));
+    /// A click on the desktop, which closes any popup.
+    fn away(&mut self);
+    /// Fails when the shell has died.
+    fn alive(&mut self) {}
+}
+
+/// The running shell on `desk`, clicked with a virtual pointer.
+struct DeskBar<'a> {
+    desk: &'a mut Desk,
+    pointer: support::pointer::Pointer,
+}
+
+impl Bar for DeskBar<'_> {
+    fn calendar_shown(&self) -> bool {
+        calendar_shown(&self.desk.dump())
+    }
+    fn surfaces(&self) -> usize {
+        self.desk.surface_count()
+    }
+    fn click(&mut self, (x, y): (u32, u32)) {
+        self.pointer.click(x, y, LAYOUT.0, LAYOUT.1);
+    }
+    fn away(&mut self) {
+        self.pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
+    }
+    fn alive(&mut self) {
+        self.desk.assert_alive();
     }
 }
 
-/// Clicks along `HEADLESS-1`'s bar ([`bar_points`]) until the dump shows
-/// the calendar, dismissing any other popup a click opened; the point
-/// that opened it, or `None`. A click that paints a new surface is given
-/// [`POPUP_LOOK`] to show the calendar before that surface is closed as
-/// another popup's, so a calendar painted late is never dismissed.
-fn open_calendar(desk: &mut Desk) -> Option<(u32, u32)> {
-    let mut pointer = desk.pointer();
-    // (A new virtual pointer's first buttons reach no surface.)
-    pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
-    std::thread::sleep(Duration::from_millis(200));
-    let mut found = None;
+/// Watches for the calendar after a click made at `start`, when `before`
+/// surfaces had been painted: `looks.quick` while no new surface has been
+/// painted, `looks.popup` once one has, or always when `slow`.
+fn calendar_after_click(
+    bar: &impl Bar,
+    looks: &Looks,
+    start: Instant,
+    before: usize,
+    slow: bool,
+) -> bool {
+    loop {
+        if bar.calendar_shown() {
+            return true;
+        }
+        let look = if slow || bar.surfaces() > before {
+            looks.popup
+        } else {
+            looks.quick
+        };
+        if start.elapsed() >= look {
+            return false;
+        }
+        std::thread::sleep(looks.poll);
+    }
+}
+
+/// One pass of clicks over `points`: the point whose click showed the
+/// calendar, or the points whose click may have opened a popup the pass
+/// closed (a surface was painted before the click after next), for the
+/// slow pass to try first. `slow` watches every click for `looks.popup`
+/// and gives up after `looks.slow`.
+fn scan(
+    bar: &mut impl Bar,
+    points: &[(u32, u32)],
+    looks: &Looks,
+    slow: bool,
+) -> Result<(u32, u32), Vec<(u32, u32)>> {
+    let began = Instant::now();
+    let mut before = Vec::with_capacity(points.len() + 1);
     let mut last = None;
-    for (x, y) in bar_points() {
+    for &at in points {
         // A calendar that showed after the last click's look ended is
         // found before the next click could close it.
         if let Some(at) = last
-            && calendar_shown(&desk.dump())
+            && bar.calendar_shown()
         {
-            found = Some(at);
+            return Ok(at);
+        }
+        if slow && began.elapsed() >= looks.slow {
             break;
         }
-        last = Some((x, y));
-        let surfaces = desk.surface_count();
-        pointer.click(x, y, LAYOUT.0, LAYOUT.1);
+        last = Some(at);
+        let surfaces = bar.surfaces();
+        before.push(surfaces);
+        bar.click(at);
         let start = Instant::now();
         // Twice: a surface painted just as the quick look ended gets its
         // full look too, before it is dismissed.
-        if calendar_after_click(desk, start, surfaces)
-            || (desk.surface_count() > surfaces && calendar_after_click(desk, start, surfaces))
+        if calendar_after_click(bar, looks, start, surfaces, slow)
+            || (bar.surfaces() > surfaces
+                && calendar_after_click(bar, looks, start, surfaces, slow))
         {
-            found = Some((x, y));
-            break;
+            return Ok(at);
         }
-        desk.assert_alive();
-        if desk.surface_count() > surfaces {
+        bar.alive();
+        if bar.surfaces() > surfaces {
             // Some other popup (a tray menu): a click on the desktop
             // closes it before the next try.
-            pointer.click(1200, 700, LAYOUT.0, LAYOUT.1);
-            std::thread::sleep(Duration::from_millis(150));
+            bar.away();
+            std::thread::sleep(looks.settle);
         }
     }
-    pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
+    // The last click's calendar may show late too.
+    std::thread::sleep(looks.popup);
+    if let Some(at) = last
+        && bar.calendar_shown()
+    {
+        return Ok(at);
+    }
+    before.push(bar.surfaces());
+    let n = before.len() - 1;
+    Err((0..n)
+        .filter(|&i| before[(i + 2).min(n)] > before[i])
+        .map(|i| points[i])
+        .collect())
+}
+
+/// Clicks along `points` until the shell shows the calendar, dismissing
+/// any other popup a click opened; the point that opened it, or `None`.
+/// A quick pass first ([`scan`]); when it finds nothing, a slow pass
+/// watches every click for `looks.popup`, the points after which a
+/// surface was painted first, since on a loaded runner a click may reach
+/// the shell after the quick look, so that the next click closes the
+/// calendar as a click-away before it is painted or seen (a second
+/// toggle may never paint it at all). A calendar later than `looks.popup`
+/// is still lost, as it was to the fixed top-centre click.
+fn open_calendar_on(
+    bar: &mut impl Bar,
+    points: &[(u32, u32)],
+    looks: &Looks,
+) -> Option<(u32, u32)> {
+    let suspects = match scan(bar, points, looks, false) {
+        Ok(at) => return Some(at),
+        Err(suspects) => suspects,
+    };
+    let mut order = suspects;
+    for &at in points {
+        if !order.contains(&at) {
+            order.push(at);
+        }
+    }
+    bar.away();
+    std::thread::sleep(looks.settle);
+    scan(bar, &order, looks, true).ok()
+}
+
+/// Opens the calendar on `desk` by clicking along `HEADLESS-1`'s bar
+/// ([`bar_points`], [`open_calendar_on`]).
+fn open_calendar(desk: &mut Desk) -> Option<(u32, u32)> {
+    let pointer = desk.pointer();
+    let mut bar = DeskBar { desk, pointer };
+    // (A new virtual pointer's first buttons reach no surface.)
+    bar.away();
+    std::thread::sleep(Duration::from_millis(200));
+    let found = open_calendar_on(&mut bar, &bar_points(), &LOOKS);
+    bar.pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
     found
+}
+
+/// A shell slow to show the calendar, as on a loaded runner: a click on
+/// `clock` toggles it at once, but it is painted and seen only `paint`
+/// after it opened, and any other click closes it, so a calendar closed
+/// before then is never painted or seen at all.
+struct LaggyBar {
+    clock: (u32, u32),
+    paint: Duration,
+    state: std::cell::RefCell<LaggyState>,
+}
+
+#[derive(Default)]
+struct LaggyState {
+    /// When the open calendar opened.
+    opened: Option<Instant>,
+    painted: bool,
+    surfaces: usize,
+}
+
+impl LaggyBar {
+    fn new(clock: (u32, u32)) -> LaggyBar {
+        LaggyBar {
+            clock,
+            paint: Duration::from_millis(80),
+            state: Default::default(),
+        }
+    }
+
+    /// Whether the calendar is painted, painting it when it is due.
+    fn painted(&self) -> bool {
+        let mut s = self.state.borrow_mut();
+        if !s.painted && s.opened.is_some_and(|t| t.elapsed() >= self.paint) {
+            s.painted = true;
+            s.surfaces += 1;
+        }
+        s.painted
+    }
+}
+
+impl Bar for LaggyBar {
+    fn calendar_shown(&self) -> bool {
+        self.painted()
+    }
+    fn surfaces(&self) -> usize {
+        self.painted();
+        self.state.borrow().surfaces
+    }
+    fn click(&mut self, at: (u32, u32)) {
+        let s = self.state.get_mut();
+        if s.opened.is_some() {
+            s.opened = None;
+            s.painted = false;
+        } else if at == self.clock {
+            s.opened = Some(Instant::now());
+        }
+    }
+    fn away(&mut self) {
+        self.click((0, 0));
+    }
+}
+
+/// A calendar the shell shows only after the quick look is still found:
+/// the quick pass loses it (the next click closes it before it is
+/// painted), and the slow pass opens it (decisions.md m5-docs3, round 3).
+#[test]
+fn a_calendar_the_shell_shows_late_is_still_found() {
+    let looks = Looks {
+        quick: Duration::from_millis(20),
+        popup: Duration::from_millis(300),
+        settle: Duration::from_millis(5),
+        poll: Duration::from_millis(5),
+        slow: Duration::from_secs(10),
+    };
+    let points = [(10, 1), (20, 1), (30, 1), (40, 1), (50, 1)];
+    let mut bar = LaggyBar::new((40, 1));
+    assert_eq!(open_calendar_on(&mut bar, &points, &looks), Some((40, 1)));
+    // And a bar with no clock fails, in bounded time.
+    let mut none = LaggyBar::new((99, 1));
+    assert_eq!(open_calendar_on(&mut none, &points, &looks), None);
 }
 
 /// The proxy's score of the config running on `desk`: every item but the

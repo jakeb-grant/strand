@@ -2202,13 +2202,9 @@ impl<'a> Checker<'a> {
             let r = self.expr(rhs, Some(&l.ty.non_null().clone()));
             (l, r)
         };
-        // Numbers with units are equal-comparable exactly when they are
-        // ordering-comparable (spec.md 7.2): `90deg == 90px` and
-        // `1s == 1000` are load errors, as `90deg < 10px` and `1s < 2` are.
-        let comparable = match (l.ty.non_null().prim(), r.ty.non_null().prim()) {
-            (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => common_unit(a, b).is_some(),
-            _ => self.types.assignable(&l.ty, &r.ty) || self.types.assignable(&r.ty, &l.ty),
-        };
+        let comparable = self.types.assignable(&l.ty, &r.ty)
+            || self.types.assignable(&r.ty, &l.ty)
+            || (l.ty.non_null().is_numeric() && r.ty.non_null().is_numeric());
         if !comparable {
             let (a, b) = (self.show(&l.ty), self.show(&r.ty));
             self.error(
@@ -2292,7 +2288,19 @@ impl<'a> Checker<'a> {
                 (x, y) if x == y => Some(Float),
                 _ => None,
             },
-            _ => common_unit(a, b),
+            _ => match (a, b) {
+                (Int, Int) => Some(Int),
+                (x, y) if scalar(x) && scalar(y) => Some(Float),
+                (x, y) if x == y => Some(x),
+                // Plain numbers are pixels and degrees.
+                (x @ (Length | Angle | Percent), y) | (y, x @ (Length | Angle | Percent))
+                    if scalar(y) =>
+                {
+                    Some(x)
+                }
+                (Length, Percent) | (Percent, Length) => Some(Length),
+                _ => None,
+            },
         };
         match res {
             Some(p) => Ty::Prim(p),
@@ -3079,27 +3087,5 @@ fn join_labels(quoted: &[String]) -> String {
         [] => String::new(),
         [one] => one.clone(),
         [init @ .., last] => format!("{} and {last}", init.join(", ")),
-    }
-}
-
-/// The unit two numbers are added, subtracted or compared in, or `None`
-/// when their units never mix (spec.md 7.2): plain numbers are pixels and
-/// degrees beside a length, angle or percentage, a length and a
-/// percentage compare as written, and a duration goes only with a
-/// duration.
-fn common_unit(a: Prim, b: Prim) -> Option<Prim> {
-    use Prim::*;
-    match (a, b) {
-        (Int, Int) => Some(Int),
-        (x, y) if x.is_scalar() && y.is_scalar() => Some(Float),
-        (x, y) if x == y => Some(x),
-        // Plain numbers are pixels and degrees.
-        (x @ (Length | Angle | Percent), y) | (y, x @ (Length | Angle | Percent))
-            if y.is_scalar() =>
-        {
-            Some(x)
-        }
-        (Length, Percent) | (Percent, Length) => Some(Length),
-        _ => None,
     }
 }
