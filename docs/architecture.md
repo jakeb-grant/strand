@@ -414,7 +414,7 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
           ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
           ├── strand-services-schema (the builtin services' schema texts)
           ├── strand-icons (apps' icons, the renderer's lookup)
-          └── strand-introspect (D-Bus introspection; zbus only)
+          └── strand-introspect (D-Bus introspection; zbus and log only)
 strand (binary) wires everything; its ServiceHost adapters join
 strand-services' stores to strand-compiler's VM. M5: strand-core gains
 `ipc` (the protocol types, serde_json), which strand, strand-services
@@ -563,7 +563,11 @@ D-Bus introspection (`properties_on(conn, name, path)` async,
 `properties(&Bus, name, path)` blocking with a 2 s bound over one
 connection per bus kept for the process (on a current-thread runtime
 with no thread of its own, so an idle connection costs no wakeup; made
-again when it breaks or hangs), `parse(xml)`,
+again when it breaks or hangs, which it logs at `warn`: `dropped its
+connection :1.N to the bus (why)`, or `gave up connecting to the bus`
+when the connect ran past the bound; the reloads test reads these to
+tell a reconnect from a connection made for nothing, decisions.md
+m6-flakes), `parse(xml)`,
 `default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),
 `properties` blocking, `properties_or_ask` answering from what it
 remembers and asking on a thread of its own): what `from dbus` services

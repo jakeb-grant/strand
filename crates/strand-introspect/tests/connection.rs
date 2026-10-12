@@ -149,6 +149,36 @@ fn counted(hellos: &AtomicUsize) -> usize {
     hellos.load(Ordering::SeqCst)
 }
 
+/// What `strand-introspect` logged, from every test in this binary (a
+/// logger is installed once per process).
+fn logged() -> Vec<String> {
+    struct Capture(std::sync::Mutex<Vec<String>>);
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if let Ok(mut lines) = self.0.lock() {
+                lines.push(format!(
+                    "{} {}: {}",
+                    record.level(),
+                    record.target(),
+                    record.args()
+                ));
+            }
+        }
+        fn flush(&self) {}
+    }
+    static CAPTURE: std::sync::OnceLock<&'static Capture> = std::sync::OnceLock::new();
+    let capture = CAPTURE.get_or_init(|| {
+        let c: &'static Capture = Box::leak(Box::new(Capture(Default::default())));
+        let _ = log::set_logger(c);
+        log::set_max_level(log::LevelFilter::Trace);
+        c
+    });
+    capture.0.lock().map(|l| l.clone()).unwrap_or_default()
+}
+
 /// The bus daemon's own object: it is introspectable and has properties.
 fn ask(bus: &Bus) -> Result<Vec<strand_introspect::Property>, String> {
     properties(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus")
@@ -256,6 +286,7 @@ fn a_question_that_times_out_does_not_wait_for_another_callers_connect() {
     };
     let _peer = silent_peer(&bus.address, "org.example.Silent");
     let target = Bus::Address(bus.address.clone());
+    logged();
     // The kept connection to the private bus is made now.
     ask(&target).unwrap();
     let (mute, _stop) = mute_bus(&bus.dir);
@@ -285,4 +316,21 @@ fn a_question_that_times_out_does_not_wait_for_another_callers_connect() {
     assert!(connecting.join().unwrap().is_err());
     // The hung connection was dropped: the bus is reached on a new one.
     assert!(ask(&target).is_ok());
+    // Both are in the log (decisions.md m6-flakes): the dropped
+    // connection by its unique name, and the connect given up on.
+    let late = format!("(no answer within {:?})", strand_introspect::TIMEOUT);
+    let lines = logged();
+    assert!(
+        lines.iter().any(|l| {
+            l.starts_with("WARN strand_introspect: dropped its connection :1.")
+                && l.ends_with(&late)
+        }),
+        "the dropped connection is not logged: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| *l == format!("WARN strand_introspect: gave up connecting to the bus {late}")),
+        "the connect given up on is not logged: {lines:?}"
+    );
 }
