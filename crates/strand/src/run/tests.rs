@@ -2842,35 +2842,36 @@ fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// (M5, S-platform) The services' token source asks the main thread over
-/// its channel with the press's surface and serial, and the token main
-/// answers is what the services' future gives; main gone (the channel
-/// closed, or the ask dropped unanswered), the future gives `None`.
+/// (M5, S-platform) The services' token source queues an ask for the
+/// main thread with the press's surface and serial and wakes it, and the
+/// token main answers is what the services' future gives; main gone
+/// (the queue dropped with the asks in it), the future gives `None`.
 #[test]
 fn the_token_source_asks_main_and_hears_its_answer() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let (tx, rx) = calloop::channel::channel::<TokenAsk>();
-    let source = token_source(tx);
+    let asks = TokenAsks::default();
+    let (ping, ping_source) = calloop::ping::make_ping().unwrap();
+    let source = token_source(asks.clone(), ping);
     let token = source(3, 99);
     let mut el = calloop::EventLoop::<Vec<TokenAsk>>::try_new().unwrap();
+    let queue = asks.clone();
     el.handle()
-        .insert_source(rx, |e, _, asks: &mut Vec<TokenAsk>| {
-            if let Event::Msg(a) = e {
-                asks.push(a);
-            }
+        .insert_source(ping_source, move |_, _, got: &mut Vec<TokenAsk>| {
+            got.extend(take_token_asks(&queue));
         })
         .unwrap();
-    let mut asks = Vec::new();
-    el.dispatch(Some(Duration::ZERO), &mut asks).unwrap();
-    assert_eq!(asks.len(), 1);
-    let ask = asks.remove(0);
+    let mut got = Vec::new();
+    el.dispatch(Some(Duration::from_secs(1)), &mut got).unwrap();
+    assert_eq!(got.len(), 1, "woken for it");
+    let ask = got.remove(0);
     assert_eq!((ask.surface, ask.serial), (3, 99));
     ask.answer.send(Some("tok".into()));
     assert_eq!(rt.block_on(token).as_deref(), Some("tok"));
-    // Asked, then dropped unanswered (main's loop gone with it).
+    // Asked, then dropped unanswered (main's loop gone with its queue).
     let token = source(3, 100);
     drop(el);
+    asks.lock().unwrap().clear();
     assert_eq!(rt.block_on(token), None);
 }

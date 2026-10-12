@@ -295,23 +295,38 @@ pub struct TokenAsk {
     answer: strand_services::activation::TokenAnswer,
 }
 
-/// (M5) The services' token source over `tx` (the main thread's
-/// `TokenAsk` channel): main gone, the future answers `None`.
+/// (M5) The token asks waiting for the main thread: a queue and a ping
+/// rather than a calloop channel of their own (a channel's generic
+/// source costs about 11 KB of `.text`; decisions.md m5-platform).
+pub(crate) type TokenAsks = std::sync::Arc<std::sync::Mutex<Vec<TokenAsk>>>;
+
+/// (M5) The services' token source: each ask queued on `asks`, main
+/// woken by `wake`, and answered when main drains the queue
+/// ([`take_token_asks`]); main gone, the queue and the answers in it
+/// are dropped and the futures answer `None`.
 pub(crate) fn token_source(
-    tx: calloop::channel::Sender<TokenAsk>,
+    asks: TokenAsks,
+    wake: calloop::ping::Ping,
 ) -> strand_services::activation::TokenSource {
-    let tx = std::sync::Mutex::new(tx);
     std::sync::Arc::new(move |surface, serial| {
         let (answer, token) = strand_services::activation::token_reply();
-        if let Ok(tx) = tx.lock() {
-            let _ = tx.send(TokenAsk {
+        if let Ok(mut q) = asks.lock() {
+            q.push(TokenAsk {
                 surface,
                 serial,
                 answer,
             });
         }
+        wake.ping();
         token
     })
+}
+
+/// (M5) The asks queued so far, taken.
+pub(crate) fn take_token_asks(asks: &TokenAsks) -> Vec<TokenAsk> {
+    asks.lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
 }
 
 /// (M5) What logic tells or asks the main thread (docs/architecture.md,
@@ -601,8 +616,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // (M5) xdg-activation tokens: the services ask from the logic
     // thread, main asks the compositor and answers (`State::
     // activation_token`).
-    let (token_tx, token_rx) = calloop::channel::channel::<TokenAsk>();
-    live.tokens = Some(Tokens(token_source(token_tx)));
+    let token_asks = TokenAsks::default();
+    let (token_ping, token_rx) = calloop::ping::make_ping()?;
+    live.tokens = Some(Tokens(token_source(token_asks.clone(), token_ping)));
     // (M4) The GPU thread's replies wake the loop; the loop pumps them
     // after every dispatch (`run/gpu.rs`).
     #[cfg(feature = "gpu")]
@@ -664,8 +680,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         )
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     handle
-        .insert_source(token_rx, |event, _, state| {
-            if let Event::Msg(ask) = event {
+        .insert_source(token_rx, move |_, _, state| {
+            for ask in take_token_asks(&token_asks) {
                 state.activation_token(SurfaceId(ask.surface), ask.serial, move |t| {
                     ask.answer.send(t)
                 });

@@ -783,16 +783,14 @@ impl Notifications {
                             }
                             NotificationsAction::Activate { item } => {
                                 if kept.default.contains(&item.id) {
-                                    activation_token(&conn, item.id, token.as_deref()).await;
-                                    invoked(&conn, item.id, "default").await;
+                                    invoked(&conn, item.id, "default", token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.id)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Invoke { item } => {
                                 if cx.state().all.iter().any(|n| n.id == item.notification) {
-                                    activation_token(&conn, item.notification, token.as_deref()).await;
-                                    invoked(&conn, item.notification, &item.id).await;
+                                    invoked(&conn, item.notification, &item.id, token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.notification)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.notification, Closed::Dismissed).await
@@ -934,32 +932,19 @@ async fn signal_closed(conn: &zbus::Connection, id: i64, why: Closed) {
     }
 }
 
-/// (M5) Spec 1.2's `ActivationToken`, before the `ActionInvoked` it
-/// goes with; nothing without a token.
-async fn activation_token(conn: &zbus::Connection, id: i64, token: Option<&str>) {
-    let Some(token) = token else {
-        return;
-    };
-    let r = conn
-        .emit_signal(
-            None::<&str>,
-            PATH,
-            NAME,
-            "ActivationToken",
-            &(id as u32, token),
-        )
-        .await;
-    if let Err(e) = r {
-        log::debug!("notifications: ActivationToken not sent: {e}");
-    }
-}
-
-async fn invoked(conn: &zbus::Connection, id: i64, key: &str) {
-    let r = conn
-        .emit_signal(None::<&str>, PATH, NAME, "ActionInvoked", &(id as u32, key))
-        .await;
-    if let Err(e) = r {
-        log::debug!("notifications: ActionInvoked not sent: {e}");
+/// `ActionInvoked`, after (M5) spec 1.2's `ActivationToken` when the
+/// press that invoked it got a token.
+async fn invoked(conn: &zbus::Connection, id: i64, key: &str, token: Option<&str>) {
+    for (member, text) in [("ActivationToken", token), ("ActionInvoked", Some(key))] {
+        let Some(text) = text else {
+            continue;
+        };
+        let r = conn
+            .emit_signal(None::<&str>, PATH, NAME, member, &(id as u32, text))
+            .await;
+        if let Err(e) = r {
+            log::debug!("notifications: {member} not sent: {e}");
+        }
     }
 }
 
