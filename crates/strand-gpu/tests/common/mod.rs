@@ -110,6 +110,7 @@ pub fn frame(h: &mut Harness, f: Frame) -> Readback {
             surface,
             frame,
             pixels,
+            ..
         } => {
             assert_eq!((surface, frame), (S, id));
             pixels

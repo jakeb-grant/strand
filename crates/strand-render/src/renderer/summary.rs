@@ -4,14 +4,16 @@
 //! time is the render thread's work in it, and it is presented when it
 //! drew something (the caller commits it), discarded when it damaged
 //! nothing (nothing is committed). A frame sent to the GPU (a promoted
-//! surface's) is timed from its `paint`'s start to the GPU thread's
-//! reply: `Presented` for a `GpuPresent` frame, at its `at` (when the
-//! GPU had run the frame's work, before `present`) less its `waited`
-//! (the GPU thread's wait for a swapchain image, the compositor's
-//! pacing), and `Pixels` for a readback one, which comes after the GPU
-//! ran the frame. Both measure the frame's cost through the GPU's
-//! render, not vsync; it counts as presented then, and not at all if no
-//! reply comes. The percentiles are over both kinds.
+//! surface's) is timed from its `paint`'s start through the GPU's
+//! render: a `GpuPresent` frame to its `Presented`'s `at` (the GPU
+//! thread's submission, before `present`), plus the GPU's run of it
+//! from timestamp queries (`ran`, which comes with a later `Presented`;
+//! the frame counts only then), and a readback frame to its `Pixels`,
+//! which comes after the GPU ran the frame; each less its `waited` (the
+//! GPU thread's queue behind other surfaces' work, and the swapchain's
+//! FIFO pacing). Both measure the frame's cost, not vsync; it counts as
+//! presented then, and not at all if its reply or run never comes. The
+//! percentiles are over both kinds.
 
 use std::collections::HashMap;
 use std::time::Duration;

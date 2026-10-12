@@ -66,6 +66,8 @@ impl Device {
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("strand"),
+            // A presented frame's GPU time (`timer.rs`), where there is one.
+            required_features: adapter.features() & crate::timer::FEATURES,
             ..wgpu::DeviceDescriptor::default()
         }))
         .map_err(|e| {
