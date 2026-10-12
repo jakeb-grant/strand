@@ -165,3 +165,78 @@ fn a_canvas_draws_its_texts() {
         assert_matches_ref(name, &buf, TOLERANCE);
     }
 }
+
+/// How `c.fill` and `c.stroke` combine with the shapes around them
+/// (guide level 5, "Canvas"; ref `canvas_paint_order.png`): shapes add to
+/// one path, and a `fill` or `stroke` paints the shapes recorded since
+/// the last paint, then starts a new path, so a paint never reaches a
+/// shape drawn after it, nor one an earlier paint already took (a shape
+/// to be filled and stroked is added again); a shape with no paint after
+/// it draws nothing; a `fill` with no path paints the whole box and a
+/// `stroke` with none draws nothing; a later paint covers an earlier one.
+#[test]
+fn a_paint_takes_the_shapes_since_the_last_paint() {
+    let solid = |c: &str| Paint::Solid(hex(c));
+    let ops = vec![
+        // No path: the whole box.
+        DrawOp::Fill(solid("#313244")),
+        // A, filled red.
+        DrawOp::Rect {
+            x: 5.0,
+            y: 5.0,
+            w: 30.0,
+            h: 20.0,
+        },
+        DrawOp::Fill(solid("#ff0000")),
+        // B, stroked blue: only B's outline, over A where they cross.
+        DrawOp::Rect {
+            x: 20.0,
+            y: 10.0,
+            w: 30.0,
+            h: 20.0,
+        },
+        DrawOp::Stroke {
+            paint: solid("#0000ff"),
+            width: 2.0,
+        },
+        // E, filled yellow; the stroke after it has no path left.
+        DrawOp::Rect {
+            x: 55.0,
+            y: 5.0,
+            w: 15.0,
+            h: 10.0,
+        },
+        DrawOp::Fill(solid("#ffff00")),
+        DrawOp::Stroke {
+            paint: solid("#ffffff"),
+            width: 2.0,
+        },
+        // C, with no paint after it.
+        DrawOp::Circle {
+            x: 85.0,
+            y: 25.0,
+            r: 8.0,
+        },
+    ];
+    let mut r = renderer();
+    let (diff, _) = canvas_scene(ops);
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(160, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    // BGRA, bar coordinates (the canvas is at (10, 10)).
+    let (bg, red, blue, yellow) = (
+        [0x44, 0x32, 0x31, 255],
+        [0, 0, 255, 255],
+        [255, 0, 0, 255],
+        [0, 255, 255, 255],
+    );
+    assert_eq!(buf.px(20, 20), red, "A filled");
+    assert_eq!(buf.px(44, 18), red, "A's edge is not stroked");
+    assert_eq!(buf.px(30, 30), blue, "B's outline over A");
+    assert_eq!(buf.px(50, 35), bg, "B is not filled");
+    assert_eq!(buf.px(72, 20), yellow, "E filled");
+    assert_eq!(buf.px(64, 20), bg, "E is not stroked: its path was taken");
+    assert_eq!(buf.px(95, 35), bg, "C has no paint after it");
+    assert_matches_ref("canvas_paint_order", &buf, TOLERANCE);
+}

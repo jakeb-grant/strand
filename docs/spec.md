@@ -459,7 +459,13 @@ filling the monitor, the keyboard always).
   row of an outer list that holds the item's list (a kanban column
   holding the dragged card) is counted. So `list.move(key, at)`, which
   moves the first item with that key, puts it where it was let go. Values from other programs (files, apps,
-  text) arrive as typed `Drop` values.
+  text) arrive as typed `Drop` values. Known limit of 1.0's
+  implementation, not of the language: in a windowed `list`, a copy
+  outside the mounted rows is not seen (render has only the mounted
+  rows), so a drop into a list whose copy of the item is scrolled out of
+  view before the drop point gets an `at` one too high. The rule above
+  is the meaning; a fix is a bug fix, not a language change
+  (decisions.md m5-fixups, m5-integration-w3).
 - **`pages`** shows one `page` at a time, with directional transitions;
   hidden pages unmount, so their service subscriptions stop.
 

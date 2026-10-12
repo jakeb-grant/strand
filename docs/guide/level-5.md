@@ -548,8 +548,11 @@ steps.
   `c.rect`, `c.circle` and `c.text`, painted with `c.fill` and
   `c.stroke`, sized by `c.width` and `c.height`. Use it for charts and
   visualisers the built-in `graph`, `arc` and `spectrum` do not cover.
-  (How `fill` and `stroke` combine with the shapes after them is not yet
-  pinned down by a test.)
+  Shapes collect into one path, and `c.fill` or `c.stroke` paints the
+  shapes since the last paint, then starts a new path: to fill and
+  stroke a shape, draw it again before the stroke. A shape with no paint
+  after it draws nothing, `c.fill` before any shape paints the whole
+  canvas, and later paints cover earlier ones.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge
