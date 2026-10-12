@@ -247,7 +247,7 @@ notifications and so on. For the rest, you declare one. Make
 ```strand level=5 file=services.strand
 // services.strand: services Strand does not ship
 service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
-service host from file "/etc/hostname" { name: text }
+service host from file "/proc/sys/kernel/hostname" { name: text }
 service temps from poll ["sensors", "-j", "coretemp-*"] every 5s { cpu: float = temp1_input }
 permit exec "sensors"
 ```
@@ -267,16 +267,21 @@ introspection, so a misspelt property is an error with a
 did-you-mean. If the daemon is not running, that is a
 warning: your config is not broken because a daemon is down.
 
-**`from file`** reads a file and watches it. `/etc/hostname` holds one
-word, your computer's name, and a file that is neither JSON nor
-`key=value` lines is read whole, whatever the key: `host.name` is that
-word, and it follows the file when you rename the machine. A JSON file
-is read by key. So is a file of `key=value` (or `key: value`) lines,
-with double quotes around a value removed, but only when every line is
-a pair: one `#` comment or other line makes the whole file text again,
-and every field reads all of it. That is why this step does not read
-`PRETTY_NAME` from `/etc/os-release`, which on some systems has
-comments. A field without `= key` reads the key with its own name.
+**`from file`** reads a file and watches it. The kernel keeps the name
+your computer runs under in `/proc/sys/kernel/hostname`: one word, on
+every Linux system. (`/etc/hostname` is not as dependable: some systems
+leave it out, and it may hold `#` comment lines.) A file that is neither
+JSON nor `key=value` lines is read whole, whatever the key: `host.name`
+is that word. Files under `/proc` change without saying so, so after you
+rename the machine `host.name` shows the new name once the service
+starts again: when Strand restarts, or after nothing has read it for a
+few seconds. A JSON file is read by key. So is a file of `key=value` (or
+`key: value`) lines, with double quotes around a value removed, but only
+when every line is a pair: one `#` comment or other line makes the whole
+file text again, and every field reads all of it. That is why this step
+does not read `PRETTY_NAME` from `/etc/os-release`, which on some
+systems has comments. A field without `= key` reads the key with its own
+name.
 
 **`from poll … every T`** reads again every `T`, and only while
 something showing reads it. Given a file path (`"/sys/class/…"`), it
@@ -517,9 +522,17 @@ its place; `app?.launch()` does nothing when `app` is `null`.
 
 Every pin draws exactly one icon, the missing ones included, and that
 matters for drag and drop: the `at` a drop reports counts the icons
-drawn in the row, and `pins.move` counts the pins. Were a missing pin to
+drawn in the row, leaving out the one you are dragging, and `pins.move`
+counts the pins, taking the moved one out first. Were a missing pin to
 draw nothing, the two would disagree and a dragged icon would land one
 place off.
+
+With more than one monitor there is a dock on each, and you can drag
+an icon from one to another. Today the other dock counts its own icon
+for the pin you are dragging: dropped before that icon, the pin lands
+where you let go; dropped past that dock's own icon for the same pin,
+it lands one place further on. Dragging along one dock is always
+exact.
 
 ## 6. Escape hatches
 

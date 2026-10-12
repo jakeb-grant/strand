@@ -28,6 +28,10 @@ strand-core.workspace = true
 # and reads level 5's `from file` samples with the services' parser.
 strand-scene.workspace = true
 strand-services.workspace = true
+# `tests/guide.rs` places drops on level 5's dock with render's router,
+# on the scene laid out as `strand run` lays it out.
+strand-render.workspace = true
+strand-text.workspace = true
 # `tests/tree_sitter.rs` holds the editor grammar to the compiler's parser;
 # the grammar is linked into no binary (docs/architecture.md, "tree-sitter
 # layout").

@@ -32,7 +32,10 @@ use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_dev::workspace::{Analysis, ConfigKey, Input};
-use strand_scene::{Prop, PropValue};
+use strand_scene::{
+    ButtonState, DropPayload, InputEvent, LogicalPoint, LogicalRect, NodeId, PaintTarget, Painter,
+    Prop, PropValue, Scale, Size, SurfaceId,
+};
 use support::guide;
 
 /// A fresh directory for one config.
@@ -232,12 +235,19 @@ struct Dock {
     // Dropped before `rt`.
     inst: Instance,
     scene: SceneMirror,
+    /// The scene as `strand run`'s main thread holds it: laid out and
+    /// hit-tested, so drops are placed by `strand_render::Router`.
+    render: strand_render::Renderer,
+    /// The bars attached to the renderer, and the paint clock.
+    surfaces: Vec<(SurfaceId, NodeId)>,
+    clock: u64,
     _rt: Runtime,
 }
 
 impl Dock {
-    /// `installed`: the app ids the mock `apps.all` holds.
-    fn boot(storage: Storage, installed: &[&str]) -> Dock {
+    /// `installed`: the app ids the mock `apps.all` holds; `screens`: the
+    /// monitors' names (a dock on each).
+    fn boot(storage: Storage, installed: &[&str], screens: &[&str]) -> Dock {
         let schema = builtin_schema();
         let mut map = SourceMap::new();
         map.add("dock.strand", last_block("dock.strand"));
@@ -251,18 +261,22 @@ impl Dock {
         let program = Arc::new(lower::lower(&compiled.program, &schema));
         let rt = Runtime::new();
         let host = Rc::new(SchemaHost::mock(&rt, &program.types));
-        let screen = host.record(
-            "Screen",
-            &[
-                ("id", Value::text("Mock | DP-1 | Display")),
-                ("name", Value::text("DP-1")),
-                ("make", Value::text("Mock")),
-                ("model", Value::text("DP-1")),
-                ("description", Value::text("Display")),
-            ],
-        );
-        host.set(&rt, "screens.all", Value::list(vec![screen]))
-            .unwrap();
+        let screens = screens
+            .iter()
+            .map(|name| {
+                host.record(
+                    "Screen",
+                    &[
+                        ("id", Value::text(format!("Mock | {name} | Display"))),
+                        ("name", Value::text(*name)),
+                        ("make", Value::text("Mock")),
+                        ("model", Value::text(*name)),
+                        ("description", Value::text("Display")),
+                    ],
+                )
+            })
+            .collect();
+        host.set(&rt, "screens.all", Value::list(screens)).unwrap();
         let apps = installed
             .iter()
             .map(|id| {
@@ -278,9 +292,17 @@ impl Dock {
             .collect();
         host.set(&rt, "apps.all", Value::list(apps)).unwrap();
         let inst = Instance::new(&rt, program, host, storage);
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine =
+            strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![Arc::new(font)]));
         let mut dock = Dock {
             inst,
             scene: SceneMirror::new(),
+            render: strand_render::Renderer::new(strand_render::TextBackend::Inline(Box::new(
+                engine,
+            ))),
+            surfaces: Vec::new(),
+            clock: 0,
             _rt: rt,
         };
         dock.flush();
@@ -291,6 +313,68 @@ impl Dock {
         let u = self.inst.flush();
         assert!(u.errors.is_empty(), "{:?}", u.errors);
         self.scene.apply(&u.diff).unwrap();
+        assert!(self.render.apply(u.diff).is_empty());
+    }
+
+    /// The docks' bars, one surface each (`SurfaceId(1)`, `SurfaceId(2)`,
+    /// …), laid out 800 px wide and painted once the icons have sprung in
+    /// (or glided to their new places).
+    fn paint(&mut self) -> Vec<(SurfaceId, NodeId)> {
+        if self.surfaces.is_empty() {
+            let bars: Vec<NodeId> = self
+                .scene
+                .walk()
+                .into_iter()
+                .filter(|n| {
+                    self.scene.parent(*n).is_none()
+                        && self.scene.kind(*n).is_some_and(|k| k.name() == "bar")
+                })
+                .collect();
+            for (i, bar) in bars.into_iter().enumerate() {
+                let s = SurfaceId(i as u32 + 1);
+                self.render.attach_surface(s, bar);
+                self.render
+                    .configure_surface(s, Size::new(800, 64), Scale::ONE);
+                self.surfaces.push((s, bar));
+            }
+        }
+        let mut px = vec![0u8; 800 * 64 * 4];
+        for step in [1, 5] {
+            let at = Duration::from_secs(self.clock + step);
+            for (s, _) in &self.surfaces {
+                let target =
+                    PaintTarget::new(&mut px, Size::new(800, 64), 3200, Scale::ONE, 0).unwrap();
+                self.render.paint(*s, &mut target.at(at));
+            }
+        }
+        self.clock += 5;
+        self.surfaces.clone()
+    }
+
+    /// The icon of pin `label` on the dock under `bar`, and its box.
+    fn icon(&self, s: SurfaceId, bar: NodeId, label: &str) -> (NodeId, LogicalRect) {
+        let under = |mut n: NodeId| {
+            while let Some(p) = self.scene.parent(n) {
+                n = p;
+            }
+            n == bar
+        };
+        let icon = self
+            .scene
+            .walk()
+            .into_iter()
+            .find(|n| {
+                under(*n)
+                    && self.scene.kind(*n).is_some_and(|k| k.name() == "image")
+                    && matches!(self.scene.prop(*n, Prop::Tooltip),
+                        Some(PropValue::Text(t)) if t.as_str() == label)
+            })
+            .unwrap_or_else(|| panic!("no {label} icon:\n{}", self.scene.render()));
+        let rect = self
+            .render
+            .node_rect(s, icon)
+            .unwrap_or_else(|| panic!("{label}'s icon is not laid out"));
+        (icon, rect)
     }
 
     /// How many icons the dock draws.
@@ -334,8 +418,8 @@ impl Dock {
         self.flush();
     }
 
-    /// Drags the pin `app` and drops it where the renderer would report
-    /// `at`: its index among the row's other drawn icons.
+    /// Drops the pin `app` on the first dock's row at `at`, as
+    /// [`Dock::drop_on`] would.
     fn drop_at(&mut self, app: &str, at: i64) {
         let icon = self
             .scene
@@ -344,6 +428,12 @@ impl Dock {
             .find(|n| self.scene.kind(*n).is_some_and(|k| k.name() == "image"))
             .unwrap();
         let row = self.scene.parent(icon).unwrap();
+        self.drop_on(row, app, at);
+    }
+
+    /// Runs `row`'s `on drop(p, at)` with the pin `app`: what `strand
+    /// run` does with the router's `Drop { payload, at }` on `row`.
+    fn drop_on(&mut self, row: NodeId, app: &str, at: i64) {
         let pin = self
             .pin_list()
             .into_iter()
@@ -368,7 +458,7 @@ fn the_guide_dock_reorders_every_pin_and_keeps_the_order() {
     let dir = scratch("dock");
     let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
     // Nautilus is not installed: its pin still draws an icon.
-    let mut dock = Dock::boot(storage.clone(), &["firefox", "foot"]);
+    let mut dock = Dock::boot(storage.clone(), &["firefox", "foot"], &["DP-1"]);
     assert_eq!(dock.pins(), ["firefox", "org.gnome.Nautilus"]);
     assert_eq!(dock.icons(), 2, "{}", dock.scene.render());
     dock.push("foot", "Foot");
@@ -380,12 +470,149 @@ fn the_guide_dock_reorders_every_pin_and_keeps_the_order() {
     assert_eq!(dock.pins(), ["org.gnome.Nautilus", "foot", "firefox"]);
     drop(dock);
     // After a restart: the same order.
-    let dock = Dock::boot(storage.clone(), &["firefox", "foot"]);
+    let dock = Dock::boot(storage.clone(), &["firefox", "foot"], &["DP-1"]);
     assert_eq!(dock.pins(), ["org.gnome.Nautilus", "foot", "firefox"]);
     drop(dock);
     if let Some(p) = &storage.persist {
         assert!(p.sync(std::time::Duration::from_secs(5)));
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Where the router places a drop on the guide's dock, two monitors, a
+/// dock on each (decisions.md m5-docs, review round 3 item 1). Dragged
+/// along its own dock, an icon lands where it is let go: the `at`
+/// strand-render's `drop_index` reports leaves the dragged icon out, as
+/// `pins.move` takes it out before it inserts. Dropped on the other
+/// monitor's dock, the `at` counts that dock's own icon for the same
+/// pin: before that icon it is right, past it one too high. That is the
+/// limit level 5 states; when render leaves the other dock's copy out
+/// too, the last order here becomes `[foot, nautilus, firefox]`, this
+/// fails, and the page changes with it.
+#[test]
+fn the_guide_dock_drops_where_the_pointer_is() {
+    let dir = scratch("dock-drops");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let mut dock = Dock::boot(storage.clone(), &["firefox", "foot"], &["DP-1", "DP-2"]);
+    dock.push("foot", "Foot");
+    let bars = dock.paint();
+    assert_eq!(bars.len(), 2, "{}", dock.scene.render());
+    let ((a, bar_a), (b, bar_b)) = (bars[0], bars[1]);
+    let mut router = strand_render::Router::default();
+    router.attached(a, bar_a);
+    router.attached(b, bar_b);
+    let centre = |r: LogicalRect| LogicalPoint::new(r.x + r.w / 2.0, r.y + r.h / 2.0);
+    let between = |l: LogicalRect, r: LogicalRect| {
+        let (l, r) = (centre(l), centre(r));
+        LogicalPoint::new((l.x + r.x) / 2.0, l.y)
+    };
+    let press = |s, at, state| InputEvent::PointerButton {
+        surface: s,
+        position: at,
+        button: strand_scene::input::button::LEFT,
+        state,
+        time: 0,
+    };
+    let motion = |s, at, time| InputEvent::PointerMotion {
+        surface: s,
+        position: at,
+        time,
+    };
+    // The drop the router reports for `events`: its row and its `at`.
+    let dropped = |dock: &mut Dock, router: &mut strand_render::Router, events: Vec<InputEvent>| {
+        let mut out = Vec::new();
+        for e in &events {
+            out.extend(router.handle(e, &mut dock.render));
+        }
+        let drops: Vec<(NodeId, u32)> = out
+            .into_iter()
+            .filter_map(|i| match i {
+                strand_render::Intent::Event {
+                    node,
+                    event: strand_render::NodeEvent::Drop { at, .. },
+                } => Some((node, at)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drops.len(), 1, "one drop: {drops:?}");
+        drops[0]
+    };
+
+    // Along DP-1's dock: Firefox let go between Files and Foot.
+    let (firefox, ff) = dock.icon(a, bar_a, "Firefox");
+    let (_, files) = dock.icon(a, bar_a, "Files");
+    let (_, foot) = dock.icon(a, bar_a, "Foot");
+    let to = between(files, foot);
+    let (row, at) = dropped(
+        &mut dock,
+        &mut router,
+        vec![
+            motion(a, centre(ff), 0),
+            press(a, centre(ff), ButtonState::Pressed),
+            motion(a, LogicalPoint::new(centre(ff).x + 20.0, centre(ff).y), 10),
+            motion(a, to, 20),
+            press(a, to, ButtonState::Released),
+        ],
+    );
+    assert_eq!(Some(row), dock.scene.parent(firefox));
+    assert_eq!(at, 1);
+    dock.drop_on(row, "firefox", i64::from(at));
+    assert_eq!(dock.pins(), ["org.gnome.Nautilus", "firefox", "foot"]);
+    dock.paint();
+
+    // From DP-1's dock to DP-2's, through the compositor: `at` counts
+    // DP-2's own icon for the dragged pin.
+    let mut across = |dock: &mut Dock, label: &str, app: &str, left: &str, right: &str| {
+        let (source, from) = dock.icon(a, bar_a, label);
+        let (_, l) = dock.icon(b, bar_b, left);
+        let (_, r) = dock.icon(b, bar_b, right);
+        let to = between(l, r);
+        let (row, at) = dropped(
+            dock,
+            &mut router,
+            vec![
+                motion(a, centre(from), 0),
+                press(a, centre(from), ButtonState::Pressed),
+                motion(
+                    a,
+                    LogicalPoint::new(centre(from).x + 20.0, centre(from).y),
+                    10,
+                ),
+                InputEvent::PointerLeave { surface: a },
+                InputEvent::DragEnter {
+                    surface: b,
+                    at: to,
+                    kinds: vec![],
+                },
+                InputEvent::DragMotion { surface: b, at: to },
+                InputEvent::DragDrop {
+                    surface: b,
+                    at: to,
+                    payload: DropPayload::Node(source),
+                },
+            ],
+        );
+        assert_ne!(Some(row), dock.scene.parent(source), "DP-2's row");
+        dock.drop_on(row, app, i64::from(at));
+        dock.paint();
+        at
+    };
+    // Foot between Files and Firefox, before DP-2's Foot: right.
+    assert_eq!(across(&mut dock, "Foot", "foot", "Files", "Firefox"), 1);
+    assert_eq!(dock.pins(), ["org.gnome.Nautilus", "foot", "firefox"]);
+    // Files between Foot and Firefox, past DP-2's Files: one too far.
+    assert_eq!(
+        across(&mut dock, "Files", "org.gnome.Nautilus", "Foot", "Firefox"),
+        2
+    );
+    assert_eq!(dock.pins(), ["foot", "firefox", "org.gnome.Nautilus"]);
+
+    // The page says so.
+    let page = std::fs::read_to_string(guide::root().join("docs/guide/level-5.md")).unwrap();
+    let page = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = "dropped past that dock's own icon for the same pin, it lands one place further on";
+    assert!(page.contains(said), "level-5.md no longer says: {said}");
+    drop(dock);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -487,7 +714,7 @@ fn the_guide_control_centre_overrides_a_component_token() {
 /// real system, the awkward cases included (decisions.md m5-docs, review
 /// round 2 item 1).
 const FILE_SAMPLES: &[(&str, &str)] = &[
-    ("/etc/hostname", "mylaptop\n"),
+    ("/proc/sys/kernel/hostname", "mylaptop\n"),
     // openSUSE Tumbleweed's, which carries a comment line.
     (
         "/etc/os-release",
@@ -539,6 +766,75 @@ fn the_guide_file_services_read_one_value() {
         }
     }
     assert!(seen >= 1, "level 5 has no `from file` service:\n{text}");
+}
+
+/// Level 5's `host` service, run as `strand run` runs it, reads the
+/// name the kernel runs under: one line, present on every system, which
+/// `/etc/hostname` is not (decisions.md m5-docs, review round 3 item 2:
+/// hostname(5) allows `#` comment lines there, which the parser keeps,
+/// and some systems leave the file out, which reads as nothing).
+#[test]
+fn the_guide_host_service_reads_the_kernels_name() {
+    use strand_services::custom::{self, Custom, FieldSpec, Source, Spec};
+    use strand_services::{Buses, Data, Services};
+    let text = last_block("services.strand");
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("service host from file "))
+        .unwrap_or_else(|| panic!("no `host` file service:\n{text}"));
+    let path = line.split('"').nth(1).unwrap();
+    assert_eq!(path, "/proc/sys/kernel/hostname", "{line}");
+    let kernel = std::fs::read_to_string(path).unwrap();
+    let kernel = kernel.trim();
+    assert!(!kernel.is_empty() && !kernel.contains('\n'));
+    // The file the page no longer reads, as hostname(5) allows it: the
+    // comment is in what every field reads.
+    let commented = strand_services::custom::Document::parse("# set by the installer\nmylaptop\n");
+    assert_eq!(
+        commented.get(&["name".to_string()]),
+        Some(Data::Text("# set by the installer\nmylaptop".into()))
+    );
+
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "host");
+    let id = custom::register(Spec {
+        name: "host".into(),
+        source: Source::File { path: path.into() },
+        fields: vec![FieldSpec {
+            name: "name".into(),
+            key: vec!["name".into()],
+            rw: false,
+        }],
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let value = || {
+        client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let want = Some(Data::Text(kernel.into()));
+    loop {
+        services.pump(&rt);
+        rt.flush();
+        if value() == want {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "host.name is {:?}, the kernel's name {kernel:?}",
+            value()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
 }
 
 /// The limit level 5 states for `key=value` files: one line that is not

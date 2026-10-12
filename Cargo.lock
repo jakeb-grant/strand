@@ -2904,9 +2904,11 @@ dependencies = [
  "strand-compiler",
  "strand-core",
  "strand-introspect",
+ "strand-render",
  "strand-scene",
  "strand-services",
  "strand-services-schema",
+ "strand-text",
  "tree-sitter",
  "tree-sitter-strand",
 ]
