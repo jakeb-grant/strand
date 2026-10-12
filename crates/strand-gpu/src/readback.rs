@@ -12,6 +12,31 @@ use crate::{GpuError, GpuErrorKind, Readback};
 /// wait a thread that never answers again.
 pub(crate) const HUNG_AFTER: Duration = Duration::from_secs(10);
 
+/// Waits on this thread until the GPU has run `index` (the latest
+/// submission when `None`), at most [`HUNG_AFTER`]; past it the device
+/// counts as hung and lost. `what` names the wait in an error.
+pub(crate) fn finish(
+    dev: &Device,
+    index: Option<wgpu::SubmissionIndex>,
+    what: &str,
+) -> Result<(), GpuError> {
+    match dev.device.poll(wgpu::PollType::Wait {
+        submission_index: index,
+        timeout: Some(HUNG_AFTER),
+    }) {
+        Ok(_) => Ok(()),
+        Err(wgpu::PollError::Timeout) => {
+            dev.hung.store(true, Ordering::SeqCst);
+            dev.lost.store(true, Ordering::SeqCst);
+            Err(GpuError::new(
+                GpuErrorKind::Lost,
+                format!("the GPU ran past {HUNG_AFTER:?} on one submission"),
+            ))
+        }
+        Err(e) => Err(GpuError::new(GpuErrorKind::Render, format!("{what}: {e}"))),
+    }
+}
+
 /// Bytes per row of a `width`-pixel copy, padded to wgpu's alignment.
 pub(crate) fn padded_stride(width: u32) -> u32 {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -77,26 +102,7 @@ impl ReadBuffer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        match dev.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(HUNG_AFTER),
-        }) {
-            Ok(_) => {}
-            Err(wgpu::PollError::Timeout) => {
-                dev.hung.store(true, Ordering::SeqCst);
-                dev.lost.store(true, Ordering::SeqCst);
-                return Err(GpuError::new(
-                    GpuErrorKind::Lost,
-                    format!("the GPU ran past {HUNG_AFTER:?} on one submission"),
-                ));
-            }
-            Err(e) => {
-                return Err(GpuError::new(
-                    GpuErrorKind::Render,
-                    format!("readback: {e}"),
-                ));
-            }
-        }
+        finish(dev, None, "readback")?;
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {

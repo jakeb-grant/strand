@@ -1,6 +1,6 @@
-//! The `strand-gpu` thread: waits on its channel (and on presents, inside
-//! `get_current_texture`), never on a timer; it does not decide when to
-//! stop. A panic in the device's code counts as a lost device.
+//! The `strand-gpu` thread: waits on its channel (on presents, inside
+//! `get_current_texture`, and on each frame's GPU work, at most
+//! `HUNG_AFTER`), never on a timer; it does not decide when to stop. A panic in the device's code counts as a lost device.
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -15,7 +15,7 @@ use crate::draw::{self, DrawnPass, Held, Images};
 use crate::lru::Lru;
 use crate::pass::{self, Passes};
 use crate::present::{self, Blit, Presented};
-use crate::readback::ReadBuffer;
+use crate::readback::{self, ReadBuffer};
 use crate::{
     Frame, GpuError, GpuErrorKind, GpuMode, GpuOptions, GpuReply, GpuRequest, Op, PassFrame, Scale,
     Size, SurfaceId, Upload,
@@ -495,6 +495,10 @@ impl State {
             let Some(p) = target.present.as_mut() else {
                 return Err(render_error("no swapchain"));
             };
+            // Waiting for a swapchain image is the compositor's pacing
+            // (FIFO), not the frame's cost: measured, and left out of its
+            // time (`GpuReply::Presented`'s `waited`).
+            let acquiring = Instant::now();
             let tex = match p.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(t)
                 | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
@@ -508,6 +512,7 @@ impl State {
                     }
                 }
             };
+            let waited = acquiring.elapsed();
             let Some(tex) = tex else {
                 return Err(render_error("no swapchain image"));
             };
@@ -516,12 +521,15 @@ impl State {
                 .create_view(&wgpu::TextureViewDescriptor::default());
             self.blit
                 .record(dev, &mut encoder, &ft.view, &dst, p.config.format);
-            dev.queue.submit([encoder.finish()]);
+            // Timed when the GPU has run the frame, before `present`,
+            // which may block on the compositor's frame callback.
+            let at = submit_finished(dev, encoder.finish())?;
             dev.queue.present(tex);
             drop(keep);
             reply.send(GpuReply::Presented {
                 surface,
-                at: Instant::now(),
+                at,
+                waited,
             });
             Ok(())
         } else {
@@ -669,9 +677,83 @@ fn render_error(message: impl Into<String>) -> GpuError {
     GpuError::new(GpuErrorKind::Render, message)
 }
 
+/// Submits a presented frame's work and waits for the GPU to run it
+/// (at most `HUNG_AFTER`); returns when it finished, so a frame's time
+/// includes the GPU's render on both backends (a readback waits in
+/// `ReadBuffer::read`).
+fn submit_finished(dev: &Device, work: wgpu::CommandBuffer) -> Result<Instant, GpuError> {
+    let index = dev.queue.submit([work]);
+    readback::finish(dev, Some(index), "present")?;
+    Ok(Instant::now())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (m5-tools review round 2) A presented frame is timed when the GPU
+    /// has run it, not when its work was queued: after
+    /// `submit_finished` nothing is left in flight. Lavapipe runs a
+    /// submission on its own thread, so sixteen clears of a 4096² texture
+    /// are still running when a bare `submit` returns.
+    #[test]
+    fn a_presented_frame_is_timed_after_the_gpu_ran_it() {
+        let dev = match Device::open(&GpuOptions::from_env()) {
+            Ok(d) => d,
+            Err(e) => {
+                let required = std::env::var("STRAND_REQUIRE_GPU").is_ok_and(|v| v == "1");
+                assert!(!required, "STRAND_REQUIRE_GPU=1 but no GPU: {e}");
+                eprintln!("skipped: no GPU ({e})");
+                return;
+            }
+        };
+        let texture = dev.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 4096,
+                height: 4096,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FRAME_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = dev
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        for i in 0..16 {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(i) / 16.0,
+                            g: 0.5,
+                            b: 0.25,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..wgpu::RenderPassDescriptor::default()
+            });
+        }
+        let before = Instant::now();
+        let at = submit_finished(&dev, encoder.finish()).unwrap();
+        assert!(at >= before);
+        let status = dev.device.poll(wgpu::PollType::Poll).unwrap();
+        assert!(
+            status.is_queue_empty(),
+            "the frame was timed with its GPU work still running"
+        );
+    }
 
     fn replies(
         owed: Option<(Option<SurfaceId>, Option<u64>)>,

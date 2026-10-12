@@ -826,16 +826,22 @@ impl Renderer {
                 self.set_backend(surface, backend);
             }
             GpuReply::Released(surface) => self.set_backend(surface, Backend::Cpu),
-            GpuReply::Presented { surface, at } => {
+            GpuReply::Presented {
+                surface,
+                at,
+                waited,
+            } => {
                 self.gpu.device.used(now);
                 if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
                     // The frame's time: its paint on main, the hop, and
-                    // the GPU thread's render and present.
+                    // the GPU's render and blit, to when the GPU had run
+                    // them; the GPU thread's wait for a swapchain image
+                    // (the compositor's pacing) is left out.
                     if s.presenting
                         && let Some(t) = s.started.take()
                         && self.surfaces.contains_key(&surface)
                     {
-                        let took = at.saturating_duration_since(t);
+                        let took = at.saturating_duration_since(t).saturating_sub(waited);
                         self.frame_stats.record(surface, took, true);
                     }
                     s.presenting = false;

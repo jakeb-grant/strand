@@ -29,7 +29,7 @@
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub use strand_scene::{AdapterInfo, Scale, ShaderPass, Size, SurfaceId};
 pub use vello_common::color::{AlphaColor, Srgb};
@@ -140,9 +140,18 @@ pub enum GpuReply {
     Attached { surface: SurfaceId, mode: GpuMode },
     /// `surface`'s swapchain is gone; the manager may commit it again.
     Released(SurfaceId),
-    /// A presented frame went to the compositor at `at`: the surface's
-    /// frame callback.
-    Presented { surface: SurfaceId, at: Instant },
+    /// A presented frame went to the compositor: the surface's frame
+    /// callback. `at` is when the GPU had run the frame's work (render
+    /// and blit), taken before `present`; `waited` is how long the GPU
+    /// thread blocked on the swapchain for its image (the compositor's
+    /// FIFO pacing), which is not the frame's cost. A frame's time is
+    /// `at` less its start less `waited`, the same measure as a
+    /// readback frame's `Pixels`.
+    Presented {
+        surface: SurfaceId,
+        at: Instant,
+        waited: Duration,
+    },
     /// A readback frame's pixels.
     Pixels {
         surface: SurfaceId,

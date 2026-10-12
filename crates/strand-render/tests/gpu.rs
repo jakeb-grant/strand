@@ -1045,6 +1045,7 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
     r.deliver_gpu(GpuReply::Presented {
         surface: S,
         at: Instant::now(),
+        waited: Duration::ZERO,
     });
     r.update();
     assert!(
@@ -1064,8 +1065,10 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
 }
 
 /// (M5, m5-tools review) `strand report`'s frame time of a promoted
-/// surface includes the GPU thread's work: a `GpuPresent` frame runs
-/// from its `paint` to its `Presented`, a readback frame from its
+/// surface includes the GPU's work: a `GpuPresent` frame runs from its
+/// `paint` to its `Presented`'s `at` (when the GPU had run it; round 2,
+/// `strand-gpu`'s `a_presented_frame_is_timed_after_the_gpu_ran_it`),
+/// a readback frame from its
 /// `paint` to its `Pixels`, and neither counts before its reply. Needs
 /// no device; the GPU thread's 40 ms is a sleep.
 #[test]
@@ -1107,6 +1110,7 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
     r.deliver_gpu(GpuReply::Presented {
         surface: S,
         at: Instant::now(),
+        waited: Duration::ZERO,
     });
     let f = r.frame_summary(S).unwrap();
     assert_eq!(f.presented, 2);
@@ -1149,6 +1153,48 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
         "the readback's GPU work left out: {:?}",
         f.p50
     );
+}
+
+/// (M5, m5-tools review round 2) A presented frame's time leaves out
+/// the GPU thread's wait for a swapchain image (`Presented`'s `waited`,
+/// the compositor's FIFO pacing), so it measures the frame's cost as a
+/// readback frame's does, not the refresh period. Needs no device: the
+/// 40 ms the GPU thread blocked is a sleep reported as `waited`.
+#[test]
+fn a_presented_frames_time_leaves_out_the_swapchain_wait() {
+    let paced = Duration::from_millis(40);
+    let mut b = Builder::default();
+    b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    assert!(
+        !buf.paint_at(&mut r, S, 0, Duration::from_secs(1))
+            .is_empty()
+    );
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    let sent = Instant::now();
+    assert!(r.paint_gpu(S, Duration::from_secs(1)).is_some());
+    std::thread::sleep(paced);
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        at: Instant::now(),
+        waited: sent.elapsed(),
+    });
+    let f = r.frame_summary(S).unwrap();
+    assert_eq!(f.presented, 2);
+    assert!(f.p99 < paced, "the swapchain wait counted: {:?}", f.p99);
 }
 
 /// (m4-integration-w2) A surface the GPU thread presents paints its pose

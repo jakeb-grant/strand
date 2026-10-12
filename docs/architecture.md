@@ -922,8 +922,13 @@ an overlay step and a contrast-guard step where they apply.
   time the render thread's work in it, presented when it damaged
   something and discarded when it damaged nothing; a frame a `paint`
   sends to the GPU (a promoted surface's) runs from that `paint`'s start
-  to the GPU thread's `Presented` (its `at`) or `Pixels`, and counts as
-  presented only then; nearest-rank percentiles over both; a detached
+  to the GPU thread's `Presented` or `Pixels`, and counts as presented
+  only then; `Presented { surface, at, waited }`'s `at` is taken when
+  the GPU has run the frame (the GPU thread waits on its submission, at
+  most `HUNG_AFTER`, before `present`) and its `waited`, the GPU
+  thread's block on the swapchain for an image (FIFO pacing), is
+  subtracted, so both backends time the frame through the GPU's render
+  and neither times vsync (m5-tools review round 2); nearest-rank percentiles over both; a detached
   surface's frames go). Beside it,
   `Renderer::gpu_lost_devices() -> u32` (0 without the `gpu` feature)
   for the report's lost-device count, and strand-surface's
@@ -3879,7 +3884,9 @@ Wayland crate. Its interface:
   (m4-gpu-effects).
   `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
   `Attached { surface, mode: GpuMode }`, `Released(SurfaceId)`,
-  `Presented { surface, at: Instant }`, `Pixels { surface, frame: u64,
+  `Presented { surface, at: Instant, waited: Duration }` (`at` when the
+  GPU had run the frame, before `present`; `waited` the block on the
+  swapchain for its image; m5-tools review round 2), `Pixels { surface, frame: u64,
   pixels: Readback }`, `PassPixels { key, frame, pixels }`, `Failed {
   surface, key, error }` (a frame or pass that could not be drawn, such
   as a shader that fails to compile on the device; the device stays

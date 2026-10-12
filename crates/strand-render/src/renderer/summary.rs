@@ -5,10 +5,13 @@
 //! drew something (the caller commits it), discarded when it damaged
 //! nothing (nothing is committed). A frame sent to the GPU (a promoted
 //! surface's) is timed from its `paint`'s start to the GPU thread's
-//! reply: `Presented` (at its `at`) for a `GpuPresent` frame, `Pixels`
-//! for a readback one, so its time includes the GPU's render; it counts
-//! as presented then, and not at all if no reply comes. The percentiles
-//! are over both kinds.
+//! reply: `Presented` for a `GpuPresent` frame, at its `at` (when the
+//! GPU had run the frame's work, before `present`) less its `waited`
+//! (the GPU thread's wait for a swapchain image, the compositor's
+//! pacing), and `Pixels` for a readback one, which comes after the GPU
+//! ran the frame. Both measure the frame's cost through the GPU's
+//! render, not vsync; it counts as presented then, and not at all if no
+//! reply comes. The percentiles are over both kinds.
 
 use std::collections::HashMap;
 use std::time::Duration;
