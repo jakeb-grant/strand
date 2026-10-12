@@ -108,7 +108,8 @@ pub enum DropPayload {
 
 /// (M4) The dragged value's type name in a `drag:` source's
 /// [`Prop::Drag`](crate::Prop::Drag): a `Keyword`, or the first item of
-/// the `List` that also carries its [`drag_export`].
+/// the `List` that also carries its [`drag_export`] and its
+/// [`drag_identity`].
 pub fn drag_type(value: &crate::PropValue) -> Option<&str> {
     use crate::PropValue as V;
     match value {
@@ -121,13 +122,34 @@ pub fn drag_type(value: &crate::PropValue) -> Option<&str> {
     }
 }
 
+/// (M5) Which value a `drag:` source carries, as an identity: the
+/// compiler puts it last in [`Prop::Drag`](crate::Prop::Drag)'s `List`
+/// (`[type, …, List [Text(identity)]]`), equal for equal values. Two
+/// sources with one identity carry the same value, such as one pin's
+/// icon on the dock of each monitor: a drop counts its rows with every
+/// copy of the dragged item left out, not only the dragged node.
+/// `None`: a prop without one (a bare `Keyword`).
+pub fn drag_identity(value: &crate::PropValue) -> Option<&str> {
+    use crate::PropValue as V;
+    let V::List(items) = value else {
+        return None;
+    };
+    match items.get(1..)?.last()? {
+        V::List(id) => match id.as_slice() {
+            [V::Text(t)] => Some(t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// (M4) What a `drag:` source gives other programs when the compositor
 /// carries it out (`None`: nothing, the drag is Strand's alone). The
 /// compiler sets [`Prop::Drag`](crate::Prop::Drag) to `[type, kind,
 /// items…]` for a value that has a form outside Strand: `text`
 /// (`[type, text, Text]`), a `Drop` (its kind; `files`: a `Text` per
 /// path, `text`: one `Text`, `app`: the app's desktop id), an `App`
-/// (`[type, app, id]`).
+/// (`[type, app, id]`). A trailing [`drag_identity`] is not part of it.
 pub fn drag_export(value: &crate::PropValue) -> Option<DropPayload> {
     use crate::PropValue as V;
     let V::List(items) = value else {
@@ -308,6 +330,37 @@ mod tests {
         assert_eq!(drag_export(&V::List(vec![kw("App"), kw("app")])), None);
         assert_eq!(drag_export(&V::List(vec![kw("x"), kw("uri")])), None);
         assert_eq!(drag_type(&V::Number(1.0)), None);
+        // An identity last: read by `drag_identity`, never exported.
+        let n = V::List(vec![t("9f2c")]);
+        let pin = V::List(vec![kw("Pin"), n.clone()]);
+        assert_eq!(drag_type(&pin), Some("Pin"));
+        assert_eq!(drag_export(&pin), None);
+        assert_eq!(drag_identity(&pin), Some("9f2c"));
+        let text = V::List(vec![kw("text"), kw("text"), t("hello"), n.clone()]);
+        assert_eq!(drag_identity(&text), Some("9f2c"));
+        assert_eq!(
+            drag_export(&text),
+            Some(DropPayload::External {
+                kind: DropKind::Text,
+                files: vec![],
+                text: "hello".into(),
+                app_id: None,
+            })
+        );
+        let files_id = V::List(vec![kw("Drop"), kw("files"), t("/a"), n.clone()]);
+        assert_eq!(
+            drag_export(&files_id),
+            Some(DropPayload::External {
+                kind: DropKind::Files,
+                files: vec!["/a".into()],
+                text: String::new(),
+                app_id: None,
+            }),
+            "the identity is not a file"
+        );
+        assert_eq!(drag_identity(&kw("Pin")), None);
+        assert_eq!(drag_identity(&V::List(vec![n])), None, "a type first");
+        assert_eq!(drag_identity(&files), None);
     }
 
     #[test]

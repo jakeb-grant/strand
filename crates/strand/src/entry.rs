@@ -17,9 +17,9 @@ const COMMANDS: &[(&str, &str)] = &[
         "run",
         "run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)",
     ),
-    ("check", "check the config without running it [dir]"),
+    ("check", "check the config without running it [dir | file]"),
     ("fmt", "format .strand files in place [--check] [paths]"),
-    ("watch", "stream reload events (--json)"),
+    ("watch", "stream reload events, faults and notices (--json)"),
     ("reload", "rescan now (--hard drops non-persisted state)"),
     (
         "get",
@@ -27,7 +27,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "set",
-        "write an exported value (strand set theme.look mocha; '$accent' overlays a token)",
+        "write an exported value, a settings field or an rw service field (strand set theme.look mocha; audio.sink.volume +5%; '$accent' overlays a token)",
     ),
     ("toggle", "flip an exported boolean"),
     (
@@ -50,9 +50,23 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Flags that stand in for a command (not COMMANDS rows: `dispatch` and
+/// `main` take them before any command).
+const OPTIONS: &[(&str, &str)] = &[
+    (
+        "--write-schemas",
+        "write this plugin binary's service schemas for strand check and the LSP",
+    ),
+    ("-V, --version", "print the version"),
+];
+
 fn usage() -> String {
     let mut s = String::from("usage: strand <command> [args]\n\ncommands:\n");
     for (name, about) in COMMANDS {
+        s.push_str(&format!("  {name:<18}{about}\n"));
+    }
+    s.push_str("\noptions:\n");
+    for (name, about) in OPTIONS {
         s.push_str(&format!("  {name:<18}{about}\n"));
     }
     s
@@ -216,6 +230,14 @@ mod tests {
         for (name, ..) in COMMANDS {
             assert!(out.contains(name), "help is missing `{name}`");
         }
+        // The flags a plugin author and a script need, though no row.
+        assert!(
+            out.contains(
+                "\noptions:\n  --write-schemas   write this plugin binary's service schemas"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("-V, --version"), "{out}");
     }
 
     /// Every command the help lists is served: `run`, a tool or a

@@ -60,8 +60,8 @@ pub(crate) fn main_part(state: &State<Host>) -> Json {
                     "p50_us": f.p50.as_micros() as u64,
                     "p95_us": f.p95.as_micros() as u64,
                     "p99_us": f.p99.as_micros() as u64,
-                    "presented": f.presented,
-                    "discarded": f.discarded,
+                    "drawn": f.drawn,
+                    "unchanged": f.unchanged,
                 })
             });
             json!({
@@ -262,17 +262,19 @@ pub(crate) fn text(r: &Json) -> String {
             let _ = writeln!(out, "    promoted: {why}");
         }
         let f = &v["frames"];
-        if f.is_object() {
+        if f["drawn"].as_u64().is_some_and(|n| n > 0) {
             let ms = |k: &str| f[k].as_u64().unwrap_or(0) as f64 / 1000.0;
             let _ = writeln!(
                 out,
-                "    frames: p50 {:.2} ms, p95 {:.2} ms, p99 {:.2} ms ({} presented, {} discarded)",
+                "    frames: p50 {:.2} ms, p95 {:.2} ms, p99 {:.2} ms over {} drawn ({} unchanged)",
                 ms("p50_us"),
                 ms("p95_us"),
                 ms("p99_us"),
-                f["presented"],
-                f["discarded"]
+                f["drawn"],
+                f["unchanged"]
             );
+        } else if f.is_object() {
+            let _ = writeln!(out, "    frames: none drawn ({} unchanged)", f["unchanged"]);
         } else {
             let _ = writeln!(out, "    frames: none yet");
         }
@@ -327,7 +329,7 @@ mod tests {
                           "size": [1536, 32], "scale": 1.25, "fractional": true,
                           "backend": "gpu-present", "promoted": "because",
                           "frames": {"p50_us": 1500, "p95_us": 2000, "p99_us": 4000,
-                                     "presented": 10, "discarded": 2}}],
+                                     "drawn": 10, "unchanged": 2}}],
             "gpu": {"built": true, "status": "up", "reason": null,
                     "adapter": {"name": "Intel", "driver": "Mesa", "software": false},
                     "off": false, "lost_devices": 1},
@@ -343,9 +345,16 @@ mod tests {
             "lost devices: 1",
             "strand-Top (bar) on DP-1: 1536x32 at scale 1.25, gpu-present",
             "promoted: because",
-            "p50 1.50 ms, p95 2.00 ms, p99 4.00 ms (10 presented, 2 discarded)",
+            "p50 1.50 ms, p95 2.00 ms, p99 4.00 ms over 10 drawn (2 unchanged)",
         ] {
             assert!(t.contains(want), "{want:?} in\n{t}");
         }
+        // Paints that changed nothing, none drawn: no percentiles shown.
+        let mut r = r;
+        r["surfaces"][0]["frames"] =
+            json!({"p50_us": 0, "p95_us": 0, "p99_us": 0, "drawn": 0, "unchanged": 3});
+        let t = text(&r);
+        assert!(t.contains("    frames: none drawn (3 unchanged)"), "{t}");
+        assert!(!t.contains("p50 0.00"), "{t}");
     }
 }

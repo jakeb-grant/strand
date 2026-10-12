@@ -29,10 +29,12 @@
 //!   reader is visible.
 //!
 //! A document ([`Document`]) is JSON when it parses as JSON, else
-//! `key=value` (or `key: value`) lines when every line is one, else plain
-//! text. A field's key path walks a JSON object (a first key the top
-//! level lacks is searched for below it); in lines it is the key; a
-//! scalar document (a number, a word) is every field's value.
+//! `key=value` (or `key: value`) lines when every line is one (blank and
+//! `#` comment lines aside; a value's double or single quotes removed,
+//! as os-release(5) writes them), else plain text. A field's key path
+//! walks a JSON object (a first key the top level lacks is searched for
+//! below it); in lines it is the key; a scalar document (a number, a
+//! word) is every field's value.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -213,20 +215,22 @@ impl Document {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
             return Document::Json(v);
         }
-        let lines: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Blank lines and `#` comment lines (os-release(5), hostname(5))
+        // are not lines of the document's pairs.
+        let lines: Vec<&str> = t
+            .lines()
+            .filter(|l| {
+                let l = l.trim_start();
+                !l.is_empty() && !l.starts_with('#')
+            })
+            .collect();
         let pairs: Option<Vec<(String, String)>> = lines
             .iter()
             .map(|l| {
                 let (k, v) = l.split_once('=').or_else(|| l.split_once(':'))?;
                 let k = k.trim();
-                (!k.is_empty() && !k.contains(char::is_whitespace)).then(|| {
-                    let v = v.trim();
-                    let v = v
-                        .strip_prefix('"')
-                        .and_then(|v| v.strip_suffix('"'))
-                        .unwrap_or(v);
-                    (k.to_string(), v.to_string())
-                })
+                (!k.is_empty() && !k.contains(char::is_whitespace))
+                    .then(|| (k.to_string(), unquote(v.trim())))
             })
             .collect();
         match pairs {
@@ -252,6 +256,31 @@ impl Document {
             Document::Text(t) => Some(Data::text(t.as_str())),
         }
     }
+}
+
+/// A pair's value without the quotes around it, as os-release(5) writes
+/// them: in double quotes, `\"`, `\\`, `\$` and `` \` `` are the
+/// character after the backslash; single quotes keep everything between
+/// them.
+fn unquote(v: &str) -> String {
+    if v.len() >= 2 && v.starts_with('\'') && v.ends_with('\'') {
+        return v[1..v.len() - 1].to_string();
+    }
+    let Some(inner) = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return v.to_string();
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(&n)) if matches!(n, '"' | '\\' | '$' | '`') => {
+                out.push(n);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn json_path<'a>(v: &'a serde_json::Value, key: &[String]) -> Option<&'a serde_json::Value> {
@@ -1507,6 +1536,48 @@ mod tests {
         assert_eq!(t.get(&key("profile")), Some(Data::text("performance")));
         let words = Document::parse("hello world\nsecond line");
         assert!(matches!(words, Document::Text(_)));
+    }
+
+    /// os-release(5) and hostname(5): `#` comment lines are not lines of
+    /// the pairs, and a value's quotes go, double (with the shell's
+    /// escapes in them) or single. A file of one word and comments is
+    /// still text, read whole.
+    #[test]
+    fn pairs_skip_comments_and_lose_their_quotes() {
+        let os = Document::parse(
+            "NAME=\"openSUSE Tumbleweed\"\n# VERSION=\"20240101\"\n  # indented\nID='opensuse-tumbleweed'\n\
+             PRETTY_NAME=\"Say \\\"hi\\\" for \\$5 \\\\ \\`x\\` \\n\"\nEMPTY=''\nONE='\n",
+        );
+        let Document::Pairs(p) = &os else {
+            panic!("not pairs: {os:?}");
+        };
+        assert_eq!(p.len(), 5, "{p:?}");
+        assert_eq!(
+            os.get(&key("NAME")),
+            Some(Data::text("openSUSE Tumbleweed"))
+        );
+        assert_eq!(os.get(&key("VERSION")), None, "a comment");
+        assert_eq!(os.get(&key("ID")), Some(Data::text("opensuse-tumbleweed")));
+        assert_eq!(
+            os.get(&key("PRETTY_NAME")),
+            Some(Data::text("Say \"hi\" for $5 \\ `x` \\n")),
+            "only the four escapes"
+        );
+        assert_eq!(os.get(&key("EMPTY")), Some(Data::text("")));
+        assert_eq!(
+            os.get(&key("ONE")),
+            Some(Data::text("'")),
+            "one quote stays"
+        );
+        let host = Document::parse("# set by the installer\nmylaptop\n");
+        assert_eq!(
+            host,
+            Document::Text("# set by the installer\nmylaptop".into())
+        );
+        assert!(matches!(
+            Document::parse("# only\n# comments\n"),
+            Document::Text(_)
+        ));
     }
 
     #[test]

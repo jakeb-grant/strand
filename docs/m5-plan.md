@@ -238,6 +238,14 @@ charge against the 64 KiB reserve, and an overrun past it is read as
 wave 2's were, by its cause, not cut to fit. In the ledger line's terms
 the gates are hit at Δ +3,216,697 CPU-only and +3,765,433 GPU.
 
+**Wave 3, S-fixups (2026-10-11, decisions.md m5-fixups).** The wave-2
+stragglers (the checker's and lowering's `rw` writes to a config
+service, `drop_index`'s copies and the drag identity, `Document::parse`,
+the drawn-only percentiles, `export -o` through the `file` writer, the
+help's options) measure CPU-only **18,560,343 B** (+4,992 B over
+`8e84059`) and GPU **22,477,847 B** (+4,736 B), charged to the 64 KiB
+reserve.
+
 Optional items, paid from the reserve only if the reserve allows:
 check-time `import()` validation (2–4 KB) and the "says why" lines in the
 node pane (2–5 KB).
@@ -1026,7 +1034,9 @@ weeks features.md gives M5 (weeks 45–52). Human trials run after wave
   - compositor and globals with versions; outputs and scales; PSS from
     smaps_rollup;
   - per-surface frame p50/p95/p99 over the last 600 frames, presented
-    and discarded;
+    and discarded (as built: over the frames drawn among the last 600
+    paints, with the drawn and unchanged counts; decisions.md
+    m5-fixups);
   - GPU status, reason and lost-device count; promotion reasons;
   - no serials or IDs.
 

@@ -763,6 +763,80 @@ bar Top {{
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// A config's own `from dbus` service's `rw` field written from the
+/// language (spec.md 5.6, 8.1): `on change` assigns `ppd.profile`, and
+/// dbusmock's power-profiles-daemon holds the new profile, which the bar
+/// then shows (green); assigning it back sets the bus again (blue).
+#[test]
+fn a_config_services_rw_field_is_written_to_the_bus() {
+    let config = "\
+export state saver = false
+service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }
+bar Top {
+  edge: top; height: 40
+  bg: ppd.profile == \"power-saver\" ? #00ff00 : ppd.profile == \"balanced\" ? #0000ff : #ff0000
+  on change saver { ppd.profile = saver ? \"power-saver\" : \"balanced\" }
+}
+";
+    let Some(setup) = Setup::start_with(
+        "ppdwrite",
+        config,
+        &[("power_profiles_daemon", "net.hadess.PowerProfiles")],
+        &[],
+    ) else {
+        return;
+    };
+    let blue = [0, 0, 255];
+    let on_bus = || -> String {
+        setup._tokio.block_on(async {
+            let c = zbus::connection::Builder::address(setup._bus.address.as_str())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let p = zbus::fdo::PropertiesProxy::builder(&c)
+                .destination("net.hadess.PowerProfiles")
+                .unwrap()
+                .path("/net/hadess/PowerProfiles")
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let v = p
+                .get(
+                    zbus::names::InterfaceName::from_static_str_unchecked(
+                        "net.hadess.PowerProfiles",
+                    ),
+                    "ActiveProfile",
+                )
+                .await
+                .unwrap();
+            String::try_from(v).unwrap()
+        })
+    };
+    setup.wait("the daemon's profile (balanced, blue)", |img| {
+        close(img.px(1270, 20), blue)
+    });
+    setup.cli(&["set", "bar.saver", "true"]);
+    setup.wait("power-saver (green)", |img| close(img.px(1270, 20), GREEN));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while on_bus() != "power-saver" {
+        assert!(
+            Instant::now() < deadline,
+            "the bus never took the write\n{}",
+            setup.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.cli(&["set", "bar.saver", "false"]);
+    setup.wait("balanced again (blue)", |img| close(img.px(1270, 20), blue));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while on_bus() != "balanced" {
+        assert!(Instant::now() < deadline, "{}", setup.log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 const MAGENTA: [u8; 3] = [255, 0, 255];
 const CYAN: [u8; 3] = [0, 255, 255];
 

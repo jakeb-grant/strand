@@ -1796,8 +1796,12 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 /// (M4) Where a drop at `at` lands in `target`: the global index among
 /// its rows (its live children; a windowed list's `row_first` added) of
 /// the first row whose middle is past the pointer, counted without the
-/// dragged `source` (a row moved within its own list lands where it is
-/// let go, `pins.move(p.app, at)`). Rows mounted but not laid out (out
+/// dragged `source` and (M5) without every copy of the dragged item (a
+/// row holding a `drag:` source of the same `drag_identity`, as the
+/// same pin on another monitor's dock): a row moved within its own list,
+/// or onto another surface's copy of that list, lands where it is let
+/// go, `pins.move(p.app, at)`. A copy unmounted from a windowed list is
+/// not seen. Rows mounted but not laid out (out
 /// of view) count by their place; past the last laid-out row lands after
 /// it, and a target none of whose rows is laid out lands at its end.
 /// Only a `list`, or a target whose children are drag sources, holds
@@ -1813,12 +1817,37 @@ fn drop_index(
     at: LogicalPoint,
     source: Option<NodeId>,
 ) -> u32 {
-    let rows_of = |n: NodeId| -> Vec<NodeId> {
+    // (M5) The dragged value's identity: a row holding a `drag:` source
+    // with it is a copy of the dragged item (one pin on the dock of each
+    // monitor), left out as the source is, so a drop handed to another
+    // surface counts what `pins.move` counts.
+    let identity = source
+        .and_then(|s| tree.get(s)?.get(Prop::Drag))
+        .and_then(strand_scene::drag_identity);
+    let copy = |r: NodeId| -> bool {
+        let Some(id) = identity else {
+            return false;
+        };
+        let mut stack = vec![r];
+        while let Some(n) = stack.pop() {
+            let Some(x) = tree.get(n).filter(|_| tree.contains_live(n)) else {
+                continue;
+            };
+            if x.get(Prop::Drag).and_then(strand_scene::drag_identity) == Some(id) {
+                return true;
+            }
+            stack.extend(x.children.iter().copied());
+        }
+        false
+    };
+    let rows_of = |n: NodeId, keep: Option<NodeId>| -> Vec<NodeId> {
         tree.get(n).map_or_else(Vec::new, |x| {
             x.children
                 .iter()
                 .copied()
-                .filter(|r| tree.contains_live(*r) && Some(*r) != source)
+                .filter(|r| {
+                    tree.contains_live(*r) && Some(*r) != source && (Some(*r) == keep || !copy(*r))
+                })
                 .collect()
         })
     };
@@ -1853,7 +1882,7 @@ fn drop_index(
                 tree.contains_live(*c) && tree.get(*c).is_some_and(|n| n.get(Prop::Drag).is_some())
             })
     });
-    let rows = rows_of(target);
+    let rows = rows_of(target, None);
     if holds_rows {
         // Only the rows in view (and a little overscan) are laid out; a
         // windowed list mounts more on either side. The laid-out ones
@@ -1884,10 +1913,16 @@ fn drop_index(
     let Some(parent) = tree.get(target).and_then(|x| x.parent) else {
         return 0;
     };
-    let siblings = rows_of(parent);
+    // The target itself is counted even when it is a copy of the
+    // dragged item; dropped on its own copy, the item stays where that
+    // copy is.
+    let siblings = rows_of(parent, Some(target));
     let Some(i) = siblings.iter().position(|r| *r == target) else {
         return first(parent);
     };
+    if copy(target) {
+        return first(parent) + i as u32;
+    }
     let rs = rects(&siblings);
     let x = along_x(parent, &rs);
     let after = scene.node_rect(surface, target).is_some_and(|r| {

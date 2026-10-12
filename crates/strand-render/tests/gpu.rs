@@ -1095,7 +1095,7 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
             .is_empty()
     );
     let cpu = r.frame_summary(S).unwrap();
-    assert_eq!(cpu.presented, 1);
+    assert_eq!(cpu.drawn, 1);
     assert!(cpu.p99 < gpu_work, "the CPU frame: {:?}", cpu.p99);
 
     // Presented: timed at the GPU thread's `Presented`.
@@ -1104,7 +1104,7 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
     let _ = r.take_backend_changes();
     let id = r.paint_gpu(S, Duration::from_secs(1)).unwrap().id;
     assert_eq!(
-        r.frame_summary(S).unwrap().presented,
+        r.frame_summary(S).unwrap().drawn,
         1,
         "counted before its reply"
     );
@@ -1118,7 +1118,7 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
         ran: vec![(id, ran)],
     });
     let f = r.frame_summary(S).unwrap();
-    assert_eq!(f.presented, 2);
+    assert_eq!(f.drawn, 2);
     assert!(
         f.p99 >= gpu_work + ran,
         "the GPU's work left out: {:?}",
@@ -1140,7 +1140,7 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
         })
         .expect("a readback frame sent");
     assert_eq!(
-        r.frame_summary(S).unwrap().presented,
+        r.frame_summary(S).unwrap().drawn,
         2,
         "counted before its reply"
     );
@@ -1157,7 +1157,7 @@ fn a_gpu_frame_is_timed_to_the_gpu_threads_reply() {
         waited: Duration::ZERO,
     });
     let f = r.frame_summary(S).unwrap();
-    assert_eq!(f.presented, 3);
+    assert_eq!(f.drawn, 3);
     assert!(
         f.p50 >= gpu_work,
         "the readback's GPU work left out: {:?}",
@@ -1212,7 +1212,7 @@ fn a_presented_frames_time_leaves_out_the_swapchain_wait() {
         ran: vec![(id, Duration::ZERO)],
     });
     let f = r.frame_summary(S).unwrap();
-    assert_eq!(f.presented, 2);
+    assert_eq!(f.drawn, 2);
     assert!(
         f.p99 >= span - waited && f.p99 < span - waited / 2,
         "the span less `waited`: {:?}",
@@ -1242,12 +1242,12 @@ fn a_presented_frame_counts_when_its_gpu_run_comes() {
         id
     };
     let _first = present(&mut r, vec![]);
-    assert_eq!(r.frame_summary(S).unwrap().presented, 1, "no run yet");
+    assert_eq!(r.frame_summary(S).unwrap().drawn, 1, "no run yet");
     let second = present(&mut r, vec![]);
     let run = Duration::from_millis(500);
     let _third = present(&mut r, vec![(second, run)]);
     let f = r.frame_summary(S).unwrap();
-    assert_eq!(f.presented, 2, "the second, and not the first");
+    assert_eq!(f.drawn, 2, "the second, and not the first");
     assert!(f.p99 >= run && f.p99 < run * 2, "its run: {:?}", f.p99);
 }
 

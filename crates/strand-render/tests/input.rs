@@ -1342,6 +1342,106 @@ fn a_drag_carried_to_another_surface_drops_there() {
     assert!(events(f.drain()).is_empty());
 }
 
+/// (M5) A drag handed to another surface whose list draws the same
+/// items (one pin on the dock of each monitor) counts that list's rows
+/// without its own copy of the dragged item (`drag_identity`), as
+/// `pins.move` counts: [A, B, C] on both, A dragged from the first and
+/// let go on the second between B and C lands at 1, not 2; let go
+/// before the copy it lands at 0; a row of another value is counted.
+#[test]
+fn a_drop_on_another_surface_leaves_out_its_copy_of_the_item() {
+    use strand_scene::{Color, NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    // Rows A, B, C: 40 px tall, each a drag source of identity 1, 2, 3.
+    let mut d = SceneDiff::new();
+    let mut lists = Vec::new();
+    let mut rows = Vec::new();
+    for p in 0..2u32 {
+        let id = |i: u32| NodeId::new(p * 100 + i, 0);
+        let (panel, list) = (id(0), id(1));
+        d.create(panel, NodeKind::Panel, None, p)
+            .set(panel, Prop::Width, PropValue::Number(200.0))
+            .set(panel, Prop::Height, PropValue::Number(120.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(list, NodeKind::List, Some(panel), 0)
+            .set(list, Prop::Height, PropValue::Number(120.0))
+            .set(list, Prop::Accepts, PropValue::List(vec![kw("Pin")]));
+        let mut mine = Vec::new();
+        for k in 0..3u32 {
+            let row = id(10 + k);
+            d.create(row, NodeKind::Row, Some(list), k)
+                .set(row, Prop::Height, PropValue::Number(40.0))
+                .set(
+                    row,
+                    Prop::Drag,
+                    PropValue::List(vec![
+                        kw("Pin"),
+                        PropValue::List(vec![PropValue::Text(format!("pin{k}"))]),
+                    ]),
+                );
+            mine.push(row);
+        }
+        lists.push(list);
+        rows.push(mine);
+    }
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    for (s, root) in [(s1, NodeId::new(0, 0)), (s2, NodeId::new(100, 0))] {
+        r.attach_surface(s, root);
+        f.attached(s, root);
+        let mut px = vec![0u8; 200 * 120 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(200, 120), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    }
+    let across = |f: &mut R, r: &mut Renderer, from: NodeId, y_from: f32, y: f32| {
+        f.input(&motion(s1, 50.0, y_from, 0), r);
+        f.input(&left(s1, 50.0, y_from, ButtonState::Pressed), r);
+        f.input(&motion(s1, 50.0, y_from + 10.0, 10), r);
+        f.input(&InputEvent::PointerLeave { surface: s1 }, r);
+        f.drain();
+        let at = LogicalPoint::new(50.0, y);
+        f.input(
+            &InputEvent::DragEnter {
+                surface: s2,
+                at,
+                kinds: vec![],
+            },
+            r,
+        );
+        f.input(&InputEvent::DragMotion { surface: s2, at }, r);
+        f.input(
+            &InputEvent::DragDrop {
+                surface: s2,
+                at,
+                payload: DropPayload::Node(from),
+            },
+            r,
+        );
+        let got = events(f.drain());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, lists[1]);
+        let NodeEvent::Drop { at, .. } = got[0].1 else {
+            panic!("{got:?}");
+        };
+        at
+    };
+    // A between B and C on the second surface: past its own A, at 1.
+    assert_eq!(across(&mut f, &mut r, rows[0][0], 20.0, 80.0), 1);
+    // A before the second surface's A: 0.
+    assert_eq!(across(&mut f, &mut r, rows[0][0], 20.0, 10.0), 0);
+    // C between A and B: the second surface's C is past the pointer, at 1.
+    assert_eq!(across(&mut f, &mut r, rows[0][2], 100.0, 40.0), 1);
+    // C at the end: its copy left out, at 2 (after A and B).
+    assert_eq!(across(&mut f, &mut r, rows[0][2], 100.0, 118.0), 2);
+}
+
 /// A focused `input` that logic removes loses focus at once, although
 /// it still plays its exit pose (a ghost): keys no longer reach its id.
 #[test]

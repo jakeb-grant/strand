@@ -808,6 +808,20 @@ fn write_atomic(
     result
 }
 
+/// Writes `bytes` to `path` as a `file` element writes its target, with
+/// no question of ownership (`strand export -o`, which the user named):
+/// a link is followed and kept (a dangling one refused), the file
+/// replaced atomically with its mode kept. Errors are worded as the
+/// element's notices are.
+pub(crate) fn write_through(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let target = real(path)?;
+    let meta = std::fs::metadata(&target).ok();
+    if meta.as_ref().is_some_and(|m| !m.is_file()) {
+        return Err("refused: it is not a regular file".into());
+    }
+    write_atomic(&target, bytes, meta.as_ref()).map_err(|e| format!("not written: {e}"))
+}
+
 /// FNV-1a, 64 bits: stable across builds, which the manifest needs.
 fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

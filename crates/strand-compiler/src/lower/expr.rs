@@ -174,6 +174,19 @@ impl Lowerer<'_> {
         }
     }
 
+    /// The service `e` names: a builtin one (`audio`) or a config's own
+    /// (`service ppd from dbus …`), whose `rw` fields are written
+    /// through the service host by name as a builtin's are.
+    fn service_name(&self, e: &hir::Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Service(s) => Some(s.clone()),
+            ExprKind::Def(d) if matches!(self.hir.def(*d).kind, DefKind::Service(_)) => {
+                Some(self.hir.def(*d).name.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// The root of `target`'s place, its segments (leaf last), the index
     /// expressions above the root and, for [`PlaceRoot::Item`], the item
     /// expression: a path of fields from a service is that service's
@@ -188,8 +201,7 @@ impl Lowerer<'_> {
         let fields_from_service = loop {
             match &cur.kind {
                 ExprKind::Field { base, .. } => cur = base,
-                ExprKind::Service(_) => break true,
-                _ => break false,
+                _ => break self.service_name(cur).is_some(),
             }
         };
         let mut segs = Vec::new();
@@ -211,8 +223,10 @@ impl Lowerer<'_> {
                     indices.push(index.as_ref());
                     cur = base;
                 }
+                _ if self.service_name(cur).is_some() => {
+                    break PlaceRoot::Service(self.service_name(cur)?);
+                }
                 ExprKind::Def(d) => break PlaceRoot::Def(*d),
-                ExprKind::Service(s) => break PlaceRoot::Service(s.clone()),
                 _ => return None,
             }
         };

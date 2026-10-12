@@ -1985,14 +1985,15 @@ impl Ctx {
                     let types = &ctx.vm.prog.types;
                     let name = PropValue::Keyword(drag_type(types, &v));
                     // (M4) With what other programs get when the
-                    // compositor carries it out (`strand_scene::drag_export`).
-                    let value = match drag_export(types, &v) {
-                        Some(mut items) => {
-                            items.insert(0, name);
-                            PropValue::List(items)
-                        }
-                        None => name,
-                    };
+                    // compositor carries it out (`strand_scene::drag_export`),
+                    // and (M5) the value's identity last, so a drop can
+                    // leave out every copy of it (`drag_identity`).
+                    let mut items = drag_export(types, &v).unwrap_or_default();
+                    items.insert(0, name);
+                    items.push(PropValue::List(vec![PropValue::Text(drag_identity(
+                        types, &v,
+                    ))]));
+                    let value = PropValue::List(items);
                     ctx.drags.borrow_mut().insert(id, v);
                     return Ok(PropOut { value, source: i });
                 }
@@ -3751,6 +3752,20 @@ fn type_key(types: &crate::ty::TypeTable, ty: &Ty) -> String {
 /// [`type_key`] names an `on drop` parameter's type.
 pub(crate) fn drag_type(types: &crate::ty::TypeTable, v: &Value) -> String {
     type_key(types, &value_ty(v))
+}
+
+/// (M5) A dragged value's identity in `Prop::Drag`
+/// (`strand_scene::drag_identity`): an FNV-1a hash, in hex, of its type
+/// name and of its identity (a keyed record's key, else itself) as it
+/// shows. Equal values (one pin drawn on the dock of each monitor) have
+/// equal identities, the same on every build.
+fn drag_identity(types: &crate::ty::TypeTable, v: &Value) -> String {
+    let shown = v.identity(types).show(types);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in drag_type(types, v).bytes().chain([0]).chain(shown.bytes()) {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// (M4) What a dragged value gives other programs, after its type name

@@ -225,7 +225,9 @@ provisional record AudioDevice key id {
 
 /// A tray item's menu (DBusMenu).
 provisional record TrayMenu {
-  /// Opens it as a popup: `on secondary { item.menu.open() }`.
+  /// Opens it: `on secondary { item.menu.open() }`. The app is told and
+  /// `opened` becomes true; a `popup` bound to `item.menu.opened` shows a
+  /// DBusMenu, and an item without one shows its own menu.
   action open()
 }
 

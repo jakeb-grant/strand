@@ -115,7 +115,8 @@ pub fn export_cli(args: &[String]) -> Result<String, String> {
     };
     match &ask.out {
         Some(path) => {
-            strand_theme::writer::write_atomic(path, &bytes)
+            // As a `file` element writes: through a link, the mode kept.
+            crate::run::write_through(path, &bytes)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             Ok(String::new())
         }

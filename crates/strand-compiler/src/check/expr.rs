@@ -2822,7 +2822,8 @@ impl<'a> Checker<'a> {
     /// An `rw` field `field` of `base`: written through the service it
     /// starts at (`audio.sink.volume`), through an item of a service's
     /// keyed list (`s.volume` for `s` in `audio.sinks`, `audio.sinks[0]
-    /// .volume`: the service finds the item by its key), or in `state`
+    /// .volume`: the service finds the item by its key), through a
+    /// config-declared service (`ppd.profile`), or in `state`
     /// or a settings file. Reached any other way, the write would go
     /// nowhere.
     fn rw_root(&self, base: &hir::Expr, field: &str) -> Result<(), NotWritable> {
@@ -2833,6 +2834,11 @@ impl<'a> Checker<'a> {
             }
             match &cur.kind {
                 ExprKind::Service(_) | ExprKind::Error => return Ok(()),
+                // A config's own service (`service ppd from dbus …`):
+                // written through that service, as a builtin one is.
+                ExprKind::Def(d) if matches!(self.defs[d.0 as usize].kind, DefKind::Service(_)) => {
+                    return Ok(());
+                }
                 ExprKind::Def(_) => return self.writable_place(cur, false),
                 ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => cur = base,
                 _ if cur.ty.is_error() => return Ok(()),

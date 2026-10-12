@@ -41,9 +41,11 @@ record TrayMenu {
   /// (`on secondary { item.menu.open(); menu_screen = screen }`, `open:
   /// item.menu.opened && menu_screen == screen`).
   opened: bool
-  /// Opens it as a popup: `on secondary { item.menu.open() }`. The app is
-  /// told it opens (and may update its entries first), and `opened`
-  /// becomes true. An item without a DBusMenu shows its own menu. An
+  /// Opens it: `on secondary { item.menu.open() }`. The app is told it
+  /// opens (and may update its entries first), and `opened` becomes
+  /// true; a `popup { open: item.menu.opened … }` drawing `items` is what
+  /// shows a DBusMenu, and nothing shows without one. An item without a
+  /// DBusMenu shows its own menu. An
   /// item that is only a menu (`ItemIsMenu`, or one refusing `Activate`)
   /// opens it on `item.activate()` too.
   action open()

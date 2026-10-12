@@ -1087,6 +1087,63 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
     );
 }
 
+/// A config's own service's `rw` field is written as a builtin service's
+/// is (spec.md 5.6, 8.1): assigned (`=`, a compound `+=`) and bound with
+/// `<->`, lowered as a write of that service's field (the service host
+/// writes it by name). Its read-only fields, and the service as a whole,
+/// stay refused.
+#[test]
+fn a_config_services_rw_field_is_writable() {
+    use strand_compiler::lower::{PlaceRoot, PlaceSeg};
+    const SVC: &str = "service ppd from dbus system \"net.hadess.PowerProfiles\" \
+                       { profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded }\n\
+                       service lvl from dbus session \"org.example.Level\" { n: int rw = Level }\n";
+    let src = format!(
+        "{SVC}export state saver = false\n\
+         bar B {{\n  on change saver {{ ppd.profile = saver ? \"power-saver\" : \"balanced\"; lvl.n += 1 }}\n\
+           text ppd.profile\n  input {{ text: <-> ppd.profile }}\n}}\n"
+    );
+    let out = one(&src);
+    let lowered =
+        strand_compiler::lower::lower(&out.program, strand_compiler::schema::Schema::builtin());
+    // Every place the program writes: the two fields, by service name.
+    let mut places: Vec<(String, Vec<String>)> = lowered
+        .chunks
+        .iter()
+        .flat_map(|c| &c.places)
+        .filter_map(|p| match &p.root {
+            PlaceRoot::Service(s) => Some((
+                s.clone(),
+                p.segs
+                    .iter()
+                    .map(|g| match g {
+                        PlaceSeg::Field(f) => f.clone(),
+                        PlaceSeg::Index => "[]".into(),
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    places.sort();
+    places.dedup();
+    assert_eq!(
+        places,
+        [
+            ("lvl".to_string(), vec!["n".to_string()]),
+            ("ppd".to_string(), vec!["profile".to_string()]),
+        ]
+    );
+    // A field without `rw`, and the whole service, are not written.
+    for (body, code) in [
+        ("ppd.degraded = \"x\"", "check::read_only"),
+        ("ppd = ppd", "check::read_only"),
+    ] {
+        let c = codes(&format!("{SVC}bar B {{ on click {{ {body} }} }}\n"));
+        assert_eq!(c, [code], "{body}");
+    }
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

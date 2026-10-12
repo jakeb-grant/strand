@@ -225,6 +225,32 @@ fn palette_expressions_and_output_files() {
     // A bad expression is reported against `--palette`.
     let err = home.err(&["json", "--palette", "import("]);
     assert!(err.contains("--palette"), "{err}");
+    // As a `file` element writes (spec 9.7): a link is followed and
+    // kept, and the target keeps its mode; a dangling link is refused.
+    use std::os::unix::fs::PermissionsExt as _;
+    let real = home.dir.join("dots/base24.yaml");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "old\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let link = home.dir.join("out/base24.yaml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let to = link.to_str().unwrap();
+    assert_eq!(home.ok(&["base24", "--palette", mocha, "-o", to]), "");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link is kept"
+    );
+    assert!(std::fs::read_to_string(&real).unwrap().contains("base00"));
+    let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640);
+    let dangling = home.dir.join("out/gone.yaml");
+    std::os::unix::fs::symlink(home.dir.join("nowhere/x.yaml"), &dangling).unwrap();
+    let err = home.err(&["json", "--palette", mocha, "-o", dangling.to_str().unwrap()]);
+    assert!(err.contains("link to a missing file"), "{err}");
+    assert!(!home.dir.join("nowhere").exists());
 }
 
 /// A broken theme is "no palette" with its cause, never the built-in

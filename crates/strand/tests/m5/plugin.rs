@@ -11,9 +11,11 @@
 //! - a plugin binary without `strand::process_setup!()` says so;
 //! - the guide's profile block is the workspace's.
 //!
-//! The examples are built by `cargo test` beside this binary (never by a
-//! nested cargo). Skipped, loudly, without sway (CI sets
-//! `STRAND_REQUIRE_SWAY`).
+//! The examples are built beside this binary: `cargo test` of the whole
+//! package builds them, and a filtered run (`--test m5`, which does not)
+//! has the cargo running it build them once, into the same target
+//! directory and profile (decisions.md m5-fixups). Skipped, loudly,
+//! without sway (CI sets `STRAND_REQUIRE_SWAY`).
 
 use std::io::BufRead as _;
 use std::os::unix::fs::PermissionsExt;
@@ -34,21 +36,60 @@ impl Drop for Proc {
     }
 }
 
-/// `target/<profile>/examples/<name>`, built by `cargo test` with this
-/// test binary.
+/// `target/<profile>/examples/<name>`, built for this test binary's
+/// profile and features ([`build_examples`]).
 fn example(name: &str) -> PathBuf {
     let strand = Path::new(env!("CARGO_BIN_EXE_strand"));
     let path = strand
         .parent()
         .map(|p| p.join("examples").join(name))
         .unwrap_or_default();
-    assert!(
-        path.is_file(),
-        "{} is not built; run `cargo build -p strand --example {name}` (or `cargo test -p \
-         strand`, which builds the examples) first",
-        path.display()
-    );
+    if let Err(e) = build_examples(strand) {
+        panic!(
+            "building the plugin examples: {e}\n(run `cargo build -p strand --examples`, or \
+             `cargo test -p strand`, which builds them)"
+        );
+    }
+    assert!(path.is_file(), "{} is not built", path.display());
     path
+}
+
+/// Builds `plugin_hello` and `plugin_bare` once per test process with the
+/// cargo running this test, into the target directory and profile
+/// `strand` (`target/<dir>/<profile>/strand`) was built in, with this
+/// build's features: up to date, it does nothing, and after a filtered
+/// `cargo test --test m5` (which builds no examples) it builds them.
+fn build_examples(strand: &Path) -> Result<(), String> {
+    static BUILT: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let profile_dir = strand.parent().ok_or("no profile directory")?;
+            let target_dir = profile_dir.parent().ok_or("no target directory")?;
+            let profile = match profile_dir.file_name().and_then(|n| n.to_str()) {
+                Some("debug") => "dev",
+                Some(p) => p,
+                None => return Err("an unnamed profile directory".into()),
+            };
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+            let mut cmd = Command::new(cargo);
+            cmd.args(["build", "--offline", "--quiet", "--profile", profile])
+                .arg("--manifest-path")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+                .arg("--target-dir")
+                .arg(target_dir)
+                .args(["--example", "plugin_hello", "--example", "plugin_bare"]);
+            if !cfg!(feature = "gpu") {
+                cmd.arg("--no-default-features");
+            }
+            let out = cmd.output().map_err(|e| format!("cargo: {e}"))?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr);
+                let tail: String = err.lines().rev().take(30).collect::<Vec<_>>().join("\n");
+                return Err(format!("cargo build failed:\n{tail}"));
+            }
+            Ok(())
+        })
+        .clone()
 }
 
 /// A command whose child starts with THP back on: the test binary turned

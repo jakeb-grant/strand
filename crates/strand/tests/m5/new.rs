@@ -1,8 +1,12 @@
 //! S-tools: `strand new [dir]` (m5-plan, S-tools): the guide's level-1
 //! hello bar written into a new or empty directory (the default
 //! `$XDG_CONFIG_HOME/strand`), which `strand check` passes; a directory
-//! with anything in it is refused and left as it was. That the written
-//! shell runs is `report.rs`'s (`strand report` on it under sway).
+//! with anything in it is refused and left as it was, and the template
+//! is the guide's first level-1 block. That the written shell runs on
+//! two outputs, against grim references, is `acceptance.rs`'s
+//! `the_new_shell_checks_and_runs_on_two_outputs` (that binary holds the
+//! reference machinery and the frozen-clock mock); `report.rs` runs it
+//! too, under `strand report`.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -94,4 +98,20 @@ fn a_non_empty_dir_is_refused() {
     let out = strand(&["new", "a", "b"], &xdg);
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage: strand new [dir]"));
     let _ = std::fs::remove_dir_all(xdg);
+}
+
+/// The template is byte for byte the guide's first level-1 block, the
+/// one level 1 shows as "what it wrote" (new.rs's TEMPLATE says so):
+/// an edit to either alone fails here.
+#[test]
+fn the_template_is_the_guides_first_block() {
+    let page = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/guide/level-1.md"
+    ))
+    .unwrap();
+    let fence = "```strand level=1 file=bar.strand\n";
+    let start = page.find(fence).expect("level 1 has a bar.strand block") + fence.len();
+    let len = page[start..].find("```\n").expect("the block ends");
+    assert_eq!(&page[start..start + len], template());
 }

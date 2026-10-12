@@ -484,11 +484,10 @@ fn the_guide_dock_reorders_every_pin_and_keeps_the_order() {
 /// along its own dock, an icon lands where it is let go: the `at`
 /// strand-render's `drop_index` reports leaves the dragged icon out, as
 /// `pins.move` takes it out before it inserts. Dropped on the other
-/// monitor's dock, the `at` counts that dock's own icon for the same
-/// pin: before that icon it is right, past it one too high. That is the
-/// limit level 5 states; when render leaves the other dock's copy out
-/// too, the last order here becomes `[foot, nautilus, firefox]`, this
-/// fails, and the page changes with it.
+/// monitor's dock, the `at` leaves out that dock's own icon for the same
+/// pin too (its `drag_identity` is the dragged one's; decisions.md
+/// m5-fixups), so the drop is exact before and past that icon, as level
+/// 5 says.
 #[test]
 fn the_guide_dock_drops_where_the_pointer_is() {
     let dir = scratch("dock-drops");
@@ -600,17 +599,17 @@ fn the_guide_dock_drops_where_the_pointer_is() {
     // Foot between Files and Firefox, before DP-2's Foot: right.
     assert_eq!(across(&mut dock, "Foot", "foot", "Files", "Firefox"), 1);
     assert_eq!(dock.pins(), ["org.gnome.Nautilus", "foot", "firefox"]);
-    // Files between Foot and Firefox, past DP-2's Files: one too far.
+    // Files between Foot and Firefox, past DP-2's Files: right too.
     assert_eq!(
         across(&mut dock, "Files", "org.gnome.Nautilus", "Foot", "Firefox"),
-        2
+        1
     );
-    assert_eq!(dock.pins(), ["foot", "firefox", "org.gnome.Nautilus"]);
+    assert_eq!(dock.pins(), ["foot", "org.gnome.Nautilus", "firefox"]);
 
     // The page says so.
     let page = std::fs::read_to_string(guide::root().join("docs/guide/level-5.md")).unwrap();
     let page = page.split_whitespace().collect::<Vec<_>>().join(" ");
-    let said = "dropped past that dock's own icon for the same pin, it lands one place further on";
+    let said = "so the pin lands where you let it go on either dock";
     assert!(page.contains(said), "level-5.md no longer says: {said}");
     drop(dock);
     let _ = std::fs::remove_dir_all(dir);
@@ -837,28 +836,35 @@ fn the_guide_host_service_reads_the_kernels_name() {
     custom::forget(id);
 }
 
-/// The limit level 5 states for `key=value` files: one line that is not
-/// a pair (a `#` comment) makes the whole file text, which every field
-/// reads; double quotes around a value are removed and single ones kept.
-/// When strand-services lifts it, this fails and the page changes with it.
+/// What level 5 states for `key=value` files: blank and `#` comment
+/// lines are skipped, a value's double or single quotes removed, and one
+/// line that is neither a pair nor a comment makes the whole file text,
+/// which every field reads.
 #[test]
-fn the_guide_states_the_pairs_limit() {
+fn the_guide_states_the_pairs_rule() {
     use strand_services::custom::Document;
     let commented = FILE_SAMPLES
         .iter()
         .find(|(p, _)| *p == "/etc/os-release")
         .unwrap()
         .1;
-    assert!(matches!(Document::parse(commented), Document::Text(_)));
+    let Document::Pairs(p) = Document::parse(commented) else {
+        panic!("os-release with a comment is not pairs");
+    };
+    assert!(p.contains(&("PRETTY_NAME".into(), "openSUSE Tumbleweed".into())));
     let Document::Pairs(p) = Document::parse("A=\"x\"\nB='y'\n") else {
         panic!("not pairs");
     };
-    assert_eq!(p, [("A".into(), "x".into()), ("B".into(), "'y'".into())]);
+    assert_eq!(p, [("A".into(), "x".into()), ("B".into(), "y".into())]);
+    assert!(matches!(
+        Document::parse("A=x\nnot a pair\n"),
+        Document::Text(_)
+    ));
     let page = std::fs::read_to_string(guide::root().join("docs/guide/level-5.md")).unwrap();
     let page = page.split_whitespace().collect::<Vec<_>>().join(" ");
     for said in [
-        "with double quotes around a value removed, but only when every line is a pair",
-        "one `#` comment or other line makes the whole file text again",
+        "with blank lines and `#` comment lines skipped and the double or single quotes around a value removed, but only when every other line is a pair",
+        "one line that is neither makes the whole file text again",
     ] {
         assert!(page.contains(said), "level-5.md no longer says: {said}");
     }

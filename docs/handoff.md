@@ -96,8 +96,8 @@ measured numbers.
     `renderer::summary` and `report`/`new` units,
     `crates/strand-render/tests/gpu.rs`'s frame-time tests. The
     `new`/`export`/`report` box is ticked; m5-plan's grim reference PNGs
-    for `report` are missing (the two-output test in `report.rs` stands
-    in), left to the owner to confirm. Size on the merged tree: **+70,208
+    were missing at this merge and S-fixups made them in wave 3
+    (owner item 6). Size on the merged tree: **+70,208
     B CPU-only, +90,688 B GPU** over `db85876`.
   - **S-docs** (`732976f`): guide levels 4 and 5 (design.md's builds
     byte for byte, then one construct per step; level 5's `file`
@@ -145,14 +145,17 @@ measured numbers.
 - **S-docs' wave-3 work**: the ladder test, `docs/reference/` and its
   generator, `tests/m5/newcomer.rs`, the agent-proxy harness, the spec
   freeze.
-- **Proposed fixes for other owners, recorded and not made**:
-  strand-render's `drop_index` (a dock drop on another monitor's dock
-  lands one place on; m5-docs round 3); the checker's `rw_root` refusing
-  writes to a config service's `rw` field (m5-docs round 1);
-  strand-services' `Document::parse` reading a `#` comment line whole
-  and keeping single quotes (m5-docs round 2); the tray schema's
-  `open()` doc (m5-docs round 3 of wave 1); S-plugins' leftover-file
-  log level.
+- **Proposed fixes for other owners: made in wave 3 by S-fixups**
+  (decisions.md m5-fixups): `drop_index` leaves out every copy of the
+  dragged item (`strand_scene::drag_identity`), so a dock drop on
+  another monitor's dock lands where it is let go; the checker and
+  lowering write a config service's `rw` field; `Document::parse` skips
+  `#` comment lines and strips single quotes; the tray schema's
+  `open()` doc; S-plugins' leftover-file log level stays `info`
+  (decided). With them: `strand report`'s percentiles are over drawn
+  frames (`drawn`/`unchanged`), spec.md 13 names `new`, `report` and
+  `compositor-rules`, `--write-schemas` is in `strand help`, and
+  `strand export -o` writes as a `file` element does.
 
 ## Next: M5 wave 3
 
@@ -198,10 +201,11 @@ Each has its paragraph in decisions.md.
    tripwire, m5-infra, m5-speed-gpu-bound, m5-open-budgets).
 5. **`scripts/gpu-measure.sh`'s KMS-card run: not needed** (Q19 (A));
    owner-optional, never run by an agent.
-6. **`strand report`'s grim reference PNGs** (m5-plan): not made; the
-   two-output test in `tests/m5/report.rs` stands in for them. Confirm
-   or ask for them (decisions.md m5-integration-w2, S-tools' wave-3
-   merge).
+6. **`strand report`'s grim reference PNGs: answered** (2026-10-11,
+   deferred to the integrator, who made them): `strand new`'s shell on
+   two outputs on the frozen-clock acceptance mock,
+   `acceptance.rs::the_new_shell_checks_and_runs_on_two_outputs`
+   (decisions.md m5-fixups).
 
 Wave 1's overruns (S-ipc's socket half, S-inspect's library) were
 accepted at wave 1's integration and stand (m5-integration-w1). Every M4

@@ -919,12 +919,15 @@ an overlay step and a contrast-guard step where they apply.
   300 ms, the flash's own repaint excluded; off means no clock and no
   allocation;
 - `Renderer::frame_summary(surface) -> Option<FrameSummary>`:
-  p50/p95/p99 over the last 600 frames, presented and discarded
-  (`renderer/summary.rs`, S-tools; built: a frame is one `paint`, its
-  time the render thread's work in it, presented when it damaged
-  something and discarded when it damaged nothing; a frame a `paint`
+  p50/p95/p99 over the frames drawn among the last 600 paints, and
+  `drawn` and `unchanged`, the counts of those paints that drew a frame
+  and that changed nothing (`renderer/summary.rs`, S-tools; built: a
+  paint is one `paint`, its time the render thread's work in it, drawn
+  when it damaged something and unchanged when it damaged nothing,
+  which no percentile counts (m5-fixups; "discarded" stays
+  `wp_presentation`'s word); a frame a `paint`
   sends to the GPU (a promoted surface's) runs from that `paint`'s start
-  to the GPU thread's `Presented` or `Pixels`, and counts as presented
+  to the GPU thread's `Presented` or `Pixels`, and counts as drawn
   only then; `Presented { surface, frame, at, waited, ran }`'s `at` is
   taken when the GPU thread has submitted the frame, before `present`,
   and its `waited` (the request's time in the GPU thread's queue behind
@@ -937,7 +940,7 @@ an overlay step and a contrast-guard step where they apply.
   frame's `Pixels` comes after the GPU ran it and carries its queue
   time as `waited`, subtracted too. Both backends time the frame
   through the GPU's render, and neither times vsync or other surfaces'
-  work (m5-tools review rounds 2 and 3); nearest-rank percentiles over both; a detached
+  work (m5-tools review rounds 2 and 3); nearest-rank percentiles over the drawn frames, zero before the first; a detached
   surface's frames go). Beside it,
   `Renderer::gpu_lost_devices() -> u32` (0 without the `gpu` feature)
   for the report's lost-device count, and strand-surface's
@@ -1092,7 +1095,8 @@ m5-w0-harden). The example is `[[example]] plugin_hello`
 in the strand crate, never in the release binary's `.text`. The binary
 reaches the library through a hidden `strand::cli` module (its entry
 points: `check`, `fmt`, the IPC commands, `compositor_rules`, `demo`,
-`run`, `trim`, `LogConfig`, `default_dir` and `export_cli`; `entry.rs`'s
+`run`, `trim`, `LogConfig`, `default_dir`, `export_cli`, `new_cli` and
+`report_cli`; `entry.rs`'s
 command line is reached only through `Builder::run`, which `main.rs`
 calls as `Shell::builder().run()`); the module tree stays
 private. `main.rs` invokes `strand::process_setup!()`, and so do
@@ -1977,7 +1981,8 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     `apps` service when it builds the `Drop` value (null when no
     installed app has that id).
     `strand_render::input::NodeEvent` gains `Drop { payload, at: u32 }`
-    (`at` a global row index) for `on drop(p, at)`. As built
+    (`at` a global row index, with the dragged source and every copy of
+    the dragged item left out) for `on drop(p, at)`. As built
     (m4-lists wave 2): the Router turns a press on a `drag:` node into a
     drag past `DRAG_THRESHOLD` (6 px), draws the source at the pointer
     through `InputScene::lift(node, Option<LogicalPoint>)`
@@ -1993,7 +1998,14 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     Keyword(kind), Text…]` instead of the bare `Keyword` (kind `text`,
     `files` or `app`, then the text, the paths or the app id);
     `strand_scene::drag_type` and `strand_scene::drag_export` read either
-    form, and nothing else may look inside the prop. `Prop::DropRows`
+    form, and nothing else may look inside the prop. As built
+    (m5-fixups): the instance always sends the `List`, its last item
+    `List [Text(identity)]`, a hash of the value's type and identity (a
+    keyed record's key, else the value) that is equal for equal values;
+    `strand_scene::drag_identity` reads it, `drag_export` ignores it, and
+    `drop_index` leaves out every row holding a `drag:` source of the
+    dragged one's identity (one pin's icon on another monitor's dock), as
+    it leaves out the source. `Prop::DropRows`
     (`Bool`, compiler-set) marks an `on drop` target whose direct children
     come from a `for`, so render places drops among those items even when
     they are not `drag:` sources. `Renderer::drag_image(surface, node) ->
@@ -3385,7 +3397,8 @@ Public interfaces other crates and later stages build on:
     to a mounted row is its ops; a change outside the window sends no row
     op. `nav` selects by index, and a selection lands when its row mounts.
   - Drag and drop: the instance sets `Prop::Drag` (the dragged value's
-    type, with its text, files or app id when it has them) and
+    type, with its text, files or app id when it has them, and its
+    identity last) and
     `Prop::Accepts` (from each `on drop` parameter's type), plus
     `Prop::DropRows` on a target with a direct `for` child; a
     `NodeEvent::Drop` with `DropPayload::Node` is delivered with that

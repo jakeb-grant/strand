@@ -1595,3 +1595,50 @@ fn the_hello_bar_alone_is_laid_out_and_themed() {
     }
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
 }
+
+/// `strand new`'s shell checks and runs on two outputs (m5-plan, S-tools:
+/// "the new shell checks and runs on two outputs (grim refs)"): the
+/// binary writes it into an empty directory, `strand check` passes it,
+/// and `strand run` draws it on both outputs against references, on the
+/// acceptance mock, whose clock is frozen at 09:41 and whose focused
+/// window's title is fixed, so its pixels do not change by the minute
+/// (decisions.md m5-fixups).
+#[test]
+fn the_new_shell_checks_and_runs_on_two_outputs() {
+    let dir = std::env::temp_dir().join(format!("strand-new-scaffold-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = dir.join("config");
+    let made = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("new")
+        .arg(&config)
+        .env("HOME", dir.join("home"))
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "strand new: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let check = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("check")
+        .arg(&config)
+        .env("HOME", dir.join("home"))
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "strand check on the new shell: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let bar = std::fs::read_to_string(config.join("bar.strand")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let files = [("bar.strand", bar.as_str())];
+    let Some(desk) = Desk::start_with("new", &files, |b| b.contains("buffer=2560x32 ")) else {
+        return;
+    };
+    desk.settled_ref("HEADLESS-1", rect(0, 0, 2560, 32), "new_shell_headless1");
+    desk.settled_ref("HEADLESS-2", rect(0, 0, 1920, 40), "new_shell_headless2");
+    assert!(desk.errors().is_empty(), "{:?}", desk.errors());
+}

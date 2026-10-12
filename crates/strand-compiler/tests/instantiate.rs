@@ -4243,8 +4243,12 @@ bar B {
     }
     assert!(!acc.contains(&kw("any")), "{acc:?}");
     let boxes = shell.scene.children(row).to_vec();
-    assert_eq!(shell.scene.prop(boxes[0], Prop::Drag), Some(&kw("[any]")));
-    assert_eq!(shell.scene.prop(boxes[1], Prop::Drag), Some(&kw("int")));
+    let ty = |n: NodeId| {
+        strand_scene::drag_type(shell.scene.prop(n, Prop::Drag).expect("a drag source"))
+            .map(str::to_string)
+    };
+    assert_eq!(ty(boxes[0]).as_deref(), Some("[any]"));
+    assert_eq!(ty(boxes[1]).as_deref(), Some("int"));
     let empty = shell.inst.drag_value(boxes[0]).unwrap();
     assert!(shell.inst.event(row, "drop", vec![empty, Value::int(0)]));
     shell.flush();
@@ -4383,10 +4387,22 @@ bar B {
     );
     let boxes = shell.scene.children(row).to_vec();
     assert_eq!(boxes.len(), 3);
+    let mut ids = Vec::new();
     for b in &boxes {
-        assert_eq!(shell.scene.prop(*b, Prop::Drag), Some(&kw("Pin")));
+        let drag = shell.scene.prop(*b, Prop::Drag).expect("a drag source");
+        assert_eq!(strand_scene::drag_type(drag), Some("Pin"));
+        assert_eq!(strand_scene::drag_export(drag), None);
+        ids.push(
+            strand_scene::drag_identity(drag)
+                .expect("an identity")
+                .to_string(),
+        );
         assert_eq!(shell.scene.prop(*b, Prop::Accepts), None);
     }
+    // (M5) One identity per value: three pins, three identities.
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 3, "{ids:?}");
     let app = |shell: &Shell, n: NodeId| {
         let v = shell.inst.drag_value(n).expect("a drag value");
         let Value::Record(r) = v else {

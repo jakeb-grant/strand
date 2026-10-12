@@ -59,8 +59,7 @@ fn every_section_is_reported_and_the_json_round_trips() {
         let r = super::cli::json(&desk.ok(&["report", "--json"]));
         let painted = r["surfaces"].as_array().is_some_and(|s| {
             s.len() == 2
-                && s.iter()
-                    .all(|s| s["frames"]["presented"].as_u64() > Some(0))
+                && s.iter().all(|s| s["frames"]["drawn"].as_u64() > Some(0))
                 && s.iter().any(|s| s["scale"] == 2.0)
         });
         if painted {
@@ -112,7 +111,7 @@ fn every_section_is_reported_and_the_json_round_trips() {
             us("p50_us") <= us("p95_us") && us("p95_us") <= us("p99_us"),
             "{f}"
         );
-        assert!(us("presented") + us("discarded") <= 600, "{f}");
+        assert!(us("drawn") + us("unchanged") <= 600, "{f}");
     }
     let on: std::collections::BTreeSet<&str> = r["surfaces"]
         .as_array()

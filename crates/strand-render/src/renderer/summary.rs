@@ -1,19 +1,23 @@
-//! (M5, S-tools) Frame timing for `strand report`: p50/p95/p99 over a
-//! surface's last 600 frames, presented and discarded
-//! (docs/architecture.md, "M5 interfaces"). A frame is one `paint`: its
-//! time is the render thread's work in it, and it is presented when it
-//! drew something (the caller commits it), discarded when it damaged
-//! nothing (nothing is committed). A frame sent to the GPU (a promoted
-//! surface's) is timed from its `paint`'s start through the GPU's
-//! render: a `GpuPresent` frame to its `Presented`'s `at` (the GPU
-//! thread's submission, before `present`), plus the GPU's run of it
-//! from timestamp queries (`ran`, which comes with a later `Presented`;
-//! the frame counts only then), and a readback frame to its `Pixels`,
-//! which comes after the GPU ran the frame; each less its `waited` (the
-//! GPU thread's queue behind other surfaces' work, and the swapchain's
-//! FIFO pacing). Both measure the frame's cost, not vsync; it counts as
-//! presented then, and not at all if its reply or run never comes. The
-//! percentiles are over both kinds.
+//! (M5, S-tools) Frame timing for `strand report`: p50/p95/p99 over the
+//! frames a surface drew among its last 600 paints, with how many of
+//! those paints were drawn and how many changed nothing
+//! (docs/architecture.md, "M5 interfaces"). A paint is one `paint`: its
+//! time is the render thread's work in it; it is drawn when it damaged
+//! something (the caller commits it) and unchanged when it damaged
+//! nothing (nothing is committed). The percentiles are over the drawn
+//! frames only: an unchanged paint costs next to nothing and would pull
+//! them under what a frame on screen costs (decisions.md m5-fixups). A
+//! frame sent to the GPU (a promoted surface's) is timed from its
+//! `paint`'s start through the GPU's render: a `GpuPresent` frame to its
+//! `Presented`'s `at` (the GPU thread's submission, before `present`),
+//! plus the GPU's run of it from timestamp queries (`ran`, which comes
+//! with a later `Presented`; the frame counts only then), and a readback
+//! frame to its `Pixels`, which comes after the GPU ran the frame; each
+//! less its `waited` (the GPU thread's queue behind other surfaces' work,
+//! and the swapchain's FIFO pacing). Both measure the frame's cost, not
+//! vsync; it counts as drawn then, and not at all if its reply or run
+//! never comes. Whether the compositor then showed or discarded a frame
+//! (`wp_presentation`'s words, the `FrameClock`'s) is not measured here.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -31,14 +35,15 @@ pub struct FrameSummary {
     pub p50: Duration,
     pub p95: Duration,
     pub p99: Duration,
-    /// Frames presented and discarded among those summarised.
-    pub presented: u64,
-    pub discarded: u64,
+    /// The paints summarised that drew a frame (the percentiles' frames)
+    /// and that changed nothing.
+    pub drawn: u64,
+    pub unchanged: u64,
 }
 
-/// The last [`FRAMES_SUMMARISED`] frames of each attached surface: each
+/// The last [`FRAMES_SUMMARISED`] paints of each attached surface: each
 /// its time in microseconds, shifted left one bit, the low bit set when
-/// it was presented.
+/// it drew a frame.
 #[derive(Debug, Default)]
 pub(crate) struct FrameStats {
     rings: HashMap<SurfaceId, Ring>,
@@ -52,10 +57,10 @@ struct Ring {
 }
 
 impl FrameStats {
-    /// A frame of `surface` that took `took` (presented or not).
-    pub(crate) fn record(&mut self, surface: SurfaceId, took: Duration, presented: bool) {
+    /// A paint of `surface` that took `took` (drew a frame or not).
+    pub(crate) fn record(&mut self, surface: SurfaceId, took: Duration, drawn: bool) {
         let micros = took.as_micros().min(u128::from(u32::MAX >> 1)) as u32;
-        let frame = micros << 1 | u32::from(presented);
+        let frame = micros << 1 | u32::from(drawn);
         let r = self.rings.entry(surface).or_default();
         if r.frames.len() < FRAMES_SUMMARISED {
             r.frames.push(frame);
@@ -72,27 +77,34 @@ impl FrameStats {
 
     fn summary(&self, surface: SurfaceId) -> Option<FrameSummary> {
         let r = self.rings.get(&surface).filter(|r| !r.frames.is_empty())?;
-        let presented = r.frames.iter().filter(|f| *f & 1 == 1).count() as u64;
-        let mut times: Vec<u32> = r.frames.iter().map(|f| f >> 1).collect();
+        let mut times: Vec<u32> = r
+            .frames
+            .iter()
+            .filter(|f| *f & 1 == 1)
+            .map(|f| f >> 1)
+            .collect();
         times.sort_unstable();
-        // Nearest rank: the smallest time at least `q` of the frames
-        // take no longer than.
+        // Nearest rank: the smallest time at least `q` of the drawn
+        // frames take no longer than (zero before the first).
         let at = |q: f64| {
             let rank = (q * times.len() as f64).ceil() as usize;
-            Duration::from_micros(u64::from(times[rank.clamp(1, times.len()) - 1]))
+            let i = rank.clamp(1, times.len().max(1)) - 1;
+            Duration::from_micros(times.get(i).map_or(0, |t| u64::from(*t)))
         };
+        let drawn = times.len() as u64;
         Some(FrameSummary {
             p50: at(0.50),
             p95: at(0.95),
             p99: at(0.99),
-            presented,
-            discarded: times.len() as u64 - presented,
+            drawn,
+            unchanged: r.frames.len() as u64 - drawn,
         })
     }
 }
 
 impl Renderer {
-    /// `surface`'s frame timing over its last 600 frames; `None` before its first frame or once it is detached.
+    /// `surface`'s frame timing over its last 600 paints; `None` before
+    /// its first paint or once it is detached.
     pub fn frame_summary(&self, surface: SurfaceId) -> Option<FrameSummary> {
         self.frame_stats.summary(surface)
     }
@@ -106,28 +118,44 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    /// Nearest-rank percentiles over the last 600 frames, presented and
-    /// discarded counted apart; older frames fall out, and a detached
-    /// surface has none.
+    /// Nearest-rank percentiles over the frames drawn among the last
+    /// 600 paints, the unchanged ones (no damage) counted apart and left
+    /// out of them; older paints fall out, and a detached surface has
+    /// none.
     #[test]
-    fn percentiles_are_over_the_last_600_frames() {
+    fn percentiles_are_over_the_drawn_frames_of_the_last_600_paints() {
         let mut s = FrameStats::default();
         let a = SurfaceId(1);
         assert_eq!(s.summary(a), None);
-        // 100 frames of 1..=100 ms, every tenth discarded.
+        // 100 paints of 1..=100 ms, every tenth unchanged: the drawn
+        // ones are the 90 that are not a multiple of ten.
         for i in 1..=100 {
             s.record(a, ms(i), i % 10 != 0);
         }
         let f = s.summary(a).unwrap();
-        assert_eq!((f.p50, f.p95, f.p99), (ms(50), ms(95), ms(99)));
-        assert_eq!((f.presented, f.discarded), (90, 10));
+        // Rank 45 of the 90 is 49 ms (every tenth gone below it), 86 is
+        // 95 ms, 90 is 99 ms.
+        assert_eq!((f.p50, f.p95, f.p99), (ms(49), ms(95), ms(99)));
+        assert_eq!((f.drawn, f.unchanged), (90, 10));
+        // Unchanged paints, however many and however cheap, move no
+        // percentile.
+        let mut b = FrameStats::default();
+        for _ in 0..500 {
+            b.record(a, Duration::from_micros(3), false);
+        }
+        for _ in 0..100 {
+            b.record(a, ms(8), true);
+        }
+        let f = b.summary(a).unwrap();
+        assert_eq!((f.p50, f.p99), (ms(8), ms(8)));
+        assert_eq!((f.drawn, f.unchanged), (100, 500));
         // 600 more of 2 ms push every one of them out.
         for _ in 0..FRAMES_SUMMARISED {
             s.record(a, ms(2), true);
         }
         let f = s.summary(a).unwrap();
         assert_eq!((f.p50, f.p99), (ms(2), ms(2)));
-        assert_eq!((f.presented, f.discarded), (600, 0));
+        assert_eq!((f.drawn, f.unchanged), (600, 0));
         // One slow frame among 600 is past p99 (rank 594), not at it.
         s.record(a, ms(40), true);
         let f = s.summary(a).unwrap();
@@ -137,14 +165,19 @@ mod tests {
         assert_eq!(s.summary(a), None);
     }
 
-    /// A single frame is every percentile.
+    /// A single drawn frame is every percentile; with none drawn yet the
+    /// percentiles are zero.
     #[test]
     fn one_frame_is_every_percentile() {
         let mut s = FrameStats::default();
-        s.record(SurfaceId(1), Duration::from_micros(1_234), false);
+        s.record(SurfaceId(1), Duration::from_micros(700), false);
+        let f = s.summary(SurfaceId(1)).unwrap();
+        assert_eq!((f.p50, f.p99), (Duration::ZERO, Duration::ZERO));
+        assert_eq!((f.drawn, f.unchanged), (0, 1));
+        s.record(SurfaceId(1), Duration::from_micros(1_234), true);
         let f = s.summary(SurfaceId(1)).unwrap();
         assert_eq!(f.p50, Duration::from_micros(1_234));
         assert_eq!(f.p99, f.p50);
-        assert_eq!((f.presented, f.discarded), (0, 1));
+        assert_eq!((f.drawn, f.unchanged), (1, 1));
     }
 }

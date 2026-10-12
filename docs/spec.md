@@ -447,8 +447,12 @@ filling the monitor, the keyboard always).
   `id`; Return activates the selected row (`on activate`).
 - **`tooltip: expr`** shows a tooltip on hover.
 - **Drag and drop.** `drag: value` on a source; `on drop(v: T, at: int)`
-  on a target. Values from other programs (files, apps, text) arrive as
-  typed `Drop` values.
+  on a target. `at` is where it lands among the target's rows (for a
+  target that is itself a row, among its siblings), counted without the
+  dragged item or any copy of it (the same value drawn by another
+  monitor's surface), so `list.move(key, at)` puts it where it was let
+  go. Values from other programs (files, apps, text) arrive as typed
+  `Drop` values.
 - **`pages`** shows one `page` at a time, with directional transitions;
   hidden pages unmount, so their service subscriptions stop.
 
@@ -814,7 +818,10 @@ in step with the theme.
   `text:` expression has the template scope (section 9.8). The
   positional path, `template:`, `run:` and any `when` condition are
   ordinary expressions in the enclosing scope, loop variables included,
-  so a `for` can mount distinct paths. One path mounted from two places
+  so a `for` can mount distinct paths. The positional path resolves as
+  a settings file's does (section 11): `~/…` from `$HOME`, an absolute
+  path as given, anything else against the config directory, never the
+  working directory of `strand run`. One path mounted from two places
   (a `file` in a `bar` on every monitor) is an error naming both.
 - **`run`** names a command run after the file is written; its program
   needs `permit exec` (section 5.6), else it is a load error. `strand
@@ -1014,6 +1021,11 @@ people can edit by hand.
 
 - `strand run [dir]` runs a config; `strand check [dir | file]` checks
   it without running it; `strand fmt [--check] [paths]` formats files.
+- `strand new [dir]` writes a starter shell, the guide's level-1 bar as
+  `bar.strand`, into `dir` (default `$XDG_CONFIG_HOME/strand`), made if
+  missing; a directory with anything in it is refused and left as it
+  was. `strand compositor-rules` prints the blur rules for the
+  compositor's config, to paste; it never changes the session.
 - A running shell answers commands over a Unix socket
   (`$STRAND_SOCKET`, else `$XDG_RUNTIME_DIR/strand-<display>.sock`) and
   over D-Bus:
@@ -1029,11 +1041,14 @@ people can edit by hand.
   - `strand toggle path` flips an exported `bool` state;
   - `strand call target args…` calls a service-level action;
   - `strand clear path` removes a runtime overlay;
-  - `strand watch [--json]` streams reload events: files, edit class,
-    kept and reset cells, timing and diagnostics;
+  - `strand watch [--json]` streams events: reloads (files, edit class,
+    kept and reset cells, timing and diagnostics), runtime faults and
+    notices;
   - `strand reload [--hard]` rescans now (section 10.4);
   - `strand export json | base24 | --template <file> [--palette
-    <expr>]` writes the theme to stdout, or atomically to `-o <file>`:
+    <expr>]` writes the theme to stdout, or atomically to `-o <file>`
+    as a `file` element writes (through a link, the file's mode kept;
+    section 9.7):
     `json` the palette's identity, its roles, every resolved token and
     its extras; `base24` a base24 scheme; `--template` a template
     (section 9.8). Without `--palette` it asks the running shell
@@ -1042,7 +1057,15 @@ people can edit by hand.
     fix the theme" and the cause. `--palette` is always offline: the
     base tokens and that palette, no config. A broken theme or `--palette`
     is an error, never the built-in palette. The `export` request is
-    served over the socket only, not D-Bus.
+    served over the socket only, not D-Bus;
+  - `strand report [--json]` describes the running shell for a bug
+    report: the compositor and its globals with versions, the outputs
+    and their scales, the process's PSS, the GPU's status, reason and
+    lost-device count, and each surface's backend, why it is promoted
+    and its frame times (p50/p95/p99 over the frames drawn among its
+    last 600 paints, with the drawn and unchanged counts). It carries no
+    serials or ids. The `report` request is served over the socket
+    only, not D-Bus.
 - Paths use the program's own names: `file.name` for exports
   (`launcher.open`); `file.settings.field` for a settings field, or
   `settings.field` when exactly one file declares settings with that
@@ -1060,9 +1083,10 @@ people can edit by hand.
   message is the socket's `error`. `Reload` returns once its load is
   committed, with its event. Watching is the signal `Changed(s event, s
   data)`: every event `strand watch --json` prints, `event` its kind
-  (`reload`, `fault`, `notices`) and `data` the event as JSON. `export`
-  and the inspector's commands are served over the socket only
-  (decisions.md m5-ipc).
+  (`reload`, `fault`, `notices`) and `data` the event as JSON.
+  `export`, `report` and the inspector's commands are served over the
+  socket only (decisions.md m5-ipc, m5-fixups): a D-Bus `Report` is an
+  unknown method.
 - A plugin binary (section 5.6) answers every command above as
   `strand` does, against its own schema, and adds `--write-schemas`.
 - `strand help` lists every command. Commands, their flags and their

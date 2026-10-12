@@ -258,10 +258,9 @@ seconds after the last reader goes, as the built-in ones do.
 
 **`from dbus`** reads a D-Bus object. `ppd` is the power profiles
 daemon on the system bus, and its `profile` field is the daemon's
-`ActiveProfile` property. `rw` marks it writable, so assigning
-`ppd.profile = "power-saver"` in a handler would set the property.
-`strand check` rejects that assignment today, which is a bug in the
-checker; until it is fixed, the control centre below only shows the
+`ActiveProfile` property. `rw` marks it writable: assigning
+`ppd.profile = "power-saver"` in a handler (or binding it with `<->`)
+sets the property, which the control centre below does when you click a
 profile. Strand checks every field against the object's
 introspection, so a misspelt property is an error with a
 did-you-mean. If the daemon is not running, that is a
@@ -276,12 +275,11 @@ is that word. Files under `/proc` change without saying so, so after you
 rename the machine `host.name` shows the new name once the service
 starts again: when Strand restarts, or after nothing has read it for a
 few seconds. A JSON file is read by key. So is a file of `key=value` (or
-`key: value`) lines, with double quotes around a value removed, but only
-when every line is a pair: one `#` comment or other line makes the whole
-file text again, and every field reads all of it. That is why this step
-does not read `PRETTY_NAME` from `/etc/os-release`, which on some
-systems has comments. A field without `= key` reads the key with its own
-name.
+`key: value`) lines such as `/etc/os-release`, with blank lines and `#`
+comment lines skipped and the double or single quotes around a value
+removed, but only when every other line is a pair: one line that is
+neither makes the whole file text again, and every field reads all of
+it. A field without `= key` reads the key with its own name.
 
 **`from poll … every T`** reads again every `T`, and only while
 something showing reads it. Given a file path (`"/sys/class/…"`), it
@@ -360,6 +358,7 @@ panel Control {
               for p in ["power-saver", "balanced", "performance"] key p {
                 text p { grow: 1; font: $font.caption; color: $fg.muted
                   when ppd.profile == p { color: $accent; weight: 600 }
+                  on click { ppd.profile = p }
                 }
               }
             }
@@ -397,7 +396,7 @@ panel Control {
 Bind a key to `strand toggle control.open` and press it. A panel slides
 in at the top right: your system's name and CPU temperature, then tiles
 for the look, volume, brightness (on a laptop), the power profile in
-use and Bluetooth. Pick "mocha" and the panel itself changes colour as
+use (click one to switch) and Bluetooth. Pick "mocha" and the panel itself changes colour as
 you watch. "Devices ›" slides to a second page that lists your Bluetooth
 devices; "‹" slides back.
 
@@ -528,11 +527,9 @@ draw nothing, the two would disagree and a dragged icon would land one
 place off.
 
 With more than one monitor there is a dock on each, and you can drag
-an icon from one to another. Today the other dock counts its own icon
-for the pin you are dragging: dropped before that icon, the pin lands
-where you let go; dropped past that dock's own icon for the same pin,
-it lands one place further on. Dragging along one dock is always
-exact.
+an icon from one to another. The other dock draws the same pin too, and
+its `at` leaves that icon out as well, so the pin lands where you let
+it go on either dock.
 
 ## 6. Escape hatches
 

@@ -88,6 +88,9 @@ mod sleep;
 mod trim;
 
 pub use logic::{Live, OwnWrites, Switched, logic};
+/// The `file` element's write (a link followed, the target's mode kept),
+/// which `strand export -o` shares.
+pub(crate) use outputs::write_through;
 pub use trim::trim;
 use trim::{Trimmer, structural};
 

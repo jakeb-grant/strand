@@ -29,7 +29,7 @@ pub use geometry::{LogicalPoint, LogicalRect, LogicalSize, Point, Rect, Scale, S
 pub use id::{NodeId, NodeIdAllocator, SurfaceId};
 pub use input::{
     AxisDelta, AxisSource, ButtonState, DropKind, DropPayload, InputEvent, KeyInput, Modifiers,
-    drag_export, drag_type,
+    drag_export, drag_identity, drag_type,
 };
 pub use motion::{Curve, Motion, Spring};
 pub use paint::{
