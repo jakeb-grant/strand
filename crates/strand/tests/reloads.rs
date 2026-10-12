@@ -26,9 +26,12 @@
 //! - no service starts or stops again (`STRAND_LOG=info`: one
 //!   `service `x` started` line per run, the client's start counter),
 //!   but `memory` stopping once, 5 s after its reader's last removal;
-//! - no connection is made to the bus at all (dbus-daemon numbers its
+//! - no connection is made to the bus (dbus-daemon numbers its
 //!   connections in order: no number falls between a probe connection
-//!   before and one after the reloads); the `from dbus` check asks again
+//!   before and one after the reloads), but `strand-introspect`'s
+//!   reconnect after an `Introspect` got no answer within its timeout (a
+//!   starved runner's mock; it says only `Hello` and `Introspect`); the
+//!   `from dbus` check asks again
 //!   once its answer is 10 s old over the connection `strand-introspect`
 //!   keeps for the process (a bus monitor counts those `Introspect`
 //!   calls, from a connection older than the first probe), and the mocks
@@ -875,9 +878,75 @@ fn pw_new_of(text: &str, pid: u32, serial: u64) -> Vec<String> {
 
 /// What each connection sent on the bus, by its unique name's number
 /// (`:1.N`), as `type interface.member`: a monitor's view
-/// (`BecomeMonitor`), kept from when it starts.
+/// (`BecomeMonitor`), kept from when it starts. With it, when each
+/// connection first spoke, when each `Introspect` was sent and when its
+/// answer came (to tell `strand-introspect`'s reconnect after a refresh
+/// that got no answer in time from a connection made for nothing).
 #[derive(Clone, Default)]
-struct BusLog(Arc<std::sync::Mutex<BTreeMap<u64, Vec<String>>>>);
+struct BusLog(Arc<std::sync::Mutex<Seen>>);
+
+const INTROSPECT: &str = "MethodCall org.freedesktop.DBus.Introspectable.Introspect";
+const HELLO: &str = "MethodCall org.freedesktop.DBus.Hello";
+
+#[derive(Clone, Default)]
+struct Seen {
+    sent: BTreeMap<u64, Vec<String>>,
+    /// When each connection sent its first message.
+    first: HashMap<u64, Instant>,
+    /// Each `Introspect` call, by its sender and serial: when it was
+    /// sent, and when its answer (a return or an error) came.
+    introspects: BTreeMap<(u64, u32), (Instant, Option<Instant>)>,
+}
+
+impl Seen {
+    fn record(&mut self, n: u64, what: String, at: Instant) {
+        self.first.entry(n).or_insert(at);
+        self.sent.entry(n).or_default().push(what);
+    }
+
+    /// The connections numbered between two probes (`from`, `to`), with
+    /// what each sent, but `strand-introspect`'s reconnects: a connection
+    /// that said only `Hello` and `Introspect`, made after an older
+    /// connection's `Introspect` went unanswered for
+    /// `strand_introspect::TIMEOUT` (it drops a connection that gets no
+    /// answer in time, so the next question connects again; a starved
+    /// runner can make the mock that late, decisions.md m6-flakes).
+    fn unexplained(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
+        // A little under the deadline: it runs from the question, a
+        // moment before the call is on the bus.
+        let late = strand_introspect::TIMEOUT - Duration::from_millis(100);
+        (from + 1..to)
+            .map(|n| (n, self.sent.get(&n).cloned().unwrap_or_default()))
+            .filter(|(n, sent)| {
+                let only_introspects = sent.iter().any(|s| s == INTROSPECT)
+                    && sent.iter().all(|s| s == INTROSPECT || s == HELLO);
+                let Some(&began) = self.first.get(n) else {
+                    return true;
+                };
+                let after_a_late_answer =
+                    self.introspects
+                        .iter()
+                        .any(|(&(m, _), &(asked, answered))| {
+                            m < *n
+                                && began.duration_since(asked) >= late
+                                && answered.is_none_or(|a| a.duration_since(asked) >= late)
+                        });
+                !(only_introspects && after_a_late_answer)
+            })
+            .collect()
+    }
+
+    /// How many connections between two probes were
+    /// `strand-introspect`'s reconnects (see [`Seen::unexplained`]).
+    fn reconnects(&self, from: u64, to: u64) -> usize {
+        (from + 1..to).filter(|n| self.sent.contains_key(n)).count()
+            - self
+                .unexplained(from, to)
+                .iter()
+                .filter(|(n, _)| self.sent.contains_key(n))
+                .count()
+    }
+}
 
 impl BusLog {
     fn start(tokio: &tokio::runtime::Runtime, bus: &PrivateBus) -> BusLog {
@@ -900,13 +969,23 @@ impl BusLog {
         });
         let l = log.clone();
         tokio.spawn(async move {
+            let number = |name: &str| name.rsplit('.').next().and_then(|n| n.parse().ok());
             let mut messages = zbus::MessageStream::from(&conn);
             while let Some(Ok(m)) = messages.next().await {
+                let at = Instant::now();
                 let h = m.header();
-                let Some(n) = h
-                    .sender()
-                    .and_then(|s| s.rsplit('.').next().and_then(|n| n.parse().ok()))
-                else {
+                let Ok(mut seen) = l.0.lock() else {
+                    continue;
+                };
+                // An answer to an `Introspect` (from a mock or the bus).
+                if let (Some(to), Some(serial)) = (
+                    h.destination().and_then(|d| number(d.as_str())),
+                    h.reply_serial(),
+                ) && let Some((_, answered)) = seen.introspects.get_mut(&(to, serial.get()))
+                {
+                    answered.get_or_insert(at);
+                }
+                let Some(n) = h.sender().and_then(|s| number(s.as_str())) else {
                     continue;
                 };
                 let what = format!(
@@ -915,16 +994,23 @@ impl BusLog {
                     h.interface().map(|i| i.to_string()).unwrap_or_default(),
                     h.member().map(|m| m.to_string()).unwrap_or_default()
                 );
-                if let Ok(mut log) = l.0.lock() {
-                    log.entry(n).or_default().push(what);
+                if what == INTROSPECT {
+                    seen.introspects
+                        .insert((n, h.primary().serial_num().get()), (at, None));
                 }
+                seen.record(n, what, at);
             }
         });
         log
     }
 
+    fn seen(&self) -> Seen {
+        self.0.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
     /// The connections numbered between two probes (`from`, `to`, see
-    /// [`next_connection`]), with what each sent: there should be none.
+    /// [`next_connection`]), with what each sent: there should be none
+    /// but `strand-introspect`'s reconnects ([`Seen::unexplained`]).
     /// The `from dbus` check asks the bus again on a reload once its
     /// answer is 10 s old (`strand_introspect::TTL`, decisions.md
     /// wave4-a3), over the one connection per bus `strand-introspect`
@@ -933,21 +1019,68 @@ impl BusLog {
     fn connections_between(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
         // The monitor sees a message a moment after it is sent.
         std::thread::sleep(Duration::from_millis(200));
-        let log = self.0.lock().map(|l| l.clone()).unwrap_or_default();
-        (from + 1..to)
-            .map(|n| (n, log.get(&n).cloned().unwrap_or_default()))
-            .collect()
+        self.seen().unexplained(from, to)
     }
 
     /// How many `Introspect` calls connections numbered below `below`
     /// (made before a probe) have sent since the monitor started: the
     /// kept connection's refreshes.
     fn introspections_below(&self, below: u64) -> usize {
-        let log = self.0.lock().map(|l| l.clone()).unwrap_or_default();
-        log.range(..below)
+        self.seen()
+            .sent
+            .range(..below)
             .flat_map(|(_, sent)| sent)
-            .filter(|s| *s == "MethodCall org.freedesktop.DBus.Introspectable.Introspect")
+            .filter(|s| *s == INTROSPECT)
             .count()
+    }
+}
+
+/// (m6-flakes) The bus check's classification: a connection that only
+/// introspects is `strand-introspect`'s reconnect when an older
+/// connection's `Introspect` went unanswered for its timeout, and made
+/// for nothing otherwise; any other connection is never explained.
+#[test]
+fn a_reconnect_after_an_unanswered_introspect_is_explained() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let introspecting = |seen: &mut Seen, n: u64, began: u64| {
+        seen.record(n, HELLO.into(), at(began));
+        seen.record(n, INTROSPECT.into(), at(began + 1));
+    };
+    // The kept connection, :1.5, answered at once; then :1.10 connects.
+    let mut seen = Seen::default();
+    introspecting(&mut seen, 5, 0);
+    seen.introspects.insert((5, 2), (at(1), Some(at(3))));
+    introspecting(&mut seen, 10, 10_000);
+    seen.record(11, HELLO.into(), at(10_500));
+    assert_eq!(
+        seen.unexplained(7, 12),
+        vec![
+            (8, vec![]),
+            (9, vec![]),
+            (10, vec![HELLO.to_string(), INTROSPECT.to_string()]),
+            (11, vec![HELLO.to_string()]),
+        ],
+        "made for nothing"
+    );
+    assert_eq!(seen.reconnects(7, 12), 0);
+    // :1.5's refresh got no answer in time: :1.10 is its reconnect.
+    for answered in [None, Some(at(8_000 + 2_500))] {
+        let mut late = seen.clone();
+        late.introspects.insert((5, 3), (at(8_000), answered));
+        assert_eq!(
+            late.unexplained(9, 12),
+            vec![(11, vec![HELLO.to_string()])],
+            "only the reconnect is explained ({answered:?})"
+        );
+        assert_eq!(late.reconnects(9, 12), 1);
+        // One that did more than introspect is not.
+        late.record(
+            10,
+            "MethodCall org.freedesktop.DBus.Properties.GetAll".into(),
+            at(10_002),
+        );
+        assert_eq!(late.unexplained(9, 11).len(), 1);
     }
 }
 
@@ -1706,15 +1839,31 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     let last = next_connection(&tokio, &bus);
     let made = bus_log.connections_between(first, last);
     let refreshed = bus_log.introspections_below(first);
+    let seen = bus_log.seen();
+    let reconnects = seen.reconnects(first, last);
+    // The monitor sees the answers: else every refresh would look late.
+    let answered = seen
+        .introspects
+        .values()
+        .filter(|(_, a)| a.is_some())
+        .count();
+    assert!(
+        seen.introspects.is_empty() || answered > 0,
+        "the bus monitor saw no answer to {} `Introspect` calls",
+        seen.introspects.len()
+    );
     assert!(
         made.is_empty(),
         "connections were made to the bus during the reloads (each with what \
          it sent; the `from dbus` check asked {refreshed} times over the \
-         connection it keeps): {made:?}"
+         connection it keeps, and reconnected {reconnects} times after an \
+         `Introspect` went unanswered for its timeout): {made:?}"
     );
     eprintln!(
         "the `from dbus` check asked the bus {refreshed} times during the reloads, \
-         over the connection it keeps"
+         over the connection it keeps; {reconnects} reconnects after a late answer; \
+         {answered} of {} `Introspect` calls answered",
+        seen.introspects.len()
     );
     let after = mock_calls(&mocks);
     for (name, before) in &calls {

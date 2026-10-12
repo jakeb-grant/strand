@@ -251,11 +251,15 @@ recorded reason.
     within about 30 ms; a request dropped as unwanted in that gap, and
     wanted again before the render loop polled the drop, was never asked
     for again. The worker now wakes the loop for a drop and the poll
-    sends a wanted key again (`strand-render`'s
-    `image::tests::a_dropped_request_wanted_again_is_decoded`).
+    sends a wanted key again, a stale icon from a theme change while it
+    was in flight too (`strand-render`'s
+    `image::tests::a_dropped_request_wanted_again_is_decoded` and
+    `a_dropped_stale_icon_wanted_again_is_decoded`).
   - `strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle`: its idle
-    window now reads where it ended and is taken again if a minute tick
-    fell in it (a loaded runner holding the test thread). The cause of
+    window now reads where it began (just before its snapshot) and
+    ended, and is taken again if it began within 2 s of a minute boundary
+    or a minute tick fell in it (a loaded runner holding the test
+    thread). The cause of
     the one CI failure is not proven.
   - `strand-watch/src/core.rs::tests::a_file_rewritten_without_pause_is_read_within_max_delay`
     (read before `max_delay`): the test's writes are stamped ahead of
@@ -269,10 +273,11 @@ recorded reason.
   was never retargeted. Feeds now sync after every applied diff
   (`Host::apply_diff`). Reproduced in the container by delaying the
   audio loop 3 s: it fails before the fix and passes after.
-- `crates/strand/tests/reloads.rs` allows no bus connection at all
-  during the reloads now that `strand-introspect` keeps one connection
-  per bus, and counts the `from dbus` refreshes on the kept connection
-  (decisions.md m6-flakes).
+- `crates/strand/tests/reloads.rs` allows no bus connection during the
+  reloads now that `strand-introspect` keeps one connection per bus,
+  but its reconnect after an `Introspect` got no answer within its 2 s
+  timeout (a starved runner's mock), and counts the `from dbus`
+  refreshes on the kept connection (decisions.md m6-flakes).
 - Done in M5's wave 0 (decisions.md m5-infra): the two functional tests
   that bounded wall-clock time now check work done and order, and
   `compositor_matrix.rs` sends Hyprland's Lua dispatch form first (its

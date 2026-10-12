@@ -569,22 +569,25 @@ fn demo_bar_on_two_outputs_then_idle() {
     // Idle: no thread of the process wakes. The minute tick is the one
     // wakeup, and its frame and the trims after it follow within a
     // second or so: the window starts 2 s or more past a boundary and
-    // ends before the next. Where it ends is read, not assumed: a loaded
-    // runner can hold this thread past its 2 s sleep, and a window the
-    // tick fell into is taken again (decisions.md m6-flakes).
-    let minute = || {
-        SystemTime::now()
+    // ends before the next. Where it starts and ends is read, not
+    // assumed: the start is read just before the snapshot (a loaded
+    // runner can hold this thread between the check and the snapshot),
+    // the end after its 2 s sleep, and a window that began too near a
+    // boundary or that the tick fell into is taken again (decisions.md
+    // m6-flakes).
+    let now = || {
+        let s = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs()
-            / 60
+            .as_secs();
+        (s / 60, s % 60)
     };
     for attempt in 1.. {
         let s = seconds_into_minute();
         if !(2..56).contains(&s) {
             std::thread::sleep(Duration::from_secs((62 - s) % 60));
         }
-        let began = minute();
+        let (began, from) = now();
         let frames = damage_lines(&log).len();
         let before = switches(pid);
         let threads = per_thread(pid);
@@ -596,8 +599,10 @@ fn demo_bar_on_two_outputs_then_idle() {
             .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
             .collect();
         let painted = damage_lines(&log).len() - frames;
-        if minute() != began && attempt < 3 {
-            eprintln!("the idle window met a minute tick (attempt {attempt}): again");
+        if (now().0 != began || from < 2) && attempt < 3 {
+            eprintln!(
+                "the idle window met a minute tick (attempt {attempt}, from :{from:02}): again"
+            );
             continue;
         }
         assert_eq!(after - before, 0, "woke while idle: {woke:?}");

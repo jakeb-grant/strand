@@ -1383,7 +1383,10 @@ impl ImageStore {
     /// undecoded that a frame wants again is sent again: it was dropped
     /// because no frame wanted it when the worker came to it, and a frame
     /// that wanted it again before this poll did not ask for it (it was
-    /// in flight), so nothing else would (decisions.md m6-flakes).
+    /// in flight), so nothing else would (decisions.md m6-flakes). A
+    /// stale one is sent again too, and is no longer stale: it has no
+    /// old-theme result to throw away, and the worker looks it up in the
+    /// theme current when it comes to it.
     pub fn poll(&mut self) -> Vec<ImageKey> {
         let ImageBackend::Worker(w) = &self.backend else {
             return Vec::new();
@@ -1392,13 +1395,13 @@ impl ImageStore {
         let mut arrived = Vec::new();
         for (k, r) in got {
             if r.is_none()
-                && !self.stale.contains(&k)
                 && self.frames.values().any(|f| f.contains(&k))
                 && let ImageBackend::Worker(w) = &self.backend
                 && w.requests
                     .as_ref()
                     .is_some_and(|tx| tx.send(Job::Image(k.clone())).is_ok())
             {
+                self.stale.remove(&k);
                 continue;
             }
             self.pending.remove(&k);
@@ -1980,6 +1983,58 @@ mod tests {
             store.get(&k).is_some_and(|r| r.is_err()),
             "decoded (a missing file)"
         );
+        assert_eq!(store.pending(), 0);
+    }
+
+    /// (m6-flakes) The same race when the icon theme changed while the
+    /// key was in flight: a stale key dropped undecoded that a frame
+    /// wants again is sent again (and kept when it comes), not forgotten.
+    #[test]
+    fn a_dropped_stale_icon_wanted_again_is_decoded() {
+        let (woke, wakes) = std::sync::mpsc::channel::<()>();
+        let waker = Box::new(move || {
+            let _ = woke.send(());
+        });
+        let worker = ImageWorker::spawn(IconTheme::named("StrandTest"), Some(waker)).unwrap();
+        let mut store = ImageStore::new(ImageBackend::Worker(worker));
+        let k = ImageKey {
+            source: "strand-dropped-icon".into(),
+            icon: true,
+            w: 8,
+            h: 8,
+            fit: Fit::Contain,
+            scale: 1,
+            frame: 0,
+        };
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let hold = move || -> Loaded {
+            let _ = held.recv();
+            Ok(Arc::new(()))
+        };
+        assert!(store.load_file("hold", hold).is_none());
+        store.want(SurfaceId(1), std::slice::from_ref(&k), false);
+        assert_eq!(store.pending(), 1);
+        // The theme changes while `k` is in flight: it is stale.
+        assert_eq!(store.invalidate_icons(), vec![SurfaceId(1)]);
+        store.want(SurfaceId(1), &[], false);
+        release.send(()).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let wait = |what: &str| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(wakes.recv_timeout(left).is_ok(), "no wake for {what}");
+        };
+        wait("the held job");
+        wait("`k` dropped");
+        // The repaint the theme change asked for wants `k` again while
+        // it is in flight.
+        store.want(SurfaceId(1), std::slice::from_ref(&k), false);
+        loop {
+            store.poll();
+            if store.get(&k).is_some() {
+                break;
+            }
+            wait("`k` decoded: it was dropped stale and never asked for again");
+        }
         assert_eq!(store.pending(), 0);
     }
 
