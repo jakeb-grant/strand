@@ -212,8 +212,10 @@ instantiations, under 10 KB of byte-identical functions in the whole
 binary, and wave 2's code costs about what the existing crates' code
 costs per line), so it cut nothing. Under the owner's ruling of
 2026-10-11 the overruns stand, and the integrator re-bases both gates to
-the measured tree after S-tools' remaining work merges; the rows above
-stay as the record of what each stream was allocated.
+the measured tree now, as handoff's "Next: M5 wave 3" item 1, before the
+full checks and GitHub CI run on `laptop/m5-w2`'s head (item 2); wave 3's
+streams then charge against the re-based gates. The rows above stay as
+the record of what each stream was allocated.
 
 Optional items, paid from the reserve only if the reserve allows:
 check-time `import()` validation (2–4 KB) and the "says why" lines in the
