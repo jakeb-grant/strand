@@ -81,7 +81,13 @@ are not steps.
 
 - A Wayland compositor with layer-shell: sway, Hyprland, niri, labwc,
   river or similar. GNOME does not offer layer-shell.
-- The `strand` binary on your `PATH`.
+- The `strand` binary on your `PATH`. There is no release yet, so
+  either build it from a checkout of the repository with
+  `cargo build --release -p strand` (it lands in
+  `target/release/strand`), or take the `strand-release-binaries`
+  artifact of a green run of its CI workflow on GitHub and rename
+  `strand-gpu` in it to `strand` (`strand-cpu` is the same without the
+  GPU backend). `strand --version` tells you it is found.
 
 Then start at [level 1](level-1.md).
 

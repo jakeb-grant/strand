@@ -1,4 +1,4 @@
-# Handoff: M6 wave 1 (updated 2026-10-12)
+# Handoff: M6 wave 1 (updated 2026-10-13)
 
 M6 wave 1 (hardening, approved by the owner 2026-10-12) is on `main`
 (`5484c4f`): its four streams merged, the integrator's sweep closed what
@@ -12,9 +12,9 @@ sweep), and for M5's numbers `docs/m5-report.md`.
 
 ## State after M6 wave 1
 
-- **M0–M4 are complete; M5 is complete but for its newcomer exit**
-  (features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14, M4 18/18, M5
-  11/12, the newcomer exit waiting on the owner). **M6 Hardening** has
+- **M0–M5 are complete** (features.md: M0 20/20, M1 59/59, M2 30/30,
+  M3 14/14, M4 18/18, M5 12/12, the newcomer exit ticked 2026-10-13 by
+  Q15's fallback (ii)). **M6 Hardening** has
   ten boxes, all ticked.
 - **Branches.** `main` is at `5484c4f`, fast-forwarded from M5's close
   (`361296e`) to `laptop/m6-w1`, which held wave 1: S-services
@@ -70,7 +70,7 @@ sweep), and for M5's numbers `docs/m5-report.md`.
 
 ## Next
 
-1. **The owner's open items** below.
+1. **No owner items are open** (below, all done).
 2. **Later M6 waves** are the owner's to plan; candidates are the known
    limits below and m5-report.md's "What remains". The language is
    frozen: a change to grammar.md or spec.md needs a decisions.md
@@ -81,14 +81,12 @@ sweep), and for M5's numbers `docs/m5-report.md`.
 Each has its paragraph in decisions.md (m6-owner holds the 2026-10-12
 rulings).
 
-1. **The newcomer exit criterion (Q15).** Ruled 2026-10-12: the owner
-   tests it themself, which is Q15's fallback (ii), since the owner's
-   own run does not count as a trial; the green automated newcomer test
-   carries the box, with the owner's run (time and stumbles, guide
-   levels 1–3 from `strand new` to bar (a) on both monitors, the
-   `strand-release-binaries` artifact of run 38327195975) reported in
-   m5-report.md. Open until that run is reported; no agent-proxy
-   session is planned.
+1. ~~**The newcomer exit criterion (Q15)**~~: done 2026-10-13. The
+   owner asked the integrator to do the newcomer run, so Q15's fallback
+   (ii) carries it: the automated newcomer test and one agent-proxy
+   session, which built bar (a) from the guide alone and scored 9/9 on
+   two outputs (m5-report.md, "Human trials"). The guide now says where
+   the `strand` binary comes from (decisions.md m6-owner).
 2. ~~**The `.text` gates**~~: done 2026-10-12. More room to run, as the
    owner asked: measured on `main` plus a 512 KiB reserve, rounded up to
    256 KiB, so 20,447,232 B (CPU-only) and 24,379,392 B (GPU), about

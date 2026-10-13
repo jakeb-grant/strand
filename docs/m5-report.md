@@ -22,7 +22,7 @@ decisions.md's `m5-*` sections.
 | Exit (`docs/features.md`, M5) | Evidence | State |
 | --- | --- | --- |
 | Language spec frozen | spec.md and grammar.md say they are frozen, and spec.md 14's compatibility policy is in force: in 1.x no syntax is removed or changes meaning and builtin schema entries are only added; a later change to either file needs a decisions.md paragraph citing it (decisions.md m5-integration-w3, "the language freeze"). Held by the conformance tests: `crates/strand-dev/tests/spec.rs`, `crates/strand-compiler/tests/fixtures.rs`, `crates/strand-dev/tests/tree_sitter.rs`, `crates/strand-dev/tests/ladder.rs` | **ticked** (`672b114`) |
-| Newcomer builds a multi-monitor bar in 15 minutes | the automated layer is green: `crates/strand/tests/m5/newcomer.rs::the_guide_builds_bar_a_on_two_outputs` builds design.md's bar (a) from `strand new` through guide levels 1–3 as live saves on two headless outputs, every step clean, its kept cells as predicted and its frames matching 27 reference PNGs; the agent proxy's harness (`scripts/agent-proxy/`) is exercised end to end but no model session has run (starting one is a person's call) | **open, the owner's**: the two or three timed human trials (Q15 (i)), or Q15's fallback (ii) |
+| Newcomer builds a multi-monitor bar in 15 minutes | the automated layer is green: `crates/strand/tests/m5/newcomer.rs::the_guide_builds_bar_a_on_two_outputs` builds design.md's bar (a) from `strand new` through guide levels 1–3 as live saves on two headless outputs, every step clean, its kept cells as predicted and its frames matching 27 reference PNGs; one agent-proxy session (2026-10-13, below) built bar (a) from the guide alone and scored 9/9 | **ticked** 2026-10-13 by Q15's fallback (ii) (decisions.md m6-owner) |
 
 All ten of M5's feature boxes are ticked, each with the tests that
 prove it (features.md, M5). With the freeze, features.md's M5 line
@@ -31,7 +31,45 @@ complete (20/20, 59/59, 30/30, 14/14, 18/18).
 
 ### Human trials
 
-None recorded yet. m5-plan's "Timed human trials" asks for two or three
+No human trial was run: the owner recruited none and, on 2026-10-13,
+asked the integrator to do the newcomer run, so Q15's fallback (ii)
+carries the exit (decisions.md m6-owner). The run that was done is the
+agent proxy's, below; human trials stay welcome and are recorded in the
+table at the end of this section, but they gate nothing.
+
+**Agent proxy, 2026-10-13, on `main` at `f8ea24d`.**
+`scripts/agent-proxy/prepare.sh` made the workspace (the guide without
+`target-checklist.md`, an empty config directory, a `strand` limited to
+`new`, `check`, `fmt` and `help` through the container's debug build).
+A fresh model session (Claude Opus 5.5, as a subagent of the
+integrator's session) got PROMPT.md and nothing else, with the rules
+to read only that workspace, not the web, and to report every stumble.
+It read README.md and levels 1–3, ran `strand new` (its `bar.strand`
+was level 1's first block), wrote the five files level 3 ends with
+(`bar`, `dot`, `clock`, `volume`, `battery`; about 75 lines), and
+`strand check` passed on the first try with 0 errors and 0 warnings;
+`strand fmt` changed nothing. 45 s from start to "done", 9 tool calls.
+`scripts/agent-proxy/score.sh` then ran it on two headless outputs
+(acceptance mock): **9/9** (`bar-per-output`, `dots` 4 and 2 by
+output, `title`, `clock`, `calendar` opened by a click, `volume`,
+`battery`, `tray`, `themed`). The time says the guide's blocks are
+complete and correct as written, not how long a person takes: a model
+reads and types far faster, and it took each file whole from its last
+block rather than building step by step. Stumbles it reported, none
+blocking: README.md's links to `docs/spec.md`, `docs/grammar.md`,
+`docs/reference/` and `guide.rs` lead outside the guide directory (they
+resolve in the repository, where readers have the guide; the proxy's
+copy has only the guide, so left as is); level 2's tray note sends a
+reader to the `TrayMenu` doc for the menu popup (by design, the
+reference holds it); level 1 shows `strand check` without a directory
+(it defaults to the config directory, so correct). One gap the owner
+hit first, on 2026-10-13, before the proxy ran: README.md's "What you
+need" said to have `strand` on your `PATH` but not where it comes from
+(`bash: strand: command not found`). It now says to build it with
+`cargo build --release -p strand` or take the `strand-release-binaries`
+artifact and name `strand-gpu` `strand`.
+
+Earlier text, kept: m5-plan's "Timed human trials" asks for two or three
 people new to Strand, on their own machines and layer-shell compositors
 (never the laptop), with the budgets job's `strand-release-binaries`
 artifact or a source build and the guide; the clock starts once `strand
@@ -240,7 +278,8 @@ GitHub's timing job enforces these; the laptop treats them as advisory
 
 For the owner, before M5 is called closed (handoff.md, "Open items"):
 
-1. The newcomer exit: the human trials, or Q15 (ii).
+1. ~~The newcomer exit~~: ticked 2026-10-13 by Q15 (ii), the automated
+   test and the agent proxy (above, "Human trials").
 2. The close gate: keep both `.text` gates (proposed) or tighten to
    the next 64 KiB.
 3. The `why` field of `inspect.node`'s answer, written into
