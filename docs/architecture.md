@@ -1049,8 +1049,8 @@ main, not that main has turned it on. `inspect.node`'s answer gains
 "surface", "x", "y", "width", "height" }]` (empty when none draws it),
 through the snapshot hop; its `files` and `inspect.dump`'s hash every
 file the program was compiled from, not only the nodes' own, so
-write-back can check a token's defining file. (Proposed in the wave-3
-sweep, decisions.md m5-integration-w3, for the owner's review.) For a
+write-back can check a token's defining file. (From the wave-3
+sweep, decisions.md m5-integration-w3; accepted by the owner, m6-owner.) For a
 `shader` node that draws nothing it also gains `why`, a string from the
 GPU status main last sent logic (`ToLogic::GpuStatus`; no main hop):
 `Unavailable { reason }` and `Starting` each say so, `Up` and `Unused`
@@ -2181,8 +2181,8 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     (one pin's icon on another monitor's dock; the first, as `move`
     takes the first equal item out), as it leaves out the source's row
     in its own list, where equal items beside it are counted.
-    (M6, m6-edges; an interface change, proposed for the owner's
-    review) `NodeEvent::Drop` gains `hidden: Option<HiddenRows>`
+    (M6, m6-edges; an interface change, accepted by the owner,
+    m6-owner) `NodeEvent::Drop` gains `hidden: Option<HiddenRows>`
     (`strand_render::HiddenRows { list: NodeId, before: u32 }`, the
     target list and its `row_first` as render held it), and so does
     `run::NodeEvent::Drop`, which the binary forwards unchanged: render

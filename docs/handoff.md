@@ -62,13 +62,13 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   held-back save with ending the hold; Strand was right, and the check
   now measures the hold on the logic thread against 250 ms).
 - **What remains of wave 1's scope:** nothing the streams owned. The
-  owner-run Hyprland capture (open item 7) is the one hardening item an
+  owner-run Hyprland capture (open item 3) is the one hardening item an
   agent cannot do here, since it reads the live session's event socket.
 
 ## Next
 
 1. **The owner's open items** below.
-2. **The Hyprland capture** (owner, open item 7), whenever convenient.
+2. **The Hyprland capture** (owner, open item 3), whenever convenient.
 3. **Later M6 waves** are the owner's to plan; candidates are the known
    limits below and m5-report.md's "What remains". The language is
    frozen: a change to grammar.md or spec.md needs a decisions.md
@@ -76,42 +76,24 @@ sweep), and for M5's numbers `docs/m5-report.md`.
 
 ## Open items for the owner
 
-Each has its paragraph in decisions.md.
+Each has its paragraph in decisions.md (m6-owner holds the 2026-10-12
+rulings).
 
-1. **The newcomer exit criterion (Q15).** Two or three timed human
-   trials on their own machines and compositors, with the budgets job's
-   `strand-release-binaries` artifact (30 days) or a source build; or
-   invoke Q15's fallback (ii), where the green automated newcomer test
-   and the agent proxy carry it (no proxy session has been run: starting
-   one is a person's call, `scripts/agent-proxy/run.sh` with
-   `AGENT_PROXY_CMD`).
-2. **The close gate** (m5-plan Closing step 5): proposed **keep both**
-   `.text` gates (18,874,368 / 22,806,528 B; the speed rule reproduces
-   them); the alternative is m5-plan's original "next 64 KiB above"
-   (18,743,296 / 22,675,456 B). The gate test keeps today's values until
-   the owner says. (Superseded in M6 wave 1: remote media art's HTTPS
-   stack moved both to 19,922,944 / 23,855,104 B, decisions.md
-   m6-integration-w1; the owner may still choose between the M5
-   values as the base those grew from.)
-3. **Wave 3's `.text` overruns, accepted by the integrator** under the
-   standing policy (S-platform +94,272 B against 20 KB, S-inspect
-   +35,008 B against 20 KB; decisions.md m5-integration-w3, sweep-3).
-   The owner may re-rule.
-4. **Interface changes**: wave 3's accepted ones (S-fixups' drag
-   identity and `drawn`/`unchanged`, S-inspect's inspect protocol,
-   S-platform's handler input context and token types) and one
-   **proposed** in architecture.md: the `why` field of `inspect.node`'s
-   answer for a `shader` node.
-5. ~~**The fast-forward of `main`**~~: done at `5484c4f` under the
-   standing approval, every check green on that commit.
-6. **M6 wave 1's interface changes** (architecture.md, each with its
-   reason): `strand_render::NodeEvent::Drop`'s `hidden` (S-edges),
-   `strand-dev`'s write-back hooks (S-edges), helper protocol version 2
-   and `auth.message`/`auth.prompt` (S-lock), `strand-introspect`'s
-   drop log (S-flakes), and from the sweep
-   `strand_auth::Client::submit_saying` and
-   `lock_fallback::paint`'s `message` argument.
-7. **The Hyprland IPC capture** (owner-run; Verification gaps below).
+1. **The newcomer exit criterion (Q15).** Ruled 2026-10-12: the owner
+   tests it themself, which is Q15's fallback (ii), since the owner's
+   own run does not count as a trial; the green automated newcomer test
+   carries the box, with the owner's run (time and stumbles, guide
+   levels 1–3 from `strand new` to bar (a) on both monitors, the
+   `strand-release-binaries` artifact of run 38327195975) reported in
+   m5-report.md. Open until that run is reported; no agent-proxy
+   session is planned.
+2. **The `.text` gates.** Ruled 2026-10-12: more room to run. Proposed
+   (and pending the owner's okay and the measurement, after the owner's
+   testing so the laptop is not loaded): measured on `main` plus a
+   512 KiB reserve, rounded up to 256 KiB, about 750 KB of headroom
+   (from today's 19,922,944 / 23,855,104 B, about 220 KB). This also
+   settles M5's close-gate question, since those values are superseded.
+3. **The Hyprland IPC capture** (owner-run; Verification gaps below).
    The Hyprland 0.56.2 fixture lacks a second monitor, close, move,
    fullscreen, reload and special workspaces, and was stitched from
    three captures with unrecorded gaps. Running
@@ -126,10 +108,19 @@ reference PNGs to the integrator (2026-10-11), who made them,
 deterministic on the frozen-clock acceptance mock (m5-fixups); wave 2's
 overruns (accepted 2026-10-11), S-ipc's `Request(s json)` alternative
 (not taken), the presented GPU leg's after-drop bound (a leak
-tripwire), the `gpu-measure.sh` KMS-card run (not needed, Q19 (A)),
-remote media art's HTTPS stack (kept in-process, 2026-10-12: the
-system-`curl`, feature-flag and `http://`-only alternatives are not
-taken; decisions.md m6-owner).
+tripwire), the `gpu-measure.sh` KMS-card run (not needed, Q19 (A)).
+On 2026-10-12 (decisions.md m6-owner): remote media art's HTTPS stack
+stays in-process (the system-`curl`, feature-flag and `http://`-only
+alternatives are not taken); M5 wave 3's `.text` overruns (S-platform
++94,272 B, S-inspect +35,008 B) are accepted; M5 wave 3's interface
+changes (S-fixups' drag identity and `drawn`/`unchanged`, S-inspect's
+inspect protocol with `inspect.node`'s `layout`, `files` and `why`,
+S-platform's handler input context and token types) and M6 wave 1's
+(`NodeEvent::Drop`'s `hidden`, `strand-dev`'s write-back hooks, helper
+protocol version 2 with `auth.message`/`auth.prompt`,
+`strand-introspect`'s drop log, `Client::submit_saying`,
+`lock_fallback::paint`'s `message`) are accepted as architecture.md
+gives them; the fast-forward of `main` is done (`5484c4f`).
 Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
@@ -491,4 +482,4 @@ closing head) carry over below or to the owner's items.
   the merged `laptop/m6-*` branches deleted locally and from the
   remote.
 - [x] Every `strand-wt/m6*` worktree and its `target/` removed.
-- [ ] The Hyprland capture (owner-run, open item 7).
+- [ ] The Hyprland capture (owner-run, open item 3).
