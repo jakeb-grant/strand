@@ -159,10 +159,11 @@ opt-levels build the code users wait on for speed and event-rate
 glue for size (decisions.md m5-speed-profile), and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
 build from the workspace (`budgets.rs` holds the release binary's
-`.text` to 23,855,104 B, and a build without the GPU backend to
-19,922,944 B, both re-based in M5 for the speed profile, again to
-wave 2's merged tree, and in M6 for remote media art's HTTPS stack
-(decisions.md m5-speed, m5-integration-w2, m6-integration-w1); see
+`.text` to 24,379,392 B, and a build without the GPU backend to
+20,447,232 B, both re-based in M5 for the speed profile, again to
+wave 2's merged tree, in M6 for remote media art's HTTPS stack, and on
+M6 wave 1's `main` with a 512 KiB reserve (decisions.md m5-speed,
+m5-integration-w2, m6-integration-w1, m6-owner); see
 "`strand-gpu`"). Every program strand starts gets back
 the THP setting strand inherited (`strand_services::child`, in each
 `pre_exec`). SIGINT, SIGTERM (a
@@ -535,8 +536,8 @@ blocker). The `strand` binary's default feature `gpu` turns on render's
 on `shaders` so the LSP checks shaders too. Built with
 `--no-default-features`, `strand` links none of wgpu, vello_gpu, naga or
 libwayland-client: that build is the CPU core the CPU-only `.text` gate
-measures (19,922,944 B since M6 wave 1's re-base; decisions.md
-m6-integration-w1).
+measures (20,447,232 B since the owner's re-base on M6 wave 1's
+`main`; decisions.md m6-owner).
 
 ```
 strand-scene <── strand-gpu (M4: wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -4403,10 +4404,12 @@ inspector (M5) to say why.
 
 **Budgets and tests.**
 - `.text` (`strand/tests/budgets.rs`): the default build at most
-  23,855,104 B and `strand --no-default-features` at most 19,922,944 B
-  (decisions.md m6-integration-w1: M6 wave 1's tree with remote media
-  art, 23,556,951 and 19,639,511 B, plus a 64 KiB reserve, rounded up to
-  256 KiB; before it 22,806,528 and 18,874,368 B, from m5-integration-w2: wave 2's merged tree, 22,473,111 and
+  24,379,392 B and `strand --no-default-features` at most 20,447,232 B
+  (decisions.md m6-owner: M6 wave 1 on `main`, 23,620,631 and
+  19,702,999 B, plus a 512 KiB reserve, rounded up to 256 KiB; before it
+  23,855,104 and 19,922,944 B, decisions.md m6-integration-w1: M6 wave
+  1's tree with remote media art, 23,556,951 and 19,639,511 B, plus a
+  64 KiB reserve, rounded up to 256 KiB; before that 22,806,528 and 18,874,368 B, from m5-integration-w2: wave 2's merged tree, 22,473,111 and
   18,555,351 B, plus M5's unspent lines and a 64 KiB reserve, rounded up
   to 256 KiB; 22,282,240 and 18,350,080 B after the speed review,
   decisions.md m5-speed). Before the speed profile they were 18.5 MiB

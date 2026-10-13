@@ -37,7 +37,10 @@ sweep), and for M5's numbers `docs/m5-report.md`.
 - **Budgets re-based** in wave 1: remote media art links an HTTPS stack
   (ureq, rustls), so both `.text` gates moved to 19,922,944 B (CPU-only)
   and 23,855,104 B (GPU), measured plus 64 KiB rounded up to 256 KiB
-  (decisions.md m6-integration-w1, the S-services merge).
+  (decisions.md m6-integration-w1, the S-services merge); after the
+  fast-forward the owner asked for more room, and they are now
+  20,447,232 B and 24,379,392 B, measured on `main` plus 512 KiB rounded
+  up to 256 KiB (decisions.md m6-owner).
 - **Checks.** Each merge and the sweep ran fmt, workspace clippy and
   the touched crates' tests in the container, and the lock VM's
   `scenarios/all.sh` where lock code changed (LOCK VM SCENARIOS PASSED
@@ -86,12 +89,12 @@ rulings).
    `strand-release-binaries` artifact of run 38327195975) reported in
    m5-report.md. Open until that run is reported; no agent-proxy
    session is planned.
-2. **The `.text` gates.** Ruled 2026-10-12: more room to run. Proposed
-   (and pending the owner's okay and the measurement, after the owner's
-   testing so the laptop is not loaded): measured on `main` plus a
-   512 KiB reserve, rounded up to 256 KiB, about 750 KB of headroom
-   (from today's 19,922,944 / 23,855,104 B, about 220 KB). This also
-   settles M5's close-gate question, since those values are superseded.
+2. ~~**The `.text` gates**~~: done 2026-10-12. More room to run, as the
+   owner asked: measured on `main` plus a 512 KiB reserve, rounded up to
+   256 KiB, so 20,447,232 B (CPU-only) and 24,379,392 B (GPU), about
+   745 and 760 KB of headroom (it was about 220 KB). This also settles
+   M5's close-gate question, whose values are superseded (decisions.md
+   m6-owner).
 3. ~~**The Hyprland IPC capture**~~: done 2026-10-12. The owner ran
    `scripts/capture-hyprland.sh 300` on three monitors; scrubbed, it is
    `tests/fixtures/hyprland-0.56.2-captured-2`, replayed by two adapter
@@ -119,18 +122,21 @@ Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
 
-M6 wave 1's close at `067711a` (in the container; M5's figures at
+`.text` on `laptop/m6-owner` after the fast-forward (M6 wave 1 on
+`main` plus the docs, the Hyprland fixture and the gates); memory at M6
+wave 1's close at `067711a` (in the container; M5's figures at
 `672b114` are in m5-report.md). Size and memory gates are regression
 tripwires, never caps on a user's shell: growth past them is read by
 its cause and re-based or cut with a recorded reason.
 
-- **`.text`** (`scripts/size-report.sh`): CPU-only **19,701,655 B** of
-  the **19,922,944 B** gate (221,289 B of headroom; +990,528 B over
+- **`.text`** (`scripts/size-report.sh`): CPU-only **19,702,999 B** of
+  the **20,447,232 B** gate (744,233 B of headroom; +991,872 B over
   M5's close, 18,711,127 B, almost all remote media art's ureq/rustls
-  stack, and +16,832 B over the last merge `d221f7d`, the sweep's row
-  probe, fallback font and stubs); GPU **23,619,223 B** of
-  **23,855,104 B** (235,881 B of headroom; +988,928 B over M5's
-  22,630,295 B, +16,768 B over `d221f7d`). No re-base needed at close.
+  stack; +1,344 B over wave 1's close at `067711a`, the scale fix); GPU
+  **23,620,631 B** of **24,379,392 B** (758,761 B of headroom;
+  +990,336 B over M5's 22,630,295 B, +1,408 B over `067711a`). The
+  gates were re-based here with a 512 KiB reserve at the owner's
+  request (decisions.md m6-owner).
 - **Memory** (CI tripwires set by judgement, decisions.md
   m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
   fails above 48 MB (49,152 kB): 38,201 kB in the container at

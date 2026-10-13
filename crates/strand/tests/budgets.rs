@@ -2479,23 +2479,25 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 23,855,104 B (91 × 256
-/// KiB). M6 wave 1's tree with remote media art (ureq over rustls/ring,
-/// about 778 KB of it) measured 23,556,951 B; the gate adds a 64 KiB
-/// reserve, rounded up to 256 KiB (decisions.md m6-integration-w1). It
-/// was 22,806,528 B from M5 wave 2's re-base (decisions.md
+/// `.text` of the default (GPU) release build: 24,379,392 B (93 × 256
+/// KiB). M6 wave 1 on `main` measured 23,620,631 B; the gate adds a
+/// 512 KiB reserve, rounded up to 256 KiB, so the owner's next work has
+/// room to run (decisions.md m6-owner). It was 23,855,104 B from remote
+/// media art's re-base (ureq over rustls/ring, about 778 KB; 64 KiB
+/// reserve, decisions.md m6-integration-w1), 22,806,528 B from M5 wave 2's re-base (decisions.md
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 23_855_104;
-/// `.text` of the CPU-only release build: 19,922,944 B (76 × 256 KiB).
-/// M6 wave 1's tree with remote media art measured 19,639,511 B; the
-/// gate adds a 64 KiB reserve, rounded up to 256 KiB; the rounding is not
-/// spendable (decisions.md m6-integration-w1). It was 18,874,368 B from
+const TEXT_GATE_GPU: u64 = 24_379_392;
+/// `.text` of the CPU-only release build: 20,447,232 B (78 × 256 KiB).
+/// M6 wave 1 on `main` measured 19,702,999 B; the gate adds a 512 KiB
+/// reserve, rounded up to 256 KiB (decisions.md m6-owner). It was
+/// 19,922,944 B from remote media art's re-base (64 KiB reserve,
+/// decisions.md m6-integration-w1), 18,874,368 B from
 /// M5 wave 2's re-base (decisions.md m5-integration-w2), 18,350,080 B
 /// after the speed review (decisions.md m5-speed) and 15,859,712 B
 /// before it. The gate catches accidental growth, never caps a feature:
 /// a deliberate choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 19_922_944;
+const TEXT_GATE_CPU: u64 = 20_447_232;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

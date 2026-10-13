@@ -181,9 +181,9 @@ jobs:
       # The release binary the gate just measured, kept for the human
       # trials' artifact below before the CPU-only build replaces it.
       - run: mkdir -p "$RUNNER_TEMP/trial" && cp target/release/strand "$RUNNER_TEMP/trial/strand-gpu"
-      # The CPU core's .text keeps its own gate (19,922,944 B; the GPU
-      # backend's is 23,855,104 B), both re-based to M6 wave 1's tree with
-      # remote media art (decisions.md m6-integration-w1; docs/architecture.md,
+      # The CPU core's .text keeps its own gate (20,447,232 B; the GPU
+      # backend's is 24,379,392 B), both re-based on M6 wave 1's `main`
+      # with a 512 KiB reserve (decisions.md m6-owner; docs/architecture.md,
       # "`strand-gpu`").
       - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:
