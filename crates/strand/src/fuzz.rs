@@ -36,10 +36,12 @@
 //!   surface, in one diff, and keeps the note), and at most one error
 //!   overlay is shown.
 //! - The overlay never opens unless a reload left notices (a reset, a
-//!   kept value) or a load was held back for 250 ms with no save ending
-//!   the hold (once the next load came, judged on the logic thread's
-//!   timeline from the events' timing: a stall on that load lengthens
-//!   the hold there); once a commit lands clean it lists no errors.
+//!   kept value) or a load was held back for 250 ms with no load ending
+//!   the hold, judged on the logic thread's own timeline (the instants
+//!   it applied each load at, told through `run::LOADS_APPLIED`): a
+//!   stall anywhere between a save and the logic thread lengthens the
+//!   hold there, as it does for the overlay's timer; once a commit lands
+//!   clean it lists no errors.
 //! - A broken or partial save is held back (`held`, never `unreadable`)
 //!   and changes nothing; a single file's save is one load (never split,
 //!   delete-then-create included, with a 0–25 ms gap: 0–20 in CI's
@@ -100,8 +102,11 @@ use crate::bench::Sway;
 use crate::demo::host::{Host, Probe, ProbeHandle};
 use crate::ipc;
 use crate::live::Worker;
+use crate::overlay;
 use crate::run::tests::{inbox, screen};
-use crate::run::{Live, NodeEvent, ScreenInfo, ToLogic, logic, set_screens};
+use crate::run::{
+    Applied, LOADS_APPLIED, Live, NodeEvent, ScreenInfo, ToLogic, logic, set_screens,
+};
 
 /// How long one pipeline may take to answer a save or show a scene.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -128,9 +133,6 @@ const SCREENS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
 /// of the main surface recreates only that one.
 const NOTE_FILE: &str = "note.strand";
 const NOTE_TEXT: &str = "note";
-/// A hold the overlay may open on: its 250 ms of quiet, less the
-/// difference between the test's clock and the logic thread's.
-const HELD_LONG: Duration = Duration::from_millis(200);
 const CELL_NAMES: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const CHIP_LABELS: [&str; 4] = ["x", "y", "z", "w"];
 const LIST_LABELS: [&str; 4] = ["p", "q", "r", "s"];
@@ -1352,33 +1354,39 @@ struct Shell {
     /// The overlay may list errors (no clean commit since a held load).
     errors_ok: bool,
     had_overlay: bool,
+    /// Times the overlay opened.
+    opened: u64,
     /// When the step's saves began.
     save_at: Instant,
-    /// Since when a load is held back, and when the save that ends the
-    /// hold began: the overlay opens only on a hold of 250 ms.
+    /// When the save of the held load and the save of the load that
+    /// ended the hold began (the test's clock: said when the check
+    /// fails).
     hold: Option<Instant>,
     fix_at: Option<Instant>,
-    /// How long after its save the held load reached the logic thread
-    /// and was applied there (its event's timing: watch, compile,
-    /// commit), when its 250 ms timer starts.
-    held_lag: Duration,
-    /// The hold on the logic thread's timeline, once the load that ends
-    /// it came: from the held load's arrival to the next one's (each
-    /// save's start plus its event's timing).
-    gap: Option<Duration>,
+    /// When each load reached the logic thread, one per reload event
+    /// and in their order (`run::LOADS_APPLIED`).
+    applied: Receiver<Applied>,
+    /// The last reload event's.
+    last_applied: Option<Applied>,
+    /// The held load's, which armed the overlay's 250 ms there, and the
+    /// load's that ended the hold: the overlay opens only on a hold of
+    /// 250 ms on the logic thread's own timeline.
+    held_at: Option<Applied>,
+    fixed_by: Option<Applied>,
     pixels: Option<Pixels>,
 }
 
-/// How long after its save a load reached the logic thread (`commit`:
-/// and was applied there), from its reload event's timing.
-fn lag(ev: &Json, commit: bool) -> Duration {
-    let t = &ev["timing"];
-    let mut keys = vec!["watch_ms", "compile_ms"];
-    if commit {
-        keys.push("commit_ms");
-    }
-    let ms: f64 = keys.iter().filter_map(|k| t[*k].as_f64()).sum();
-    Duration::from_secs_f64(ms.max(0.0) / 1000.0)
+/// How a load got from its save (`save`: when the test began it) to the
+/// logic thread, said when the overlay check fails.
+fn route(save: Option<Instant>, a: &Applied) -> String {
+    let saw = a.saved.unwrap_or(a.started);
+    let from = |t: Instant, f: Option<Instant>| f.map(|f| t.saturating_duration_since(f));
+    format!(
+        "save to the watcher's last event {:?}, to the worker {:?}, to the logic thread {:?}",
+        from(saw, save),
+        a.started.saturating_duration_since(saw),
+        a.at.saturating_duration_since(a.started)
+    )
 }
 
 impl Shell {
@@ -1437,7 +1445,11 @@ impl Shell {
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();
-        let thread = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+        let (applied_tx, applied) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            LOADS_APPLIED.with(|h| *h.borrow_mut() = Some(applied_tx));
+            logic(boot, Storage::none(), from_main, tx, live)
+        });
         let deadline = Instant::now() + PATIENCE;
         let stream = loop {
             match UnixStream::connect(&socket) {
@@ -1482,11 +1494,14 @@ impl Shell {
             notes: false,
             errors_ok: false,
             had_overlay: false,
+            opened: 0,
             save_at: Instant::now(),
             hold: None,
             fix_at: None,
-            held_lag: Duration::ZERO,
-            gap: None,
+            applied,
+            last_applied: None,
+            held_at: None,
+            fixed_by: None,
             pixels: pixels.then(Pixels::new),
         })
     }
@@ -1504,13 +1519,10 @@ impl Shell {
     }
 
     /// A step's saves begin (one call per step, or per part of a partial
-    /// save): a held load's hold ends here.
+    /// save).
     fn saving(&mut self) {
         self.save_at = Instant::now();
         self.descheduled = None;
-        if self.hold.is_some() && self.fix_at.is_none() {
-            self.fix_at = Some(self.save_at);
-        }
     }
 
     /// Save `text` as `name` the way this shell's editor does.
@@ -1659,27 +1671,24 @@ impl Shell {
         );
         if let Some(&o) = over.first() {
             // Errors open it after 250 ms of quiet: a hold that long, and
-            // not ended by a save before then (or notices left by a
-            // reload, which wait as long).
-            // Judged on the logic thread's timeline once the hold ended
-            // (a watcher or compiler stall on the next load lengthens
-            // the hold there), else on the test's.
-            let held = self.gap.or_else(|| {
-                self.hold.map(|h| {
-                    self.fix_at
-                        .unwrap_or_else(Instant::now)
-                        .saturating_duration_since(h)
-                })
+            // not ended by a load that commits before then (a save held
+            // back too does not end it), or notices left by a reload,
+            // which wait as long. Judged on the logic thread's own
+            // timeline, which the timer runs on: from the held load's
+            // arrival there to the committing load's, or to now (the
+            // overlay opened before this diff came).
+            let held = self.held_at.map(|h| {
+                self.fixed_by
+                    .map_or_else(Instant::now, |f| f.at)
+                    .saturating_duration_since(h.at)
             });
             assert!(
-                self.had_overlay || self.overlay_ok || held.is_some_and(|h| h >= HELD_LONG),
-                "{what} ({label}): the overlay opened with no notice and nothing held back for 250 ms (held {held:?}{}, the held load {:?} after its save)\n{}",
-                if self.gap.is_some() {
-                    " on the logic thread"
-                } else {
-                    " on the test's clock"
-                },
-                self.held_lag,
+                self.had_overlay || self.overlay_ok || held.is_some_and(|h| h >= overlay::QUIET),
+                "{what} ({label}): the overlay opened with no notice and nothing held back for 250 ms on the logic thread (held {held:?}; the held load {}; the load that ended the hold {})\n{}",
+                self.held_at
+                    .map_or_else(|| "none".to_string(), |a| route(self.hold, &a)),
+                self.fixed_by
+                    .map_or_else(|| "none yet".to_string(), |a| route(self.fix_at, &a)),
                 scene.render()
             );
             let header = texts_under(scene, o)
@@ -1692,6 +1701,9 @@ impl Shell {
                 "{what} ({label}): the overlay lists errors after a clean commit\n{}",
                 scene.render()
             );
+        }
+        if !self.had_overlay && !over.is_empty() {
+            self.opened += 1;
         }
         self.had_overlay = !over.is_empty();
         if let Some(p) = &mut self.pixels {
@@ -1950,6 +1962,11 @@ impl Shell {
                 self.overlay_ok = true;
             }
             if ev["event"] == "reload" {
+                let applied = self
+                    .applied
+                    .recv_timeout(PATIENCE)
+                    .unwrap_or_else(|e| panic!("{what} ({}): no load applied: {e}", self.label));
+                self.last_applied = Some(applied);
                 return ev;
             }
         }
@@ -2013,16 +2030,16 @@ impl Shell {
             "{what} ({label}): {ev}"
         );
         // Its diagnostics may open the overlay once they stood 250 ms.
-        self.start_hold(&ev);
+        self.start_hold();
         self.errors_ok = true;
     }
 
     /// A load is held back (`ev` its event): the hold starts, unless one
     /// already runs.
-    fn start_hold(&mut self, ev: &Json) {
+    fn start_hold(&mut self) {
         if self.hold.is_none() {
             self.hold = Some(self.save_at);
-            self.held_lag = lag(ev, true);
+            self.held_at = self.last_applied;
         }
     }
 
@@ -2046,9 +2063,9 @@ impl Shell {
                 || ev["cancelled"].as_u64().is_some_and(|c| c > 0);
             let held = ev["held"].as_array().is_some_and(|h| !h.is_empty());
             if !held {
-                if let (Some(h), Some(f)) = (self.hold, self.fix_at) {
-                    self.gap =
-                        Some((f + lag(&ev, false)).saturating_duration_since(h + self.held_lag));
+                if self.hold.is_some() {
+                    self.fix_at = Some(self.save_at);
+                    self.fixed_by = self.last_applied;
                 }
                 return (resets, split, notes);
             }
@@ -2061,9 +2078,9 @@ impl Shell {
             );
             split = true;
             // The rest of the save is already made: a hold this short
-            // never opens the overlay.
-            self.start_hold(&ev);
-            self.fix_at.get_or_insert_with(Instant::now);
+            // opens the overlay only if the rest reaches the logic thread
+            // 250 ms after this load.
+            self.start_hold();
             self.errors_ok = true;
         }
     }
@@ -2076,7 +2093,8 @@ impl Shell {
         self.errors_ok = false;
         self.hold = None;
         self.fix_at = None;
-        self.gap = None;
+        self.held_at = None;
+        self.fixed_by = None;
     }
 
     /// Dismiss the overlay if it is shown.
@@ -2562,4 +2580,51 @@ fn random_edits_through_five_save_styles() {
         labels.len(),
         elapsed.as_secs_f64()
     );
+}
+
+/// (m6-integration-w1) A save that is itself held back does not end a
+/// hold: a broken save, then another file saved (held back too, the
+/// same error listed), then the fix after the overlay's 250 ms. The
+/// overlay opens on the first held load's error, and the check judges
+/// the hold from that load to the one that commits, on the logic
+/// thread's timeline. Nightly run 38313001306 failed the fuzzer this way
+/// at step 4318 (a partial save after a broken one): the check took the
+/// held save's start for the fix's and called the hold 130 ms.
+#[test]
+fn a_save_held_back_behind_a_broken_one_does_not_end_its_hold() {
+    let base = Dir(PathBuf::from(format!("{}-held-hold", base_dir().display())));
+    let _ = std::fs::remove_dir_all(&base.0);
+    let model = Model::first();
+    let files = model.files();
+    let state = State::defaults(&model);
+    let mut sh = Shell::start(&base.0, Style::InPlace, &files, 1, false, false)
+        .expect("the offline pipeline always starts");
+    let (expect, _) = cold_boot(&model, &files, &state);
+    let e = expect.clone();
+    sh.until("the boot", |s| look(s) == e);
+    sh.allowed = vec![expect.clone()];
+    sh.fixed = surfaces(&sh.scene);
+    sh.closed = true;
+    let (theme, bar) = ("theme.strand", "bar.strand");
+    sh.saving();
+    sh.save(theme, &format!("{}export let broken =\n", files[theme]));
+    sh.held_event("broken", false);
+    std::thread::sleep(Duration::from_millis(100));
+    // Another file saved (one more blank line): held back behind the
+    // broken one, with the same error, so the overlay's 250 ms go on.
+    sh.saving();
+    sh.save(bar, &format!("{}\n", files[bar]));
+    sh.held_event("another file", true);
+    std::thread::sleep(overlay::QUIET);
+    sh.saving();
+    sh.save(theme, &files[theme]);
+    let (resets, split, notes) = sh.landed("the fix", true);
+    assert_eq!((resets, split), (0, false));
+    // The overlay opened before the fix landed (checked as each diff is
+    // applied), and the fix's commit takes it away.
+    sh.until("the fix lands", |s| overlays(s).is_empty());
+    sh.reach("the fix lands", Some(&expect), &expect);
+    assert_eq!(sh.opened, 1, "the overlay never opened on the held error");
+    sh.committed(notes);
+    sh.stop();
 }

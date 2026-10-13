@@ -32,6 +32,29 @@ impl Problems {
     }
 }
 
+/// (tests) When a load reached the logic thread, told for each load
+/// [`Shell::apply`] applies, in the order of their reload events: the
+/// reload fuzzer judges the overlay's 250 ms of quiet on this thread's
+/// own timeline (decisions.md, m6-integration-w1).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Applied {
+    /// The load's latest file event, as the watcher saw it.
+    pub(crate) saved: Option<Instant>,
+    /// When the worker started compiling it.
+    pub(crate) started: Instant,
+    /// When its diagnostics went to the overlay (the instant its quiet
+    /// period runs from, when they changed it).
+    pub(crate) at: Instant,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where this logic thread tells [`Applied`] (none: not told).
+    pub(crate) static LOADS_APPLIED: std::cell::RefCell<Option<std::sync::mpsc::Sender<Applied>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// The logic thread's state between steps (see [`logic`]).
 pub(super) struct Shell {
     pub(super) inst: Instance,
@@ -465,6 +488,17 @@ impl Shell {
             self.retell_blur();
         }
         let commit = began.elapsed();
+        let now = Instant::now();
+        #[cfg(test)]
+        LOADS_APPLIED.with(|h| {
+            if let Some(tx) = h.borrow().as_ref() {
+                let _ = tx.send(Applied {
+                    saved: l.saved,
+                    started: l.started,
+                    at: now,
+                });
+            }
+        });
         if overlay {
             // The overlay: every diagnostic of the attempt (none when it
             // all committed).
@@ -480,7 +514,7 @@ impl Shell {
                 } else {
                     Vec::new()
                 },
-                Instant::now(),
+                now,
                 &self.inst,
             );
         }

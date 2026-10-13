@@ -91,6 +91,8 @@ pub use logic::{Live, OwnWrites, Switched, Tokens, logic};
 /// The `file` element's write (a link followed, the target's mode kept),
 /// which `strand export -o` shares.
 pub(crate) use outputs::write_through;
+#[cfg(test)]
+pub(crate) use shell::{Applied, LOADS_APPLIED};
 pub use trim::trim;
 use trim::{Trimmer, structural};
 
