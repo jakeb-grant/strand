@@ -1,0 +1,45 @@
+[{
+    "id": 1,
+    "name": "1",
+    "monitor": "DP-2",
+    "monitorID": 2,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x5596a690c160",
+    "lastwindowtitle": "✳ term one",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 12,
+    "name": "12",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 0,
+    "hasfullscreen": false,
+    "lastwindow": "0x0",
+    "lastwindowtitle": "",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 6,
+    "name": "6",
+    "monitor": "DP-6",
+    "monitorID": 1,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x5596a5d55ad0",
+    "lastwindowtitle": "scripts/capture-hyprland.sh 300 target/hyprland-capture",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 2,
+    "name": "2",
+    "monitor": "DP-2",
+    "monitorID": 2,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x5596a68e9fb0",
+    "lastwindowtitle": "✳ term two",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}]

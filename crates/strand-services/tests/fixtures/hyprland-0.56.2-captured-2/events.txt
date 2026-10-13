@@ -1,0 +1,287 @@
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+focusedmon>>eDP-1,12
+focusedmonv2>>eDP-1,12
+moveworkspace>>1,eDP-1
+moveworkspacev2>>1,1,eDP-1
+createworkspace>>3
+createworkspacev2>>3,3
+workspace>>3
+workspacev2>>3,3
+moveworkspace>>2,eDP-1
+moveworkspacev2>>2,2,eDP-1
+destroyworkspace>>3
+destroyworkspacev2>>3,3
+monitorremoved>>DP-2
+monitorremovedv2>>2,DP-2,Ancor Communications Inc ASUS VS239 SERIAL00002
+closelayer>>awww-daemon
+closelayer>>quickshell-exclusion
+closelayer>>quickshell-drawers
+closelayer>>quickshell-osd
+moveworkspace>>1,DP-2
+moveworkspacev2>>1,1,DP-2
+moveworkspace>>2,DP-2
+moveworkspacev2>>2,2,DP-2
+monitoradded>>DP-2
+monitoraddedv2>>2,DP-2,Ancor Communications Inc ASUS VS239 SERIAL00002
+openlayer>>quickshell-exclusion
+openlayer>>quickshell-drawers
+openlayer>>quickshell-osd
+openlayer>>awww-daemon
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+windowtitle>>5596a675e730
+windowtitlev2>>5596a675e730,New Tab - Google Chrome
+urgent>>5596a675e730
+openwindow>>5596a675e730,6,google-chrome,New Tab - Google Chrome
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a675e730
+windowtitle>>5596a5dc3030
+windowtitlev2>>5596a5dc3030,Ghostty
+urgent>>5596a5dc3030
+openwindow>>5596a5dc3030,6,com.mitchellh.ghostty,Ghostty
+activewindow>>com.mitchellh.ghostty,Ghostty
+activewindowv2>>5596a5dc3030
+windowtitle>>5596a5dc3030
+windowtitlev2>>5596a5dc3030,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>5596a5dc3030
+windowtitle>>5596a5dc3030
+windowtitlev2>>5596a5dc3030,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>5596a5dc3030
+closewindow>>5596a5dc3030
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a675e730
+closewindow>>5596a675e730
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+windowtitle>>5596a5daae10
+windowtitlev2>>5596a5daae10,New Tab - Google Chrome
+urgent>>5596a5daae10
+openwindow>>5596a5daae10,6,google-chrome,New Tab - Google Chrome
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+createworkspace>>4
+createworkspacev2>>4,4
+movewindow>>5596a5daae10,4
+movewindowv2>>5596a5daae10,4,4
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+workspace>>4
+workspacev2>>4,4
+focusedmon>>DP-2,4
+focusedmonv2>>DP-2,4
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+focusedmon>>eDP-1,12
+focusedmonv2>>eDP-1,12
+activewindow>>,
+activewindowv2>>
+focusedmon>>DP-2,4
+focusedmonv2>>DP-2,4
+activewindow>>com.mitchellh.ghostty,✳ term one
+activewindowv2>>5596a690c160
+workspace>>1
+workspacev2>>1,1
+activewindow>>com.mitchellh.ghostty,✳ term one
+activewindowv2>>5596a690c160
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+workspace>>2
+workspacev2>>2,2
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+workspace>>4
+workspacev2>>4,4
+createworkspace>>5
+createworkspacev2>>5,5
+movewindow>>5596a5daae10,5
+movewindowv2>>5596a5daae10,5,5
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+workspace>>5
+workspacev2>>5,5
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+destroyworkspace>>4
+destroyworkspacev2>>4,4
+movewindow>>5596a5daae10,6
+movewindowv2>>5596a5daae10,6,6
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+focusedmon>>DP-2,5
+focusedmonv2>>DP-2,5
+activewindow>>com.mitchellh.ghostty,✳ term one
+activewindowv2>>5596a690c160
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>5
+destroyworkspacev2>>5,5
+activewindow>>com.mitchellh.ghostty,✳ term one
+activewindowv2>>5596a690c160
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+workspace>>2
+workspacev2>>2,2
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>5596a5daae10
+fullscreen>>1
+fullscreen>>0
+fullscreen>>1
+fullscreen>>0
+closewindow>>5596a5daae10
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+createworkspace>>special:magic
+createworkspacev2>>-98,special:magic
+activewindow>>,
+activewindowv2>>
+activespecial>>special:magic,DP-6
+activespecialv2>>-98,special:magic,DP-6
+windowtitle>>5596a5da53d0
+windowtitlev2>>5596a5da53d0,Ghostty
+urgent>>5596a5da53d0
+openwindow>>5596a5da53d0,special:magic,com.mitchellh.ghostty,Ghostty
+activewindow>>com.mitchellh.ghostty,Ghostty
+activewindowv2>>5596a5da53d0
+windowtitle>>5596a5da53d0
+windowtitlev2>>5596a5da53d0,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>5596a5da53d0
+windowtitle>>5596a5da53d0
+windowtitlev2>>5596a5da53d0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>5596a5da53d0
+activespecial>>,DP-6
+activespecialv2>>,,DP-6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>5596a5da53d0
+activespecial>>special:magic,DP-6
+activespecialv2>>-98,special:magic,DP-6
+windowtitle>>5596a5da53d0
+windowtitlev2>>5596a5da53d0,hyprctl reload
+activewindow>>com.mitchellh.ghostty,hyprctl reload
+activewindowv2>>5596a5da53d0
+configreloaded>>
+windowtitle>>5596a5da53d0
+windowtitlev2>>5596a5da53d0,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>5596a5da53d0
+windowtitle>>5596a5da53d0
+windowtitlev2>>5596a5da53d0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>5596a5da53d0
+activespecial>>,DP-6
+activespecialv2>>,,DP-6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>5596a5da53d0
+activespecial>>special:magic,DP-6
+activespecialv2>>-98,special:magic,DP-6
+closewindow>>5596a5da53d0
+activewindow>>,
+activewindowv2>>
+activespecial>>,DP-6
+activespecialv2>>,,DP-6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+destroyworkspace>>special:magic
+destroyworkspacev2>>-98,special:magic
+createworkspace>>special:magic
+createworkspacev2>>-98,special:magic
+activewindow>>,
+activewindowv2>>
+activespecial>>special:magic,DP-6
+activespecialv2>>-98,special:magic,DP-6
+activespecial>>,DP-6
+activespecialv2>>,,DP-6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+destroyworkspace>>special:magic
+destroyworkspacev2>>-98,special:magic
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◑ term two
+activewindow>>com.mitchellh.ghostty,◑ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,◐ term two
+activewindow>>com.mitchellh.ghostty,◐ term two
+activewindowv2>>5596a68e9fb0
+windowtitle>>5596a68e9fb0
+windowtitlev2>>5596a68e9fb0,✳ term two
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0
+focusedmon>>DP-6,6
+focusedmonv2>>DP-6,6
+activewindow>>com.mitchellh.ghostty,scripts/capture-hyprland.sh 300 target/hyprland-capture
+activewindowv2>>5596a5d55ad0
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>com.mitchellh.ghostty,✳ term two
+activewindowv2>>5596a68e9fb0

@@ -1454,4 +1454,201 @@ mod tests {
         }
         assert_eq!(s2.snapshot(), after.snapshot());
     }
+
+    // ---- one capture: three monitors, hotplug, the structural events ------
+
+    /// One `scripts/capture-hyprland.sh` run (2026-10-12, SOURCE.txt): the
+    /// replies read at its start and end while the stream was quiet, and
+    /// every event between them.
+    const SESSION: &str = "hyprland-0.56.2-captured-2";
+
+    fn from_session(dir: &str) -> State {
+        let read =
+            |name: &str| crate::wm::captured::fixture(&format!("{SESSION}/{dir}/{name}.json"));
+        let mut s = State::default();
+        s.replace(
+            parse_reply("j/monitors", &read("monitors")).unwrap(),
+            parse_reply("j/workspaces", &read("workspaces")).unwrap(),
+            parse_reply("j/clients", &read("clients")).unwrap(),
+            parse_active(&read("activewindow")).unwrap(),
+        );
+        s
+    }
+
+    /// What the adapter reads of the structure, without focus or titles:
+    /// the monitors, each workspace with its monitor, each window with its
+    /// workspace.
+    fn structure(s: &State) -> String {
+        let monitors: Vec<&str> = s.monitors.iter().map(|m| m.name.as_str()).collect();
+        let workspaces: Vec<(i64, &str, &str)> = s
+            .workspaces
+            .iter()
+            .map(|w| (w.id, w.name.as_str(), w.monitor.as_str()))
+            .collect();
+        let windows: Vec<(&str, i64)> = s
+            .clients
+            .iter()
+            .map(|c| (c.address.as_str(), c.workspace.id))
+            .collect();
+        format!("{monitors:?} {workspaces:?} {windows:?}")
+    }
+
+    /// The events that always ask for a read: structure changed.
+    const STRUCTURAL: &[&str] = &[
+        "monitorremoved",
+        "monitorremovedv2",
+        "monitoradded",
+        "monitoraddedv2",
+        "createworkspace",
+        "createworkspacev2",
+        "destroyworkspace",
+        "destroyworkspacev2",
+        "moveworkspace",
+        "moveworkspacev2",
+        "openwindow",
+        "closewindow",
+        "movewindow",
+        "movewindowv2",
+        "fullscreen",
+    ];
+
+    /// Every event kind the session sent is one the adapter handles as it
+    /// should: structure (a monitor unplugged and plugged back, workspaces
+    /// moved, made and destroyed, windows opened, moved and closed,
+    /// fullscreen) asks for a read, `configreloaded` for a read after a
+    /// reload, and layers and the special workspace's toggle (whose windows
+    /// count as minimised whether it is shown or not) for nothing. A kind
+    /// not listed here fails, so a new one is decided, not ignored.
+    #[test]
+    fn captured_session_events_are_each_handled() {
+        const NOTHING: &[&str] = &[
+            "workspace",
+            "focusedmon",
+            "activewindow",
+            "windowtitle",
+            "openlayer",
+            "closelayer",
+            "activespecial",
+            "activespecialv2",
+        ];
+        // Patched, or read when the state does not hold what they name.
+        const PATCHED: &[&str] = &[
+            "workspacev2",
+            "focusedmonv2",
+            "activewindowv2",
+            "windowtitlev2",
+            "urgent",
+        ];
+        let text = crate::wm::captured::fixture(&format!("{SESSION}/events.txt"));
+        let all: Vec<&str> = lines(&text).collect();
+        assert_eq!(all.len(), 287);
+        let mut seen = HashSet::new();
+        for (i, line) in all.iter().enumerate() {
+            let kind = line.split_once(">>").map_or(*line, |(k, _)| k);
+            seen.insert(kind);
+            let e = from_session("start").apply_line(line.as_bytes());
+            if STRUCTURAL.contains(&kind) {
+                assert_eq!(e, Effect::Requery, "line {i}: {line}");
+            } else if kind == "configreloaded" {
+                assert_eq!(e, Effect::Reloaded, "line {i}: {line}");
+            } else if NOTHING.contains(&kind) {
+                assert_eq!(e, Effect::None, "line {i}: {line}");
+            } else {
+                assert!(
+                    PATCHED.contains(&kind),
+                    "line {i}: an unhandled kind: {line}"
+                );
+            }
+        }
+        for kind in [
+            "monitorremovedv2",
+            "monitoraddedv2",
+            "closewindow",
+            "movewindowv2",
+            "fullscreen",
+            "configreloaded",
+            "activespecialv2",
+        ] {
+            assert!(seen.contains(kind), "the session sent no {kind}");
+        }
+    }
+
+    /// The session on its own replies: what comes before the monitor is
+    /// unplugged patches in place, and Hyprland moves the monitor's
+    /// workspaces away (which asks for a read) before it says the monitor
+    /// is gone; after the last structural event (the special workspace
+    /// destroyed) the structure is again what the start's replies hold,
+    /// focus included, so the adapter's read there gets those replies, and
+    /// the focus and title changes left patch to exactly the end's.
+    #[test]
+    fn captured_session_ends_where_hyprland_does() {
+        let text = crate::wm::captured::fixture(&format!("{SESSION}/events.txt"));
+        let all: Vec<&str> = lines(&text).collect();
+        let start = from_session("start");
+        let end = from_session("end");
+        let snap = start.snapshot().state;
+        assert_eq!(
+            start
+                .monitors
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            ["eDP-1", "DP-6", "DP-2"]
+        );
+        assert_eq!(
+            snap.workspaces
+                .iter()
+                .map(|w| (w.id, w.screen.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "DP-2"), (2, "DP-2"), (6, "DP-6"), (12, "eDP-1")]
+        );
+        assert_eq!(snap.windows.len(), 3);
+        assert_eq!(snap.focused_screen.as_deref(), Some("DP-6"));
+        assert_eq!(
+            structure(&start),
+            structure(&end),
+            "the start's structure is the end's"
+        );
+
+        // A structural event: read again whatever the state holds.
+        let asks = |l: &str| {
+            let kind = l.split_once(">>").map_or(l, |(k, _)| k);
+            STRUCTURAL.contains(&kind) || kind == "configreloaded"
+        };
+        let first = all
+            .iter()
+            .position(|l| asks(l))
+            .expect("a structural event");
+        let unplug = all
+            .iter()
+            .position(|l| l.starts_with("monitorremovedv2>>"))
+            .expect("the unplug");
+        assert!(all[first].starts_with("moveworkspace>>"), "{}", all[first]);
+        assert!(first < unplug, "workspaces move before the monitor goes");
+        let mut s = from_session("start");
+        for (i, line) in all[..first].iter().enumerate() {
+            let e = s.apply_line(line.as_bytes());
+            assert!(
+                matches!(e, Effect::None | Effect::Changed),
+                "line {i} asked for a read: {line} ({e:?})"
+            );
+        }
+        assert_eq!(s.snapshot().state.focused_screen.as_deref(), Some("eDP-1"));
+
+        let last = all
+            .iter()
+            .rposition(|l| asks(l))
+            .expect("a structural event");
+        assert_eq!(all[last], "destroyworkspacev2>>-98,special:magic");
+        let mut s = from_session("start");
+        for (i, line) in all[last + 1..].iter().enumerate() {
+            let e = s.apply_line(line.as_bytes());
+            assert!(
+                matches!(e, Effect::None | Effect::Changed),
+                "line {} asked for a read: {line} ({e:?})",
+                last + 1 + i
+            );
+        }
+        assert_eq!(s.snapshot(), end.snapshot());
+    }
 }

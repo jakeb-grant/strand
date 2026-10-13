@@ -1,0 +1,37 @@
+Hyprland 0.56.2 IPC traffic captured from a live session in one run of
+scripts/capture-hyprland.sh 300: the owner's laptop, Hyprland 0.56.2
+(efb5099, version.json) with three monitors (eDP-1 1920x1200, DP-6 and
+DP-2 1920x1080), 2026-10-12, read-only (no dispatch, keyword or reload
+was sent by the script; the owner ran `hyprctl reload` in a terminal).
+
+start/  the replies to j/monitors, j/workspaces, j/clients and
+        j/activewindow, read while the stream was quiet, before its first
+        line (marks.txt "start 0"). Three windows on workspaces 1, 2 (DP-2)
+        and 6 (DP-6), workspace 12 empty on eDP-1, DP-6 focused.
+events.txt  every line of .socket2.sock for about 300 s (287 lines).
+end/    the same four replies read after its last line ("end 287"). The
+        structure is the start's; the focus is on DP-2.
+
+What the owner did, in order (the stream shows each): DP-2 unplugged and
+plugged back (Hyprland moves its workspaces 1 and 2 to eDP-1 before
+monitorremoved, and back before monitoradded; the layer shells close and
+reopen), windows opened and closed, a window moved to new workspaces 4
+and 5 and back, fullscreen on and off twice, the special workspace
+special:magic shown and hidden with a terminal on it, `hyprctl reload`
+run from that terminal (configreloaded), the special workspace made and
+destroyed again, and focus moved between the monitors while a terminal's
+title spun (◐ ◑ ✳).
+
+Scrubbed, the same way in replies and events: two terminal session titles
+by "term one" and "term two" (their spinner glyphs kept), the shell
+prompt's user and host by "user@host", and the two DP monitors' serial
+numbers by SERIAL00001 and SERIAL00002 (in their description). Not
+scrubbed, as captured: window classes (public app ids), the capture
+command's own title, layer namespaces, addresses, stableIds, pids, and
+the monitors' make and model.
+
+src/wm/hyprland.rs's tests captured_session_events_are_each_handled and
+captured_session_ends_where_hyprland_does replay it; the adapter needed no
+change for it. With hyprland-0.56.2-captured it covers what that capture
+did not: a second (and third) monitor, hotplug, closewindow, movewindow,
+fullscreen, configreloaded and special workspaces.

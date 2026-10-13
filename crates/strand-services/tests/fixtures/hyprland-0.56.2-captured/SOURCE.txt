@@ -76,4 +76,6 @@ captured_stream_ends_where_hyprland_does replay this data.
 
 Not covered by this capture: a second monitor (the laptop had one),
 closewindow, movewindow, fullscreen, configreloaded and special
-workspaces; the compositor matrix (CI's vkms leg) covers the live path.
+workspaces. hyprland-0.56.2-captured-2, one later run of the script on
+three monitors, covers each of them (its SOURCE.txt); the compositor
+matrix (CI's vkms leg) covers the live path.

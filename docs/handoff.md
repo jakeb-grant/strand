@@ -61,15 +61,14 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   output), and the nightly fuzzer's overlay check (the check credited a
   held-back save with ending the hold; Strand was right, and the check
   now measures the hold on the logic thread against 250 ms).
-- **What remains of wave 1's scope:** nothing the streams owned. The
-  owner-run Hyprland capture (open item 3) is the one hardening item an
-  agent cannot do here, since it reads the live session's event socket.
+- **What remains of wave 1's scope:** nothing. The owner-run Hyprland
+  capture, the one hardening item an agent could not do here, was taken
+  on 2026-10-12 (open item 3).
 
 ## Next
 
 1. **The owner's open items** below.
-2. **The Hyprland capture** (owner, open item 3), whenever convenient.
-3. **Later M6 waves** are the owner's to plan; candidates are the known
+2. **Later M6 waves** are the owner's to plan; candidates are the known
    limits below and m5-report.md's "What remains". The language is
    frozen: a change to grammar.md or spec.md needs a decisions.md
    paragraph citing spec.md 14's compatibility policy.
@@ -93,15 +92,10 @@ rulings).
    512 KiB reserve, rounded up to 256 KiB, about 750 KB of headroom
    (from today's 19,922,944 / 23,855,104 B, about 220 KB). This also
    settles M5's close-gate question, since those values are superseded.
-3. **The Hyprland IPC capture** (owner-run; Verification gaps below).
-   The Hyprland 0.56.2 fixture lacks a second monitor, close, move,
-   fullscreen, reload and special workspaces, and was stitched from
-   three captures with unrecorded gaps. Running
-   `scripts/capture-hyprland.sh [SECONDS] [OUT]` on the owner's own
-   session while doing those things closes it. It is read-only, but it
-   holds the session's window titles and classes (scrubbed before
-   committing, as its header says), and agents never attach to the live
-   session, so it is the owner's to run and hand over.
+3. ~~**The Hyprland IPC capture**~~: done 2026-10-12. The owner ran
+   `scripts/capture-hyprland.sh 300` on three monitors; scrubbed, it is
+   `tests/fixtures/hyprland-0.56.2-captured-2`, replayed by two adapter
+   tests (decisions.md m6-owner).
 
 Answered and standing: the owner deferred `strand report`'s grim
 reference PNGs to the integrator (2026-10-11), who made them,
@@ -325,13 +319,13 @@ recorded reason.
   laptop-verify). Hyprland's matrix leg is CI's alone.
 - The Hyprland 0.56.2 and niri 26.04 IPC fixtures are checked against
   real captures (`*-captured` fixtures; `scripts/capture-hyprland.sh`,
-  `scripts/container/capture-niri.sh`). The Hyprland capture lacks a
-  second monitor, close, move, fullscreen, reload and special workspaces.
-  It was put together from three separate captures with unrecorded gaps
-  between them (its SOURCE.txt). A capture from
-  `scripts/capture-hyprland.sh` during a busy session would close that
-  gap: it reads its replies while the stream is quiet and records in
-  `marks.txt` the stream line where each set falls.
+  `scripts/container/capture-niri.sh`). The first Hyprland capture was
+  put together from three captures with unrecorded gaps and lacked a
+  second monitor, close, move, fullscreen, reload and special
+  workspaces; the owner's single `scripts/capture-hyprland.sh` run of
+  2026-10-12 (`hyprland-0.56.2-captured-2`: three monitors, one
+  unplugged and plugged back, and each of those events) closes that gap
+  (decisions.md m6-owner).
 
 ### Known limits, recorded and not blockers
 
@@ -482,4 +476,4 @@ closing head) carry over below or to the owner's items.
   the merged `laptop/m6-*` branches deleted locally and from the
   remote.
 - [x] Every `strand-wt/m6*` worktree and its `target/` removed.
-- [ ] The Hyprland capture (owner-run, open item 3).
+- [x] The Hyprland capture (owner-run, open item 3): `hyprland-0.56.2-captured-2`.
