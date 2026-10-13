@@ -1,9 +1,11 @@
 # Handoff: M6 wave 1 (updated 2026-10-12)
 
-M5 is closed on `main` (`361296e`). M6 wave 1 (hardening, approved by
-the owner 2026-10-12) is on the integration branch `laptop/m6-w1`: its
-four streams are merged, the integrator's sweep has closed what they
-left, and the integrator's close has measured the head. Read this first when picking the repo up cold, then
+M6 wave 1 (hardening, approved by the owner 2026-10-12) is on `main`
+(`5484c4f`): its four streams merged, the integrator's sweep closed what
+they left, three intermittent CI failures found while verifying the
+head were fixed at their causes, and the laptop's full set and GitHub CI
+(the nightly job included) passed on that commit before the
+fast-forward. Read this first when picking the repo up cold, then
 `docs/features.md` ("M6 Hardening"), `docs/decisions.md` (the
 `## m6-*` sections; `## m6-integration-w1` holds the merges and the
 sweep), and for M5's numbers `docs/m5-report.md`.
@@ -14,12 +16,14 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   (features.md: M0 20/20, M1 59/59, M2 30/30, M3 14/14, M4 18/18, M5
   11/12, the newcomer exit waiting on the owner). **M6 Hardening** has
   ten boxes, all ticked.
-- **Branches.** `main` is at `361296e` (M5's close). `laptop/m6-w1`
-  (from `361296e`) holds wave 1: S-services (`laptop/m6-services`,
-  fast-forwarded), S-edges (`laptop/m6-edges`), S-lock
-  (`laptop/m6-lock`) and S-flakes (`laptop/m6-flakes`), merged in that
-  order, then the integrator's sweep. It is what the owner
-  fast-forwards `main` to.
+- **Branches.** `main` is at `5484c4f`, fast-forwarded from M5's close
+  (`361296e`) to `laptop/m6-w1`, which held wave 1: S-services
+  (`laptop/m6-services`, fast-forwarded), S-edges (`laptop/m6-edges`),
+  S-lock (`laptop/m6-lock`) and S-flakes (`laptop/m6-flakes`), merged in
+  that order, then the integrator's sweep and the three verification
+  fixes (`laptop/m6-matrixflake`, `m6-scaleflake`, `m6-fuzzflake`).
+  Every one of those branches and worktrees is deleted, locally and on
+  the remote; the remote holds only `main`.
 - **What wave 1 did** (decisions.md m6-services, m6-edges, m6-lock,
   m6-flakes, m6-integration-w1): remote media art fetched and cached;
   enterprise and WEP joins; `Notification.time` with its time of day;
@@ -39,30 +43,33 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   `scenarios/all.sh` where lock code changed (LOCK VM SCENARIOS PASSED
   on the sweep's lock change). The close measured `.text` at `067711a`
   with `scripts/size-report.sh` (inside both gates, below) and ran the
-  release budgets test there (11 passed, 1 ignored). **Not yet run on
-  the head**: the laptop's `run.sh ci` and `matrix.sh`, and GitHub CI
-  on the pushed head; the standing fast-forward approval needs all
-  three.
+  release budgets test there (11 passed, 1 ignored); the lock VM and
+  the strict hardware GPU leg passed at `692dcc1`. On the final head
+  `5484c4f`: `run.sh ci` passed all 32 steps (only `reload_latency`'s
+  advisory laptop WARN), `matrix.sh` passed sway, niri and labwc, and
+  GitHub CI passed every job (push run 38327195975; dispatched run
+  38329258170 with the nightly job).
+- **Verification fixes** (decisions.md m6-integration-w1, the
+  2026-10-12 verification paragraphs), found as intermittent GitHub
+  failures on the head and fixed before the fast-forward:
+  the matrix's "the wallpaper never showed" (the launch test's helper
+  app outlived its test and its window covered the read pixel; the
+  test now ends it), `strand report`'s "not two painted bars" (a real
+  bug: on sway 1.9 a surface made just before its output's scale
+  changed never heard the new scale and stayed blurry;
+  `strand-surface` now re-derives an unshown surface's scale from its
+  output), and the nightly fuzzer's overlay check (the check credited a
+  held-back save with ending the hold; Strand was right, and the check
+  now measures the hold on the logic thread against 250 ms).
 - **What remains of wave 1's scope:** nothing the streams owned. The
   owner-run Hyprland capture (open item 7) is the one hardening item an
   agent cannot do here, since it reads the live session's event socket.
 
 ## Next
 
-1. **The laptop's full set on the head of `laptop/m6-w1`**, one at a
-   time: `scripts/container/run.sh ci`, then
-   `scripts/container/matrix.sh`; and GitHub CI green on the same
-   commit. That meets the standing approval for the fast-forward of
-   `main`.
-2. **The owner's open items** below.
-3. **After the fast-forward**: delete the merged branches
-   (`laptop/m6-w1`, `m6-services`, `m6-edges`, `m6-lock`, `m6-flakes`)
-   from the remote, as earlier waves' were; M5's wave-3 branches
-   (`laptop/m5-w3`, `m5-fixups`, `m5-inspect`, `m5-platform`,
-   `m5-docs3`) too if they are still there.
-4. **The Hyprland capture** (owner, open item 7), whenever convenient;
-   it does not hold the fast-forward.
-5. **Later M6 waves** are the owner's to plan; candidates are the known
+1. **The owner's open items** below.
+2. **The Hyprland capture** (owner, open item 7), whenever convenient.
+3. **Later M6 waves** are the owner's to plan; candidates are the known
    limits below and m5-report.md's "What remains". The language is
    frozen: a change to grammar.md or spec.md needs a decisions.md
    paragraph citing spec.md 14's compatibility policy.
@@ -95,7 +102,8 @@ Each has its paragraph in decisions.md.
    S-platform's handler input context and token types) and one
    **proposed** in architecture.md: the `why` field of `inspect.node`'s
    answer for a `shader` node.
-5. **The fast-forward of `main`** once item 1 of "Next" is green.
+5. ~~**The fast-forward of `main`**~~: done at `5484c4f` under the
+   standing approval, every check green on that commit.
 6. **M6 wave 1's interface changes** (architecture.md, each with its
    reason): `strand_render::NodeEvent::Drop`'s `hidden` (S-edges),
    `strand-dev`'s write-back hooks (S-edges), helper protocol version 2
@@ -118,7 +126,10 @@ reference PNGs to the integrator (2026-10-11), who made them,
 deterministic on the frozen-clock acceptance mock (m5-fixups); wave 2's
 overruns (accepted 2026-10-11), S-ipc's `Request(s json)` alternative
 (not taken), the presented GPU leg's after-drop bound (a leak
-tripwire), the `gpu-measure.sh` KMS-card run (not needed, Q19 (A)).
+tripwire), the `gpu-measure.sh` KMS-card run (not needed, Q19 (A)),
+remote media art's HTTPS stack (kept in-process, 2026-10-12: the
+system-`curl`, feature-flag and `http://`-only alternatives are not
+taken; decisions.md m6-owner).
 Every M4 owner item was answered on 2026-10-10.
 
 ## Budgets now
@@ -448,10 +459,8 @@ M5 wave 2 and both its boxes are ticked.
 - Plans and reports: `docs/m5-plan.md` and `docs/m5-report.md` (M5),
   `docs/m4-plan.md` and `docs/m4-report.md` (M4); interface text in
   `docs/architecture.md`.
-- Remote branches: `origin/main` and M6 wave 1's: the integration
-  branch `laptop/m6-w1` and its streams (`laptop/m6-services`,
-  `m6-edges`, `m6-lock`, `m6-flakes`), all merged into `laptop/m6-w1`.
-  M5's branches are gone from the remote (M5 is on `main`).
+- Remote branches: `origin/main` only. M5's and M6 wave 1's branches
+  are merged into `main` and deleted.
 
 ## Handoff checklist (M6 wave 1)
 
@@ -473,10 +482,13 @@ closing head) carry over below or to the owner's items.
   on the last lock change (the sweep).
 - [x] Stream worktrees' `target/` directories gone
   (`strand-wt/m6-{lock,services,edges,flakes}`).
-- [ ] The laptop's `run.sh ci` and `matrix.sh` on the head, one at a
-  time, and GitHub CI green on the same commit.
-- [ ] The owner fast-forwards `main`; the merged `laptop/m6-*` branches
-  are deleted from the remote after it.
+- [x] The three intermittent failures found on the head fixed at their
+  causes, each with a test (m6-integration-w1, verification).
+- [x] The laptop's `run.sh ci` and `matrix.sh` on the head `5484c4f`,
+  one at a time, and GitHub CI green on the same commit, the nightly
+  job included.
+- [x] `main` fast-forwarded to `5484c4f` under the standing approval;
+  the merged `laptop/m6-*` branches deleted locally and from the
+  remote.
+- [x] Every `strand-wt/m6*` worktree and its `target/` removed.
 - [ ] The Hyprland capture (owner-run, open item 7).
-- [ ] `strand-wt/m6/target` deleted when the integrator's work on the
-  branch ends.
