@@ -195,6 +195,29 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    which failed before with 160 ms on the fade out); decisions.md
    m6-owner-fixes. The config is right.
 
+9. **Cut text flickers while the island morphs.** (2026-10-14,
+   Hyprland at scales 1 and 1.5, the notch config) "When it expands
+   certain text gets flickery … all text that gets cut off with '...'
+   is the stuff that flickers as it gets triggered to cutoff": the
+   window title in the crown's pill, squeezed while the card's width
+   springs.
+   **Fixed.** Strand's: a text narrower than its unbounded layout
+   draws a layout shaped for its box's width, and a springing width
+   asks the text worker for a new one every frame, which arrives after
+   that frame. Meanwhile the unbounded layout stood in, so every frame
+   whose width had changed drew the whole title spilling past its box,
+   and only frames where the rounded width held still (the spring's
+   slow tail) drew it cut: cut and whole by turns. The inline shaper
+   of the offline tests never showed it. Now a layout of another width
+   stands in: the widest shaped for no more than the box (last frame's,
+   while it grows), else the nearest wider one clipped to the box; the
+   unbounded one only where nothing else was ever shaped, also clipped
+   (`crates/strand-render/tests/morph.rs::cut_text_stays_cut_while_its_box_springs`,
+   on the text worker at scales 1 and 1.5, which failed before with
+   the whole title drawn 28 px past its box on the first frame).
+   Text whose box keeps its width draws as before. decisions.md
+   m6-owner-fixes. The config is right.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,

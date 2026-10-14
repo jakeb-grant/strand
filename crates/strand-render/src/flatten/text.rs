@@ -63,28 +63,40 @@ pub(crate) fn pick_part(
 /// A layout to draw and its logical offset in the node's box.
 pub(crate) type PlacedText = (Arc<TextLayout>, f32, f32);
 
-/// Where a text node's glyphs go in its box: the layout to draw and the
-/// logical offset of its origin from the box's top-left. A text whose
-/// unbounded layout fits its box is drawn from that layout, aligned in
-/// the box by `align`; a narrower box draws the layout shaped for its
-/// width (wrapped or ellipsised, aligned by the text engine), or the
-/// unbounded one while that is being shaped. `align: center` also
+/// Where a text node's glyphs go in its box: the layout to draw, the
+/// logical offset of its origin from the box's top-left, and whether it
+/// must be clipped to the box. A text whose unbounded layout fits its
+/// box is drawn from that layout, aligned in the box by `align`; a
+/// narrower box draws the layout shaped for its width (wrapped or
+/// ellipsised, aligned by the text engine). `align: center` also
 /// centres it vertically in a taller box; otherwise it sits at the top.
+///
+/// While the layout for a narrower box is being shaped (a width that
+/// springs asks for a new one every frame), a layout shaped for another
+/// width stands in, so cut text stays cut: the widest one shaped for no
+/// more than the box, which fits it; else the narrowest wider one, or
+/// the unbounded one, clipped to the box. The unbounded layout never
+/// spills whole past a box it does not fit (owner-testing.md bug 9).
 pub(crate) fn place_text(
     shaped: &[Shaped],
     scale: Scale,
     rect: LogicalRect,
     align: TextAlign,
-) -> (Option<f32>, Option<PlacedText>) {
+) -> (Option<f32>, Option<PlacedText>, bool) {
     let natural = pick(shaped, scale, None);
     let fit = natural
         .as_ref()
         .is_some_and(|n| rect.w + 1.0 < n.size.w)
         .then(|| rect.w.round().max(0.0));
+    let mut clip = false;
     let chosen = match fit {
         Some(w) => pick(shaped, scale, Some(w))
-            .map(|l| (l, 0.0))
-            .or_else(|| natural.clone().map(|l| (l, 0.0))),
+            .or_else(|| {
+                let (fits, wider) = fitted_stand_in(shaped, scale, w);
+                clip = fits.is_none();
+                fits.or(wider).or_else(|| natural.clone())
+            })
+            .map(|l| (l, 0.0)),
         None => natural.clone().map(|l| {
             let slack = (rect.w - l.size.w).max(0.0);
             let dx = match align {
@@ -109,7 +121,38 @@ pub(crate) fn place_text(
         };
         (l, dx, dy)
     });
-    (fit, placed)
+    (fit, placed, clip)
+}
+
+/// The layouts of a node's own text shaped for a line box other than
+/// `w` that can stand in for one `w` wide, preferring `scale`: the
+/// widest shaped for at most `w`, and the narrowest shaped for more.
+fn fitted_stand_in(
+    shaped: &[Shaped],
+    scale: Scale,
+    w: f32,
+) -> (Option<Arc<TextLayout>>, Option<Arc<TextLayout>>) {
+    let at = |want: Option<Scale>| {
+        let fitted = || {
+            shaped.iter().filter_map(|c| {
+                let m = c.max_width?;
+                (c.part == 0 && want.is_none_or(|s| c.layout.scale == s)).then_some((m, c))
+            })
+        };
+        let fits = fitted()
+            .filter(|(m, _)| *m <= w)
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, c)| c.layout.clone());
+        let wider = fitted()
+            .filter(|(m, _)| *m > w)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, c)| c.layout.clone());
+        (fits, wider)
+    };
+    match at(Some(scale)) {
+        (None, None) => at(None),
+        found => found,
+    }
 }
 
 /// A font safe to shape: non-finite or non-positive sizes fall back to the
