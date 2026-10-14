@@ -126,6 +126,8 @@ pub(super) struct Shell {
     pub(super) exports: Vec<super::request::Waiting>,
     /// (M5, S-tools) `file` outputs' writer (`outputs.rs`).
     pub(super) files: super::outputs::Files,
+    /// (M6) Declared actions' commands (`exec.rs`).
+    pub(super) execs: super::exec::Execs,
     /// (M5, S-tools) Where snapshots are asked for (`strand report`);
     /// `None` without a main thread.
     pub(super) to_main: Option<Sender<ToMain>>,

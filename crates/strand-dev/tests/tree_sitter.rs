@@ -279,6 +279,8 @@ use tokens base, palette material(seed: #7aa2f7)
 service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }
 service user from dbus session \"org.example.X\" { n: int = N }
 permit exec \"sensors\"
+action temps(chip: text) [\"sensors\", chip]
+service ups from dbus system \"org.example.Ups\" { action: text = Action; action hold(r: text) = Hold }
 keyframes shake { 0%, 100% { x: 0 }; duration: 300ms }
 on notifications.received(n) { open = true }
 after 1s while open { open = false }

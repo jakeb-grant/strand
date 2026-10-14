@@ -17,6 +17,8 @@
 //! Skipped, loudly, without sway, grim or dbus-daemon (CI sets
 //! `STRAND_REQUIRE_SWAY` and `STRAND_REQUIRE_DBUS`).
 
+mod support;
+
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -1061,4 +1063,80 @@ bar Bottom {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// (M6) A click runs a declared action's command (decisions.md
+/// m6-w2-language, the owner's ruling): `strand run` on the headless sway,
+/// a virtual pointer clicking the bar. The command receives its argument
+/// whole (spaces, quotes and `$` as written: no shell reads it), and a
+/// command that fails is logged with the action's name while the shell
+/// keeps running.
+#[test]
+fn a_click_runs_a_declared_actions_command() {
+    let out = std::env::temp_dir().join(format!("strand-action-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let config = format!(
+        "\
+permit exec \"sh\"
+state title = \"it's \\\"two\\\" words; $HOME\"
+action note(msg: text) [\"sh\", \"-c\", \"printf '%s|%s\\\\n' \\\"$1\\\" \\\"$#\\\" >> \\\"$0\\\"\", \"{}\", msg]
+action fail() [\"sh\", \"-c\", \"exit 3\"]
+bar Top {{
+  edge: top; height: 40
+  bg: #0000ff
+  row {{
+    box {{ width: 200; height: 40; bg: #00ff00; on click {{ note(title) }} }}
+    box {{ width: 200; height: 40; bg: #ff0000; on click {{ fail() }} }}
+  }}
+}}
+",
+        out.display()
+    );
+    let Some(setup) = Setup::start("action", &config) else {
+        return;
+    };
+    setup.wait("the bar", |img| close(img.px(100, 20), GREEN));
+    let mut pointer = support::pointer::Pointer::new(&setup.dir.join(&setup.display));
+    // A new virtual pointer's first buttons may reach no surface: click
+    // until the command has run.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !out.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the action never ran\n{}",
+            setup.log()
+        );
+        pointer.click(100, 20, 1280, 720);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // Each run printed its one argument and how many it had.
+    std::thread::sleep(Duration::from_millis(200));
+    let lines = std::fs::read_to_string(&out).unwrap();
+    assert!(!lines.is_empty());
+    for l in lines.lines() {
+        assert_eq!(l, "it's \"two\" words; $HOME|1", "{lines}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !setup.log().contains("action fail: `sh` failed") {
+        assert!(
+            Instant::now() < deadline,
+            "the failing action was not logged\n{}",
+            setup.log()
+        );
+        pointer.click(300, 20, 1280, 720);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The shell is fine: the bar still draws, and the first action
+    // still runs.
+    let before = std::fs::read_to_string(&out).unwrap().lines().count();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while std::fs::read_to_string(&out).unwrap().lines().count() == before {
+        assert!(Instant::now() < deadline, "{}", setup.log());
+        pointer.click(100, 20, 1280, 720);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    setup.wait("the bar after both", |img| {
+        close(img.px(300, 20), [255, 0, 0])
+    });
+    let _ = std::fs::remove_file(&out);
 }

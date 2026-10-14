@@ -73,6 +73,9 @@ pub enum ItemKind {
     Service(Service),
     Permit(Permit),
     Keyframes(Keyframes),
+    /// `action name(params) [argv]` at the top level, or `action
+    /// name(params) = Method` in a `from dbus` service.
+    Action(ActionDecl),
     /// A typed field inside a `service` block.
     Field(Field),
     /// `25%, 75% { … }` inside `keyframes`.
@@ -181,6 +184,29 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub body: Block<Stmt>,
+}
+
+/// `action name(params) [argv]`: a command a handler runs
+/// (`dispatch(3)`), each parameter one argument of it; or, in a `from
+/// dbus` service, `action name(params) = Method`, a method of its object.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionDecl {
+    pub name: Ident,
+    pub params: Vec<Param>,
+    pub body: ActionBody,
+    pub span: Span,
+}
+
+/// What an [`ActionDecl`] does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ActionBody {
+    /// The command, a list literal (`["hyprctl", "dispatch", "workspace",
+    /// ws]`).
+    Command(Expr),
+    /// `= Method`: the D-Bus method it calls.
+    Method(Ident),
+    /// Nothing parsable (the parser reported it).
+    Missing,
 }
 
 /// `tokens name extends base { … }`.

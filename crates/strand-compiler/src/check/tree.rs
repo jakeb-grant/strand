@@ -2594,6 +2594,42 @@ impl<'a> Checker<'a> {
                 key_span: f.default.as_ref().map_or(f.name.span, |d| d.span),
             });
         }
+        // (M6) `action hold(profile: text) = HoldProfile`: a method of a
+        // D-Bus object; other sources have none to call.
+        let mut actions = Vec::new();
+        for item in &s.body.items {
+            let ItemKind::Action(a) = &item.kind else {
+                continue;
+            };
+            if kind != "dbus" {
+                self.error(
+                    "check::misplaced",
+                    format!("a `{kind}` service has no methods to call"),
+                    a.span,
+                    "not a `dbus` service",
+                )
+                .help = Some(
+                    "declare a command at the top level instead: `action name(p: text)                      [\"program\", p]`"
+                        .into(),
+                );
+                continue;
+            }
+            let ast::ActionBody::Method(m) = &a.body else {
+                continue;
+            };
+            let params = rid
+                .and_then(|r| self.types.record(r).method(&a.name.name).cloned())
+                .and_then(|m| m.sigs.first().cloned())
+                .map(|sig| sig.params.iter().map(|p| p.ty.clone()).collect())
+                .unwrap_or_default();
+            actions.push(hir::ServiceAction {
+                name: a.name.name.clone(),
+                span: a.name.span,
+                params,
+                method: m.name.clone(),
+                method_span: m.span,
+            });
+        }
         hir::ServiceDecl {
             def: id,
             file: self.file(),
@@ -2603,6 +2639,7 @@ impl<'a> Checker<'a> {
             args,
             every,
             fields,
+            actions,
             spec,
         }
     }

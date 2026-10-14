@@ -46,6 +46,9 @@ pub struct Program {
     pub use_palette: Option<ChunkId>,
     /// Custom services (`service ppd from dbus …`), by declaration.
     pub services: BTreeMap<DefId, CustomService>,
+    /// (M6) Declared actions' commands (`action dispatch(ws: int)
+    /// ["hyprctl", "dispatch", "workspace", ws]`), by declaration.
+    pub execs: BTreeMap<DefId, ExecAction>,
     /// Keyframes by declaration.
     pub keyframes: BTreeMap<DefId, KeyframesProgram>,
     /// The `key` of keyed `state` collections (`state pins: [Pin] key
@@ -85,6 +88,26 @@ pub struct CustomService {
     pub source: crate::hir::SourceSpec,
     /// Its fields, in declaration order (the record's order).
     pub fields: Vec<CustomField>,
+    /// (M6) Its actions (`from dbus` only), in declaration order.
+    pub actions: Vec<CustomAction>,
+}
+
+/// (M6) A declared action's command: what a handler's call runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecAction {
+    pub name: String,
+    /// The program first, then its arguments; each parameter is one.
+    pub argv: Vec<crate::hir::ArgvPart>,
+}
+
+/// (M6) A `from dbus` service's `action name(params) = Method`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomAction {
+    pub name: String,
+    /// The D-Bus method it calls.
+    pub method: String,
+    /// How many arguments it takes.
+    pub arity: usize,
 }
 
 /// One field of a [`CustomService`].
@@ -713,6 +736,15 @@ impl Lowerer<'_> {
                                     rw: f.rw,
                                 })
                                 .collect(),
+                            actions: s
+                                .actions
+                                .iter()
+                                .map(|a| CustomAction {
+                                    name: a.name.clone(),
+                                    method: a.method.clone(),
+                                    arity: a.params.len(),
+                                })
+                                .collect(),
                         },
                     );
                 }
@@ -736,6 +768,15 @@ impl Lowerer<'_> {
             }
             hir::Item::Handler(h) => out.push(Node::Handler(self.handler(h))),
             hir::Item::Timer(t) => out.push(Node::Timer(self.timer(t))),
+            hir::Item::Action(a) => {
+                self.out.execs.insert(
+                    a.def,
+                    ExecAction {
+                        name: self.hir.def(a.def).name.clone(),
+                        argv: a.argv.clone(),
+                    },
+                );
+            }
             hir::Item::Enum(_) | hir::Item::Type(_) | hir::Item::Permit(_) => {}
         }
     }

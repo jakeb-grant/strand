@@ -1,7 +1,9 @@
 //! No-code `from dbus` services checked against D-Bus introspection
 //! (design.md: "checked against introspection"): each field's property
 //! exists on the object, its D-Bus type converts to the field's declared
-//! type, and an `rw` field's property is writable.
+//! type, and an `rw` field's property is writable; (M6) each `action
+//! name(params) = Method`'s method exists, takes as many arguments, and
+//! each parameter converts to its argument's D-Bus type.
 //!
 //! The compiler has no bus of its own: the caller hands it an
 //! [`Introspect`] (`strand check`, `strand run`'s loader and the LSP use
@@ -23,6 +25,15 @@ pub struct BusProperty {
     pub writable: bool,
 }
 
+/// (M6) One method of an introspected object.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BusMethod {
+    pub interface: String,
+    pub name: String,
+    /// Its in-arguments' D-Bus type signatures, in order.
+    pub inputs: Vec<String>,
+}
+
 /// Reads an object's properties from a bus.
 pub trait Introspect {
     /// The properties of `path` of bus name `name` on the system (or
@@ -36,6 +47,36 @@ pub trait Introspect {
         name: &str,
         path: &str,
     ) -> Option<Result<Vec<BusProperty>, String>>;
+
+    /// (M6) The methods of the same object, answered as
+    /// [`Introspect::properties`] is. The default (`None`) leaves
+    /// services' actions unchecked.
+    fn methods(
+        &self,
+        _system: bool,
+        _name: &str,
+        _path: &str,
+    ) -> Option<Result<Vec<BusMethod>, String>> {
+        None
+    }
+}
+
+/// (M6) Whether a value of `ty` converts to a D-Bus argument of type
+/// `sig` (as strand-services' `to_dbus` sends it): the other way from
+/// [`compatible`], so an `int` goes to a `d` but a `float` never to an
+/// `i`.
+pub fn passes(ty: &Ty, sig: &str) -> bool {
+    const INTS: &[&str] = &["y", "n", "q", "i", "u", "x", "t"];
+    match ty {
+        Ty::Error => true,
+        Ty::Prim(Prim::Bool) => sig == "b",
+        Ty::Prim(Prim::Int) => INTS.contains(&sig) || sig == "d",
+        Ty::Prim(Prim::Float) => sig == "d",
+        Ty::Prim(Prim::Text | Prim::Path) => matches!(sig, "s" | "o"),
+        Ty::Enum(_) => sig == "s",
+        Ty::List(item, _) => matches!(**item, Ty::Prim(Prim::Text)) && sig == "as",
+        _ => false,
+    }
 }
 
 /// The object path a bus name's object is at by convention.
@@ -97,7 +138,8 @@ pub fn check(program: &hir::Program, intro: &dyn Introspect) -> Vec<Diagnostic> 
                     continue;
                 }
             };
-            if props.is_empty() {
+            check_actions(program, s, intro, *system, name, &path, &mut out);
+            if props.is_empty() && !s.fields.is_empty() {
                 let mut d = Diagnostic::warning(
                     "check::dbus_unchecked",
                     format!("`{name}` has no properties at `{path}`"),
@@ -161,6 +203,93 @@ pub fn check(program: &hir::Program, intro: &dyn Introspect) -> Vec<Diagnostic> 
         }
     }
     out
+}
+
+/// (M6) Service `s`'s actions against the methods of its object.
+fn check_actions(
+    program: &hir::Program,
+    s: &hir::ServiceDecl,
+    intro: &dyn Introspect,
+    system: bool,
+    name: &str,
+    path: &str,
+    out: &mut Vec<Diagnostic>,
+) {
+    if s.actions.is_empty() {
+        return;
+    }
+    // Unanswered, or not reached: the properties' answer says so.
+    let Some(Ok(methods)) = intro.methods(system, name, path) else {
+        return;
+    };
+    for a in &s.actions {
+        // The interface named like the bus name first.
+        let found = methods
+            .iter()
+            .filter(|m| m.name == a.method)
+            .min_by_key(|m| m.interface != name);
+        let Some(m) = found else {
+            let names: Vec<&str> = methods
+                .iter()
+                .filter(|m| !m.interface.starts_with("org.freedesktop.DBus."))
+                .map(|m| m.name.as_str())
+                .collect();
+            let fix = closest(&a.method, names.iter().copied());
+            let mut d = Diagnostic::error(
+                "check::dbus_method",
+                format!("`{name}` has no method `{}`", a.method),
+            )
+            .with_label_in(s.file, a.method_span, "not a method");
+            if let Some(fix) = fix {
+                d.suggest(a.method_span, fix);
+                d = d.in_file(s.file);
+            } else {
+                d.help = Some(format!("its methods: {}", names.join(", ")));
+            }
+            out.push(d);
+            continue;
+        };
+        if m.inputs.len() != a.params.len() {
+            let mut d = Diagnostic::error(
+                "check::dbus_method",
+                format!(
+                    "`{name}`'s `{}` takes {} argument{}, and `{}` passes {}",
+                    m.name,
+                    m.inputs.len(),
+                    if m.inputs.len() == 1 { "" } else { "s" },
+                    a.name,
+                    a.params.len()
+                ),
+            )
+            .with_label_in(s.file, a.span, "the action's parameters");
+            d.help = Some(format!(
+                "declare one parameter per argument, of D-Bus types {}",
+                m.inputs
+                    .iter()
+                    .map(|t| format!("`{t}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            out.push(d);
+            continue;
+        }
+        for (i, (ty, sig)) in a.params.iter().zip(&m.inputs).enumerate() {
+            if !passes(ty, sig) {
+                let mut d = Diagnostic::error(
+                    "check::dbus_type",
+                    format!(
+                        "`{name}`'s `{}` takes a D-Bus `{sig}` as argument {}, which a {} is not",
+                        m.name,
+                        i + 1,
+                        program.types.show(ty)
+                    ),
+                )
+                .with_label_in(s.file, a.span, "the action's parameters");
+                d.help = Some(format!("declare it as {}", suggested_type(sig)));
+                out.push(d);
+            }
+        }
+    }
 }
 
 /// The schema type a D-Bus signature reads as best.

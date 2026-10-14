@@ -35,6 +35,7 @@ const TOP_KEYWORDS: &[&str] = &[
     "enum",
     "type",
     "fn",
+    "action",
     "tokens",
     "use",
     "service",

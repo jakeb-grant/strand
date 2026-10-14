@@ -104,6 +104,7 @@ const LADDER: &[(&str, u32, &str)] = &[
     ("service from listen", 5, "`from listen`"),
     ("service from poll", 5, "`from poll`"),
     ("permit exec", 5, "`permit exec`"),
+    ("action", 5, "`action`"),
 ];
 
 /// The constructs the guide teaches in prose at their level and first
@@ -126,6 +127,9 @@ const PROSE: &[(&str, &str)] = &[
     ("an SVG layer selector", "#needle {"),
     // Level 5: `from listen`'s common commands are compositor-specific.
     ("service from listen", "`service player from listen"),
+    // Level 5: an action's command is the reader's own (a compositor's
+    // dispatch, an app of theirs), not one the guide's build can run.
+    ("action", "`action dispatch("),
 ];
 
 fn prose(name: &str) -> Option<&'static str> {
@@ -251,6 +255,7 @@ impl Walk<'_> {
             }
             Item::Handler(h) => self.handler(h),
             Item::Timer(t) => self.timer(t),
+            Item::Action(a) => self.at("action", a.span),
             Item::Permit(_) => {
                 // A permit has no span of its own; the service it allows
                 // is the one beside it.
@@ -597,6 +602,7 @@ impl Walk<'_> {
                     }
                     Callee::Method { receiver, .. } => self.expr(receiver),
                     Callee::Builtin { .. } => {}
+                    Callee::Action(_) => self.at("action", e.span),
                     Callee::Error => panic!("a call that did not check"),
                 }
                 for a in args {

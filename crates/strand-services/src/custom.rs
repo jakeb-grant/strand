@@ -45,7 +45,7 @@ use tokio::io::AsyncBufReadExt;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
 use crate::dbus::{self, Daemon, DaemonEvent};
-use crate::{Cx, Data, Msg, ServiceError, Store, Write, service};
+use crate::{CallSig, Cx, Data, DataError, FromCall, Msg, ServiceError, Store, Write, service};
 
 /// The schema text of the [`Custom`] store. Never added to the
 /// language's schema: each declaration is its own record there.
@@ -113,6 +113,15 @@ pub struct FieldSpec {
     pub rw: bool,
 }
 
+/// (M6) One `action name(params) = Method` of a `from dbus` declaration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionSpec {
+    /// Its name in the language (`hold`).
+    pub name: String,
+    /// The D-Bus method it calls (`HoldProfile`).
+    pub method: String,
+}
+
 /// A no-code service declaration, as the language side hands it over.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spec {
@@ -120,6 +129,33 @@ pub struct Spec {
     pub name: String,
     pub source: Source,
     pub fields: Vec<FieldSpec>,
+    /// (M6) Its actions (`from dbus` only), by index.
+    pub actions: Vec<ActionSpec>,
+}
+
+/// (M6) A call of a declaration's action (`ppd.hold("performance")`):
+/// its index in [`Spec::actions`] and its arguments, sent as the method's
+/// in-arguments' D-Bus types. The host builds it ([`crate::Client::act_with`]);
+/// it is never typed from a call by name, since each declaration has
+/// actions of its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomAction {
+    pub index: usize,
+    pub args: Vec<Data>,
+}
+
+impl FromCall for CustomAction {
+    const NAMES: &'static [&'static str] = &[];
+
+    fn signatures() -> Vec<CallSig> {
+        Vec::new()
+    }
+
+    fn from_call(name: &str, _: Option<&Data>, _: &[Data]) -> Result<Self, DataError> {
+        Err(DataError::new(format!(
+            "a declared service's action `{name}` is sent by index"
+        )))
+    }
 }
 
 static SPECS: Mutex<Option<HashMap<i64, Arc<Spec>>>> = Mutex::new(None);
@@ -166,7 +202,7 @@ pub struct CustomValue {
 }
 
 /// See the module docs.
-#[service(name = "custom")]
+#[service(name = "custom", action = CustomAction)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Custom {
     /// Which declaration it runs.
@@ -488,6 +524,72 @@ fn refuse(cx: &mut Cx<Custom>, w: &Write) -> bool {
 /// The property each field reads: its interface and signature.
 type Bound = Vec<Option<(String, String, String)>>;
 
+/// (M6) The method each action calls: its interface, name and
+/// in-arguments' signatures.
+type Calls = Vec<Option<(String, String, Vec<String>)>>;
+
+fn bind_methods(spec: &Spec, name: &str, methods: &[strand_introspect::Method]) -> Calls {
+    spec.actions
+        .iter()
+        .map(|a| {
+            let found = methods
+                .iter()
+                .filter(|m| m.name == a.method)
+                .min_by_key(|m| m.interface != name);
+            match found {
+                Some(m) => Some((m.interface.clone(), m.name.clone(), m.inputs.clone())),
+                None => {
+                    log::warn!("custom service: `{name}` has no method `{}`", a.method);
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// (M6) Calls `method` of `iface` at `path` of `dest` with `args`, each
+/// sent as its in-argument's D-Bus type, waiting for the answer as long
+/// as [`dbus::timed`] does.
+async fn call_method(
+    conn: &zbus::Connection,
+    dest: &str,
+    path: &str,
+    (iface, method, inputs): &(String, String, Vec<String>),
+    args: &[Data],
+) -> Result<(), String> {
+    if inputs.len() != args.len() {
+        return Err(format!(
+            "`{method}` takes {} arguments, and {} were given",
+            inputs.len(),
+            args.len()
+        ));
+    }
+    let call = async {
+        if args.is_empty() {
+            return conn
+                .call_method(Some(dest), path, Some(iface.as_str()), method.as_str(), &())
+                .await
+                .map(drop);
+        }
+        let mut body = zbus::zvariant::StructureBuilder::new();
+        for (sig, d) in inputs.iter().zip(args) {
+            let v = to_dbus(d, sig).map_err(zbus::Error::Failure)?;
+            body = body.append_field(ZValue::from(v));
+        }
+        let body = body.build().map_err(zbus::Error::Variant)?;
+        conn.call_method(
+            Some(dest),
+            path,
+            Some(iface.as_str()),
+            method.as_str(),
+            &body,
+        )
+        .await
+        .map(drop)
+    };
+    dbus::timed(call).await.map_err(|e| e.to_string())
+}
+
 fn bind(spec: &Spec, name: &str, props: &[strand_introspect::Property]) -> Bound {
     spec.fields
         .iter()
@@ -649,19 +751,21 @@ async fn run_dbus(
     loop {
         // (Re)read everything from the current owner.
         let mut bound: Bound = vec![None; spec.fields.len()];
+        let mut calls: Calls = vec![None; spec.actions.len()];
         let mut state = cx.state().clone();
         for v in &mut state.values {
             v.value = Data::Null;
         }
         if daemon.owner().is_some() {
-            let props = dbus::timed_for(dbus::READ_TIMEOUT, async {
-                strand_introspect::properties_on(&conn, name, path)
+            let (props, methods) = dbus::timed_for(dbus::READ_TIMEOUT, async {
+                strand_introspect::members_on(&conn, name, path)
                     .await
                     .map_err(zbus::Error::Failure)
             })
             .await
             .map_err(|e| ServiceError(format!("{name} did not answer: {e}")))?;
             bound = bind(spec, name, &props);
+            calls = bind_methods(spec, name, &methods);
             let mut ifaces: Vec<&String> = bound.iter().flatten().map(|(i, _, _)| i).collect();
             ifaces.sort();
             ifaces.dedup();
@@ -718,6 +822,19 @@ async fn run_dbus(
                 },
                 m = cx.recv() => match m {
                     None => return Ok(()),
+                    // (M6) `ppd.hold("performance")`: the method, its
+                    // arguments as it takes them; a refusal is logged.
+                    Some(Msg::Action(a)) => {
+                        let label = spec.actions.get(a.index).map_or("?", |x| x.name.as_str());
+                        match calls.get(a.index).cloned().flatten() {
+                            Some(call) => {
+                                if let Err(e) = call_method(&conn, name, path, &call, &a.args).await {
+                                    log::warn!("{}.{label}: {name} refused `{}`: {e}", spec.name, call.1);
+                                }
+                            }
+                            None => log::warn!("{}.{label}: `{name}` has no such method", spec.name),
+                        }
+                    }
                     Some(Msg::Write(w)) => {
                         let i = w.key.as_ref().and_then(|k| match k { Data::Int(n) => usize::try_from(*n).ok(), _ => None });
                         let target = i.and_then(|i| bound.get(i).cloned().flatten().map(|b| (i, b)));

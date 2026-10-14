@@ -1423,3 +1423,200 @@ fn transition_takes_the_design_masks_only() {
         out.diagnostics
     );
 }
+
+/// (M6) Declared actions (decisions.md m6-w2-language, the owner's
+/// ruling): the program must be allowed by `permit exec`; a call is
+/// checked like a function's (arity, types) and runs only in a handler;
+/// the command holds texts and parameters only, the program written out;
+/// a parameter's type is one an argument carries; a parameter the
+/// command never passes is a warning.
+#[test]
+fn actions_are_checked_like_calls_and_against_permit_exec() {
+    const OK: &str = "permit exec \"hyprctl\"\n\
+        action dispatch(ws: int, name: text) [\"hyprctl\", \"dispatch\", \"workspace\", ws, name]\n";
+    let with = |decls: &str, body: &str| codes(&format!("{decls}bar B {{ {body} }}\n"));
+    assert!(with(OK, "on click { dispatch(3, \"a b\") }").is_empty());
+    // Not permitted: the program by name, or no `permit exec` at all.
+    assert_eq!(
+        with(
+            "permit exec \"swaymsg\"\naction go(ws: int) [\"hyprctl\", \"dispatch\", ws]\n",
+            "on click { go(1) }"
+        ),
+        ["check::no_permit"]
+    );
+    assert_eq!(
+        with(
+            "action go(ws: int) [\"hyprctl\", ws]\n",
+            "on click { go(1) }"
+        ),
+        ["check::no_permit"]
+    );
+    // A bare `permit exec` allows any program.
+    assert!(
+        with(
+            "permit exec\naction go(ws: int) [\"x\", ws]\n",
+            "on click { go(1) }"
+        )
+        .is_empty()
+    );
+    // Arity and types, as a function's.
+    assert_eq!(with(OK, "on click { dispatch(3) }"), ["check::missing_arg"]);
+    assert_eq!(
+        with(OK, "on click { dispatch(3, \"a\", 4) }"),
+        ["check::too_many_args"]
+    );
+    assert_eq!(
+        with(OK, "on click { dispatch(\"3\", \"a\") }"),
+        ["check::type_mismatch"]
+    );
+    // Only a handler runs it.
+    assert_eq!(
+        with(OK, "text dispatch(1, \"a\")"),
+        ["check::action_in_binding"]
+    );
+    // The command: texts and parameters, the program written out.
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) [p, \"x\"]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) [\"x\", p + \"y\"]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) [\"x\", q]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) \"x\"\n",
+            "on click { go(\"a\") }"
+        ),
+        ["syntax::expected"]
+    );
+    // A parameter an argument cannot carry, and one never passed.
+    assert_eq!(
+        with(
+            "permit exec\naction go(c: color) [\"x\", c]\n",
+            "on click { go(#fff) }"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text?) [\"x\", p]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text, q: int) [\"x\", p]\n",
+            "on click { go(\"a\", 1) }"
+        ),
+        ["check::unknown_param"]
+    );
+    // A `from dbus` service's action calls a method; other sources have
+    // none.
+    let svc = "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+        profile: text = ActiveProfile\n  \
+        action hold(profile: text, reason: text, app: text) = HoldProfile\n}\n";
+    assert!(
+        with(
+            svc,
+            "on click { ppd.hold(\"performance\", \"x\", \"strand\") }"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        with(svc, "on click { ppd.hold(\"performance\") }"),
+        ["check::missing_arg"]
+    );
+    assert_eq!(
+        with(svc, "text ppd.hold(\"a\", \"b\", \"c\")"),
+        ["check::action_in_binding"]
+    );
+    assert_eq!(
+        with(
+            "service h from file \"/etc/hostname\" {\n  name: text\n  action go() = Go\n}\n",
+            "text h.name"
+        ),
+        ["check::misplaced"]
+    );
+}
+
+/// (M6) A `from dbus` service's actions against its object's methods: a
+/// missing method (with a did-you-mean), another number of arguments, and
+/// a parameter that does not convert to its argument's D-Bus type.
+#[test]
+fn dbus_actions_are_checked_against_introspection() {
+    use strand_compiler::check::dbus::{BusMethod, BusProperty, Introspect, check};
+    struct Fake;
+    impl Introspect for Fake {
+        fn properties(
+            &self,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            Some(Ok(vec![BusProperty {
+                interface: "net.hadess.PowerProfiles".into(),
+                name: "ActiveProfile".into(),
+                signature: "s".into(),
+                writable: true,
+            }]))
+        }
+        fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
+            let m = |name: &str, inputs: &[&str]| BusMethod {
+                interface: "net.hadess.PowerProfiles".into(),
+                name: name.into(),
+                inputs: inputs.iter().map(|s| s.to_string()).collect(),
+            };
+            Some(Ok(vec![
+                m("HoldProfile", &["s", "s", "s"]),
+                m("ReleaseProfile", &["u"]),
+            ]))
+        }
+    }
+    let run = |actions: &str| {
+        let src = format!(
+            "service ppd from dbus system \"net.hadess.PowerProfiles\" {{\n  profile: text = ActiveProfile\n{actions}\n}}\nbar B {{ text \"x\" }}\n"
+        );
+        let (out, _) = compile_files(&[("a.strand", src)]);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        check(&out.program, &Fake)
+    };
+    assert!(
+        run(
+            "  action hold(p: text, r: text, a: text) = HoldProfile\n  action release(c: int) = ReleaseProfile"
+        )
+        .is_empty()
+    );
+    let d = run("  action hold(p: text, r: text, a: text) = HoldProfil");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_method");
+    assert_eq!(d[0].suggestions[0].replacement, "HoldProfile");
+    let d = run("  action hold(p: text) = HoldProfile");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_method");
+    assert!(
+        d[0].message.contains("takes 3 arguments"),
+        "{}",
+        d[0].message
+    );
+    let d = run("  action release(c: text) = ReleaseProfile");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_type");
+    // A `float` never goes to an integer argument.
+    let d = run("  action release(c: float) = ReleaseProfile");
+    assert_eq!(d[0].code, "check::dbus_type", "{d:?}");
+}

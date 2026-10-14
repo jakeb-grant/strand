@@ -73,7 +73,7 @@ name** (`enter: popin(0.8)`, `type: password`, `text: <-> query`).
 
 | Position | Words |
 | --- | --- |
-| Start of a top-level item | `component` `bar` `panel` `osd` `lock` `state` `let` `export` `enum` `type` `fn` `tokens` `use` `service` `permit` `keyframes` `on` `after` `every` |
+| Start of a top-level item | `component` `bar` `panel` `osd` `lock` `state` `let` `export` `enum` `type` `fn` `tokens` `use` `service` `permit` `action` `keyframes` `on` `after` `every` |
 | Start of a tree item | `when` `if` `match` `for` `on` `after` `every` `enter` `exit` `state` `let` `slot` `set` (only before `{`) `play` |
 | Start of a handler statement | `let` `if` `match` `for` `play` |
 | Start of an expression | `true` `false` `null` `match` `await` |
@@ -213,8 +213,8 @@ file      = SEP? ( top_item ( SEP top_item )* )? SEP? EOF
 top_item  = attribute* top_decl
 attribute = AT ( TOUCH '(' args? ')' )?      // @reset
 top_decl  = component | surface | state | let | export | enum_decl | type_decl
-          | fn_decl | tokens_decl | use_decl | service | permit | keyframes
-          | on_handler | timer | top_file
+          | fn_decl | tokens_decl | use_decl | service | permit | action
+          | keyframes | on_handler | timer | top_file
 top_file  = element                  // only the element named `file`
 ```
 
@@ -346,8 +346,10 @@ service = kw:service IDENT kw:from source service_block
 source  = IDENT source_arg* ( SAME_LINE kw:every expr )?
 source_arg = SAME_LINE expr           // up to `{` or `every`
 service_block = '{' SEP? ( service_item ( SEP service_item )* )? SEP? '}'
-service_item  = field | permit
+service_item  = field | permit | method_action
 permit  = kw:permit IDENT ( SAME_LINE expr ( ',' expr )* )?
+action  = kw:action IDENT params SAME_LINE expr      // the command: a list
+method_action = kw:action IDENT params '=' IDENT    // `from dbus` only
 ```
 
 The source kind is one of `dbus`, `file`, `listen`, `poll` (others are an
@@ -382,6 +384,23 @@ this, never parsed as a document. An unknown source kind is
 with a did-you-mean); a `poll` without `every` is one
 `syntax::expected`. See decisions.md, wave4-a3 "no-code
 services, their grammar read precisely".
+
+```
+permit exec "hyprctl"
+action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]
+service ppd from dbus system "net.hadess.PowerProfiles" {
+  profile: text rw = ActiveProfile
+  action hold(profile: text, reason: text, app: text) = HoldProfile
+}
+```
+
+(M6) `action` is a keyword only when a name follows it (`action: text`
+in a service block is still a field). At the top level the command
+follows the parameters on the same line; a missing command is one
+`syntax::expected`. In a service block an action names its method after
+`=`. Every parameter has a type and no default. What the command may
+hold, and the checks, are in spec.md 5.6 (decisions.md
+m6-w2-language).
 
 ### Keyframes and play
 
@@ -727,6 +746,7 @@ diagnostic and resynchronises:
 | `tokens base { … }`, `extends`, `override`, `use tokens …, palette …` | `tokens_decl`, `use_decl` |
 | `set { $surface: … }` | `set` |
 | `service … from dbus system "…" { f: text rw = P }`, `permit exec` | `service`, `permit` |
+| `action name(params) [command]`, `action name(params) = Method` | `action`, `method_action` |
 | `fn`, `keyframes`, `play` | `fn_decl`, `keyframes`, `play` |
 | `shader "x.wgsl" { … }`, `canvas { draw: (c) => … }` | `element` |
 | `file "~/.cache/strand/colors.css" { template: "colors.css.tmpl" }` (top level or in a tree) | `top_file`, `element` |

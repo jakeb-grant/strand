@@ -247,7 +247,11 @@ fn calls(e: &hir::Expr) -> bool {
                 }
                 Callee::Value(v) => calls(v),
                 // A `fn` is pure (`check::impure`): it cannot submit.
-                Callee::Fn(_) | Callee::Builtin { .. } | Callee::Record(_) | Callee::Error => false,
+                Callee::Fn(_)
+                | Callee::Builtin { .. }
+                | Callee::Record(_)
+                | Callee::Action(_)
+                | Callee::Error => false,
             };
             hit || args.iter().any(|a| calls(&a.value))
         }

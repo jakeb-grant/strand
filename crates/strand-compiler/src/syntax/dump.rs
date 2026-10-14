@@ -282,6 +282,15 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
         }
         ItemKind::Permit(p) => TreeNode::node(format!("permit {}", p.capability.name), span)
             .with_all(p.args.iter().map(expr)),
+        ItemKind::Action(a) => {
+            let n = TreeNode::node(format!("action {}", a.name.name), span)
+                .with(params(&a.params, params_span(&a.params, span)));
+            match &a.body {
+                ActionBody::Command(e) => n.with(expr(e)),
+                ActionBody::Method(m) => n.with(TreeNode::leaf(format!("= {}", m.name), m.span)),
+                ActionBody::Missing => n,
+            }
+        }
         ItemKind::Keyframes(k) => {
             TreeNode::node(format!("keyframes {}", k.name.name), span).with_all(items(&k.body))
         }

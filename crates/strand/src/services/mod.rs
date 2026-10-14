@@ -151,6 +151,7 @@ fn declare_at_defaults(
                 path: path.display().to_string(),
             },
             fields: Vec::new(),
+            actions: Vec::new(),
         };
         host.declare(rt, &at_defaults, types);
     }

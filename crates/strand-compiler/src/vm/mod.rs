@@ -395,6 +395,19 @@ pub struct Vm {
     /// ([`Vm::in_other_mode`]): `system.dark` reads negated and the
     /// `let`s that reach it read from these slots.
     other: RefCell<Option<Rc<OtherEnv>>>,
+    /// (M6) Commands declared actions asked to run since the last
+    /// [`Vm::take_execs`].
+    execs: RefCell<Vec<ExecRequest>>,
+}
+
+/// (M6) A command a handler's call of a declared action (`dispatch(3)`)
+/// asked to run: the host starts it detached, off the logic thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecRequest {
+    /// The action's name, for its notices.
+    pub action: String,
+    /// The program, then its arguments: each parameter exactly one.
+    pub argv: Vec<String>,
 }
 
 /// (M5) The other mode's env (decisions.md m5-tools, "a template reads
@@ -454,7 +467,39 @@ impl Vm {
             watched: RefCell::default(),
             canvas: RefCell::default(),
             other: RefCell::default(),
+            execs: RefCell::default(),
         })
+    }
+
+    /// (M6) Asks for declared action `def`'s command with `args` filling
+    /// its parameters, each one argument as its text (never split, never
+    /// read by a shell). It runs when the host takes it
+    /// ([`Vm::take_execs`]).
+    pub(crate) fn exec(&self, def: DefId, args: &[Value]) -> Result<(), Error> {
+        let Some(action) = self.prog.execs.get(&def) else {
+            return Err(Error::failed("no such action"));
+        };
+        let types = self.types();
+        let argv = action
+            .argv
+            .iter()
+            .map(|p| match p {
+                crate::hir::ArgvPart::Text(t) => t.clone(),
+                crate::hir::ArgvPart::Param(i) => {
+                    args.get(*i).map(|v| v.show(types)).unwrap_or_default()
+                }
+            })
+            .collect();
+        self.execs.borrow_mut().push(ExecRequest {
+            action: action.name.clone(),
+            argv,
+        });
+        Ok(())
+    }
+
+    /// (M6) The commands asked for since the last call, in order.
+    pub fn take_execs(&self) -> Vec<ExecRequest> {
+        std::mem::take(&mut *self.execs.borrow_mut())
     }
 
     /// (M5) Runs `f` in the other mode: `system.dark` reads negated (the

@@ -127,6 +127,7 @@ impl<'a> Walk<'a> {
             }
             ItemKind::Let(l) => self.declare(&l.name.name),
             ItemKind::Fn(f) => self.declare(&f.name.name),
+            ItemKind::Action(a) => self.declare(&a.name.name),
             ItemKind::Prop(p) => {
                 if p.name.name == "id"
                     && let ExprKind::Name(n) = &p.value.kind

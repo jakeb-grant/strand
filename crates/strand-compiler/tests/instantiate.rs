@@ -4730,3 +4730,57 @@ fn bundled_effect_knobs_reach_the_scene() {
     assert_eq!(glass, Some(call("glass", vec![PropValue::Number(20.0)])));
     assert_eq!(calls(prop(3, Prop::Backdrop))[0].0, "glass");
 }
+
+/// (M6) A click's call of a declared action asks for its command, each
+/// parameter exactly one argument as its text: a title with spaces,
+/// quotes and `$` stays whole, an `int`, a `bool` and an enum show as
+/// written. A `from dbus` service's action goes to the service host by
+/// name with its arguments (decisions.md m6-w2-language).
+#[test]
+fn a_declared_action_asks_for_its_command_with_whole_arguments() {
+    use strand_compiler::vm::ExecRequest;
+    let src = "permit exec \"notify-send\"\n\
+        enum Urgency { low, critical }\n\
+        state title = \"it's \\\"two\\\" words; $HOME\"\n\
+        action say(summary: text, ms: int, wait: bool, u: Urgency) \
+        [\"notify-send\", \"-t\", ms, \"-u\", u, summary, wait]\n\
+        service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+        profile: text = ActiveProfile\n  action hold(profile: text) = HoldProfile\n}\n\
+        bar B {\n  box { on click { say(title, 1500, true, critical) } }\n  \
+        box { on click { ppd.hold(\"performance\") } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(shell.inst.take_execs().is_empty(), "nothing runs at boot");
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(
+        shell.inst.take_execs(),
+        [ExecRequest {
+            action: "say".into(),
+            argv: [
+                "notify-send",
+                "-t",
+                "1500",
+                "-u",
+                "critical",
+                "it's \"two\" words; $HOME",
+                "true"
+            ]
+            .map(String::from)
+            .to_vec(),
+        }]
+    );
+    assert!(shell.inst.take_execs().is_empty(), "taken once");
+    shell.inst.event(boxes[1], "click", Vec::new());
+    shell.flush();
+    let calls = shell.host.take_actions();
+    let held: Vec<_> = calls
+        .iter()
+        .filter(|c| c.target == "ppd")
+        .map(|c| (c.name.as_str(), c.args.clone()))
+        .collect();
+    assert_eq!(held, [("hold", vec![Value::text("performance")])]);
+}

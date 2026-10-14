@@ -1,14 +1,15 @@
-//! D-Bus introspection of one object's properties: what a no-code
-//! service (`service ppd from dbus system "net.hadess.PowerProfiles" {
-//! profile: text rw = ActiveProfile }`) is checked against (design.md:
-//! "checked against introspection") by `strand check`, `strand run`'s
-//! loader and the LSP, and what the running service reads its
-//! properties' signatures from.
+//! D-Bus introspection of one object's properties and methods: what a
+//! no-code service (`service ppd from dbus system
+//! "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`, and
+//! its `action hold(profile: text, …) = HoldProfile`) is checked against
+//! (design.md: "checked against introspection") by `strand check`,
+//! `strand run`'s loader and the LSP, and what the running service reads
+//! its properties' and methods' signatures from.
 //!
 //! It depends on zbus alone (no service runtime), so the LSP can link it
 //! (decisions.md, wave4-a3). The introspection XML is read with a small
-//! scanner of its own: only `<interface name>` and `<property name type
-//! access>` matter.
+//! scanner of its own: only `<interface name>`, `<property name type
+//! access>`, `<method name>` and its `<arg type direction>`s matter.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,6 +32,17 @@ pub struct Property {
     pub readable: bool,
     /// It can be written (`access="readwrite"` or `"write"`).
     pub writable: bool,
+}
+
+/// (M6) One method of an object, as its introspection data declares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Method {
+    /// The interface declaring it.
+    pub interface: String,
+    /// Its name (`HoldProfile`).
+    pub name: String,
+    /// Its in-arguments' D-Bus type signatures, in order.
+    pub inputs: Vec<String>,
 }
 
 /// The object path a bus name's object is at by convention:
@@ -93,6 +105,68 @@ pub fn parse(xml: &str) -> Vec<Property> {
     out
 }
 
+/// (M6) The methods `xml` (introspection data) declares, in order, with
+/// their in-arguments (an `<arg>` with no `direction` is one, as the
+/// specification says for methods).
+pub fn parse_methods(xml: &str) -> Vec<Method> {
+    let mut out: Vec<Method> = Vec::new();
+    let mut interface: Option<String> = None;
+    // The method whose `<arg>`s are being read.
+    let mut open = false;
+    let mut rest = xml;
+    while let Some(i) = rest.find('<') {
+        rest = &rest[i + 1..];
+        let end = match rest.find('>') {
+            Some(e) => e,
+            None => break,
+        };
+        let tag = &rest[..end];
+        rest = &rest[end + 1..];
+        if tag.starts_with('!') || tag.starts_with('?') {
+            continue;
+        }
+        if let Some(t) = tag.strip_prefix('/') {
+            match t.trim() {
+                "interface" => interface = None,
+                "method" => open = false,
+                _ => {}
+            }
+            continue;
+        }
+        let closed = tag.trim_end().ends_with('/');
+        let (kind, attrs) = tag.split_once(char::is_whitespace).unwrap_or((tag, ""));
+        let kind = kind.trim_end_matches('/');
+        match kind {
+            "interface" => {
+                interface = attr(attrs, "name");
+                if closed {
+                    interface = None;
+                }
+            }
+            "method" => {
+                let (Some(iface), Some(name)) = (&interface, attr(attrs, "name")) else {
+                    open = false;
+                    continue;
+                };
+                out.push(Method {
+                    interface: iface.clone(),
+                    name,
+                    inputs: Vec::new(),
+                });
+                open = !closed;
+            }
+            "arg" if open => {
+                let input = attr(attrs, "direction").is_none_or(|d| d == "in");
+                if let (true, Some(sig), Some(m)) = (input, attr(attrs, "type"), out.last_mut()) {
+                    m.inputs.push(sig);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The value of attribute `key` in a tag's attribute text, entities
 /// decoded.
 fn attr(attrs: &str, key: &str) -> Option<String> {
@@ -128,8 +202,22 @@ pub async fn properties_on(
     name: &str,
     path: &str,
 ) -> Result<Vec<Property>, String> {
-    introspect(conn, name, path)
+    introspect_xml(conn, name, path)
         .await
+        .map(|xml| parse(&xml))
+        .map_err(|e| e.to_string())
+}
+
+/// (M6) Introspect `path` of `name` on `conn`: its properties and its
+/// methods, from one answer.
+pub async fn members_on(
+    conn: &zbus::Connection,
+    name: &str,
+    path: &str,
+) -> Result<(Vec<Property>, Vec<Method>), String> {
+    introspect_xml(conn, name, path)
+        .await
+        .map(|xml| (parse(&xml), parse_methods(&xml)))
         .map_err(|e| e.to_string())
 }
 
@@ -241,13 +329,13 @@ impl Shared {
     /// dropped and the question asked once more on a new one; one that
     /// gets no answer in time is dropped too, so a hung bus is never
     /// kept.
-    async fn properties(
+    async fn introspect(
         &self,
         bus: &Bus,
         name: &str,
         path: &str,
         deadline: tokio::time::Instant,
-    ) -> Result<Vec<Property>, String> {
+    ) -> Result<String, String> {
         let late = || format!("no answer within {TIMEOUT:?}");
         let mut retried = false;
         loop {
@@ -260,7 +348,7 @@ impl Shared {
                     return Err(late());
                 }
             };
-            match tokio::time::timeout_at(deadline, introspect(&conn, name, path)).await {
+            match tokio::time::timeout_at(deadline, introspect_xml(&conn, name, path)).await {
                 Err(_) => {
                     self.forget(bus, &conn, &late());
                     return Err(late());
@@ -275,7 +363,7 @@ impl Shared {
                     }
                     return Err(e.to_string());
                 }
-                Ok(Ok(props)) => return Ok(props),
+                Ok(Ok(xml)) => return Ok(xml),
             }
         }
     }
@@ -287,11 +375,7 @@ fn answered(e: &zbus::Error) -> bool {
     matches!(e, zbus::Error::MethodError(..) | zbus::Error::FDO(_))
 }
 
-async fn introspect(
-    conn: &zbus::Connection,
-    name: &str,
-    path: &str,
-) -> zbus::Result<Vec<Property>> {
+async fn introspect_xml(conn: &zbus::Connection, name: &str, path: &str) -> zbus::Result<String> {
     let reply = conn
         .call_method(
             Some(name),
@@ -301,8 +385,7 @@ async fn introspect(
             &(),
         )
         .await?;
-    let xml: String = reply.body().deserialize()?;
-    Ok(parse(&xml))
+    reply.body().deserialize()
 }
 
 /// Introspect `path` of `name` on `bus`, blocking, at most [`TIMEOUT`],
@@ -310,41 +393,59 @@ async fn introspect(
 /// question, made again when it breaks). For callers outside any tokio
 /// runtime: `strand check`, the loader, the LSP.
 pub fn properties(bus: &Bus, name: &str, path: &str) -> Result<Vec<Property>, String> {
+    introspect(bus, name, path).map(|xml| parse(&xml))
+}
+
+/// (M6) [`properties`]' question for the object's methods.
+pub fn methods(bus: &Bus, name: &str, path: &str) -> Result<Vec<Method>, String> {
+    introspect(bus, name, path).map(|xml| parse_methods(&xml))
+}
+
+fn introspect(bus: &Bus, name: &str, path: &str) -> Result<String, String> {
     let shared = shared()?;
     shared.rt.block_on(async {
         let deadline = tokio::time::Instant::now() + TIMEOUT;
-        shared.properties(bus, name, path, deadline).await
+        shared.introspect(bus, name, path, deadline).await
     })
 }
 
-/// What introspecting one object answered: its properties, or why they
-/// could not be read.
-pub type Answer = Result<Vec<Property>, String>;
+/// What introspecting one object answered: its properties (or, for a
+/// [`Cache`] of methods, its methods), or why they could not be read.
+pub type Answer<T = Vec<Property>> = Result<T, String>;
 
-type Fetch = dyn Fn(&Bus, &str, &str) -> Answer + Send + Sync;
+type Fetch<T> = dyn Fn(&Bus, &str, &str) -> Answer<T> + Send + Sync;
 
 /// Bus, name and path.
 type Key = (Bus, String, String);
 
-#[derive(Default)]
-struct Entry {
+struct Entry<T> {
     /// When it was last answered, and the answer.
-    known: Option<(Instant, Answer)>,
+    known: Option<(Instant, Answer<T>)>,
     /// A background ask ([`Cache::properties_or_ask`]) is under way.
     asking: bool,
+}
+
+impl<T> Default for Entry<T> {
+    fn default() -> Self {
+        Self {
+            known: None,
+            asking: false,
+        }
+    }
 }
 
 /// [`properties`] answers, failures included, remembered for a while: a
 /// reload burst or an LSP's keystrokes ask the bus once per object, and a
 /// daemon that does not answer costs one bounded wait per `ttl`. `strand
-/// check`, the loader and the LSP share it.
-pub struct Cache {
+/// check`, the loader and the LSP share it. (M6) A `Cache<Vec<Method>>`
+/// ([`Cache::methods`]) remembers objects' methods the same way.
+pub struct Cache<T = Vec<Property>> {
     ttl: Duration,
-    fetch: Box<Fetch>,
-    seen: Mutex<HashMap<Key, Entry>>,
+    fetch: Box<Fetch<T>>,
+    seen: Mutex<HashMap<Key, Entry<T>>>,
 }
 
-impl std::fmt::Debug for Cache {
+impl<T> std::fmt::Debug for Cache<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cache").field("ttl", &self.ttl).finish()
     }
@@ -365,46 +466,10 @@ impl Cache {
         Self::with_fetch(ttl, properties)
     }
 
-    /// The same over another way of asking (tests).
-    pub fn with_fetch(
-        ttl: Duration,
-        fetch: impl Fn(&Bus, &str, &str) -> Answer + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            ttl,
-            fetch: Box::new(fetch),
-            seen: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn key(bus: &Bus, name: &str, path: &str) -> Key {
-        (bus.clone(), name.to_string(), path.to_string())
-    }
-
-    fn remember(&self, key: Key, answer: &Answer) -> bool {
-        let Ok(mut seen) = self.seen.lock() else {
-            return true;
-        };
-        let e = seen.entry(key).or_default();
-        let changed = e.known.as_ref().is_none_or(|(_, a)| a != answer);
-        e.known = Some((Instant::now(), answer.clone()));
-        e.asking = false;
-        changed
-    }
-
     /// `path`'s properties, blocking at most [`TIMEOUT`] when the answer
     /// is not remembered (or is older than the ttl).
     pub fn properties(&self, bus: &Bus, name: &str, path: &str) -> Answer {
-        let key = Self::key(bus, name, path);
-        if let Ok(seen) = self.seen.lock()
-            && let Some((at, answer)) = seen.get(&key).and_then(|e| e.known.as_ref())
-            && at.elapsed() < self.ttl
-        {
-            return answer.clone();
-        }
-        let answer = (self.fetch)(bus, name, path);
-        self.remember(key, &answer);
-        answer
+        self.answer(bus, name, path)
     }
 
     /// `path`'s properties without waiting on the bus: the remembered
@@ -420,6 +485,76 @@ impl Cache {
         path: &str,
         done: impl FnOnce() + Send + 'static,
     ) -> Option<Answer> {
+        self.answer_or_ask(bus, name, path, done)
+    }
+}
+
+impl Cache<Vec<Method>> {
+    /// (M6) Objects' methods on the buses ([`methods`]), answers reused
+    /// `ttl`.
+    pub fn methods(ttl: Duration) -> Self {
+        Self::with_fetch(ttl, methods)
+    }
+}
+
+impl Default for Cache<Vec<Method>> {
+    fn default() -> Self {
+        Self::methods(TTL)
+    }
+}
+
+impl<T: Clone + PartialEq + Send + 'static> Cache<T> {
+    /// The same over another way of asking (tests).
+    pub fn with_fetch(
+        ttl: Duration,
+        fetch: impl Fn(&Bus, &str, &str) -> Answer<T> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            ttl,
+            fetch: Box::new(fetch),
+            seen: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn key(bus: &Bus, name: &str, path: &str) -> Key {
+        (bus.clone(), name.to_string(), path.to_string())
+    }
+
+    fn remember(&self, key: Key, answer: &Answer<T>) -> bool {
+        let Ok(mut seen) = self.seen.lock() else {
+            return true;
+        };
+        let e = seen.entry(key).or_default();
+        let changed = e.known.as_ref().is_none_or(|(_, a)| a != answer);
+        e.known = Some((Instant::now(), answer.clone()));
+        e.asking = false;
+        changed
+    }
+
+    /// What `path` answered, blocking at most [`TIMEOUT`] when the answer
+    /// is not remembered (or is older than the ttl).
+    pub fn answer(&self, bus: &Bus, name: &str, path: &str) -> Answer<T> {
+        let key = Self::key(bus, name, path);
+        if let Ok(seen) = self.seen.lock()
+            && let Some((at, answer)) = seen.get(&key).and_then(|e| e.known.as_ref())
+            && at.elapsed() < self.ttl
+        {
+            return answer.clone();
+        }
+        let answer = (self.fetch)(bus, name, path);
+        self.remember(key, &answer);
+        answer
+    }
+
+    /// What `path` answered, without waiting on the bus
+    /// ([`Cache::properties_or_ask`]).
+    pub fn answer_or_ask(
+        self: &Arc<Self>,
+        bus: &Bus,
+        name: &str,
+        path: &str,
+        done: impl FnOnce() + Send + 'static,
+    ) -> Option<Answer<T>> {
         let key = Self::key(bus, name, path);
         let remembered = {
             let Ok(mut seen) = self.seen.lock() else {
@@ -478,7 +613,7 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (g, late) = (gate.clone(), timed_out.clone());
-        let cache = Arc::new(Cache::with_fetch(
+        let cache = Arc::new(Cache::<Vec<Property>>::with_fetch(
             Duration::from_millis(200),
             move |_, name, _| {
                 a.fetch_add(1, Ordering::SeqCst);
@@ -535,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn introspection_xml_gives_properties_by_interface() {
+    fn introspection_xml_gives_properties_and_methods_by_interface() {
         let xml = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
@@ -548,7 +683,13 @@ mod tests {
     </property>
     <property name='Profiles' type='aa{sv}' access='read'/>
     <property name="Secret" type="s" access="write"/>
-    <signal name="Changed"/>
+    <method name="HoldProfile">
+      <arg name="profile" type="s" direction="in"/>
+      <arg name="cookie" type="u" direction="out"/>
+      <arg name="reason" type="s"/>
+    </method>
+    <method name="Ping"/>
+    <signal name="Changed"><arg type="s"/></signal>
   </interface>
   <interface name="empty.Thing"/>
   <node name="child"/>
@@ -573,5 +714,26 @@ mod tests {
             "/net/hadess/PowerProfiles"
         );
         assert_eq!(attr(r#"a="&lt;x&gt;""#, "a").as_deref(), Some("<x>"));
+        // (M6) Methods with their in-arguments (no direction: in), a
+        // signal's arguments not among them.
+        let m = parse_methods(xml);
+        let shown: Vec<(&str, &str, Vec<&str>)> = m
+            .iter()
+            .map(|m| {
+                (
+                    m.interface.as_str(),
+                    m.name.as_str(),
+                    m.inputs.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                ("org.freedesktop.DBus.Properties", "Get", vec!["s"]),
+                ("net.hadess.PowerProfiles", "HoldProfile", vec!["s", "s"]),
+                ("net.hadess.PowerProfiles", "Ping", vec![]),
+            ]
+        );
     }
 }

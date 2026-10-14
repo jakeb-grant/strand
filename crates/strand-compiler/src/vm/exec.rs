@@ -378,6 +378,11 @@ impl Machine {
                     let v = vm.call(rt, &f, a.into_vec())?;
                     self.stack.push(v);
                 }
+                Op::Exec { def, args } => {
+                    let a = self.pop_args(&chunk.args[*args as usize]);
+                    vm.exec(*def, &a.into_vec())?;
+                    self.stack.push(Value::Unit);
+                }
                 Op::MakeRecord { ty, args } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
                     let def = vm.types().record(*ty);

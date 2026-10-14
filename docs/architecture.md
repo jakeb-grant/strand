@@ -580,6 +580,18 @@ running service reads signatures from. The compiler's
 `check::dbus::Introspect::properties` answers `None` while a question is
 out (the LSP's, which never waits on a bus: an unanswered service is
 unchecked until the answer wakes the server to publish again).
+(M6, decisions.md m6-w2-language) It reads an object's methods from the
+same XML: `Method { interface, name, inputs }` (the in-argument
+signatures, an argument without a direction counting as in),
+`parse_methods(xml)`, `methods(&Bus, name, path)` blocking, and
+`members_on(conn, name, path) -> Result<(Vec<Property>, Vec<Method>),
+String>`, which the running custom service binds its actions' methods
+with. `Cache<T>` is generic over the answer (`Cache<Vec<Property>>` the
+default, `Cache::<Vec<Method>>::methods(ttl)`); `answer`/`answer_or_ask`
+are the generic forms of `properties`/`properties_or_ask`. The
+compiler's `Introspect::methods(system, name, path) ->
+Option<Result<Vec<BusMethod>, String>>` defaults to `None` (unchecked),
+so an implementor that predates it compiles unchanged.
 
 `strand-scene` has no heavy dependencies; it is what lets render and surface
 be built and tested without the language, and the language without pixels.
@@ -3051,7 +3063,14 @@ Public interfaces other crates and later stages build on:
   path); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
   its `dbus` fields with an object's introspection (`Introspect::
   properties(system, name, path) -> Result<Vec<BusProperty>, String>`;
-  the caller brings the bus: `strand check`, the loader, the LSP).
+  the caller brings the bus: `strand check`, the loader, the LSP), and
+  (M6) its actions (`hir::ServiceDecl::actions`, each a
+  `hir::ServiceAction { name, params, method }`) with the object's
+  methods (`Introspect::methods`, `BusMethod { interface, name, inputs
+  }`). A top-level `action` is `hir::Item::Action(hir::ActionDecl {
+  def, params, argv: Vec<ArgvPart> })`, `ArgvPart::Text` or
+  `ArgvPart::Param(index)`, with `ActionDecl::shown()` the line `strand
+  check` lists; a call of it is `Callee::Action(def)`.
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
   `from poll` path names a program (executable, `#!` or ELF; stat before
@@ -3241,6 +3260,19 @@ Public interfaces other crates and later stages build on:
     service that does not restart; `SchemaHost` remounts it at the new
     defaults when its record or field types moved). All default to
     nothing.
+  - (M6) A `from dbus` declaration's actions are
+    `CustomService::actions` (`lower::CustomAction { name, method,
+    arity }`, in declaration order) and methods on its record, so a
+    call reaches the host as `action(rt, ActionTarget::Service(name),
+    action, args, ctx)`; the strand host sends the custom service
+    `strand_services::custom::CustomAction { index, args: Vec<Data> }`,
+    and the service calls the method (`custom::Spec::actions`, each an
+    `ActionSpec { name, method }`). A top-level `action`'s command is not
+    a host call: the VM queues an `ExecRequest { action, argv }`
+    (`lower::Program::execs` maps its def to its `ExecAction { name,
+    argv }`), and after each tick's diff logic takes them
+    (`Instance::take_execs() -> Vec<ExecRequest>`) and starts each on a
+    thread of its own (`run/exec.rs`).
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so

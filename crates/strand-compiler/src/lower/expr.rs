@@ -730,6 +730,11 @@ impl Lowerer<'_> {
                 let map = self.push_args(c, args, args.len(), None);
                 c.emit(Op::CallValue { args: map }, span);
             }
+            Callee::Action(d) => {
+                let arity = self.out_fn_arity(*d);
+                let map = self.push_args(c, args, arity, None);
+                c.emit(Op::Exec { def: *d, args: map }, span);
+            }
             Callee::Error => {
                 c.emit(Op::Null, span);
             }

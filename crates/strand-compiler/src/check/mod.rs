@@ -21,6 +21,7 @@
 //! each file in order. `let`s, `state`s and fns without a return type are
 //! checked on first use, which is also how static cycles are found.
 
+mod actions;
 mod collect;
 mod cycles;
 pub mod dbus;

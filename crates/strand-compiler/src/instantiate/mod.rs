@@ -1373,6 +1373,13 @@ impl Instance {
         &self.ctx.vm
     }
 
+    /// (M6) The commands handlers' calls of declared actions asked for
+    /// since the last call, in order (call it after a tick): the host
+    /// starts each detached, off the logic thread.
+    pub fn take_execs(&self) -> Vec<crate::vm::ExecRequest> {
+        self.ctx.vm.take_execs()
+    }
+
     /// Advance the logic clock to `now` and end the tick.
     pub fn tick(&self, now: Duration) -> Update {
         let tick = self.rt.tick(now);

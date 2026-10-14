@@ -4,7 +4,7 @@ You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders, `file`; also `set { }`, `keyframes` and
 `play`, `canvas`, `type` and `key`, `slot`, `fn`, settings files,
 SVG layer selectors, and `service … from file | listen | poll` with
-`permit exec`.
+`permit exec`, and `action`.
 You build: a theme file, a CSS file of your colours that other programs
 can read, services Strand does not ship, a control centre and a dock.
 
@@ -309,6 +309,24 @@ update, for programs that report changes as they happen:
 `service player from listen ["playerctl", "--follow", "status"] { status: text }`,
 with `permit exec "playerctl"`, has `player.status` follow your media
 player as it plays and pauses.
+
+**`action` runs a command from a handler.** For what no service does
+(opening an app of your own, a compositor's dispatch, a tool with only a
+command line), declare the command once at the top level, its
+parameters in it, and call it like a function:
+`action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]`,
+with `permit exec "hyprctl"`, then `on click { dispatch(3) }`. Each
+parameter is exactly one argument of the program, as it is: a title
+with spaces or quotes is never split, and no shell reads it. The
+program must be written out and allowed by `permit exec`, so every
+command your config can run is listed where it is declared: `strand
+check` lists them all with their parameters. The command runs on its
+own, detached; if it cannot start or exits with an error, the terminal
+running `strand run` and `strand watch` say so. A `from dbus` service
+can declare actions too, calling a method of its object:
+`action hold(profile: text, reason: text, app: text) = HoldProfile`
+in `ppd`'s block is `ppd.hold("performance", "gaming", "strand")` in a
+handler, checked against the object's introspection as its fields are.
 
 For a service none of these can describe, write it in Rust (section 7).
 

@@ -76,6 +76,7 @@ use crate::overlay::{self, Click, Overlay};
 use crate::system;
 use strand_watch::{CacheKind, Role};
 
+mod exec;
 pub(crate) mod feeds;
 mod gpu;
 mod lists;

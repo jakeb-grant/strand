@@ -188,6 +188,12 @@ pub enum Op {
     CallValue {
         args: u32,
     },
+    /// (M6) Run a declared action's command (`dispatch(3)`): its
+    /// arguments fill the command's parameters.
+    Exec {
+        def: DefId,
+        args: u32,
+    },
     /// Build a record (`Pin(app: a, label: "x")`).
     MakeRecord {
         ty: RecordId,
@@ -352,6 +358,7 @@ impl Chunk {
                     | Op::CallMethod { action: true, .. }
                     | Op::CallFn { .. }
                     | Op::CallValue { .. }
+                    | Op::Exec { .. }
                     | Op::Await
                     | Op::Keyed { .. }
                     | Op::AsyncSite(_)

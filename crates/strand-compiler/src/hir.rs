@@ -136,6 +136,8 @@ pub enum DefKind {
     Keyframes,
     /// `service x from …`.
     Service(RecordId),
+    /// (M6) `action name(params) [argv]`: a command handlers run.
+    Action,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -210,6 +212,51 @@ pub enum Item {
     Handler(Handler),
     Timer(Timer),
     Permit(Permit),
+    Action(ActionDecl),
+}
+
+/// (M6) `action name(params) [argv]`: the command a handler's call
+/// (`dispatch(3)`) runs, each parameter one argument of it, never split
+/// and never read by a shell.
+#[derive(Clone, Debug)]
+pub struct ActionDecl {
+    pub def: DefId,
+    pub file: FileId,
+    /// The whole declaration.
+    pub span: Span,
+    /// Its parameters' names, in order.
+    pub params: Vec<String>,
+    /// The command: the program first (always [`ArgvPart::Text`]).
+    pub argv: Vec<ArgvPart>,
+}
+
+/// One argument of an action's command.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ArgvPart {
+    /// Written out.
+    Text(String),
+    /// The parameter at this index, as one argument.
+    Param(usize),
+}
+
+impl ActionDecl {
+    /// The command as `strand check` lists it: texts as written (quoted
+    /// when they hold a space or nothing), a parameter as `{name}`.
+    pub fn shown(&self) -> String {
+        self.argv
+            .iter()
+            .map(|p| match p {
+                ArgvPart::Text(t) if t.is_empty() || t.contains(char::is_whitespace) => {
+                    format!("{t:?}")
+                }
+                ArgvPart::Text(t) => t.clone(),
+                ArgvPart::Param(i) => {
+                    format!("{{{}}}", self.params.get(*i).map_or("?", String::as_str))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +363,9 @@ pub struct ServiceDecl {
     pub args: Vec<Expr>,
     pub every: Option<Expr>,
     pub fields: Vec<ServiceField>,
+    /// (M6) `action name(params) = Method`: methods of a `from dbus`
+    /// service's object that handlers call (`ppd.hold("performance")`).
+    pub actions: Vec<ServiceAction>,
     /// The source with its arguments evaluated (they must be constants);
     /// `None` when they are not (an error says why).
     pub spec: Option<SourceSpec>,
@@ -371,6 +421,18 @@ pub struct ServiceField {
     pub key: Vec<String>,
     /// Where the key is written (the field's name when it names none).
     pub key_span: Span,
+}
+
+/// (M6) `action name(params) = Method` in a `from dbus` service.
+#[derive(Clone, Debug)]
+pub struct ServiceAction {
+    pub name: String,
+    pub span: Span,
+    /// Its parameters' types, in order.
+    pub params: Vec<Ty>,
+    /// The D-Bus method it calls, and where that is written.
+    pub method: String,
+    pub method_span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -690,6 +752,8 @@ pub enum Callee {
     Record(RecordId),
     /// Calling a function value (a lambda parameter).
     Value(Box<Expr>),
+    /// (M6) Running a declared `action`'s command.
+    Action(DefId),
     Error,
 }
 

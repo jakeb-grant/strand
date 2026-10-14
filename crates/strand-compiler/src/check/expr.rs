@@ -1236,6 +1236,25 @@ impl<'a> Checker<'a> {
                     self.add_ref(id.span, Target::Def(d));
                     return self.construct(r, args, span);
                 }
+                DefKind::Action => {
+                    self.add_ref(id.span, Target::Def(d));
+                    let reported = self.action_check(name, id.span);
+                    let Ty::Fn(sig) = self.defs[d.0 as usize].ty.clone() else {
+                        for a in args {
+                            self.expr(&a.value, None);
+                        }
+                        return hir::Expr::error(span);
+                    };
+                    let (args, _) = self.call_args(&sig, args, &format!("`{name}`"), span);
+                    return hir::Expr {
+                        kind: ExprKind::Call {
+                            callee: Callee::Action(d),
+                            args,
+                        },
+                        ty: if reported { Ty::Error } else { Ty::Unit },
+                        span,
+                    };
+                }
                 DefKind::Component => {
                     self.error(
                         "check::not_a_value",
@@ -1336,6 +1355,7 @@ impl<'a> Checker<'a> {
             DefKind::Keyframes => format!("export keyframes {n} {{ … }}"),
             DefKind::Service(_) => format!("export service {n} from …"),
             DefKind::Surface(k) => format!("export {k} {n}"),
+            DefKind::Action => format!("action {n}(…)"),
         }
     }
 
@@ -2961,7 +2981,8 @@ impl<'a> Checker<'a> {
                 | DefKind::Enum(_)
                 | DefKind::Type(_)
                 | DefKind::Tokens
-                | DefKind::Keyframes => false,
+                | DefKind::Keyframes
+                | DefKind::Action => false,
             },
             K::Service(_) | K::Value(_) | K::Node(_) | K::Token(_) | K::Error => true,
             K::Local(l) => !matches!(self.locals[l.0 as usize].kind, LocalKind::Channel),

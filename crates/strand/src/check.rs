@@ -202,6 +202,9 @@ fn check_config(
         }
     }
     report.text.push_str(&render(&diags, &map, style));
+    report
+        .text
+        .push_str(&actions(&compiled.program, &map, focus_id));
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     let _ = match focus {
         Some(f) => writeln!(
@@ -223,6 +226,59 @@ fn check_config(
         ),
     };
     Ok(report)
+}
+
+/// (M6) Every declared action's command (decisions.md m6-w2-language):
+/// what the config's handlers can run, each on a line with its
+/// parameters, a parameter shown as `{name}` where it is one argument,
+/// and where it is declared. Only `focus`'s with a file. Empty when
+/// there are none.
+fn actions(
+    program: &strand_compiler::hir::Program,
+    map: &SourceMap,
+    focus: Option<strand_compiler::source::FileId>,
+) -> String {
+    use strand_compiler::hir::Item;
+    use strand_compiler::ty::Ty;
+    let mut lines = Vec::new();
+    for f in &program.files {
+        for item in &f.items {
+            let Item::Action(a) = item else {
+                continue;
+            };
+            if a.argv.is_empty() || focus.is_some_and(|id| id != a.file) {
+                continue;
+            }
+            let def = program.def(a.def);
+            let params = match &def.ty {
+                Ty::Fn(sig) => sig
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name, program.types.show(&p.ty)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => String::new(),
+            };
+            let at = map.get(a.file).map(|src| {
+                let start = (a.span.start as usize).min(src.text.len());
+                let line = src.text[..start].matches('\n').count() + 1;
+                format!("{}:{line}", src.name)
+            });
+            lines.push(format!(
+                "  {}({params}) runs: {}{}",
+                def.name,
+                a.shown(),
+                at.map(|a| format!("  ({a})")).unwrap_or_default()
+            ));
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "actions (each parameter is one argument, never split):\n{}\n\n",
+        lines.join("\n")
+    )
 }
 
 /// `check::lock_no_helper`: the config has a `lock` and no `strand-auth`
@@ -347,6 +403,37 @@ mod tests {
         d.write("c.tmpl", "{{ $accent }}\n");
         let r = check_dir(&d.0, Style::Plain).unwrap();
         assert!(r.ok(), "{}", r.text);
+    }
+
+    /// (M6) `strand check` lists every declared action's command with its
+    /// parameters, and an action whose program `permit exec` does not
+    /// allow is an error naming it.
+    #[test]
+    fn actions_are_listed_and_checked_against_permit_exec() {
+        let d = TempDir::new();
+        d.write(
+            "bar.strand",
+            "permit exec \"hyprctl\"\n\
+             action dispatch(ws: int) [\"hyprctl\", \"dispatch\", \"workspace\", ws]\n\
+             action say(msg: text) [\"notify-send\", \"Strand says\", msg]\n\
+             bar B { on click { dispatch(3) } }\n",
+        );
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert_eq!(r.errors, 1, "{}", r.text);
+        assert!(
+            r.text.contains("running `notify-send` needs `permit exec`"),
+            "{}",
+            r.text
+        );
+        assert!(
+            r.text
+                .contains("  dispatch(ws: int) runs: hyprctl dispatch workspace {ws}")
+                && r.text
+                    .contains("  say(msg: text) runs: notify-send \"Strand says\" {msg}"),
+            "{}",
+            r.text
+        );
+        assert!(r.text.contains("bar.strand:2)"), "{}", r.text);
     }
 
     #[test]

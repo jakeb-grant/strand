@@ -73,6 +73,7 @@ guide's ladder test use this table as the list of constructs.
 | `fn` | `fn_decl` | 5.5 |
 | `tokens … extends …`, `override`, `use tokens …, palette …` | `tokens_decl`, `use_decl` | 9 |
 | `service … from dbus\|file\|listen\|poll`, `permit exec` | `service`, `permit` | 5.6 |
+| `action name(params) [command]`, `action name(params) = Method` | `action`, `method_action` | 5.7 |
 | `keyframes`, `play` | `keyframes`, `play` | 6.6 |
 | `@reset` | `attribute` | 10.4 |
 | `kind [positional] { props; children }` | `element` | 6.1 |
@@ -316,6 +317,44 @@ filling the monitor, the keyboard always).
   the running binary does not serve a service a file declares, reads
   give its schema defaults and writes, calls and actions are refused,
   with a notice naming the file while the program reads it.
+
+### 5.7 Actions
+
+(M6, the owner's ruling; decisions.md m6-w2-language.)
+
+- `action name(params) [command]` at the top level declares an action
+  that runs a command. Every parameter has a type and no default; the
+  type is one of `text`, `path`, `int`, `float`, `bool` or an enum.
+  The command is a list literal whose items are text literals and the
+  action's parameters, nothing else; its first item, the program, is a
+  text literal. The program must be allowed by `permit exec` (section
+  5.6), else it is a load error. A parameter the command never uses is
+  a warning.
+- A handler calls it as a function: `on click { dispatch(3) }`. The
+  call is checked as a function's (arity, argument types) and, as every
+  action call is, allowed only in a handler (section 8.3). Each
+  parameter becomes exactly one argument of the program, its value as
+  `text` shows it: never split on spaces, never read by a shell. The
+  program is run directly, never through a shell.
+- The command runs detached, in its own process group, with stdin and
+  stdout on `/dev/null`; the handler does not wait for it, and logic is
+  never blocked by it. A program that cannot start or exits non-zero is
+  logged and becomes a `strand watch` notice naming the action, as a
+  `file`'s `run` failing does (section 9.7). The handler's next
+  statement has already run: the call's value is `()`.
+- `strand check` lists every action's command, each parameter shown as
+  `{name}` where it is one argument; the language server shows it on an
+  action's hover. Both check its program against `permit exec`.
+- In a `from dbus` service's block, `action name(params) = Method`
+  declares an action that calls a method of the service's object.
+  Parameters are as above, plus `[text]`. The method is checked against
+  the object's introspection as fields are (section 5.6): a missing
+  method is an error with a did-you-mean, as is another number of
+  arguments or a parameter whose type does not convert to the
+  argument's D-Bus type. A handler calls it as a service action:
+  `on click { ppd.hold("performance", "game", "strand") }`. A failed
+  call is logged, as a builtin service's action failing is. Any other
+  source's block declaring an action is a load error.
 
 ## 6. Trees
 
@@ -587,7 +626,8 @@ units).
 - A **handler** is the body of `on`, `after` or `every`. It is a
   coroutine: it may `await`, and other handlers run while it waits.
 - Statements are `let`, `if`, `match`, `for`, `play`, expressions (an
-  action call such as `ws.focus()`) and assignments.
+  action call such as `ws.focus()`, or of a declared action, section
+  5.7) and assignments.
 - **Assignment** (`=`, `+=`, `-=`, `*=`, `/=`) writes a place: a
   `state`, a field or item of one, an `rw` service field (including one
   on an item of a service's keyed list), or a settings field (written
