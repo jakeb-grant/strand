@@ -1647,6 +1647,10 @@ fn popups_nest_under_their_anchors_and_close_on_click_away() {
     spec.height = Some(120.0);
     spec.overhang = Insets::all(10.0);
     spec.open_two_way = true;
+    // Both opened by the click (`SceneDiff::press`).
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    mgr.state_mut().set_popup_cause(POPUP, Some(serial));
+    mgr.state_mut().set_popup_cause(MENU, Some(serial));
     mgr.state_mut()
         .apply_surface_change(POPUP, SurfaceChange::Created(spec.clone()));
     let ok = mgr
@@ -1887,6 +1891,10 @@ fn popups_grab_only_right_after_a_press() {
     };
 
     // Opened by the click: it grabs.
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    for node in [CALENDAR, VOLUME, LATE] {
+        mgr.state_mut().set_popup_cause(node, Some(serial));
+    }
     mgr.state_mut()
         .apply_surface_change(CALENDAR, SurfaceChange::Created(popup("Calendar", 100.0)));
     assert!(mapped(&mut mgr, CALENDAR));
@@ -2076,6 +2084,9 @@ fn escape_reaches_a_grabbing_popup() {
     spec.width = Some(200.0);
     spec.height = Some(120.0);
     spec.open_two_way = true;
+    // Opened by the click (`SceneDiff::press`).
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    mgr.state_mut().set_popup_cause(POPUP, Some(serial));
     mgr.state_mut()
         .apply_surface_change(POPUP, SurfaceChange::Created(spec));
     let ok = mgr
@@ -2874,4 +2885,206 @@ impl VirtualPointer {
         }
         self.queue.roundtrip(&mut VpClient).unwrap();
     }
+}
+
+/// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: one the
+/// press opened (`State::set_popup_cause`, from `SceneDiff::press`)
+/// grabs with that press's serial even when the pointer moved well away
+/// before it was created; one no press opened (a hover island under
+/// the next bar item) takes no grab within `GRAB_WINDOW` of a click, so
+/// it neither takes the keyboard nor latches the pointer. A popup in a
+/// parent popup without a grab takes none either (xdg-shell allows a
+/// grab only under a toplevel or a grabbing popup). A `trigger: hover`
+/// popup never grabs, even marked with a fresh press, nor does a popup
+/// opened from it.
+#[test]
+fn a_popup_grabs_only_for_the_press_that_opened_it() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_popup_grabs_only_for_the_press_that_opened_it") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const HOVERED: NodeId = NodeId::new(2, 0);
+    const CLICKED: NodeId = NodeId::new(3, 0);
+    const NESTED: NodeId = NodeId::new(4, 0);
+    const TRIGGERED: NodeId = NodeId::new(5, 0);
+    const IN_TRIGGERED: NodeId = NodeId::new(6, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // A first click on the desktop wakes the new virtual pointer up.
+    click(1, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    let pressed = |mgr: &mut strand_surface::SurfaceManager<TestHost>, n: usize| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        InputEvent::PointerButton {
+                            state: ButtonState::Pressed,
+                            ..
+                        }
+                    )
+                })
+                .count()
+                >= n
+        })
+        .unwrap()
+    };
+    let popup =
+        |name: &str, x: f32| {
+            let mut spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| {
+                None::<&strand_scene::PropValue>
+            });
+            spec.name = Some(name.into());
+            spec.parent = Some(BAR);
+            spec.anchor_rect = Some(LogicalRect::new(x, 8.0, 60.0, 20.0));
+            spec.width = Some(200.0);
+            spec.height = Some(120.0);
+            spec.open_two_way = true;
+            spec
+        };
+    let mapped = |mgr: &mut strand_surface::SurfaceManager<TestHost>, node: NodeId| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap()
+    };
+
+    // A click on one item, then the pointer goes on along the bar, more
+    // than 8 px, to the next (well within the grab window).
+    click(10, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    assert!(pressed(&mut mgr, 1), "the press reached the bar");
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    pointer.motion_absolute(20, 600, 18, 1920, 1080);
+    pointer.frame();
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().input.iter().any(
+                |e| matches!(e, InputEvent::PointerMotion { position, .. } if position.x > 500.0),
+            )
+        })
+        .unwrap();
+    assert!(ok, "the motion reached the bar");
+    // The island the hover opened there: no press opened it, no grab.
+    mgr.state_mut().set_popup_cause(HOVERED, None);
+    mgr.state_mut()
+        .apply_surface_change(HOVERED, SurfaceChange::Created(popup("Hovered", 600.0)));
+    assert!(mapped(&mut mgr, HOVERED));
+    assert_eq!(
+        mgr.state().stats().grabs,
+        0,
+        "a hover-opened popup never grabs"
+    );
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert!(!mgr.state().holds_keyboard_for_popup(bar));
+
+    // A popup the click opened, created only now (its handler was slow,
+    // the pointer long gone from where it pressed): it grabs.
+    mgr.state_mut().set_popup_cause(CLICKED, Some(serial));
+    mgr.state_mut()
+        .apply_surface_change(CLICKED, SurfaceChange::Created(popup("Clicked", 300.0)));
+    assert!(mapped(&mut mgr, CLICKED));
+    assert_eq!(mgr.state().stats().grabs, 1, "the click's own menu grabs");
+    assert!(mgr.state().holds_keyboard_for_popup(bar));
+
+    // A popup nested in the hover island, opened by the same press: its
+    // parent has no grab, so neither does it.
+    let mut nested = popup("Nested", 10.0);
+    nested.parent = Some(HOVERED);
+    mgr.state_mut().set_popup_cause(NESTED, Some(serial));
+    mgr.state_mut()
+        .apply_surface_change(NESTED, SurfaceChange::Created(nested));
+    assert!(mapped(&mut mgr, NESTED));
+    assert_eq!(
+        mgr.state().stats().grabs,
+        1,
+        "no grab under a popup without one"
+    );
+
+    // The popups closed, a fresh click, and a `trigger: hover` popup
+    // marked with it: no grab; nor for a popup in it marked with the
+    // same press.
+    for node in [NESTED, CLICKED, HOVERED] {
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
+    }
+    pump(&mut mgr, Duration::from_millis(100));
+    click(20, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    assert!(pressed(&mut mgr, 2), "the second press reached the bar");
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    let mut island = popup("Island", 130.0);
+    island.hover_trigger = true;
+    mgr.state_mut().set_popup_cause(TRIGGERED, Some(serial));
+    mgr.state_mut()
+        .apply_surface_change(TRIGGERED, SurfaceChange::Created(island));
+    assert!(mapped(&mut mgr, TRIGGERED));
+    let mut inner = popup("InIsland", 10.0);
+    inner.parent = Some(TRIGGERED);
+    mgr.state_mut().set_popup_cause(IN_TRIGGERED, Some(serial));
+    mgr.state_mut()
+        .apply_surface_change(IN_TRIGGERED, SurfaceChange::Created(inner));
+    assert!(mapped(&mut mgr, IN_TRIGGERED));
+    assert_eq!(
+        mgr.state().stats().grabs,
+        1,
+        "a `trigger: hover` popup, and one in it, never grab"
+    );
+    drop(input);
+    drop(pointer);
 }

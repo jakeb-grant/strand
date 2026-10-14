@@ -1017,11 +1017,14 @@ fn the_design_bar_is_laid_out_start_centre_end() {
         .unwrap();
     let mut strand = Proc(child);
     // `shadow: $elevation.md` (0 2px 8px) reaches 13 px: 11 above the
-    // box, 15 below, 13 each side; the margins move out by as much.
+    // box, 15 below, 13 each side; the buffer reaches past the box by
+    // that much, but never past the edges it is anchored to (the 8 px
+    // margins there, decisions.md m6-w2-surface), and the margins move
+    // out by as much.
     let deadline = Instant::now() + Duration::from_secs(30);
     while !damage_lines(&log)
         .iter()
-        .any(|l| l.contains("buffer=2570x62 "))
+        .any(|l| l.contains("buffer=2560x59 "))
     {
         assert!(
             strand.0.try_wait().unwrap().is_none(),
@@ -1030,7 +1033,7 @@ fn the_design_bar_is_laid_out_start_centre_end() {
         );
         assert!(
             Instant::now() < deadline,
-            "no 2570x62 bar: {}",
+            "no 2560x59 bar: {}",
             std::fs::read_to_string(&log).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(50));

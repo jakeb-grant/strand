@@ -37,6 +37,7 @@ enum DropKind { files, app, text }
 /// What an `input` holds: `type: password` masks it (docs/grammar.md).
 enum InputKind { text, password }
 enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }
+enum PopupTrigger { open, hover }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -63,6 +64,12 @@ handle record Node {
   width: float
   /// Its laid-out height.
   height: float
+  /// A `popup` (or another surface) is open: from the moment its `open`
+  /// turns true (or the pointer opens a `trigger: hover` one) until it
+  /// turns false, as its exit pose starts. False on other elements.
+  /// `when cal.open { bg: $surface.hi }` styles an anchor while its
+  /// popup shows.
+  open: bool
 }
 
 /// A span of characters: from `start` up to, not including, `end`.
@@ -1079,6 +1086,22 @@ element osd: surface { flags surface }
 element lock: surface { flags surface }
 /// Anchored to its parent element; nests (tray menus).
 element popup: surface {
+  /// What opens it: `open` (the default), its `open:` prop; `hover`,
+  /// the pointer. A `trigger: hover` popup opens while the pointer is
+  /// on the element it is anchored to (after `delay`), stays open while
+  /// the pointer is on that element or on the popup (popups opened from
+  /// it too), and 200 ms more to cross the gap, or while a drag that
+  /// started in it goes on. It never takes the keyboard, and opening
+  /// one closes the other `trigger: hover` popup open from the same
+  /// surface. It takes no `open:`.
+  trigger: PopupTrigger
+  /// How long the pointer rests on the element before a `trigger:
+  /// hover` popup opens. At once by default.
+  delay: duration
+  /// How long a `trigger: hover` popup stays open after the pointer
+  /// leaves both it and its element, to cross the gap. 200 ms by
+  /// default.
+  grace: duration
   /// Escape or a click away closed it.
   on dismiss
   flags on_demand

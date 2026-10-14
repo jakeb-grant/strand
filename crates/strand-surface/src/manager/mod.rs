@@ -803,6 +803,9 @@ pub struct State<H: SurfaceHost + 'static> {
     /// Popups the compositor dismissed (Escape, a click away) whose spec
     /// still says open: not shown again until it says closed.
     dismissed: BTreeSet<NodeId>,
+    /// (M6) The press each popup node was opened by
+    /// ([`State::set_popup_cause`]): only such a popup grabs.
+    popup_cause: HashMap<NodeId, u32>,
     /// Set by [`State::set_focused_monitor`]; `None` lets the compositor
     /// place `screens: focused` surfaces.
     focused: Option<MonitorId>,
@@ -1014,6 +1017,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             held_leave: None,
             grab_focus: None,
             dismissed: BTreeSet::new(),
+            popup_cause: HashMap::new(),
             modifiers: Modifiers::default(),
             focused: None,
             input: None,
@@ -1236,6 +1240,25 @@ impl<H: SurfaceHost + 'static> State<H> {
         let ids: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
         for id in ids {
             self.mark(id);
+        }
+    }
+
+    /// (M6) `node`, a popup a scene diff creates or opens, was opened by
+    /// the press with compositor serial `press` (`SceneDiff::press`: its
+    /// handler or two-way write ran for that press), or by no press
+    /// (`None`: a hover, a timer, IPC). Its surface grabs with that
+    /// serial when it is created, if the press is still the seat's last
+    /// and within [`GRAB_WINDOW`]; a popup no press opened never grabs
+    /// (decisions.md m6-w2-surface). Call it before applying the surface
+    /// changes the diff causes.
+    pub fn set_popup_cause(&mut self, node: NodeId, press: Option<u32>) {
+        match press {
+            Some(serial) => {
+                self.popup_cause.insert(node, serial);
+            }
+            None => {
+                self.popup_cause.remove(&node);
+            }
         }
     }
 

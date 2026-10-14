@@ -1714,8 +1714,24 @@ impl Instance {
     }
 
     /// A widget wrote `prop` (`value: <-> level`): write it to the bound
-    /// place, outside any handler.
+    /// place, outside any handler. (M6) The router opening or closing a
+    /// `trigger: hover` popup writes its `open`, which the popup owns.
     pub fn write(&self, node: NodeId, prop: SceneProp, value: PropValue) -> Result<(), Error> {
+        if prop == SceneProp::Open {
+            let shown = {
+                let em = self.ctx.em.borrow();
+                let hover = em.sent.get(&node).and_then(|m| m.get(&SceneProp::Trigger))
+                    == Some(&PropValue::Keyword("hover".into()));
+                em.nodes.get(&node).filter(|_| hover).map(|e| e.state.open)
+            };
+            if let Some(shown) = shown {
+                let PropValue::Bool(on) = value else {
+                    return Err(Error::failed("a popup's `open` is true or false"));
+                };
+                self.inspect_write(node, prop, &value);
+                return shown.set(&self.rt, on);
+            }
+        }
         let target = self.ctx.em.borrow().nodes.get(&node).and_then(|e| {
             e.two_way
                 .iter()

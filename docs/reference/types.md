@@ -187,6 +187,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `selected` | `bool` | It is the selected item of a `list`; arrow keys move the selection. |
 | `width` | `float` | Its laid-out width. `when self.width < 300 { … }` is a container query, with 4 px hysteresis so it cannot flicker. |
 | `height` | `float` | Its laid-out height. |
+| `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |
 
 ### `Notification`
 
@@ -409,6 +410,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Layer` | `background`, `bottom`, `top`, `overlay` |
 | `Markup` | `none`, `basic` |
 | `Place` | `flow`, `absolute` |
+| `PopupTrigger` | `open`, `hover` |
 | `PoseName` | `none`, `fade`, `slidefade` |
 | `RadiusKeyword` | `full` |
 | `Screens` | `all`, `focused` |

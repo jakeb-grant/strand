@@ -8,7 +8,7 @@ use strand_scene::Curve;
 use strand_scene::{NodeId, Prop, PropValue, Scale, SurfaceId, TokenScope};
 
 use super::Renderer;
-use super::specs::centred_overhang;
+use super::specs::{centred_overhang, within_edges};
 use super::text::TextSlot;
 use crate::anim::{Animator, SizeMap};
 use crate::flatten::{Flattened, Shaped, flatten, pick};
@@ -263,7 +263,11 @@ impl Renderer {
             && spec.open
         {
             let grown = crate::fillet::grow(&self.tree, &boxes, root, boxes.overhang);
-            let o = crate::fillet::flush(&self.tree, root, centred_overhang(&spec, grown));
+            let o = crate::fillet::flush(
+                &self.tree,
+                root,
+                within_edges(&spec, centred_overhang(&spec, grown)),
+            );
             if o != spec.overhang {
                 spec.overhang = o;
                 self.record_spec(root, spec);

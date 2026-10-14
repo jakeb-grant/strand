@@ -48,7 +48,8 @@ pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
 pub use clock::Rate;
 pub use flatten::{BLUR_TINT, SurfaceOrigin};
 pub use input::{
-    DragView, Flag, HiddenRows, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP,
+    DragView, Flag, HOVER_GRACE, HiddenRows, HitOnly, InputScene, Intent, NodeEvent, Router,
+    WHEEL_STEP,
 };
 pub use inspect::LayoutInfo;
 pub use layout::{

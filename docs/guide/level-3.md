@@ -175,6 +175,27 @@ the slider, even when the pointer leaves the row, so the slider never
 vanishes under you. `if` can have an `else { … }` block for when the
 condition is false.
 
+**`trigger: hover` opens a popup by pointing.** The slider sits inside
+the row, so `if hover` keeps it while you use it. A `popup` is a surface
+of its own: an `if hover` popup would close on the pointer's way to it.
+Give the popup `trigger: hover` instead and Strand opens and closes it:
+it opens while the pointer is on the element it belongs to, stays while
+the pointer is on either, and 200 ms more, long enough to cross the gap:
+
+```
+box { size: 28
+  when popout.open { bg: $surface.hi }      // lit while its popup shows
+  popup { id: popout; trigger: hover; pad: $space.3
+    text "More here"
+  }
+}
+```
+
+Such a popup takes no `open:`: the pointer is what opens it. `delay:`
+makes the pointer rest first, and `grace:` changes the 200 ms. Pointing
+at another `trigger: hover` element on the same bar swaps the popups at
+once. `popout.open` reads whether a popup is open, whatever opens it.
+
 **`enter { width: 0; opacity: 0 }` is where a node animates in from.**
 When the slider appears it starts at no width and transparent, and
 springs to its real size and full opacity. When it goes, it plays the

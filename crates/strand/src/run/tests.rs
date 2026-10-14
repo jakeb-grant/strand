@@ -1560,6 +1560,7 @@ fn a_password_value_is_redacted_from_fault_messages() {
             node: input,
             prop: Prop::Text,
             value: PropValue::Text(password.into()),
+            input: None,
         })
         .unwrap();
     let ev = loop {
@@ -3380,4 +3381,90 @@ fn a_failing_actions_command_is_a_watch_notice() {
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: the diff
+/// a click's handler produces carries that click's serial
+/// (`SceneDiff::press`, and so does every diff after it until a hover
+/// change, for a menu a service opens in answer), so the menu it opens
+/// is caused by the press (`demo::popup_causes`), as is a submenu Right
+/// opens by a two-way write; the diff a hover change produces carries
+/// none, so the island it opens is caused by nothing and never grabs.
+#[test]
+fn a_diff_carries_the_press_whose_handlers_made_it() {
+    use strand_compiler::vm::InputCtx;
+    let dir = temp_dir("press-cause");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  height: 30\n  state menu = false\n  state sub = false\n  row {\n    box { id: item; size: 20\n      on click { menu = true }\n      popup { open: menu; box { size: 40 } }\n    }\n    box { id: other; size: 20\n      popup { open: other.hover; box { size: 40 } }\n    }\n    box { size: 20; popup { open: <-> sub; box { size: 40 } } }\n  }\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::none();
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, Live::default()));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| {
+        s.of_kind(strand_scene::NodeKind::Popup).len() == 3
+    });
+    let popups = m.scene.of_kind(strand_scene::NodeKind::Popup);
+    let (menu, island, sub) = (popups[0], popups[1], popups[2]);
+    let item = m.scene.parent(menu).unwrap();
+    let other = m.scene.parent(island).unwrap();
+    // The diff that opens `popup`, and what `popup_causes` makes of it.
+    let opened = |m: &mut Mirror, popup| loop {
+        let diff = m
+            .inbox
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a diff opening the popup");
+        m.apply("open", &diff);
+        let causes = crate::demo::popup_causes(&diff);
+        if let Some((_, cause)) = causes.iter().find(|(n, _)| *n == popup)
+            && m.scene.prop(popup, Prop::Open) == Some(&PropValue::Bool(true))
+        {
+            break (diff.press, *cause);
+        }
+    };
+    let input = Some(InputCtx {
+        surface: 1,
+        serial: 42,
+    });
+    to_logic
+        .send(ToLogic::Event {
+            node: item,
+            event: NodeEvent::Click,
+            input,
+        })
+        .unwrap();
+    assert_eq!(
+        opened(&mut m, menu),
+        (Some(42), Some(42)),
+        "the click's menu"
+    );
+    to_logic
+        .send(ToLogic::Flag {
+            node: other,
+            flag: NodeFlag::Hover,
+            on: true,
+        })
+        .unwrap();
+    assert_eq!(opened(&mut m, island), (None, None), "the hover's island");
+    to_logic
+        .send(ToLogic::Write {
+            node: sub,
+            prop: Prop::Open,
+            value: PropValue::Bool(true),
+            input: Some(InputCtx {
+                surface: 1,
+                serial: 43,
+            }),
+        })
+        .unwrap();
+    assert_eq!(opened(&mut m, sub), (Some(43), Some(43)), "Right's submenu");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
 }

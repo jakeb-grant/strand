@@ -133,25 +133,45 @@ pub(super) const SQUIRCLE_N: f64 = 5.0;
 /// corner" of iOS and Material 3 Expressive).
 pub(super) const SQUIRCLE_REACH: f64 = 1.6;
 
+/// The reach along each edge and the superellipse exponent of a squircle
+/// corner of radius `r` in a box whose shorter side is `2 × cap`: the
+/// reach is `SQUIRCLE_REACH × r`, capped at `cap`; where the cap cuts it
+/// short, the corner has no room to ease in, so the exponent falls
+/// linearly from `SQUIRCLE_N` (full reach) to 2 (a reach of only `r`, a
+/// circle). A radius of half the side (`radius: full`, or 20 on a 40 px
+/// bar) is then the pill a round corner draws, not a near-square corner
+/// a quintic curve squeezed into the circle's room would be.
+pub(super) fn squircle_corner(r: f64, cap: f64) -> (f64, f64) {
+    let r = r.max(0.0);
+    let full = r * SQUIRCLE_REACH;
+    let reach = full.min(cap.max(0.0));
+    if reach >= full || full <= r {
+        return (reach, SQUIRCLE_N);
+    }
+    let t = ((reach - r) / (full - r)).clamp(0.0, 1.0);
+    (reach, 2.0 + (SQUIRCLE_N - 2.0) * t)
+}
+
 /// A rounded rect whose corners are superellipse quadrants
 /// (`|x|^n + |y|^n = 1`, n = 5) reaching `SQUIRCLE_REACH` × the radius
-/// along each edge (capped at half the side), flattened to lines.
+/// along each edge, flattened to lines; a corner capped at half the side
+/// rounds towards a circle ([`squircle_corner`]).
 /// Hit testing and blurred shadows keep the circular shape of the same
 /// radii, which a squircle stays within a pixel or so of.
 pub(super) fn squircle_path(rect: kurbo::Rect, r: RoundedRectRadii) -> BezPath {
     let (w, h) = (rect.width(), rect.height());
     let cap = (w.min(h) / 2.0).max(0.0);
-    let reach = |v: f64| (v * SQUIRCLE_REACH).min(cap).max(0.0);
+    let corner = |v: f64| squircle_corner(v, cap);
     // Corners clockwise from top-left: (corner point, x dir, y dir).
     let corners = [
-        (rect.x0, rect.y0, 1.0, 1.0, reach(r.top_left)),
-        (rect.x1, rect.y0, -1.0, 1.0, reach(r.top_right)),
-        (rect.x1, rect.y1, -1.0, -1.0, reach(r.bottom_right)),
-        (rect.x0, rect.y1, 1.0, -1.0, reach(r.bottom_left)),
+        (rect.x0, rect.y0, 1.0, 1.0, corner(r.top_left)),
+        (rect.x1, rect.y0, -1.0, 1.0, corner(r.top_right)),
+        (rect.x1, rect.y1, -1.0, -1.0, corner(r.bottom_right)),
+        (rect.x0, rect.y1, 1.0, -1.0, corner(r.bottom_left)),
     ];
     let mut path = BezPath::new();
-    let e = 2.0 / SQUIRCLE_N;
-    for (i, &(cx, cy, dx, dy, rr)) in corners.iter().enumerate() {
+    for (i, &(cx, cy, dx, dy, (rr, n))) in corners.iter().enumerate() {
+        let e = 2.0 / n;
         // Points from the edge before the corner to the edge after it,
         // going clockwise.
         let steps = ((rr.sqrt() * 4.0).ceil() as usize).clamp(4, 64);

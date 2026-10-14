@@ -4909,3 +4909,160 @@ fn a_component_reads_its_bars_screen() {
         "{texts:?}"
     );
 }
+
+/// (M6, spec.md 6.3) A `trigger: hover` popup's `open` is the router's:
+/// it starts closed (render reads a popup with no `open` as shown), its
+/// body mounts only once the router writes it true, plays `on show`,
+/// and goes when it writes false. Its spec takes no grab. A popup
+/// without the trigger keeps refusing a write to an `open` not bound
+/// two-way.
+#[test]
+fn the_router_opens_a_hover_popup() {
+    let src = "state shows = 0\nbar Top {\n  height: 30\n  row {\n    box { size: 20\n      popup { trigger: hover\n        on show { shows += 1 }\n        text \"island\" }\n    }\n    box { size: 20; popup { open: false; text \"menu\" } }\n  }\n  text shows > 0 ? \"shown\" : \"never\"\n}\n";
+    let mut shell = boot(&[("h.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let popups = shell.scene.of_kind(NodeKind::Popup);
+    let (island, menu) = (popups[0], popups[1]);
+    let texts = |shell: &Shell| -> Vec<String> {
+        shell
+            .scene
+            .of_kind(NodeKind::Text)
+            .into_iter()
+            .filter_map(|t| match shell.scene.prop(t, Prop::Text) {
+                Some(PropValue::Text(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        shell.scene.prop(island, Prop::Open),
+        Some(&PropValue::Bool(false))
+    );
+    assert_eq!(texts(&shell), ["never"], "nothing mounted in either popup");
+    let spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |p| {
+        shell.scene.prop(island, p).cloned()
+    });
+    assert!(spec.hover_trigger && !spec.open);
+    shell
+        .inst
+        .write(island, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(island, Prop::Open),
+        Some(&PropValue::Bool(true))
+    );
+    let mut got = texts(&shell);
+    got.sort();
+    assert_eq!(got, ["island", "shown"], "its body mounted and it showed");
+    shell
+        .inst
+        .write(island, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(texts(&shell), ["shown"], "its body gone");
+    assert!(
+        shell
+            .inst
+            .write(menu, Prop::Open, PropValue::Bool(true))
+            .is_err()
+    );
+}
+
+/// (M6) `p.open` reads a popup's open state, so its anchor can style
+/// itself while it shows: a `trigger: hover` popup's as the router
+/// opens and closes it, an `open:` popup's as its expression goes.
+#[test]
+fn an_anchor_reads_its_popups_open() {
+    let src = "state on = false\nbar Top {\n  height: 30\n  row {\n    box { size: 20\n      when cal.open { opacity: 0.5 }\n      popup { id: cal; trigger: hover; text \"cal\" }\n    }\n    box { size: 20\n      on click { on = !on }\n      when menu.open { opacity: 0.25 }\n      popup { id: menu; open: on; text \"menu\" }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("o.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let popups = shell.scene.of_kind(NodeKind::Popup);
+    let (cal, menu) = (popups[0], popups[1]);
+    let a = shell.scene.parent(cal).unwrap();
+    let b = shell.scene.parent(menu).unwrap();
+    let opacity = |shell: &Shell, n| match shell.scene.prop(n, Prop::Opacity) {
+        Some(PropValue::Number(v)) => *v,
+        _ => 1.0,
+    };
+    assert_eq!((opacity(&shell, a), opacity(&shell, b)), (1.0, 1.0));
+    shell
+        .inst
+        .write(cal, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    shell.flush();
+    assert_eq!(opacity(&shell, a), 0.5, "the island shows");
+    shell.inst.event(b, "click", Vec::new());
+    shell
+        .inst
+        .write(cal, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(opacity(&shell, a), 1.0, "the island closed");
+    assert_eq!(opacity(&shell, b), 0.25, "the menu opened by its `open:`");
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(opacity(&shell, b), 1.0, "and closed");
+}
+
+/// (M6, decisions.md m6-integration-w2) Where the surface stream's hover
+/// popups meet the language stream's calls: a call whose root is a
+/// `trigger: hover` popup takes `id:` and `on show` as the popup's, so
+/// `i.open` reads the router's writes and the caller's handler runs; a
+/// component's `screen` (its bar's) reaches the body of a hover popup
+/// that mounts only when the router opens it.
+#[test]
+fn a_calls_id_and_screen_reach_its_hover_popup() {
+    let src = "state shows = 0\n\
+        component Island(label: text) { popup { trigger: hover; text label } }\n\
+        component Chip { box { size: 20\n      popup { trigger: hover; text join(\" \", \"on\", screen.name) } } }\n\
+        bar B {\n  row {\n    \
+        box { size: 20\n      when i.open { opacity: 0.5 }\n      \
+        Island \"island\" { id: i; on show { shows += 1 } } }\n    \
+        Chip\n    \
+        text join(\" \", \"shows\", shows)\n  }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let popups = shell.scene.of_kind(NodeKind::Popup);
+    let (island, chip) = (popups[0], popups[1]);
+    let anchor = shell.scene.parent(island).unwrap();
+    let opacity = |shell: &Shell| match shell.scene.prop(anchor, Prop::Opacity) {
+        Some(PropValue::Number(v)) => *v,
+        _ => 1.0,
+    };
+    let mut texts = shell.scene.texts();
+    texts.sort();
+    assert_eq!(texts, ["shows 0"], "neither body mounted");
+    assert_eq!(opacity(&shell), 1.0);
+    shell
+        .inst
+        .write(island, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    shell
+        .inst
+        .write(chip, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let mut texts = shell.scene.texts();
+    texts.sort();
+    assert_eq!(texts, ["island", "on DP-1", "shows 1"], "{texts:?}");
+    assert_eq!(opacity(&shell), 0.5, "`i.open` is the popup's");
+    shell
+        .inst
+        .write(island, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(opacity(&shell), 1.0, "and closes with it");
+}

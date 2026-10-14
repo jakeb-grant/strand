@@ -322,6 +322,17 @@ props! {
     /// and a component's `tokens { radius: $radius.lg }` (as
     /// `Toast.radius`) both lower to it. See [`crate::TokenScope`].
     Tokens = "tokens": Snap,
+    /// (M6) On a `popup`: `trigger: hover` (`Keyword`): the router opens
+    /// and closes it by the pointer (spec.md 6.3), writing its `open`;
+    /// `open` (or none) leaves `open:` to the program.
+    Trigger = "trigger": Snap,
+    /// (M6) On a `trigger: hover` popup: how long the pointer rests on
+    /// its anchor before it opens (`Duration`; none is at once).
+    Delay = "delay": Snap,
+    /// (M6) On a `trigger: hover` popup: how long it stays open after
+    /// the pointer leaves it and its anchor (`Duration`; none is
+    /// `strand_render::HOVER_GRACE`).
+    Grace = "grace": Snap,
 }
 
 /// A length in logical pixels or relative to a reference.
@@ -937,6 +948,12 @@ pub struct SceneDiff {
     /// `reduced-motion`, as `system.reduced_motion`): render snaps
     /// every spring while it is on (`Renderer::set_reduced_motion`).
     pub reduced_motion: Option<bool>,
+    /// (M6) The compositor serial of the button or key press whose
+    /// handlers (or two-way write) produced this diff, if any: a popup
+    /// this diff creates or opens was opened by that press, and grabs
+    /// with its serial; one a diff without it opens (a hover, a timer)
+    /// never grabs (decisions.md m6-w2-surface).
+    pub press: Option<u32>,
 }
 
 impl SceneDiff {

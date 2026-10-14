@@ -116,6 +116,13 @@ pub(super) struct Shell {
     pub(super) settings_reread: Vec<String>,
     /// The last layout fact batch taken in since the last diff went out.
     pub(super) layout_seen: Option<u64>,
+    /// (M6) The serial of the last press whose event or write logic
+    /// handled, until a hover change (or input with no press) is handled
+    /// after it: every diff carries it (`SceneDiff::press`), so popups it
+    /// opens, at once or once a service answers the handler's action (a
+    /// tray menu's `opened`), were opened by that press; one a hover
+    /// opens has none and never grabs.
+    pub(super) press: Option<u32>,
     /// (M4) The GPU status render last reported.
     pub(super) gpu: strand_scene::GpuStatus,
     /// The password inputs' values, redacted from fault messages
@@ -183,6 +190,7 @@ impl Shell {
                     }
                     return;
                 }
+                self.press = input.map(|i| i.serial);
                 inst.event_with(node, event.name(), event.args_with(&self.host), input);
             }
             ToLogic::Layout { seq, sizes } => {
@@ -191,13 +199,25 @@ impl Shell {
                 }
                 self.layout_seen = Some(seq);
             }
-            ToLogic::Write { node, prop, value } => {
+            ToLogic::Write {
+                node,
+                prop,
+                value,
+                input,
+            } => {
+                self.press = input.map(|i| i.serial);
                 self.secrets.see_write(node, prop, &value);
                 if let Err(e) = inst.write(node, prop, value) {
                     log::debug!("write to {prop}: {}", self.secrets.redact_error(&e));
                 }
             }
-            ToLogic::Flag { node, flag, on } => inst.set_flag(node, flag, on),
+            ToLogic::Flag { node, flag, on } => {
+                // A hover change opens popups no press opened.
+                if flag == NodeFlag::Hover {
+                    self.press = None;
+                }
+                inst.set_flag(node, flag, on);
+            }
             ToLogic::Size {
                 node,
                 width,

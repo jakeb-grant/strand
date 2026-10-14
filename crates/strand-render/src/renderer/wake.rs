@@ -132,7 +132,22 @@ impl Renderer {
         let gpu = self.gpu_wake();
         #[cfg(not(feature = "gpu"))]
         let gpu = None;
-        [exits, tooltip, clocks, gpu].into_iter().flatten().min()
+        [exits, tooltip, clocks, gpu, self.input_wake]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// (M6) Wakes the host's loop at `at` as well (`None`: no longer): the
+    /// input router's next `trigger: hover` popup delay or grace ending
+    /// (`strand_render::Router::next_wake`), which the host's wake
+    /// handler then ticks (`Router::tick`). Arms the timer at once.
+    pub fn set_input_wake(&mut self, at: Option<Instant>) {
+        if self.input_wake == at {
+            return;
+        }
+        self.input_wake = at;
+        self.arm_timer();
     }
 
     /// Collects finished text layouts and sends shaping requests for text

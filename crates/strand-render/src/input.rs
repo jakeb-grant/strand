@@ -428,6 +428,60 @@ pub struct Router {
     /// (M5) Pick mode: pointer input goes to the inspector, not to
     /// handlers ([`Router::set_picking`]).
     picking: bool,
+    /// (M6) The `trigger: hover` popups the router opens and closes.
+    hover_popups: HoverPopups,
+}
+
+/// (M6) How long a `trigger: hover` popup stays open after the pointer
+/// leaves both it and the element it is anchored to (spec.md 6.3): the
+/// pointer crosses the gap between a bar item and its island without
+/// the island closing on the way. Quickshell configs use the same
+/// 200 ms (decisions.md m6-w2-surface).
+pub const HOVER_GRACE: Duration = Duration::from_millis(200);
+
+/// (M6) The `trigger: hover` popups the router opened (spec.md 6.3): it
+/// writes their `open` as the pointer comes and goes.
+#[derive(Debug, Default)]
+struct HoverPopups {
+    /// Each open one, and when it closes unless the pointer comes back
+    /// (`None` while the pointer is on it or its anchor).
+    open: HashMap<NodeId, Option<Instant>>,
+    /// Each waiting for its `delay` while the pointer rests on its
+    /// anchor, and when it opens.
+    pending: HashMap<NodeId, Instant>,
+}
+
+/// (M6) Whether `node` is a `trigger: hover` popup (never a tooltip's).
+fn is_hover_popup(tree: &SceneTree, node: NodeId) -> bool {
+    !tree.is_overlay(node)
+        && tree.get(node).is_some_and(|n| {
+            n.kind == NodeKind::Popup
+                && matches!(n.get(Prop::Trigger), Some(PropValue::Keyword(k)) if k == "hover")
+        })
+}
+
+/// (M6) `node`'s tree ancestors, nearest first: for a popup, the element
+/// it is anchored to and up, across the popups it nests in.
+fn ancestors(tree: &SceneTree, node: NodeId) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut up = tree.get(node).and_then(|n| n.parent);
+    while let Some(p) = up {
+        if out.len() >= 256 || out.contains(&p) {
+            break;
+        }
+        out.push(p);
+        up = tree.get(p).and_then(|n| n.parent);
+    }
+    out
+}
+
+/// (M6) The surface a popup opens from: the nearest surface node above
+/// it (a bar, a panel, the popup it nests in). One `trigger: hover`
+/// popup is open from each at a time.
+fn opened_from(tree: &SceneTree, popup: NodeId) -> Option<NodeId> {
+    ancestors(tree, popup)
+        .into_iter()
+        .find(|a| tree.get(*a).is_some_and(|n| n.kind.is_surface()))
 }
 
 impl Router {
@@ -612,6 +666,165 @@ impl Router {
         self.flush(scene)
     }
 
+    /// (M6) Opens and closes the `trigger: hover` popups whose time came
+    /// (a `delay`, the [`HOVER_GRACE`]); returns what logic hears of it.
+    /// The host calls it when [`Router::next_wake`] comes, and after a
+    /// surface detaches.
+    pub fn tick(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
+        self.flush(scene)
+    }
+
+    /// (M6) When [`Router::tick`] must run: the earliest `delay` or
+    /// grace of a `trigger: hover` popup to end.
+    pub fn next_wake(&self) -> Option<Instant> {
+        let h = &self.hover_popups;
+        h.open
+            .values()
+            .flatten()
+            .chain(h.pending.values())
+            .min()
+            .copied()
+    }
+
+    /// (M6) The `trigger: hover` popups follow the pointer (spec.md 6.3).
+    /// One opens while the pointer is on the element it is anchored to
+    /// (the innermost such element, after its `delay`), closing at once
+    /// any other opened from the same surface. An open one stays while
+    /// the pointer is on that element or on anything above it in the
+    /// tree (the popup, a popup opened from it), or while a press that
+    /// went down there is held (a slider's drag), and for
+    /// [`HOVER_GRACE`] after; then it closes, with the popups opened from
+    /// it first. In pick mode nothing opens and the graces end.
+    fn hover_popups(&mut self, tree: Option<&SceneTree>, now: Instant) {
+        let Some(tree) = tree else {
+            return;
+        };
+        let live = |n: &NodeId| tree.contains_live(*n);
+        self.hover_popups.open.retain(|n, _| live(n));
+        self.hover_popups.pending.retain(|n, _| live(n));
+        if self.picking {
+            let graced: Vec<NodeId> = self
+                .hover_popups
+                .open
+                .iter()
+                .filter(|(_, due)| due.is_some())
+                .map(|(n, _)| *n)
+                .collect();
+            for p in graced {
+                self.close_hover_popup(tree, p);
+            }
+            self.hover_popups.pending.clear();
+            return;
+        }
+        // Where the pointer is: each hovered (or pressed) chain, and from
+        // a popup's root on up through the element it is anchored to.
+        let mut under: HashSet<NodeId> = HashSet::new();
+        for chain in self.hovered.values().chain(self.pressed.values()) {
+            under.extend(chain.iter().copied());
+            if let Some(&root) = chain.last() {
+                under.extend(ancestors(tree, root));
+            }
+        }
+        // What the pointer opens: the innermost hovered element's
+        // `trigger: hover` popup, one for each surface it opens from.
+        let mut want: HashMap<NodeId, NodeId> = HashMap::new();
+        for chain in self.hovered.values() {
+            for &n in chain {
+                let Some(node) = tree.get(n) else {
+                    continue;
+                };
+                for &c in &node.children {
+                    if is_hover_popup(tree, c)
+                        && let Some(from) = opened_from(tree, c)
+                    {
+                        want.entry(from).or_insert(c);
+                    }
+                }
+            }
+        }
+        self.hover_popups
+            .pending
+            .retain(|p, _| want.values().any(|w| w == p));
+        let mut opening = Vec::new();
+        for (&from, &p) in &want {
+            if self.hover_popups.open.contains_key(&p) {
+                continue;
+            }
+            let delay = match tree.get(p).and_then(|n| n.get(Prop::Delay)) {
+                Some(PropValue::Duration(d)) => *d,
+                _ => Duration::ZERO,
+            };
+            if !delay.is_zero() {
+                let due = *self.hover_popups.pending.entry(p).or_insert(now + delay);
+                if due > now {
+                    continue;
+                }
+            }
+            self.hover_popups.pending.remove(&p);
+            opening.push((from, p));
+        }
+        for (from, p) in opening {
+            let others: Vec<NodeId> = self
+                .hover_popups
+                .open
+                .keys()
+                .copied()
+                .filter(|q| *q != p && opened_from(tree, *q) == Some(from))
+                .collect();
+            for q in others {
+                self.close_hover_popup(tree, q);
+            }
+            self.hover_popups.open.insert(p, None);
+            self.out.push(Intent::Write {
+                node: p,
+                prop: Prop::Open,
+                value: PropValue::Bool(true),
+            });
+        }
+        let open: Vec<NodeId> = self.hover_popups.open.keys().copied().collect();
+        for p in open {
+            let anchor = tree.get(p).and_then(|n| n.parent);
+            let Some(due) = self.hover_popups.open.get_mut(&p) else {
+                continue; // closed with the popup it was opened from
+            };
+            if anchor.is_some_and(|a| under.contains(&a)) {
+                *due = None;
+                continue;
+            }
+            let grace = match tree.get(p).and_then(|n| n.get(Prop::Grace)) {
+                Some(PropValue::Duration(d)) => *d,
+                _ => HOVER_GRACE,
+            };
+            if *due.get_or_insert(now + grace) <= now {
+                self.close_hover_popup(tree, p);
+            }
+        }
+    }
+
+    /// (M6) Closes `popup`, a `trigger: hover` popup the router opened,
+    /// and before it those opened from inside it, innermost first.
+    fn close_hover_popup(&mut self, tree: &SceneTree, popup: NodeId) {
+        let mut inner: Vec<(usize, NodeId)> = self
+            .hover_popups
+            .open
+            .keys()
+            .filter(|q| **q != popup)
+            .filter_map(|q| {
+                let up = ancestors(tree, *q);
+                up.contains(&popup).then_some((up.len(), *q))
+            })
+            .collect();
+        inner.sort_by_key(|q| std::cmp::Reverse(q.0));
+        for p in inner.into_iter().map(|(_, q)| q).chain([popup]) {
+            self.hover_popups.open.remove(&p);
+            self.out.push(Intent::Write {
+                node: p,
+                prop: Prop::Open,
+                value: PropValue::Bool(false),
+            });
+        }
+    }
+
     /// (M5) Whether pick mode is on ([`Router::set_picking`]).
     pub fn picking(&self) -> bool {
         self.picking
@@ -715,6 +928,7 @@ impl Router {
 
     /// Widgets draw hover, press, focus and selection at once.
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
+        self.hover_popups(scene.tree(), Instant::now());
         for i in &self.out {
             if let Intent::Flag { node, flag, on } = i {
                 scene.set_flag(*node, *flag, *on);

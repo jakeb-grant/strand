@@ -2757,3 +2757,374 @@ fn return_activates_a_plain_input() {
         );
     }
 }
+
+/// A bar with two items, `a` (x < 10) and `b` (10 ≤ x < 20), on surface
+/// 1; `a`'s island on surface 2 and `b`'s on surface 3, each a popup in
+/// its item holding a card (x < 50 on the island; nothing is under
+/// x ≥ 100, past the island's edge). `a`'s card holds an item (x < 20)
+/// with a popup of its own on surface 4.
+struct Islands {
+    tree: strand_render::SceneTree,
+}
+
+const BAR_N: NodeId = NodeId::new(0, 0);
+const ITEM_A: NodeId = NodeId::new(1, 0);
+const POP_A: NodeId = NodeId::new(2, 0);
+const CARD_A: NodeId = NodeId::new(3, 0);
+const ITEM_B: NodeId = NodeId::new(4, 0);
+const POP_B: NodeId = NodeId::new(5, 0);
+const CARD_B: NodeId = NodeId::new(6, 0);
+const SUB_ITEM: NodeId = NodeId::new(7, 0);
+const SUB_POP: NodeId = NodeId::new(8, 0);
+const SUB_CARD: NodeId = NodeId::new(9, 0);
+
+impl Islands {
+    /// The islands' popups with `trigger: hover` when `hover`, waiting
+    /// `delay` before they open.
+    fn new(hover: bool, delay: Option<std::time::Duration>) -> Islands {
+        use strand_scene::{NodeKind, SceneDiff};
+        let mut d = SceneDiff::new();
+        d.create(BAR_N, NodeKind::Bar, None, 0)
+            .create(ITEM_A, NodeKind::Box, Some(BAR_N), 0)
+            .create(POP_A, NodeKind::Popup, Some(ITEM_A), 0)
+            .create(CARD_A, NodeKind::Box, Some(POP_A), 0)
+            .create(SUB_ITEM, NodeKind::Box, Some(CARD_A), 0)
+            .create(SUB_POP, NodeKind::Popup, Some(SUB_ITEM), 0)
+            .create(SUB_CARD, NodeKind::Box, Some(SUB_POP), 0)
+            .create(ITEM_B, NodeKind::Box, Some(BAR_N), 1)
+            .create(POP_B, NodeKind::Popup, Some(ITEM_B), 0)
+            .create(CARD_B, NodeKind::Box, Some(POP_B), 0);
+        if hover {
+            for p in [POP_A, POP_B, SUB_POP] {
+                d.set(p, Prop::Trigger, PropValue::Keyword("hover".into()));
+                if let Some(t) = delay {
+                    d.set(p, Prop::Delay, PropValue::Duration(t));
+                }
+            }
+        }
+        let mut tree = strand_render::SceneTree::new();
+        assert!(tree.apply(d).is_empty());
+        Islands { tree }
+    }
+}
+
+impl InputScene for Islands {
+    fn hit(&self, surface: SurfaceId, at: LogicalPoint) -> Vec<NodeId> {
+        if at.x >= 100.0 {
+            return Vec::new();
+        }
+        match surface.0 {
+            1 if at.x < 10.0 => vec![ITEM_A, BAR_N],
+            1 if at.x < 20.0 => vec![ITEM_B, BAR_N],
+            1 => vec![BAR_N],
+            2 if at.x < 20.0 => vec![SUB_ITEM, CARD_A, POP_A],
+            2 if at.x < 50.0 => vec![CARD_A, POP_A],
+            2 => vec![POP_A],
+            3 if at.x < 50.0 => vec![CARD_B, POP_B],
+            3 => vec![POP_B],
+            _ => vec![SUB_CARD, SUB_POP],
+        }
+    }
+    fn tree(&self) -> Option<&strand_render::SceneTree> {
+        Some(&self.tree)
+    }
+}
+
+const S_BAR: SurfaceId = SurfaceId(1);
+const S_A: SurfaceId = SurfaceId(2);
+const S_SUB: SurfaceId = SurfaceId(4);
+
+fn at_x(surface: SurfaceId, x: f32) -> InputEvent {
+    InputEvent::PointerMotion {
+        surface,
+        position: LogicalPoint::new(x, 1.0),
+        time: 0,
+    }
+}
+
+fn enter(surface: SurfaceId, x: f32) -> InputEvent {
+    InputEvent::PointerEnter {
+        surface,
+        position: LogicalPoint::new(x, 1.0),
+    }
+}
+
+fn leave(surface: SurfaceId) -> InputEvent {
+    InputEvent::PointerLeave { surface }
+}
+
+fn hover(node: NodeId, on: bool) -> Intent {
+    Intent::Flag {
+        node,
+        flag: Flag::Hover,
+        on,
+    }
+}
+
+/// The popups the router opened (`true`) and closed so far, in order.
+fn opens(f: &mut R) -> Vec<(NodeId, bool)> {
+    let (opens, rest): (Vec<Intent>, Vec<Intent>) = f.drain().into_iter().partition(|i| {
+        matches!(
+            i,
+            Intent::Write {
+                prop: Prop::Open,
+                ..
+            }
+        )
+    });
+    f.out = rest;
+    opens
+        .into_iter()
+        .filter_map(|i| match i {
+            Intent::Write {
+                node,
+                value: PropValue::Bool(on),
+                ..
+            } => Some((node, on)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The hover flags the router asked for so far.
+fn flags(f: &mut R) -> Vec<Intent> {
+    f.drain()
+        .into_iter()
+        .filter(|i| matches!(i, Intent::Flag { .. }))
+        .collect()
+}
+
+/// Waits past the hover grace, then ticks the router.
+fn after_grace(f: &mut R, scene: &mut dyn InputScene) {
+    std::thread::sleep(strand_render::HOVER_GRACE + std::time::Duration::from_millis(50));
+    f.out.extend(f.router.tick(scene));
+}
+
+/// spec.md 6.3 (decisions.md m6-w2-surface): a `trigger: hover` popup
+/// opens as the pointer reaches its anchor, stays open while the
+/// pointer crosses the gap to it (within `HOVER_GRACE`) and rests on
+/// it, and closes `HOVER_GRACE` after the pointer leaves both. The
+/// anchor's own `hover` keeps its meaning: it goes out as the pointer
+/// leaves the anchor.
+#[test]
+fn a_hover_popup_opens_on_its_anchor_and_closes_after_the_grace() {
+    let grace = strand_render::HOVER_GRACE;
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+    assert_eq!(flags(&mut f), [hover(BAR_N, true), hover(ITEM_A, true)]);
+    assert_eq!(f.router.next_wake(), None, "open, with the pointer on `a`");
+    f.attached(S_A, POP_A);
+
+    // Off the bar into the gap: the item's hover goes, its popup stays.
+    let left = std::time::Instant::now();
+    f.input(&leave(S_BAR), &mut scene);
+    assert_eq!(opens(&mut f), []);
+    assert_eq!(flags(&mut f), [hover(ITEM_A, false), hover(BAR_N, false)]);
+    let due = f.router.next_wake().expect("the grace");
+    assert!(due > left && due <= left + grace + std::time::Duration::from_millis(50));
+    // On the island in time: it stays, for as long as the pointer does.
+    f.input(&enter(S_A, 30.0), &mut scene);
+    assert_eq!(opens(&mut f), []);
+    assert_eq!(f.router.next_wake(), None, "no grace while on the island");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [], "still open under the pointer");
+
+    // Away from both: it closes once the grace ends, not before.
+    f.input(&leave(S_A), &mut scene);
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [], "graced");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, false)]);
+    assert_eq!(f.router.next_wake(), None);
+
+    // Back on the bar off the items: nothing opens.
+    f.input(&enter(S_BAR, 50.0), &mut scene);
+    assert_eq!(opens(&mut f), []);
+}
+
+/// The pointer going straight from item `a` to item `b`: `b`'s popup
+/// opens and `a`'s closes in the same step, `a`'s first, with no grace
+/// in between (one `trigger: hover` popup open from a surface at a
+/// time).
+#[test]
+fn going_straight_from_a_to_b_swaps_the_popups_with_no_overlap() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+    f.attached(S_A, POP_A);
+    f.input(&at_x(S_BAR, 15.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, false), (POP_B, true)]);
+    assert_eq!(f.router.next_wake(), None, "no grace left running");
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_B, false), (POP_A, true)]);
+}
+
+/// A `trigger: hover` popup opened from inside another keeps it open:
+/// the pointer on the inner popup is on the outer one's content. Off
+/// both, the inner closes first, then the outer. Inside the outer, off
+/// the inner's anchor, only the inner's grace runs.
+#[test]
+fn a_nested_hover_popup_keeps_the_one_it_opened_from() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.attached(S_A, POP_A);
+    f.input(&leave(S_BAR), &mut scene);
+    f.input(&enter(S_A, 10.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true), (SUB_POP, true)]);
+    f.attached(S_SUB, SUB_POP);
+    // Onto the inner popup: both stay.
+    f.input(&leave(S_A), &mut scene);
+    f.input(&enter(S_SUB, 10.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), []);
+    // Back on the outer card, off the inner's anchor: the inner closes
+    // after its grace, the outer stays.
+    f.input(&leave(S_SUB), &mut scene);
+    f.input(&enter(S_A, 30.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(SUB_POP, false)]);
+    // Both open again, then the pointer away from all: innermost first.
+    f.input(&at_x(S_A, 10.0), &mut scene);
+    assert_eq!(opens(&mut f), [(SUB_POP, true)]);
+    f.input(&leave(S_A), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(SUB_POP, false), (POP_A, false)]);
+}
+
+/// A drag that started on the popup (a slider's) keeps it open while
+/// the button is held, even far past the popup's edge; the release
+/// starts the grace.
+#[test]
+fn a_drag_that_leaves_the_popup_keeps_it_open() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.attached(S_A, POP_A);
+    f.input(&leave(S_BAR), &mut scene);
+    f.input(&enter(S_A, 30.0), &mut scene);
+    let button = |x, state| InputEvent::PointerButton {
+        surface: S_A,
+        position: LogicalPoint::new(x, 1.0),
+        button: button::LEFT,
+        state,
+        time: 0,
+    };
+    f.input(&button(30.0, ButtonState::Pressed), &mut scene);
+    f.input(&at_x(S_A, 400.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)], "held open by the drag");
+    f.input(&button(400.0, ButtonState::Released), &mut scene);
+    f.input(&leave(S_A), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, false)]);
+}
+
+/// `delay`: the pointer must rest on the anchor that long before the
+/// popup opens; leaving first opens nothing.
+#[test]
+fn a_hover_popup_waits_for_its_delay() {
+    use std::time::Duration;
+    let mut scene = Islands::new(true, Some(Duration::from_millis(80)));
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), []);
+    assert!(f.router.next_wake().is_some());
+    f.input(&at_x(S_BAR, 50.0), &mut scene);
+    assert_eq!(f.router.next_wake(), None, "passed over: nothing waits");
+    std::thread::sleep(Duration::from_millis(100));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), []);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    std::thread::sleep(Duration::from_millis(100));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+}
+
+/// A popup without `trigger: hover` is the program's, as before M6: the
+/// router never writes its `open`, and its anchor's `hover` goes as the
+/// pointer leaves the anchor.
+#[test]
+fn a_popup_without_trigger_hover_is_left_to_the_program() {
+    let mut scene = Islands::new(false, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.attached(S_A, POP_A);
+    f.input(&at_x(S_BAR, 15.0), &mut scene);
+    f.input(&leave(S_BAR), &mut scene);
+    f.input(&enter(S_A, 10.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), []);
+    assert_eq!(
+        flags(&mut f),
+        [
+            hover(BAR_N, true),
+            hover(ITEM_A, true),
+            hover(ITEM_A, false),
+            hover(ITEM_B, true),
+            hover(ITEM_B, false),
+            hover(BAR_N, false),
+            hover(POP_A, true),
+            hover(CARD_A, true),
+            hover(SUB_ITEM, true),
+        ]
+    );
+    assert_eq!(f.router.next_wake(), None);
+}
+
+/// Pick mode ends the graces (the popup closes at once) and opens
+/// nothing.
+#[test]
+fn pick_mode_ends_the_hover_graces() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.attached(S_A, POP_A);
+    f.input(&leave(S_BAR), &mut scene);
+    assert!(f.router.next_wake().is_some());
+    opens(&mut f);
+    f.out.extend(f.router.set_picking(true, &mut scene));
+    assert_eq!(opens(&mut f), [(POP_A, false)]);
+    assert_eq!(f.router.next_wake(), None);
+    f.input(&enter(S_BAR, 15.0), &mut scene);
+    assert_eq!(opens(&mut f), [], "nothing opens while picking");
+}
+
+/// `grace:` sets how long a `trigger: hover` popup outlasts the
+/// pointer: 400 ms here, so it is still open after the default 200 ms,
+/// and closed after its own.
+#[test]
+fn a_hover_popup_takes_its_own_grace() {
+    use std::time::Duration;
+    let mut scene = Islands::new(true, None);
+    let mut d = strand_scene::SceneDiff::new();
+    d.set(
+        POP_A,
+        Prop::Grace,
+        PropValue::Duration(Duration::from_millis(400)),
+    );
+    assert!(scene.tree.apply(d).is_empty());
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+    let left = std::time::Instant::now();
+    f.input(&leave(S_BAR), &mut scene);
+    let due = f.router.next_wake().expect("the grace");
+    assert!(due >= left + Duration::from_millis(400));
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [], "open past the default grace");
+    std::thread::sleep(Duration::from_millis(200));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [(POP_A, false)]);
+}

@@ -168,6 +168,75 @@ fn corners_per_corner_full_and_squircle() {
     assert_matches_ref("paint_corners_1_5x", &buf, TOLERANCE);
 }
 
+/// A 40 px tall bar, `radius: 20`, round (top) and `corners: squircle`
+/// (bottom).
+fn squircle_bar_scene() -> SceneDiff {
+    let mut b = Builder::default();
+    let root = panel(&mut b, 220.0, 100.0);
+    for (i, squircle) in [false, true].into_iter().enumerate() {
+        let mut props = vec![(Prop::Bg, color("#89b4fa")), (Prop::Radius, num(20.0))];
+        if squircle {
+            props.push((Prop::Corners, kw("squircle")));
+        }
+        at(
+            &mut b,
+            root,
+            10.0,
+            10.0 + 50.0 * i as f32,
+            200.0,
+            40.0,
+            props,
+        );
+    }
+    b.diff
+}
+
+/// (M6, decisions.md m6-w2-surface) `corners: squircle` with `radius: 20` on a
+/// 40 px bar drew nearly square corners (a quintic corner squeezed into
+/// the 20 px a circle has), where the round corner draws a pill. A
+/// squircle corner capped at half the side now rounds towards the
+/// circle, so at half the side it is the pill: every pixel of the
+/// squircle bar matches the round one's (within the rasteriser's
+/// flattening of the round one's arcs), at 1x and 1.5x, and 3 px in
+/// along its corner's diagonal is background.
+#[test]
+fn a_squircle_bar_of_half_its_height_is_a_pill() {
+    for (scale, name) in [
+        (Scale::ONE, "paint_squircle_bar"),
+        (Scale::new(180).unwrap(), "paint_squircle_bar_1_5x"),
+    ] {
+        let buf = render(squircle_bar_scene(), scale);
+        assert_matches_ref(name, &buf, TOLERANCE);
+        let s = scale.as_f32();
+        let px = |v: f32| (v * s).round() as u32;
+        let mut worst = 0u8;
+        for y in 0..px(40.0) {
+            for x in 0..px(200.0) {
+                let round = buf.px(px(10.0) + x, px(10.0) + y);
+                let squircle = buf.px(px(10.0) + x, px(60.0) + y);
+                let d = round
+                    .iter()
+                    .zip(squircle)
+                    .map(|(a, b)| a.abs_diff(b))
+                    .max()
+                    .unwrap();
+                worst = worst.max(d);
+            }
+        }
+        // The round box's arcs are flattened more coarsely by the
+        // rasteriser than the squircle's polyline, so their edge pixels
+        // differ by up to about 40 levels (the old quintic corner, by
+        // over 200).
+        assert!(
+            worst <= 64,
+            "{name}: the squircle bar is not the pill ({worst})"
+        );
+        let bg = [0x2e, 0x1e, 0x1e, 0xff];
+        // 3 px in from the corner, along the diagonal: outside a pill.
+        assert_eq!(buf.px(px(13.0), px(63.0)), bg, "{name}: a squared corner");
+    }
+}
+
 fn borders_scene() -> SceneDiff {
     let mut b = Builder::default();
     let root = panel(&mut b, 220.0, 70.0);

@@ -93,7 +93,9 @@ impl Drop for Desk {
 
 impl Desk {
     fn start(tag: &'static str) -> Option<Desk> {
-        Self::start_with(tag, &SHELLS, |b| b.contains("buffer=2570x62 "))
+        // The bar's buffer: its box and its shadow below, none past the
+        // edges it is anchored to (decisions.md m6-w2-surface).
+        Self::start_with(tag, &SHELLS, |b| b.contains("buffer=2560x59 "))
     }
 
     /// [`Desk::start`] on `files` instead of the five, ready once a

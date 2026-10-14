@@ -1621,7 +1621,8 @@ fn an_animated_offset_never_resizes_its_surface() {
     assert!(r.apply(b.diff).is_empty());
     let spec = r.surface_spec(p).unwrap().clone();
     let o = spec.overhang;
-    assert_eq!((o.left, o.right), (37.0, 37.0), "at rest: {o:?}");
+    // (None past the right edge it is anchored to, flush against.)
+    assert_eq!((o.left, o.right), (37.0, 0.0), "at rest: {o:?}");
     r.take_surface_changes();
     r.attach_surface(S, p);
     let (w, h) = (
@@ -1993,4 +1994,160 @@ fn a_percentage_sized_image_still_gives_way_in_a_row() {
         tail.x + tail.w <= 200.0 + 0.51,
         "the sibling stays in the row: {tail:?}"
     );
+}
+
+/// (M6, decisions.md m6-w2-surface) A text's line
+/// box is CSS's `line-height: normal`, the font's ascent, descent and
+/// line gap (hhea, as the font asks: Liberation Sans 1854 + 434 + 67 of
+/// 2048 units per em), with half the gap above the first baseline. Qt
+/// draws the line without the gap, so for a font with none (the owner's
+/// JetBrains Mono: 1020 + 300 + 0 of 1000) the two agree, and the room
+/// above the capitals (the ascent less the cap height, 1409 here) is
+/// the font's. Ascent and descent are rounded to whole pixels and the
+/// half gap above is floored, as Chrome does: at 40 px the ascent is
+/// round(36.2) = 36, the descent round(8.5) = 8, the gap 46.0 − 44 =
+/// 1.996 and its upper half floor(0.998) = 0. With `pad: 12` an `H`'s
+/// baseline is 12 + 36 = 48 px down and its ink starts 48 − 40 × 1409 /
+/// 2048 ≈ 20.5 px down.
+#[test]
+fn a_text_line_box_is_css_normal() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(120.0)),
+            (Prop::Height, num(80.0)),
+            (Prop::Bg, color("#ffffff")),
+            (Prop::Color, color("#000000")),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![
+            (Prop::Pad, num(12.0)),
+            (Prop::Font, PropValue::Font(font(40.0))),
+        ],
+    );
+    let t = b.node(NodeKind::Text, Some(col), vec![(Prop::Text, text("H"))]);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let size = Scale::ONE.physical_size(LogicalSize::new(120.0, 80.0));
+    r.attach_surface(S, root);
+    r.configure_surface(S, size, Scale::ONE);
+    let mut buf = Buffer::new(size.w, size.h, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    assert_matches_ref("text_line_box", &buf, TOLERANCE);
+    let em = 40.0 / 2048.0;
+    let line = r.boxes(S).unwrap().rects[&t];
+    assert!(
+        (line.y - 12.0).abs() < 0.01 && (line.h - (1854.0 + 434.0 + 67.0) * em).abs() <= 1.0,
+        "the line box is ascent + descent + gap: {line:?}"
+    );
+    let (mut top, mut bottom) = (u32::MAX, 0);
+    for y in 0..size.h {
+        for x in 0..size.w {
+            if buf.px(x, y)[1] < 128 {
+                top = top.min(y);
+                bottom = bottom.max(y);
+            }
+        }
+    }
+    let ascent = (1854.0 * em).round();
+    let gap = (1854.0_f32 + 434.0 + 67.0) * em - ascent - (434.0 * em).round();
+    let baseline = 12.0 + ascent + (gap * 0.5).floor();
+    let ink_top = baseline - 1409.0 * em;
+    assert!(
+        (top as f32 - ink_top).abs() <= 1.0,
+        "the capitals start {top}, want {ink_top}"
+    );
+    assert!(
+        (bottom as f32 + 1.0 - baseline).abs() <= 1.0,
+        "the baseline is {}, want {baseline}",
+        bottom + 1
+    );
+}
+
+/// (M6, decisions.md m6-w2-surface) A layer
+/// surface's buffer never reaches past an edge it is anchored to, so its
+/// origin lies on its own output (Hyprland constrains a popup to the
+/// monitor at that origin). The owner's floating bar (`margin: 4, 4, 0`,
+/// `shadow: 0 6px 24px`) asks for 4 px above and beside its box, its
+/// margins, and its full reach below; a bar flush with its edge asks for
+/// none on that side; a `top_right` panel 48 px down keeps its shadow
+/// above and loses only what passes the right edge; a centred panel
+/// keeps all of it.
+#[test]
+fn a_layer_surface_buffer_stays_inside_its_anchored_edges() {
+    let shadow = || {
+        (
+            Prop::Shadow,
+            PropValue::Shadow(vec![Shadow {
+                x: 0.0,
+                y: 6.0,
+                blur: 24.0,
+                spread: 0.0,
+                color: hex("#00000059"),
+            }]),
+        )
+    };
+    let margin = |m: [f32; 4]| (Prop::Margin, list(&m));
+    let mut b = Builder::default();
+    let floating = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Height, num(36.0)), margin([4.0, 4.0, 0.0, 4.0])],
+    );
+    let inner = b.node(
+        NodeKind::Row,
+        Some(floating),
+        vec![shadow(), (Prop::Grow, num(1.0))],
+    );
+    let flush = b.node(NodeKind::Bar, None, vec![(Prop::Height, num(30.0))]);
+    b.node(
+        NodeKind::Row,
+        Some(flush),
+        vec![shadow(), (Prop::Grow, num(1.0))],
+    );
+    let corner = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Anchor, kw("top_right")),
+            margin([48.0, 4.0, 0.0, 0.0]),
+            (Prop::Width, num(300.0)),
+            (Prop::Height, num(100.0)),
+            shadow(),
+        ],
+    );
+    let centred = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(300.0)),
+            (Prop::Height, num(100.0)),
+            shadow(),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    // blur 24: reach 1.5 × 24 + 1 = 37, offset 6 down (31 above, 43
+    // below).
+    let o = |n| {
+        let o = r.surface_spec(n).unwrap().overhang;
+        (o.top, o.right, o.bottom, o.left)
+    };
+    assert_eq!(o(floating), (4.0, 4.0, 43.0, 4.0), "the floating bar");
+    assert_eq!(o(flush), (0.0, 0.0, 43.0, 0.0), "the flush bar");
+    assert_eq!(o(corner), (31.0, 4.0, 43.0, 37.0), "the corner panel");
+    assert_eq!(o(centred), (43.0, 37.0, 43.0, 37.0), "the centred panel");
+
+    // The floating bar's row sits 4 px in from its buffer's corner.
+    r.attach_surface(S, floating);
+    r.configure_surface(S, Size::new(1280, 83), Scale::ONE);
+    let mut buf = Buffer::new(1280, 83, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    let row = rect(&r, inner);
+    approx(row, (4.0, 4.0, 1280.0 - 8.0, 36.0));
 }

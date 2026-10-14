@@ -45,6 +45,62 @@ pub(super) fn centred_overhang(spec: &SurfaceSpec, o: Insets) -> Insets {
     o
 }
 
+/// The overhang a layer surface asks for, kept inside the edges it is
+/// anchored to: on each anchored side no more than its margin there, so
+/// the buffer never reaches past the output's edge (a shadow there would
+/// be off screen anyway). The buffer's origin then lies on the surface's
+/// own output. Hyprland constrains a popup to the monitor at its layer
+/// surface's origin, or to the nearest monitor when none holds it
+/// (`CPopup::reposition`, `CMonitorQueryCore::closestTo`): a floating,
+/// shadowed bar's origin lay above and left of its output, nearer the
+/// neighbour on its left, so its hover islands slid onto that monitor
+/// (decisions.md m6-w2-surface). A popup's box is placed by the compositor,
+/// so its overhang is left alone.
+pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
+    let (top, right, bottom, left) = match spec.kind {
+        NodeKind::Bar => match spec.edge.unwrap_or(Edge::Top) {
+            Edge::Top => (true, true, false, true),
+            Edge::Bottom => (false, true, true, true),
+            Edge::Left => (true, false, true, true),
+            Edge::Right => (true, true, true, false),
+        },
+        NodeKind::Panel | NodeKind::Osd => {
+            let (mut t, mut r, mut b, mut l) = match spec.anchor {
+                Anchor::Center => (false, false, false, false),
+                Anchor::Top => (true, false, false, false),
+                Anchor::Bottom => (false, false, true, false),
+                Anchor::Left => (false, false, false, true),
+                Anchor::Right => (false, true, false, false),
+                Anchor::TopLeft => (true, false, false, true),
+                Anchor::TopRight => (true, true, false, false),
+                Anchor::BottomLeft => (false, false, true, true),
+                Anchor::BottomRight => (false, true, true, false),
+            };
+            // `attach:` anchors that edge (its overhang is none already,
+            // `fillet::flush`).
+            match spec.attach.filter(|_| spec.kind == NodeKind::Panel) {
+                Some(Edge::Top) => (t, b) = (true, false),
+                Some(Edge::Bottom) => (t, b) = (false, true),
+                Some(Edge::Left) => (l, r) = (true, false),
+                Some(Edge::Right) => (l, r) = (false, true),
+                None => {}
+            }
+            (t, r, b, l)
+        }
+        _ => return o,
+    };
+    let m = spec.margin;
+    let cap = |v: f32, anchored: bool, margin: f32| {
+        if anchored { v.min(margin.max(0.0)) } else { v }
+    };
+    Insets {
+        top: cap(o.top, top, m.top),
+        right: cap(o.right, right, m.right),
+        bottom: cap(o.bottom, bottom, m.bottom),
+        left: cap(o.left, left, m.left),
+    }
+}
+
 impl Renderer {
     /// Content-sized surfaces held at a larger size while things moved
     /// ask for their own size once nothing does, and any spec left dirty
@@ -376,7 +432,11 @@ impl Renderer {
                 ),
                 _ => (LogicalSize::default(), Insets::default()),
             };
-            spec.overhang = crate::fillet::flush(&self.tree, id, centred_overhang(&spec, overhang));
+            spec.overhang = crate::fillet::flush(
+                &self.tree,
+                id,
+                within_edges(&spec, centred_overhang(&spec, overhang)),
+            );
             if content_sized {
                 // Capped: content taller than any output (a list with no
                 // `max_height`, a long body) never asks for a buffer of

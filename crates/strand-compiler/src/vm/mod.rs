@@ -369,6 +369,7 @@ impl Env {
             pressed: rt.signal(false),
             focused: rt.signal(false),
             selected: rt.signal(false),
+            open: rt.signal(false),
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
             watch: Cell::new(0),
