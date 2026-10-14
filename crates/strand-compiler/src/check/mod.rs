@@ -29,6 +29,7 @@ mod effects;
 mod expr;
 pub mod files;
 mod lock;
+pub mod names;
 pub mod paths;
 mod prepin;
 pub mod shaders;
@@ -412,6 +413,11 @@ pub(crate) struct Checker<'a> {
     /// Global names: components, surfaces, enums, types, fns, token sets,
     /// keyframes, custom services.
     pub globals: HashMap<String, DefId>,
+    /// (M6) Each file's own global declarations (`names.rs`).
+    pub module_globals: Vec<HashMap<String, DefId>>,
+    /// (M6) Every declaration of each global name, one per file: more
+    /// than one only for components, types, enums and `fn`s.
+    pub global_decls: HashMap<String, Vec<DefId>>,
     /// Each file's top-level `state`/`let`.
     pub file_scopes: Vec<HashMap<String, DefId>>,
     /// File stems, for `file.name`.
@@ -457,6 +463,10 @@ pub(crate) struct Checker<'a> {
     pub calls: Vec<tree::CallCtx>,
     /// Token entries of each component's `tokens { }`.
     pub comp_tokens: HashMap<DefId, Vec<usize>>,
+    /// Components' `tokens { }` blocks, flattened once every file's names
+    /// are known: (M6) a component whose name another file declares too
+    /// keeps its tokens under `$file.Name.…` (spec.md 4.2).
+    pub token_blocks: Vec<(DefId, usize, &'a ast::Block<ast::TokenEntry>)>,
     /// Parameters of fns whose return type comes from their body.
     pub fn_params: HashMap<DefId, Vec<crate::ty::ParamSig>>,
     /// Argument types at the call sites of parameters to infer, with
@@ -556,6 +566,8 @@ impl<'a> Checker<'a> {
             refs: Vec::new(),
             diags: Vec::new(),
             globals: HashMap::new(),
+            module_globals: vec![HashMap::new(); modules.len()],
+            global_decls: HashMap::new(),
             file_scopes: vec![HashMap::new(); modules.len()],
             file_index: HashMap::new(),
             comp_sigs: HashMap::new(),
@@ -582,6 +594,7 @@ impl<'a> Checker<'a> {
             top_outputs: Vec::new(),
             calls: Vec::new(),
             comp_tokens: HashMap::new(),
+            token_blocks: Vec::new(),
             fn_params: HashMap::new(),
             param_args: HashMap::new(),
             infer_failed: HashSet::new(),
@@ -762,6 +775,7 @@ impl<'a> Checker<'a> {
         });
         self.diags.dedup();
         let tokens = all;
+        let unqualifiable = self.unqualifiable();
         Checked {
             program: Program {
                 files,
@@ -773,6 +787,7 @@ impl<'a> Checker<'a> {
                 file_texts: self.file_texts,
                 file_templates: self.file_templates,
                 call_screens: self.call_screens,
+                unqualifiable,
             },
             diagnostics: self.diags,
             passes: 1,
@@ -1309,6 +1324,11 @@ impl<'a> Checker<'a> {
     /// Whether a bare `name` resolves to anything at a value position
     /// (ignoring enum variants, which need an expected type).
     pub fn names_something(&self, name: &str) -> bool {
+        self.names_other_than_a_file(name) || self.file_index.contains_key(name)
+    }
+
+    /// [`Checker::names_something`] but a file of the config.
+    pub fn names_other_than_a_file(&self, name: &str) -> bool {
         self.lookup_scope(name).is_some()
             || NODE_BOOLS.contains(&name)
             || name == "self"
@@ -1316,7 +1336,6 @@ impl<'a> Checker<'a> {
             || self.globals.contains_key(name)
             || self.schema.services.contains_key(name)
             || self.schema.values.contains_key(name)
-            || self.file_index.contains_key(name)
     }
 
     /// Whether an unknown name in the current file may still compute a
@@ -1453,7 +1472,11 @@ impl<'a> Checker<'a> {
                     if let Some(t) = own {
                         return t;
                     }
-                    if let Some(id) = self.globals.get(*one).copied() {
+                    let user = match self.global(one, path[0].span, names::Want::Type) {
+                        names::Global::Ambiguous(_) => return Ty::Error,
+                        g => g.one(),
+                    };
+                    if let Some(id) = user {
                         match self.defs[id.0 as usize].kind {
                             DefKind::Enum(e) => {
                                 self.add_ref(path[0].span, Target::Def(id));
@@ -1468,6 +1491,29 @@ impl<'a> Checker<'a> {
                     }
                     if let Some(ty) = self.schema.named_type(one) {
                         return ty;
+                    }
+                }
+                // (M6) `tray.Item`: the type or enum file `tray` declares
+                // (spec.md 4.2).
+                if let [f, n] = path.as_slice()
+                    && let Some(m) = self.file_for_name(&f.name)
+                    && self.module_globals[m].contains_key(&n.name)
+                {
+                    match self.qualified(f, n) {
+                        names::Qualified::Found(id) => match self.defs[id.0 as usize].kind {
+                            DefKind::Enum(e) => return Ty::Enum(e),
+                            DefKind::Type(r) => return Ty::Record(r),
+                            _ => {
+                                self.error(
+                                    "check::unknown_type",
+                                    format!("`{}.{}` is not a type", f.name, n.name),
+                                    span,
+                                    "not a type",
+                                );
+                                return Ty::Error;
+                            }
+                        },
+                        _ => return Ty::Error,
                     }
                 }
                 let mut candidates: Vec<String> = [

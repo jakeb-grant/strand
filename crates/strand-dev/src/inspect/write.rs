@@ -175,12 +175,21 @@ pub fn token_edit(files: &Json, path: &str, origin: &str, value: &str) -> Result
             "`${path}` (set by {origin}, not written in a `tokens` block)"
         )));
     }
+    // (M6) `component tray.Row`: a component another file has a `Row`
+    // of too, found in the file of that stem (spec.md 4.2).
+    let (stem, component) = match component.map(|c| c.rsplit_once('.')) {
+        Some(Some((s, c))) => (Some(s), Some(c)),
+        _ => (None, component),
+    };
     let names = files.as_object().into_iter().flat_map(|m| m.keys());
     // A file changed since the shell compiled it may be the one: if the
     // token is found in no other, that is the refusal.
     let mut unread = None;
     for name in names {
         let file = PathBuf::from(name);
+        if stem.is_some() && file.file_stem().and_then(|s| s.to_str()) != stem {
+            continue;
+        }
         let (text, hash) = match current(&file, files) {
             Ok(t) => t,
             Err(r) => {
@@ -201,10 +210,16 @@ pub fn token_edit(files: &Json, path: &str, origin: &str, value: &str) -> Result
                 _ => continue,
             };
             // A component's token paths are written without its name.
-            let local = match component {
-                Some(c) => path.strip_prefix(c).and_then(|p| p.strip_prefix('.')),
-                None => Some(path),
+            let local = match (stem, component) {
+                (Some(s), Some(c)) => path
+                    .strip_prefix(s)
+                    .and_then(|p| p.strip_prefix('.'))
+                    .and_then(|p| p.strip_prefix(c))
+                    .and_then(|p| p.strip_prefix('.')),
+                (None, Some(c)) => path.strip_prefix(c).and_then(|p| p.strip_prefix('.')),
+                (_, None) => Some(path),
             };
+
             let Some(local) = local else { continue };
             if let Some(e) = entry(entries, "", local) {
                 let TokenBody::Value(v) = &e.body else {

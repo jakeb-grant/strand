@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use super::names::{Global, Want};
 use super::{Binding, Checker, NODE_BOOLS};
 use crate::diagnostic::suggest;
-use crate::hir::{self, CallArg, Callee, DefKind, ExprKind, LocalKind, Target};
+use crate::hir::{self, CallArg, Callee, DefId, DefKind, ExprKind, LocalKind, Target};
 use crate::syntax::Span;
 use crate::syntax::ast::{self, ArgKind, BinaryOp, UnaryOp};
 use crate::ty::{FnSig, ParamSig, Prim, RecordId, Ty};
@@ -400,6 +401,49 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Global `d`, named `name`, read as a value at `span`.
+    fn global_value(&mut self, d: DefId, name: &str, span: Span) -> hir::Expr {
+        let def = &self.defs[d.0 as usize];
+        let what = match def.kind {
+            DefKind::Component => Some("a component: use it as an element (`Name arg { … }`)"),
+            DefKind::Surface(_) => Some("a surface, not a value"),
+            DefKind::Type(_) => Some("a type: build one with `Name(field: value, …)`"),
+            _ => None,
+        };
+        if let Some(what) = what {
+            self.error(
+                "check::not_a_value",
+                format!("`{name}` is {what}"),
+                span,
+                "not a value",
+            );
+            return hir::Expr::error(span);
+        }
+        self.binding_expr(Binding::Def(d), span)
+    }
+
+    /// Whether a declaration of the config claims `name` at a position
+    /// that accepts `want`, hiding a builtin of that name: a name
+    /// declared once always does, as before; a name declared in several
+    /// files only through a declaration of an accepted kind.
+    pub(super) fn claims(&self, name: &str, want: Want) -> bool {
+        !matches!(self.global_in(self.module, name, want), Global::Missing)
+    }
+
+    /// (M6) `tray.Name` in an expression where file `tray` declares a
+    /// component, type, enum or `fn` called `Name` (and no `state` or
+    /// `let` of it), no local or file-level name `tray` is in scope, and
+    /// no service, value or enum called `tray` has a member `Name`, which
+    /// keeps the meaning it had (spec.md 4.2, 14).
+    fn qualifies(&self, file: &str, name: &str) -> bool {
+        self.file_for_name(file).is_some_and(|m| {
+            !self.file_scopes[m].contains_key(name)
+                && self.module_globals[m]
+                    .get(name)
+                    .is_some_and(|d| super::names::shareable(&self.defs[d.0 as usize].kind))
+        }) && !self.member_of_other(file, name)
+    }
+
     pub fn name_expr(&mut self, id: &ast::Ident, expected: Option<&Ty>) -> hir::Expr {
         let span = id.span;
         let name = id.name.as_str();
@@ -448,24 +492,10 @@ impl<'a> Checker<'a> {
         if let Some(&d) = self.file_scopes[self.module].get(name) {
             return self.binding_expr(Binding::Def(d), span);
         }
-        if let Some(&d) = self.globals.get(name) {
-            let def = &self.defs[d.0 as usize];
-            let what = match def.kind {
-                DefKind::Component => Some("a component: use it as an element (`Name arg { … }`)"),
-                DefKind::Surface(_) => Some("a surface, not a value"),
-                DefKind::Type(_) => Some("a type: build one with `Name(field: value, …)`"),
-                _ => None,
-            };
-            if let Some(what) = what {
-                self.error(
-                    "check::not_a_value",
-                    format!("`{name}` is {what}"),
-                    span,
-                    "not a value",
-                );
-                return hir::Expr::error(span);
-            }
-            return self.binding_expr(Binding::Def(d), span);
+        match self.global(name, span, Want::Value) {
+            Global::One(d) => return self.global_value(d, name, span),
+            Global::Ambiguous(_) => return hir::Expr::error(span),
+            Global::Missing => {}
         }
         if let Some(&rec) = self.schema.services.get(name) {
             self.add_ref(span, Target::Service(name.to_string()));
@@ -772,19 +802,50 @@ impl<'a> Checker<'a> {
         optional: bool,
         span: Span,
     ) -> hir::Expr {
+        // (M6) `tray.Kind.dark`: a variant of the enum file `tray`
+        // declares.
+        if let ast::ExprKind::Field {
+            base: inner,
+            name: en,
+            optional: false,
+        } = &base.kind
+            && let ast::ExprKind::Name(f) = &inner.kind
+            && self.qualifies(&f.name, &en.name)
+            && let super::names::Qualified::Found(d) = self.qualified(f, en)
+            && let DefKind::Enum(e) = self.defs[d.0 as usize].kind
+        {
+            return self.variant_of(e, name, span);
+        }
+        // `self.width`, `hover`: node names, read before any file (a
+        // `self.strand` changes nothing).
         if let ast::ExprKind::Name(b) = &base.kind
+            && b.name != "self"
+            && !super::NODE_BOOLS.contains(&b.name.as_str())
             && self.lookup_scope(&b.name).is_none()
             && !self.file_scopes[self.module].contains_key(&b.name)
         {
+            // (M6) `tray.Kind`, `tray.fmt`: what file `tray` declares.
+            if self.qualifies(&b.name, &name.name) {
+                return match self.qualified(b, name) {
+                    super::names::Qualified::Found(d) => {
+                        self.global_value(d, &format!("{}.{}", b.name, name.name), span)
+                    }
+                    _ => hir::Expr::error(span),
+                };
+            }
             // `Look.dark`.
-            if let Some(&d) = self.globals.get(&b.name)
-                && let DefKind::Enum(e) = self.defs[d.0 as usize].kind
-            {
-                self.add_ref(b.span, Target::Def(d));
-                return self.variant_of(e, name, span);
+            match self.global(&b.name, b.span, Want::Enum) {
+                Global::One(d) => {
+                    if let DefKind::Enum(e) = self.defs[d.0 as usize].kind {
+                        self.add_ref(b.span, Target::Def(d));
+                        return self.variant_of(e, name, span);
+                    }
+                }
+                Global::Ambiguous(_) => return hir::Expr::error(span),
+                Global::Missing => {}
             }
             if let Some(e) = self.schema.types.find_enum(&b.name)
-                && !self.globals.contains_key(&b.name)
+                && !self.claims(&b.name, Want::Enum)
             {
                 return self.variant_of(e, name, span);
             }
@@ -1138,6 +1199,22 @@ impl<'a> Checker<'a> {
                 name,
                 optional,
             } => {
+                // (M6) `tray.fmt(x)`, `tray.Item(…)`: what file `tray`
+                // declares (spec.md 4.2).
+                if let ast::ExprKind::Name(f) = &base.kind
+                    && self.qualifies(&f.name, &name.name)
+                {
+                    let found = match self.qualified(f, name) {
+                        super::names::Qualified::Found(d) => self.call_def(d, name, args, span),
+                        _ => None,
+                    };
+                    return found.unwrap_or_else(|| {
+                        for a in args {
+                            self.expr(&a.value, None);
+                        }
+                        hir::Expr::error(span)
+                    });
+                }
                 let recv = self.expr(base, None);
                 self.method_call(recv, base, name, *optional, args, span)
             }
@@ -1180,6 +1257,103 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A call of global `d` (a `fn`, a `type`'s constructor, an
+    /// action), named by `id` as written: `None` when `d` is not
+    /// callable and no builtin of its name is either, so the caller
+    /// goes on to the builtins.
+    fn call_def(
+        &mut self,
+        d: DefId,
+        id: &ast::Ident,
+        args: &'a [ast::Arg],
+        span: Span,
+    ) -> Option<hir::Expr> {
+        let name = id.name.as_str();
+        match self.defs[d.0 as usize].kind.clone() {
+            DefKind::Fn => {
+                self.add_ref(id.span, Target::Def(d));
+                let ty = self.def_ty(d, id.span);
+                if self.ctx.pure_fn && self.stack.contains(&d) && ty.is_error() {
+                    return Some(hir::Expr::error(span));
+                }
+                let Ty::Fn(sig) = ty else {
+                    for a in args {
+                        self.expr(&a.value, None);
+                    }
+                    return Some(hir::Expr::error(span));
+                };
+                let (args, ret) = self.call_args(&sig, args, &format!("`{name}`"), span);
+                if self.speculating == 0 {
+                    match self.ctx.fn_def {
+                        Some(caller) => self.fn_calls.push((caller, d)),
+                        None if !self.ctx.handler => {
+                            self.binding_fn_calls.push((d, self.module, span));
+                        }
+                        None => {}
+                    }
+                }
+                return Some(hir::Expr {
+                    kind: ExprKind::Call {
+                        callee: Callee::Fn(d),
+                        args,
+                    },
+                    ty: ret,
+                    span,
+                });
+            }
+            DefKind::Type(r) => {
+                self.add_ref(id.span, Target::Def(d));
+                return Some(self.construct(r, args, span));
+            }
+            DefKind::Action => {
+                self.add_ref(id.span, Target::Def(d));
+                let reported = self.action_check(name, id.span);
+                let Ty::Fn(sig) = self.defs[d.0 as usize].ty.clone() else {
+                    for a in args {
+                        self.expr(&a.value, None);
+                    }
+                    return Some(hir::Expr::error(span));
+                };
+                let (args, _) = self.call_args(&sig, args, &format!("`{name}`"), span);
+                return Some(hir::Expr {
+                    kind: ExprKind::Call {
+                        callee: Callee::Action(d),
+                        args,
+                    },
+                    ty: if reported { Ty::Error } else { Ty::Unit },
+                    span,
+                });
+            }
+            DefKind::Component => {
+                self.error(
+                    "check::not_a_value",
+                    format!("`{name}` is a component, not a function"),
+                    id.span,
+                    "components are elements",
+                )
+                .help = Some(format!("write it as an element: `{name} arg {{ … }}`"));
+                return Some(hir::Expr::error(span));
+            }
+            kind => {
+                // `enum wave { … }` then `wave(2s)`: never the
+                // builtin behind the user's name.
+                let what = match kind {
+                    DefKind::Surface(_) => "surface",
+                    DefKind::Enum(_) => "enum",
+                    DefKind::Tokens => "token set",
+                    DefKind::Keyframes => "keyframes",
+                    DefKind::Service(_) => "service",
+                    _ => "declaration",
+                };
+                if let Some(e) = self.hides_builtin(id, what, args, span) {
+                    self.add_ref(id.span, Target::Def(d));
+                    return Some(e);
+                }
+            }
+        }
+        None
+    }
+
     fn call_name(&mut self, id: &ast::Ident, args: &'a [ast::Arg], span: Span) -> hir::Expr {
         let name = id.name.as_str();
         // Every user binding comes before the builtins (they are a
@@ -1205,89 +1379,19 @@ impl<'a> Checker<'a> {
             }
             return self.call_value(f, args, span);
         }
-        if let Some(&d) = self.globals.get(name) {
-            match self.defs[d.0 as usize].kind.clone() {
-                DefKind::Fn => {
-                    self.add_ref(id.span, Target::Def(d));
-                    let ty = self.def_ty(d, id.span);
-                    if self.ctx.pure_fn && self.stack.contains(&d) && ty.is_error() {
-                        return hir::Expr::error(span);
-                    }
-                    let Ty::Fn(sig) = ty else {
-                        for a in args {
-                            self.expr(&a.value, None);
-                        }
-                        return hir::Expr::error(span);
-                    };
-                    let (args, ret) = self.call_args(&sig, args, &format!("`{name}`"), span);
-                    if self.speculating == 0 {
-                        match self.ctx.fn_def {
-                            Some(caller) => self.fn_calls.push((caller, d)),
-                            None if !self.ctx.handler => {
-                                self.binding_fn_calls.push((d, self.module, span));
-                            }
-                            None => {}
-                        }
-                    }
-                    return hir::Expr {
-                        kind: ExprKind::Call {
-                            callee: Callee::Fn(d),
-                            args,
-                        },
-                        ty: ret,
-                        span,
-                    };
-                }
-                DefKind::Type(r) => {
-                    self.add_ref(id.span, Target::Def(d));
-                    return self.construct(r, args, span);
-                }
-                DefKind::Action => {
-                    self.add_ref(id.span, Target::Def(d));
-                    let reported = self.action_check(name, id.span);
-                    let Ty::Fn(sig) = self.defs[d.0 as usize].ty.clone() else {
-                        for a in args {
-                            self.expr(&a.value, None);
-                        }
-                        return hir::Expr::error(span);
-                    };
-                    let (args, _) = self.call_args(&sig, args, &format!("`{name}`"), span);
-                    return hir::Expr {
-                        kind: ExprKind::Call {
-                            callee: Callee::Action(d),
-                            args,
-                        },
-                        ty: if reported { Ty::Error } else { Ty::Unit },
-                        span,
-                    };
-                }
-                DefKind::Component => {
-                    self.error(
-                        "check::not_a_value",
-                        format!("`{name}` is a component, not a function"),
-                        id.span,
-                        "components are elements",
-                    )
-                    .help = Some(format!("write it as an element: `{name} arg {{ … }}`"));
-                    return hir::Expr::error(span);
-                }
-                kind => {
-                    // `enum wave { … }` then `wave(2s)`: never the
-                    // builtin behind the user's name.
-                    let what = match kind {
-                        DefKind::Surface(_) => "surface",
-                        DefKind::Enum(_) => "enum",
-                        DefKind::Tokens => "token set",
-                        DefKind::Keyframes => "keyframes",
-                        DefKind::Service(_) => "service",
-                        _ => "declaration",
-                    };
-                    if let Some(e) = self.hides_builtin(id, what, args, span) {
-                        self.add_ref(id.span, Target::Def(d));
-                        return e;
-                    }
+        match self.global(name, id.span, Want::Call) {
+            Global::One(d) => {
+                if let Some(e) = self.call_def(d, id, args, span) {
+                    return e;
                 }
             }
+            Global::Ambiguous(_) => {
+                for a in args {
+                    self.expr(&a.value, None);
+                }
+                return hir::Expr::error(span);
+            }
+            Global::Missing => {}
         }
         if let Some(sigs) = self.schema.functions.get(name) {
             self.add_ref(id.span, Target::Builtin(name.to_string()));
@@ -2653,15 +2757,40 @@ impl<'a> Checker<'a> {
                             return hir::Pattern::Error;
                         }
                     },
+                    // (M6) `tray.Kind.dark`.
+                    [f, en, v] if self.qualifies(&f.name, &en.name) => {
+                        let e = match self.qualified(f, en) {
+                            super::names::Qualified::Found(d) => {
+                                match self.defs[d.0 as usize].kind {
+                                    DefKind::Enum(e) => Some(e),
+                                    _ => None,
+                                }
+                            }
+                            _ => return hir::Pattern::Error,
+                        };
+                        if e.is_none() {
+                            self.error(
+                                "check::unknown_type",
+                                format!("`{}.{}` is not an enum", f.name, en.name),
+                                en.span,
+                                "not an enum",
+                            );
+                            return hir::Pattern::Error;
+                        }
+                        (e, v)
+                    }
                     [en, v] => {
-                        let e = self
-                            .globals
-                            .get(&en.name)
+                        let user = match self.global(&en.name, en.span, Want::Enum) {
+                            Global::Ambiguous(_) => return hir::Pattern::Error,
+                            g => g.one(),
+                        };
+                        let e = user
                             .and_then(|d| match self.defs[d.0 as usize].kind {
                                 DefKind::Enum(e) => Some(e),
                                 _ => None,
                             })
                             .or_else(|| self.schema.types.find_enum(&en.name));
+
                         if e.is_none() {
                             self.error(
                                 "check::unknown_type",

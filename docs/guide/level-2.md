@@ -137,6 +137,31 @@ that workspace. Service values have actions like this one, called with
 small target, so its clickable area grows 6 pixels on every side without
 changing how it looks.
 
+**The same name in two files.** Two files may each declare a component
+with the same name (or a `type`, `enum` or `fn`): say `dot.strand` and
+`menu.strand` both have a `component Item`. A file that declares a name
+uses its own, so `Item` in `menu.strand` is the menu's. A file without
+one of its own, like `bar.strand`, names the file it means: `dot.Item ws`
+or `menu.Item t`. A bare `Item` there is an error that names both files
+and offers both fixes:
+
+```text
+× `Item` is declared in 2 files, `dot.strand` and `menu.strand`, and not in this one
+help: name the file it comes from: `dot.Item` or `menu.Item` (or declare `Item` in this file, which then uses its own)
+```
+
+Tokens follow the same rules: inside `dot.strand`, `$Item.gap` is the
+dot's `Item`'s token; in `bar.strand` it is `$dot.Item.gap`. A name only
+one file declares, like `Dot`, is used by its bare name everywhere.
+
+Adding the second `component Item` is what makes a bare `Item` in
+`bar.strand` an error. While `strand` is running, the reload holds the
+new file back and the bar keeps running the last version that loaded;
+the error in `bar.strand` says what to write, and once it is fixed both
+files load together, each `Item` keeping its state. `strand check` and
+the editor also put a note, not an error, on each declaration of a
+shared name, listing the other files.
+
 ## The tray
 
 Add the system tray at the end of the bar:

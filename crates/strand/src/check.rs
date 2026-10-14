@@ -22,6 +22,8 @@ pub struct Report {
     pub files: usize,
     pub errors: usize,
     pub warnings: usize,
+    /// (M6) Notes: not problems (a name declared in more than one file).
+    pub notes: usize,
     /// Rendered diagnostics and the summary line.
     pub text: String,
 }
@@ -186,19 +188,32 @@ fn check_config(
         &compiled.program,
         Some(dir),
     ));
+    // (M6) A component, type, enum or `fn` declared in more than one
+    // file: a note at each declaration (spec.md 4.2).
+    diags.extend(strand_compiler::check::names::notes(&compiled.program));
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call
         // site of a parameter whose callers disagree.
-        diags.retain(|d| d.labels.iter().any(|l| Some(l.file) == focus_id));
+        // (M6) A same-name note, and an ambiguous use, are the file's only
+        // where they point: each declaration has its own note, and the
+        // use is fixed where it is written, not where its labels show the
+        // declarations.
+        diags.retain(|d| {
+            if d.severity == strand_compiler::Severity::Note || d.code == "check::ambiguous_name" {
+                d.primary().is_some_and(|l| Some(l.file) == focus_id)
+            } else {
+                d.labels.iter().any(|l| Some(l.file) == focus_id)
+            }
+        });
     }
     // The install's, not a file's: reported whichever file is checked.
     diags.extend(lock_helper(&compiled.parses, helper));
     for d in &diags {
-        if d.is_error() {
-            report.errors += 1;
-        } else {
-            report.warnings += 1;
+        match d.severity {
+            strand_compiler::Severity::Error => report.errors += 1,
+            strand_compiler::Severity::Warning => report.warnings += 1,
+            strand_compiler::Severity::Note => report.notes += 1,
         }
     }
     report.text.push_str(&render(&diags, &map, style));
@@ -206,23 +221,30 @@ fn check_config(
         .text
         .push_str(&actions(&compiled.program, &map, focus_id));
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let notes = if report.notes > 0 {
+        format!(", {}", plural(report.notes, "note"))
+    } else {
+        String::new()
+    };
     let _ = match focus {
         Some(f) => writeln!(
             report.text,
-            "strand check: {} (checked with the {} in {}): {}, {}",
+            "strand check: {} (checked with the {} in {}): {}, {}{}",
             f.display(),
             plural(report.files, "file"),
             dir.display(),
             plural(report.errors, "error"),
             plural(report.warnings, "warning"),
+            notes,
         ),
         None => writeln!(
             report.text,
-            "strand check: {} in {}: {}, {}",
+            "strand check: {} in {}: {}, {}{}",
             plural(report.files, "file"),
             dir.display(),
             plural(report.errors, "error"),
             plural(report.warnings, "warning"),
+            notes,
         ),
     };
     Ok(report)
@@ -437,6 +459,62 @@ mod tests {
         assert!(r.text.contains("bar.strand:2)"), "{}", r.text);
     }
 
+    /// (M6, spec.md 4.2) A component declared in two files is a note at
+    /// each declaration, counted apart from errors and warnings; a third
+    /// file's bare use of it is the ambiguity error with its fix.
+    #[test]
+    fn a_name_in_two_files_is_a_note_and_its_bare_use_an_error() {
+        let d = TempDir::new();
+        d.write("a.strand", "component Row { text \"a\" }\nbar A { Row }\n");
+        d.write("b.strand", "component Row { text \"b\" }\nbar B { Row }\n");
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert_eq!((r.errors, r.warnings, r.notes), (0, 0, 2), "{}", r.text);
+        assert!(r.ok());
+        assert!(
+            r.text.contains("`Row` is also declared in `b.strand`")
+                && r.text.contains("`Row` is also declared in `a.strand`")
+                && r.text
+                    .contains("not a problem: a file that declares `Row` uses its own"),
+            "{}",
+            r.text
+        );
+        assert!(
+            r.text.contains("0 errors, 0 warnings, 2 notes"),
+            "{}",
+            r.text
+        );
+        d.write("c.strand", "bar C { Row }\n");
+        let r = check_dir(&d.0, Style::Plain).unwrap();
+        assert_eq!(r.errors, 1, "{}", r.text);
+        assert!(
+            r.text.contains(
+                "`Row` is declared in 2 files, `a.strand` and `b.strand`, and not in this one"
+            ) && r
+                .text
+                .contains("name the file it comes from: `a.Row` or `b.Row`"),
+            "{}",
+            r.text
+        );
+        // (Review minor 14) `strand check a.strand` counts `a`'s own note
+        // only, not `b`'s, which names `a.strand` in a secondary label,
+        // nor `c`'s ambiguous use, which shows `a`'s declaration.
+
+        let r = check_file(
+            &d.0.join("a.strand"),
+            None,
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
+        assert_eq!((r.errors, r.warnings, r.notes), (0, 0, 1), "{}", r.text);
+        assert!(
+            r.text.contains("`Row` is also declared in `b.strand`")
+                && !r.text.contains("`Row` is also declared in `a.strand`"),
+            "{}",
+            r.text
+        );
+    }
+
     #[test]
     fn default_dir_prefers_xdg() {
         assert_eq!(
@@ -622,11 +700,12 @@ mod tests {
             "{}",
             report.text
         );
-        // A name declared in two files is both files' error, though the
-        // primary label is on the second declaration.
+        // A surface name declared in two files is both files' error,
+        // though the primary label is on the second declaration (a
+        // component's is a note: spec.md 4.2).
         let t = TempDir::new();
-        t.write("a.strand", "component Card { box {} }\n");
-        t.write("b.strand", "component Card { box {} }\n");
+        t.write("a.strand", "bar Card { box {} }\n");
+        t.write("b.strand", "bar Card { box {} }\n");
         for f in ["a.strand", "b.strand"] {
             let report = check_file(
                 &t.0.join(f),
@@ -824,8 +903,8 @@ mod tests {
     #[test]
     fn redeclaring_across_files_names_both() {
         let t = TempDir::new();
-        t.write("a.strand", "component Dot { box {} }\n");
-        t.write("b.strand", "component Dot { box {} }\n");
+        t.write("a.strand", "panel Dot { box {} }\n");
+        t.write("b.strand", "panel Dot { box {} }\n");
         let report = check_dir(&t.0, Style::Plain).unwrap();
         assert_eq!(report.errors, 1, "{}", report.text);
         assert!(report.text.contains("declared twice"), "{}", report.text);

@@ -3056,7 +3056,11 @@ Public interfaces other crates and later stages build on:
   code: &'static str, message, labels: Vec<Label { file: FileId, span,
   message, primary }>, help: Option<String>, suggestions: Vec<Suggestion {
   file, span, replacement }> }`, built with
-  `Diagnostic::error/warning(code, msg).with_label(span, msg)`,
+  `Diagnostic::error/warning/note(code, msg).with_label(span, msg)`
+  (M6: `Severity::Note`, which is not a problem and never a load notice:
+  only `check::names::notes` makes one, the LSP sends it as
+  Information and `strand check` counts it apart from errors and
+  warnings),
   `.with_secondary(..)`, `.with_label_in(file, ..)`,
   `.with_secondary_in(file, ..)`, `.with_help(..)`, and `.in_file(file)` for
   single-file stages (it moves suggestions too). A suggestion is the
@@ -3123,6 +3127,56 @@ Public interfaces other crates and later stages build on:
   handlers, run in the caller's scope and attached to the root's scene
   node once it mounts, and `vm::Env::adopt_node(idx, state)` gives the
   root the call's element state, so `c.hover` is the root's.
+  (M6, decisions.md m6-w2-language "the same name in two files")
+  `check::names::notes(&hir::Program) -> Vec<Diagnostic>` gives the
+  `check::same_name` note at each declaration of a component, type, enum
+  or `fn` whose name more than one file declares; `strand check` and the
+  LSP call it as they call the paths check, and a load never does.
+  `ast::Element { qual: Option<Ident>, kind, … }` holds the file of a
+  `menu.Row` call. `hir::Program::same_named(DefId)`,
+  `::qualified_name(DefId)` and `::file_stem(FileId)` answer which other
+  files declare a name and how a use would write it. A shared type or
+  enum keeps its name in the `TypeTable` and carries `ty::Home { file,
+  shared }`: `TypeTable::show` writes it `file.Name`, `TypeTable::stable`
+  writes every config type `file.Name` (the key cells' types are kept
+  by across reloads), and `RecordDef::same_record`/`EnumDef::same_enum`
+  match a value's type by home file and name when a reload translates
+  it. A shared component's `lower::Component::name` is `file.Name` for
+  display (state paths through `lower::Program::owner_name`, the
+  inspector's scope, a token's origin `component file.Name`), and
+  `lower::Program::owner_key` (`module.Name`, always) keys its cells and
+  reload identity, so a name becoming shared re-keys nothing (a unique
+  one moved to another file is found by name: `Identity` counts each
+  component name's files, `Ctx::moved_from` gives the old file's key,
+  `ty::CellTy` compares a cell's type in its stable and shown
+  forms, and two unshared types of one name are one); a
+  persisted path that changes form moves (`instantiate::mount`'s
+  `moved_path`/`migrate_persisted` on a cold boot, `Carry::dropped`
+  removed after a reload's old instance goes). (Review of 2026-10-14)
+  The checker resolves a global through `Checker::global(name, span,
+  check::names::Want)`, rules 1 to 3 over the declarations the position
+  takes, and a component token path through
+  `Checker::component_token_path`. `check::names::{is_identifier,
+  nameable, listed, naming}` are public for the language server's hover
+  and completion, which also reads `ctx::Context::call` (an element's
+  qualifier and kind span) to take the call's component from
+  `program.refs`. The tree-sitter scanner gains the external token
+  `_qualified_dot`. (Second review of 2026-10-14) An element's or a
+  type's `q.Name` goes through `Checker::file_for_name` (only a local or
+  file-level `q` blocks it), an expression's also through
+  `Checker::member_of_other`; `check::names::naming(stems, form,
+  hidden)` takes the stems a use cannot write, and
+  `hir::Program::unqualifiable`/`can_qualify` carry them to the note,
+  hover and completion. `Ctx::moved_from` takes a call's cells from the
+  one old file that no longer declares the component's name,
+  `Ctx::take_parked_moved` from a parked bar's, and
+  `Identity::take_over_moved_bodies` gives a pasted-then-cut
+  component's body the cut one's identity (only when the survivor had
+  no calls and the cut one had some, by `Identity::calls`). `vm::SettingsSlot::types`
+  holds each field's `ty::CellTy` and the type string its handle holds.
+  A persisted value is migrated between path forms only on a fresh
+  mount (`Ctx::reloading` false, no cell carried).
+
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
   `from poll` path names a program (executable, `#!` or ELF; stat before

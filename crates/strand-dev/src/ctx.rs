@@ -31,6 +31,18 @@ pub struct Context<'a> {
     pub block: Block,
     /// The top-level component or surface holding the offset.
     pub top: Option<&'a Item>,
+    /// (M6) The element whose block [`Context::block`] is, as written:
+    /// `tray.Row {` names `Row` from `tray` (spec.md 4.2).
+    pub call: Option<Call>,
+}
+
+/// An element as written at its call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Call {
+    /// `tray` of `tray.Row`.
+    pub qual: Option<String>,
+    /// The kind's name, where the checker records what it named.
+    pub span: Span,
 }
 
 /// The innermost block holding `offset` in `file` (`src` is its text).
@@ -40,6 +52,8 @@ pub fn context<'a>(file: &'a File, src: &str, offset: u32) -> Context<'a> {
         offset,
         block: Block::TopLevel,
         element: None,
+        call: None,
+        block_call: None,
     };
     let top = file.items.iter().rev().find(|it| f.inside_item(it));
     if let Some(it) = top {
@@ -48,6 +62,7 @@ pub fn context<'a>(file: &'a File, src: &str, offset: u32) -> Context<'a> {
     Context {
         block: f.block,
         top: top.filter(|it| matches!(it.kind, ItemKind::Component(_) | ItemKind::Surface(_))),
+        call: f.block_call,
     }
 }
 
@@ -57,6 +72,9 @@ struct Finder<'s> {
     block: Block,
     /// The element whose block we are in.
     element: Option<String>,
+    /// That element as written, and the one of the block found.
+    call: Option<Call>,
+    block_call: Option<Call>,
 }
 
 impl Finder<'_> {
@@ -109,6 +127,7 @@ impl Finder<'_> {
             props_only,
             sub_of: None,
         };
+        self.block_call = self.call.clone();
         // The last item holding the offset: an earlier item with an
         // unclosed block may claim it too.
         if let Some(it) = items.iter().rev().find(|it| self.inside_item(it)) {
@@ -152,7 +171,13 @@ impl Finder<'_> {
                 if let Some(b) = &e.block
                     && self.inside(b.span)
                 {
+                    let call = Call {
+                        qual: e.qual.as_ref().map(|q| q.name.clone()),
+                        span: e.kind.span,
+                    };
+                    let saved = self.call.replace(call);
                     self.tree(&b.items, Some(e.kind.name.clone()), false);
+                    self.call = saved;
                 }
             }
             ItemKind::Prop(p) => {
@@ -165,6 +190,7 @@ impl Finder<'_> {
                         props_only: true,
                         sub_of: Some(p.name.name.clone()),
                     };
+                    self.block_call = self.call.clone();
                 }
             }
             ItemKind::When(w) => {

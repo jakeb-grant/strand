@@ -1309,3 +1309,417 @@ fn a_shadowing_service_leaves_the_runtimes_reads_and_stops_on_reload() {
         shell.scene.texts()
     );
 }
+
+/// (M6, spec.md 4.2) Two files' components named `Row`, each file's
+/// surfaces calling their own and a third calling `b.Row`: each call
+/// shows its own file's component, the two keep their state apart
+/// through a reload of one of them, and the report names them `a.Row`
+/// and `b.Row`.
+#[test]
+fn same_named_components_in_two_files_stay_apart() {
+    let row = |s: &str| {
+        format!(
+            "component Row {{\n  state open = false\n  text open ? \"{s} open\" : \"{s}\" {{ on click {{ open = !open }} }}\n}}\n"
+        )
+    };
+    let a = format!("{}bar A {{ Row }}\n", row("a"));
+    let b = format!("{}bar B {{ Row }}\n", row("b"));
+    let c = "bar C { b.Row }\n";
+    let mut shell = boot(&[("a.strand", &a), ("b.strand", &b), ("c.strand", c)]);
+    let t = shell.scene.find_text("a").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    assert!(shell.scene.find_text("a open").is_some());
+    // `b`'s `Row` shown twice (in `B` and in `C`), still shut.
+    let edited = b.replace("\"b\"", "\"bee\"");
+    let (report, _) = shell.reload(&[("a.strand", &a), ("b.strand", &edited), ("c.strand", c)]);
+    assert!(
+        shell.scene.find_text("a open").is_some(),
+        "a.Row's state kept"
+    );
+    assert!(shell.scene.find_text("bee").is_some());
+    assert!(shell.scene.find_text("b").is_none());
+    assert!(
+        report.kept.iter().any(|k| k == "a.Row.open")
+            && report.kept.iter().any(|k| k == "b.Row.open"),
+        "{report:?}"
+    );
+}
+
+/// (Review major 2) A name that becomes shared (another file declares a
+/// `Row` and an `Item` in a reload) costs the file nobody edited
+/// nothing: `a`'s `Row` keeps its persisted `open` (moved on disk from
+/// `Row.open` to `a.Row.open`) and its plain `hits`, and `a`'s
+/// `state sel: Item?` its value; deleting the other file again moves the
+/// path back. A cold boot reads either path.
+#[test]
+fn a_name_becoming_shared_keeps_the_unedited_files_state() {
+    let dir = std::env::temp_dir().join(format!("strand-reload-shared-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let a = "type Item { n: int }\nstate sel: Item? = null\n\
+component Row {\n  state open = false persist\n  state hits = 0\n  \
+text join(\"\", open ? \"a open \" : \"a shut \", hits) {\n    \
+on click { open = !open; hits = hits + 1; sel = Item(n: 7) }\n  }\n}\n\
+bar A { Row; text sel == null ? \"none\" : join(\"\", \"sel \", sel?.n) }\n";
+    let b = "type Item { m: text }\ncomponent Row {\n  state open = true persist\n  \
+text open ? \"b open\" : \"b shut\"\n}\nbar B { Row }\n";
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let store = storage.persist.clone().unwrap();
+    let on_disk = |path: &str| {
+        assert!(store.sync(Duration::from_secs(5)));
+        store.load(path).unwrap().is_some()
+    };
+    // (Re-review minor 4) A reload writes nothing on the logic thread:
+    // a kept cell's live value goes to its new path through its own
+    // queued writes, never a synchronous move of what is on disk.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let logic = std::thread::current().id();
+    let sync_writes = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = sync_writes.clone();
+    store.on_written(move |w| {
+        if std::thread::current().id() == logic && w.content.is_some() {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let mut shell = boot_with(&[("a.strand", a)], storage.clone(), &["DP-1"]);
+    let t = shell.scene.find_text("a shut 0").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    shell.at(1.0);
+    assert!(on_disk("Row.open"));
+    let shown = |shell: &Shell| {
+        assert!(shell.scene.find_text("a open 1").is_some(), "Row's cells");
+        assert!(shell.scene.find_text("sel 7").is_some(), "sel");
+    };
+    shown(&shell);
+    // `b.strand` arrives with its own `Row` and `Item`.
+    let (report, _) = shell.reload(&[("a.strand", a), ("b.strand", b)]);
+    shown(&shell);
+    assert!(shell.scene.find_text("b open").is_some());
+    assert!(report.reset.is_empty(), "{report:?}");
+    shell.at(2.0);
+    assert!(on_disk("a.Row.open") && !on_disk("Row.open"));
+    // And goes again.
+    let (report, _) = shell.reload(&[("a.strand", a)]);
+    assert_eq!(sync_writes.load(Ordering::SeqCst), 0);
+    shown(&shell);
+    assert!(report.reset.is_empty(), "{report:?}");
+    shell.at(3.0);
+    assert!(on_disk("Row.open") && !on_disk("a.Row.open"));
+    drop(shell);
+    // Cold boots: shared, the bare path is read (and moved) when no other
+    // `Row` has an `open`; unique again, the qualified one.
+    let b2 = b
+        .replace("state open = true persist", "state lit = true persist")
+        .replace("open ?", "lit ?");
+    let shell = boot_with(
+        &[("a.strand", a), ("b.strand", &b2)],
+        storage.clone(),
+        &["DP-1"],
+    );
+    assert!(shell.scene.find_text("a open 0").is_some());
+    assert!(on_disk("a.Row.open") && !on_disk("Row.open"));
+    drop(shell);
+    let shell = boot_with(&[("a.strand", a)], storage, &["DP-1"]);
+    assert!(shell.scene.find_text("a open 0").is_some());
+    assert!(on_disk("Row.open") && !on_disk("a.Row.open"));
+    drop(shell);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (Review major 2, the other way) A component or type whose name is
+/// unique, moved to another file, keeps its state as before the same-name
+/// rules: its cells, and values of the type, wherever they are held.
+#[test]
+fn a_unique_component_or_type_moved_to_another_file_keeps_its_state() {
+    let row = "type Item { n: int }\ncomponent Row {\n  state hits = 0\n  \
+text join(\"\", \"hits \", hits) { on click { hits = hits + 1 } }\n}\n";
+    let bar = "state sel: Item? = null\n\
+bar A {\n  Row\n  text sel == null ? \"none\" : join(\"\", \"sel \", sel?.n) { on click { sel = Item(n: 7) } }\n}\n";
+    let mut shell = boot(&[("a.strand", row), ("c.strand", bar)]);
+    for t in ["hits 0", "none"] {
+        let t = shell.scene.find_text(t).unwrap();
+        shell.inst.event(t, "click", Vec::new());
+        shell.flush();
+    }
+
+    let (report, _) = shell.reload(&[("b.strand", row), ("c.strand", bar)]);
+    assert!(shell.scene.find_text("hits 1").is_some(), "{report:?}");
+    assert!(shell.scene.find_text("sel 7").is_some(), "{report:?}");
+    assert!(report.reset.is_empty(), "{report:?}");
+}
+
+/// (Re-review major 2) Moving a component by pasting it into another
+/// file and then cutting it from its own keeps its state, as a move did
+/// before the same-name rules: through the paste (the name now shared,
+/// `a`'s calls still `a`'s) and the cut (`a`'s calls now `c`'s `Row`),
+/// `open` (persisted) and `hits` survive, the persisted value follows
+/// from `Row.open` to `a.Row.open` and back to `Row.open`, and no copy is
+/// left behind.
+#[test]
+fn a_component_pasted_then_cut_keeps_its_state() {
+    let dir = std::env::temp_dir().join(format!("strand-reload-paste-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let row = "component Row {\n  state open = false persist\n  state hits = 0\n  row {\n    \
+text join(\"\", open ? \"open \" : \"shut \", hits) {\n      on click { open = !open; hits = hits + 1 }\n    }\n    \
+for i in [1] key i {\n      state deep = 0\n      text join(\"\", \"deep \", deep) { on click { deep = deep + 1 } }\n    }\n  }\n}\n";
+    let bar = "bar A { Row }\n";
+    let a = format!("{row}{bar}");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let store = storage.persist.clone().unwrap();
+    let on_disk = |path: &str| {
+        assert!(store.sync(Duration::from_secs(5)));
+        store.load(path).unwrap().is_some()
+    };
+    // (Re-review minor 4) A reload writes nothing on the logic thread:
+    // a kept cell's live value goes to its new path through its own
+    // queued writes, never a synchronous per-instance move.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let logic = std::thread::current().id();
+    let sync_writes = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = sync_writes.clone();
+    store.on_written(move |w| {
+        if std::thread::current().id() == logic && w.content.is_some() {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let mut shell = boot_with(&[("a.strand", &a)], storage.clone(), &["DP-1"]);
+    for t in ["shut 0", "deep 0"] {
+        let t = shell.scene.find_text(t).unwrap();
+        shell.inst.event(t, "click", Vec::new());
+        shell.flush();
+    }
+    shell.at(1.0);
+    assert!(on_disk("Row.open"));
+    // Paste.
+    let (report, _) = shell.reload(&[("a.strand", &a), ("c.strand", row)]);
+    assert_eq!(sync_writes.load(Ordering::SeqCst), 0);
+    assert!(shell.scene.find_text("open 1").is_some(), "{report:?}");
+    assert!(
+        shell.scene.find_text("deep 1").is_some(),
+        "a list item's state too: {report:?}"
+    );
+    assert!(report.reset.is_empty(), "{report:?}");
+    shell.at(2.0);
+    assert!(on_disk("a.Row.open") && !on_disk("Row.open") && !on_disk("c.Row.open"));
+    // Cut.
+    let (report, _) = shell.reload(&[("a.strand", bar), ("c.strand", row)]);
+    assert_eq!(sync_writes.load(Ordering::SeqCst), 0);
+    assert!(shell.scene.find_text("open 1").is_some(), "{report:?}");
+    assert!(
+        shell.scene.find_text("deep 1").is_some(),
+        "a list item's state too: {report:?}"
+    );
+    assert!(report.reset.is_empty(), "{report:?}");
+    shell.at(3.0);
+    assert!(on_disk("Row.open") && !on_disk("a.Row.open") && !on_disk("c.Row.open"));
+    // Still live, and what a cold boot reads.
+    let t = shell.scene.find_text("open 1").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    assert!(shell.scene.find_text("shut 2").is_some());
+    let t = shell.scene.find_text("shut 2").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    shell.at(4.0);
+    drop(shell);
+    let shell = boot_with(&[("a.strand", bar), ("c.strand", row)], storage, &["DP-1"]);
+    assert!(shell.scene.find_text("open 0").is_some());
+    assert!(on_disk("Row.open") && !on_disk("a.Row.open") && !on_disk("c.Row.open"));
+    drop(shell);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (Re-review minor 3) A settings file's field of a unique enum keeps
+/// its value when the enum moves to another file, with no "type
+/// changed" notice; a reload after that keeps it too.
+#[test]
+fn a_settings_field_of_a_moved_enum_keeps_its_value() {
+    let dir = std::env::temp_dir().join(format!("strand-reload-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    std::fs::write(dir.join("config/prefs.toml"), "look = \"dark\"\n").unwrap();
+    let kind = "enum Look { light, dark }\n";
+    let bar = "state prefs from \"prefs.toml\" { look: Look = light }\n\
+bar A { text prefs.look == dark ? \"dark\" : \"light\" }\n";
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let a = format!("{kind}{bar}");
+    let mut shell = boot_with(&[("a.strand", &a)], storage, &["DP-1"]);
+    assert!(shell.scene.find_text("dark").is_some());
+    for files in [
+        vec![("a.strand", bar), ("b.strand", kind)],
+        vec![("a.strand", bar), ("b.strand", kind)],
+        vec![("a.strand", a.as_str())],
+    ] {
+        let build = compile(Some(&shell.build), &files);
+        let report = shell.inst.reload(&build);
+        shell.build = build;
+        let mut diags = shell.flush().diagnostics;
+        diags.extend(shell.at(shell.now + 0.1).diagnostics);
+        assert!(shell.scene.find_text("dark").is_some(), "{report:?}");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !format!("{d:?}").contains("TypeChanged")),
+            "{diags:?}"
+        );
+        assert!(
+            report.notices.iter().all(|n| !n.contains("type")) && report.reset.is_empty(),
+            "{report:?}"
+        );
+    }
+    drop(shell);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (Re-review minor 5) A cold boot that moves a persisted value back
+/// to its bare path (`a.Row.open`, from while the name was shared, to
+/// `Row.open`) removes an older copy at the bare path when the newer
+/// value is the default, so the older one never comes back.
+#[test]
+fn a_newer_default_value_replaces_an_older_copy_on_a_cold_boot() {
+    let dir = std::env::temp_dir().join(format!("strand-reload-older-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let row = |s: &str| {
+        format!(
+            "component Row {{\n  state open = false persist\n  \
+text open ? \"{s} open\" : \"{s} shut\" {{ on click {{ open = !open }} }}\n}}\n"
+        )
+    };
+    let a = format!("{}bar A {{ Row }}\n", row("a"));
+    let b = format!("{}bar B {{ Row }}\n", row("b"));
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let store = storage.persist.clone().unwrap();
+    let click = |shell: &mut Shell, t: &str| {
+        let n = shell.scene.find_text(t).unwrap();
+        shell.inst.event(n, "click", Vec::new());
+        shell.flush();
+    };
+    // Unique: `Row.open` is true.
+    let mut shell = boot_with(&[("a.strand", &a)], storage.clone(), &["DP-1"]);
+    click(&mut shell, "a shut");
+    shell.at(1.0);
+    drop(shell);
+    // Shared, with `b`'s `Row` also having an `open`: the bare copy is
+    // not moved (it could be `b`'s), and `a.Row.open` is written back to
+    // its default.
+    let mut shell = boot_with(
+        &[("a.strand", &a), ("b.strand", &b)],
+        storage.clone(),
+        &["DP-1"],
+    );
+    click(&mut shell, "a shut");
+    shell.at(1.0);
+    click(&mut shell, "a open");
+    shell.at(2.0);
+    drop(shell);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert!(store.load("Row.open").unwrap().is_some());
+    assert!(store.load("a.Row.open").unwrap().is_some());
+    // Unique again: the newer value (the default) stands.
+    let shell = boot_with(&[("a.strand", &a)], storage, &["DP-1"]);
+    assert!(
+        shell.scene.find_text("a shut").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert!(store.sync(Duration::from_secs(5)));
+    assert!(store.load("a.Row.open").unwrap().is_none());
+    drop(shell);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (Re-review minor 6) A bar parked by an unplug while its component
+/// moves to another file gets the component's state back when its
+/// monitor returns.
+#[test]
+fn a_parked_bar_keeps_a_moved_components_state() {
+    let row = "component Row {\n  state open = false\n  \
+text join(\"\", open) { on click { open = !open } }\n}\n";
+    let bar = "bar Top { Row }\n";
+    let mut shell = boot_with(
+        &[("a.strand", row), ("t.strand", bar)],
+        Storage::none(),
+        &["DP-1", "DP-2"],
+    );
+    let t = shell.scene.of_kind(NodeKind::Text)[1];
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["false", "true"]);
+    screens(&shell.rt, &shell.host, &["DP-1"]);
+    shell.flush();
+    shell.reload(&[("b.strand", row), ("t.strand", bar)]);
+    screens(&shell.rt, &shell.host, &["DP-1", "DP-2"]);
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["false", "true"]);
+}
+
+/// A component whose body holds a list item's `state`, its texts led by
+/// `s`.
+fn deep_row(s: &str) -> String {
+    format!(
+        "component Row {{\n  row {{\n    for i in [1] key i {{\n      state deep = 0\n      \
+text join(\"\", \"{s} deep \", deep) {{ on click {{ deep = deep + 1 }} }}\n    }}\n  }}\n}}\n"
+    )
+}
+
+fn click_text(shell: &mut Shell, t: &str) {
+    let n = shell
+        .scene
+        .find_text(t)
+        .unwrap_or_else(|| panic!("no {t:?} in {:?}", shell.scene.texts()));
+    shell.inst.event(n, "click", Vec::new());
+    shell.flush();
+}
+
+/// (Third review) Undoing a paste (a copy of `a`'s `Row` pasted into
+/// `c.strand`, then deleted from it) keeps `a`'s own body state: the
+/// survivor's body is never handed the deleted copy's identity.
+#[test]
+fn undoing_a_paste_keeps_the_originals_state() {
+    let row = deep_row("a");
+    let a = format!("{row}bar A {{ Row }}\n");
+    let mut shell = boot(&[("a.strand", &a)]);
+    click_text(&mut shell, "a deep 0");
+    shell.reload(&[("a.strand", &a), ("c.strand", &row)]);
+    assert!(shell.scene.find_text("a deep 1").is_some());
+    let (report, _) = shell.reload(&[("a.strand", &a)]);
+    assert!(
+        shell.scene.find_text("a deep 1").is_some(),
+        "{:?} {report:?}",
+        shell.scene.texts()
+    );
+}
+
+/// (Third review) Deleting one of two separate same-named components in
+/// use keeps the other's body state.
+#[test]
+fn deleting_one_of_two_components_in_use_keeps_the_others_state() {
+    let menu = format!("{}bar M {{ Row }}\n", deep_row("menu"));
+    let bar = format!("{}bar B {{ Row }}\n", deep_row("bar"));
+    let mut shell = boot(&[("menu.strand", &menu), ("bar.strand", &bar)]);
+    click_text(&mut shell, "bar deep 0");
+    let (report, _) = shell.reload(&[("menu.strand", "bar M { Row }\n"), ("bar.strand", &bar)]);
+    assert!(
+        shell.scene.find_text("bar deep 1").is_some(),
+        "{:?} {report:?}",
+        shell.scene.texts()
+    );
+}
+
+/// (Third review) A save that renames `a`'s `Row` (to `Tile`) while
+/// `c`'s `Row` is in use is no move: `c`'s body state is kept.
+#[test]
+fn a_rename_beside_a_same_named_component_keeps_its_state() {
+    let a = format!("{}bar A {{ Row }}\n", deep_row("a"));
+    let c = format!("{}bar C {{ Row }}\n", deep_row("c"));
+    let mut shell = boot(&[("a.strand", &a), ("c.strand", &c)]);
+    click_text(&mut shell, "c deep 0");
+    let renamed = a.replace("Row", "Tile");
+    let (report, _) = shell.reload(&[("a.strand", &renamed), ("c.strand", &c)]);
+    assert!(
+        shell.scene.find_text("c deep 1").is_some(),
+        "{:?} {report:?}",
+        shell.scene.texts()
+    );
+}

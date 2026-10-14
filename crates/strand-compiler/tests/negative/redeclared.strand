@@ -1,8 +1,10 @@
 // expect: check::redeclared
-// Components, types and other global names are shared by every file of a
-// config: declaring one twice is an error naming both places.
+// Surfaces, services and other global names are shared by every file of a
+// config: declaring one twice is an error naming both places. (M6) A
+// component, type, enum or `fn` may share its name with one in another
+// file (spec.md 4.2), but never with a surface, nor within one file.
 // file: bar.strand
-component Dot { box { size: 8 } }
+bar Dot { box { size: 8 } }
 enum Kind { a, b }
 // file: widgets.strand
 component Dot { box { size: 6 } }

@@ -2522,12 +2522,21 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "FIELD",
-          "name": "name",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "name",
+              "content": {
+                "type": "SYMBOL",
+                "name": "identifier"
+              }
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_qualified_name"
+            }
+          ]
         },
         {
           "type": "CHOICE",
@@ -2551,12 +2560,21 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "FIELD",
-          "name": "name",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "name",
+              "content": {
+                "type": "SYMBOL",
+                "name": "identifier"
+              }
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_qualified_name"
+            }
+          ]
         },
         {
           "type": "CHOICE",
@@ -2580,6 +2598,36 @@
           "content": {
             "type": "SYMBOL",
             "name": "tree_block"
+          }
+        }
+      ]
+    },
+    "_qualified_name": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "file",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_qualified_dot"
+          },
+          "named": false,
+          "value": "."
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
           }
         }
       ]
@@ -5144,6 +5192,10 @@
     {
       "type": "SYMBOL",
       "name": "_postfix"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_qualified_dot"
     }
   ],
   "inline": [],

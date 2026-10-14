@@ -507,6 +507,28 @@ impl Program {
         &self.defs[id.0 as usize]
     }
 
+    /// The name a component or surface is shown and kept by: (M6)
+    /// `tray.Row` for a component another file has a `Row` of too
+    /// (spec.md 4.2), else its name.
+    pub fn owner_name(&self, id: DefId) -> String {
+        match self.components.get(&id) {
+            Some(c) => c.name.clone(),
+            None => self.def(id).name.clone(),
+        }
+    }
+
+    /// (M6) What a reload matches a component or surface by: a
+    /// component by its file and name (`tray.Row`), shared or not, so a
+    /// name becoming shared (or unique again) keeps its state; a surface
+    /// by its name, which is the config's alone.
+    pub fn owner_key(&self, id: DefId) -> String {
+        let d = self.def(id);
+        match d.kind {
+            DefKind::Component => format!("{}.{}", d.module, d.name),
+            _ => d.name.clone(),
+        }
+    }
+
     /// The read set of `chunk` (empty for an unknown chunk).
     pub fn reads(&self, chunk: ChunkId) -> &Reads {
         static EMPTY: std::sync::LazyLock<Reads> = std::sync::LazyLock::new(Reads::default);
@@ -661,7 +683,9 @@ impl Lowerer<'_> {
                     c.def,
                     Component {
                         def: c.def,
-                        name: self.hir.def(c.def).name.clone(),
+                        // (M6) `tray.Row` when another file has a `Row`:
+                        // reload identity and the inspector tell them apart.
+                        name: self.hir.qualified_name(c.def),
                         params,
                         body,
                         root,

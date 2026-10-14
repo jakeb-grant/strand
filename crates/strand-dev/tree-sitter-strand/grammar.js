@@ -111,6 +111,9 @@ module.exports = grammar({
     // touching bracket after a `}` that takes no postfix (a lambda's or a
     // statement block's) starts the next item.
     $._postfix,
+    // The `.` of `tray.Row`, lexed only where the compiler's parser takes
+    // one (src/scanner.c).
+    $._qualified_dot,
   ],
 
   extras: $ => [/[ \t\r\f\n]/, $.comment],
@@ -418,14 +421,23 @@ module.exports = grammar({
       repeat1(prec.left(seq(optional($._group_term), $._expression))),
     )),
 
+    // `tray.Row e { … }`: a component named from its file (M6).
     _element_bare: $ => seq(
-      field('name', $.identifier),
+      choice(field('name', $.identifier), $._qualified_name),
       optional(field('argument', $._head)),
     ),
     _element_block: $ => seq(
-      field('name', $.identifier),
+      choice(field('name', $.identifier), $._qualified_name),
       optional(field('argument', $._head)),
       field('body', $.tree_block),
+    ),
+    // `tray.Row`: the `.` touches both names and the name is not followed
+    // by a touching `(`, `[`, `.` or `?.` or an assignment, as in the
+    // compiler's parser (grammar.md, "Qualified names"; src/scanner.c).
+    _qualified_name: $ => seq(
+      field('file', $.identifier),
+      alias($._qualified_dot, '.'),
+      field('name', $.identifier),
     ),
     _head: $ => choice($._expression, $.named_argument),
 

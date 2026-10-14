@@ -18,6 +18,10 @@ use crate::syntax::{LineIndex, Span};
 pub enum Severity {
     Error,
     Warning,
+    /// (M6) Not a problem: something worth knowing about the config, such
+    /// as a name declared in more than one file. Never part of a load's
+    /// notices; `strand check` and the language server report it.
+    Note,
 }
 
 /// A span with an explanation. The primary label marks where the problem is.
@@ -76,6 +80,14 @@ impl Diagnostic {
     pub fn warning(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Warning,
+            ..Self::error(code, message)
+        }
+    }
+
+    /// (M6) A [`Severity::Note`].
+    pub fn note(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Note,
             ..Self::error(code, message)
         }
     }
@@ -371,6 +383,7 @@ impl miette::Diagnostic for Report<'_> {
         Some(match self.diag.severity {
             Severity::Error => miette::Severity::Error,
             Severity::Warning => miette::Severity::Warning,
+            Severity::Note => miette::Severity::Advice,
         })
     }
 
@@ -579,6 +592,7 @@ pub fn render_short(diags: &[Diagnostic], map: &SourceMap) -> String {
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
+            Severity::Note => "note",
         };
         out.push_str(&format!(
             "{name}:{line}:{col}: {sev}[{}]: {}",

@@ -143,7 +143,33 @@ fn a_token_is_written_at_its_definition() {
     );
 }
 
+/// (Review minor 9) A component two files declare: its token's origin
+/// (`component b.Row`) and path (`b.Row.gap`) name the file, and the
+/// edit lands in that file's `Row`, never the other's.
+#[test]
+fn a_shared_components_token_is_written_in_its_own_file() {
+    let d = dir("shared-token");
+    let row = |gap: u32| format!("component Row tokens {{ gap: {gap} }} {{ box {{ }} }}\n");
+    let (a, b) = (d.join("a.strand"), d.join("b.strand"));
+    fs::write(&a, row(4)).unwrap();
+    fs::write(&b, row(8)).unwrap();
+    let files = json!({
+        a.display().to_string(): hash(row(4).as_bytes()),
+        b.display().to_string(): hash(row(8).as_bytes()),
+    });
+    let e = token_edit(&files, "b.Row.gap", "component b.Row", "12").unwrap();
+    assert_eq!(e.file, b);
+    assert_eq!(&row(8)[e.span.clone()], "8");
+    let e = token_edit(&files, "a.Row.gap", "component a.Row", "12").unwrap();
+    assert_eq!(e.file, a);
+    assert!(matches!(
+        token_edit(&files, "c.Row.gap", "component c.Row", "12"),
+        Err(Refusal::NotFound(_))
+    ));
+}
+
 /// A file changed since the shell compiled it is never overwritten.
+
 #[test]
 fn a_file_changed_underneath_is_refused() {
     let d = dir("changed");

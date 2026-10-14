@@ -108,6 +108,11 @@ pub struct SettingsSlot {
     /// The file's handle (reload, overlay, provenance), when the
     /// instance has a settings store.
     pub handle: Option<strand_core::Settings<Value>>,
+    /// (M6) Each field's type as a reload compares it, and the type
+    /// string the handle holds for it ([`strand_core::FieldSpec::with_type`]):
+    /// a reload whose type is the same by [`crate::ty::CellTy::same`]
+    /// passes the held string again, so the handle sees no change.
+    pub(crate) types: Vec<(String, crate::ty::CellTy, String)>,
 }
 
 impl std::fmt::Debug for SettingsSlot {

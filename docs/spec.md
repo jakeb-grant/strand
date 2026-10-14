@@ -117,8 +117,84 @@ guide's ladder test use this table as the list of constructs.
 ### 4.2 Names across files
 
 - **Global names** are shared by every module: components, surfaces,
-  enums, types, `fn`s, token sets and services. Declaring one twice, in
-  one file or two, is a load error naming both places.
+  enums, types, `fn`s, token sets, keyframes, actions and services.
+  Declaring a surface, service, token set, keyframes or action twice, in
+  one file or two, is a load error naming both places; so is declaring
+  any global name twice in one file, or a component, type, enum or `fn`
+  under the name of one of those.
+- **The same name in two files.** (M6, the owner's ruling) A component,
+  type, enum or `fn` may be declared under one name in more than one
+  file. A use resolves by three rules, counting only the declarations
+  its position takes: a type position (`x: Item`) takes types and
+  enums, an element takes components, a call (`f(x)`, `Item(a: 1)`)
+  takes `fn`s and types, and a variant (`Kind.dark`, in a pattern too)
+  takes enums. (1) A file that declares such a name uses its own
+  declaration; (2) a file without its own uses the single declaration
+  elsewhere, as when the name is unique; (3) where two or more other
+  files declare it, a bare use is a load error at the use
+  (`check::ambiguous_name`) that names every declaring file and offers
+  `file.Name`. Where no declaration of the position's kind exists, the
+  name means what it did without them (a builtin type, a schema enum):
+  two `component Workspace`s do not hide the `Workspace` type, and a
+  `type Item` in one file and a `component Item` in another are never
+  ambiguous. A name declared once means that declaration wherever it is
+  used, as before. **`file.Name`** names the declaration in `file`,
+  wherever a bare name can stand: a component call (`menu.Row e { … }`),
+  a type (`x: menu.Item?`, `menu.Item(a: 1)`), an enum and its variants
+  (`menu.Kind.dark`, in a pattern too) and a `fn` call (`menu.fmt(x)`).
+  It is the form exports already use, with the same rule: the file's
+  name must be an identifier. Where a file's name is not one, the error
+  and the note say to rename the file instead of offering `file.Name`;
+  two files with one name in different directories (`bar/row.strand`,
+  `menu/row.strand`) that both declare a shared name are a load error
+  (`check::file_name`) asking to rename one, since `row.Name` could not
+  say which. In an element and a type, `menu.Name` is the file's
+  declaration whenever no local or file-level name `menu` is in scope,
+  so a file named like a service, value or builtin type (`tray.strand`,
+  `battery.strand`, `color.strand`) is named the same way; a local or
+  file-level `menu` keeps its reading (in a tree, `n.expire()` stays a
+  statement where `n` is a value). In an expression (a call, a
+  constructor, a variant) a service, builtin value or enum called `menu`
+  that has a member `Name` keeps that meaning (`battery.percent` is the
+  service's field, `Edge.top` the builtin variant beside an
+  `Edge.strand`), and the error and the note then ask to rename the file
+  instead of offering it; a file's exported `state` or `let` of that
+  name is read as before. `self` and the node names (`hover`, …) are
+  never file qualifiers. `strand
+  check` and the language server put a note (`check::same_name`, not an
+  error or a warning) at each declaration of a name declared in more
+  than one file, listing the other files; a load never reports it, and
+  `strand check FILE` counts only the notes at that file's
+  declarations. Messages, hover, completion, the inspector and live
+  reload show such a component, type or enum as `file.Name`. A
+  component's `tokens { }` keep its tokens under `$file.Name.…`; `$Row.gap`
+  and a set's `override Row.gap` follow rules 1 and 2 over the
+  components of that name with tokens (inside `a`'s `Row`, or anywhere
+  in `a.strand`, it is `a`'s; elsewhere the only one with tokens), and
+  where two or more other files' have tokens the read is an error
+  offering `$a.Row.gap`. A template (section 9.8) reads tokens by their
+  full path at run time, so it writes `$a.Row.gap`. Adding a second
+  declaration can make a bare use in a third file an error; a live
+  reload then keeps running the last program that loaded until the use
+  is qualified. What a live reload keeps: when a name becomes shared or
+  unique again, every component's cells (list items' included), its
+  `persist` values (the path moves between `Row.open` and `a.Row.open`
+  with the live value, and the old path is removed), settings fields,
+  and values of the types; when a component moves to another file and
+  its old file no longer declares that name (moved, or pasted into
+  another file and then cut), the same, at each call that now names it;
+  when a type or enum moves, its values and settings fields, if its name
+  is unique before and after. Its limits: a shared type or enum moved to
+  another file is a new type, so values of it start from their defaults; a call that comes to name another
+  file's declaration while the one it named still exists (pasting a
+  component into the file that calls it) starts that call's state from
+  its defaults, as calling a different component does; and a `persist`
+  value whose path changed form while strand was not running is moved on
+  the next start only when that is unambiguous (while the name is
+  shared, `Row.open` is not taken when another file's `Row` has an
+  `open` too), stamped with the current default, so a "kept over the new
+  default" notice is not shown on that start. Every program that loaded
+  before resolves exactly as before (section 14).
 - **File names.** A top-level `state` or `let` belongs to its file.
   Another file reads it as `file.name`, and only if it is declared
   `export`; a name that is another file's private declaration is a load
@@ -253,7 +329,10 @@ filling the monitor, the keyboard always).
   error, and so is `slot` outside a component. Each copy of a slotted
   subtree has its own state.
 - `component Name(params) tokens { … } { tree }` exposes component
-  tokens (section 9.1), read inside as `$Name.token`.
+  tokens (section 9.1), read inside as `$Name.token`. (M6) When another
+  file declares a component of the same name, `$Name.token` still means
+  the file's own (section 4.2); another file names it `$file.Name.token`
+  where a bare path would be ambiguous.
 - Components hold state (section 5.3). A cycle of components that always
   mount each other is a load error naming the path.
 
@@ -832,7 +911,7 @@ units).
 | --- | --- | --- |
 | Palette | A typed schema of colour roles: Material 3's system roles one to one, plus 13 hue roles; its source's own colours and its identity ride along | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; `$palette.mauve`, `$palette.name` |
 | Base tokens | Scales and derived roles, written as expressions over the palette | `$space.2`, `$radius.lg`, `$font.ui`, `$motion.spatial`, `$surface.hi` |
-| Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius` |
+| Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius`; a `Toast` declared in two files (section 4.2) keeps its own `$Toast.radius` inside its file and is `$file.Toast.radius` where the bare path is ambiguous |
 
 - Tokens are live values in the reactive graph, never constants fixed at
   load. A token change re-evaluates what reads it; nothing is rebuilt.

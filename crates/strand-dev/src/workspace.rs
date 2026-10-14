@@ -175,6 +175,11 @@ impl Analysis {
         compiled
             .diagnostics
             .extend(strand_compiler::check::paths::check(&compiled.program, dir));
+        // (M6) A name declared in more than one file: a note at each
+        // declaration (spec.md 4.2).
+        compiled
+            .diagnostics
+            .extend(strand_compiler::check::names::notes(&compiled.program));
         // (M5, S-tools) `file`s' literal `template:` paths.
         compiled
             .diagnostics

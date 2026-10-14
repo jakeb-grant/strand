@@ -202,10 +202,43 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
     match found {
         Found::Ref(Target::Def(d)) => {
             let def = p.def(*d);
-            describe::markdown(
-                &describe::def(an, def),
-                describe::def_doc(an, def.file, def.span).as_deref(),
-            )
+            let mut doc = describe::def_doc(an, def.file, def.span);
+            // (M6) A name declared in more than one file: which one this
+            // is (spec.md 4.2).
+            let others = p.same_named(*d);
+            if !others.is_empty() {
+                let stem = |f| p.file_stem(f).unwrap_or("?");
+                let mut also: Vec<&str> = others.iter().map(|o| stem(p.def(*o).file)).collect();
+                also.sort_unstable();
+                also.dedup();
+                let mut all = also.clone();
+                all.push(stem(def.file));
+                let own = stem(def.file);
+                // `a.Row`, unless the file's name cannot be written, or
+                // `a.name` means something else (`battery.percent`).
+                let named = if !strand_compiler::check::names::nameable(&all).contains(&own) {
+                    format!(
+                        " (rename `{own}.strand` to an identifier no other file has to name it from other files)"
+                    )
+                } else if !p.can_qualify(own, &def.name) {
+                    format!(
+                        " (`{own}.{}` means something else, so rename `{own}.strand` to name it from other files)",
+                        def.name
+                    )
+                } else {
+                    format!(" (`{own}.{}` from other files)", def.name)
+                };
+                let from = format!(
+                    "From `{own}.strand`{named}; also declared in {}.",
+                    strand_compiler::check::names::listed(&also)
+                );
+
+                doc = Some(match doc {
+                    Some(d) => format!("{from}\n\n{d}"),
+                    None => from,
+                });
+            }
+            describe::markdown(&describe::def(an, def), doc.as_deref())
         }
         Found::Ref(Target::Local(l)) | Found::CallProp(l) => {
             let local = p.local(*l);

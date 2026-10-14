@@ -40,6 +40,8 @@ use crate::syntax::Span;
 use crate::vm::value::{NodeState, Value};
 use crate::vm::{Env, SettingsSlot};
 
+pub(crate) use crate::ty::CellTy;
+
 /// A state cell as a reload finds it.
 pub(crate) enum CellRec {
     /// A `state` (persisted or not): its holder scope owns the cell.
@@ -48,7 +50,7 @@ pub(crate) enum CellRec {
         sig: strand_core::Signal<Value>,
         persisted: Option<Rc<strand_core::Persisted<Value>>>,
         default: Value,
-        ty: String,
+        ty: CellTy,
         path: String,
     },
     /// A keyed list `state`: the items carry over (into a new
@@ -58,7 +60,7 @@ pub(crate) enum CellRec {
         keyed: strand_core::KeyedSignal<crate::vm::value::ValueKey, Value>,
         list: strand_core::Memo<Value>,
         default: Value,
-        ty: String,
+        ty: CellTy,
         path: String,
     },
     /// A settings file: the handle is kept and redeclared.
@@ -149,6 +151,10 @@ pub(crate) struct Carry {
     /// Persisted paths handed from an old cell to a new one: their
     /// "path in use" diagnostic is the handover, not a mistake.
     pub handover: Vec<String>,
+    /// (M6) Persisted paths a kept cell left for a new one (its
+    /// component's name became shared, or unique again): removed after
+    /// the old instance goes.
+    pub dropped: Vec<String>,
     /// Surfaces the new instance mounted: their scope ident (a bar's:
     /// the prefix of its per-monitor idents) and whether it is a bar.
     pub surfaces: Vec<(Rc<str>, bool)>,
@@ -307,6 +313,75 @@ impl Ctx {
         Some((rec, c.old_prog.clone()))
     }
 
+    /// (M6) The file component `c` of `prog` was declared in by the old
+    /// program, when a call that named it there now names `c`: the one
+    /// old file that declared a component of `c`'s name and no longer
+    /// does (moved to another file, or cut after being pasted into
+    /// another). Its cells are found under that file's key.
+    pub(crate) fn moved_from(&self, prog: &Program, c: crate::hir::DefId) -> Option<String> {
+        let carry = self.carry.borrow();
+        let old = &carry.as_ref()?.old_prog;
+        let def = prog.def(c);
+        let modules = |p: &Program| -> Vec<String> {
+            p.defs
+                .iter()
+                .filter(|d| {
+                    d.kind == crate::hir::DefKind::Component
+                        && d.owner.is_none()
+                        && d.name == def.name
+                })
+                .map(|d| d.module.clone())
+                .collect()
+        };
+        let now = modules(prog);
+        let mut gone = modules(old).into_iter().filter(|m| !now.contains(m));
+        let one = gone.next();
+        one.filter(|_| gone.next().is_none())
+    }
+
+    /// (M6) A cell of a bar parked across reloads (`pending`) whose
+    /// component, called at `scope_key`, has moved to another file since
+    /// it was parked: the one parked cell `state` of a same-named
+    /// component from a file that no longer declares one.
+    pub(crate) fn take_parked_moved(
+        &self,
+        scope_key: &str,
+        prog: &Program,
+        c: crate::hir::DefId,
+        state: &str,
+    ) -> Option<super::ParkedCell> {
+        let def = prog.def(c);
+        let declares = |p: &Program, m: &str| {
+            p.defs.iter().any(|d| {
+                d.kind == crate::hir::DefKind::Component
+                    && d.owner.is_none()
+                    && d.name == def.name
+                    && d.module == m
+            })
+        };
+        let prefix = format!("{scope_key}#");
+        let suffix = format!(".{}.{state}", def.name);
+        let mut pending = self.pending.borrow_mut();
+        let found: Vec<Rc<str>> = pending
+            .iter()
+            .filter(|(k, (_, p))| {
+                k.strip_prefix(prefix.as_str())
+                    .and_then(|r| r.strip_suffix(suffix.as_str()))
+                    .is_some_and(|m| !declares(prog, m) && declares(p, m))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        match found.as_slice() {
+            [one] => pending.remove(one),
+            _ => None,
+        }
+    }
+
+    /// Whether a reload is being mounted.
+    pub(crate) fn reloading(&self) -> bool {
+        self.carry.borrow().is_some()
+    }
+
     /// A bar under `ident` mounts `n` instances in this reload (its
     /// monitor list as first computed).
     pub(crate) fn bar_instances(&self, ident: &str, n: usize) {
@@ -405,6 +480,12 @@ impl Ctx {
     pub(crate) fn handover_path(&self, path: String) {
         if let Some(c) = self.carry.borrow_mut().as_mut() {
             c.handover.push(path);
+        }
+    }
+
+    pub(crate) fn drop_persisted(&self, path: String) {
+        if let Some(c) = self.carry.borrow_mut().as_mut() {
+            c.dropped.push(path);
         }
     }
 

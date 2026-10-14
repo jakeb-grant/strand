@@ -642,3 +642,43 @@ text tried\n  text \"plain\"\n}\n";
     }
     assert!(text.contains("plain"), "other text is shown");
 }
+
+/// (Review minor 9) A component another file declares too is named from
+/// its file in the inspector: the scope of its nodes is `b.Row`, and its
+/// token's origin `component b.Row`, which the write-back finds in
+/// `b.strand`.
+#[test]
+fn a_shared_components_scope_and_token_origin_name_its_file() {
+    let row = |s: &str, gap: u32| {
+        format!(
+            "component Row tokens {{ gap: {gap} }} {{\n  box {{ text \"{s}\"; bg: $accent; margin: $Row.gap }}\n}}\n"
+        )
+    };
+    let a = format!("{}bar A {{ Row }}\n", row("a", 4));
+    let b = format!("{}bar B {{ Row }}\n", row("b", 8));
+    let shell = boot(
+        &[("a.strand", &a), ("b.strand", &b)],
+        Storage::none(),
+        &["DP-1"],
+    );
+    let t = shell.text("b");
+    assert_eq!(shell.inst.identity(t).unwrap().scope, "b.Row");
+    let dump = shell.inst.dump(None).unwrap();
+    let origins: Vec<(&str, &str)> = dump["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|n| n["tokens"].as_array().into_iter().flatten())
+        .flat_map(|t| t["chain"].as_array().into_iter().flatten())
+        .filter_map(|s| Some((s["path"].as_str()?, s["origin"].as_str()?)))
+        .filter(|(p, _)| p.ends_with("Row.gap"))
+        .collect();
+    assert!(
+        origins.contains(&("b.Row.gap", "component b.Row")),
+        "{origins:?}"
+    );
+    assert!(
+        origins.contains(&("a.Row.gap", "component a.Row")),
+        "{origins:?}"
+    );
+}

@@ -256,6 +256,7 @@ pub fn lines(diags: &[Diagnostic], map: &SourceMap, unreadable: &[(PathBuf, Stri
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
+            Severity::Note => "note",
         };
         let at = d
             .primary()
