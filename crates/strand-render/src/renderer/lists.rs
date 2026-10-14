@@ -389,12 +389,9 @@ impl Renderer {
         };
         let root = s.root;
         let pending = s.boxes.as_ref().is_some_and(|b| {
-            b.lists.iter().any(|(id, lb)| {
-                self.scrolls.get(id).is_some_and(|st| {
-                    let shown = st.offset.clamp(lb.bounds.0, lb.bounds.1);
-                    (shown - lb.applied).abs() > 0.01
-                })
-            })
+            b.lists
+                .iter()
+                .any(|(id, lb)| self.scrolls.get(id).is_some_and(|st| st.unapplied(lb)))
         });
         pending
             || self
@@ -443,12 +440,7 @@ impl Renderer {
         let mut scrolled: Vec<NodeId> = s.boxes.as_ref().map_or_else(Vec::new, |b| {
             b.lists
                 .iter()
-                .filter(|(id, lb)| {
-                    self.scrolls.get(id).is_some_and(|st| {
-                        let shown = st.offset.clamp(lb.bounds.0, lb.bounds.1);
-                        (shown - lb.applied).abs() > 0.01
-                    })
-                })
+                .filter(|(id, lb)| self.scrolls.get(id).is_some_and(|st| st.unapplied(lb)))
                 .map(|(id, _)| *id)
                 .collect()
         });

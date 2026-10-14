@@ -248,6 +248,17 @@ impl ScrollState {
         self.motion.is_some()
     }
 
+    /// True when the boxes under it should move to its offset: while it
+    /// moves, by more than a hundredth of a pixel; once at rest, by any
+    /// amount, so a spring that settles a hair from where the last frame
+    /// drew it (an overshooting one crosses its target fast) lands its
+    /// drawn offset exactly (decisions.md m6-owner, 2026-10-14).
+    pub fn unapplied(&self, lb: &ListBox) -> bool {
+        let shown = self.offset.clamp(lb.bounds.0, lb.bounds.1);
+        let d = (shown - lb.applied).abs();
+        d > 0.01 || (!self.moving() && d > 0.0)
+    }
+
     /// Advances the motion to frame time `at` (`snap`: no clock, or
     /// `reduced_motion`: it lands at once). Returns true if the offset
     /// changed.
