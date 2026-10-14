@@ -82,6 +82,13 @@ pub struct WmState {
     pub windows: Vec<Window>,
     /// The name of the screen with keyboard focus.
     pub focused_screen: Option<String>,
+    /// The workspaces the compositor's config places on a screen that do
+    /// not exist yet (Hyprland's numbered workspace rules with a monitor,
+    /// sway's `workspace … output …`), in number order: unoccupied and
+    /// inactive, each with the id its `ws.focus()` makes it by (Hyprland:
+    /// its number; sway: a negative id of the adapter's own). A bar's
+    /// persistent slots (`workspaces.slots(screen)`).
+    pub configured: Vec<Workspace>,
 }
 
 impl WmState {
@@ -200,6 +207,8 @@ pub enum WmChange {
     FocusedWorkspace(Option<Workspace>),
     /// `windows.focused`.
     FocusedWindow(Option<Window>),
+    /// `workspaces.configured`, keyed by id.
+    Configured(Vec<VecDiff<i64, Workspace>>),
     /// The screen with keyboard focus (for `screens.focused`).
     FocusedScreen(Option<String>),
     /// `wm.config_reloaded`: `Some(failed)` from niri, `None` from
@@ -238,6 +247,9 @@ impl Publisher {
         let ws_items = |s: &WmState| -> Vec<(i64, Workspace)> {
             s.workspaces.iter().map(|w| (w.id, w.clone())).collect()
         };
+        let configured_items = |s: &WmState| -> Vec<(i64, Workspace)> {
+            s.configured.iter().map(|w| (w.id, w.clone())).collect()
+        };
         let win_items = |s: &WmState| -> Vec<(String, Window)> {
             s.windows
                 .iter()
@@ -258,6 +270,9 @@ impl Publisher {
                 ));
                 out.push(WmChange::FocusedWindow(next.focused_window().cloned()));
                 out.push(WmChange::FocusedScreen(next.focused_screen.clone()));
+                out.push(WmChange::Configured(vec![VecDiff::Reset {
+                    items: configured_items(&next),
+                }]));
             }
             Some(last) => {
                 if last.name != next.name {
@@ -285,6 +300,12 @@ impl Publisher {
                 }
                 if last.focused_screen != next.focused_screen {
                     out.push(WmChange::FocusedScreen(next.focused_screen.clone()));
+                }
+                if last.configured != next.configured {
+                    let d = keyed_diff(&configured_items(last), &configured_items(&next));
+                    if !d.is_empty() {
+                        out.push(WmChange::Configured(d));
+                    }
                 }
             }
         }
@@ -324,6 +345,8 @@ pub struct Mirror {
     pub focused_window: Option<Window>,
     /// The focused screen.
     pub focused_screen: Option<String>,
+    /// `workspaces.configured`.
+    pub configured: Vec<(i64, Workspace)>,
     /// The `wm.config_reloaded` events seen, in order.
     pub reloads: Vec<Option<bool>>,
     /// The last sources seen.
@@ -349,6 +372,11 @@ impl Mirror {
             WmChange::FocusedWorkspace(w) => self.focused_workspace = w.clone(),
             WmChange::FocusedWindow(w) => self.focused_window = w.clone(),
             WmChange::FocusedScreen(s) => self.focused_screen = s.clone(),
+            WmChange::Configured(d) => {
+                for diff in d {
+                    diff.apply(&mut self.configured)?;
+                }
+            }
             WmChange::ConfigReloaded { failed } => self.reloads.push(*failed),
             WmChange::Sources(s) => self.sources = s.clone(),
         }
@@ -434,6 +462,7 @@ mod tests {
             workspaces: vec![ws(1, "1", true), ws(2, "2", false)],
             windows: vec![win("a", 1, true)],
             focused_screen: Some("DP-1".into()),
+            ..Default::default()
         };
         s.derive();
         let first = p.publish(s.clone());

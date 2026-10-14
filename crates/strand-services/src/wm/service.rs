@@ -163,11 +163,40 @@ pub enum WindowAction {
     Fullscreen { item: WindowItem },
 }
 
-/// `workspaces`' actions (on a `Workspace` item).
+/// `workspaces`' actions: on a `Workspace` item, and the service's own.
 #[derive(Call, Debug)]
 pub enum WorkspaceAction {
     /// `ws.focus()`.
     Focus { item: WorkspaceItem },
+    /// `workspaces.focus(target)`: by id or by name (Gaps 2).
+    #[call(name = "focus")]
+    FocusTarget { target: WorkspaceTarget },
+}
+
+/// What `workspaces.focus(target)` switches to: an `int` is a
+/// workspace's id (a configured one's included), a `text` its name.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkspaceTarget {
+    /// By id.
+    Id(i64),
+    /// By name.
+    Name(String),
+}
+
+impl crate::FromData for WorkspaceTarget {
+    fn from_data(d: &Data) -> Result<Self, crate::DataError> {
+        match d {
+            Data::Int(n) => Ok(Self::Id(*n)),
+            // A number literal in a list is a float (owner-testing.md,
+            // gaps 12): a whole one is an id.
+            Data::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Ok(Self::Id(*f as i64)),
+            Data::Text(t) => Ok(Self::Name(t.to_string())),
+            other => Err(crate::DataError::new(format!(
+                "a workspace is an id (int) or a name (text), not {}",
+                other.kind()
+            ))),
+        }
+    }
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.
@@ -196,6 +225,12 @@ pub struct Workspaces {
     pub all: Vec<WorkspaceItem>,
     /// The focused workspace, if any.
     pub focused: Option<WorkspaceItem>,
+    /// The workspaces the compositor's config places on a screen that do
+    /// not exist yet (Hyprland's numbered workspace rules, sway's
+    /// `workspace … output …`), keyed by `id`: empty and inactive, made
+    /// by `ws.focus()`. `workspaces.slots(screen)` puts them in place.
+    #[store(keyed)]
+    pub configured: Vec<WorkspaceItem>,
 }
 
 /// The compositor.
@@ -238,8 +273,59 @@ fn workspace_fns(
                 )
             }))
         }
+        "slots" => {
+            let name = match args
+                .first()
+                .map(|s| crate::record_field(s, "Screen", "name"))
+            {
+                Some(Ok(Data::Text(t))) => Some(t.to_string()),
+                _ => None,
+            };
+            let on = |w: &WorkspaceItem| name.as_deref() == Some(w.screen.as_str());
+            let made = match cells.all.with(rt, |v| {
+                v.items()
+                    .iter()
+                    .filter(|(_, w)| on(w))
+                    .map(|(_, w)| w.clone())
+                    .collect::<Vec<_>>()
+            }) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            Some(cells.configured.with(rt, |v| {
+                let configured = v
+                    .items()
+                    .iter()
+                    .filter(|(_, w)| on(w))
+                    .map(|(_, w)| w.clone());
+                Data::List(
+                    slots(made, configured)
+                        .iter()
+                        .map(ToData::to_data)
+                        .collect(),
+                )
+            }))
+        }
         _ => None,
     }
+}
+
+/// A screen's slots: its workspaces and the configured ones not made yet,
+/// by the number their name starts with (as compositors number them),
+/// then the rest in their own order (Gaps 3, decisions.md
+/// m6-w2-services).
+pub fn slots(
+    made: impl IntoIterator<Item = WorkspaceItem>,
+    configured: impl IntoIterator<Item = WorkspaceItem>,
+) -> Vec<WorkspaceItem> {
+    let mut all: Vec<WorkspaceItem> = made.into_iter().chain(configured).collect();
+    let number = |w: &WorkspaceItem| -> Option<u64> {
+        let digits: String = w.name.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    // Stable: unnumbered ones keep their order, after the numbered.
+    all.sort_by_key(|w| (number(w).is_none(), number(w)));
+    all
 }
 
 /// The hub's subscription, or the error that ends the body.
@@ -379,13 +465,27 @@ impl Workspaces {
                         WmChange::FocusedWorkspace(w) => {
                             patches.push(WorkspacesPatch::Focused(w.map(WorkspaceItem::from)));
                         }
+                        WmChange::Configured(d) => {
+                            patches.push(WorkspacesPatch::Configured(map_diffs(
+                                d,
+                                WorkspaceItem::from,
+                            )));
+                        }
                         _ => {}
                     }
                 }
                 cx.send(patches).then_some(known)
             },
-            |a| match a {
-                WorkspaceAction::Focus { item } => Some(WmAction::FocusWorkspace(item.id)),
+            |a| {
+                Some(match a {
+                    WorkspaceAction::Focus { item } => WmAction::FocusWorkspace(item.id),
+                    WorkspaceAction::FocusTarget {
+                        target: WorkspaceTarget::Id(id),
+                    } => WmAction::FocusWorkspace(id),
+                    WorkspaceAction::FocusTarget {
+                        target: WorkspaceTarget::Name(name),
+                    } => WmAction::FocusWorkspaceNamed(name),
+                })
             },
         )
         .await
@@ -437,7 +537,7 @@ mod tests {
         assert_eq!(<Workspaces as Service>::NAME, "workspaces");
         assert_eq!(<Wm as Service>::NAME, "wm");
         let names: Vec<&str> = Workspaces::FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(names, ["all", "focused"]);
+        assert_eq!(names, ["all", "focused", "configured"]);
         assert_eq!((Workspaces::FIELDS[0].ty)(), "[Workspace]");
         assert_eq!((Windows::FIELDS[0].ty)(), "Window?");
         assert_eq!(Wm::EVENTS[0].name, "config_reloaded");

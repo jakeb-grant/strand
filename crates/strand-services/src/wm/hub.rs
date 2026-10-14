@@ -316,6 +316,9 @@ impl Inner {
             out.push(WmChange::FocusedWorkspace(m.focused_workspace.clone()));
             out.push(WmChange::FocusedWindow(m.focused_window.clone()));
             out.push(WmChange::FocusedScreen(m.focused_screen.clone()));
+            out.push(WmChange::Configured(vec![VecDiff::Reset {
+                items: m.configured.clone(),
+            }]));
         }
         if self.has_sources {
             out.push(WmChange::Sources(self.mirror.sources.clone()));

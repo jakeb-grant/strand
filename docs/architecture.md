@@ -4960,6 +4960,28 @@ transparent huge pages for life.
   sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
+  (M6 wave 2, m6-w2-services) `WmState::configured` holds the workspaces
+  the compositor's config places on a screen that do not exist yet
+  (Hyprland's numbered `j/workspacerules` with a monitor that is on,
+  read at connection and on `configreloaded`; sway's `workspace <name>
+  output <outputs…>` lines of `get_config`, read at connection and on
+  `reload`, placed on the first of their outputs `get_outputs` says is
+  active; niri none, its named workspaces always exist), published as
+  `WmChange::Configured` (keyed by id, a `Reset` on the first publish and
+  in the hub's replay) and served as `workspaces.configured`; a slot's id
+  is its number on Hyprland and `-(n + 1)` for the n-th assignment on
+  sway, and `ws.focus()` on it makes it. `workspaces.slots(screen)` is a
+  `fn` over `all` and `configured` (`wm::service::slots`: by the number a
+  name starts with, then the rest in order). `workspaces.focus(target:
+  int | text)` is a service-level action (`WorkspaceAction::FocusTarget`,
+  a `WorkspaceTarget::{Id, Name}`), sent as `WmAction::FocusWorkspace(id)`
+  or `WmAction::FocusWorkspaceNamed(name)`; `FocusWorkspace` of an id no
+  workspace has is a number Hyprland makes (`dispatch workspace N`) or a
+  sway slot's name, else `UnknownWorkspace`; `FocusWorkspaceNamed` is
+  Hyprland's `name:` (a number by number), sway's `workspace "<name>"`,
+  niri's `{"Name": …}` reference (a number not named: `{"Index": n}`) and
+  `ext-workspace-v1`'s activation of a listed workspace, else
+  `WmError::UnknownWorkspaceName`.
   `wm::live_runs()` counts live `run`s (tests). `screens.focused` is the
   `screens` service's, which no crate serves yet; when one does it takes
   `FocusedScreen` from the same hub, with a store's lifecycle (it drops
@@ -4969,8 +4991,9 @@ transparent huge pages for life.
   replacing the provisional stubs and adding `Workspace.active`,
   `Window.urgent`, `Window.maximized` and `event
   config_reloaded(failed: bool?)`. `requests` takes
-  `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
-  CloseWindow, MinimizeWindow, MaximizeWindow, FullscreenWindow},
+  `WmRequest { action: WmAction::{FocusWorkspace, FocusWorkspaceNamed,
+  FocusWindow, CloseWindow, MinimizeWindow, MaximizeWindow,
+  FullscreenWindow},
   reply: Option<oneshot> }`
   (`WmRequest::new(action) -> (WmRequest, WmReply)`;
   `WmSubscription::request(action) -> WmReply`), answered

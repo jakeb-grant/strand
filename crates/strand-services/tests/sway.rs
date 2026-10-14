@@ -853,3 +853,65 @@ async fn a_sway_refusing_the_command_syntax_degrades() {
     assert!(c.mirror.windows.is_empty());
     service.abort();
 }
+
+/// Gaps 2 and 3 (m6-w2-services): a real sway's config assignments
+/// (`workspace … output …`, through `set` variables) are its configured
+/// workspaces while they do not exist; one is switched to (and made) by
+/// its id, a new one by its name, and an assignment to an output that is
+/// not there makes no slot. (sway makes the first workspace assigned
+/// to an output when the output comes: 1 here, which is no slot.)
+#[tokio::test]
+async fn sway_config_assignments_are_configured_workspaces() {
+    let Some(sway) = Sway::start_with(
+        "sway_config_assignments_are_configured_workspaces",
+        "set $out HEADLESS-1\nworkspace 1 output $out\nworkspace 4 output $out\n\
+         workspace \"7: mail\" output DP-9 $out\nworkspace 9 output DP-9\n",
+    ) else {
+        return;
+    };
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(Backend::Sway {
+            socket: sway.ipc.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.configured.is_empty())
+        .await;
+    let slots: Vec<(String, String)> = c
+        .mirror
+        .configured
+        .iter()
+        .map(|(_, w)| (w.name.clone(), w.screen.clone()))
+        .collect();
+    assert_eq!(
+        slots,
+        [
+            ("4".to_string(), "HEADLESS-1".to_string()),
+            ("7: mail".into(), "HEADLESS-1".into())
+        ]
+    );
+    let four = c.mirror.configured[0].1.id;
+    assert!(four < 0, "sway's ids are its containers'; a slot's its own");
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(four));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("4 made and focused", |m| {
+        m.focused_workspace.as_ref().is_some_and(|w| w.name == "4")
+            && m.configured.iter().all(|(_, w)| w.name != "4")
+    })
+    .await;
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspaceNamed("chat".into()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("chat made and focused", |m| {
+        m.focused_workspace
+            .as_ref()
+            .is_some_and(|w| w.name == "chat")
+    })
+    .await;
+    service.abort();
+}

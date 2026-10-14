@@ -348,6 +348,57 @@ fn the_compositor_stores_follow_hyprland() {
         s.pump(&rt);
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Gaps 3 (m6-w2-services): the rules' slots not made yet, and a
+    // screen's slots in number order with its workspaces.
+    let configured: Vec<i64> = b
+        .workspaces
+        .cells()
+        .configured
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(configured, [4, 6]);
+    let screen = |name: &str| Data::Record {
+        ty: "Screen".into(),
+        fields: vec![("name".into(), Data::Text(name.into()))],
+    };
+    let slots = |name: &str| -> Vec<String> {
+        let Some(Ok(Data::List(items))) =
+            b.workspaces.dynamic().call(&rt, "slots", &[screen(name)])
+        else {
+            panic!("slots({name}) is no list");
+        };
+        items
+            .iter()
+            .map(
+                |w| match strand_services::record_field(w, "Workspace", "name") {
+                    Ok(Data::Text(t)) => t.to_string(),
+                    other => panic!("{other:?}"),
+                },
+            )
+            .collect()
+    };
+    assert_eq!(slots("DP-1"), ["1", "2", "4"]);
+    assert_eq!(slots("HDMI-A-1"), ["3", "6"]);
+    // Gaps 2: `workspaces.focus(4)` makes a slot, `focus("chat")` a new
+    // named workspace.
+    for (target, sent) in [
+        (Data::Int(4), "dispatch workspace 4"),
+        (Data::Text("chat".into()), "dispatch workspace name:chat"),
+    ] {
+        b.workspaces
+            .dynamic()
+            .action(&rt, "focus", None, &[target], Default::default())
+            .unwrap();
+        while !fake.requests().iter().any(|r| r == sent) {
+            assert!(Instant::now() < deadline, "{:?}", fake.requests());
+            s.pump(&rt);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     fake.send(&bursts["reload"]);
     until(&rt, &s, "configreloaded", || {
         reloads.borrow().as_slice() == [vec![Data::Null]]

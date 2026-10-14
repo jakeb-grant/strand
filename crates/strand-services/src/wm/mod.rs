@@ -71,8 +71,18 @@ pub use service::{
 /// An action on a workspace or window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WmAction {
-    /// `ws.focus()`: switch to the workspace.
+    /// `ws.focus()`, `workspaces.focus(id)`: switch to the workspace with
+    /// this id. One that does not exist yet is made where the compositor
+    /// makes workspaces on switching: Hyprland, whose numbered
+    /// workspaces' ids are their numbers, and a configured workspace
+    /// ([`WmState::configured`]) on any adapter.
     FocusWorkspace(i64),
+    /// `workspaces.focus(name)`: switch to the workspace named `name`,
+    /// made when it does not exist yet and the compositor makes
+    /// workspaces on switching (Hyprland, sway). A name that is a number
+    /// is the workspace of that number on Hyprland and sway, and the
+    /// n-th of the focused screen on niri.
+    FocusWorkspaceNamed(String),
     /// `win.focus()`: raise and focus the window.
     FocusWindow(String),
     /// `win.close()`: ask the window to close.
@@ -96,6 +106,9 @@ pub enum WmError {
     Unsupported(&'static str),
     /// No workspace has this id.
     UnknownWorkspace(i64),
+    /// No workspace has this name, and the compositor does not make one
+    /// on switching.
+    UnknownWorkspaceName(String),
     /// No window has this id.
     UnknownWindow(String),
     /// The compositor refused, with its message.
@@ -110,6 +123,7 @@ impl std::fmt::Display for WmError {
             Self::NotConnected => f.write_str("the compositor is not connected"),
             Self::Unsupported(why) => write!(f, "not supported: {why}"),
             Self::UnknownWorkspace(id) => write!(f, "no workspace {id}"),
+            Self::UnknownWorkspaceName(name) => write!(f, "no workspace named {name:?}"),
             Self::UnknownWindow(id) => write!(f, "no window {id}"),
             Self::Rejected(msg) => write!(f, "the compositor refused: {msg}"),
             Self::Io(msg) => write!(f, "compositor IPC: {msg}"),
@@ -390,6 +404,7 @@ pub(crate) fn merge_with(
                     .collect(),
                 windows,
                 focused_screen: keyboard_screen,
+                configured: Vec::new(),
             }
         }
     };
@@ -772,6 +787,21 @@ fn route(
             };
             return client.send(protocol::ProtoCmd::Activate(p.key, req.reply));
         }
+        // `ext-workspace-v1` switches to a workspace it lists; making one
+        // is a group's request this client does not make.
+        WmAction::FocusWorkspaceNamed(name) => {
+            let Some(client) = protocol.filter(|_| proto.workspace_manager) else {
+                return fail(req.reply, unsupported("no workspace source"));
+            };
+            let Some(p) = proto
+                .workspaces
+                .iter()
+                .find(|p| !p.hidden && p.name == name)
+            else {
+                return fail(req.reply, WmError::UnknownWorkspaceName(name));
+            };
+            return client.send(protocol::ProtoCmd::Activate(p.key, req.reply));
+        }
         WmAction::FocusWindow(id) => (id, WindowOp::Activate),
         WmAction::CloseWindow(id) => (id, WindowOp::Close),
         WmAction::MinimizeWindow(id) => (id, WindowOp::Minimize),
@@ -1032,6 +1062,7 @@ mod tests {
                 ipc_window("12", "foot", "~"),
             ],
             focused_screen: Some("DP-1".into()),
+            ..Default::default()
         };
         let mut ff = managed(1, "firefox", "Strand (old title)", "DP-1");
         ff.maximized = true;
@@ -1185,6 +1216,7 @@ mod tests {
                 ..Default::default()
             }],
             focused_screen: None,
+            ..Default::default()
         };
         let proto = ProtocolState {
             connected: true,

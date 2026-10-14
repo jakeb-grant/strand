@@ -1,0 +1,27 @@
+[{
+    "workspaceString": "1",
+    "enabled": true,
+    "monitor": "DP-1",
+    "default": true
+},{
+    "workspaceString": "2",
+    "enabled": true,
+    "monitor": "DP-1"
+},{
+    "workspaceString": "4",
+    "enabled": true,
+    "monitor": "DP-1"
+},{
+    "workspaceString": "3",
+    "enabled": true,
+    "monitor": "HDMI-A-1",
+    "default": true
+},{
+    "workspaceString": "6",
+    "enabled": true,
+    "monitor": "desc:LG Electronics LG HDR 4K"
+},{
+    "workspaceString": "name:web",
+    "enabled": true,
+    "monitor": "DP-1"
+}]

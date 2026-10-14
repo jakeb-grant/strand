@@ -256,8 +256,11 @@ in what the protocol does not cover yet.
 | --- | --- | --- |
 | `all` | `[Workspace]` | Every workspace, keyed by `id`. |
 | `focused` | `Workspace?` | The focused workspace, if any. |
+| `configured` | `[Workspace]` | The workspaces the compositor's config places on a screen that do not exist yet (Hyprland's numbered workspace rules, sway's `workspace … output …`), keyed by `id`: empty and inactive, made by `ws.focus()`. `workspaces.slots(screen)` puts them in place. |
 
 | Method | |
 | --- | --- |
 | `fn on(screen: Screen) -> [Workspace]` | The workspaces on `screen`: `for ws in workspaces.on(screen)`. |
+| `fn slots(screen: Screen) -> [Workspace]` | A bar's slots on `screen`: its workspaces and the configured ones not made yet, by the number their name starts with, then the rest: `for ws in workspaces.slots(screen) { Dot ws }`. |
+| `action focus(target: int \| text)` | Switches to a workspace by id (`int`, a configured one's included) or by name (`text`), making it where the compositor makes workspaces it is switched to (Hyprland, sway; on niri a number is the n-th workspace of the focused screen): `on click { workspaces.focus(4) }`. |
 

@@ -167,6 +167,153 @@ pub(crate) struct State {
     pub workspaces: Vec<swayipc_types::Workspace>,
     /// Windows with their workspace (`None` in the scratchpad).
     pub windows: Vec<(Option<i64>, Node)>,
+    /// The config's `workspace <name> output <outputs…>` lines, in
+    /// order ([`assignments`]); read when the session starts and on
+    /// `reload`.
+    pub assignments: Vec<(String, Vec<String>)>,
+    /// The outputs (read with the state while there are assignments).
+    pub outputs: Vec<SwayOutput>,
+}
+
+/// One of `get_outputs`' outputs: what an assignment names it by.
+#[derive(Clone, Debug, Default, serde::Deserialize, PartialEq)]
+pub(crate) struct SwayOutput {
+    pub name: String,
+    #[serde(default)]
+    pub make: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub serial: String,
+    #[serde(default)]
+    pub active: bool,
+}
+
+impl SwayOutput {
+    /// Whether an assignment's `output` argument names it: its connector
+    /// or its `make model serial` identifier.
+    fn named(&self, arg: &str) -> bool {
+        arg == self.name || arg == format!("{} {} {}", self.make, self.model, self.serial)
+    }
+}
+
+/// The words of a config line as sway splits them: whitespace apart,
+/// quotes (`"…"`, `'…'`) keeping words together and dropped.
+fn words(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            (Some(_), c) => word.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(word);
+    }
+    out
+}
+
+/// The config's top-level `workspace <name> output <outputs…>` lines
+/// (Gaps 3, decisions.md m6-w2-services), with `set $var value`
+/// variables expanded as sway expands them (longest name first, before
+/// the line is split), comments and blocks' contents left out, and
+/// continued lines (`\` at the end) joined. Only the text sway's
+/// `get_config` returns is read: the main config file, not the files it
+/// includes.
+pub(crate) fn assignments(config: &str) -> Vec<(String, Vec<String>)> {
+    let mut vars: Vec<(String, String)> = Vec::new();
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut pending = String::new();
+    for raw in config.lines() {
+        let line = raw.trim();
+        if let Some(head) = line.strip_suffix('\\') {
+            pending.push_str(head);
+            pending.push(' ');
+            continue;
+        }
+        let line = std::mem::take(&mut pending) + line;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let opens = line.ends_with('{');
+        if line == "}" {
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if depth > 0 {
+            depth += usize::from(opens);
+            continue;
+        }
+        if opens {
+            depth += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("set ") {
+            let rest = rest.trim_start();
+            if let Some(name) = rest.strip_prefix('$') {
+                let (name, value) = name.split_once(char::is_whitespace).unwrap_or((name, ""));
+                let value = expand(value.trim(), &vars);
+                vars.retain(|(n, _)| n != name);
+                vars.push((name.to_string(), value));
+                vars.sort_by_key(|(n, _)| std::cmp::Reverse(n.len()));
+            }
+            continue;
+        }
+        let w = words(&expand(line, &vars));
+        if w.first().map(String::as_str) != Some("workspace") {
+            continue;
+        }
+        let Some(k) = w.iter().skip(2).position(|t| t == "output").map(|k| k + 2) else {
+            continue;
+        };
+        let name = w[1..k].join(" ");
+        let outputs: Vec<String> = w[k + 1..].to_vec();
+        if name.is_empty() || outputs.is_empty() {
+            continue;
+        }
+        out.push((name, outputs));
+    }
+    out
+}
+
+/// `line` with each `$name` of `vars` (longest first) replaced.
+fn expand(line: &str, vars: &[(String, String)]) -> String {
+    let mut s = line.to_string();
+    for (name, value) in vars {
+        s = s.replace(&format!("${name}"), value);
+    }
+    s
+}
+
+/// A workspace name's leading number, as sway orders workspaces.
+fn leading_number(name: &str) -> Option<i64> {
+    let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 fn is_window(n: &Node) -> bool {
@@ -257,11 +404,57 @@ impl State {
                 workspaces,
                 windows,
                 focused_screen: None,
+                configured: self.configured(),
             },
             toplevel_ids,
             // `fullscreen_mode`; sway has no maximize, so never maximized.
             window_states: true,
         }
+    }
+
+    /// The workspaces the config's assignments place on an output that is
+    /// on, and that do not exist yet (Gaps 3): by their name's number,
+    /// then in the config's order. sway gives a workspace an id only once
+    /// made, so each has a negative id of its own (`-1` for the first
+    /// assignment, and on), which `ws.focus()` makes it by; the first
+    /// assignment of a name, and the first of its outputs that is on,
+    /// place it, as sway does.
+    pub(crate) fn configured(&self) -> Vec<Workspace> {
+        let mut out: Vec<Workspace> = Vec::new();
+        for (i, (name, outputs)) in self.assignments.iter().enumerate() {
+            if out.iter().any(|w| w.name == *name)
+                || self.workspaces.iter().any(|w| w.name == *name)
+            {
+                continue;
+            }
+            let on = outputs.iter().find_map(|arg| {
+                self.outputs
+                    .iter()
+                    .find(|o| o.active && o.named(arg))
+                    .map(|o| o.name.clone())
+            });
+            let Some(screen) = on else {
+                continue;
+            };
+            out.push(Workspace {
+                id: -(i as i64) - 1,
+                name: name.clone(),
+                screen,
+                ..Default::default()
+            });
+        }
+        out.sort_by_key(|w| (leading_number(&w.name).is_none(), leading_number(&w.name)));
+        out
+    }
+
+    /// The sway command switching to the workspace named `name` (made when
+    /// it does not exist, on its assigned output if it has one).
+    fn switch_to(name: &str) -> Result<String, WmError> {
+        if name.trim().is_empty() {
+            return Err(WmError::UnknownWorkspaceName(name.to_string()));
+        }
+        let name = name.replace('\\', "\\\\").replace('"', "\\\"");
+        Ok(format!("workspace --no-auto-back-and-forth \"{name}\""))
     }
 
     /// The sway command for an action.
@@ -274,14 +467,19 @@ impl State {
         };
         Ok(match action {
             WmAction::FocusWorkspace(id) => {
-                let ws = self
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == *id)
-                    .ok_or(WmError::UnknownWorkspace(*id))?;
-                let name = ws.name.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("workspace --no-auto-back-and-forth \"{name}\"")
+                let name = match self.workspaces.iter().find(|w| w.id == *id) {
+                    Some(ws) => ws.name.clone(),
+                    // A configured workspace, made by switching to it.
+                    None => self
+                        .configured()
+                        .into_iter()
+                        .find(|w| w.id == *id)
+                        .map(|w| w.name)
+                        .ok_or(WmError::UnknownWorkspace(*id))?,
+                };
+                Self::switch_to(&name)?
             }
+            WmAction::FocusWorkspaceNamed(name) => Self::switch_to(name)?,
             WmAction::FocusWindow(id) => format!("[con_id={}] focus", window(id)?),
             WmAction::CloseWindow(id) => format!("[con_id={}] kill", window(id)?),
             WmAction::MinimizeWindow(id) => format!("[con_id={}] move scratchpad", window(id)?),
@@ -313,7 +511,33 @@ async fn query(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
     state.workspaces = conn.request(CommandType::GetWorkspaces, "").await?;
     let tree: Node = conn.request(CommandType::GetTree, "").await?;
     state.set_tree(&tree);
+    // The outputs only matter to the config's assignments.
+    if !state.assignments.is_empty() {
+        state.outputs = extra(conn.request(CommandType::GetOutputs, "").await)?.unwrap_or_default();
+    }
     Ok(())
+}
+
+/// The config's workspace assignments (`get_config`), read when a
+/// session starts and on `reload`.
+async fn read_assignments(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
+    let config: Option<swayipc_types::Config> =
+        extra(conn.request(CommandType::GetConfig, "").await)?;
+    state.assignments = config.map(|c| assignments(&c.config)).unwrap_or_default();
+    Ok(())
+}
+
+/// A reply the adapter can do without (the config, the outputs): one it
+/// cannot read is none, never a reason to degrade; a lost socket is.
+fn extra<T>(reply: Result<T, SessionEnd>) -> Result<Option<T>, SessionEnd> {
+    match reply {
+        Ok(v) => Ok(Some(v)),
+        Err(SessionEnd::Io(e)) => Err(SessionEnd::Io(e)),
+        Err(SessionEnd::NotUnderstood(n)) => {
+            log::debug!("sway IPC: {n:?}");
+            Ok(None)
+        }
+    }
 }
 
 /// The version sway reports (`get_version`'s `human_readable`), for a
@@ -428,6 +652,7 @@ async fn session(
     }
     let mut conn = Conn::connect(socket).await?;
     let mut state = State::default();
+    read_assignments(&mut conn, &mut state).await?;
     query(&mut conn, &mut state).await?;
     // Actions this sway refused stay refused until it reports another
     // version.
@@ -482,6 +707,9 @@ async fn session(
                 }
                 if shutdown {
                     return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "sway is shutting down").into());
+                }
+                if reloads > 0 {
+                    read_assignments(&mut conn, &mut state).await?;
                 }
                 if requery {
                     query(&mut conn, &mut state).await?;
@@ -640,6 +868,119 @@ mod tests {
         assert_eq!(
             state.command_for(&WmAction::FullscreenWindow("0".into())),
             Err(WmError::UnknownWindow("0".into()))
+        );
+    }
+
+    /// Gaps 3 (m6-w2-services): the config's top-level `workspace <name>
+    /// output <outputs…>` lines, with `set` variables (longest name
+    /// first), quotes, continued lines; blocks, comments, bindings and
+    /// other `workspace` commands are not assignments.
+    #[test]
+    fn assignments_are_read_from_the_config() {
+        let config = r#"
+# workspace 9 output DP-9 (a comment)
+set $mon DP-1
+set $mon2 "HDMI-A-1"
+set $ws3 "3: mail"
+workspace 1 output $mon
+workspace 2 output $mon2 $mon
+workspace $ws3 output \
+    $mon2
+workspace "4: chat" output 'Dell Inc. DELL U2720Q 7Z9DL13'
+workspace 5 gaps inner 4
+workspace_layout tabbed
+bindsym $mod+1 workspace number 1
+mode "resize" {
+    workspace 6 output DP-1
+}
+bar {
+    position top
+}
+workspace 7 output DP-1
+"#;
+        assert_eq!(
+            assignments(config),
+            [
+                ("1".to_string(), vec!["DP-1".to_string()]),
+                ("2".into(), vec!["HDMI-A-1".into(), "DP-1".into()]),
+                ("3: mail".into(), vec!["HDMI-A-1".into()]),
+                (
+                    "4: chat".into(),
+                    vec!["Dell Inc. DELL U2720Q 7Z9DL13".into()]
+                ),
+                ("7".into(), vec!["DP-1".into()]),
+            ]
+        );
+    }
+
+    /// Gaps 2 and 3 (m6-w2-services): an assigned workspace that does
+    /// not exist is configured on the first of its outputs that is on (by
+    /// connector or by `make model serial`), with a negative id of its
+    /// own that `ws.focus()` makes it by; a name is switched to (and
+    /// made) as written.
+    #[test]
+    fn assigned_workspaces_are_configured_and_made_by_switching() {
+        let workspaces: Vec<swayipc_types::Workspace> = decode(
+            br#"[{"id": 4, "num": 1, "name": "1", "layout": "splith", "visible": true,
+                  "focused": true, "urgent": false, "output": "DP-1",
+                  "rect": {"x": 0, "y": 0, "width": 1, "height": 1}}]"#
+                .to_vec(),
+        )
+        .unwrap();
+        let output = |name: &str, active: bool| SwayOutput {
+            name: name.into(),
+            make: "Dell Inc.".into(),
+            model: "DELL U2720Q".into(),
+            serial: format!("S-{name}"),
+            active,
+        };
+        let state = State {
+            workspaces,
+            assignments: assignments(
+                "workspace 1 output DP-1\nworkspace 10 output DP-1\n\
+                 workspace 2: web output DP-9 HDMI-A-1\n\
+                 workspace chat output 'Dell Inc. DELL U2720Q S-DP-1'\n\
+                 workspace 3 output DP-2\nworkspace 2: web output DP-1\n",
+            ),
+            outputs: vec![
+                output("DP-1", true),
+                output("HDMI-A-1", true),
+                output("DP-2", false),
+            ],
+            ..Default::default()
+        };
+        let slots: Vec<(i64, String, String)> = state
+            .snapshot()
+            .state
+            .configured
+            .into_iter()
+            .map(|w| (w.id, w.name, w.screen))
+            .collect();
+        assert_eq!(
+            slots,
+            [
+                (-3, "2: web".to_string(), "HDMI-A-1".to_string()),
+                (-2, "10".into(), "DP-1".into()),
+                (-4, "chat".into(), "DP-1".into()),
+            ]
+        );
+        assert_eq!(
+            state.command_for(&WmAction::FocusWorkspace(-3)).unwrap(),
+            r#"workspace --no-auto-back-and-forth "2: web""#
+        );
+        assert_eq!(
+            state.command_for(&WmAction::FocusWorkspace(-5)),
+            Err(WmError::UnknownWorkspace(-5))
+        );
+        assert_eq!(
+            state
+                .command_for(&WmAction::FocusWorkspaceNamed("say \"hi\"".into()))
+                .unwrap(),
+            r#"workspace --no-auto-back-and-forth "say \"hi\"""#
+        );
+        assert_eq!(
+            state.command_for(&WmAction::FocusWorkspaceNamed(" ".into())),
+            Err(WmError::UnknownWorkspaceName(" ".into()))
         );
     }
 
