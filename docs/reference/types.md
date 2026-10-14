@@ -415,6 +415,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `EffectKind` | `lightning`, `sparks`, `shimmer`, `ripple`, `aurora` |
 | `Ellipsis` | `none`, `start`, `middle`, `end` |
 | `Fit` | `cover`, `contain`, `fill`, `none` |
+| `HitKeyword` | `none` |
 | `InputKind` | `text`, `password`. What an `input` holds: `type: password` masks it (docs/grammar.md). |
 | `Instant` | `instant` |
 | `Justify` | `start`, `center`, `end`, `space_between`, `space_around`, `space_evenly` |

@@ -1310,8 +1310,12 @@ impl<'a> Flattener<'a> {
         if root {
             self.out.root_paints = (!ink.is_empty() || self.out.blur.len() > blur_start) && !inert;
         }
-        let takes_input = !root && !inh.input_done && !inert;
-        let input_done = inh.input_done || !root;
+        // (m6-owner-fixes, G-c) `hit: none`: no input in its own box;
+        // its children take theirs, and stand for it in a hover popup's
+        // region.
+        let no_hit = matches!(get(Prop::Hit), Some(PropValue::Keyword(k)) if k == "none");
+        let takes_input = !root && !inh.input_done && !inert && !no_hit;
+        let input_done = inh.input_done || (!root && !no_hit);
         // The border, hashed apart, still counts in the whole and in what
         // the glyphs leave out.
         let rest = sig.finish();
@@ -1341,7 +1345,8 @@ impl<'a> Flattener<'a> {
             },
         );
 
-        // Hit shape: the rounded box, grown by `hit: grow(n)`.
+        // Hit shape: the rounded box, grown by `hit: grow(n)`; none with
+        // `hit: none`.
         let grow = match get(Prop::Hit) {
             Some(PropValue::Call { name, args }) if name == "grow" => {
                 args.first().and_then(|a| number(Some(a))).unwrap_or(0.0)
@@ -1350,7 +1355,7 @@ impl<'a> Flattener<'a> {
         }
         .clamp(0.0, 1000.0) as f64
             * s;
-        if !inert {
+        if !inert && !no_hit {
             let grown = frame.inflate(grow, grow);
             let radii = RoundedRectRadii::new(
                 r.top_left + grow,

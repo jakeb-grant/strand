@@ -737,14 +737,18 @@ filling the monitor, the keyboard always).
 - **Hit testing** follows the node's rounded shape where it is drawn
   (its paint offsets and transforms, and its ancestors', move it; a
   slider or `segmented` reads the pointer there too). `hit: grow(n)`
-  enlarges it by `n` for small targets. Shadows enlarge the buffer but
-  not the input region.
+  enlarges it by `n` for small targets; `hit: none` takes no input in
+  the node's own box (the pointer passes through to what is below),
+  while its children take theirs and are hit with it among their
+  ancestors. Shadows enlarge the buffer but not the input region.
 - **A `trigger: hover` popup that draws nothing itself** (no `bg`,
   border, shadow, `blur` or `backdrop` of its own) takes input only in
   the boxes of its top-level elements that draw (a `blur` or `backdrop`
   counts), as they are drawn this frame: the pointer passes through the
   rest of it to what is below. A travelling island (section 6.3) moves
   inside a popup wider than it, and only the island takes the pointer.
+  A top-level element with `hit: none` gives its children's boxes
+  instead of its own.
   While a press that went down on it is held (a slider's drag), it
   takes its whole box. Any other popup takes the pointer in its whole box, gaps included.
   (decisions.md m6-w2-surface, 2026-10-14)

@@ -52,7 +52,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `blur_fallback` | `BlurFallback` | What to draw when the compositor cannot blur. |
 | `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
 | `clip` | `bool` | Clips its children to its rounded shape. |
-| `hit` | `HitArea` | Its hit area: `hit: grow(6)` enlarges it for small targets. |
+| `hit` | `HitArea \| HitKeyword` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
 | `tooltip` | `text` | A tooltip shown on hover. |
 | `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
 | `blend` | `Blend` | How it blends with what is below it. |
@@ -522,7 +522,7 @@ It takes no children.
 | `blur_fallback` | `BlurFallback` | What to draw when the compositor cannot blur. |
 | `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
 | `clip` | `bool` | Clips its children to its rounded shape. |
-| `hit` | `HitArea` | Its hit area: `hit: grow(6)` enlarges it for small targets. |
+| `hit` | `HitArea \| HitKeyword` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
 | `tooltip` | `text` | A tooltip shown on hover. |
 | `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
 | `blend` | `Blend` | How it blends with what is below it. |

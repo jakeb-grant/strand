@@ -21,6 +21,7 @@ enum Markup { none, basic }
 enum Fit { cover, contain, fill, none }
 enum CornerStyle { round, squircle }
 enum RadiusKeyword { full }
+enum HitKeyword { none }
 enum Place { flow, absolute }
 enum Blend { normal, screen, add, multiply, overlay, difference }
 enum BlurFallback { tint, none }
@@ -999,8 +1000,13 @@ group node {
   backdrop: Filter
   /// Clips its children to its rounded shape.
   clip: bool
-  /// Its hit area: `hit: grow(6)` enlarges it for small targets.
-  hit: HitArea
+  /// Its hit area: `hit: grow(6)` enlarges it for small targets;
+  /// `hit: none` takes no input in its own box (the pointer passes
+  /// through to what is below), while its children take theirs. On a
+  /// `trigger: hover` popup that draws nothing, a top-level element
+  /// with `hit: none` gives the popup's input region its children's
+  /// boxes instead of its own.
+  hit: HitArea | HitKeyword
   /// A tooltip shown on hover.
   tooltip: text
   /// Colour filters on its subtree: `filter: grayscale(1)`, or a list.
