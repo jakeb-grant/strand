@@ -1144,6 +1144,24 @@ fn a_config_services_rw_field_is_writable() {
     }
 }
 
+/// Gaps 13 (m6-w2-services): `media.position` is writable, so a
+/// scrubber binds it both ways and a click assigns it; the rest of
+/// `media` stays read-only.
+#[test]
+fn media_position_is_a_scrubber() {
+    assert_eq!(
+        codes(
+            "bar B {\n  slider { value: <-> media.position }\n  \
+             text media.title ?? \"\"\n  on click { media.position = 0 }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { on click { media.elapsed = media.elapsed } }\n"),
+        ["check::read_only"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

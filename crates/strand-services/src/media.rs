@@ -17,6 +17,15 @@
 //! answer newer than the re-read stands). `elapsed` and `position`
 //! are `#[store(stream)]` fields, ticking once a second only while a visible
 //! reader shows them and the player plays. Otherwise nothing wakes.
+//!
+//! Writing `position` (a fraction of the track) seeks the active player
+//! (Gaps 13, decisions.md m6-w2-services): `SetPosition` with the track's
+//! `mpris:trackid` when it has one, else `Seek` by the offset from where
+//! it is now, in a task of its own. The position is fixed at the target
+//! at once (so a dragged scrubber does not jump back), and the player's
+//! `Seeked` corrects it; a call that fails asks the position again. A
+//! player whose `CanSeek` is false, or a track of unknown length, keeps
+//! its place.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -68,8 +77,11 @@ pub struct Media {
     /// the player sent none, while remote art loads, or when it failed, so
     /// `media.art ?? "audio-x-generic"` falls back.
     pub art: Option<String>,
-    /// Fraction of the track played, 0 to 1.
-    #[store(stream)]
+    /// Fraction of the track played, 0 to 1. Writable: a scrubber's
+    /// `slider { value: <-> media.position }` seeks the player (MPRIS
+    /// `SetPosition`, or `Seek` when the track has no id). A player that
+    /// cannot seek, or a track of unknown length, keeps its place.
+    #[store(stream, rw)]
     pub position: f64,
     /// Time played.
     #[store(stream)]
@@ -286,6 +298,47 @@ impl Players {
         }
     }
 
+    /// Seeks the active player to `fraction` of its track at `now`: the
+    /// call to make, its position fixed at the target meanwhile. `None`
+    /// when no player is active, it cannot seek (`CanSeek` false), its
+    /// track's length is unknown, or `fraction` is not a number.
+    fn seek(&mut self, fraction: f64, now: Instant) -> Option<Seek> {
+        if !fraction.is_finite() {
+            return None;
+        }
+        let name = self.active_name()?;
+        let p = self.by_name.get_mut(&name)?;
+        if dbus::boolean(&p.props, "CanSeek") == Some(false) {
+            return None;
+        }
+        let meta = p.metadata();
+        let length = meta.get("mpris:length").and_then(micros)?;
+        if length.is_zero() {
+            return None;
+        }
+        let target = length.mul_f64(fraction.clamp(0.0, 1.0));
+        let from = p.elapsed(now, Some(length));
+        let us = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
+        // `NoTrack` is no track to set a position in (the MPRIS spec).
+        let track = meta
+            .get("mpris:trackid")
+            .and_then(|v| v.downcast_ref::<zbus::zvariant::ObjectPath>().ok())
+            .map(|p| p.to_string())
+            .filter(|t| t != "/org/mpris/MediaPlayer2/TrackList/NoTrack");
+        let call = match track {
+            Some(track) => SeekCall::SetPosition(track, us(target)),
+            None => SeekCall::Seek(us(target) - us(from)),
+        };
+        p.asked += 1;
+        p.at = Some((target, now));
+        Some(Seek {
+            name,
+            owner: p.owner.clone(),
+            call,
+            asked: p.asked,
+        })
+    }
+
     fn by_owner(&mut self, owner: &str) -> Option<(&String, &mut Player)> {
         self.by_name.iter_mut().find(|(_, p)| p.owner == owner)
     }
@@ -429,6 +482,62 @@ async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> 
 
 /// The body's tasks: reads (answers to apply) and actions (nothing).
 type Tasks = tokio::task::JoinSet<Option<Read>>;
+
+/// A seek to make ([`Players::seek`]).
+#[derive(Debug, PartialEq)]
+struct Seek {
+    name: String,
+    owner: String,
+    call: SeekCall,
+    /// The position question the seek's fix is (a failed call asks the
+    /// position again under it).
+    asked: u64,
+}
+
+/// MPRIS's two ways to seek.
+#[derive(Debug, PartialEq)]
+enum SeekCall {
+    /// `SetPosition(track, position)`, microseconds.
+    SetPosition(String, i64),
+    /// `Seek(offset)`, microseconds from where it is.
+    Seek(i64),
+}
+
+impl Seek {
+    /// Makes the call; when it fails, the position is asked again.
+    async fn run(self, conn: zbus::Connection) -> Option<Read> {
+        let name = self.name.as_str();
+        let r = match &self.call {
+            SeekCall::SetPosition(track, us) => {
+                match zbus::zvariant::ObjectPath::try_from(track.as_str()) {
+                    Ok(path) => {
+                        dbus::timed(conn.call_method(
+                            Some(name),
+                            PATH,
+                            Some(PLAYER),
+                            "SetPosition",
+                            &(path, *us),
+                        ))
+                        .await
+                    }
+                    Err(e) => Err(e.into()),
+                }
+            }
+            SeekCall::Seek(offset) => {
+                dbus::timed(conn.call_method(Some(name), PATH, Some(PLAYER), "Seek", &(*offset,)))
+                    .await
+            }
+        };
+        let e = r.err()?;
+        log::warn!("media: seeking {name}: {e}");
+        let ask = Ask {
+            position: Some(self.asked),
+            asked: self.asked,
+            ..Ask::default()
+        };
+        Some(read(conn, self.name, self.owner, ask).await)
+    }
+}
 
 /// A remote art fetch's end: its URL, and its file (`None` when it came
 /// in while no media body ran: only the shown file is kept then), or why
@@ -724,6 +833,23 @@ impl Media {
                                 }
                                 None
                             });
+                        }
+                        false
+                    }
+                    Some(Msg::Write(w)) if w.field == "position" => {
+                        let now = Instant::now();
+                        match players.seek(w.value().unwrap_or(f64::NAN), now) {
+                            Some(seek) => {
+                                let conn = conn.clone();
+                                tasks.spawn(seek.run(conn));
+                            }
+                            None => log::info!("media: no player can seek to that"),
+                        }
+                        // The fix stands (or the place is kept): the
+                        // write is answered with it.
+                        let state = shown(&players, &mut kept, now);
+                        if !cx.report(&w, |s| *s = state) {
+                            return Ok(());
                         }
                         false
                     }

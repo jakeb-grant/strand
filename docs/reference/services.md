@@ -138,7 +138,7 @@ and only while a visible reader shows it.
 | `artist` | `text?` | The track's artist. |
 | `album` | `text?` | The track's album. |
 | `art` | `text?` | The album art: `image media.art { fit: cover }`. Local art (a `file://` URL or a path) as the player sent it; remote (`https://`, `http://`) art fetched and shown as a file once it is in. Null when the player sent none, while remote art loads, or when it failed, so `media.art ?? "audio-x-generic"` falls back. |
-| `position` | `float` | Fraction of the track played, 0 to 1. |
+| `position` | `float rw` | Fraction of the track played, 0 to 1. Writable: a scrubber's `slider { value: <-> media.position }` seeks the player (MPRIS `SetPosition`, or `Seek` when the track has no id). A player that cannot seek, or a track of unknown length, keeps its place. |
 | `elapsed` | `duration` | Time played. |
 | `length` | `duration?` | The track's length, when known. |
 | `player` | `text?` | The active player's name, such as `Firefox` or `mpv`; null when no player runs. |

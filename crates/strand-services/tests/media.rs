@@ -27,6 +27,10 @@ struct Track {
     frozen: bool,
     /// Its `mpris:artUrl`.
     art: String,
+    /// Its `mpris:trackid`, when it names one.
+    trackid: Option<String>,
+    /// Its `CanSeek`.
+    can_seek: bool,
 }
 
 struct Player(Arc<Mutex<Track>>);
@@ -60,6 +64,39 @@ impl Player {
         self.0.lock().unwrap().calls.push("Previous".into());
     }
 
+    async fn set_position(
+        &self,
+        track: zbus::zvariant::ObjectPath<'_>,
+        position: i64,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+    ) {
+        {
+            let mut t = self.0.lock().unwrap();
+            t.calls.push(format!("SetPosition {track} {position}"));
+            // The MPRIS spec: a stale track id is ignored.
+            if t.trackid.as_deref() != Some(track.as_str()) {
+                return;
+            }
+            t.position_us = position;
+        }
+        Self::seeked(&e, position).await.unwrap();
+    }
+
+    async fn seek(&self, offset: i64, #[zbus(signal_emitter)] e: SignalEmitter<'_>) {
+        let position = {
+            let mut t = self.0.lock().unwrap();
+            t.calls.push(format!("Seek {offset}"));
+            t.position_us = (t.position_us + offset).max(0);
+            t.position_us
+        };
+        Self::seeked(&e, position).await.unwrap();
+    }
+
+    #[zbus(property)]
+    fn can_seek(&self) -> bool {
+        self.0.lock().unwrap().can_seek
+    }
+
     #[zbus(property)]
     fn playback_status(&self) -> String {
         self.0.lock().unwrap().status.clone()
@@ -68,7 +105,7 @@ impl Player {
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, OwnedValue> {
         let t = self.0.lock().unwrap();
-        HashMap::from([
+        let mut m = HashMap::from([
             (
                 "xesam:title".to_string(),
                 OwnedValue::try_from(Value::from(t.title.as_str())).unwrap(),
@@ -82,7 +119,15 @@ impl Player {
                 "mpris:artUrl".to_string(),
                 OwnedValue::try_from(Value::from(t.art.as_str())).unwrap(),
             ),
-        ])
+        ]);
+        if let Some(id) = &t.trackid {
+            let path = zbus::zvariant::ObjectPath::try_from(id.as_str()).unwrap();
+            m.insert(
+                "mpris:trackid".to_string(),
+                OwnedValue::try_from(Value::from(path)).unwrap(),
+            );
+        }
+        m
     }
 
     #[zbus(property(emits_changed_signal = "false"))]
@@ -141,6 +186,8 @@ fn player_with(
         rate: 1.0,
         frozen: false,
         art: "file:///tmp/art.png".into(),
+        trackid: None,
+        can_seek: true,
     };
     f(&mut t);
     let track = Arc::new(Mutex::new(t));
@@ -570,5 +617,108 @@ fn remote_art_is_fetched_cached_and_never_stalls_the_player() {
     until(&rt, &s, "the next body", || b.media.starts() == 2);
     until(&rt, &s, "the art again", || shows(&a_png));
     assert_eq!(count("/slow.png"), 1, "fetched again");
+    s.shutdown();
+}
+
+/// Gaps 13 (m6-w2-services): writing `media.position` seeks the active
+/// player: `SetPosition` with its track's id, `Seek` by the offset when
+/// the track has none. The position stands at the target at once and
+/// the player's `Seeked` confirms it. A player that cannot seek is not
+/// asked and keeps its place.
+#[test]
+fn writing_the_position_seeks_the_player() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let (a_conn, a) = player_with(
+        &tokio,
+        &bus.address,
+        "mpv",
+        "Paused",
+        "First",
+        30_000_000,
+        |t| t.trackid = Some("/org/mpv/track/7".into()),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let position = media::Media::FIELDS
+        .iter()
+        .position(|f| f.name == "position")
+        .unwrap();
+    let seek = |to: f64| {
+        b.media
+            .dynamic()
+            .write(&rt, position, &[], strand_services::Data::Float(to))
+            .unwrap();
+        rt.flush();
+    };
+
+    // Halfway: SetPosition on its track, 100 s into 200 s.
+    seek(0.5);
+    until(&rt, &s, "the SetPosition", || {
+        a.lock().unwrap().calls == ["SetPosition /org/mpv/track/7 100000000"]
+    });
+    until(&rt, &s, "the position", || {
+        cells.elapsed.get_untracked(&rt) == Ok(Duration::from_secs(100))
+            && cells.position.get_untracked(&rt) == Ok(0.5)
+    });
+    assert_eq!(a.lock().unwrap().position_us, 100_000_000);
+
+    // A track without an id: Seek by the offset from where it is.
+    a.lock().unwrap().trackid = None;
+    tokio.block_on(async {
+        let i = a_conn
+            .object_server()
+            .interface::<_, Player>(media::PATH)
+            .await
+            .unwrap();
+        i.get()
+            .await
+            .metadata_changed(i.signal_emitter())
+            .await
+            .unwrap();
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    seek(0.25);
+    until(&rt, &s, "the Seek", || {
+        a.lock().unwrap().calls.last().map(String::as_str) == Some("Seek -50000000")
+    });
+    until(&rt, &s, "the new position", || {
+        cells.elapsed.get_untracked(&rt) == Ok(Duration::from_secs(50))
+    });
+    assert_eq!(a.lock().unwrap().position_us, 50_000_000);
+
+    // A player that cannot seek is not asked; the place is kept.
+    a.lock().unwrap().can_seek = false;
+    tokio.block_on(async {
+        let i = a_conn
+            .object_server()
+            .interface::<_, Player>(media::PATH)
+            .await
+            .unwrap();
+        i.get()
+            .await
+            .can_seek_changed(i.signal_emitter())
+            .await
+            .unwrap();
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    let calls = a.lock().unwrap().calls.len();
+    seek(0.9);
+    std::thread::sleep(Duration::from_millis(300));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(a.lock().unwrap().calls.len(), calls, "not asked");
+    assert_eq!(
+        cells.elapsed.get_untracked(&rt),
+        Ok(Duration::from_secs(50)),
+        "the place is kept"
+    );
     s.shutdown();
 }
