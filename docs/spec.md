@@ -159,7 +159,8 @@ guide's ladder test use this table as the list of constructs.
   service's field, `Edge.top` the builtin variant beside an
   `Edge.strand`), and the error and the note then ask to rename the file
   instead of offering it; a file's exported `state` or `let` of that
-  name is read as before. `strand
+  name is read as before. `self` and the node names (`hover`, …) are
+  never file qualifiers. `strand
   check` and the language server put a note (`check::same_name`, not an
   error or a warning) at each declaration of a name declared in more
   than one file, listing the other files; a load never reports it, and

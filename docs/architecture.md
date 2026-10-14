@@ -3139,7 +3139,8 @@ Public interfaces other crates and later stages build on:
   one old file that no longer declares the component's name,
   `Ctx::take_parked_moved` from a parked bar's, and
   `Identity::take_over_moved_bodies` gives a pasted-then-cut
-  component's body the cut one's identity. `vm::SettingsSlot::types`
+  component's body the cut one's identity (only when the survivor had
+  no calls and the cut one had some, by `Identity::calls`). `vm::SettingsSlot::types`
   holds each field's `ty::CellTy` and the type string its handle holds.
   A persisted value is migrated between path forms only on a fresh
   mount (`Ctx::reloading` false, no cell carried).

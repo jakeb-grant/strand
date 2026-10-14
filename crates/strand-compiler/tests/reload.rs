@@ -1653,3 +1653,73 @@ text join(\"\", open) { on click { open = !open } }\n}\n";
     shell.flush();
     assert_eq!(shell.scene.texts(), ["false", "true"]);
 }
+
+/// A component whose body holds a list item's `state`, its texts led by
+/// `s`.
+fn deep_row(s: &str) -> String {
+    format!(
+        "component Row {{\n  row {{\n    for i in [1] key i {{\n      state deep = 0\n      \
+text join(\"\", \"{s} deep \", deep) {{ on click {{ deep = deep + 1 }} }}\n    }}\n  }}\n}}\n"
+    )
+}
+
+fn click_text(shell: &mut Shell, t: &str) {
+    let n = shell
+        .scene
+        .find_text(t)
+        .unwrap_or_else(|| panic!("no {t:?} in {:?}", shell.scene.texts()));
+    shell.inst.event(n, "click", Vec::new());
+    shell.flush();
+}
+
+/// (Third review) Undoing a paste (a copy of `a`'s `Row` pasted into
+/// `c.strand`, then deleted from it) keeps `a`'s own body state: the
+/// survivor's body is never handed the deleted copy's identity.
+#[test]
+fn undoing_a_paste_keeps_the_originals_state() {
+    let row = deep_row("a");
+    let a = format!("{row}bar A {{ Row }}\n");
+    let mut shell = boot(&[("a.strand", &a)]);
+    click_text(&mut shell, "a deep 0");
+    shell.reload(&[("a.strand", &a), ("c.strand", &row)]);
+    assert!(shell.scene.find_text("a deep 1").is_some());
+    let (report, _) = shell.reload(&[("a.strand", &a)]);
+    assert!(
+        shell.scene.find_text("a deep 1").is_some(),
+        "{:?} {report:?}",
+        shell.scene.texts()
+    );
+}
+
+/// (Third review) Deleting one of two separate same-named components in
+/// use keeps the other's body state.
+#[test]
+fn deleting_one_of_two_components_in_use_keeps_the_others_state() {
+    let menu = format!("{}bar M {{ Row }}\n", deep_row("menu"));
+    let bar = format!("{}bar B {{ Row }}\n", deep_row("bar"));
+    let mut shell = boot(&[("menu.strand", &menu), ("bar.strand", &bar)]);
+    click_text(&mut shell, "bar deep 0");
+    let (report, _) = shell.reload(&[("menu.strand", "bar M { Row }\n"), ("bar.strand", &bar)]);
+    assert!(
+        shell.scene.find_text("bar deep 1").is_some(),
+        "{:?} {report:?}",
+        shell.scene.texts()
+    );
+}
+
+/// (Third review) A save that renames `a`'s `Row` (to `Tile`) while
+/// `c`'s `Row` is in use is no move: `c`'s body state is kept.
+#[test]
+fn a_rename_beside_a_same_named_component_keeps_its_state() {
+    let a = format!("{}bar A {{ Row }}\n", deep_row("a"));
+    let c = format!("{}bar C {{ Row }}\n", deep_row("c"));
+    let mut shell = boot(&[("a.strand", &a), ("c.strand", &c)]);
+    click_text(&mut shell, "c deep 0");
+    let renamed = a.replace("Row", "Tile");
+    let (report, _) = shell.reload(&[("a.strand", &renamed), ("c.strand", &c)]);
+    assert!(
+        shell.scene.find_text("c deep 1").is_some(),
+        "{:?} {report:?}",
+        shell.scene.texts()
+    );
+}

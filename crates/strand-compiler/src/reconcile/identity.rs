@@ -202,6 +202,10 @@ pub struct Identity {
     /// identity in the one file that does now (moved, or pasted then
     /// cut).
     components: HashMap<String, Vec<String>>,
+    /// (M6) Calls of each component, by its file and name (`a.Row`): a
+    /// body is taken over only from a component that had calls by one
+    /// that had none (pasted, then cut).
+    calls: HashMap<String, usize>,
 }
 
 impl Identity {
@@ -269,8 +273,8 @@ impl Identity {
     }
 
     /// (M6) For each component name declared in one file now and, before,
-    /// in that file and exactly one other that no longer declares it
-    /// (pasted, then cut), match the new body's nodes to the cut body's
+    /// in that file (with no calls) and exactly one other that no longer
+    /// declares it (with calls): pasted, then cut. Match the new body's nodes to the cut body's
     /// through the token diff between the cut file's old text and the
     /// new file's text.
     fn take_over_moved_bodies(
@@ -289,6 +293,18 @@ impl Identity {
             }
             let gone: Vec<&String> = before.iter().filter(|b| *b != m).collect();
             let [g] = gone.as_slice() else { continue };
+            // Only the paste-then-cut shape: the survivor was not called
+            // before (a fresh copy) and the cut one was. Undoing a paste,
+            // or deleting one of two components in use, keeps the
+            // survivor's own body.
+            let called = |module: &str| {
+                prev.calls
+                    .get(&format!("{module}.{name}"))
+                    .is_some_and(|n| *n > 0)
+            };
+            if called(m) || !called(g) {
+                continue;
+            }
             let file_of = |files: &[FileSkel], module: &str| {
                 files
                     .iter()
@@ -473,7 +489,10 @@ impl Identity {
                 // The name as written: which file's it is shows in the
                 // component's own group, so a call keeps its identity
                 // when its component moves or its name becomes shared.
-                ElementKind::Component(d) => prog.def(*d).name.clone(),
+                ElementKind::Component(d) => {
+                    *self.calls.entry(prog.owner_key(*d)).or_default() += 1;
+                    prog.def(*d).name.clone()
+                }
 
                 ElementKind::Unknown(n) => format!("?{n}"),
                 ElementKind::File(_) => "file".to_string(),

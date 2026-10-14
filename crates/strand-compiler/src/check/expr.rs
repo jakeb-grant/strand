@@ -816,7 +816,11 @@ impl<'a> Checker<'a> {
         {
             return self.variant_of(e, name, span);
         }
+        // `self.width`, `hover`: node names, read before any file (a
+        // `self.strand` changes nothing).
         if let ast::ExprKind::Name(b) = &base.kind
+            && b.name != "self"
+            && !super::NODE_BOOLS.contains(&b.name.as_str())
             && self.lookup_scope(&b.name).is_none()
             && !self.file_scopes[self.module].contains_key(&b.name)
         {

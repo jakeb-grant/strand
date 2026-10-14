@@ -2588,3 +2588,33 @@ bar C { Row; text join(\"\", a, b, f, m, j.n) }\n";
         }
     }
 }
+
+/// (Third review) A file named `self.strand` never changes `self.x`,
+/// nor one named like a node name `hover.x`: those are read before any
+/// file (spec.md 14).
+#[test]
+fn a_file_named_self_is_not_a_qualifier() {
+    let (out, map) = compile_files(&[
+        (
+            "self.strand",
+            "fn width() -> bool { true }\nfn height() -> bool { true }\n".to_string(),
+        ),
+        (
+            "c.strand",
+            "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n    text \"x\"\n  }\n}\n"
+                .to_string(),
+        ),
+    ]);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.is_error()),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert!(
+        out.program
+            .refs
+            .iter()
+            .all(|r| !matches!(r.target, strand_compiler::hir::Target::File(_))),
+        "`self` named the file"
+    );
+}

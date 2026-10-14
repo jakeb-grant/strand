@@ -171,11 +171,18 @@ impl<'a> Checker<'a> {
 
     /// (M6) The module `q` names before a `.` in an element or a type
     /// (`dock.Row e`, `x: dock.Item`): a file of the config, unless a
-    /// local or a file-level name `q` is in scope. A service, a builtin
+    /// local, a file-level name or a node name (`self`, `hover`) `q` is in
+    /// scope. A service, a builtin
     /// value or a builtin type cannot stand there, so a file named like
     /// one (`tray.strand`, `color.strand`) is still read.
     pub(super) fn file_for_name(&self, q: &str) -> Option<usize> {
-        if self.lookup_scope(q).is_some() || self.file_scopes[self.module].contains_key(q) {
+        // `self`, `hover` and the other node names are read before any
+        // file-level name, so a `self.strand` never changes `self.x`.
+        if q == "self"
+            || super::NODE_BOOLS.contains(&q)
+            || self.lookup_scope(q).is_some()
+            || self.file_scopes[self.module].contains_key(q)
+        {
             return None;
         }
         self.file_index.get(q).copied()
