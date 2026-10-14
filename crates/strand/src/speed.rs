@@ -329,6 +329,7 @@ fn search_cost() {
                 path: None,
                 file: PathBuf::from("/dev/null"),
                 icon_key: None,
+                wm_class: None,
                 also: vec![word(3), word(2), word(4)],
             }
         })
