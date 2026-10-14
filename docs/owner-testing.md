@@ -55,6 +55,8 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    `crates/strand-render/tests/layout.rs::a_layer_surface_buffer_stays_inside_its_anchored_edges`,
    `crates/strand-surface/tests/sway.rs::a_popup_grabs_only_for_the_press_that_opened_it`);
    decisions.md m6-w2-surface.
+   **Verified by the owner on Hyprland, 2026-10-14** (the CI build of
+   `0e45b19`): hover popups open on the right monitor.
 2. **Animation feels less snappy, lower frame rate, than Quickshell.**
    (open) The owner's impression on the hover islands, the workspace
    indicator and the slots. Not measured yet: `strand report` on the
@@ -63,16 +65,22 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    physical pixels wide), the GPU build not promoting these surfaces,
    and springs (`$motion.spatial`) settling more slowly than
    Quickshell's 200 ms OutBack curves.
-   **Wave 2: proposed** (decisions.md m6-w2-surface, "a snappier
-   default `$motion.spatial`"). Measured at 1.5, there is no raster
-   cost: the 3840×125 bar paints in 4.6 ms, the pill's move at
-   0.16 ms a frame, an island's enter at 1.25 ms a frame
+   **Wave 2: fixed** by the owner's ruling (2026-10-14, option (b) of
+   decisions.md m6-w2-surface, "a snappier default
+   `$motion.spatial`"; recorded in decisions.md m6-owner). Measured at
+   1.5, there is no raster cost: the 3840×125 bar paints in 4.6 ms,
+   the pill's move at 0.16 ms a frame, an island's enter at 1.25 ms a
+   frame
    (`crates/strand-render/tests/owner_motion.rs::the_owners_bar_and_island_at_one_and_a_half`).
    What reads as slow is the test config's `enter` on each island's
    card, which never plays (the pose belongs on the popup), and
    spring(700, 0.9) reaching 90% at 129 ms where OutBack does at 60 ms.
-   spring(3000, 0.75) is proposed as the default for the owner's
-   ruling; nothing is changed.
+   The default `$motion.spatial` is now spring(3000, 0.75): half way
+   at 27 ms, 90% at 52 ms, 2.8% overshoot, settled within 0.2% at
+   142 ms
+   (`crates/strand-scene/src/motion.rs::tests::the_default_spatial_spring_is_snappy`,
+   `crates/strand-theme/src/defaults.rs::tests::the_built_in_theme_resolves_every_base_token`).
+   Whether it feels right is the owner's to judge on their session.
 3. **A window's icon is its raw app id.** (diagnosed) `Window.icon` is
    the app id until "the apps service resolves desktop entries"
    (`crates/strand-services/src/wm/model.rs`, `derive`), and nothing
@@ -109,6 +117,68 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    decisions.md m6-w2-surface. The guide's padding examples could say
    so (docs stream).
 
+6. **The travelling island runs off the right edge.** (2026-10-14,
+   Hyprland, the CI build of `0e45b19`) "Some of the popouts go off
+   the right side of the screen. E.g., power, battery, bt": the
+   rightmost items of the status group, whose island the config's
+   `clamp` holds at the popup's right end.
+   **Fixed.** The island's underdamped spring carried it a pixel or
+   two past the popup's box at the edge, which grew the popup's shadow overhang and
+   so repositioned the popup (`xdg_popup.reposition`); Hyprland 0.56.2
+   slides a repositioned popup against its monitor moved by the
+   popup's own window-geometry offset (its 37 px overhang), so it
+   landed 33 px past the right edge, the clamped island with it
+   (`src/protocols/XDGShell.cpp:93-96`). Sway slides correctly and was
+   right throughout. Now an overshoot no longer changes the popup, and
+   Strand moves a popup inside its output itself, so the compositor
+   need not slide it
+   (`crates/strand-render/tests/boxes.rs::an_island_overshooting_the_popups_edge_keeps_it_still`,
+   `crates/strand-surface/tests/sway.rs::a_popup_at_an_outputs_edge_is_placed_inside_it`,
+   `crates/strand/tests/hover_popups.rs::the_travelling_island_stays_on_its_output_at_the_right_edge`
+   on 1920- and 2560-wide outputs); decisions.md m6-owner-fixes. The
+   config is right.
+   **Verified by the owner on Hyprland, 2026-10-14** (the GitHub CI
+   build of `0cba252`, with bug 7): "They behave well and I'm not
+   seeing flicker."
+7. **A tray menu flickers back after it has gone.** (2026-10-14,
+   Hyprland) First "when I move quickly the new tray opens and then the
+   old one flickers just a bit"; then precisely: "I swap hover from
+   slack to calendar, but while the calendar is up and the slack has
+   disappeared, the slack popup just flickers in and out once
+   briefly". The Slack menu is a tray icon's own `popup { trigger:
+   hover; delay: 100ms; enter { opacity: 0; scale: 0.9 } … }`, the
+   calendar the status group's travelling island.
+   **Fixed.** Strand's: the closing popup's exit is handed to Hyprland as an alpha
+   multiplier (the alpha modifier). The frame that ended the exit
+   also dropped the content kept for it, and that cleared the
+   renderer's cached frame, whose pose the surface manager reads
+   right after the paint (`commit.rs`). It then found no pose and sent
+   the rest pose (multiplier 1) with that frame's commit, the last
+   the popup got before it was destroyed. Hyprland applied it (a
+   commit applies the multiplier) and, unmapping the popup, faded a
+   snapshot of it out at full opacity with `fadePopupsOut` (the
+   owner's `fade`, about 300 ms; `src/desktop/view/Popup.cpp:270-278`,
+   `src/render/Renderer.cpp:3171`): the whole menu back, fading out.
+   Now the pose sent is the one the painted frame took, kept apart
+   from the cache, so the last commit carries the exit's last pose
+   (faded out)
+   (`crates/strand-render/tests/surface_poses.rs::a_closing_popups_last_frame_keeps_its_exit_pose`,
+   which failed before: its last frame reported no pose). Every
+   delegated closing pose whose content unmounts on close had it, so
+   any hover or click popup, and a panel, closing on Hyprland. Sway
+   1.9 has no alpha modifier: the exit is painted there and it never
+   showed. On headless sway, the other suspects are ruled out: the
+   menu is not opened again, its surface is made once and goes once,
+   and it draws nothing after its exit
+   (`crates/strand/tests/hover_popups.rs::a_tray_menu_left_for_the_island_goes_once`,
+   `::a_hover_hand_off_draws_nothing_new_on_the_old_island`). The
+   first reading, the islands' cross-fade under Hyprland's popup
+   fades, was not it; that proposal is withdrawn. decisions.md
+   m6-owner-fixes. The config is right.
+   **Verified by the owner on Hyprland, 2026-10-14** (the GitHub CI
+   build of `0cba252`, with bug 6): "They behave well and I'm not
+   seeing flicker."
+
 8. **A relative `svg` or `image` path draws nothing.** (fixed
    2026-10-14, decisions.md m6-owner-fixes) Found with the GitHub
    build of `0cba252` on headless sway: `svg "dot.svg"` and
@@ -127,6 +197,75 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    file while the shell runs are still not watched
    (`crates/strand-compiler/tests/render.rs::relative_media_paths_are_under_the_config_directory`,
    `crates/strand-compiler/tests/checker.rs::a_missing_literal_file_is_a_warning`).
+   The island test bar (`target/try/island`, built the same day) avoided
+   `svg` entirely because of this bug.
+
+Bugs 9 to 12 and gaps 20 to 27 come from the island test bar
+(`target/try/island`, "Liquid island": one small island at the top
+edge that swells into a dashboard and into live activities), built by
+a workflow on 2026-10-14 against the GitHub build of `0cba252` and
+checked only on headless sway. The test bars are functional-parity
+probes: these are findings, recorded so a later wave can reproduce
+them minimally; they do not by themselves shape Strand, and nothing
+here is a proposal.
+
+9. **A drop shadow makes a shrinking size snap.** (open, 2026-10-14;
+   found by the island test bar (`target/try/island`), headless sway;
+   not yet reproduced minimally) A `col` whose `width` and `height`
+   spring (`width: w ~ s_w; height: h ~ s_h; x: … ~ s_w`, with `when
+   !grown { width: rest_w ~ s_fold; height: rest_h ~ s_fold; x: … ~
+   s_fold }`) and that has a constant `shadow: 0 10px 28px …`: when
+   `grown` goes false, `width` and `height` snap to their targets while
+   `x` still springs. Growing animates fine, and with the `shadow`
+   removed the shrink springs. The node is the card in a `trigger:
+   hover` popup that draws nothing itself (`MorphBody` in
+   `target/try/island/strand/notch.strand`, which now carries no shadow
+   and a comment saying why). A/B screenshots from the builder's run:
+   `target/try/shots/island/r7slowfold` and
+   `target/try/shots/island/r7slowfold-noshadow`. Not known whether it
+   needs the popup. Likely direction: look first at how layout takes a
+   shadowed node's overhang while its size moves (the path bug 6 changed
+   for a moving island in a hover popup).
+10. **A conditional transition does not switch on the change that
+    switches it.** (open, 2026-10-14; found by the island test bar
+    (`target/try/island`), headless sway; not yet reproduced minimally)
+    `opacity: grown ? 1 : 0 ~ (grown ? ease(ease_out, 160ms) :
+    ease(ease_in, 1000ms))` faded out in about 150 ms when `grown` went
+    false: the transition the change picked was not the one applied to
+    that change. The documented form, `opacity: 1 ~ ease(ease_out,
+    160ms)` with `when !grown { opacity: 0 ~ ease(…) }`, works (what the
+    config now uses). The same pattern on `width` and `height` seemed to
+    work, which is inconsistent and is the first thing a minimal repro
+    should settle. Likely direction: check whether a `~`'s easing is
+    read before or after the write that retargets the value.
+11. **A size in a popup's `enter` pose does not play.** (open,
+    2026-10-14; found by the island test bar (`target/try/island`),
+    headless sway; not yet reproduced minimally) A `width` or `height`
+    in the `enter` pose of a popup's card does not play on the popup's
+    first frame: the card mounts at its final size. The config works
+    around it by mounting the card at the island's size and flipping a
+    flag 30 ms later (`on change big.open after 30ms { grown = big.open
+    }`). The card is the root of the popup's `if big.open` branch, where
+    spec.md 6.6 says poses apply. Bug 2 recorded a card's `enter` in the
+    `qs` config never playing, its pose belonging on the popup; whether
+    this is the same is for the repro to settle. Likely direction: check
+    what a popup's first layout and first configure are sized from when
+    its content's enter pose changes a size.
+12. **`.hover` disagrees with a hover popup that maps under a still
+    pointer.** (open, 2026-10-14; found by the island test bar
+    (`target/try/island`), headless sway; not yet reproduced minimally)
+    When a `trigger: hover` popup maps under a pointer that does not
+    move, `card.hover` (an element in the popup) and the anchor's
+    `.hover` read false until the pointer moves, while the popup itself
+    stays open: Strand's popup hover tracking and node `.hover`
+    disagree. The config latches `touched` on the first `card.hover` so
+    the card does not fold back meanwhile. This popup covers its anchor
+    (gap 24's negative margin), so the anchor's `.hover` reading false
+    is what spec.md 6.3 says (the pointer on a popup does not hover its
+    anchor); `card.hover` is the disagreement. It may be sway 1.9 not
+    sending `wl_pointer.enter` to a surface mapped under the pointer.
+    Likely direction: check on Hyprland first; if it is sway's, decide
+    whether node `.hover` should follow the popup tracker's view.
 
 ## Capability gaps
 
@@ -231,15 +370,19 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    Nor can a component change its caller's state: a tray menu's rows
    could not switch the menu to a submenu from a row component, so the
    rows were inlined into the tray icon's component.
-   **Wave 2: partly fixed, the rest proposed.** `id:` and handlers on
-   a call are its root element's, so a component's root hover (and a
-   root popup's `open`) reach the caller and a caller's handler on a
-   row switches its menu
+   **Wave 2: fixed for the owner's case; the rest declined for now**
+   (the owner's ruling, 2026-10-14, decisions.md m6-owner). `id:` and
+   handlers on a call are its root element's, so a component's root
+   hover (and a root popup's `open`) reach the caller and a caller's
+   handler on a row switches its menu
    (`crates/strand-compiler/tests/instantiate.rs::a_calls_handlers_and_id_are_its_root_elements`,
-   `::a_calls_id_and_screen_reach_its_hover_popup`). Exposing a
-   non-root element's state and a component writing its caller's
-   state (`name: <-> T` parameters) are proposed (decisions.md
-   m6-w2-language, "the rest of owner testing Gaps 6").
+   `::a_calls_id_and_screen_reach_its_hover_popup`). State that two
+   places need lives in the caller. Exposing a non-root element's
+   state and a component writing its caller's state (`name: <-> T`
+   parameters, decisions.md m6-w2-language, "the rest of owner testing
+   Gaps 6") are not taken; they are revisited only if real testing
+   hits a component that must write its caller's state from inside
+   itself, and then land in a later wave with that case as the test.
 7. **`screen` is not in scope in components a bar uses.** It has to
    be passed as a parameter (`Bar { scr: screen }`).
    **Wave 2: fixed**
@@ -353,6 +496,98 @@ run on Hyprland), **in progress** (being built on a stream's branch).
     `crates/strand-compiler/tests/instantiate.rs::a_qualified_call_takes_its_hover_popups_id`;
     the full list is features.md's); spec.md 4.2, the guide's level 2,
     decisions.md m6-w2-language.
+
+Gaps 20 to 27 come from the island test bar (see the note before bug 9):
+findings only.
+
+20. **No way to tell whether a builtin service is running.** (open,
+    2026-10-14; found by the island test bar (`target/try/island`),
+    headless sway; not yet reproduced minimally) `network`, `bluetooth`
+    and `session` have no field saying their daemon answers
+    (`brightness.available` is the only one). A write or an action on a
+    service that is not there (`network.wifi = true` without
+    NetworkManager or iwd) is a runtime fault, freezing the enclosing
+    component in its red frame until a reload; spec.md 12 says service
+    failures reach the program as values, so part of this may be a bug.
+    `session.lock()` with no logind faults and does not fire
+    `session.failed`, which the reference says covers "no login
+    session". The config latches a sign of life per service (`net_seen`,
+    `bt_seen`, `fn logind()` from the `can_*` fields). Likely direction:
+    a `running`/`available` field per service, or actions and writes
+    failing as values.
+21. **A `trigger: hover` popup cannot be opened from code.** (diagnosed,
+    2026-10-14; found by the island test bar (`target/try/island`),
+    headless sway; not yet reproduced minimally) It takes no `open:`
+    (spec.md 6.3, as designed), so a live-activity peek that covers the
+    dashboard's anchor cannot hand over to the dashboard: the hover
+    popup opens only when the pointer re-enters the anchor. The config
+    drops the peek after 800 ms on its middle and relies on the pointer.
+    Likely direction: a way to open (not hold) a hover popup from a
+    handler.
+22. **A hover popup's input covers its elements' empty gaps.**
+    (diagnosed, 2026-10-14; found by the island test bar
+    (`target/try/island`), headless sway; not yet reproduced minimally)
+    A `trigger: hover` popup that draws nothing takes input in each
+    top-level element's whole box (spec.md 6.7), gaps that draw nothing
+    included; there is no `hit: none` per node and no input that follows
+    drawn pixels. A card with decorative side pieces (the island's two
+    concave fillets) had to be three top-level siblings, each placed by
+    `x`, so the strips beside the fillets let the pointer through.
+    Likely direction: a per-node way out of the input region.
+23. **No index-of on lists.** (open, 2026-10-14; found by the island
+    test bar (`target/try/island`), headless sway; not yet reproduced
+    minimally) Lists have `find`, `filter`, `first` and `last` but
+    nothing gives an item's position, so stepping workspaces by scroll
+    (`fn ws_step` in `target/try/island/strand/parts.strand`) compares
+    `id`s and calls `workspaces.focus(int)`. That is right on Hyprland,
+    where the id is the number, and may step wrongly on sway and niri,
+    where `id` is not the number `focus(int)` takes. Not tried there.
+    Likely direction: an index-of (or index-carrying `find`) so the next
+    slot's record can be focused with `ws.focus()`.
+24. **A popup's gap side: a negative `margin` and a `margin` of 0.**
+    (diagnosed, 2026-10-14; found by the island test bar
+    (`target/try/island`), headless sway; not yet reproduced minimally)
+    `margin: -h, 0, 0` on a bar's popup (the island's popups covering
+    the bar to grow out of the screen's edge) works on sway but is
+    undocumented and untested on Hyprland; and a `margin` of 0 on the
+    gap side becomes the default 6 px (`popup_config` in
+    `crates/strand-surface/src/placement.rs`), so a popup cannot sit
+    flush against its anchor without `attach:`. Likely direction:
+    document the gap side's meaning and give "no gap" a spelling.
+25. **`graph` keeps its history only while mounted.** (open, 2026-10-14;
+    found by the island test bar (`target/try/island`), headless sway;
+    not yet reproduced minimally) A `graph` in a popup (the dashboard's
+    system load) starts empty each time the popup opens: the history is
+    the node's own (reference, `graph`), and a popup mounts its children
+    only while shown. Likely direction: a history that can outlive the
+    node (kept by the service or the surface).
+26. **`attach:` fillets cannot serve a popup over its bar.** (open,
+    2026-10-14; found by the island test bar (`target/try/island`),
+    headless sway; not yet reproduced minimally) A popup that overlaps
+    its bar to grow out of the screen's edge (gap 24's negative margin)
+    cannot use `attach: top`: `attach:` makes the gap 0 whatever the
+    margin, so the popup opens below the bar. The island draws its
+    concave fillets itself (`Fillet` in `notch.strand`). Likely
+    direction: let `attach:` name the screen edge for a popup that
+    covers its anchor.
+27. **A popup's root has no per-child alignment.** (open, 2026-10-14;
+    found by the island test bar (`target/try/island`), headless sway;
+    not yet reproduced minimally) A popup's root lays its children out
+    centred on both axes, and there is no per-child `align_self`, so the
+    island's three side-by-side pieces are each placed by `x` from the
+    popup's size. Neither the spec nor the reference says how a surface
+    lays out its top-level children. Likely direction: document the
+    root's layout, then decide whether `align`/`justify` on the popup
+    suffice.
+
+Dropped from the island bar's notes, the spec already answering them: a
+component whose tree is not one element cannot take `id:` (spec.md 5.2:
+a load error whose fix is to wrap the call in a `box`); and a component
+cannot read a bar's `let`s or `state` except through `export` (spec.md
+4.2 and 5.3: a top-level value belongs to its file and other files read
+it only when exported, a surface's state is per instance and reaches a
+component as a parameter; gap 6's ruling keeps state two places need in
+the caller).
 
 ## Docs and traps
 

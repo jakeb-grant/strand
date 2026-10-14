@@ -7,8 +7,8 @@
 //! are testable as images. Times are [`Duration`]s on the presentation
 //! clock ([`crate::PaintTarget::time`]).
 //!
-//! - [`Spring`] is a unit-mass damped harmonic oscillator, `spring(700,
-//!   0.9)` in the language: stiffness and damping *ratio* (1 is critical,
+//! - [`Spring`] is a unit-mass damped harmonic oscillator, `spring(3000,
+//!   0.75)` in the language: stiffness and damping *ratio* (1 is critical,
 //!   below 1 overshoots). Its position and velocity at any time are closed
 //!   form ([`Spring::step`]); there is no integration and so no drift.
 //! - [`Curve`] is how a value moves to a new target: a spring, a timed
@@ -41,8 +41,8 @@ pub struct Spring {
 
 /// `$motion.spatial`: movement and size (design.md, theme file).
 pub const SPATIAL: Spring = Spring {
-    stiffness: 700.0,
-    damping: 0.9,
+    stiffness: 3000.0,
+    damping: 0.75,
 };
 
 /// `$motion.effects`: colour and opacity.
@@ -644,6 +644,30 @@ mod tests {
         assert!(min < -0.01, "bouncy overshoots: {min}");
     }
 
+    /// The default `$motion.spatial` keeps pace with a 200 ms OutBack
+    /// curve (the owner's ruling of 2026-10-14, decisions.md m6-owner):
+    /// half way by 27 ms, 90% by 52 ms, a small overshoot, settled within
+    /// 0.2% by 142 ms. spring(700, 0.9) reached 90% at 129 ms.
+    #[test]
+    fn the_default_spatial_spring_is_snappy() {
+        assert_eq!((SPATIAL.stiffness, SPATIAL.damping), (3000.0, 0.75));
+        // Progress from rest at 0 towards 1, sampled every 0.1 ms.
+        let at = |t_ms: f64| 1.0 - SPATIAL.step(1.0, 0.0, t_ms / 1000.0).0;
+        let first = |p: f64| (0..2000).map(|i| i as f64 / 10.0).find(|&t| at(t) >= p);
+        assert!(first(0.5).is_some_and(|t| t <= 27.0), "{:?}", first(0.5));
+        assert!(first(0.9).is_some_and(|t| t <= 52.0), "{:?}", first(0.9));
+        let peak = (0..2000).map(|i| at(i as f64 / 10.0)).fold(0.0, f64::max);
+        assert!(peak > 1.02 && peak < 1.03, "overshoot {peak}");
+        let last_off = (0..5000)
+            .map(|i| i as f64 / 10.0)
+            .filter(|&t| (at(t) - 1.0).abs() > 0.002)
+            .fold(0.0, f64::max);
+        assert!(
+            last_off < 142.0,
+            "settled within 0.2% only at {last_off} ms"
+        );
+    }
+
     #[test]
     fn motion_is_deterministic_and_settles_exactly() {
         let mut a = Motion::<1>::rest([0.0], 0.01);
@@ -683,13 +707,15 @@ mod tests {
         let t0 = Duration::from_secs(2);
         let mut m = Motion::<1>::rest([0.0], 0.01);
         m.retarget_at([100.0], Curve::Spring(SPATIAL), t0);
-        let mid = t0 + ms(60);
+        // Mid-flight: `SPATIAL` is half way at 27 ms.
+        let mid = t0 + ms(25);
         let v_before = m.velocity(mid)[0];
         let x_before = m.peek(mid)[0];
         assert!(v_before > 100.0);
-        // Interrupted mid-flight: same place, same velocity, new target.
+        // Interrupted mid-flight: same place (to f32 rounding of the new
+        // displacement), same velocity, new target.
         m.retarget_at([-50.0], Curve::Spring(SPATIAL), mid);
-        assert_eq!(m.peek(mid)[0], x_before);
+        assert!((m.peek(mid)[0] - x_before).abs() < 1e-4);
         assert!((m.velocity(mid)[0] - v_before).abs() < 1e-3);
         // It keeps going the old way for a moment before turning.
         assert!(m.peek(mid + ms(5))[0] > x_before);

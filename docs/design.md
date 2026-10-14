@@ -386,7 +386,7 @@ tokens base {
   space  { 1: 4px; 2: 8px; 3: 12px; 4: 16px }
   radius { sm: 6px; md: 10px; lg: 14px; xl: 20px; full: 999px }
   font   { ui: "Inter" 13px 500; title: "Inter" 18px 600; caption: "Inter" 11px; mono: "JetBrains Mono" 12px }
-  motion { spatial: spring(700, 0.9); effects: spring(1600, 1); bouncy: spring(380, 0.75) }
+  motion { spatial: spring(3000, 0.75); effects: spring(1600, 1); bouncy: spring(380, 0.75) }
   elevation {
     md: 0 2px 8px $shadow.alpha(0.25)
     lg: 0 8px 24px $shadow.alpha(0.3), 0 1px 2px $shadow.alpha(0.2)

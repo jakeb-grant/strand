@@ -162,8 +162,8 @@
     },
     "motion.spatial": {
       "spring": {
-        "stiffness": 700,
-        "damping": 0.9
+        "stiffness": 3000,
+        "damping": 0.75
       }
     },
     "on_accent": "#11111b",

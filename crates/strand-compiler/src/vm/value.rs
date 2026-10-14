@@ -53,7 +53,7 @@ pub struct Record {
 pub use strand_theme::Palette;
 
 /// A call-shaped builtin value: `linear(45deg, $accent, $tertiary)`,
-/// `spring(700, 0.9)`, `grow(6)`, `blur(16)`. The emitter turns it into a
+/// `spring(3000, 0.75)`, `grow(6)`, `blur(16)`. The emitter turns it into a
 /// paint, a transition or a `PropValue::Call` by name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CallValue {

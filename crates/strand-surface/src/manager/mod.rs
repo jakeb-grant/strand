@@ -71,7 +71,7 @@ use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
 use crate::placement::{
     LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config_with, popup_config,
-    popup_scrim_layer,
+    popup_request, popup_scrim_layer, popup_shift,
 };
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 use strand_scene::{KeyInput, Modifiers};
@@ -415,6 +415,11 @@ pub struct Stats {
     /// rides that frame's commit, or a bare commit when nothing was
     /// drawn.
     pub poses: u64,
+    /// (owner-testing.md bug 6) Popup configures that put the popup's box
+    /// elsewhere than its positioner asked (by more than a pixel): the
+    /// compositor slid or flipped it. A popup the manager moved inside
+    /// its output itself is not slid.
+    pub popups_moved: u64,
 }
 
 /// A snapshot of one surface.
@@ -590,6 +595,10 @@ enum Role {
         /// parent's window geometry: it is placed again from it when the
         /// parent moves (`origin.rs`).
         at: Option<(i32, i32)>,
+        /// (owner-testing.md bug 6) Where its positioner asked for its
+        /// box, relative to its parent's window geometry: a configure
+        /// elsewhere counts in [`Stats::popups_moved`].
+        asked: Option<(i32, i32)>,
     },
     /// (M4) A session lock surface showing the lock's content
     /// (`session_lock.rs`).
