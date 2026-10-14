@@ -559,6 +559,22 @@ impl Host {
         }
     }
 
+    /// (M6) The router's hover graces that are due end, and the hover a
+    /// detached surface held goes out (`Router::tick`): logic hears of
+    /// it, and the next grace's end is the renderer's input wake. Run on
+    /// every wake of the loop ([`crate::demo::text_ready`]).
+    pub(crate) fn tick_input(&mut self) {
+        let Some(f) = &mut self.logic else {
+            return;
+        };
+        for intent in f.router.tick(&mut self.renderer) {
+            if let Some(msg) = to_logic(intent, None) {
+                f.send(msg);
+            }
+        }
+        self.renderer.set_input_wake(f.router.next_wake());
+    }
+
     /// (M5) Pick mode ends on main's side (the surface picked on
     /// unmapped, a lock): logic is told.
     fn end_pick(&mut self) {
@@ -885,6 +901,8 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
+        // (M6) A popup gone puts out the hover it held on its anchor.
+        self.tick_input();
     }
 
     fn monitor_added(&mut self, monitor: &Monitor, _reconnected: bool) {
@@ -992,6 +1010,8 @@ impl SurfaceHost for Host {
             // (M4) `parallax` and `tilt` follow the router's pointer.
             let s = event.surface();
             self.renderer.set_pointer(s, f.router.pointer(s));
+            // (M6) A hover grace's end wakes the loop (`tick_input`).
+            self.renderer.set_input_wake(f.router.next_wake());
         }
         // A scroll lays out again: its sizes go with it.
         self.forward_facts();

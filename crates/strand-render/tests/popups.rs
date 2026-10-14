@@ -292,3 +292,39 @@ fn a_tooltip_shows_after_a_rest_and_hides_on_leave() {
             .any(|(node, c)| *node == tip && *c == SurfaceChange::Removed)
     );
 }
+
+/// (M6, decisions.md m6-w2-surface) A node holding a shown popup shows
+/// no tooltip: the pointer on the popup keeps the node hovered, and the
+/// popup is what it shows. The popup opening ends a tooltip waiting (or
+/// shown); once it is gone, the still-hovered node's tooltip comes back
+/// after the delay.
+#[test]
+fn a_node_holding_a_shown_popup_shows_no_tooltip() {
+    let (mut r, n) = bar_shown();
+    let mut d = SceneDiff::new();
+    d.set(n.clock, Prop::Tooltip, text("Calendar"));
+    r.apply(d);
+    r.take_surface_changes();
+    r.set_tooltip_delay(Duration::from_millis(40));
+    r.set_widget_flag(n.bar, Flag::Hover, true);
+    r.set_widget_flag(n.clock, Flag::Hover, true);
+    // The popup opens (as `if hover { popup { … } }` would) before the
+    // delay is up: the tooltip never shows.
+    open_popup(&mut r, &n);
+    r.attach_surface(POP, n.popup);
+    std::thread::sleep(Duration::from_millis(60));
+    r.update();
+    assert!(r.tooltip_popup().is_none(), "no tooltip over the popup");
+    // The popup goes, the clock still hovered: its tooltip shows again.
+    r.detach_surface(POP);
+    std::thread::sleep(Duration::from_millis(60));
+    r.update();
+    let tip = r
+        .tooltip_popup()
+        .expect("the tooltip once the popup is gone");
+    // It shown, the popup opening again hides it at once.
+    r.attach_surface(SurfaceId(3), tip);
+    assert!(r.tooltip_popup().is_some(), "its own surface keeps it");
+    r.attach_surface(POP, n.popup);
+    assert!(r.tooltip_popup().is_none(), "hidden as the popup shows");
+}

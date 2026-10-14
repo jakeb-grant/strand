@@ -309,6 +309,9 @@ pub struct Renderer {
     /// The tooltip waiting to show or shown (`tooltip: expr`).
     tooltip: Option<Tooltip>,
     tooltip_delay: Duration,
+    /// (M6) When the host's input router wants its next tick
+    /// ([`Renderer::set_input_wake`]).
+    input_wake: Option<Instant>,
     /// Tooltips shown so far (their overlay ids' generation).
     tooltip_seq: u32,
     /// Wakes the render loop from another thread (the text worker's
@@ -431,6 +434,7 @@ impl Renderer {
             extras,
             tooltip: None,
             tooltip_delay: TOOLTIP_DELAY,
+            input_wake: None,
             tooltip_seq: 0,
             timer: None,
             timer_due: None,

@@ -2324,6 +2324,21 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     and (M5) the inspector: runtime faults, write errors, and the values
     and notices of cells kept over a changed default (the overlay's rows
     too).
+  - Hover through popups (M6, m6-w2-surface; owner-testing.md gap 4,
+    for review by the router's owner). A surface's hovered chain goes
+    on past a popup's root to its tree ancestors (the anchor element and
+    up), and a node is hovered while it is on any surface's chain. A
+    node that holds a shown popup (an ancestor of the root of a surface
+    the router routes for) keeps `hover` for `strand_render::HOVER_GRACE`
+    (200 ms) after the pointer leaves it and the popup; reaching either
+    again keeps it lit. `Router::next_wake() -> Option<Instant>` is the
+    earliest grace's end and `Router::tick(&mut dyn InputScene) ->
+    Vec<Intent>` ends the graces that are due and puts out hover a
+    detached surface held. The host hands `next_wake` to
+    `Renderer::set_input_wake(Option<Instant>)` after each routed event
+    (the renderer's timer wakes the loop then) and calls `tick` on every
+    wake (`demo::text_ready`, `Host::tick_input`) and after a surface
+    detaches, sending its intents like `handle`'s.
 
 - Later (render):
   - `flatten_surface` rebuilds the map of every delivered layout and
@@ -3832,7 +3847,10 @@ and the connection):
   on its edge so margin + zone is unchanged, and the input region is the
   box inside it (`SurfaceInfo::input_region`; an OSD's is empty). Render
   makes the overhang even on the axes the anchor leaves centred, so the
-  compositor centres the box. `LayerConfig::fit` clamps a layer surface's
+  compositor centres the box, and (M6, m6-w2-surface) no larger than the
+  margin on a side the surface is anchored to, so its buffer never
+  passes its output's edge (Hyprland constrains a popup to the monitor
+  at the parent's origin). `LayerConfig::fit` clamps a layer surface's
   box to its output's logical size less its margins; the host passes the
   output's size to render (`Renderer::set_surface_bounds`), and render
   holds a content-sized surface's frame for the configure at a new size
@@ -3859,8 +3877,11 @@ and the connection):
   with slide and flip; its window geometry is its box, its buffer the
   box plus the overhang. Size or anchor changes reposition it
   (`xdg_popup.reposition`). It grabs with the last button or key press's
-  serial when that press came within `GRAB_WINDOW` (500 ms), never for a
-  tooltip (`SurfaceSpec::tooltip`: no grab, empty input region);
+  serial when that press came within `GRAB_WINDOW` (500 ms) and (M6,
+  m6-w2-surface) the pointer has neither left the surface it pressed on
+  nor moved more than `GRAB_SLOP` (8 logical px) from the press since (a
+  hover island opening under the next item is not the click's), never
+  for a tooltip (`SurfaceSpec::tooltip`: no grab, empty input region);
   `Stats::grabs` counts grabs. "Grabbing" is what was sent, not what
   the spec asked for: only a popup made with `xdg_popup.grab` dismisses
   a grabbing chain outside its own first, makes its layer surface

@@ -1621,7 +1621,8 @@ fn an_animated_offset_never_resizes_its_surface() {
     assert!(r.apply(b.diff).is_empty());
     let spec = r.surface_spec(p).unwrap().clone();
     let o = spec.overhang;
-    assert_eq!((o.left, o.right), (37.0, 37.0), "at rest: {o:?}");
+    // (None past the right edge it is anchored to, flush against.)
+    assert_eq!((o.left, o.right), (37.0, 0.0), "at rest: {o:?}");
     r.take_surface_changes();
     r.attach_surface(S, p);
     let (w, h) = (
@@ -2066,4 +2067,87 @@ fn a_text_line_box_is_css_normal() {
         "the baseline is {}, want {baseline}",
         bottom + 1
     );
+}
+
+/// owner-testing.md bug 1 (decisions.md m6-w2-surface): a layer
+/// surface's buffer never reaches past an edge it is anchored to, so its
+/// origin lies on its own output (Hyprland constrains a popup to the
+/// monitor at that origin). The owner's floating bar (`margin: 4, 4, 0`,
+/// `shadow: 0 6px 24px`) asks for 4 px above and beside its box, its
+/// margins, and its full reach below; a bar flush with its edge asks for
+/// none on that side; a `top_right` panel 48 px down keeps its shadow
+/// above and loses only what passes the right edge; a centred panel
+/// keeps all of it.
+#[test]
+fn a_layer_surface_buffer_stays_inside_its_anchored_edges() {
+    let shadow = || {
+        (
+            Prop::Shadow,
+            PropValue::Shadow(vec![Shadow {
+                x: 0.0,
+                y: 6.0,
+                blur: 24.0,
+                spread: 0.0,
+                color: hex("#00000059"),
+            }]),
+        )
+    };
+    let margin = |m: [f32; 4]| (Prop::Margin, list(&m));
+    let mut b = Builder::default();
+    let floating = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Height, num(36.0)), margin([4.0, 4.0, 0.0, 4.0])],
+    );
+    let inner = b.node(
+        NodeKind::Row,
+        Some(floating),
+        vec![shadow(), (Prop::Grow, num(1.0))],
+    );
+    let flush = b.node(NodeKind::Bar, None, vec![(Prop::Height, num(30.0))]);
+    b.node(
+        NodeKind::Row,
+        Some(flush),
+        vec![shadow(), (Prop::Grow, num(1.0))],
+    );
+    let corner = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Anchor, kw("top_right")),
+            margin([48.0, 4.0, 0.0, 0.0]),
+            (Prop::Width, num(300.0)),
+            (Prop::Height, num(100.0)),
+            shadow(),
+        ],
+    );
+    let centred = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(300.0)),
+            (Prop::Height, num(100.0)),
+            shadow(),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    // blur 24: reach 1.5 × 24 + 1 = 37, offset 6 down (31 above, 43
+    // below).
+    let o = |n| {
+        let o = r.surface_spec(n).unwrap().overhang;
+        (o.top, o.right, o.bottom, o.left)
+    };
+    assert_eq!(o(floating), (4.0, 4.0, 43.0, 4.0), "the floating bar");
+    assert_eq!(o(flush), (0.0, 0.0, 43.0, 0.0), "the flush bar");
+    assert_eq!(o(corner), (31.0, 4.0, 43.0, 37.0), "the corner panel");
+    assert_eq!(o(centred), (43.0, 37.0, 43.0, 37.0), "the centred panel");
+
+    // The floating bar's row sits 4 px in from its buffer's corner.
+    r.attach_surface(S, floating);
+    r.configure_surface(S, Size::new(1280, 83), Scale::ONE);
+    let mut buf = Buffer::new(1280, 83, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    let row = rect(&r, inner);
+    approx(row, (4.0, 4.0, 1280.0 - 8.0, 36.0));
 }

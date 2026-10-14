@@ -428,7 +428,23 @@ pub struct Router {
     /// (M5) Pick mode: pointer input goes to the inspector, not to
     /// handlers ([`Router::set_picking`]).
     picking: bool,
+    /// (M6) The nodes whose `hover` is on, in the order they were lit:
+    /// those on some surface's hovered chain, and those [`HOVER_GRACE`]
+    /// holds.
+    lit: Vec<NodeId>,
+    /// (M6) Nodes off every hovered chain that keep `hover` until then:
+    /// a popup's anchor (and its ancestors) the pointer left, on its way
+    /// to the popup or away from both.
+    graced: HashMap<NodeId, Instant>,
 }
+
+/// (M6) How long a node that holds a shown popup stays hovered after the
+/// pointer leaves it and its popup (owner-testing.md gap 4): the pointer
+/// crosses the gap between a bar item and its island without the
+/// island, opened by `if hover { popup { … } }`, closing on the way.
+/// Quickshell configs and the owner's hand-written grace use the same
+/// 200 ms (decisions.md m6-w2-surface).
+pub const HOVER_GRACE: Duration = Duration::from_millis(200);
 
 impl Router {
     pub fn new() -> Self {
@@ -594,8 +610,10 @@ impl Router {
             self.picking = on;
             if on {
                 let surfaces: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
+                // Graced hovers end with the rest.
+                self.graced.clear();
                 for s in surfaces {
-                    self.hover(s, Vec::new());
+                    self.hover(s, Vec::new(), scene.tree());
                     self.release(s);
                     self.end_drags(scene, s);
                     self.right_down.remove(&s);
@@ -874,7 +892,7 @@ impl Router {
                     return;
                 }
                 let now = chain(scene, *position);
-                self.hover(surface, now);
+                self.hover(surface, now, scene.tree());
             }
             InputEvent::PointerLeave { .. } => {
                 self.pointer.remove(&surface);
@@ -893,7 +911,7 @@ impl Router {
                 }
                 self.end_drags(scene, surface);
                 self.release(surface);
-                self.hover(surface, Vec::new());
+                self.hover(surface, Vec::new(), scene.tree());
             }
             InputEvent::PointerButton {
                 button: b,
@@ -1256,7 +1274,7 @@ impl Router {
         if b == button::LEFT {
             match state {
                 ButtonState::Pressed => {
-                    self.hover(surface, under.clone());
+                    self.hover(surface, under.clone(), scene.tree());
                     for &n in under.iter().rev() {
                         self.flag(n, Flag::Pressed, true);
                     }
@@ -1369,7 +1387,7 @@ impl Router {
                     }
                     self.end_drags(scene, surface);
                     self.release(surface);
-                    self.hover(surface, under.clone());
+                    self.hover(surface, under.clone(), scene.tree());
                 }
             }
         }
@@ -1426,6 +1444,9 @@ impl Router {
         });
         self.edits.retain(|n, _| live(*n));
         self.focus.retain(|_, n| live(*n));
+        // A removed node keeps no hover (logic dropped its flags with it).
+        self.lit.retain(|n| tree.contains(*n));
+        self.graced.retain(|n, _| tree.contains(*n));
     }
 
     /// Moves keyboard focus on `surface` to `node` (`focused`).
@@ -1790,24 +1811,108 @@ impl Router {
         }
     }
 
-    /// The hovered chain of `surface` becomes `now`: nodes it left lose
-    /// `hover` (innermost first), nodes it reached get it (outermost
-    /// first).
-    fn hover(&mut self, surface: SurfaceId, now: Vec<NodeId>) {
-        let was = self.hovered.remove(&surface).unwrap_or_default();
-        for &n in &was {
-            if !now.contains(&n) {
-                self.flag(n, Flag::Hover, false);
+    /// The hovered chain of `surface` becomes `now`, reaching past a
+    /// popup's root to its anchor: a popup is a child of the element it
+    /// is anchored to, and a node is hovered while a child is, so the
+    /// pointer on an island keeps its bar item hovered (decisions.md
+    /// m6-w2-surface). Then every node is lit while it is on some
+    /// surface's chain ([`Router::relight`]).
+    fn hover(&mut self, surface: SurfaceId, mut now: Vec<NodeId>, tree: Option<&SceneTree>) {
+        if !now.is_empty()
+            && let (Some(tree), Some(&root)) = (tree, self.surfaces.get(&surface))
+            && !tree.is_overlay(root)
+        {
+            let mut up = tree.get(root).and_then(|n| n.parent);
+            for _ in 0..256 {
+                let Some(p) = up else {
+                    break;
+                };
+                if !now.contains(&p) {
+                    now.push(p);
+                }
+                up = tree.get(p).and_then(|n| n.parent);
             }
         }
-        for &n in now.iter().rev() {
-            if !was.contains(&n) {
+        if now.is_empty() {
+            self.hovered.remove(&surface);
+        } else {
+            self.hovered.insert(surface, now);
+        }
+        self.relight(tree, Instant::now());
+    }
+
+    /// Lights the nodes on some surface's hovered chain (outermost
+    /// first) and puts out those on none (innermost first), except a
+    /// node that holds a shown popup, an ancestor of the root of a
+    /// surface this router routes for: it keeps `hover` for
+    /// [`HOVER_GRACE`], and while it does the pointer reaching the popup
+    /// (or coming back) keeps it lit. A grace ends at its time
+    /// ([`Router::tick`]), or at once when the popup is gone.
+    fn relight(&mut self, tree: Option<&SceneTree>, now: Instant) {
+        let mut on = Vec::new();
+        for chain in self.hovered.values() {
+            for &n in chain.iter().rev() {
+                if !on.contains(&n) {
+                    on.push(n);
+                }
+            }
+        }
+        // The anchors (and their ancestors) of the popups shown.
+        let mut holding = HashSet::new();
+        if let Some(tree) = tree {
+            for &root in self.surfaces.values() {
+                if tree.is_overlay(root) {
+                    continue;
+                }
+                let mut up = tree.get(root).and_then(|n| n.parent);
+                for _ in 0..256 {
+                    let Some(p) = up else {
+                        break;
+                    };
+                    holding.insert(p);
+                    up = tree.get(p).and_then(|n| n.parent);
+                }
+            }
+        }
+        // Nodes left lose it first (innermost first), then the nodes
+        // reached get it (outermost first).
+        let lit = self.lit.clone();
+        for &n in lit.iter().rev() {
+            if on.contains(&n) {
+                continue;
+            }
+            if holding.contains(&n) {
+                let due = *self.graced.entry(n).or_insert(now + HOVER_GRACE);
+                if due > now {
+                    continue;
+                }
+            }
+            self.graced.remove(&n);
+            self.lit.retain(|l| *l != n);
+            self.flag(n, Flag::Hover, false);
+        }
+        for &n in &on {
+            self.graced.remove(&n);
+            if !self.lit.contains(&n) {
+                self.lit.push(n);
                 self.flag(n, Flag::Hover, true);
             }
         }
-        if !now.is_empty() {
-            self.hovered.insert(surface, now);
-        }
+    }
+
+    /// (M6) Ends the hover graces that are due, and puts out the hover of
+    /// nodes a detached surface held; returns what logic hears of it.
+    /// The host calls it when [`Router::next_wake`] comes, and after a
+    /// surface detaches.
+    pub fn tick(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
+        self.relight(scene.tree(), Instant::now());
+        self.flush(scene)
+    }
+
+    /// (M6) When [`Router::tick`] must run: the earliest hover grace's
+    /// end.
+    pub fn next_wake(&self) -> Option<Instant> {
+        self.graced.values().min().copied()
     }
 
     /// The left button is up (or the pointer left): nothing is pressed.

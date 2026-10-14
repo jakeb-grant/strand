@@ -159,6 +159,10 @@ impl Renderer {
                     .unwrap_or_default(),
             },
         );
+        // (M6) A popup shown under a hovered node ends its tooltip.
+        if self.tooltip.is_some() {
+            self.refresh_tooltip();
+        }
         self.raster.set_surfaces(self.surfaces.len());
         self.refresh_size_holds();
         // A surface attached while a swap springs: its `set { }` scopes
@@ -268,6 +272,11 @@ impl Renderer {
         self.raster.set_surfaces(self.surfaces.len());
         self.prune_scales();
         self.prune_texts();
+        // (M6) A popup gone: the hovered node that held it may want its
+        // tooltip again.
+        if !self.extras.widgets.hovered.is_empty() {
+            self.refresh_tooltip();
+        }
     }
 
     /// The nodes under the logical `point` of `surface` in its last

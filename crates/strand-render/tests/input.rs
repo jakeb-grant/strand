@@ -2757,3 +2757,136 @@ fn return_activates_a_plain_input() {
         );
     }
 }
+
+/// A tree and a hit function: the bar's item on surface 1, its island
+/// (a popup in the item) on surface 2.
+struct Islands {
+    tree: strand_render::SceneTree,
+}
+
+impl InputScene for Islands {
+    fn hit(&self, surface: SurfaceId, at: LogicalPoint) -> Vec<NodeId> {
+        let id = |i| NodeId::new(i, 0);
+        let (bar, item, popup, card) = (id(0), id(1), id(2), id(3));
+        match surface.0 {
+            1 if at.x < 10.0 => vec![item, bar],
+            1 => vec![bar],
+            _ if at.x < 50.0 => vec![card, popup],
+            _ => vec![popup],
+        }
+    }
+    fn tree(&self) -> Option<&strand_render::SceneTree> {
+        Some(&self.tree)
+    }
+}
+
+/// owner-testing.md gap 4 (decisions.md m6-w2-surface): a popup is a
+/// child of the element it is anchored to, so the pointer on it keeps
+/// that element (and its ancestors) hovered, as a row is while a child
+/// is; and a node holding a shown popup keeps `hover` for `HOVER_GRACE`
+/// once the pointer leaves it and the popup, so the pointer crosses the
+/// gap between them without the hover dropping. A node holding no popup
+/// loses it at once, and once the popup's surface is gone, so does its
+/// anchor.
+#[test]
+fn a_popup_keeps_its_anchor_hovered_and_the_gap_is_graced() {
+    use std::time::Duration;
+    use strand_scene::{NodeKind, SceneDiff};
+    let id = |i| NodeId::new(i, 0);
+    let (bar, item, popup, card) = (id(0), id(1), id(2), id(3));
+    let mut d = SceneDiff::new();
+    d.create(bar, NodeKind::Bar, None, 0)
+        .create(item, NodeKind::Box, Some(bar), 0)
+        .create(popup, NodeKind::Popup, Some(item), 0)
+        .create(card, NodeKind::Box, Some(popup), 0);
+    let mut tree = strand_render::SceneTree::new();
+    assert!(tree.apply(d).is_empty());
+    let mut scene = Islands { tree };
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    f.attached(s1, bar);
+    let motion = |surface, x| InputEvent::PointerMotion {
+        surface,
+        position: LogicalPoint::new(x, 1.0),
+        time: 0,
+    };
+    let hover = |node, on| Intent::Flag {
+        node,
+        flag: Flag::Hover,
+        on,
+    };
+    let flags = |f: &mut R| -> Vec<Intent> {
+        f.drain()
+            .into_iter()
+            .filter(|i| matches!(i, Intent::Flag { .. }))
+            .collect()
+    };
+
+    // No popup shown: leaving the item puts its hover out at once.
+    f.input(&motion(s1, 5.0), &mut scene);
+    assert_eq!(flags(&mut f), [hover(bar, true), hover(item, true)]);
+    f.input(&motion(s1, 30.0), &mut scene);
+    assert_eq!(flags(&mut f), [hover(item, false)]);
+    assert_eq!(f.router.next_wake(), None);
+
+    // The item's island shows: leaving the item for the gap keeps the
+    // item and the bar hovered, for the grace.
+    f.input(&motion(s1, 5.0), &mut scene);
+    f.drain();
+    f.attached(s2, popup);
+    let left = std::time::Instant::now();
+    f.input(&InputEvent::PointerLeave { surface: s1 }, &mut scene);
+    assert_eq!(flags(&mut f), []);
+    let due = f.router.next_wake().expect("a grace");
+    assert!(due > left && due <= left + strand_render::HOVER_GRACE + Duration::from_millis(50));
+    // The pointer reaches the island: its card and the island are
+    // hovered, and so are the item and the bar, which stay lit.
+    f.input(
+        &InputEvent::PointerEnter {
+            surface: s2,
+            position: LogicalPoint::new(20.0, 1.0),
+        },
+        &mut scene,
+    );
+    assert_eq!(flags(&mut f), [hover(popup, true), hover(card, true)]);
+    assert_eq!(f.router.next_wake(), None, "no grace while on the island");
+    // Well past the grace, still on the island: still hovered.
+    std::thread::sleep(strand_render::HOVER_GRACE + Duration::from_millis(50));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(flags(&mut f), []);
+
+    // Away from both: the island's own nodes go at once, the item and
+    // the bar once the grace ends.
+    f.input(&InputEvent::PointerLeave { surface: s2 }, &mut scene);
+    assert_eq!(flags(&mut f), [hover(card, false), hover(popup, false)]);
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(flags(&mut f), [], "graced");
+    std::thread::sleep(strand_render::HOVER_GRACE + Duration::from_millis(50));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(flags(&mut f), [hover(item, false), hover(bar, false)]);
+    assert_eq!(f.router.next_wake(), None);
+
+    // The island gone while the pointer was on it: the item's hover goes
+    // with it at the next tick.
+    f.input(&motion(s1, 5.0), &mut scene);
+    f.input(&InputEvent::PointerLeave { surface: s1 }, &mut scene);
+    f.input(
+        &InputEvent::PointerEnter {
+            surface: s2,
+            position: LogicalPoint::new(20.0, 1.0),
+        },
+        &mut scene,
+    );
+    f.drain();
+    f.router.detached(s2);
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(
+        flags(&mut f),
+        [
+            hover(card, false),
+            hover(popup, false),
+            hover(item, false),
+            hover(bar, false)
+        ]
+    );
+}

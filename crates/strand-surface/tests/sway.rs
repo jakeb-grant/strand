@@ -2875,3 +2875,152 @@ impl VirtualPointer {
         self.queue.roundtrip(&mut VpClient).unwrap();
     }
 }
+
+/// owner-testing.md bug 1 (decisions.md m6-w2-surface): a press opens a
+/// grabbing popup only while the pointer stays where it pressed (within
+/// `GRAB_SLOP`). A popup that opens within `GRAB_WINDOW` of a click but
+/// after the pointer went on (a hover island under the next bar item)
+/// takes no grab, so it neither takes the keyboard nor latches the
+/// pointer; a popup opened by the click itself still grabs.
+#[test]
+fn a_press_the_pointer_moved_on_from_opens_no_grab() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_press_the_pointer_moved_on_from_opens_no_grab") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const HOVERED: NodeId = NodeId::new(2, 0);
+    const CLICKED: NodeId = NodeId::new(3, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // A first click on the desktop wakes the new virtual pointer up.
+    click(1, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    let pressed = |mgr: &mut strand_surface::SurfaceManager<TestHost>, n: usize| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        InputEvent::PointerButton {
+                            state: ButtonState::Pressed,
+                            ..
+                        }
+                    )
+                })
+                .count()
+                >= n
+        })
+        .unwrap()
+    };
+    let popup =
+        |name: &str, x: f32| {
+            let mut spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| {
+                None::<&strand_scene::PropValue>
+            });
+            spec.name = Some(name.into());
+            spec.parent = Some(BAR);
+            spec.anchor_rect = Some(LogicalRect::new(x, 8.0, 60.0, 20.0));
+            spec.width = Some(200.0);
+            spec.height = Some(120.0);
+            spec.open_two_way = true;
+            spec
+        };
+    let mapped = |mgr: &mut strand_surface::SurfaceManager<TestHost>, node: NodeId| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap()
+    };
+
+    // A click on one item, then the pointer goes on along the bar to
+    // the next (well within the grab window): the island that opens
+    // there takes no grab.
+    click(10, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    assert!(pressed(&mut mgr, 1), "the press reached the bar");
+    pointer.motion_absolute(20, 600, 18, 1920, 1080);
+    pointer.frame();
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().input.iter().any(
+                |e| matches!(e, InputEvent::PointerMotion { position, .. } if position.x > 500.0),
+            )
+        })
+        .unwrap();
+    assert!(ok, "the motion reached the bar");
+    mgr.state_mut()
+        .apply_surface_change(HOVERED, SurfaceChange::Created(popup("Hovered", 600.0)));
+    assert!(mapped(&mut mgr, HOVERED));
+    assert_eq!(
+        mgr.state().stats().grabs,
+        0,
+        "no grab after the pointer went on"
+    );
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert!(!mgr.state().holds_keyboard_for_popup(bar));
+
+    // A click that opens its own menu (the pointer stays put): it grabs.
+    click(30, 300, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    assert!(pressed(&mut mgr, 2), "the second press reached the bar");
+    mgr.state_mut()
+        .apply_surface_change(CLICKED, SurfaceChange::Created(popup("Clicked", 300.0)));
+    assert!(mapped(&mut mgr, CLICKED));
+    assert_eq!(mgr.state().stats().grabs, 1, "the click's own menu grabs");
+    drop(input);
+    drop(pointer);
+}

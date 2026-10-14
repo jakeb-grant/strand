@@ -206,7 +206,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         // opened later (a timer, `on change`, IPC) has no grab, so it
         // neither takes the keyboard nor closes other grabbing popups.
         let grab = match &self.last_action {
-            Some(a) if config.grab && a.at.elapsed() <= GRAB_WINDOW => {
+            Some(a) if config.grab && !a.wandered && a.at.elapsed() <= GRAB_WINDOW => {
                 Some((a.seat.clone(), a.serial))
             }
             _ => None,

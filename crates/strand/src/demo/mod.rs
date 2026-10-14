@@ -69,6 +69,8 @@ pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
 /// changed (a content-sized surface's size, laid-out sizes).
 pub(crate) fn text_ready(state: &mut State<Host>) {
     state.host_mut().renderer.update();
+    // (M6) A hover grace that ended (the renderer's timer woke for it).
+    state.host_mut().tick_input();
     sync(state);
 }
 

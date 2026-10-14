@@ -843,11 +843,25 @@ impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
 /// timer, `on change` or IPC later than this has no grab.
 pub const GRAB_WINDOW: Duration = Duration::from_millis(500);
 
+/// (M6) How far the pointer may move from where it pressed before the
+/// press stops opening grabbing popups, in logical pixels: a click
+/// opens its menu at once, while a popup that opens after the pointer
+/// has gone on (a hover island under the next item, the click having
+/// been on the last) was not opened by it (owner-testing.md bug 1,
+/// decisions.md m6-w2-surface).
+pub const GRAB_SLOP: f64 = 8.0;
+
 /// A button or key press: its seat, serial and when it arrived.
 struct UserAction {
     seat: wl_seat::WlSeat,
     serial: u32,
     at: Instant,
+    /// (M6) A pointer press's surface and position, None for a key or a
+    /// press on a catcher.
+    from: Option<(wl_surface::WlSurface, (f64, f64))>,
+    /// (M6) The pointer left `from`'s surface or moved more than
+    /// [`GRAB_SLOP`] from it since: the press opens no grabbing popup.
+    wandered: bool,
 }
 
 /// A seat's pointer, with the cursor it shows over our surfaces.
