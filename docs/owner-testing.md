@@ -55,6 +55,8 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    `crates/strand-render/tests/layout.rs::a_layer_surface_buffer_stays_inside_its_anchored_edges`,
    `crates/strand-surface/tests/sway.rs::a_popup_grabs_only_for_the_press_that_opened_it`);
    decisions.md m6-w2-surface.
+   **Verified by the owner on Hyprland, 2026-10-14** (the CI build of
+   `0e45b19`): hover popups open on the right monitor.
 2. **Animation feels less snappy, lower frame rate, than Quickshell.**
    (open) The owner's impression on the hover islands, the workspace
    indicator and the slots. Not measured yet: `strand report` on the
@@ -108,6 +110,49 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    (`crates/strand-render/tests/layout.rs::a_text_line_box_is_css_normal`);
    decisions.md m6-w2-surface. The guide's padding examples could say
    so (docs stream).
+
+6. **The travelling island runs off the right edge.** (2026-10-14,
+   Hyprland, the CI build of `0e45b19`) "Some of the popouts go off
+   the right side of the screen. E.g., power, battery, bt": the
+   rightmost items of the status group, whose island the config's
+   `clamp` holds at the popup's right end.
+   **Fixed, pending the owner's verification on Hyprland.** The
+   island's underdamped spring carried it a pixel or two past the
+   popup's box at the edge, which grew the popup's shadow overhang and
+   so repositioned the popup (`xdg_popup.reposition`); Hyprland 0.56.2
+   slides a repositioned popup against its monitor moved by the
+   popup's own window-geometry offset (its 37 px overhang), so it
+   landed 33 px past the right edge, the clamped island with it
+   (`src/protocols/XDGShell.cpp:93-96`). Sway slides correctly and was
+   right throughout. Now an overshoot no longer changes the popup, and
+   Strand moves a popup inside its output itself, so the compositor
+   need not slide it
+   (`crates/strand-render/tests/boxes.rs::an_island_overshooting_the_popups_edge_keeps_it_still`,
+   `crates/strand-surface/tests/sway.rs::a_popup_at_an_outputs_edge_is_placed_inside_it`,
+   `crates/strand/tests/hover_popups.rs::the_travelling_island_stays_on_its_output_at_the_right_edge`
+   on 1920- and 2560-wide outputs); decisions.md m6-owner-fixes. The
+   config is right.
+7. **Moving quickly between tray items, the old island flickers.**
+   (2026-10-14, Hyprland) "When I move quickly the new tray opens and
+   then the old one flickers just a bit", e.g. Slack to Spotify; each
+   tray icon has its own `popup { trigger: hover; delay: 100ms; enter
+   { opacity: 0; scale: 0.9 } … }`.
+   **Diagnosed; a remedy proposed.** On headless sway the old island
+   draws nothing new and never reopens: it plays its exit (its
+   `enter` mirrored, about 250 ms) while the new one enters, a
+   cross-fade with a frame or two where both are faint
+   (`crates/strand/tests/hover_popups.rs::a_hover_hand_off_draws_nothing_new_on_the_old_island`).
+   Hyprland adds its own popup fades on top: the new popup fades in
+   and a snapshot of the old one fades out after it unmaps, each with
+   `fadePopupsIn`/`fadePopupsOut`, which inherit the owner's `fade`
+   (about 300 ms). Remedies: turn off Hyprland's `fadePopups` (the
+   owner's `hyprland.lua`), or draw the tray as one travelling island
+   (one popup over the tray that never unmaps), as Quickshell does.
+   **Proposed, for the owner's ruling:** a hand-off between `trigger:
+   hover` popups of one surface swaps them without the old one's
+   `exit` or the new one's `enter` (as tooltips stay warm), which
+   changes spec.md 6.3's "its `enter` and `exit` poses play as it
+   opens and closes"; decisions.md m6-owner-fixes.
 
 ## Capability gaps
 

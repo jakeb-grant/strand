@@ -456,7 +456,23 @@ pub(crate) fn layout(
         });
         for (id, (ox, oy), moves, list) in &b.shadows {
             let Some(r) = out.rects.get(id) else { continue };
-            let r = LogicalRect::new(r.x + ox, r.y + oy, r.w, r.h);
+            let mut r = LogicalRect::new(r.x + ox, r.y + oy, r.w, r.h);
+            if *moves && island {
+                // (M6, owner-testing.md bug 6) Taken where it would be
+                // inside the popup's box: an island a spring carries past
+                // the edge (an underdamped one overshoots there) does not
+                // grow the overhang, which would resize and reposition
+                // the popup mid-travel; what passes the reach is clipped.
+                let inside = |v: f32, w: f32, lo: f32, room: f32| {
+                    if w >= room {
+                        lo
+                    } else {
+                        v.clamp(lo, lo + room - w)
+                    }
+                };
+                r.x = inside(r.x, r.w, rb.x, rb.w);
+                r.y = inside(r.y, r.h, rb.y, rb.h);
+            }
             for sh in list {
                 if sh.color.a.is_nan() || sh.color.a <= 0.0 {
                     continue;

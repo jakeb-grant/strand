@@ -27,6 +27,43 @@ use support::pointer::Pointer;
 const LW: u32 = 2560;
 const LH: u32 = 720;
 
+/// Two outputs side by side: each one's mode in physical pixels and its
+/// scale; HEADLESS-2 starts where HEADLESS-1 ends.
+#[derive(Copy, Clone)]
+struct Layout {
+    one: (u32, u32, f64),
+    two: (u32, u32, f64),
+}
+
+impl Layout {
+    /// HEADLESS-1 1280×720 at 1, HEADLESS-2 1920×1080 at 1.5: both 1280
+    /// logical pixels wide.
+    const EVEN: Layout = Layout {
+        one: (1280, 720, 1.0),
+        two: (1920, 1080, 1.5),
+    };
+    /// (owner-testing.md bug 6) As the owner's monitors differ: HEADLESS-1
+    /// 1920×1080 at 1 (eDP-1, DP-6), HEADLESS-2 3840×2160 at 1.5, 2560
+    /// logical pixels wide (DP-8, DP-10).
+    const MIXED: Layout = Layout {
+        one: (1920, 1080, 1.0),
+        two: (3840, 2160, 1.5),
+    };
+
+    /// HEADLESS-1's width in logical pixels: where HEADLESS-2 starts.
+    fn split(self) -> u32 {
+        (self.one.0 as f64 / self.one.2).round() as u32
+    }
+
+    /// The layout's logical extent, for the virtual pointer.
+    fn extent(self) -> (u32, u32) {
+        let w2 = (self.two.0 as f64 / self.two.2).round() as u32;
+        let h1 = (self.one.1 as f64 / self.one.2).round() as u32;
+        let h2 = (self.two.1 as f64 / self.two.2).round() as u32;
+        (self.split() + w2, h1.max(h2))
+    }
+}
+
 const ITEM_A: [u8; 3] = [0xff, 0x00, 0x00];
 const ITEM_B: [u8; 3] = [0x00, 0x00, 0xff];
 const ISLAND_A: [u8; 3] = [0x00, 0xff, 0x00];
@@ -108,6 +145,49 @@ bar Top {
 component Item(c: color, island: color) {
   box { size: 28; bg: c
     ISLAND
+  }
+}
+"#;
+
+const ITEM_C: [u8; 3] = [0xff, 0x00, 0xff];
+
+/// The owner's travelling island (target/try/qs/strand/shell.strand,
+/// `Status`): three items at the right end of the bar and one
+/// `trigger: hover` popup over the group, wider than it by 160 on each
+/// side, holding one card that springs to the item `it` names, clamped
+/// inside the popup. The card is `ISLAND_A`; it is 304 wide, or 232
+/// over `c`, and casts a shadow, so the popup reserves the shadow's reach
+/// at every edge (its window geometry starts inside its buffer).
+const TRAVEL: &str = r#"
+bar Top {
+  edge: top; height: 36; margin: 4, 4, 0; radius: 16
+  bg: #303030; shadow: 0 6px 24px #000000
+  split { pad: 4
+    end { Status }
+  }
+}
+
+component Status {
+  state at = "a"
+  let over = a.hover ? "a" : b.hover ? "b" : c.hover ? "c" : ""
+  on change over { if over != "" { at = over } }
+  let wide = at == "c" ? 232 : 304
+  row { id: group; gap: 4; align: center
+    box { id: a; size: 28; bg: #ff0000
+      when at == "a" { id: it }
+    }
+    box { id: b; size: 28; bg: #0000ff
+      when at == "b" { id: it }
+    }
+    box { id: c; size: 28; bg: #ff00ff
+      when at == "c" { id: it }
+    }
+    popup { id: island; trigger: hover; grace: 250ms; margin: 8, 0, 0
+      width: group.box.width + 320; height: 200
+      box { place: absolute; height: 120; bg: #00ff00; shadow: 0 6px 24px #000000
+            width: wide ~ spring(3000, 0.75)
+            x: clamp(it.box.x + it.box.width / 2 - wide / 2 - island.box.x, 0, island.box.width - wide) ~ spring(3000, 0.75) }
+    }
   }
 }
 "#;
@@ -280,13 +360,18 @@ fn tools() -> bool {
 }
 
 /// Headless sway with the two outputs: HEADLESS-2 is made over IPC.
-fn sway(dir: &Path) -> (Proc, String) {
+fn sway(dir: &Path, layout: Layout) -> (Proc, String) {
     let cfg = dir.join("sway.cfg");
+    let (w1, h1, s1) = layout.one;
+    let (w2, h2, s2) = layout.two;
+    let x2 = layout.split();
     std::fs::write(
         &cfg,
-        "xwayland disable\n\
-         output HEADLESS-1 resolution 1280x720 position 0 0 scale 1\n\
-         output HEADLESS-2 resolution 1920x1080 position 1280 0 scale 1.5\n",
+        format!(
+            "xwayland disable\n\
+             output HEADLESS-1 resolution {w1}x{h1} position 0 0 scale {s1}\n\
+             output HEADLESS-2 resolution {w2}x{h2} position {x2} 0 scale {s2}\n"
+        ),
     )
     .unwrap();
     let log = std::fs::File::create(dir.join("sway.log")).unwrap();
@@ -334,18 +419,19 @@ fn sway(dir: &Path) -> (Proc, String) {
                 .output()
                 .is_ok_and(|o| o.status.success());
             if ok {
+                let (mode, x2, s2) = (format!("{w2}x{h2}"), x2.to_string(), s2.to_string());
                 for args in [
                     &["create_output"][..],
                     &[
                         "output",
                         "HEADLESS-2",
                         "resolution",
-                        "1920x1080",
+                        &mode,
                         "position",
-                        "1280",
+                        &x2,
                         "0",
                         "scale",
-                        "1.5",
+                        &s2,
                     ],
                 ] {
                     let out = Command::new("swaymsg")
@@ -364,6 +450,10 @@ fn sway(dir: &Path) -> (Proc, String) {
 }
 
 fn start(name: &str, shell: &str) -> Option<Shell> {
+    start_on(name, shell, Layout::EVEN)
+}
+
+fn start_on(name: &str, shell: &str, layout: Layout) -> Option<Shell> {
     if !tools() {
         return None;
     }
@@ -371,7 +461,7 @@ fn start(name: &str, shell: &str) -> Option<Shell> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let (sway, display) = sway(&dir);
+    let (sway, display) = sway(&dir, layout);
     let home = dir.join("home");
     let config = home.join(".config/strand");
     std::fs::create_dir_all(&config).unwrap();
@@ -497,6 +587,217 @@ fn going_straight_from_item_to_item_swaps_the_islands() {
         );
         assert!(one.region(ISLAND_A, 1).is_none(), "{name}: a's is gone");
     }
+}
+
+/// (owner-testing.md bug 6) The travelling island at the right end of a
+/// bar stays on its output, under its items, on outputs of different
+/// widths (the owner's are 1920 and 2560 logical pixels): HEADLESS-1
+/// 1920 wide at scale 1, whose right edge meets HEADLESS-2, and
+/// HEADLESS-2 2560 wide at 1.5, the layout's right edge. The popup is
+/// wider than the room there; the card, clamped inside it by
+/// `island.box`, lands whole on the output under each item: the popup
+/// is anchored on the bar it opens from and placed inside its output,
+/// and `it.box` and `island.box` are read on that bar.
+#[test]
+fn the_travelling_island_stays_on_its_output_at_the_right_edge() {
+    travel("travel", TRAVEL);
+}
+
+/// The same island whose popup grows by 80 while it is over `c`: the
+/// popup changes while open (`xdg_popup.reposition`, or made again on
+/// sway 1.9, whose `xdg_wm_base` is version 2), and still lands inside
+/// its output.
+#[test]
+fn a_repositioned_island_stays_on_its_output() {
+    let shell = TRAVEL.replace(
+        "width: group.box.width + 320",
+        "width: group.box.width + (at == \"c\" ? 400 : 320)",
+    );
+    assert_ne!(shell, TRAVEL);
+    travel("travel-grow", &shell);
+}
+
+fn travel(name: &str, shell: &str) {
+    let layout = Layout::MIXED;
+    let Some(mut sh) = start_on(name, shell, layout) else {
+        return;
+    };
+    let (lw, lh) = layout.extent();
+    let split = layout.split();
+    let (a1, b1, c1, a2, b2, c2) = sh.wait("the items on both bars", |one, two| {
+        Some((
+            one.region(ITEM_A, 400)?,
+            one.region(ITEM_B, 400)?,
+            one.region(ITEM_C, 400)?,
+            two.region(ITEM_A, 900)?,
+            two.region(ITEM_B, 900)?,
+            two.region(ITEM_C, 900)?,
+        ))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    let cases = [
+        ("c on HEADLESS-1", c1, 0, 1.0, 232.0, false),
+        ("b on HEADLESS-1", b1, 0, 1.0, 304.0, false),
+        ("a on HEADLESS-1", a1, 0, 1.0, 304.0, false),
+        ("c on HEADLESS-2", c2, split, 1.5, 232.0, true),
+        ("b on HEADLESS-2", b2, split, 1.5, 304.0, true),
+        ("a on HEADLESS-2", a2, split, 1.5, 304.0, true),
+    ];
+    let mut failures = Vec::new();
+    for (what, item, x, scale, wide, second) in cases {
+        let (cx, cy) = centre(item, x, scale);
+        pointer.motion(cx, cy, lw, lh);
+        let (here_name, there_name) = if second {
+            ("HEADLESS-2", "HEADLESS-1")
+        } else {
+            ("HEADLESS-1", "HEADLESS-2")
+        };
+        // Shown, on either output.
+        sh.wait(what, |one, two| {
+            one.region(ISLAND_A, 1)
+                .or_else(|| two.region(ISLAND_A, 1))
+                .map(|_| ())
+        });
+        // Settled: the springs are done well within this.
+        std::thread::sleep(Duration::from_millis(700));
+        sh.keep(what);
+        let here = sh.shot(here_name);
+        let card = here.region(ISLAND_A, 1);
+        let there = sh.shot(there_name).region(ISLAND_A, 1);
+        let (tx0, _, tx1, _) = logical(item, scale);
+        let out_w = here.w as f64 / scale;
+        let Some(card) = card else {
+            failures.push(format!(
+                "{what}: no card on its output (on the other: {there:?})"
+            ));
+            continue;
+        };
+        let (x0, _, x1, _) = logical(card, scale);
+        eprintln!(
+            "{what}: card {x0}..{x1} ({} wide), item {tx0}..{tx1}, output {out_w} wide; \
+             on the other output: {there:?}",
+            x1 - x0,
+        );
+        if there.is_some() {
+            failures.push(format!(
+                "{what}: the card shows on the other output: {there:?}"
+            ));
+        }
+        if ((x1 - x0) - wide).abs() > 2.0 {
+            failures.push(format!(
+                "{what}: the card {x0}..{x1} is {} wide, not {wide}: cut off at the output's edge",
+                x1 - x0
+            ));
+        }
+        // Under its item: centred on it, or clamped to the popup's end
+        // (an item near the output's edge), still over it.
+        if !(x0 <= tx1 && tx0 <= x1) {
+            failures.push(format!(
+                "{what}: the card {x0}..{x1} is not under its item {tx0}..{tx1}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}\n{}", sh.log_text());
+}
+
+/// (owner-testing.md bug 7) The tray's hand-off: two items, each with
+/// its own `trigger: hover` popup with a `delay` and an `enter` pose,
+/// whose content changes as it closes (the app re-sends its menu when
+/// told it closed). The pointer goes straight from `a` to `b`.
+const HANDOFF: &str = r#"
+bar Top {
+  edge: top; height: 36; margin: 4, 4, 0; radius: 16
+  bg: #303030; shadow: 0 6px 24px #000000
+  split { pad: 4
+    start { gap: 8
+      Item { c: #ff0000; island: #00ff00 }
+      Item { c: #0000ff; island: #00ffff }
+    }
+  }
+}
+
+component Item(c: color, island: color) {
+  state shut = 0
+  on change menu.open { if !menu.open { shut += 1 } }
+  box { size: 28; bg: c
+    popup { id: menu; trigger: hover; delay: 100ms; margin: 8, 0, 0
+      enter { opacity: 0; scale: 0.9 }
+      box { width: 200; height: 120; bg: shut > 0 ? #ffffff : island }
+    }
+  }
+}
+"#;
+
+/// (owner-testing.md bug 7) Going straight from one tray item to the
+/// next, the old island draws nothing new and never comes back: it
+/// plays its exit (its `enter` mirrored, spec.md 6.3) over its last
+/// content (white would show the content its close changed), and its
+/// surface is made once and goes once, while the new island enters
+/// (its own surface, made once). Screens are sampled through the
+/// hand-off and never show white. (The two cross-fade: a's exit and
+/// b's `enter` overlap for about 250 ms, both faint for a few frames
+/// in the middle.)
+#[test]
+fn a_hover_hand_off_draws_nothing_new_on_the_old_island() {
+    let Some(mut sh) = start("handoff", HANDOFF) else {
+        return;
+    };
+    let (a, b) = sh.wait("the items", |one, _| {
+        Some((one.region(ITEM_A, 400)?, one.region(ITEM_B, 400)?))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    let (ax, ay) = centre(a, 0, 1.0);
+    let (bx, by) = centre(b, 0, 1.0);
+    pointer.motion(ax, ay, LW, LH);
+    sh.wait("a's island", |one, _| one.region(ISLAND_A, 2000));
+    std::thread::sleep(Duration::from_millis(400));
+    pointer.motion(bx, by, LW, LH);
+    // Below the bar: green (a's island), cyan (b's), white (a's island
+    // after its close changed it), faded over the grey desktop or not.
+    let classify = |img: &Img| {
+        let (mut g, mut c, mut w) = (0, 0, 0);
+        for y in 50..img.h {
+            for x in 0..img.w {
+                let i = (y * img.w + x) * 3;
+                let (r, gg, bb) = (
+                    img.rgb[i] as i32,
+                    img.rgb[i + 1] as i32,
+                    img.rgb[i + 2] as i32,
+                );
+                if gg > 30 && r * 3 < gg && bb * 3 < gg {
+                    g += 1;
+                } else if gg > 30 && bb > 30 && r * 3 < gg.min(bb) && (gg - bb).abs() < 20 {
+                    c += 1;
+                } else if r > 120 && (r - gg).abs() < 10 && (r - bb).abs() < 10 {
+                    w += 1;
+                }
+            }
+        }
+        (g, c, w)
+    };
+    let t0 = Instant::now();
+    let mut shots = Vec::new();
+    while t0.elapsed() < Duration::from_millis(700) {
+        let (g, c, w) = classify(&sh.shot("HEADLESS-1"));
+        shots.push((t0.elapsed().as_millis(), g, c, w));
+    }
+    sh.wait("b's island", |one, _| one.region(ISLAND_B, 2000));
+    std::thread::sleep(Duration::from_millis(400));
+    eprintln!("{shots:?}");
+    assert!(
+        shots.iter().all(|(_, _, _, w)| *w == 0),
+        "the old island drew its changed content: {shots:?}"
+    );
+    // Three surfaces were made in all (the bar, a's island, b's), and
+    // only a's island went.
+    let log = sh.log_text();
+    let made: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("surface ") && l.contains(" on HEADLESS-1"))
+        .collect();
+    let gone = log.lines().filter(|l| l.contains(" detached")).count();
+    assert_eq!(made.len(), 3, "the bar, a's island, b's island: {made:?}");
+    assert_eq!(gone, 1, "a's island went once\n{log}");
 }
 
 /// Walks the pointer over each item, into its island and away.
