@@ -21,11 +21,15 @@ use strand_services::wm::{
 };
 use strand_services::{Applied, Builtin, Buses, Cells, Data, STOP_GRACE, Services};
 
-/// The tests configure the process-wide compositor config: one at a time.
+/// The tests configure the process-wide compositor config: one at a time,
+/// each linking windows to no desktop entry unless it sets its own
+/// (`common::no_desktop_entries`).
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    common::no_desktop_entries();
+    guard
 }
 
 /// Pump until `cond` holds (10 s at most).
@@ -723,8 +727,7 @@ fn windows_are_linked_to_their_apps() {
     });
     s.shutdown();
     wm::configure(None);
-    strand_services::apps::set_config(None);
-    strand_icons::set_base_dirs(None);
+    common::no_desktop_entries();
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -820,7 +823,6 @@ fn windows_are_published_before_the_desktop_entries_are_read() {
     });
     s.shutdown();
     wm::configure(None);
-    strand_services::apps::set_config(None);
-    strand_icons::set_base_dirs(None);
+    common::no_desktop_entries();
     let _ = std::fs::remove_dir_all(&root);
 }

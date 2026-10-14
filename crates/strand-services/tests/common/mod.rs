@@ -26,9 +26,24 @@ pub struct Collector {
     pub log: Vec<WmChange>,
 }
 
+/// No desktop entries and no icon theme for the compositor service to link
+/// windows to. Its links land after its state (m6-w2-services review minor
+/// 10), so an entry the host happens to have (GitHub's runner ships
+/// Firefox, and the replayed sessions open `firefox`) would patch a window
+/// in late, inside a test's quiet window. With none, every window's link is
+/// its own app id and no app, which is what it is published with, and a
+/// link that changes nothing is never published. Process-wide and
+/// idempotent; a test that links apps sets its own and comes back here.
+pub fn no_desktop_entries() {
+    strand_services::apps::set_config(Some(strand_services::apps::Config::default()));
+    strand_icons::set_base_dirs(Some(Vec::new()));
+}
+
 impl Collector {
-    /// The sink to hand to `wm::run`, and the collector.
+    /// The sink to hand to `wm::run`, and the collector. The service it
+    /// collects from links windows to nothing ([`no_desktop_entries`]).
     pub fn new() -> (impl FnMut(Vec<WmChange>) + Send + 'static, Collector) {
+        no_desktop_entries();
         let (tx, rx) = unbounded_channel();
         (
             move |batch: Vec<WmChange>| {
