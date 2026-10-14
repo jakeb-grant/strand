@@ -32,6 +32,12 @@ impl Renderer {
         self.estimate_wait = wait;
     }
 
+    /// Texts laying out has waited for the worker to shape so far (see
+    /// [`Renderer::set_estimate_wait`]).
+    pub fn estimate_waits(&self) -> u64 {
+        self.estimate_waits
+    }
+
     /// How recently a surface must have painted to count as in motion,
     /// so that it holds no frame for new text ([`BUSY_WINDOW`] by
     /// default; tests set it so they do not depend on the clock).

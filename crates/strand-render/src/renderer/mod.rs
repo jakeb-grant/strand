@@ -264,6 +264,7 @@ pub struct Renderer {
     first_frame_wait: Duration,
     new_text_wait: Duration,
     estimate_wait: Duration,
+    estimate_waits: u64,
     busy_window: Duration,
     /// (owner-testing.md bug 11) Per surface node whose sizes spring:
     /// the shadows' reach its overhang keeps until they settle.
@@ -439,6 +440,7 @@ impl Renderer {
             first_frame_wait: FIRST_FRAME_TEXT_WAIT,
             new_text_wait: NEW_TEXT_WAIT,
             estimate_wait: ESTIMATE_WAIT,
+            estimate_waits: 0,
             busy_window: BUSY_WINDOW,
             held_reach: HashMap::new(),
             scrolls: HashMap::new(),

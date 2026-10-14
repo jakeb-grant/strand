@@ -431,6 +431,54 @@ fn a_mounted_text_moves_its_siblings_once() {
     }
 }
 
+/// A list whose rows mount as it scrolls, reduced: here they mount at
+/// once when `more` turns true.
+const ROWS: &str = "
+state more = false
+bar Top {
+  height: 30
+  list { width: 300; height: 30
+    for n in (more ? [\"two\", \"three\", \"one\"] : [\"one\"]) key n {
+      row { gap: 6; box { width: 12; height: 12; bg: #ff0000 } text n { color: #ffffff } }
+    }
+  }
+}
+";
+
+/// The texts laying out waited for, from `more` turning true until
+/// nothing moves, on the text worker.
+fn row_waits() -> u64 {
+    let mut sh = Shell::boot_with(worker_renderer(), ROWS, 1.0, 400);
+    sh.settle_text = true;
+    run(&mut sh, NodeId::new(0, 0));
+    let before = sh.r.estimate_waits();
+    sh.set("more", Value::Bool(true));
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        n += 1;
+        assert!(n < 600, "never settled");
+    }
+    assert!(n > 0, "the rows mounted");
+    sh.r.estimate_waits() - before
+}
+
+/// (owner-testing.md bug 10) Text in a `list`'s rows is not waited for
+/// before laying out: rows mount on every frame of a scroll, and each
+/// would pay the wait and a second layout pass (the launcher's 2,000-row
+/// scroll lost half its frames under load). Text mounted outside a list
+/// is (`a_mounted_text_moves_its_siblings_once`).
+#[test]
+fn rows_mounting_in_a_list_do_not_wait_for_their_text() {
+    assert_eq!(row_waits(), 0, "rows' texts waited for");
+    let mut sh = Shell::boot_with(worker_renderer(), READING, 1.0, 400);
+    sh.settle_text = true;
+    run(&mut sh, NodeId::new(0, 0));
+    sh.set("big", Value::Bool(true));
+    run(&mut sh, NodeId::new(0, 0));
+    assert!(sh.r.estimate_waits() > 0, "the reading is waited for");
+}
+
 /// The owner's card, reduced (owner-testing.md bug 11, B-a): one popup
 /// holding a card whose `x`, `width` and `height` spring between an
 /// island (100 × 30) and a dashboard (400 × 200), with a constant drop

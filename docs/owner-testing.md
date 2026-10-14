@@ -233,7 +233,8 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    glide (on headless sway too: they were drawn 39 px left of where
    they slid from, then back). Now laying out waits up to 5 ms for the
    worker to shape a text that has no layout yet, so the frame is laid
-   out with its real size
+   out with its real size (not text in a `list`'s rows, which mount
+   as it scrolls)
    (`crates/strand-render/tests/morph.rs::a_mounted_text_moves_its_siblings_once`,
    which failed before: on the worker the bars took a frame at the
    estimate first). What is left is as specified: the bars sit at the

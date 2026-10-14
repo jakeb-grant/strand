@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use strand_scene::{NodeId, Scale, SurfaceId};
+use strand_scene::{NodeId, NodeKind, Scale, SurfaceId};
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
 use super::{MAX_TEXT_RETRIES, Renderer};
@@ -402,21 +402,60 @@ impl Renderer {
 
     /// Waits up to the estimate wait for the text worker to deliver the
     /// unbounded layouts of `needs` whose nodes have none at any scale
-    /// (layout measured them by an estimate). Returns true if any arrived
-    /// (lay out again).
+    /// (layout measured them by an estimate). Returns true if any of them
+    /// arrived (lay out again).
+    ///
+    /// Text in a `list`'s rows is not waited for: rows mount as a list
+    /// scrolls, every frame of a scroll would pay for the wait and a
+    /// second layout pass (the launcher's 2,000-row scroll lost half its
+    /// frames under load), and a row takes its own width from the list,
+    /// so a sibling of the text in it moves at most inside a row
+    /// scrolling in at the list's edge.
     pub(super) fn await_unmeasured(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
         if self.estimate_wait.is_zero() || !matches!(self.text, TextBackend::Worker(_)) {
             return false;
         }
-        let measured = |texts: &HashMap<TextSlot, TextState>, node: NodeId, part: u8| {
-            texts.iter().any(|(slot, t)| {
-                slot.node == node && slot.part == part && slot.width.is_none() && t.layout.is_some()
-            })
-        };
-        let unmeasured: Vec<TextSlot> = needs
+        // Texts drawn from their own layout (every one, once shaped)
+        // cost one lookup each; only the rest are checked further.
+        let fresh: Vec<(NodeId, u8)> = needs
             .iter()
             .filter(|(node, spec)| {
-                spec.max_width.is_none() && !measured(&self.texts, *node, spec.part)
+                spec.max_width.is_none()
+                    && self
+                        .texts
+                        .get(&TextSlot::of(*node, spec))
+                        .is_none_or(|t| t.layout.is_none())
+            })
+            .map(|(node, spec)| (*node, spec.part))
+            .collect();
+        if fresh.is_empty() {
+            return false;
+        }
+        let measured: HashSet<(NodeId, u8)> = self
+            .texts
+            .iter()
+            .filter(|(slot, t)| slot.width.is_none() && t.layout.is_some())
+            .map(|(slot, _)| (slot.node, slot.part))
+            .collect();
+        let in_list = |tree: &crate::tree::SceneTree, mut id: NodeId| loop {
+            let Some(n) = tree.get(id) else {
+                return false;
+            };
+            if n.kind == NodeKind::List {
+                return true;
+            }
+            match n.parent {
+                Some(p) if !n.kind.is_surface() => id = p,
+                _ => return false,
+            }
+        };
+        let unmeasured: HashSet<TextSlot> = needs
+            .iter()
+            .filter(|(node, spec)| {
+                spec.max_width.is_none()
+                    && fresh.contains(&(*node, spec.part))
+                    && !measured.contains(&(*node, spec.part))
+                    && !in_list(&self.tree, *node)
             })
             .map(|(node, spec)| TextSlot::of(*node, spec))
             .collect();
@@ -427,8 +466,15 @@ impl Renderer {
                     .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
             })
         };
+        let arrived = |texts: &HashMap<TextSlot, TextState>| {
+            unmeasured
+                .iter()
+                .any(|slot| texts.get(slot).is_some_and(|t| t.layout.is_some()))
+        };
         let deadline = Instant::now() + self.estimate_wait;
-        let mut delivered = false;
+        if waiting(&self.texts) {
+            self.estimate_waits += unmeasured.len() as u64;
+        }
         while waiting(&self.texts) {
             let left = deadline.saturating_duration_since(Instant::now());
             let TextBackend::Worker(w) = &self.text else {
@@ -438,10 +484,7 @@ impl Renderer {
                 break;
             }
             match w.recv_timeout(left) {
-                Ok(Some(l)) => {
-                    self.deliver(l);
-                    delivered = true;
-                }
+                Ok(Some(l)) => self.deliver(l),
                 Ok(None) => break,
                 Err(_) => {
                     self.pending.clear();
@@ -449,7 +492,9 @@ impl Renderer {
                 }
             }
         }
-        delivered
+        // Other layouts delivered meanwhile are drawn from the next frame,
+        // as when they arrive between frames.
+        arrived(&self.texts)
     }
 
     pub(super) fn request_text(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
