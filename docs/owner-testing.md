@@ -500,7 +500,7 @@ here is a proposal.
 Gaps 20 to 27 come from the island test bar (see the note before bug 9):
 findings only.
 
-20. **No way to tell whether a builtin service is running.** (open,
+20. **No way to tell whether a builtin service is running.** (fixed,
     2026-10-14; found by the island test bar (`target/try/island`),
     headless sway; not yet reproduced minimally) `network`, `bluetooth`
     and `session` have no field saying their daemon answers
@@ -542,7 +542,7 @@ findings only.
     concave fillets) had to be three top-level siblings, each placed by
     `x`, so the strips beside the fillets let the pointer through.
     Likely direction: a per-node way out of the input region.
-23. **No index-of on lists.** (open, 2026-10-14; found by the island
+23. **No index-of on lists.** (fixed, 2026-10-14; found by the island
     test bar (`target/try/island`), headless sway; not yet reproduced
     minimally) Lists have `find`, `filter`, `first` and `last` but
     nothing gives an item's position, so stepping workspaces by scroll
@@ -552,6 +552,10 @@ findings only.
     where `id` is not the number `focus(int)` takes. Not tried there.
     Likely direction: an index-of (or index-carrying `find`) so the next
     slot's record can be focused with `ws.focus()`.
+    **Fixed** (m6-owner-fixes, decisions.md): `xs.index_of(test)`, an
+    `int?`, is `find`'s position, so the next slot is
+    `slots[(slots.index_of(w => w.focused) ?? -1) + 1]?.focus()`
+    (`crates/strand-compiler/tests/vm.rs::index_of_finds_the_first_position`).
 24. **A popup's gap side: a negative `margin` and a `margin` of 0.**
     (diagnosed, 2026-10-14; found by the island test bar
     (`target/try/island`), headless sway; not yet reproduced minimally)

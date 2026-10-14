@@ -491,6 +491,32 @@ fn def_ty(p: &hir::Program, name: &str) -> String {
     show(p, &d.ty)
 }
 
+/// (M6, owner-testing gap 23) `xs.index_of(test)` is the position of
+/// `find`'s item, an `int?` that indexes the list back once defaulted;
+/// its test is a function of the item, as `find`'s is.
+#[test]
+fn index_of_is_an_optional_int_of_a_predicate() {
+    let out = one("state names = [\"a\", \"b\", \"c\"]\n\
+                   let at = names.index_of(n => n == \"b\")\n\
+                   let next = names[(at ?? -1) + 1]\n\
+                   bar B { text names[names.index_of(n => n != \"\") ?? 0] }\n");
+    assert_eq!(def_ty(&out.program, "at"), "int?");
+    assert_eq!(def_ty(&out.program, "next"), "text");
+    // The island bar's step to the next workspace (owner-testing.md).
+    one("let slots = workspaces.all\n\
+         bar B { box { on click {\n\
+           slots[(slots.index_of(w => w.focused) ?? -1) + 1]?.focus()\n\
+         } } }\n");
+    assert_eq!(
+        codes("state names = [\"a\"]\nlet at = names.index_of(\"a\")\n"),
+        ["check::type_mismatch"]
+    );
+    assert_eq!(
+        codes("state names = [\"a\"]\nlet at: int = names.index_of(n => n == \"a\")\n"),
+        ["check::nullable"]
+    );
+}
+
 /// A list literal of whole numbers is an `[int]` (design.md: `state xs =
 /// [1, 2]`), so its items index, count and fill `int` props; a fraction
 /// written to the list or to one of its items makes it a `[float]`.

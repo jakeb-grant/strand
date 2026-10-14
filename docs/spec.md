@@ -812,6 +812,13 @@ filling the monitor, the keyboard always).
   `T` is expected; using it directly is a load error.
 - Using an `Async<T>` where a `T` is expected is a load error, except
   for the reads through an `Async` list that section 8.6 lists.
+- A list's members (`len`, `filter`, `find`, `push`, …) are listed in
+  docs/reference/functions.md under `[T]`. `xs[i]` counts from 0 and
+  reads `null` past the end. `xs.index_of(test)` is the index of the
+  first item `test` is true for, as an `int?` (`null` when there is
+  none). It is `find`'s position, so
+  `xs[(xs.index_of(x => x.active) ?? -1) + 1]` is the item after the
+  active one (decisions.md m6-owner-fixes, gap 23).
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a
