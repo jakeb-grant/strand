@@ -276,6 +276,12 @@ filling the monitor, the keyboard always).
   a handler ran (a tray menu's `opened`). One a hover, a timer or IPC
   opens does not, nor does a `trigger: hover` popup or one opened from
   inside a popup without a grab.
+- **A popup opens away from a `bar`'s edge**, across the bar, below
+  its anchor otherwise, and beside its row for a popup in a popup.
+  Its `margin` on the side that faces its anchor is the gap between
+  them: 6 px unless it is set, `0` touching, negative overlapping the
+  anchor (`margin: -30, 0, 0` on a popup of a 30 px top bar covers the
+  bar). Its other sides are not used, and `attach:` makes the gap 0.
 - **`keyboard: none | on_demand | exclusive`** sets how the surface
   takes keyboard focus.
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.
@@ -722,6 +728,15 @@ filling the monitor, the keyboard always).
   `list`, `split` and `spacer` are containers; flex props and
   `min_*`/`max_*` apply. `place: absolute` takes a node out of the flow,
   placed by `x` and `y`.
+- **A stack puts its children over each other** in one cell its size:
+  a `stack`, a `box` and a surface (a `popup` included) lay out their
+  children so. Its `align` places every child on both axes (`start`,
+  `center`, `end`, or `stretch` to fill); by default a child fills the
+  cell on an axis where it has no size and sits at the start of one
+  where it has. There is no alignment per child: a child placed apart
+  from its siblings goes in a `row` or `col` that fills the cell and
+  places it (`row { justify: end; … }`), or is `place: absolute` at
+  its `x` and `y`.
 - **`split`** has three parts, `start`, `center` and `end`; `center` is
   centred on the split whatever the other two hold. `start`, `center`
   and `end` are only valid in a `split`.

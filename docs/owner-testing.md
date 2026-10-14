@@ -278,6 +278,17 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    (a node starts at its `enter` values and springs to its own).
    decisions.md m6-owner-fixes. The config is right.
 
+13. **`margin: 0` on a popup's gap side gives 6.** (2026-10-14, the
+   notch config; G-e) Placement reads a popup's `margin` there as the
+   gap to its anchor and takes 0 as unset, so a popup cannot touch its
+   anchor (a negative margin, which overlaps it, works).
+   **Open**, spec'd: spec.md 5.1 now says the gap is 6 px only while
+   `margin` is unset, `0` touches and a negative one overlaps. The fix
+   is in strand-surface (`placement::popup_config`) and needs
+   `SurfaceSpec` to tell an unset margin from 0; it is handed to that
+   crate's owner. Meanwhile `margin: 0.1` (rounded to 0 px) touches.
+   decisions.md m6-owner-fixes.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,
@@ -507,6 +518,12 @@ run on Hyprland), **in progress** (being built on a stream's branch).
     `crates/strand-compiler/tests/instantiate.rs::a_qualified_call_takes_its_hover_popups_id`;
     the full list is features.md's); spec.md 4.2, the guide's level 2,
     decisions.md m6-w2-language.
+20. **A `graph`'s history lasts only while it is mounted.** (2026-10-14,
+    the notch config; G-e) A graph in a popup starts empty every time
+    the popup opens, since a popup mounts what it holds only while
+    shown. **Ruling (m6-owner-fixes, decisions.md):** history stays per
+    mount, as built; a history kept by the data source is a service
+    feature for a later wave, not a `graph` one.
 
 ## Docs and traps
 
@@ -524,3 +541,11 @@ run on Hyprland), **in progress** (being built on a stream's branch).
 2. **The guide did not say where `strand` comes from.** (fixed
    2026-10-13, decisions.md m6-owner) The owner's first try was
    `strand: command not found`; README.md's "What you need" now says.
+3. **A popup's children are not aligned one by one.** (2026-10-14,
+   the notch config; G-e) A popup lays its children out as a stack:
+   `align` places all of them on both axes, with no per-child form.
+   **Documented** (spec.md 6.7): a child placed apart goes in a `row`
+   or `col` that fills the popup and places it, or is `place:
+   absolute`
+   (`crates/strand-render/tests/layout.rs::a_stacks_align_places_every_child_on_both_axes`).
+   decisions.md m6-owner-fixes.

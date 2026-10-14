@@ -203,6 +203,38 @@ fn stack_overlays_and_absolute_places() {
     assert_matches_ref("layout_stack", &buf, TOLERANCE);
 }
 
+/// (spec.md 6.7, decisions.md m6-owner-fixes) A stack's `align` places
+/// every child on both axes; a child placed apart from its siblings goes
+/// in a `row` filling the cell, which places it with `justify`.
+#[test]
+fn a_stacks_align_places_every_child_on_both_axes() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(120, 80, |b, root| {
+        let stack = b.node(
+            NodeKind::Stack,
+            Some(root),
+            vec![(Prop::Align, kw("center"))],
+        );
+        ids.push(swatch(b, stack, "#fab387", vec![(Prop::Size, num(20.0))]));
+        let row = b.node(
+            NodeKind::Row,
+            Some(stack),
+            vec![
+                (Prop::Width, len_pct(100.0)),
+                (Prop::Height, len_pct(100.0)),
+                (Prop::Justify, kw("end")),
+                (Prop::Align, kw("start")),
+            ],
+        );
+        ids.push(row);
+        ids.push(swatch(b, row, "#94e2d5", vec![(Prop::Size, num(10.0))]));
+    });
+    let (r, _) = show(d, root, 120, 80, Scale::ONE);
+    approx(rect(&r, ids[0]), (50.0, 30.0, 20.0, 20.0));
+    approx(rect(&r, ids[1]), (0.0, 0.0, 120.0, 80.0));
+    approx(rect(&r, ids[2]), (110.0, 0.0, 10.0, 10.0));
+}
+
 /// `grid { columns: 3; gap }`: cells flow left to right, top to bottom.
 #[test]
 fn grid_flows_into_columns() {
