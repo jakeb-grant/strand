@@ -212,15 +212,19 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    Nor can a component change its caller's state: a tray menu's rows
    could not switch the menu to a submenu from a row component, so the
    rows were inlined into the tray icon's component.
-   **Wave 2: partly fixed, the rest proposed.** `id:` and handlers on
-   a call are its root element's, so a component's root hover (and a
-   root popup's `open`) reach the caller and a caller's handler on a
-   row switches its menu
+   **Wave 2: fixed for the owner's case; the rest declined for now**
+   (the owner's ruling, 2026-10-14, decisions.md m6-owner). `id:` and
+   handlers on a call are its root element's, so a component's root
+   hover (and a root popup's `open`) reach the caller and a caller's
+   handler on a row switches its menu
    (`crates/strand-compiler/tests/instantiate.rs::a_calls_handlers_and_id_are_its_root_elements`,
-   `::a_calls_id_and_screen_reach_its_hover_popup`). Exposing a
-   non-root element's state and a component writing its caller's
-   state (`name: <-> T` parameters) are proposed (decisions.md
-   m6-w2-language, "the rest of owner testing Gaps 6").
+   `::a_calls_id_and_screen_reach_its_hover_popup`). State that two
+   places need lives in the caller. Exposing a non-root element's
+   state and a component writing its caller's state (`name: <-> T`
+   parameters, decisions.md m6-w2-language, "the rest of owner testing
+   Gaps 6") are not taken; they are revisited only if real testing
+   hits a component that must write its caller's state from inside
+   itself, and then land in a later wave with that case as the test.
 7. **`screen` is not in scope in components a bar uses.** It has to
    be passed as a parameter (`Bar { scr: screen }`).
    **Wave 2: fixed**
