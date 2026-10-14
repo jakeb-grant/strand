@@ -214,6 +214,16 @@ pub trait Painter {
         let _ = surface;
         None
     }
+    /// (M6) Where the last painted frame takes pointer input, in
+    /// surface-local logical pixels (where a popup that draws nothing
+    /// itself drew its content: input anywhere else on its surface
+    /// passes through). `None` keeps
+    /// the surface manager's own region (the box inside the shadow
+    /// overhang); an empty list takes none.
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<crate::LogicalRect>> {
+        let _ = surface;
+        None
+    }
 }
 
 #[cfg(test)]

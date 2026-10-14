@@ -204,21 +204,39 @@ impl<'a> Checker<'a> {
     }
 
     /// Finds the `id:` names of a component or surface body, so they can be
-    /// read anywhere in it, and binds them in a new scope.
+    /// read anywhere in it, and binds them in a new scope. (M6) An `id:`
+    /// in an element's `when` block is a conditional id: it names that
+    /// element while the condition holds (one in a `for` copy names the
+    /// copy whose condition holds), and the same name may be given in
+    /// several `when`s; it cannot also be a plain id.
     fn collect_ids(&mut self, items: &'a [ast::Item]) {
         self.push_scope();
-        let mut found: Vec<(&'a ast::Ident, Span)> = Vec::new();
-        fn walk<'b>(items: &'b [ast::Item], out: &mut Vec<(&'b ast::Ident, Span)>) {
+        /// A name, the element it names, and whether a `when` gives it.
+        type Found<'b> = Vec<(&'b ast::Ident, Span, bool)>;
+        fn id_of(items: &[ast::Item]) -> Option<&ast::Ident> {
+            items.iter().find_map(|p| match &p.kind {
+                ItemKind::Prop(p)
+                    if p.name.name == "id"
+                        && let ast::ExprKind::Name(n) = &p.value.kind =>
+                {
+                    Some(n)
+                }
+                _ => None,
+            })
+        }
+        fn walk<'b>(items: &'b [ast::Item], out: &mut Found<'b>) {
             for i in items {
                 match &i.kind {
                     ItemKind::Element(e) => {
                         if let Some(b) = &e.block {
-                            for p in &b.items {
-                                if let ItemKind::Prop(p) = &p.kind
-                                    && p.name.name == "id"
-                                    && let ast::ExprKind::Name(n) = &p.value.kind
+                            if let Some(n) = id_of(&b.items) {
+                                out.push((n, i.span, false));
+                            }
+                            for w in &b.items {
+                                if let ItemKind::When(w) = &w.kind
+                                    && let Some(n) = id_of(&w.body.items)
                                 {
-                                    out.push((n, i.span));
+                                    out.push((n, i.span, true));
                                 }
                             }
                             walk(&b.items, out);
@@ -238,7 +256,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        fn walk_if<'b>(f: &'b ast::If<ast::Item>, out: &mut Vec<(&'b ast::Ident, Span)>) {
+        fn walk_if<'b>(f: &'b ast::If<ast::Item>, out: &mut Found<'b>) {
             walk(&f.then.items, out);
             match &f.else_ {
                 Some(ast::Else::If(i, _)) => walk_if(i, out),
@@ -246,30 +264,44 @@ impl<'a> Checker<'a> {
                 None => {}
             }
         }
+        let mut found: Found<'a> = Vec::new();
         walk(items, &mut found);
         let node_ty = self.types.find_record("Node").map_or(Ty::Error, Ty::Record);
-        let mut seen: Vec<(String, Span)> = Vec::new();
-        for (name, el_span) in found {
-            if let Some((_, prev)) = seen.iter().find(|(n, _)| *n == name.name) {
+        // Name → where first named, and whether conditionally.
+        let mut seen: Vec<(String, Span, bool)> = Vec::new();
+        for (name, el_span, cond) in found {
+            if let Some((_, prev, was)) = seen.iter().find(|(n, _, _)| *n == name.name) {
+                if cond && *was {
+                    // Another `when` naming it: the same conditional id.
+                    continue;
+                }
                 let (file, prev) = (self.file(), *prev);
-                self.error(
+                let err = self.error(
                     "check::redeclared",
                     format!("`id: {}` is used twice", name.name),
                     name.span,
                     "named again here",
-                )
-                .add_secondary(file, prev, "first named here");
+                );
+                err.add_secondary(file, prev, "first named here");
+                if cond || *was {
+                    err.help = Some(
+                        "a name given in `when` blocks names whichever element's condition holds; give a plain `id:` another name"
+                            .into(),
+                    );
+                }
                 continue;
             }
-            seen.push((name.name.clone(), name.span));
+            seen.push((name.name.clone(), name.span, cond));
             let idx = self.new_node();
-            let local = self.bind_local(
-                &name.name,
-                node_ty.clone(),
-                name.span,
-                LocalKind::NodeId(idx),
-            );
-            self.ids.insert((self.module, el_span), (local, idx));
+            let kind = if cond {
+                LocalKind::NodeAlias(idx)
+            } else {
+                LocalKind::NodeId(idx)
+            };
+            let local = self.bind_local(&name.name, node_ty.clone(), name.span, kind);
+            if !cond {
+                self.ids.insert((self.module, el_span), (local, idx));
+            }
         }
     }
 

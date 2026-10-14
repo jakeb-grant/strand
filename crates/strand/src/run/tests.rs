@@ -198,7 +198,7 @@ fn the_logic_thread_follows_the_monitors() {
     // they change nothing (render holds a query's frame for it).
     send(ToLogic::Layout {
         seq: 7,
-        sizes: vec![(a, 1920.0, 40.0)],
+        sizes: vec![(a, strand_scene::LogicalRect::new(0.0, 0.0, 1920.0, 40.0))],
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

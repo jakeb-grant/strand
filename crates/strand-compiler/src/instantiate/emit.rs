@@ -39,6 +39,31 @@ pub(crate) struct Binding {
     pub memo: Memo<PropOut>,
     pub transitions: Rc<Vec<Transition>>,
     pub site: Rc<super::Site>,
+    /// (M6) Whether its value read a `box` render had not reported yet.
+    pub boot: Rc<BootRead>,
+}
+
+/// (M6) A binding's reads of boxes not reported yet (`id.box` before
+/// the first layout): `now` for its last evaluation, `sent` for the
+/// value last sent. A value that read one is a stand-in; the first
+/// value after it is sent without its transition, so it does not spring
+/// from the stand-in.
+#[derive(Debug, Default)]
+pub(crate) struct BootRead {
+    pub now: std::cell::Cell<bool>,
+    pub sent: std::cell::Cell<bool>,
+}
+
+impl BootRead {
+    /// The transition to send the value just evaluated with.
+    pub fn transition(&self, t: Transition) -> Transition {
+        let now = self.now.get();
+        if self.sent.replace(now) && !now {
+            Transition::Instant
+        } else {
+            t
+        }
+    }
 }
 
 /// An element instance the emitter knows.

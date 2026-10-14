@@ -797,6 +797,14 @@ fn paint_only_changes_never_relayout() {
     assert_eq!(rect(&r, ids[0]).w, 40.0);
 }
 
+/// The layout facts render hands logic, as `(node, width, height)`.
+fn facts(r: &mut strand_render::Renderer) -> Vec<(NodeId, f32, f32)> {
+    r.take_layout_facts()
+        .into_iter()
+        .map(|(n, b)| (n, b.w, b.h))
+        .collect()
+}
+
 /// Layout facts: sizes that changed go to logic (`self.width`), once,
 /// and only for nodes logic reads them of (`watch`); a size change of an
 /// unwatched node sends nothing.
@@ -814,14 +822,14 @@ fn layout_facts_report_changed_sizes() {
         ids.push(swatch(b, row, "#a6e3a1", vec![(Prop::Size, num(20.0))]));
     });
     let (mut r, mut buf) = show(d, root, 100, 40, Scale::ONE);
-    assert_eq!(r.take_layout_facts(), vec![(ids[0], 20.0, 20.0)]);
+    assert_eq!(facts(&mut r), vec![(ids[0], 20.0, 20.0)]);
     assert_eq!(r.layout_seq(), 1);
     let mut d = SceneDiff::new();
     d.set(ids[0], Prop::Width, num(30.0));
     r.apply(d);
     buf.paint(&mut r, S, 1);
-    assert_eq!(r.take_layout_facts(), vec![(ids[0], 30.0, 20.0)]);
-    assert!(r.take_layout_facts().is_empty());
+    assert_eq!(facts(&mut r), vec![(ids[0], 30.0, 20.0)]);
+    assert!(facts(&mut r).is_empty());
     assert_eq!(r.layout_seq(), 2, "an empty batch takes no number");
     // The unwatched one changes size: nothing goes to logic.
     let mut d = SceneDiff::new();
@@ -829,12 +837,12 @@ fn layout_facts_report_changed_sizes() {
     r.apply(d);
     buf.paint(&mut r, S, 1);
     assert_eq!(rect(&r, ids[1]).w, 40.0);
-    assert!(r.take_layout_facts().is_empty());
+    assert!(facts(&mut r).is_empty());
     // Watched from now on: its current size goes at once.
     let mut d = SceneDiff::new();
     d.set(ids[1], Prop::Watch, kw("size"));
     r.apply(d);
-    assert_eq!(r.take_layout_facts(), vec![(ids[1], 40.0, 20.0)]);
+    assert_eq!(facts(&mut r), vec![(ids[1], 40.0, 20.0)]);
 }
 
 /// A container query's size changing holds the frame for logic's answer:
@@ -859,7 +867,7 @@ fn a_query_size_change_holds_the_frame_for_logic() {
     r.configure_surface(S, Size::new(100, 40), Scale::ONE);
     assert!(!r.wants_frame(S), "held for the query's answer");
     assert!(r.frame_deadline(S).is_some());
-    assert_eq!(r.take_layout_facts(), vec![(ids[0], 100.0, 40.0)]);
+    assert_eq!(facts(&mut r), vec![(ids[0], 100.0, 40.0)]);
     // A diff from before logic saw them does not release it.
     let mut d = SceneDiff::new();
     d.layout_seen = Some(r.layout_seq() - 1);
@@ -878,7 +886,7 @@ fn a_query_size_change_holds_the_frame_for_logic() {
     d.set(ids[0], Prop::Height, num(20.0));
     r.apply(d);
     assert!(!r.wants_frame(S));
-    assert_eq!(r.take_layout_facts(), vec![(ids[0], 100.0, 20.0)]);
+    assert_eq!(facts(&mut r), vec![(ids[0], 100.0, 20.0)]);
     // The answer changes its size again: no second hold in this frame.
     let mut d = SceneDiff::new();
     d.set(ids[0], Prop::Height, num(10.0));
@@ -1318,7 +1326,7 @@ fn a_busy_surface_does_not_hold_for_queries() {
     r.configure_surface(S, Size::new(100, 40), Scale::ONE);
     // Never painted: idle, so the first frame waits for the answer.
     assert!(!r.wants_frame(S));
-    r.take_layout_facts();
+    facts(&mut r);
     let mut d = SceneDiff::new();
     d.layout_seen = Some(r.layout_seq());
     r.apply(d);
@@ -1330,7 +1338,7 @@ fn a_busy_surface_does_not_hold_for_queries() {
         d.set(ids[0], Prop::Width, num(w));
         r.apply(d);
         assert!(r.wants_frame(S), "held at width {w}");
-        assert_eq!(r.take_layout_facts(), vec![(ids[0], w, 40.0)]);
+        assert_eq!(facts(&mut r), vec![(ids[0], w, 40.0)]);
         buf.paint(&mut r, S, 1);
     }
 }
@@ -1454,18 +1462,15 @@ fn a_node_on_two_surfaces_reports_each_change_once() {
     let mut narrow = Buffer::new(300, 30, Scale::ONE);
     wide.paint(&mut r, a, 0);
     narrow.paint(&mut r, c, 0);
-    let facts = r.take_layout_facts();
-    assert_eq!(facts.len(), 2, "{facts:?}");
+    let first = facts(&mut r);
+    assert_eq!(first.len(), 2, "{first:?}");
     for i in 0..5 {
         let mut d = SceneDiff::new();
         d.set(ids[1], Prop::Text, text(&format!("12:0{i}")));
         r.apply(d);
         wide.paint(&mut r, a, 1);
         narrow.paint(&mut r, c, 1);
-        assert!(
-            r.take_layout_facts().is_empty(),
-            "tick {i}: sizes unchanged"
-        );
+        assert!(facts(&mut r).is_empty(), "tick {i}: sizes unchanged");
     }
 }
 

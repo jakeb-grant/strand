@@ -188,6 +188,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `width` | `float` | Its laid-out width. `when self.width < 300 { … }` is a container query, with 4 px hysteresis so it cannot flicker. |
 | `height` | `float` | Its laid-out height. |
 | `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |
+| `box` | `Rect` | Its laid-out box, in its surface's logical pixels from the top-left corner of the surface's box (paint offsets, transforms and poses not applied). A popup's own box is where it sits in the surface it opens from; a bar's, panel's or OSD's is at 0, 0. It updates a frame after layout moves it, and springs like any value: `x: item.box.x - row.box.x ~ $motion.spatial`. It may drive only what cannot move it back: paint props (`x`, `y`, `opacity`, colours, transforms), and the size of a `place: absolute` element it is not inside, or anything on another surface; a load error says so otherwise. |
 
 ### `Notification`
 
@@ -259,6 +260,17 @@ A span of characters: from `start` up to, not including, `end`.
 | --- | --- | --- |
 | `start` | `int` | The first character. |
 | `end` | `int` | Just past the last character. |
+
+### `Rect`
+
+A laid-out box (`id.box`), logical pixels.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `float` | Its left edge. |
+| `y` | `float` | Its top edge. |
+| `width` | `float` | Its width. |
+| `height` | `float` | Its height. |
 
 ### `Screen`
 

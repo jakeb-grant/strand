@@ -230,8 +230,8 @@ impl Shell {
                 inst.event_with(node, event.name(), event.args_with(&self.host), input);
             }
             ToLogic::Layout { seq, sizes } => {
-                for (node, w, h) in sizes {
-                    inst.set_size(node, w, h);
+                for (node, rect) in sizes {
+                    inst.set_box(node, rect);
                 }
                 self.layout_seen = Some(seq);
             }

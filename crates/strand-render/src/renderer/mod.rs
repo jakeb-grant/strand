@@ -21,6 +21,7 @@ mod apply;
 #[cfg(feature = "gpu")]
 pub(crate) mod backend;
 
+mod facts;
 mod feed;
 mod frame;
 mod layout_pass;
@@ -252,8 +253,8 @@ pub struct Renderer {
     /// last size each surface laid a watched node out at (a node shown on
     /// two surfaces of different sizes reports a change of either, never
     /// flip-flops between them).
-    facts: Vec<(NodeId, f32, f32)>,
-    facts_sent: HashMap<(SurfaceId, NodeId), (f32, f32)>,
+    facts: Vec<(NodeId, strand_scene::LogicalRect)>,
+    facts_sent: HashMap<(SurfaceId, NodeId), strand_scene::LogicalRect>,
     /// Fact batches handed out ([`Renderer::layout_seq`]).
     facts_seq: u64,
     /// How long a frame waits for logic's answer to a container query
@@ -590,6 +591,8 @@ impl Renderer {
             }
         }
         self.resolve_origins();
+        // (M6) A popup's `id.box` is its place in its parent.
+        self.report_placed();
     }
 
     /// Rebuilds `extras.origins` from what the host placed, each surface

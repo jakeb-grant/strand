@@ -1,0 +1,32 @@
+// expect: check::box_layout_loop
+// (M6) `.box` arrives a frame after layout: a binding on it that would
+// lay out its own surface again chases its tail, so each is refused.
+state seen = 0
+fn wider(n: float) -> float { n + 10 }
+component Sized(w: float) {
+  box { width: w }
+}
+bar Top {
+  height: 30
+  let gap = a.box.x
+  row {
+    text "a" { id: a }
+    // A sibling's width.
+    box { width: a.box.width }
+    // Through a `let`, and through a `fn`.
+    box { pad: gap }
+    box { height: wider(a.box.height) }
+    // Through a handler's state.
+    box { width: seen }
+    on change a.box.x { seen = 1 }
+    // Through a component's parameter.
+    Sized { w: a.box.width }
+    // Mounting by it.
+    if a.box.width > 10 { text "wide" }
+    // Absolute, but its own box, or one inside it.
+    box { id: me; place: absolute; width: me.box.height }
+    box { place: absolute; height: inner.box.height; text "x" { id: inner } }
+    // A popup placed by a box (its own).
+    box { size: 20; popup { id: pop; width: pop.box.width + 1; text "p" } }
+  }
+}

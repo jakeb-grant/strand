@@ -352,6 +352,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
+            painted_input: None,
             stats: Stats {
                 bare_commits: 1,
                 ..Stats::default()

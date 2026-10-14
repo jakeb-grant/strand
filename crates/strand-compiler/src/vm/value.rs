@@ -182,6 +182,20 @@ pub struct NodeState {
     pub open: Signal<bool>,
     pub width: Signal<Value>,
     pub height: Signal<Value>,
+    /// (M6) Its laid-out box, `id.box`: a `Rect` record, or `Null` until
+    /// render first reports it (it reads as all zeros then). Made on
+    /// first use ([`NodeState::rect`]): most elements are never read so.
+    pub rect_cell: std::cell::OnceCell<Signal<Value>>,
+    /// (M6) For a conditional id (`when c { id: name }`), the element it
+    /// names now: `Value::Node`, or `Null` while no condition holds.
+    /// Made on first use ([`NodeState::alias`]).
+    pub alias_cell: std::cell::OnceCell<Signal<Value>>,
+    /// (M6) The conditional ids this element took (`when c { id: name }`):
+    /// they let go of it when it unmounts.
+    pub claims: std::cell::RefCell<Vec<Signal<Value>>>,
+    /// The core scope its signals belong to (that of the scope owning
+    /// the element), for those made on first use.
+    pub scope: Option<strand_core::NodeId>,
     /// Which laid-out sizes bindings read: [`NodeState::WATCH_SIZE`],
     /// [`NodeState::WATCH_QUERY`] (sticky bits).
     pub watch: std::cell::Cell<u8>,
@@ -196,6 +210,27 @@ impl NodeState {
     pub const WATCH_SIZE: u8 = 1;
     /// A container query (`when self.width < N`) read one.
     pub const WATCH_QUERY: u8 = 2;
+    /// (M6) A binding read `box`: render reports where it is, not only
+    /// its size.
+    pub const WATCH_BOX: u8 = 4;
+
+    /// (M6) `id.box`'s signal, made on first use in the element's scope.
+    pub fn rect(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        *self.rect_cell.get_or_init(|| self.make(rt))
+    }
+
+    /// (M6) A conditional id's target signal (see `alias_cell`).
+    pub fn alias(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        *self.alias_cell.get_or_init(|| self.make(rt))
+    }
+
+    fn make(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        let make = |rt: &strand_core::Runtime| rt.signal(Value::Null);
+        match self.scope {
+            Some(o) => rt.with_owner(o, make).unwrap_or_else(|_| make(rt)),
+            None => make(rt),
+        }
+    }
 }
 
 /// A value of the language.

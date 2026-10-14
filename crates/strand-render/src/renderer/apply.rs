@@ -35,35 +35,7 @@ pub(super) fn snaps_and_glides(prop: Prop) -> bool {
 /// True for props layout reads: a change to one relayouts its surface;
 /// any other prop (colours, `x`/`y`, opacity, shadows) only repaints.
 pub fn affects_layout(prop: Prop) -> bool {
-    use Prop::*;
-    matches!(
-        prop,
-        Width
-            | Height
-            | Size
-            | MinWidth
-            | MaxWidth
-            | MinHeight
-            | MaxHeight
-            | Pad
-            | Margin
-            | Gap
-            | Grow
-            | Shrink
-            | Align
-            | Justify
-            | Place
-            | Columns
-            | Edge
-            | Text
-            | Font
-            | Weight
-            | Ellipsis
-            | MaxLines
-            | Markup
-            | Marks
-            | Tokens
-    )
+    prop.affects_layout()
 }
 
 impl Renderer {
@@ -265,34 +237,9 @@ impl Renderer {
         self.pending.retain(|_, slot| texts.contains_key(slot));
         let tree = &self.tree;
         self.facts_sent.retain(|(_, n), _| tree.contains(*n));
-        // Newly watched nodes: their size as laid out now, if it is (on
-        // the first surface showing it). A query that starts reading one
-        // holds that surface's next frame for the answer, as a size
-        // change would.
-        let (wait, window) = (self.query_wait, self.busy_window);
-        for id in watched {
-            self.facts_sent.retain(|(_, n), _| *n != id);
-            let query = match self.tree.get(id).and_then(|n| n.get(Prop::Watch)) {
-                None => continue,
-                Some(w) => matches!(w, PropValue::Keyword(k) if k == "query"),
-            };
-            let seq = self.facts_seq + 1;
-            let mut first = true;
-            for (sid, s) in self.surfaces.iter_mut() {
-                let Some(r) = s.boxes.as_ref().and_then(|b| b.rects.get(&id)).copied() else {
-                    continue;
-                };
-                self.facts_sent.insert((*sid, id), (r.w, r.h));
-                if !first {
-                    continue;
-                }
-                first = false;
-                if query {
-                    s.hold_for_query(seq, wait, window);
-                }
-                self.facts.push((id, r.w, r.h));
-            }
-        }
+        // Newly watched nodes: their box as laid out now (`facts.rs`).
+        self.report_watched(watched);
+        let tree = &self.tree;
         self.scrolls.retain(|n, _| tree.contains(*n));
         // A surface nested in a touched one (a popup in a bar) inherits
         // from it, so it is touched too; `update` clears it again if

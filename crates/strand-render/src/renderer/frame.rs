@@ -225,6 +225,25 @@ impl Painter for Renderer {
             .get(&surface)
             .map_or_else(Damage::new, |s| s.opaque)
     }
+
+    /// (M6) A popup that draws nothing itself (no background, border or
+    /// shadow of its own) takes input only in the boxes of its top-level
+    /// elements that drew anything in the last frame, as drawn (spec.md
+    /// 6.7): an island moving inside a wide popup lets the pointer through
+    /// everywhere else. Any other surface keeps the surface manager's
+    /// region.
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
+        let s = self.surfaces.get(&surface)?;
+        let popup = self
+            .tree
+            .get(s.root)
+            .is_some_and(|n| n.kind == strand_scene::NodeKind::Popup);
+        let f = s.cache.as_ref()?;
+        if !popup || f.root_paints {
+            return None;
+        }
+        Some(f.input.clone())
+    }
 }
 
 impl Renderer {

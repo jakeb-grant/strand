@@ -247,6 +247,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             last_damage: Vec::new(),
             click_through,
             input_region: click_through.then_some(None),
+            painted_input: None,
             stats: Stats {
                 bare_commits: 1,
                 ..Stats::default()
@@ -432,6 +433,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
+        // (M6) The painter's own region stands (`sync_painted_input`).
+        if s.painted_input.is_some() {
+            return;
+        }
         let factor = s.pose_factor();
         let region = s.config.input_region(s.logical).map(|rect| {
             rect.and_then(|(x, y, w, h)| {

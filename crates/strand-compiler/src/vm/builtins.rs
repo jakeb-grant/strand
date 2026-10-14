@@ -162,6 +162,45 @@ fn laid_out(vm: &Vm, n: &Rc<NodeState>, v: Value) -> Value {
     }
 }
 
+thread_local! {
+    /// (M6) A `box` read while [`reads_boot_box`] ran saw a node not laid
+    /// out yet.
+    static BOOT_BOX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// (M6) Runs `f`; returns its result and whether it read the `box` of a
+/// node render has not reported yet (all zeros): the value it gives
+/// once the box is known snaps there instead of springing from zero.
+pub(crate) fn reads_boot_box<R>(f: impl FnOnce() -> R) -> (R, bool) {
+    let outer = BOOT_BOX.with(|b| b.replace(false));
+    let r = f();
+    let boot = BOOT_BOX.with(|b| b.replace(outer));
+    BOOT_BOX.with(|b| b.set(outer || boot));
+    (r, boot)
+}
+
+/// (M6) `id.box`: the node's laid-out box as a `Rect` (zeros until
+/// render reports it), noting the read so render reports its place.
+fn laid_out_box(vm: &Vm, n: &Rc<NodeState>, v: Value) -> Value {
+    QUERY.with(|q| {
+        let mut st = q.get();
+        st.read = true;
+        st.boot_value |= !n.laid_out.get();
+        q.set(st);
+    });
+    if !n.laid_out.get() {
+        BOOT_BOX.with(|b| b.set(true));
+    }
+    vm.watch(n, NodeState::WATCH_BOX);
+    match v {
+        Value::Null => match vm.types().find_record("Rect") {
+            Some(ty) => Value::record(ty, vec![Value::float(0.0); 4]),
+            None => Value::Null,
+        },
+        v => v,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fields
 
@@ -184,6 +223,7 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "open" => Value::Bool(n.open.get(rt)?),
             "width" => laid_out(vm, n, n.width.get(rt)?),
             "height" => laid_out(vm, n, n.height.get(rt)?),
+            "box" => laid_out_box(vm, n, n.rect(rt).get(rt)?),
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),

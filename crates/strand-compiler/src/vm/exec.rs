@@ -245,6 +245,14 @@ impl Machine {
                     let n = self.env.node_state(rt, *idx);
                     self.stack.push(Value::Node(n));
                 }
+                Op::NodeAlias(idx) => {
+                    let a = self.env.node_state(rt, *idx);
+                    let v = match a.alias(rt).get(rt)? {
+                        v @ Value::Node(_) => v,
+                        _ => Value::Node(a),
+                    };
+                    self.stack.push(v);
+                }
                 Op::Token(n) => self.stack.push(Value::token(TokenExpr::path(
                     chunk.names[*n as usize].as_str(),
                 ))),

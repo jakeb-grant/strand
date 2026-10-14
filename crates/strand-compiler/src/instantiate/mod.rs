@@ -1415,10 +1415,13 @@ impl Instance {
             if !ours {
                 continue;
             }
-            let kw = if state.watch.get() & NodeState::WATCH_QUERY != 0 {
-                "query"
-            } else {
-                "size"
+            let bits = state.watch.get();
+            let query = bits & NodeState::WATCH_QUERY != 0;
+            let kw = match (bits & NodeState::WATCH_BOX != 0, query) {
+                (true, true) => "box_query",
+                (true, false) => "box",
+                (false, true) => "query",
+                (false, false) => "size",
             };
             em.set(
                 id,
@@ -1507,7 +1510,7 @@ impl Instance {
     }
 
     fn emit_binding(&self, id: CoreId) {
-        let (memo, scene, prop, transitions, site) = {
+        let (memo, scene, prop, transitions, site, boot) = {
             let em = self.ctx.em.borrow();
             let Some(b) = em.bindings.get(&id) else {
                 return;
@@ -1518,11 +1521,13 @@ impl Instance {
                 b.prop,
                 b.transitions.clone(),
                 b.site.clone(),
+                b.boot.clone(),
             )
         };
         match memo.get_untracked(&self.rt) {
             Ok(out) => {
                 let t = transitions.get(out.source).cloned().unwrap_or_default();
+                let t = boot.transition(t);
                 self.ctx.em.borrow_mut().set(scene, prop, out.value, t);
             }
             // Errors are values: the prop keeps its last good value.
@@ -1626,6 +1631,27 @@ impl Instance {
             }
             None => false,
         }
+    }
+
+    /// (M6) Render laid `node` out at `rect` (its box in its surface's
+    /// coordinates, `id.box`): sets its box and its size.
+    pub fn set_box(&self, node: NodeId, rect: strand_scene::LogicalRect) {
+        let state = self
+            .ctx
+            .em
+            .borrow()
+            .nodes
+            .get(&node)
+            .map(|e| e.state.clone());
+        let Some(s) = state else {
+            return;
+        };
+        if let Some(ty) = self.ctx.vm.types().find_record("Rect") {
+            let f = |v: f32| Value::float(v as f64);
+            let r = Value::record(ty, vec![f(rect.x), f(rect.y), f(rect.w), f(rect.h)]);
+            let _ = s.rect(&self.rt).set(&self.rt, r);
+        }
+        self.set_size(node, rect.w, rect.h);
     }
 
     /// Render reports a node's laid-out size (`self.width`).

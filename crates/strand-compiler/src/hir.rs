@@ -165,6 +165,9 @@ pub enum LocalKind {
     Channel,
     /// An element named with `id:`.
     NodeId(NodeIdx),
+    /// (M6) A conditional id, `when c { id: name }`: whichever element
+    /// names itself so now (its own index, for the alias's state).
+    NodeAlias(NodeIdx),
 }
 
 /// A resolved name use.

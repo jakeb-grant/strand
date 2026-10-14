@@ -1139,6 +1139,121 @@ fn shadow_overhang_grows_the_surface_but_not_its_input() {
     drop(pointer);
 }
 
+/// (M6) A painter's input region (`Painter::input_region`, a transparent
+/// popup's drawn content) replaces the surface's own: a click elsewhere
+/// on the surface passes through.
+#[test]
+fn a_painted_input_region_lets_the_rest_pass_through() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_painted_input_region_lets_the_rest_pass_through") else {
+        return;
+    };
+    // The painter takes input only on a 50 x 40 box inside the panel
+    // (a popup's drawn content), its edges fractional.
+    let mut host = TestHost::default();
+    host.input_rects = Some(vec![LogicalRect::new(100.2, 30.0, 49.6, 40.0)]);
+    let mut mgr =
+        strand_surface::SurfaceManager::with_connection(sway.connect(), host, Config::default())
+            .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Card", "top_left", 200.0, 100.0);
+    spec.margin = Insets::all(40.0);
+    spec.overhang = Insets::all(20.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.logical_size, (240, 140));
+    // Rounded out to whole pixels, and the overhang's region gives way.
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| i.painted_input.is_some())
+        })
+        .unwrap();
+    assert!(ok);
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(
+        info.painted_input,
+        Some(vec![strand_scene::Rect::new(100, 30, 50, 40)])
+    );
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // On the panel's box outside the painted region (it passes
+    // through), then inside it (surface (120, 50) = screen (140, 70)).
+    click(1, 60, 60);
+    click(10, 140, 70);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+            .count()
+            < 2
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    let buttons: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton { position, .. } => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        buttons.len(),
+        2,
+        "only the painted region takes the click: {events:?}"
+    );
+    assert!(
+        buttons
+            .iter()
+            .all(|p| (p.x - 120.0).abs() < 1.0 && (p.y - 50.0).abs() < 1.0),
+        "{buttons:?}"
+    );
+    drop(pointer);
+}
+
 /// (M4) A panel the compositor holds at half size (a delegated scale
 /// pose): its input region shrinks with it, and a click arrives in the
 /// coordinates of the content at rest, not the destination's, so the

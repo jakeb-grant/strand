@@ -335,6 +335,44 @@ props! {
     Grace = "grace": Snap,
 }
 
+impl Prop {
+    /// True for props layout reads: a change to one moves or resizes
+    /// laid-out boxes (render relayouts its surface); any other prop
+    /// (colours, `x`/`y`, opacity, shadows) only repaints. (M6) The
+    /// checker reads it too: what `id.box` may drive (spec.md 6.3).
+    pub const fn affects_layout(self) -> bool {
+        use Prop::*;
+        matches!(
+            self,
+            Width
+                | Height
+                | Size
+                | MinWidth
+                | MaxWidth
+                | MinHeight
+                | MaxHeight
+                | Pad
+                | Margin
+                | Gap
+                | Grow
+                | Shrink
+                | Align
+                | Justify
+                | Place
+                | Columns
+                | Edge
+                | Text
+                | Font
+                | Weight
+                | Ellipsis
+                | MaxLines
+                | Markup
+                | Marks
+                | Tokens
+        )
+    }
+}
+
 /// A length in logical pixels or relative to a reference.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Length {

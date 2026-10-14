@@ -454,6 +454,11 @@ pub struct SurfaceInfo {
     /// The input region: `None` the whole surface, `Some(None)` empty,
     /// else the box `(x, y, w, h)` inside the shadow overhang.
     pub input_region: Option<Option<(i32, i32, i32, i32)>>,
+    /// (M6) The input region the painter asked for and was last sent
+    /// (`Painter::input_region`: where a transparent popup drew), in
+    /// surface-local logical pixels rounded outward; it replaces
+    /// `input_region` while set.
+    pub painted_input: Option<Vec<Rect>>,
     /// A click-away catcher is mapped under it.
     pub click_away: bool,
     /// A scrim in this colour is mapped under it (on its root layer
@@ -546,6 +551,8 @@ struct Surface {
     /// The input region last sent: `None` the whole surface, `Some(None)`
     /// empty, else the box inside the overhang (logical pixels).
     input_region: Option<Option<(i32, i32, i32, i32)>>,
+    /// (M6) See [`SurfaceInfo::painted_input`].
+    painted_input: Option<Vec<Rect>>,
     stats: Stats,
 }
 
@@ -682,6 +689,7 @@ impl Surface {
             blur_region: self.blur.as_ref().and(self.blur_sent.clone()),
             click_through: self.click_through,
             input_region: self.input_region,
+            painted_input: self.painted_input.clone(),
             click_away: false,
             scrim: None,
             layer: matches!(self.role, Role::Layer(_)).then_some(self.config.layer),

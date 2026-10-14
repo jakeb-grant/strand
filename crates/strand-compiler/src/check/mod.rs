@@ -21,6 +21,7 @@
 //! each file in order. `let`s, `state`s and fns without a return type are
 //! checked on first use, which is also how static cycles are found.
 
+mod boxes;
 mod collect;
 mod cycles;
 pub mod dbus;
@@ -552,6 +553,7 @@ impl<'a> Checker<'a> {
         self.deferred_components(&mut files);
         self.after(&files);
         self.component_cycles(&files);
+        self.box_loops(&files);
         self.fetching_fn_calls();
         self.out_files = files;
     }

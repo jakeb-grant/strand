@@ -109,7 +109,7 @@ fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>, Vec<ChunkId>) {
                 r.services
                     .insert((chunk.names[*n as usize].clone(), next_field(i)));
             }
-            Op::Node(n) => {
+            Op::Node(n) | Op::NodeAlias(n) => {
                 r.nodes.insert(*n);
             }
             Op::Closure(l) => lambdas.push(chunk.lambdas[*l as usize].chunk),

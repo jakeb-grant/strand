@@ -140,6 +140,9 @@ pub enum Op {
     Value(u32),
     /// Push an element instance (`self`, `vol`, a bare `hover`'s node).
     Node(NodeIdx),
+    /// (M6) Push the element a conditional id (`when c { id: name }`)
+    /// names now (the alias's own, never laid out, while none does).
+    NodeAlias(NodeIdx),
     /// Push `$path` (a name index).
     Token(u32),
     Variant(EnumId, u32),
@@ -349,6 +352,7 @@ impl Chunk {
                     | Op::Service(_)
                     | Op::Value(_)
                     | Op::Node(_)
+                    | Op::NodeAlias(_)
                     | Op::CallMethod { action: true, .. }
                     | Op::CallFn { .. }
                     | Op::CallValue { .. }

@@ -34,9 +34,14 @@ their own unnamed threads.
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
-(`self.width` for container queries: `Renderer::take_layout_facts`, the
-laid-out sizes that changed of nodes carrying `Prop::Watch`, sent as
-`run::ToLogic::Layout { seq, sizes }` with `Renderer::layout_seq`). The
+(`self.width` for container queries and (M6) `id.box`:
+`Renderer::take_layout_facts`, the laid-out boxes that changed of nodes
+carrying `Prop::Watch`, each `(NodeId, LogicalRect)` from the top-left
+of its surface's box (a popup's own, its place in its parent surface;
+render's `renderer/facts.rs`), sent as `run::ToLogic::Layout { seq,
+sizes }` with `Renderer::layout_seq`; a `box` watch also reports a move,
+a size watch only a resize, and a node's first box holds its frame as a
+query's change does). The
 next diff logic sends echoes the last batch it took in as
 `SceneDiff::layout_seen` (sent even with no ops): render holds a frame
 whose layout changed a `watch: query` node's size until then, or for
@@ -201,7 +206,9 @@ config started (the portal's boot read among them). Settings-file notices from c
 shadowed field's `[clear]`) and `strand watch` notices. Layout facts
 (`ToLogic::Layout`) address the laid-out nodes logic measures (the
 instance sets `Prop::Watch` on an element whose `width`/`height` a
-binding read: `size`, or `query` from a `when`); a surface's configured
+binding read: `size`, or `query` from a `when`; (M6) `box` or
+`box_query` when one read its `box`, and `box` on every element a
+conditional id may name); a surface's configured
 size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
 host with a mock desktop for screenshots before M3 (`mock.rs`);
 `STRAND_MOCK=acceptance` is the same desktop with no notifications at
@@ -1528,6 +1535,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
 - **Geometry**: `Rect { x, y, w, h }` in physical pixels as `i32`/`u32`,
   `Size`, `Point`, and a logical-pixel `f32` variant; `Scale` is the
   fractional scale as numerator/120 (`wp_fractional_scale_v1`).
+- **Props** (M6, m6-w2-surface): `Prop::affects_layout` says which props
+  layout reads (render relays out for them; `strand_render::affects_layout`
+  forwards it) and so which a value read from `id.box` may not set (the
+  compiler's `check::box_layout_loop`).
 - **Colour**: `Color` stored as straight-alpha sRGB `f32`, with exact
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
 - **Motion** (`strand_scene::motion`, shared by the renderer's prop
@@ -3581,7 +3592,9 @@ Public interfaces other crates and later stages build on:
     …; delivered through core input queues to the innermost element
     with a handler, every handler of that event on it in source order,
     `propagate()` passes it on once), `set_flag(node, NodeFlag, on)`,
-    `set_size(node, w, h)` (layout facts for `self.width`) and
+    `set_size(node, w, h)` (layout facts for `self.width`), (M6)
+    `set_box(node, LogicalRect)` (a fact with its place, for `id.box`;
+    it sets the size too) and
     `write(node, prop, PropValue)` (`<->` writes, outside any handler,
     checked against the place's type); call `step` and send the diff to
     render; sleep until `Wake::deadline` (logic clock), `Wake::wall`
@@ -3877,7 +3890,13 @@ and the connection):
 - A spec's `overhang` grows the layer size and moves the margins out
   (`placement::layer_config`), the exclusive zone grows by the overhang
   on its edge so margin + zone is unchanged, and the input region is the
-  box inside it (`SurfaceInfo::input_region`; an OSD's is empty). Render
+  box inside it (`SurfaceInfo::input_region`; an OSD's is empty). (M6,
+  m6-w2-surface) A painter may replace it (`Painter::input_region`,
+  surface-local logical rects, applied by `sync_painted_input` at each
+  commit and kept in `SurfaceInfo::painted_input`): render asks it for a
+  popup that draws nothing itself, the boxes of its top-level elements
+  that drew, so the pointer passes through the rest (a travelling
+  island); `None` keeps the manager's region. Render
   makes the overhang even on the axes the anchor leaves centred, so the
   compositor centres the box, and (M6, m6-w2-surface) no larger than the
   margin on a side the surface is anchored to, so its buffer never

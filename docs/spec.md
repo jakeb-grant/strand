@@ -398,6 +398,68 @@ filling the monitor, the keyboard always).
   size, for container queries: `when self.width < 300 { … }`. A query
   switches with 4 px of hysteresis, so it cannot flicker, and costs at
   most one extra layout pass per frame.
+- **`name.box`** reads the laid-out box of the node with `id: name` as
+  a `Rect` (`x`, `y`, `width`, `height`), in logical pixels from the
+  top-left corner of its surface's box (a shadow's overhang lies
+  outside it), where layout put it: its paint offsets (`x`, `y`),
+  transforms and poses are not in it. A popup's own `box` is where it
+  sits on the surface it opens from; a bar's, panel's, OSD's or lock's
+  is at 0, 0. A bar on each output is its own instance, so the numbers
+  are the same at every scale. The box follows layout a frame late: it
+  reads all zeros until the node is first laid out, and that first box
+  is taken at once (a value following it does not spring in from 0,
+  0); after that a value following it springs like any value, `x:
+  cur.box.x - ws.box.x ~ $motion.spatial`. A box that does not move
+  costs nothing. (decisions.md m6-w2-surface, 2026-10-14)
+- **What a box may drive.** A value that depends on a `.box`, directly
+  or through `let`s, the `state`s handlers set from it, `fn`s,
+  component parameters and `for` bindings, may set the paint props of
+  any element (`x`, `y`, `opacity`, colours, transforms) and a
+  surface's `open`; any prop of an element on another surface (an
+  island in a popup, sized from the bar item it points at); and the
+  layout props of an element with `place: absolute`, written as a
+  constant, that the box is not of or inside. Anything else would lay
+  out the box it follows again and is a load error
+  (`check::box_layout_loop`), as is an `if`, `for` or `match` that
+  depends on a box on its own surface. A box read through a node passed
+  as a value counts as anywhere: it may drive paint props only.
+- **Conditional ids.** `id: name` in a `when` block names the node
+  while the condition holds: `for n in ids key n { box { when n ==
+  current { id: cur } } }` names the current copy, read outside the
+  `for`. Several `when`s, on one node or on several, may give the same
+  name; the node whose condition last started holding is named. While
+  none holds, the name reads a node that is never laid out (its
+  booleans false, its box zeros). A name given in a `when` cannot also
+  be a plain `id:`. Each node a conditional id may name has its box
+  measured, so a value following `name.box` travels from one box to
+  the next.
+- **A travelling island** is one popup and these reads, with no other
+  construct. The popup anchors to the whole group of items, is sized
+  from it (another surface's box) and draws nothing itself, so only its
+  island takes input (section 6.7); the island follows the hovered item:
+
+  ```strand
+  state at = "vol"
+  bar Top {
+    row {
+      id: pill
+      icon "audio-volume-high" { id: vol; when at == "vol" { id: it } }
+      icon "network-wireless" { id: net; when at == "net" { id: it } }
+      on change vol.hover { if vol.hover { at = "vol" } }
+      on change net.hover { if net.hover { at = "net" } }
+      popup {
+        id: pop; trigger: hover
+        width: pill.box.width + 16; height: 220
+        col {
+          place: absolute; bg: $surface; radius: 12; height: 200
+          x: it.box.x - pop.box.x - 8 ~ $motion.spatial
+          width: it.box.width + 16 ~ $motion.spatial
+          if at == "vol" { text "Volume" } else { text "Network" }
+        }
+      }
+    }
+  }
+  ```
 
 ### 6.4 if, else and match
 
@@ -476,6 +538,12 @@ filling the monitor, the keyboard always).
 - **Hit testing** follows the node's rounded shape. `hit: grow(n)`
   enlarges it by `n` for small targets. Shadows enlarge the buffer but
   not the input region.
+- **A popup that draws nothing itself** (no `bg`, border or shadow of its
+  own) takes input only in the boxes of its top-level elements that
+  draw, as they are drawn this frame: the pointer passes through the
+  rest of it to what is below. A travelling island (section 6.3) moves
+  inside a popup wider than it, and only the island takes the pointer.
+  (decisions.md m6-w2-surface, 2026-10-14)
 - **Events go to the innermost node with a handler** for them.
   `propagate()` in a handler passes the event on to the next enclosing
   handler.

@@ -10,7 +10,7 @@ use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::vm::{Num, Value};
 use strand_compiler::{SourceMap, lower};
 use strand_core::Runtime;
-use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneOp};
+use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneOp, Transition};
 
 struct Shell {
     rt: Runtime,
@@ -4794,4 +4794,146 @@ fn an_anchor_reads_its_popups_open() {
     shell.inst.event(b, "click", Vec::new());
     shell.flush();
     assert_eq!(opacity(&shell, b), 1.0, "and closed");
+}
+
+/// A keyword prop value, as the mirror holds it.
+fn kw(k: &str) -> Option<PropValue> {
+    Some(PropValue::Keyword(k.into()))
+}
+
+/// The transition `u` set `prop` of `node` with, if it set it.
+fn set_with(u: &Update, node: NodeId, prop: Prop) -> Option<(PropValue, Transition)> {
+    u.diff.ops.iter().rev().find_map(|op| match op {
+        SceneOp::SetProp {
+            id,
+            prop: p,
+            value,
+            transition,
+        } if *id == node && *p == prop => Some((value.clone(), transition.clone())),
+        _ => None,
+    })
+}
+
+/// (M6, spec.md 6.3) `id.box` is the element's laid-out box as render
+/// reports it (`Instance::set_box`), read here from inside the popup the
+/// bar item opens: an id in the bar is readable from the popup's tree.
+/// Before any report it reads as zeros, and the first real box is sent
+/// without its transition (it does not spring in from 0, 0); later ones
+/// spring. Reading it asks render for the box (`Prop::Watch` `box`).
+#[test]
+fn box_reads_the_reported_box_from_the_popups_tree() {
+    let src = "bar Top {\n  height: 30\n  row {\n    text \"vol\" { id: vol }\n    popup { trigger: hover; width: 200; height: 60\n      box { place: absolute; height: 10\n        x: vol.box.x ~ spring(300, 30)\n        width: vol.box.width\n        opacity: vol.box.y / 10 } }\n  }\n}\n";
+    let mut shell = boot(&[("b.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let vol = shell.text_node("vol");
+    assert_eq!(
+        shell.scene.prop(vol, Prop::Watch),
+        None,
+        "nothing reads it yet"
+    );
+    let popup = shell.scene.of_kind(NodeKind::Popup)[0];
+    shell
+        .inst
+        .write(popup, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    shell.flush();
+    let island = shell.scene.children(popup)[0];
+    assert_eq!(shell.scene.prop(vol, Prop::Watch).cloned(), kw("box"));
+    assert_eq!(
+        shell.scene.prop(island, Prop::X),
+        Some(&PropValue::Number(0.0)),
+        "zeros before render reports it"
+    );
+    shell
+        .inst
+        .set_box(vol, strand_scene::LogicalRect::new(40.0, 5.0, 30.0, 20.0));
+    let u = shell.flush();
+    let (x, t) = set_with(&u, island, Prop::X).expect("x follows the box");
+    assert_eq!(x, PropValue::Number(40.0));
+    assert_eq!(t, Transition::Instant, "the first box snaps");
+    assert_eq!(
+        shell.scene.prop(island, Prop::Width),
+        Some(&PropValue::Number(30.0))
+    );
+    assert_eq!(
+        shell.scene.prop(island, Prop::Opacity),
+        Some(&PropValue::Number(0.5))
+    );
+    shell
+        .inst
+        .set_box(vol, strand_scene::LogicalRect::new(90.0, 5.0, 30.0, 20.0));
+    let u = shell.flush();
+    let (x, t) = set_with(&u, island, Prop::X).expect("x follows again");
+    assert_eq!(x, PropValue::Number(90.0));
+    assert_ne!(t, Transition::Instant, "a move springs");
+    // An unchanged box sets nothing.
+    shell
+        .inst
+        .set_box(vol, strand_scene::LogicalRect::new(90.0, 5.0, 30.0, 20.0));
+    assert!(set_with(&shell.flush(), island, Prop::X).is_none());
+}
+
+/// (M6) A conditional id (`when c { id: name }`) names the element whose
+/// condition holds, a `for` copy included, read outside the `for`: the
+/// workspace indicator follows `cur.box` with no offsets computed by
+/// hand, and a removed copy lets go of the name.
+#[test]
+fn a_conditional_id_names_the_copy_whose_condition_holds() {
+    let src = "state current = 1\nstate ids = [1, 2, 3]\nbar Top {\n  height: 30\n  text \"next\" { on click { current = current == 1 ? 3 : 2 } }\n  text \"drop\" { on click { ids = [1, 2] } }\n  row {\n    id: ws\n    for n in ids key n {\n      text \"w\" { when n == current { id: cur } }\n    }\n    box { place: absolute; height: 2\n      x: cur.box.x - ws.box.x\n      width: cur.box.width }\n  }\n}\n";
+    let mut shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let ind = *shell.scene.children(row).last().unwrap();
+    let texts: Vec<NodeId> = shell.scene.children(row)[..3].to_vec();
+    // Every element the name may move to has its box reported, so what
+    // follows it travels from one known box to the next.
+    for t in &texts {
+        assert_eq!(shell.scene.prop(*t, Prop::Watch).cloned(), kw("box"));
+    }
+    let rect = strand_scene::LogicalRect::new;
+    shell.inst.set_box(row, rect(100.0, 0.0, 200.0, 30.0));
+    for (i, t) in texts.iter().enumerate() {
+        shell.inst.set_box(
+            *t,
+            rect(108.0 + 40.0 * i as f32, 0.0, 20.0 + i as f32, 30.0),
+        );
+    }
+    shell.flush();
+    let at = |shell: &Shell| {
+        (
+            shell.scene.prop(ind, Prop::X).cloned(),
+            shell.scene.prop(ind, Prop::Width).cloned(),
+        )
+    };
+    let num = |n: f32| Some(PropValue::Number(n));
+    assert_eq!(at(&shell), (num(8.0), num(20.0)), "on the first");
+    // The third becomes current: the indicator follows it.
+    shell
+        .inst
+        .event(shell.text_node("next"), "click", Vec::new());
+    shell.flush();
+    assert_eq!(at(&shell), (num(88.0), num(22.0)), "on the third");
+    // It goes: nothing is current, the indicator reads zeros (the
+    // alias's own box, never laid out) until another is.
+    shell
+        .inst
+        .event(shell.text_node("drop"), "click", Vec::new());
+    shell.flush();
+    assert_eq!(
+        shell.scene.children(row).len(),
+        3,
+        "two copies and the indicator"
+    );
+    assert_eq!(at(&shell), (num(-100.0), num(0.0)), "nothing named");
+    shell
+        .inst
+        .event(shell.text_node("next"), "click", Vec::new());
+    shell.flush();
+    assert_eq!(at(&shell), (num(48.0), num(21.0)), "on the second");
 }

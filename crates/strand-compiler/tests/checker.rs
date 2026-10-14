@@ -1392,3 +1392,78 @@ fn transition_takes_the_design_masks_only() {
         out.diagnostics
     );
 }
+
+/// (M6, spec.md 6.3) `.box` drives what layout does not place: paint
+/// props anywhere, the size of a `place: absolute` element it is not
+/// inside, and anything on another surface (a popup sized from the bar
+/// item it opens from, an island in it following the hovered item);
+/// a conditional id (`when c { id: name }`) names the `for` copy whose
+/// condition holds, read outside the `for`. None of it is an error.
+#[test]
+fn box_drives_paint_absolute_and_other_surfaces() {
+    let src = r#"
+state current = 1
+state hovered = 0
+bar Top {
+  height: 30
+  row {
+    id: ws
+    for n in [1, 2, 3] key n {
+      box { size: 20; when n == current { id: cur }; text "{n}" }
+    }
+    box {
+      place: absolute; height: 2; bg: $fg
+      x: cur.box.x - ws.box.x ~ spring(300, 30)
+      width: cur.box.width ~ spring(300, 30)
+      opacity: cur.box.width > 0 ? 1 : 0
+    }
+  }
+  row {
+    id: pill
+    text "vol" { id: vol; when hovered == 1 { id: it } }
+    text "net" { id: net; when hovered == 2 { id: it } }
+    popup {
+      id: pop
+      trigger: hover
+      width: pill.box.width; height: 80
+      col {
+        place: absolute; height: 60; bg: $surface
+        x: it.box.x - pop.box.x ~ spring(300, 30)
+        width: it.box.width + 16 ~ spring(300, 30)
+        text hovered == 1 ? "volume" : "network"
+      }
+    }
+  }
+}
+"#;
+    one(src);
+}
+
+/// (M6) A name given only in `when` blocks is one conditional id however
+/// many elements give it; a plain `id:` of the same name is an error.
+#[test]
+fn a_conditional_id_cannot_also_be_a_plain_one() {
+    let src = "state on = true\nbar Top {\n  height: 30\n  text \"a\" { when on { id: x } }\n  text \"b\" { when !on { id: x } }\n  text \"c\" { id: x }\n}\n";
+    let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+    let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, ["check::redeclared"], "{:?}", out.diagnostics);
+}
+
+/// (M6) spec.md 6.3's travelling island, as written there, checks with
+/// no diagnostic.
+#[test]
+fn the_specs_travelling_island_checks() {
+    let spec =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec.md"))
+            .unwrap();
+    let at = spec.find("- **A travelling island**").expect("the island");
+    let rest = &spec[at..];
+    let start = rest.find("```strand\n").unwrap() + "```strand\n".len();
+    let end = start + rest[start..].find("  ```").unwrap();
+    let src: String = rest[start..end]
+        .lines()
+        .map(|l| l.strip_prefix("  ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    one(&src);
+}

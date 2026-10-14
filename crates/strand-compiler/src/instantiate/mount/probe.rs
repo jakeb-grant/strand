@@ -262,7 +262,7 @@ impl Ctx {
         let base = e.arg.iter().chain(e.props.iter()).rfind(|p| is_drag(p));
         let mut chosen = base.map(|p| p.value);
         for c in e.children.iter() {
-            if let Node::When { cond, props } = c
+            if let Node::When { cond, props, .. } = c
                 && let Some(p) = props.iter().rfind(|p| is_drag(p))
             {
                 let (v, _) = crate::vm::builtins::layout_query(0.0, || self.eval(rt, *cond, env));

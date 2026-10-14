@@ -1,0 +1,128 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::box_layout_loop
+
+  × `width` cannot follow `a.box`: laying it out would move that box again
+   ╭─[box_layout_loop.strand:7:9]
+ 6 │ component Sized(w: float) {
+ 7 │   box { width: w }
+   ·         ──┬──
+   ·           ╰── a layout prop on that box
+ 8 │ }
+   ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × `width` cannot follow `a.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:15:11]
+ 14 │     // A sibling's width.
+ 15 │     box { width: a.box.width }
+    ·           ──┬──
+    ·             ╰── a layout prop on that box
+ 16 │     // Through a `let`, and through a `fn`.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × `pad` cannot follow `a.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:17:11]
+ 16 │     // Through a `let`, and through a `fn`.
+ 17 │     box { pad: gap }
+    ·           ─┬─
+    ·            ╰── a layout prop on that box
+ 18 │     box { height: wider(a.box.height) }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × `height` cannot follow `a.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:18:11]
+ 17 │     box { pad: gap }
+ 18 │     box { height: wider(a.box.height) }
+    ·           ───┬──
+    ·              ╰── a layout prop on that box
+ 19 │     // Through a handler's state.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × `width` cannot follow `a.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:20:11]
+ 19 │     // Through a handler's state.
+ 20 │     box { width: seen }
+    ·           ──┬──
+    ·             ╰── a layout prop on that box
+ 21 │     on change a.box.x { seen = 1 }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × this `if` cannot depend on `a.box`: what it mounts would move that box again
+    ╭─[box_layout_loop.strand:25:5]
+ 24 │     // Mounting by it.
+ 25 │     if a.box.width > 10 { text "wide" }
+    ·     ─────────────────┬─────────────────
+    ·                      ╰── depends on a box on its own surface
+ 26 │     // Absolute, but its own box, or one inside it.
+    ╰────
+  help: choose with something layout does not change (a state, a service value), and move or fade
+        what follows the box with paint props (`x`, `opacity`)
+
+check::box_layout_loop
+
+  × `width` cannot follow `me.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:27:36]
+ 26 │     // Absolute, but its own box, or one inside it.
+ 27 │     box { id: me; place: absolute; width: me.box.height }
+    ·                                    ──┬──
+    ·                                      ╰── a layout prop on that box
+ 28 │     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × `height` cannot follow `inner.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:28:28]
+ 27 │     box { id: me; place: absolute; width: me.box.height }
+ 28 │     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
+    ·                            ───┬──
+    ·                               ╰── a layout prop on that box
+ 29 │     // A popup placed by a box (its own).
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
+
+check::box_layout_loop
+
+  × `width` cannot follow `pop.box`: laying it out would move that box again
+    ╭─[box_layout_loop.strand:30:38]
+ 29 │     // A popup placed by a box (its own).
+ 30 │     box { size: 20; popup { id: pop; width: pop.box.width + 1; text "p" } }
+    ·                                      ──┬──
+    ·                                        ╰── a layout prop on that box
+ 31 │   }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
+        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
+        it is not inside, or anything on another surface
