@@ -190,9 +190,14 @@ pub struct NodeState {
     /// names now: `Value::Node`, or `Null` while no condition holds.
     /// Made on first use ([`NodeState::alias`]).
     pub alias_cell: std::cell::OnceCell<Signal<Value>>,
-    /// (M6) The conditional ids this element took (`when c { id: name }`):
-    /// they let go of it when it unmounts.
-    pub claims: std::cell::RefCell<Vec<Signal<Value>>>,
+    /// (M6) The conditional ids this element may take (`when c { id:
+    /// name }`), as their alias states: they let go of it when it
+    /// unmounts.
+    pub claims: std::cell::RefCell<Vec<std::rc::Rc<NodeState>>>,
+    /// (M6) For a conditional id: the elements whose condition holds, in
+    /// the order each started holding; the name is the last
+    /// ([`NodeState::hold`]).
+    pub holders: std::cell::RefCell<Vec<std::rc::Weak<NodeState>>>,
     /// The core scope its signals belong to (that of the scope owning
     /// the element), for those made on first use.
     pub scope: Option<strand_core::NodeId>,
@@ -222,6 +227,57 @@ impl NodeState {
     /// (M6) A conditional id's target signal (see `alias_cell`).
     pub fn alias(&self, rt: &strand_core::Runtime) -> Signal<Value> {
         *self.alias_cell.get_or_init(|| self.make(rt))
+    }
+
+    /// (M6) For a conditional id: `member`'s condition started (`on`) or
+    /// stopped holding. The name follows the element whose condition
+    /// started holding last of those still holding, so which one it is
+    /// never depends on the order effects run in, and when that one
+    /// stops, the name goes back to the one before (`Null` once none
+    /// holds). Nothing changes when `member` already is where `on` puts
+    /// it.
+    pub fn hold(
+        &self,
+        rt: &strand_core::Runtime,
+        member: &std::rc::Rc<NodeState>,
+        on: bool,
+    ) -> Result<(), strand_core::Error> {
+        let changed = {
+            let mut h = self.holders.borrow_mut();
+            h.retain(|w| w.strong_count() > 0);
+            let at = h
+                .iter()
+                .position(|w| std::ptr::eq(w.as_ptr(), std::rc::Rc::as_ptr(member)));
+            match (on, at) {
+                (true, None) => {
+                    h.push(std::rc::Rc::downgrade(member));
+                    true
+                }
+                (false, Some(i)) => {
+                    h.remove(i);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !changed {
+            return Ok(());
+        }
+        let now = self
+            .holders
+            .borrow()
+            .last()
+            .and_then(std::rc::Weak::upgrade);
+        let sig = self.alias(rt);
+        let same = match (&now, sig.get_untracked(rt)?) {
+            (Some(n), Value::Node(m)) => std::rc::Rc::ptr_eq(n, &m),
+            (None, Value::Null) => true,
+            _ => false,
+        };
+        if !same {
+            sig.set(rt, now.map_or(Value::Null, Value::Node))?;
+        }
+        Ok(())
     }
 
     fn make(&self, rt: &strand_core::Runtime) -> Signal<Value> {

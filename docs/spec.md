@@ -411,28 +411,42 @@ filling the monitor, the keyboard always).
   0); after that a value following it springs like any value, `x:
   cur.box.x - ws.box.x ~ $motion.spatial`. A box that does not move
   costs nothing. (decisions.md m6-w2-surface, 2026-10-14)
-- **What a box may drive.** A value that depends on a `.box`, directly
-  or through `let`s, the `state`s handlers set from it, `fn`s,
-  component parameters and `for` bindings, may set the paint props of
-  any element (`x`, `y`, `opacity`, colours, transforms) and a
-  surface's `open`; any prop of an element on another surface (an
-  island in a popup, sized from the bar item it points at); and the
-  layout props of an element with `place: absolute`, written as a
-  constant, that the box is not of or inside. Anything else would lay
-  out the box it follows again and is a load error
-  (`check::box_layout_loop`), as is an `if`, `for` or `match` that
-  depends on a box on its own surface. A box read through a node passed
-  as a value counts as anywhere: it may drive paint props only.
+- **What a box may drive.** Anything that does not lay that box out
+  again. The checker follows what each value depends on, directly or
+  through `let`s, the `state`s handlers set from it, `fn`s, component
+  parameters, `for` bindings and conditional ids (the conditions that
+  pick the node), and refuses every loop, however many bindings and
+  surfaces it passes through (`check::box_layout_loop`, which shows the
+  loop's path). What a binding lays out follows from what it sets:
+  paint props (`x`, `y`, `opacity`, colours, transforms) lay out
+  nothing, nor do a surface's effects (`bg`, `opacity`, `shadow`,
+  `blur`, …), corners and `open`; the size of an element that is always
+  `place: absolute` (no `when` or pose changes its `place`) lays out it
+  and what is inside it; any other layout prop, an `if`, `for`, `match`,
+  `pages`' `current`, a `segmented`'s `options`, a `set { $token: … }`
+  and a `when { id: … }`'s condition lay out their whole surface, and a
+  surface's own size and placement also the popups opened from it; a
+  component's or file's tokens reach every surface. So a popup may be
+  sized from the bar item it opens from, unless that item is sized from
+  the popup; two absolute boxes may not each be sized from the other.
+  `name.width` and `name.height` of another node are the same fact as
+  `name.box` (a node's own, in its own props, stays a container
+  query). A box read through a node passed as a value counts as any
+  box: it may drive only what lays out nothing.
 - **Conditional ids.** `id: name` in a `when` block names the node
   while the condition holds: `for n in ids key n { box { when n ==
   current { id: cur } } }` names the current copy, read outside the
   `for`. Several `when`s, on one node or on several, may give the same
-  name; the node whose condition last started holding is named. While
-  none holds, the name reads a node that is never laid out (its
-  booleans false, its box zeros). A name given in a `when` cannot also
-  be a plain `id:`. Each node a conditional id may name has its box
-  measured, so a value following `name.box` travels from one box to
-  the next.
+  name; while several hold, it names the node whose condition started
+  holding last, and the one before when that one's stops. While none
+  holds, the name reads a node that is never laid out (its booleans
+  false, its box zeros). A name that already means something where the
+  `id:` is (a plain `id:`, a `state`, a parameter, a variant, a
+  builtin) keeps that meaning, and the `when`'s `id:` does nothing, as
+  it did before conditional ids, with a warning
+  (`check::conditional_id_ignored`). The nodes a conditional id may
+  name are measured for what is read through it, so a value following
+  `name.box` travels from one box to the next.
 - **A travelling island** is one popup and these reads, with no other
   construct. The popup anchors to the whole group of items, is sized
   from it (another surface's box) and draws nothing itself, so only its
@@ -538,11 +552,13 @@ filling the monitor, the keyboard always).
 - **Hit testing** follows the node's rounded shape. `hit: grow(n)`
   enlarges it by `n` for small targets. Shadows enlarge the buffer but
   not the input region.
-- **A popup that draws nothing itself** (no `bg`, border or shadow of its
-  own) takes input only in the boxes of its top-level elements that
-  draw, as they are drawn this frame: the pointer passes through the
+- **A `trigger: hover` popup that draws nothing itself** (no `bg`,
+  border, shadow, `blur` or `backdrop` of its own) takes input only in
+  the boxes of its top-level elements that draw (a `blur` or `backdrop`
+  counts), as they are drawn this frame: the pointer passes through the
   rest of it to what is below. A travelling island (section 6.3) moves
   inside a popup wider than it, and only the island takes the pointer.
+  Any other popup takes the pointer in its whole box, gaps included.
   (decisions.md m6-w2-surface, 2026-10-14)
 - **Events go to the innermost node with a handler** for them.
   `propagate()` in a handler passes the event on to the next enclosing

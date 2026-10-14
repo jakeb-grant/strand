@@ -4,125 +4,311 @@ expression: rendered
 ---
 check::box_layout_loop
 
-  × `width` cannot follow `a.box`: laying it out would move that box again
-   ╭─[box_layout_loop.strand:7:9]
- 6 │ component Sized(w: float) {
- 7 │   box { width: w }
-   ·         ──┬──
-   ·           ╰── a layout prop on that box
- 8 │ }
-   ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
-
-check::box_layout_loop
-
-  × `width` cannot follow `a.box`: laying it out would move that box again
-    ╭─[box_layout_loop.strand:15:11]
- 14 │     // A sibling's width.
- 15 │     box { width: a.box.width }
-    ·           ──┬──
-    ·             ╰── a layout prop on that box
- 16 │     // Through a `let`, and through a `fn`.
+  × `width` depends on `a.box`, which it moves again: `a.box` → `width` of a `box` → `a.box`
+    ╭─[box_layout_loop.strand:10:9]
+  9 │ component Sized(w: float) {
+ 10 │   box { width: w }
+    ·         ──┬──
+    ·           ╰── a box loop
+ 11 │ }
     ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
 
 check::box_layout_loop
 
-  × `pad` cannot follow `a.box`: laying it out would move that box again
-    ╭─[box_layout_loop.strand:17:11]
- 16 │     // Through a `let`, and through a `fn`.
- 17 │     box { pad: gap }
-    ·           ─┬─
-    ·            ╰── a layout prop on that box
- 18 │     box { height: wider(a.box.height) }
-    ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
-
-check::box_layout_loop
-
-  × `height` cannot follow `a.box`: laying it out would move that box again
+  × `width` depends on `a.box`, which it moves again: `a.box` → `width` of a `box` → `a.box`
     ╭─[box_layout_loop.strand:18:11]
- 17 │     box { pad: gap }
- 18 │     box { height: wider(a.box.height) }
-    ·           ───┬──
-    ·              ╰── a layout prop on that box
- 19 │     // Through a handler's state.
-    ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
-
-check::box_layout_loop
-
-  × `width` cannot follow `a.box`: laying it out would move that box again
-    ╭─[box_layout_loop.strand:20:11]
- 19 │     // Through a handler's state.
- 20 │     box { width: seen }
+ 17 │     // A sibling's width.
+ 18 │     box { width: a.box.width }
     ·           ──┬──
-    ·             ╰── a layout prop on that box
- 21 │     on change a.box.x { seen = 1 }
+    ·             ╰── a box loop
+ 19 │     // Through a `let`, and through a `fn`.
     ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
 
 check::box_layout_loop
 
-  × this `if` cannot depend on `a.box`: what it mounts would move that box again
-    ╭─[box_layout_loop.strand:25:5]
- 24 │     // Mounting by it.
- 25 │     if a.box.width > 10 { text "wide" }
+  × `pad` depends on `a.box`, which it moves again: `a.box` → `pad` of a `box` → `a.box`
+    ╭─[box_layout_loop.strand:20:11]
+ 19 │     // Through a `let`, and through a `fn`.
+ 20 │     box { pad: gap }
+    ·           ─┬─
+    ·            ╰── a box loop
+ 21 │     box { height: wider(a.box.height) }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `height` depends on `a.box`, which it moves again: `a.box` → `height` of a `box` → `a.box`
+    ╭─[box_layout_loop.strand:21:11]
+ 20 │     box { pad: gap }
+ 21 │     box { height: wider(a.box.height) }
+    ·           ───┬──
+    ·              ╰── a box loop
+ 22 │     // Through a handler's state.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `a.box`, which it moves again: `a.box` → `width` of a `box` → `a.box`
+    ╭─[box_layout_loop.strand:23:11]
+ 22 │     // Through a handler's state.
+ 23 │     box { width: seen }
+    ·           ──┬──
+    ·             ╰── a box loop
+ 24 │     on change a.box.x { seen = 1 }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `a.box`, which it moves again: `a.box` → `width` of a `box` → `a.box`
+    ╭─[box_layout_loop.strand:28:11]
+ 27 │     // Another node's size is the same fact.
+ 28 │     box { width: a.width + 1 }
+    ·           ──┬──
+    ·             ╰── a box loop
+ 29 │     // Mounting by it: `if`, `for`, `match` and `pages`.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × this `if` depends on `a.box`, which it moves again: `a.box` → an `if` → `a.box`
+    ╭─[box_layout_loop.strand:30:5]
+ 29 │     // Mounting by it: `if`, `for`, `match` and `pages`.
+ 30 │     if a.box.width > 10 { text "wide" }
     ·     ─────────────────┬─────────────────
-    ·                      ╰── depends on a box on its own surface
- 26 │     // Absolute, but its own box, or one inside it.
+    ·                      ╰── a box loop
+ 31 │     for k in a.box.width > 10 ? [1] : [1, 2] key k { text "k" }
     ╰────
   help: choose with something layout does not change (a state, a service value), and move or fade
         what follows the box with paint props (`x`, `opacity`)
 
 check::box_layout_loop
 
-  × `width` cannot follow `me.box`: laying it out would move that box again
-    ╭─[box_layout_loop.strand:27:36]
- 26 │     // Absolute, but its own box, or one inside it.
- 27 │     box { id: me; place: absolute; width: me.box.height }
+  × this `for` depends on `a.box`, which it moves again: `a.box` → a `for` → `a.box`
+    ╭─[box_layout_loop.strand:31:5]
+ 30 │     if a.box.width > 10 { text "wide" }
+ 31 │     for k in a.box.width > 10 ? [1] : [1, 2] key k { text "k" }
+    ·     ─────────────────────────────┬─────────────────────────────
+    ·                                  ╰── a box loop
+ 32 │     match a.box.width > 10 { true => text "w", false => text "n" }
+    ╰────
+  help: choose with something layout does not change (a state, a service value), and move or fade
+        what follows the box with paint props (`x`, `opacity`)
+
+check::box_layout_loop
+
+  × this `match` depends on `a.box`, which it moves again: `a.box` → a `match` → `a.box`
+    ╭─[box_layout_loop.strand:32:5]
+ 31 │     for k in a.box.width > 10 ? [1] : [1, 2] key k { text "k" }
+ 32 │     match a.box.width > 10 { true => text "w", false => text "n" }
+    ·     ───────────────────────────────┬──────────────────────────────
+    ·                                    ╰── a box loop
+ 33 │     pages current: a.box.width > 10 ? w : n { page w { text "w" }; page n { text "n" } }
+    ╰────
+  help: choose with something layout does not change (a state, a service value), and move or fade
+        what follows the box with paint props (`x`, `opacity`)
+
+check::box_layout_loop
+
+  × `current` depends on `a.box`, which it moves again: `a.box` → `current` of a `pages` → `a.box`
+    ╭─[box_layout_loop.strand:33:11]
+ 32 │     match a.box.width > 10 { true => text "w", false => text "n" }
+ 33 │     pages current: a.box.width > 10 ? w : n { page w { text "w" }; page n { text "n" } }
+    ·           ───┬───
+    ·              ╰── a box loop
+ 34 │     // Naming by it: a conditional id's condition renames on this surface.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × this `when`'s condition depends on `a.box`, which it moves again: `a.box` → the `when` naming
+  │ `picked` → `a.box`
+    ╭─[box_layout_loop.strand:35:21]
+ 34 │     // Naming by it: a conditional id's condition renames on this surface.
+ 35 │     text "c" { when a.box.x > 0 { id: picked } }
+    ·                     ─────┬─────
+    ·                          ╰── a box loop
+ 36 │     // Restyling by it: a token its subtree reads.
+    ╰────
+  help: choose with something layout does not change (a state, a service value), and move or fade
+        what follows the box with paint props (`x`, `opacity`)
+
+check::box_layout_loop
+
+  × `$radius.lg` depends on `a.box`, which it moves again: `a.box` → `$radius.lg` of a `row` →
+  │ `a.box`
+    ╭─[box_layout_loop.strand:37:17]
+ 36 │     // Restyling by it: a token its subtree reads.
+ 37 │     row { set { $radius.lg: a.box.width * 1px }; box { radius: $radius.lg } }
+    ·                 ─────┬────
+    ·                      ╰── a box loop
+ 38 │     // Absolute, but its own box, or one inside it.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `me.box`, which it moves again: `me.box` → `width` of `me` → `me.box`
+    ╭─[box_layout_loop.strand:39:36]
+ 38 │     // Absolute, but its own box, or one inside it.
+ 39 │     box { id: me; place: absolute; width: me.box.height }
     ·                                    ──┬──
-    ·                                      ╰── a layout prop on that box
- 28 │     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
+    ·                                      ╰── a box loop
+ 40 │     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
     ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
 
 check::box_layout_loop
 
-  × `height` cannot follow `inner.box`: laying it out would move that box again
-    ╭─[box_layout_loop.strand:28:28]
- 27 │     box { id: me; place: absolute; width: me.box.height }
- 28 │     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
+  × `height` depends on `inner.box`, which it moves again: `inner.box` → `height` of a `box` →
+  │ `inner.box`
+    ╭─[box_layout_loop.strand:40:28]
+ 39 │     box { id: me; place: absolute; width: me.box.height }
+ 40 │     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
     ·                            ───┬──
-    ·                               ╰── a layout prop on that box
- 29 │     // A popup placed by a box (its own).
+    ·                               ╰── a box loop
+ 41 │     // Absolute only while a `when` leaves it so.
     ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
 
 check::box_layout_loop
 
-  × `width` cannot follow `pop.box`: laying it out would move that box again
-    ╭─[box_layout_loop.strand:30:38]
- 29 │     // A popup placed by a box (its own).
- 30 │     box { size: 20; popup { id: pop; width: pop.box.width + 1; text "p" } }
-    ·                                      ──┬──
-    ·                                        ╰── a layout prop on that box
- 31 │   }
+  × `width` depends on `a.box`, which it moves again: `a.box` → `width` of a `box` → `a.box`
+    ╭─[box_layout_loop.strand:42:28]
+ 41 │     // Absolute only while a `when` leaves it so.
+ 42 │     box { place: absolute; width: a.box.width; when free { place: flow } }
+    ·                            ──┬──
+    ·                              ╰── a box loop
+ 43 │     // Two absolutes each sized from the other.
     ╰────
-  help: `.box` is where layout put an element, a frame late: it may drive paint props (`x`, `y`,
-        `opacity`, colours, transforms) on any element, or the size of a `place: absolute` element
-        it is not inside, or anything on another surface
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `q.box`, which it moves again: `q.box` → `width` of `p` → `p.box` → `width`
+  │ of `q` → `q.box`
+    ╭─[box_layout_loop.strand:44:35]
+ 43 │     // Two absolutes each sized from the other.
+ 44 │     box { id: p; place: absolute; width: q.box.width + 1 }
+    ·                                   ──┬──
+    ·                                     ╰── a box loop
+ 45 │     box { id: q; place: absolute; width: p.box.width + 1 }
+    ·                                   ──┬──
+    ·                                     ╰── the loop goes on here
+ 46 │     // A popup placed by a box (its own).
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `p.box`, which it moves again: `p.box` → `width` of `q` → `q.box` → `width`
+  │ of `p` → `p.box`
+    ╭─[box_layout_loop.strand:45:35]
+ 43 │     // Two absolutes each sized from the other.
+ 44 │     box { id: p; place: absolute; width: q.box.width + 1 }
+    ·                                   ──┬──
+    ·                                     ╰── the loop goes on here
+ 45 │     box { id: q; place: absolute; width: p.box.width + 1 }
+    ·                                   ──┬──
+    ·                                     ╰── a box loop
+ 46 │     // A popup placed by a box (its own).
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `pop.box`, which it moves again: `pop.box` → `width` of `pop` → `pop.box`
+    ╭─[box_layout_loop.strand:47:38]
+ 46 │     // A popup placed by a box (its own).
+ 47 │     box { size: 20; popup { id: pop; width: pop.box.width + 1; text "p" } }
+    ·                                      ──┬──
+    ·                                        ╰── a box loop
+ 48 │     // A bar item and a popup's content each sized from the other.
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `isl.box`, which it moves again: `isl.box` → `width` of `item` → `item.box`
+  │ → `width` of `isl` → `isl.box`
+    ╭─[box_layout_loop.strand:49:26]
+ 48 │     // A bar item and a popup's content each sized from the other.
+ 49 │     text "i" { id: item; width: isl.box.width }
+    ·                          ──┬──
+    ·                            ╰── a box loop
+ 50 │     box { size: 20; popup { width: 100; height: 40; box { id: isl; height: 10; width: item.box.width } } }
+    ·                                                                                ──┬──
+    ·                                                                                  ╰── the loop goes on here
+ 51 │   }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `width` depends on `item.box`, which it moves again: `item.box` → `width` of `isl` → `isl.box`
+  │ → `width` of `item` → `item.box`
+    ╭─[box_layout_loop.strand:50:80]
+ 48 │     // A bar item and a popup's content each sized from the other.
+ 49 │     text "i" { id: item; width: isl.box.width }
+    ·                          ──┬──
+    ·                            ╰── the loop goes on here
+ 50 │     box { size: 20; popup { width: 100; height: 40; box { id: isl; height: 10; width: item.box.width } } }
+    ·                                                                                ──┬──
+    ·                                                                                  ╰── a box loop
+ 51 │   }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)

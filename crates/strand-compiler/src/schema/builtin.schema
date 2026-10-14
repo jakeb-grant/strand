@@ -75,11 +75,13 @@ handle record Node {
   /// not applied). A popup's own box is where it sits in the surface it
   /// opens from; a bar's, panel's or OSD's is at 0, 0. It updates a
   /// frame after layout moves it, and springs like any value: `x:
-  /// item.box.x - row.box.x ~ $motion.spatial`. It may drive only what
-  /// cannot move it back: paint props (`x`, `y`, `opacity`, colours,
-  /// transforms), and the size of a `place: absolute` element it is not
-  /// inside, or anything on another surface; a load error says so
-  /// otherwise.
+  /// item.box.x - row.box.x ~ $motion.spatial`. It may drive anything
+  /// that does not lay it out again, through any chain of bindings: paint
+  /// props (`x`, `y`, `opacity`, colours, transforms; a surface's
+  /// effects), the size of a `place: absolute` element it is not inside,
+  /// or what is on another surface that reads nothing back; a load error
+  /// shows the loop otherwise. `width` and `height` of another node are
+  /// the same fact.
   box: Rect
 }
 

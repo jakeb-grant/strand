@@ -1288,9 +1288,7 @@ impl Ctx {
             }
             // (M6) Conditional ids naming it name nothing now.
             for a in st.claims.borrow().iter() {
-                if matches!(a.get_untracked(rt), Ok(Value::Node(n)) if Rc::ptr_eq(&n, &st)) {
-                    let _ = a.set(rt, Value::Null);
-                }
+                let _ = a.hold(rt, &st, false);
             }
         }
     }
@@ -1747,23 +1745,19 @@ impl Ctx {
             else {
                 continue;
             };
-            let sig = env.node_state(rt, *a).alias(rt);
-            state.claims.borrow_mut().push(sig);
-            // Its box is known before the name moves to it, so what follows
-            // `name.box` travels there rather than starting from zeros.
-            self.vm.watch(state, NodeState::WATCH_BOX);
+            let alias = env.node_state(rt, *a);
+            state.claims.borrow_mut().push(alias.clone());
+            // What is read through the name is measured on each element it
+            // may name before the name moves there, so a value following
+            // `name.box` travels from the last box rather than from zeros.
+            // A name read only for its booleans measures nothing.
+            if let Some(bits) = self.vm.prog.alias_watch.get(a).filter(|b| **b != 0) {
+                self.vm.watch(state, *bits);
+            }
             let (ctx, env, me, cond) = (self.clone(), env.clone(), state.clone(), *cond);
             let effect = rt.effect(move |rt| {
                 let on = ctx.eval(rt, cond, &env)?.truthy();
-                rt.untrack(|rt| {
-                    let mine = matches!(sig.get(rt)?, Value::Node(n) if Rc::ptr_eq(&n, &me));
-                    if on && !mine {
-                        sig.set(rt, Value::Node(me.clone()))?;
-                    } else if !on && mine {
-                        sig.set(rt, Value::Null)?;
-                    }
-                    Ok(())
-                })
+                rt.untrack(|rt| alias.hold(rt, &me, on))
             });
             rt.set_name(effect.id(), "conditional id");
         }

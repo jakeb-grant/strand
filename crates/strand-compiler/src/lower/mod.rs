@@ -67,6 +67,10 @@ pub struct Program {
     /// Each chunk's assignment targets, by chunk id: what a handler
     /// running it declares with `rt.writes_to`.
     pub writes: Vec<Vec<WriteTarget>>,
+    /// (M6) Per conditional id (its alias index), the laid-out facts read
+    /// through it, as node watch bits ([`reads::alias_watch`]): the
+    /// elements it may name are measured only for those.
+    pub alias_watch: BTreeMap<NodeIdx, u8>,
     /// The checked `shader` files, by path as written (M4): what a
     /// `shader` node's `Prop::Shader` carries. Set from
     /// [`crate::Compiled::shaders`] by `Build::lowered`.
@@ -566,6 +570,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         l.out.files.push(fp);
     }
     reads::compute(&mut l.out);
+    reads::alias_watch(&mut l.out);
     l.resolve_services();
     l.out
 }

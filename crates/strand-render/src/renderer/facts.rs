@@ -7,8 +7,9 @@
 //! it), in logical pixels, as laid out (paint offsets, transforms and
 //! poses not applied). A surface node's own box is where its box sits in
 //! its parent surface's coordinates (a popup's, from where the
-//! compositor placed both), or at 0, 0 for a surface with no parent (a
-//! bar, panel, OSD or lock is the frame its content is measured in).
+//! compositor placed both, and none until both are placed), or at 0, 0
+//! for a surface with no parent (a bar, panel, OSD or lock is the frame
+//! its content is measured in).
 //! Facts go out only when a box changes: an idle shell sends none.
 
 use strand_scene::{LogicalRect, NodeId, PropValue, SurfaceId};
@@ -58,10 +59,14 @@ impl Renderer {
         if node != s.root {
             return Some(LogicalRect::new(r.x - root.x, r.y - root.y, r.w, r.h));
         }
-        Some(match self.placed_in_parent(s.root) {
-            Some((x, y)) => LogicalRect::new(x, y, r.w, r.h),
-            None => LogicalRect::new(0.0, 0.0, r.w, r.h),
-        })
+        if self.tree.get(s.root).and_then(|n| n.parent).is_some() {
+            // A popup: its place in its parent, once both are placed (a
+            // parent with no origin yet gives no box rather than a wrong
+            // one).
+            let (x, y) = self.placed_in_parent(s.root)?;
+            return Some(LogicalRect::new(x, y, r.w, r.h));
+        }
+        Some(LogicalRect::new(0.0, 0.0, r.w, r.h))
     }
 
     /// Where surface node `root`'s box sits in its parent surface's box,
@@ -145,8 +150,10 @@ impl Renderer {
         }
     }
 
-    /// (M6) A surface was placed or moved: the boxes of watched surface
-    /// nodes (a popup's place in its parent) that changed go to logic.
+    /// (M6) Surfaces were placed or moved since facts were last taken
+    /// (`placed_dirty`): the boxes of watched surface nodes (a popup's
+    /// place in its parent) that changed go to logic, each computed once
+    /// every surface moved with it is placed again.
     pub(super) fn report_placed(&mut self) {
         let ids: Vec<(SurfaceId, NodeId)> = self
             .surfaces
@@ -164,8 +171,12 @@ impl Renderer {
             let Some(rect) = self.fact_box(sid, root) else {
                 continue;
             };
-            if watch.changed(self.facts_sent.get(&(sid, root)), &rect) {
-                self.send_facts(sid, vec![(root, rect)], false);
+            let sent = self.facts_sent.get(&(sid, root));
+            if watch.changed(sent, &rect) {
+                // The first place holds the popup's frame for logic's
+                // answer, as a first box does.
+                let first = sent.is_none();
+                self.send_facts(sid, vec![(root, rect)], first);
             }
         }
     }

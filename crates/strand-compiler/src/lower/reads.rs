@@ -285,3 +285,28 @@ fn components(deps: &[Vec<ChunkId>]) -> (Vec<usize>, Vec<Vec<usize>>) {
     }
     (comp, order)
 }
+
+/// (M6) Which laid-out facts each conditional id is read for, as
+/// [`crate::vm::value::NodeState`] watch bits: `name.box` measures each element
+/// it may name ([`NodeState::WATCH_BOX`](crate::vm::value::NodeState::WATCH_BOX)), `name.width` and
+/// `name.height` their sizes, and the name passed as a value both (where
+/// it goes is not followed); its booleans (`name.hover`) need neither.
+pub(crate) fn alias_watch(prog: &mut Program) {
+    use crate::vm::value::NodeState;
+    let mut out: std::collections::BTreeMap<NodeIdx, u8> = Default::default();
+    for chunk in &prog.chunks {
+        for (i, op) in chunk.ops.iter().enumerate() {
+            let Op::NodeAlias(n) = op else { continue };
+            let bits = match chunk.ops.get(i + 1) {
+                Some(Op::Field(f)) => match chunk.names[*f as usize].as_str() {
+                    "box" => NodeState::WATCH_BOX,
+                    "width" | "height" => NodeState::WATCH_SIZE,
+                    _ => 0,
+                },
+                _ => NodeState::WATCH_BOX | NodeState::WATCH_SIZE,
+            };
+            *out.entry(*n).or_default() |= bits;
+        }
+    }
+    prog.alias_watch = out;
+}

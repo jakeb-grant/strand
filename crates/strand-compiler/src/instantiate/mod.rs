@@ -1646,7 +1646,7 @@ impl Instance {
         let Some(s) = state else {
             return;
         };
-        if let Some(ty) = self.ctx.vm.types().find_record("Rect") {
+        if let Some(ty) = self.ctx.vm.types().find_schema_record("Rect") {
             let f = |v: f32| Value::float(v as f64);
             let r = Value::record(ty, vec![f(rect.x), f(rect.y), f(rect.w), f(rect.h)]);
             let _ = s.rect(&self.rt).set(&self.rt, r);

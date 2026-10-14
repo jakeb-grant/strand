@@ -266,29 +266,38 @@ impl<'a> Checker<'a> {
         }
         let mut found: Found<'a> = Vec::new();
         walk(items, &mut found);
-        let node_ty = self.types.find_record("Node").map_or(Ty::Error, Ty::Record);
+        let node_ty = self
+            .types
+            .find_schema_record("Node")
+            .map_or(Ty::Error, Ty::Record);
+        // Plain ids first: a `when` naming one of them keeps the meaning
+        // it had before conditional ids (none).
+        let plain: Vec<(String, Span)> = found
+            .iter()
+            .filter(|(_, _, cond)| !cond)
+            .map(|(n, _, _)| (n.name.clone(), n.span))
+            .collect();
         // Name → where first named, and whether conditionally.
         let mut seen: Vec<(String, Span, bool)> = Vec::new();
         for (name, el_span, cond) in found {
-            if let Some((_, prev, was)) = seen.iter().find(|(n, _, _)| *n == name.name) {
-                if cond && *was {
+            if cond {
+                if seen.iter().any(|(n, _, was)| *n == name.name && *was) {
                     // Another `when` naming it: the same conditional id.
                     continue;
                 }
+                if let Some(what) = self.taken_name(&name.name, items, &plain) {
+                    self.conditional_id_ignored(name, what, &plain);
+                    continue;
+                }
+            } else if let Some((_, prev, _)) = seen.iter().find(|(n, _, _)| *n == name.name) {
                 let (file, prev) = (self.file(), *prev);
-                let err = self.error(
+                self.error(
                     "check::redeclared",
                     format!("`id: {}` is used twice", name.name),
                     name.span,
                     "named again here",
-                );
-                err.add_secondary(file, prev, "first named here");
-                if cond || *was {
-                    err.help = Some(
-                        "a name given in `when` blocks names whichever element's condition holds; give a plain `id:` another name"
-                            .into(),
-                    );
-                }
+                )
+                .add_secondary(file, prev, "first named here");
                 continue;
             }
             seen.push((name.name.clone(), name.span, cond));
@@ -303,6 +312,75 @@ impl<'a> Checker<'a> {
                 self.ids.insert((self.module, el_span), (local, idx));
             }
         }
+    }
+
+    /// (M6) What `name` already means where a conditional id would bind
+    /// it (`None`: nothing). Before conditional ids, `when c { id: x }`
+    /// loaded and did nothing (spec.md 14): a name that means something
+    /// there keeps that meaning, and the `when`'s `id:` keeps doing
+    /// nothing.
+    fn taken_name(
+        &self,
+        name: &str,
+        items: &[ast::Item],
+        plain: &[(String, Span)],
+    ) -> Option<String> {
+        if plain.iter().any(|(n, _)| n == name) {
+            return Some("the plain `id:` of another element here".into());
+        }
+        let declared_here = items.iter().any(|i| match &i.kind {
+            ItemKind::State(s) => s.name.name == name,
+            ItemKind::Let(l) => l.name.name == name,
+            _ => false,
+        });
+        if declared_here || self.lookup_scope(name).is_some() {
+            return Some("a name in scope here".into());
+        }
+        if self.file_scopes[self.module].contains_key(name) || self.globals.contains_key(name) {
+            return Some("a declaration of this config".into());
+        }
+        if self.schema.services.contains_key(name)
+            || self.schema.values.contains_key(name)
+            || self.schema.functions.contains_key(name)
+            || super::NODE_BOOLS.contains(&name)
+            || name == "self"
+        {
+            return Some("a builtin name".into());
+        }
+        if let Some(e) = self.types.enums.iter().find(|e| e.variant(name).is_some()) {
+            return Some(format!("a variant of `{}`", e.name));
+        }
+        if self.file_index.contains_key(name) {
+            return Some("a file of this config".into());
+        }
+        None
+    }
+
+    /// Warns that a `when`'s `id:` names nothing, as before conditional
+    /// ids, because its name already means `what`.
+    fn conditional_id_ignored(
+        &mut self,
+        name: &ast::Ident,
+        what: String,
+        plain: &[(String, Span)],
+    ) {
+        let file = self.file();
+        let d = self.warning(
+            "check::conditional_id_ignored",
+            format!(
+                "this `id: {}` names nothing: `{}` is already {what}",
+                name.name, name.name
+            ),
+            name.span,
+            "kept as before conditional ids: no effect",
+        );
+        if let Some((_, at)) = plain.iter().find(|(n, _)| *n == name.name) {
+            d.add_secondary(file, *at, "the plain id");
+        }
+        d.help = Some(format!(
+            "a name given in `when` blocks names whichever element's condition holds, but only a name that means nothing else there; rename it (`id: current_{}`) to make it one",
+            name.name
+        ));
     }
 
     // -----------------------------------------------------------------------

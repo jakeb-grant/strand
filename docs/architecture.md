@@ -207,8 +207,8 @@ shadowed field's `[clear]`) and `strand watch` notices. Layout facts
 (`ToLogic::Layout`) address the laid-out nodes logic measures (the
 instance sets `Prop::Watch` on an element whose `width`/`height` a
 binding read: `size`, or `query` from a `when`; (M6) `box` or
-`box_query` when one read its `box`, and `box` on every element a
-conditional id may name); a surface's configured
+`box_query` when one read its `box`, and on every element a
+conditional id may name what is read through the name, `Program::alias_watch`); a surface's configured
 size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
 host with a mock desktop for screenshots before M3 (`mock.rs`);
 `STRAND_MOCK=acceptance` is the same desktop with no notifications at
@@ -1537,8 +1537,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   fractional scale as numerator/120 (`wp_fractional_scale_v1`).
 - **Props** (M6, m6-w2-surface): `Prop::affects_layout` says which props
   layout reads (render relays out for them; `strand_render::affects_layout`
-  forwards it) and so which a value read from `id.box` may not set (the
-  compiler's `check::box_layout_loop`).
+  forwards it; `options` among them since the review of 66c2f03) and so
+  which bindings on `id.box` lay boxes out again (the compiler's
+  box-dependency graph, `check::box_layout_loop`).
 - **Colour**: `Color` stored as straight-alpha sRGB `f32`, with exact
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
 - **Motion** (`strand_scene::motion`, shared by the renderer's prop
@@ -3894,9 +3895,14 @@ and the connection):
   m6-w2-surface) A painter may replace it (`Painter::input_region`,
   surface-local logical rects, applied by `sync_painted_input` at each
   commit and kept in `SurfaceInfo::painted_input`): render asks it for a
-  popup that draws nothing itself, the boxes of its top-level elements
-  that drew, so the pointer passes through the rest (a travelling
-  island); `None` keeps the manager's region. Render
+  `trigger: hover` popup that draws nothing itself, the boxes of its
+  top-level elements that drew (a blur or backdrop counts), so the
+  pointer passes through the rest (a travelling island); `None`, for
+  every other surface, keeps the manager's region. A popup keeps its
+  configure position (`Role::Popup::at`) and is placed again whenever
+  its parent's origin changes, so `SurfaceHost::surface_placed` tells
+  the host its new place after its parent's; render reports a popup's
+  own box from both when facts are next taken. Render
   makes the overhang even on the axes the anchor leaves centred, so the
   compositor centres the box, and (M6, m6-w2-surface) no larger than the
   margin on a side the surface is anchored to, so its buffer never

@@ -1,7 +1,10 @@
 // expect: check::box_layout_loop
 // (M6) `.box` arrives a frame after layout: a binding on it that would
-// lay out its own surface again chases its tail, so each is refused.
+// lay that box out again chases its tail, so each is refused, with the
+// loop's path.
+enum Pg { w, n }
 state seen = 0
+state free = false
 fn wider(n: float) -> float { n + 10 }
 component Sized(w: float) {
   box { width: w }
@@ -21,12 +24,29 @@ bar Top {
     on change a.box.x { seen = 1 }
     // Through a component's parameter.
     Sized { w: a.box.width }
-    // Mounting by it.
+    // Another node's size is the same fact.
+    box { width: a.width + 1 }
+    // Mounting by it: `if`, `for`, `match` and `pages`.
     if a.box.width > 10 { text "wide" }
+    for k in a.box.width > 10 ? [1] : [1, 2] key k { text "k" }
+    match a.box.width > 10 { true => text "w", false => text "n" }
+    pages current: a.box.width > 10 ? w : n { page w { text "w" }; page n { text "n" } }
+    // Naming by it: a conditional id's condition renames on this surface.
+    text "c" { when a.box.x > 0 { id: picked } }
+    // Restyling by it: a token its subtree reads.
+    row { set { $radius.lg: a.box.width * 1px }; box { radius: $radius.lg } }
     // Absolute, but its own box, or one inside it.
     box { id: me; place: absolute; width: me.box.height }
     box { place: absolute; height: inner.box.height; text "x" { id: inner } }
+    // Absolute only while a `when` leaves it so.
+    box { place: absolute; width: a.box.width; when free { place: flow } }
+    // Two absolutes each sized from the other.
+    box { id: p; place: absolute; width: q.box.width + 1 }
+    box { id: q; place: absolute; width: p.box.width + 1 }
     // A popup placed by a box (its own).
     box { size: 20; popup { id: pop; width: pop.box.width + 1; text "p" } }
+    // A bar item and a popup's content each sized from the other.
+    text "i" { id: item; width: isl.box.width }
+    box { size: 20; popup { width: 100; height: 40; box { id: isl; height: 10; width: item.box.width } } }
   }
 }

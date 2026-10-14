@@ -651,6 +651,8 @@ impl<'a> Flattener<'a> {
         // compositor does (M4), the tint fallback raises the background's
         // alpha by 0.15 so text over it stays readable (`blur_fallback:
         // none` keeps it as written).
+        // (M6) A blur behind the box draws for input too (`input_region`).
+        let blur_start = self.out.blur.len();
         let blur = number(get(Prop::Blur)).filter(|b| *b > 0.0);
         let tint = blur.is_some()
             && !self.extras.compositor_blur
@@ -1302,11 +1304,11 @@ impl<'a> Flattener<'a> {
                 .intersect(self.surface)
                 .unwrap_or_default();
         }
-        // (M6) On a popup that draws nothing itself, each child of its root
-        // that draws anything takes input in its whole box, as drawn
-        // (below, once its subtree is drawn).
+        // (M6) On a hover popup that draws nothing itself, each child of its
+        // root that draws anything (a blur behind it included) takes input
+        // in its whole box, as drawn (below, once its subtree is drawn).
         if root {
-            self.out.root_paints = !ink.is_empty() && !inert;
+            self.out.root_paints = (!ink.is_empty() || self.out.blur.len() > blur_start) && !inert;
         }
         let takes_input = !root && !inh.input_done && !inert;
         let input_done = inh.input_done || !root;
@@ -1462,7 +1464,7 @@ impl<'a> Flattener<'a> {
             self.marker(Item::PopClip);
         }
         let subtree = bounds.union(children);
-        if takes_input && !subtree.is_empty() {
+        if takes_input && (!subtree.is_empty() || self.out.blur.len() > blur_start) {
             self.out.input.push(rect);
         }
         if let Some(i) = layer_group {

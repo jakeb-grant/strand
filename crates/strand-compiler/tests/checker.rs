@@ -1439,14 +1439,174 @@ bar Top {
     one(src);
 }
 
-/// (M6) A name given only in `when` blocks is one conditional id however
-/// many elements give it; a plain `id:` of the same name is an error.
+/// (M6, spec.md 14) Before conditional ids, `when c { id: x }` loaded and
+/// did nothing. Where binding the name would change a program that loads
+/// that way, it keeps that meaning, with a warning: beside a plain `id:
+/// x` (one error before this ruling's first cut), and where `x` already
+/// names a `state`, a parameter or an enum variant (each would now fail
+/// to check). A name that means nothing else there is a conditional id.
 #[test]
-fn a_conditional_id_cannot_also_be_a_plain_one() {
-    let src = "state on = true\nbar Top {\n  height: 30\n  text \"a\" { when on { id: x } }\n  text \"b\" { when !on { id: x } }\n  text \"c\" { id: x }\n}\n";
-    let (out, _) = compile_files(&[("a.strand", src.to_string())]);
-    let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
-    assert_eq!(codes, ["check::redeclared"], "{:?}", out.diagnostics);
+fn a_conditional_id_never_changes_a_name_that_loads_today() {
+    let cases = [
+        // Beside a plain id: the plain one keeps the name.
+        "state on = true\nbar Top {\n  height: 30\n  text \"a\" { when on { id: x } }\n  text \"b\" { when !on { id: x } }\n  text \"c\" { id: x }\n  text x.hover ? \"h\" : \"-\"\n}\n",
+        // A state: `x > 0` still reads the number.
+        "state x = 1\nbar Top {\n  height: 30\n  text \"a\" { when x > 0 { id: x } }\n  text x > 0 ? \"pos\" : \"neg\"\n}\n",
+        // A parameter.
+        "component C(x: int) {\n  text \"a\" { when x > 0 { id: x } }\n  text x > 0 ? \"pos\" : \"neg\"\n}\nbar Top {\n  height: 30\n  C { x: 1 }\n}\n",
+        // An enum variant read by an `edge:`.
+        "state on = true\nbar Top {\n  edge: top\n  height: 30\n  text \"a\" { when on { id: top } }\n}\n",
+    ];
+    for src in cases {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            !codes.is_empty() && codes.iter().all(|c| *c == "check::conditional_id_ignored"),
+            "{src}\n{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        assert!(out.diagnostics.iter().all(|d| !d.is_error()));
+    }
+    // A free name is one conditional id however many `when`s give it.
+    one(
+        "state on = true\nbar Top {\n  height: 30\n  text \"a\" { when on { id: x } }\n  text \"b\" { when !on { id: x } }\n  text x.hover ? \"h\" : \"-\"\n}\n",
+    );
+}
+
+/// The `check::box_layout_loop` messages of `src`, each with its path.
+fn box_loops(src: &str) -> Vec<String> {
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    let others: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.code != "check::box_layout_loop")
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    out.diagnostics
+        .iter()
+        .filter(|d| d.code == "check::box_layout_loop")
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// (M6, the review of 66c2f03) A box may not drive a cycle of bindings
+/// that lays it out again, however long: two absolutes each sized from
+/// the other's box (each was "absolute, not inside it" alone), a bar item
+/// and a popup's content each sized from the other's (each was "another
+/// surface" alone), and the oscillating variant that goes through a
+/// state a handler sets from a box and a ternary that flips each frame.
+/// Each binding on the loop is refused, the loop's path in its message.
+#[test]
+fn a_box_loop_through_several_bindings_is_refused() {
+    let two_absolutes = "bar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: b.box.width + 1 }\n    box { id: b; place: absolute; height: 4; width: a.box.width + 1 }\n  }\n}\n";
+    assert_eq!(
+        box_loops(two_absolutes),
+        [
+            "`width` depends on `b.box`, which it moves again: `b.box` → `width` of `a` → `a.box` → `width` of `b` → `b.box`",
+            "`width` depends on `a.box`, which it moves again: `a.box` → `width` of `b` → `b.box` → `width` of `a` → `a.box`",
+        ]
+    );
+    let across = "bar Top {\n  height: 30\n  row {\n    text \"i\" { id: item; width: island.box.width }\n    popup {\n      width: 200; height: 50\n      box { id: island; height: 20; width: item.box.width + 10 }\n    }\n  }\n}\n";
+    assert_eq!(
+        box_loops(across),
+        [
+            "`width` depends on `island.box`, which it moves again: `island.box` → `width` of `item` → `item.box` → `width` of `island` → `island.box`",
+            "`width` depends on `item.box`, which it moves again: `item.box` → `width` of `island` → `island.box` → `width` of `item` → `item.box`",
+        ]
+    );
+    let oscillating = "state wide = false\nbar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: b.box.width / 2 }\n    box { id: b; place: absolute; height: 4; width: wide ? 100 : 20 }\n    on change a.box.width { wide = a.box.width < 30 }\n  }\n}\n";
+    let got = box_loops(oscillating);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got.iter()
+            .any(|m| m.ends_with("`b.box` → `width` of `a` → `a.box` → `width` of `b` → `b.box`")),
+        "{got:?}"
+    );
+    // Each alone is fine: one absolute following another's box.
+    one(
+        "bar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: 20 }\n    box { id: b; place: absolute; height: 4; width: a.box.width + 1 }\n  }\n}\n",
+    );
+}
+
+/// (M6, the review of 66c2f03) A conditional id's conditions decide which
+/// box its name reads: they taint `name.box` and every read of the name.
+/// A `when { id: }` whose condition reads a box of its own surface is
+/// refused like an `if` (the flip-flop: the name picked by where the
+/// named box is, which moves it to the other copy and back each frame),
+/// and a name picked by a popup's box cannot size that popup's content,
+/// even read only as a value.
+#[test]
+fn a_conditional_ids_condition_is_followed() {
+    let flip_flop = "bar Top {\n  height: 30\n  row {\n    for n in [1, 2] key n {\n      box { width: 20; height: 20; when n == (cur.box.x > 10 ? 1 : 2) { id: cur } }\n    }\n    box { place: absolute; height: 2; x: cur.box.x }\n  }\n}\n";
+    let got = box_loops(flip_flop);
+    assert_eq!(
+        got,
+        [
+            "this `when`'s condition depends on `cur.box`, which it moves again: `cur.box` → the `when` naming `cur` → `cur.box`"
+        ]
+    );
+    let by_value = "bar Top {\n  height: 30\n  row {\n    text \"a\" { id: a; when big.box.width > 50 { id: cur } }\n    text \"b\" { id: b; when big.box.width <= 50 { id: cur } }\n    popup {\n      width: 200; height: 50\n      box { id: big; height: 20; width: cur == a ? 100 : 30 }\n    }\n  }\n}\n";
+    let got = box_loops(by_value);
+    assert_eq!(
+        got,
+        [
+            "`width` depends on `big.box`, which it moves again: `big.box` → `width` of `big` → `big.box`"
+        ]
+    );
+}
+
+/// (M6, the review of 66c2f03) An element is absolute only if no `when`
+/// or pose changes its `place`: one that a `when` may put back in flow
+/// lays out its siblings and its row, so it may not follow its row's box.
+#[test]
+fn absolute_only_while_a_when_says_so_moves_its_surface() {
+    let always = "state free = false\nbar Top {\n  height: 30\n  row {\n    id: r\n    box { place: absolute; height: 4; width: r.box.width / 2 }\n  }\n}\n";
+    one(always);
+    let sometimes = always.replace(
+        "width: r.box.width / 2 }",
+        "width: r.box.width / 2; when free { place: flow } }",
+    );
+    assert_eq!(
+        box_loops(&sometimes),
+        [
+            "`width` depends on `r.box`, which it moves again: `r.box` → `width` of a `box` → `r.box`"
+        ]
+    );
+}
+
+/// (M6, the review of 66c2f03) Every channel that lays a surface out is
+/// followed: a `set { $token }` its subtree reads, a component's tokens
+/// (any element may read them), `pages`' `current` (it mounts a page by
+/// value, like `match`), a `segmented`'s `options` (their count sizes
+/// it), and another node's `.width` and `.height` (the same frame-late
+/// fact as its `.box`). An element's own size in its own props stays a
+/// container query, and a surface's paint props may follow a box.
+#[test]
+fn every_layout_channel_is_followed() {
+    let set = "bar Top {\n  height: 30\n  row { id: r; set { $radius.lg: r.box.width * 1px }; box { radius: $radius.lg } }\n}\n";
+    assert_eq!(box_loops(set).len(), 1, "set");
+    let component = "state w = 0\ncomponent Card tokens { pad: w * 1px } { box { pad: $Card.pad } }\nbar Top {\n  height: 30\n  row { id: r; Card {} }\n  on change r.box.width { w = r.box.width }\n}\n";
+    assert_eq!(box_loops(component).len(), 1, "component tokens");
+    let pages = "enum Pg { w, n }\nbar Top {\n  height: 30\n  row {\n    id: r\n    pages current: r.box.width > 10 ? w : n { page w { text \"w\" }; page n { text \"n\" } }\n  }\n}\n";
+    assert_eq!(box_loops(pages).len(), 1, "pages");
+    let options = "bar Top {\n  height: 30\n  row {\n    id: r\n    segmented { options: r.box.width > 100 ? [\"a\", \"b\"] : [\"a\"] }\n  }\n}\n";
+    assert_eq!(box_loops(options).len(), 1, "options");
+    let size = "bar Top {\n  height: 30\n  row {\n    id: r\n    box { width: r.width / 2 }\n    box { height: r.height }\n  }\n}\n";
+    assert_eq!(box_loops(size).len(), 2, "width and height");
+    // Its own size: a container query.
+    one("bar Top {\n  height: 30\n  box { when self.width < 300 { pad: 4 } }\n}\n");
+    // A surface's paint props may follow a box on it; its size may not.
+    one(
+        "bar Top {\n  height: 30\n  opacity: r.box.width > 100 ? 1 : 0.5\n  row { id: r; text \"a\" }\n}\n",
+    );
+    assert_eq!(
+        box_loops("bar Top {\n  height: r.box.height\n  row { id: r; text \"a\" }\n}\n").len(),
+        1
+    );
 }
 
 /// (M6) spec.md 6.3's travelling island, as written there, checks with

@@ -55,6 +55,9 @@ impl Renderer {
     /// shown on several surfaces reports the box of the last one laid
     /// out. A non-empty batch gets the next [`Renderer::layout_seq`].
     pub fn take_layout_facts(&mut self) -> Vec<(NodeId, strand_scene::LogicalRect)> {
+        if std::mem::take(&mut self.placed_dirty) {
+            self.report_placed();
+        }
         let facts = std::mem::take(&mut self.facts);
         if !facts.is_empty() {
             self.facts_seq += 1;

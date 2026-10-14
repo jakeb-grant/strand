@@ -325,6 +325,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 parent,
                 config,
                 grabbed: grab.is_some(),
+                at: None,
             },
             config: layer_like,
             viewport,

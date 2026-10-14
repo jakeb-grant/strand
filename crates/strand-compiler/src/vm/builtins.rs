@@ -193,7 +193,7 @@ fn laid_out_box(vm: &Vm, n: &Rc<NodeState>, v: Value) -> Value {
     }
     vm.watch(n, NodeState::WATCH_BOX);
     match v {
-        Value::Null => match vm.types().find_record("Rect") {
+        Value::Null => match vm.types().find_schema_record("Rect") {
             Some(ty) => Value::record(ty, vec![Value::float(0.0); 4]),
             None => Value::Null,
         },

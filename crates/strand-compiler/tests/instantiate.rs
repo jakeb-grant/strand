@@ -3404,7 +3404,7 @@ fn a_query_first_laid_out_inside_the_band_takes_the_wide_variant() {
 /// carry nothing, so their size changes never wake logic.
 #[test]
 fn only_measured_nodes_are_watched() {
-    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
+    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text \"w\" { opacity: b.width > 10 ? 1 : 0.5 }\n}\n";
     let shell = boot(&[("w.strand", src)], |rt, host| {
         let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
         host.set(rt, "screens.all", Value::list(vec![screen]))
@@ -4936,4 +4936,82 @@ fn a_conditional_id_names_the_copy_whose_condition_holds() {
         .event(shell.text_node("next"), "click", Vec::new());
     shell.flush();
     assert_eq!(at(&shell), (num(48.0), num(21.0)), "on the second");
+}
+
+/// (M6, the review of 66c2f03) While several elements' conditions hold,
+/// a conditional id names the one whose condition started holding last;
+/// when that one's stops, the name goes back to the one before (not to
+/// nothing), whatever order the conditions' effects run in.
+#[test]
+fn a_conditional_id_follows_the_latest_holder() {
+    let src = "state a = false\nstate b = false\nbar Top {\n  height: 30\n  text \"ta\" { on click { a = !a } }\n  text \"tb\" { on click { b = !b } }\n  row {\n    text \"x\" { when a { id: cur } }\n    text \"y\" { when b { id: cur } }\n    box { place: absolute; height: 2; width: cur.box.width }\n  }\n}\n";
+    let mut shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let kids = shell.scene.children(row).to_vec();
+    let (x, y, ind) = (kids[0], kids[1], kids[2]);
+    let rect = strand_scene::LogicalRect::new;
+    shell.inst.set_box(x, rect(0.0, 0.0, 10.0, 30.0));
+    shell.inst.set_box(y, rect(20.0, 0.0, 20.0, 30.0));
+    shell.flush();
+    let width = |shell: &Shell| shell.scene.prop(ind, Prop::Width).cloned();
+    let num = |n: f32| Some(PropValue::Number(n));
+    let click = |shell: &mut Shell, t: &str| {
+        shell.inst.event(shell.text_node(t), "click", Vec::new());
+        shell.flush();
+    };
+    click(&mut shell, "ta");
+    assert_eq!(width(&shell), num(10.0), "x holds");
+    click(&mut shell, "tb");
+    assert_eq!(width(&shell), num(20.0), "y started holding last");
+    click(&mut shell, "tb");
+    assert_eq!(width(&shell), num(10.0), "back to x, which still holds");
+    click(&mut shell, "ta");
+    assert_eq!(width(&shell), num(0.0), "none holds");
+    click(&mut shell, "tb");
+    click(&mut shell, "ta");
+    assert_eq!(width(&shell), num(10.0), "x started holding last");
+}
+
+/// (M6, the review of 66c2f03) The elements a conditional id may name are
+/// measured only for what is read through it: a name read for its
+/// booleans (`cur.hover`) has render report no box of them.
+#[test]
+fn a_name_read_for_its_booleans_measures_nothing() {
+    let src = "state on = true\nbar Top {\n  height: 30\n  row {\n    text \"x\" { when on { id: cur } }\n    text \"y\" { opacity: cur.hover ? 1 : 0.5 }\n  }\n}\n";
+    let shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let x = shell.scene.children(row)[0];
+    assert_eq!(shell.scene.prop(x, Prop::Watch), None);
+}
+
+/// (M6, the review of 66c2f03) A config's own `type Rect` or `type Node`
+/// does not change what `.box` and ids are: the checker and the runtime
+/// use the schema's records, so the indicator still reads the box.
+#[test]
+fn user_types_named_rect_or_node_do_not_hijack_boxes() {
+    let src = "type Rect { a: int }\ntype Node { b: int }\nbar Top {\n  height: 30\n  row {\n    text \"x\" { id: x; when self.width < 300 { opacity: 0.5 } }\n    box { place: absolute; height: 2; width: x.box.width }\n  }\n}\n";
+    let mut shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let kids = shell.scene.children(row).to_vec();
+    shell.inst.set_box(
+        kids[0],
+        strand_scene::LogicalRect::new(0.0, 0.0, 42.0, 30.0),
+    );
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(kids[1], Prop::Width).cloned(),
+        Some(PropValue::Number(42.0))
+    );
 }

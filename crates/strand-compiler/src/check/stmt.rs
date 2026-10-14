@@ -287,7 +287,7 @@ impl<'a> Checker<'a> {
                 {
                     let node_field = self
                         .types
-                        .find_record("Node")
+                        .find_schema_record("Node")
                         .is_some_and(|r| self.types.record(r).field(&name.name).is_some());
                     (!node_field).then_some(name.name.as_str())
                 }
@@ -302,7 +302,7 @@ impl<'a> Checker<'a> {
                     let n = name.name.as_str();
                     let node_field = self
                         .types
-                        .find_record("Node")
+                        .find_schema_record("Node")
                         .is_some_and(|r| self.types.record(r).field(n).is_some());
                     if is_node
                         && !node_field

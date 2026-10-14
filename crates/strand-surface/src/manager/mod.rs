@@ -586,6 +586,10 @@ enum Role {
         /// came within [`GRAB_WINDOW`]); only these take the keyboard
         /// and obey xdg-shell's topmost-grab rule.
         grabbed: bool,
+        /// (M6) Where its last configure put its box, relative to its
+        /// parent's window geometry: it is placed again from it when the
+        /// parent moves (`origin.rs`).
+        at: Option<(i32, i32)>,
     },
     /// (M4) A session lock surface showing the lock's content
     /// (`session_lock.rs`).

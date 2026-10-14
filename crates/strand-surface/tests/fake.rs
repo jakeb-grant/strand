@@ -992,6 +992,122 @@ fn a_zone_that_drops_to_none_places_the_others_again() {
     assert_eq!(configures(&mgr), before, "the panel got no configure");
 }
 
+/// (M6, the review of 66c2f03) A popup sits where its configure put it
+/// on its parent: when the parent moves with no configure of the popup's
+/// own (the bar's zone beside the panel dropping to none and coming
+/// back), the popup is placed again with it, and the host is told, so
+/// its place on the parent (`id.box`) stays right. A popup whose parent
+/// has no origin (a focused panel whose output is not known: the fake
+/// sends no `wl_surface.enter`) has none either, and the host is told
+/// nothing for it.
+#[test]
+fn a_popup_moves_with_its_parent() {
+    use strand_scene::{LogicalRect, SurfaceSpec};
+    const POPUP: NodeId = NodeId::new(8, 0);
+    let popup_of = |parent: NodeId| {
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+        spec.name = Some("Menu".into());
+        spec.parent = Some(parent);
+        spec.anchor_rect = Some(LogicalRect::new(10.0, 10.0, 40.0, 20.0));
+        spec.width = Some(100.0);
+        spec.height = Some(50.0);
+        spec
+    };
+    let fake = Fake::compositor(SurfaceGlobals {
+        xdg_output: true,
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    mgr.state_mut().apply_surface_change(
+        common::BAR,
+        SurfaceChange::Created(common::bar_spec("Top", 36.0)),
+    );
+    let mut spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    spec.screens = strand_scene::Screens::All;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let origin = |s: &strand_surface::State<TestHost>, n: NodeId| {
+        s.surfaces_of(n)
+            .first()
+            .and_then(|id| s.surface(*id))
+            .and_then(|i| i.origin)
+    };
+    let wait = |mgr: &mut SurfaceManager<TestHost>, n: NodeId, want: (i32, i32)| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| origin(s, n) == Some(want))
+            .unwrap();
+        assert!(
+            ok,
+            "{n:?} placed at {want:?}: {:?}, told {:?}",
+            origin(mgr.state(), n),
+            mgr.state().host().placed
+        );
+    };
+    wait(&mut mgr, PANEL, (1520, 36));
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup_of(PANEL)));
+    // The fake configures a popup at (0, 0) on its parent.
+    wait(&mut mgr, POPUP, (1520, 36));
+    let popup = mgr.state().surfaces_of(POPUP)[0];
+    for (height, y) in [(0.0, 0), (36.0, 36)] {
+        mgr.state_mut().apply_surface_change(
+            common::BAR,
+            SurfaceChange::Updated {
+                spec: common::bar_spec("Top", height),
+                recreate: false,
+            },
+        );
+        wait(&mut mgr, PANEL, (1520, y));
+        wait(&mut mgr, POPUP, (1520, y));
+        assert_eq!(
+            mgr.state().host().placed.last(),
+            Some(&(popup, (1520, y))),
+            "the host is told the popup's place after its parent's"
+        );
+    }
+
+    // A parent with no origin.
+    const FOCUSED: NodeId = NodeId::new(9, 0);
+    const ITS_POPUP: NodeId = NodeId::new(10, 0);
+    mgr.state_mut().apply_surface_change(
+        FOCUSED,
+        SurfaceChange::Created(layer_spec(
+            NodeKind::Panel,
+            "Card",
+            "top_left",
+            200.0,
+            100.0,
+        )),
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(FOCUSED)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.logical_size != (0, 0))
+        })
+        .unwrap();
+    assert!(ok, "the focused panel is configured");
+    mgr.state_mut()
+        .apply_surface_change(ITS_POPUP, SurfaceChange::Created(popup_of(FOCUSED)));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(ITS_POPUP)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.logical_size != (0, 0))
+        })
+        .unwrap();
+    assert!(ok, "its popup is configured");
+    assert_eq!(origin(mgr.state(), FOCUSED), None);
+    assert_eq!(origin(mgr.state(), ITS_POPUP), None);
+    let its = mgr.state().surfaces_of(ITS_POPUP)[0];
+    assert!(
+        mgr.state().host().placed.iter().all(|(id, _)| *id != its),
+        "nothing told for it"
+    );
+}
+
 /// (m4-audit) A frame whose callback never comes (a compositor that lost
 /// it: GitHub run 38064533227's replugged bar, which logic updated and
 /// never painted again) does not stop the surface for good: new content

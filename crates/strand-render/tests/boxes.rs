@@ -236,7 +236,11 @@ fn settle(sh: &mut Shell, surface: SurfaceId, y: u32, mut k: u32) -> (u32, Vec<(
 #[test]
 fn the_workspace_indicator_follows_the_current_box() {
     let mut sh = Shell::boot(WORKSPACES, &[("DP-1", 1.0)], 300);
-    let (mut k, _) = settle(&mut sh, BAR, 1, 1);
+    // The first frame painted shows it there, and no frame after moves
+    // it: no slide from 0, 0.
+    assert_eq!(red_run(sh.buf(BAR), 1), Some((21, 45)), "the first frame");
+    let (mut k, seen) = settle(&mut sh, BAR, 1, 1);
+    assert!(seen.iter().all(|r| *r == (21, 45)), "{seen:?}");
     assert_eq!(red_run(sh.buf(BAR), 1), Some((21, 45)), "under the first");
 
     sh.inst.event(sh.text("next"), "click", Vec::new());
@@ -384,22 +388,16 @@ fn island_shell(src: &str) -> (Shell, SurfaceSpec) {
     let (_, items) = pill(&sh);
     let popup = *items.last().unwrap();
     assert_eq!(sh.r.tree().get(popup).unwrap().kind, NodeKind::Popup);
-    sh.inst
-        .write(popup, Prop::Open, PropValue::Bool(true))
-        .unwrap();
+    // A hover popup opens as the pointer would open it; one with `open:`
+    // is open already.
+    if sh.r.surface_spec(popup).is_none_or(|s| s.hover_trigger) {
+        sh.inst
+            .write(popup, Prop::Open, PropValue::Bool(true))
+            .unwrap();
+    }
     sh.flush();
-    let spec = sh
-        .r
-        .take_surface_changes()
-        .into_iter()
-        .rev()
-        .find_map(|(n, c)| match c {
-            SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } if n == popup => {
-                Some(s)
-            }
-            _ => None,
-        })
-        .expect("the popup's spec");
+    sh.r.take_surface_changes();
+    let spec = sh.r.surface_spec(popup).cloned().expect("the popup's spec");
     let o = spec.overhang;
     let (w, h) = (spec.width.unwrap(), spec.height.unwrap());
     let size = Size::new(
@@ -414,7 +412,15 @@ fn island_shell(src: &str) -> (Shell, SurfaceSpec) {
     );
     sh.shown
         .push((POP, popup, Buffer::new(size.w, size.h, Scale::ONE)));
-    settle(&mut sh, POP, 20, 100);
+    // The island is under the first item from the popup's first frame:
+    // its first box and the popup's place are taken at once, with no
+    // slide from 0, 0.
+    let (l, t) = (o.left as u32, o.top as u32);
+    let (_, seen) = settle(&mut sh, POP, 20 + t, 100);
+    assert!(
+        !seen.is_empty() && seen.iter().all(|r| *r == (l, l + 46)),
+        "from the first frame: {seen:?}"
+    );
     (sh, spec)
 }
 
@@ -456,11 +462,14 @@ fn the_island_travels_between_items() {
     assert_matches_ref("box_island_midpoint", &mid, 3);
 }
 
-/// The popup draws nothing itself: it takes input only where its island
-/// is drawn (`Painter::input_region`), so a press beside the island goes
-/// through to whatever is under the popup. With a background of its own
-/// it takes its whole box (the surface manager's region); a bar keeps
-/// its own.
+/// The hover popup draws nothing itself: it takes input only where its
+/// island is drawn (`Painter::input_region`), so a press beside the
+/// island goes through to whatever is under the popup; a top-level
+/// element that draws only a blur behind it takes input too. With a
+/// background or a blur of its own it takes its whole box (the surface
+/// manager's region), and so does a popup that `open:` opens, as it
+/// always did (spec.md 14: only the new `trigger: hover` popup lets its
+/// gaps through); a bar keeps its own.
 #[test]
 fn input_passes_through_outside_the_island() {
     let (sh, _) = island_shell(ISLAND);
@@ -468,10 +477,130 @@ fn input_passes_through_outside_the_island() {
     assert_eq!(region, vec![LogicalRect::new(0.0, 0.0, 46.0, 40.0)]);
     assert_eq!(Painter::input_region(&sh.r, BAR), None);
 
-    let painted = ISLAND.replace(
-        "        id: pop\n",
-        "        id: pop\n        bg: #101010\n",
+    let frosted = ISLAND.replace(
+        "        col {\n",
+        "        box { place: absolute; x: 150; width: 20; height: 20; blur: 12 }\n        col {\n",
     );
-    let (sh, _) = island_shell(&painted);
-    assert_eq!(Painter::input_region(&sh.r, POP), None, "its whole box");
+    let (sh, _) = island_shell(&frosted);
+    let region = Painter::input_region(&sh.r, POP).expect("the region");
+    assert_eq!(
+        region,
+        vec![
+            LogicalRect::new(150.0, 0.0, 20.0, 20.0),
+            LogicalRect::new(0.0, 0.0, 46.0, 40.0)
+        ],
+        "a blur draws"
+    );
+
+    for own in ["bg: #101010", "blur: 12"] {
+        let painted = ISLAND.replace(
+            "        id: pop\n",
+            &format!("        id: pop\n        {own}\n"),
+        );
+        let (sh, _) = island_shell(&painted);
+        assert_eq!(
+            Painter::input_region(&sh.r, POP),
+            None,
+            "{own}: its whole box"
+        );
+    }
+
+    let opened = ISLAND.replace("        trigger: hover\n", "        open: hovered > 0\n");
+    let (sh, _) = island_shell(&opened);
+    assert_eq!(Painter::input_region(&sh.r, POP), None, "an `open:` popup");
+}
+
+/// (M6, the review of 66c2f03) A shadowed island travelling inside its
+/// popup never resizes or moves the popup: the overhang its shadow asks
+/// for does not follow where the island is drawn, so no frame of the
+/// travel changes the popup's spec (its size, overhang or place).
+#[test]
+fn a_shadowed_island_keeps_its_popup_still() {
+    let src = ISLAND.replace(
+        "          bg: #ff0000\n",
+        "          bg: #ff0000; shadow: 0 6px 24px\n",
+    );
+    let (mut sh, spec) = island_shell(&src);
+    assert!(spec.overhang.left > 0.0, "the shadow reaches out: {spec:?}");
+    sh.r.take_surface_changes();
+    let (_, items) = pill(&sh);
+    for target in [2, 0, 1] {
+        sh.inst.event(items[target], "click", Vec::new());
+        sh.flush();
+        let mut k = 600;
+        let mut frames = 0;
+        while sh.answer() || sh.r.wants_frame(POP) || sh.r.wants_frame(BAR) {
+            sh.paint(k);
+            frames += 1;
+            let changes = sh.r.take_surface_changes();
+            assert!(
+                changes.is_empty(),
+                "frame {frames} to {target}: {changes:?}"
+            );
+            k += 1;
+            assert!(k < 2000, "never settled");
+        }
+        assert!(frames > 5, "it travelled");
+    }
+}
+
+/// Takes render's layout facts, hands them to logic and its answer back,
+/// and returns them.
+fn take_facts(sh: &mut Shell) -> Vec<(NodeId, LogicalRect)> {
+    let facts = sh.r.take_layout_facts();
+    for (n, b) in &facts {
+        sh.inst.set_box(*n, *b);
+    }
+    let mut diff = sh.inst.flush().diff;
+    diff.layout_seen = Some(sh.r.layout_seq());
+    assert!(sh.r.apply(diff).is_empty());
+    facts
+}
+
+/// (M6, the review of 66c2f03) A popup's own box is its place on its
+/// parent, right whenever either moves. The bar moving (another
+/// surface's exclusive zone) with the popup placed again with it reports
+/// nothing: its place on the bar is the same, and no stale box goes out
+/// between the two. The compositor repositioning the popup 10 px right
+/// moves its box, and the island moves back by as much, over the same
+/// item. With its parent not placed (an output not known yet), it
+/// reports no box rather than a wrong one, and its place once the parent
+/// has one.
+#[test]
+fn the_popups_box_follows_its_place_on_its_parent() {
+    let (mut sh, spec) = island_shell(ISLAND);
+    let o = spec.overhang;
+    let pop = sh.shown[1].1;
+    let of_pop = |facts: &[(NodeId, LogicalRect)]| -> Vec<LogicalRect> {
+        facts
+            .iter()
+            .filter(|(n, _)| *n == pop)
+            .map(|f| f.1)
+            .collect()
+    };
+    let place = |sh: &mut Shell, id: SurfaceId, at: Option<(f32, f32)>| {
+        let name = (id == BAR).then(|| "DP-1".to_string());
+        sh.r.set_surface_origin(id, at.map(|(x, y)| (name, LogicalPoint::new(x, y))));
+    };
+
+    place(&mut sh, BAR, Some((0.0, 40.0)));
+    place(&mut sh, POP, Some((32.0 - o.left, 70.0 - o.top)));
+    assert_eq!(of_pop(&take_facts(&mut sh)), [], "the same place");
+
+    place(&mut sh, POP, Some((42.0 - o.left, 70.0 - o.top)));
+    assert_eq!(
+        of_pop(&take_facts(&mut sh)),
+        [LogicalRect::new(42.0, 30.0, 186.0, 50.0)]
+    );
+    settle(&mut sh, POP, 20, 700);
+    assert_eq!(red_run(sh.buf(POP), 20), Some((0, 36)), "10 px back");
+
+    place(&mut sh, BAR, None);
+    place(&mut sh, POP, Some((47.0 - o.left, 70.0 - o.top)));
+    assert_eq!(of_pop(&take_facts(&mut sh)), [], "no parent: no box");
+    place(&mut sh, BAR, Some((0.0, 40.0)));
+    assert_eq!(
+        of_pop(&take_facts(&mut sh)),
+        [LogicalRect::new(47.0, 30.0, 186.0, 50.0)]
+    );
 }

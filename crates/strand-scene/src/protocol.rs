@@ -369,6 +369,7 @@ impl Prop {
                 | Markup
                 | Marks
                 | Tokens
+                | Options
         )
     }
 }
