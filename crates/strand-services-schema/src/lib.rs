@@ -40,6 +40,8 @@ pub const WM: &str = include_str!("wm.schema");
 pub const AUDIO: &str = include_str!("audio.schema");
 /// `auth`: the lock screen's password check (the `strand-auth` helper).
 pub const AUTH: &str = include_str!("auth.schema");
+/// `session`: the login session and the machine's power (logind).
+pub const SESSION: &str = include_str!("session.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -60,5 +62,6 @@ pub fn schemas() -> Vec<&'static str> {
         WM,
         AUDIO,
         AUTH,
+        SESSION,
     ]
 }

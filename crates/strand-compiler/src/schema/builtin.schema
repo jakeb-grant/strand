@@ -678,6 +678,34 @@ provisional service auth {
   action submit(password: text)
 }
 
+/// The login session and the machine's power, from logind.
+provisional service session {
+  /// Suspending is allowed.
+  can_suspend: bool
+  /// Hibernating is allowed.
+  can_hibernate: bool
+  /// Rebooting is allowed.
+  can_reboot: bool
+  /// Powering off is allowed.
+  can_power_off: bool
+  /// Suspends the machine.
+  action suspend()
+  /// Hibernates the machine.
+  action hibernate()
+  /// Reboots the machine.
+  action reboot()
+  /// Powers the machine off.
+  action power_off()
+  /// Asks logind to lock this session.
+  action lock()
+  /// Ends this login session.
+  action log_out()
+  /// logind asks this session's locker to lock it.
+  event lock_requested
+  /// An action failed: `on session.failed(action, error) { … }`.
+  event failed(action: text, error: text)
+}
+
 // ---------------------------------------------------------------------------
 // Functions. Overloads are tried in order; the first overload's doc
 // documents the name.

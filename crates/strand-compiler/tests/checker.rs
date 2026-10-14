@@ -1162,6 +1162,38 @@ fn media_position_is_a_scrubber() {
     );
 }
 
+/// Gaps 17 (m6-w2-services): a power menu over the builtin `session`
+/// service checks (its `can_*` fields, its actions, `lock_requested` and
+/// `failed`). A config's own service named `session` is now a taken name
+/// (spec.md 4.2, `check::redeclared`), as for every builtin service: the
+/// tension with spec.md 14 is proposed for the owner's review
+/// (decisions.md m6-w2-services), and this assertion flips if the ruling
+/// lets a config service shadow a builtin one.
+#[test]
+fn session_is_a_power_menu() {
+    assert_eq!(
+        codes(
+            "export state locked = false\n\
+             bar B {\n  state why = \"\"\n  \
+             on session.lock_requested { locked = true }\n  \
+             on session.failed(action, error) { why = join(\" \", action, error) }\n  \
+             text why\n  \
+             if session.can_suspend { text \"Suspend\" { on click { session.suspend() } } }\n  \
+             text \"Off\" { on click { if session.can_power_off { session.power_off() } } }\n  \
+             text \"Lock\" { on click { session.lock() } }\n  \
+             text \"Out\" { on click { session.log_out() } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes(
+            "service session from file \"s.json\" { user: text }\n\
+             bar B { text session.user }\n"
+        ),
+        ["check::redeclared"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

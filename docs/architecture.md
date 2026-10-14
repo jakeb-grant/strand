@@ -4794,7 +4794,13 @@ transparent huge pages for life.
   keeps every stub field with its `rw` mark and every stub event);
   `Builtin::register(&services, rt)` registers them all. A new service
   module adds its text to `strand-services-schema` and its store to
-  `Builtin`.
+  `Builtin`. (M6 wave 2, m6-w2-services) `session`
+  (`strand_services::session`, `strand_services_schema::SESSION`,
+  `Builtin.session`): logind's `Can*` answers as `can_*`, its power and
+  session calls as actions (each a task of the body's, `failed(action,
+  error)` on a refusal) and the own session's `Lock` signal as
+  `lock_requested`; a provisional stub in builtin.schema carries its
+  members.
 - **Failures are diagnostics.** A run that ends with an error (or
   panics) is a `ServiceDiagnostic { service, message, notice: false }`
   (`service: String`, the registered name);

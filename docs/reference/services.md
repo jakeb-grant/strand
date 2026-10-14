@@ -206,6 +206,34 @@ Monitors.
 | `all` | `[Screen]` | Every monitor, keyed by `name`. |
 | `focused` | `Screen?` | The monitor with keyboard focus. |
 
+## `session`
+
+The login session and the machine's power, from logind
+(`org.freedesktop.login1`): a power menu. Each `can_*` says whether
+logind allows it, so a menu greys out what it does not; an action
+that fails (polkit refused it, no login session) is `session.failed`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `can_suspend` | `bool` | Suspending is allowed (logind's `CanSuspend` is `yes`, or `challenge`: polkit asks for a password first). |
+| `can_hibernate` | `bool` | Hibernating is allowed (`CanHibernate`, as `can_suspend`). |
+| `can_reboot` | `bool` | Rebooting is allowed (`CanReboot`, as `can_suspend`). |
+| `can_power_off` | `bool` | Powering off is allowed (`CanPowerOff`, as `can_suspend`). |
+
+| Method | |
+| --- | --- |
+| `action suspend()` | Suspends the machine. |
+| `action hibernate()` | Hibernates the machine. |
+| `action reboot()` | Reboots the machine. |
+| `action power_off()` | Powers the machine off. |
+| `action lock()` | Asks logind to lock this session: the locker that follows logind puts its lock up, and `lock_requested` fires, so a shell's own `lock` can follow too. |
+| `action log_out()` | Ends this login session (logind's `TerminateSession`): every app in it is closed. |
+
+| Event | |
+| --- | --- |
+| `on session.lock_requested()` | logind asks this session's locker to lock it (`session.lock()`, `loginctl lock-session`, an idle daemon): `on session.lock_requested { locked = true }` puts a shell's own `lock` up. |
+| `on session.failed(action: text, error: text)` | An action failed (polkit refused it, no login session to lock or end): `on session.failed(action, error) { … }`, `action` as written (`"reboot"`). |
+
 ## `system`
 
 The desktop's appearance settings, from the XDG desktop portal and

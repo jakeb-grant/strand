@@ -1,0 +1,39 @@
+/// The login session and the machine's power, from logind
+/// (`org.freedesktop.login1`): a power menu. Each `can_*` says whether
+/// logind allows it, so a menu greys out what it does not; an action
+/// that fails (polkit refused it, no login session) is `session.failed`.
+service session {
+  /// Suspending is allowed (logind's `CanSuspend` is `yes`, or
+  /// `challenge`: polkit asks for a password first).
+  can_suspend: bool
+  /// Hibernating is allowed (`CanHibernate`, as `can_suspend`).
+  can_hibernate: bool
+  /// Rebooting is allowed (`CanReboot`, as `can_suspend`).
+  can_reboot: bool
+  /// Powering off is allowed (`CanPowerOff`, as `can_suspend`).
+  can_power_off: bool
+  /// Suspends the machine.
+  action suspend()
+  /// Hibernates the machine.
+  action hibernate()
+  /// Reboots the machine.
+  action reboot()
+  /// Powers the machine off.
+  action power_off()
+  /// Asks logind to lock this session: the locker that follows logind
+  /// puts its lock up, and `lock_requested` fires, so a shell's own
+  /// `lock` can follow too.
+  action lock()
+  /// Ends this login session (logind's `TerminateSession`): every app
+  /// in it is closed.
+  action log_out()
+  /// logind asks this session's locker to lock it (`session.lock()`,
+  /// `loginctl lock-session`, an idle daemon): `on
+  /// session.lock_requested { locked = true }` puts a shell's own `lock`
+  /// up.
+  event lock_requested
+  /// An action failed (polkit refused it, no login session to lock or
+  /// end): `on session.failed(action, error) { … }`, `action` as written
+  /// (`"reboot"`).
+  event failed(action: text, error: text)
+}
