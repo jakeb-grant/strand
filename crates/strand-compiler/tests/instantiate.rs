@@ -496,6 +496,42 @@ fn every_while_repeats_only_while_true() {
     assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(4));
 }
 
+/// spec.md 8.4 (decisions.md m6-w2-language, Docs 1): `after T while c`
+/// runs once per mount and is never re-armed by `c` turning false and
+/// true again, while the grace-delay idiom `on change c after T { if
+/// !c { … } }` runs each time `c` ends and stays ended for `T`.
+#[test]
+fn after_while_is_one_shot_and_the_grace_idiom_runs_each_time() {
+    let src = "state over = true\nstate fired = 0\nstate closed = 0\nafter 1s while over { fired += 1 }\non change over after 200ms { if !over { closed += 1 } }\n";
+    let mut shell = boot(&[("t.strand", src)], |_, _| {});
+    let value = |s: &Shell, n: &str| s.inst.value_of("t", n).unwrap();
+    let set = |s: &mut Shell, v: bool, at: f64| {
+        s.inst.set_value("t", "over", Value::Bool(v)).unwrap();
+        s.at(at);
+    };
+    shell.at(0.5);
+    shell.at(1.0);
+    assert_eq!(value(&shell, "fired"), Value::int(1));
+    // Leave, come back within the grace: nothing closes.
+    set(&mut shell, false, 2.0);
+    set(&mut shell, true, 2.1);
+    shell.at(2.5);
+    assert_eq!(value(&shell, "closed"), Value::int(0));
+    // Leave for good: it closes 200 ms later.
+    set(&mut shell, false, 3.0);
+    shell.at(3.3);
+    assert_eq!(value(&shell, "closed"), Value::int(1));
+    // Again: the idiom runs each time, the timer never again.
+    set(&mut shell, true, 4.0);
+    for s in [5.0, 6.0, 7.0] {
+        shell.at(s);
+    }
+    set(&mut shell, false, 8.0);
+    shell.at(8.3);
+    assert_eq!(value(&shell, "closed"), Value::int(2));
+    assert_eq!(value(&shell, "fired"), Value::int(1), "one-shot");
+}
+
 /// `<->`: widget writes reach state and `rw` service fields, and
 /// bindings follow (the launcher's query, the volume slider).
 #[test]

@@ -610,10 +610,17 @@ units).
   them).
 - **`on change a after T { … }`** debounces: it runs once, `T` after
   the last change.
-- **`after T while c { … }`** runs once, after `c` has held for a total
-  of `T`; it counts only time during which `c` holds, and schedules
-  nothing while `c` is false. **`every T while c { … }`** runs every `T`
-  while `c` holds. Without `while`, the condition is always true.
+- **`after T while c { … }`** is one-shot: it runs at most once per
+  mount of the node or component it is written in (once for the program
+  at the top level), after `c` has held for a total of `T`. It counts
+  only time during which `c` holds and schedules nothing while `c` is
+  false; when `c` turns false the count pauses and is not reset, and
+  once the body has run the timer is done, so `c` turning false and
+  true again never re-arms it. A delay that runs each time a condition
+  ends (a hover popup closing 200 ms after the pointer leaves) is
+  `on change c after T { if !c { … } }`. **`every T while c { … }`**
+  runs every `T` while `c` holds. Without `while`, the condition is
+  always true.
   `every` keeps its phase: host latency does not accumulate. After a
   gap longer than its period it runs once and re-phases, so its next
   run is one period after that one; it never replays missed runs. A
