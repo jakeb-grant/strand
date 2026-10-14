@@ -2494,3 +2494,97 @@ fn one_stem_in_two_directories_cannot_share_a_name() {
         "{notes:?}"
     );
 }
+
+/// (Re-review major 1) Every fix the checker offers for an ambiguous
+/// use compiles: over files named like a service (`tray`, `battery`), a
+/// builtin type (`color`) and plain ones, each suggestion applied alone
+/// removes its error and adds none. An element or a type always takes
+/// `tray.Row`; an expression whose `stem.name` already means something
+/// (`battery.percent`, `tray.items`: the services' fields) gets no fix
+/// there, and the help asks to rename the file instead.
+#[test]
+fn every_offered_fix_compiles_whatever_the_files_are_named() {
+    let decls = "component Row { text \"r\" }\ntype Item { n: int }\nenum Kind { dark, light }\n\
+fn percent() -> int { 1 }\nfn items() -> int { 2 }\nfn fmt() -> int { 3 }\n";
+    let user = "let a = percent()\nlet b = items()\nlet f = fmt()\nlet i: Item? = null\n\
+let j = Item(n: 1)\nlet k: Kind = Kind.dark\nlet m = match k { Kind.dark => 1, _ => 2 }\n\
+bar C { Row; text join(\"\", a, b, f, m, j.n) }\n";
+    let stems = ["tray", "battery", "theme", "color", "dock"];
+    for (x, s1) in stems.iter().enumerate() {
+        for s2 in &stems[x + 1..] {
+            let files = |c: &str| {
+                vec![
+                    (format!("{s1}.strand"), decls.to_string()),
+                    (format!("{s2}.strand"), decls.to_string()),
+                    ("use.strand".to_string(), c.to_string()),
+                ]
+            };
+            let compile = |c: &str| {
+                let owned = files(c);
+                let borrowed: Vec<(&str, String)> =
+                    owned.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+                compile_files(&borrowed)
+            };
+            let (out, map) = compile(user);
+            let errors: Vec<_> = out.diagnostics.iter().filter(|d| d.is_error()).collect();
+            assert!(
+                errors.iter().all(|d| d.code == "check::ambiguous_name"),
+                "{s1}/{s2}: {}",
+                render(&out.diagnostics, &map, Style::Plain)
+            );
+            // `percent`, `items`, `fmt`, `Item` twice, `Kind` three
+            // times, `Row`.
+            assert_eq!(
+                errors.len(),
+                9,
+                "{s1}/{s2}: {}",
+                render(&out.diagnostics, &map, Style::Plain)
+            );
+            for d in &errors {
+                let used = &user[d.primary_span().unwrap().start as usize
+                    ..d.primary_span().unwrap().end as usize];
+                for (stem, hidden) in [(*s1, false), (*s2, false)].map(|(s, _)| {
+                    (
+                        s,
+                        matches!((s, used), ("battery", "percent") | ("tray", "items")),
+                    )
+                }) {
+                    let form = format!("{stem}.{used}");
+                    let offered = d.suggestions.iter().any(|f| f.replacement == form);
+                    assert_eq!(offered, !hidden, "{s1}/{s2}: {form} in {:?}", d.suggestions);
+                    if hidden {
+                        let help = d.help.as_deref().unwrap();
+                        assert!(help.contains(&format!("rename `{stem}.strand`")), "{help}");
+                    }
+                }
+                for f in &d.suggestions {
+                    let span = f.span;
+                    let fixed = format!(
+                        "{}{}{}",
+                        &user[..span.start as usize],
+                        f.replacement,
+                        &user[span.end as usize..]
+                    );
+                    let (after, map) = compile(&fixed);
+                    let left: Vec<_> = after.diagnostics.iter().filter(|d| d.is_error()).collect();
+                    assert!(
+                        left.len() == errors.len() - 1
+                            && left.iter().all(|d| d.code == "check::ambiguous_name"),
+                        "{s1}/{s2}: `{}` does not compile:\n{fixed}\n{}",
+                        f.replacement,
+                        render(&after.diagnostics, &map, Style::Plain)
+                    );
+                }
+            }
+            // The notes say the same.
+            for n in strand_compiler::check::names::notes(&out.program) {
+                let help = n.help.as_deref().unwrap();
+                for bad in ["battery.percent`", "tray.items`"] {
+                    if help.contains(&format!("`{bad}")) {
+                        assert!(help.contains("already means something else"), "{help}");
+                    }
+                }
+            }
+        }
+    }
+}

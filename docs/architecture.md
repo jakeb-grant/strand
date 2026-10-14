@@ -3101,7 +3101,7 @@ Public interfaces other crates and later stages build on:
   or `fn` whose name more than one file declares; `strand check` and the
   LSP call it as they call the paths check, and a load never does.
   `ast::Element { qual: Option<Ident>, kind, … }` holds the file of a
-  `tray.Row` call. `hir::Program::same_named(DefId)`,
+  `menu.Row` call. `hir::Program::same_named(DefId)`,
   `::qualified_name(DefId)` and `::file_stem(FileId)` answer which other
   files declare a name and how a use would write it. A shared type or
   enum keeps its name in the `TypeTable` and carries `ty::Home { file,
@@ -3116,7 +3116,7 @@ Public interfaces other crates and later stages build on:
   reload identity, so a name becoming shared re-keys nothing (a unique
   one moved to another file is found by name: `Identity` counts each
   component name's files, `Ctx::moved_from` gives the old file's key,
-  `reload::CellTy` compares a cell's type in its stable and shown
+  `ty::CellTy` compares a cell's type in its stable and shown
   forms, and two unshared types of one name are one); a
   persisted path that changes form moves (`instantiate::mount`'s
   `moved_path`/`migrate_persisted` on a cold boot, `Carry::dropped`
@@ -3129,7 +3129,20 @@ Public interfaces other crates and later stages build on:
   and completion, which also reads `ctx::Context::call` (an element's
   qualifier and kind span) to take the call's component from
   `program.refs`. The tree-sitter scanner gains the external token
-  `_qualified_dot`.
+  `_qualified_dot`. (Second review of 2026-10-14) An element's or a
+  type's `q.Name` goes through `Checker::file_for_name` (only a local or
+  file-level `q` blocks it), an expression's also through
+  `Checker::member_of_other`; `check::names::naming(stems, form,
+  hidden)` takes the stems a use cannot write, and
+  `hir::Program::unqualifiable`/`can_qualify` carry them to the note,
+  hover and completion. `Ctx::moved_from` takes a call's cells from the
+  one old file that no longer declares the component's name,
+  `Ctx::take_parked_moved` from a parked bar's, and
+  `Identity::take_over_moved_bodies` gives a pasted-then-cut
+  component's body the cut one's identity. `vm::SettingsSlot::types`
+  holds each field's `ty::CellTy` and the type string its handle holds.
+  A persisted value is migrated between path forms only on a fresh
+  mount (`Ctx::reloading` false, no cell carried).
 
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or

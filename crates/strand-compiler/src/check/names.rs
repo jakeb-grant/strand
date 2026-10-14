@@ -148,7 +148,7 @@ impl<'a> Checker<'a> {
         let g = self.global_in(self.module, name, want);
         if let Global::Ambiguous(many) = &g {
             let many = many.clone();
-            self.ambiguous(name, span, &many);
+            self.ambiguous(name, span, &many, want);
         }
         g
     }
@@ -167,6 +167,96 @@ impl<'a> Checker<'a> {
                 .filter(|d| shareable(&self.defs[d.0 as usize].kind));
         }
         self.global_in(module, written, want).one()
+    }
+
+    /// (M6) The module `q` names before a `.` in an element or a type
+    /// (`dock.Row e`, `x: dock.Item`): a file of the config, unless a
+    /// local or a file-level name `q` is in scope. A service, a builtin
+    /// value or a builtin type cannot stand there, so a file named like
+    /// one (`tray.strand`, `color.strand`) is still read.
+    pub(super) fn file_for_name(&self, q: &str) -> Option<usize> {
+        if self.lookup_scope(q).is_some() || self.file_scopes[self.module].contains_key(q) {
+            return None;
+        }
+        self.file_index.get(q).copied()
+    }
+
+    /// (M6) Whether `q.name` in an expression already means something
+    /// without the files (spec.md 14): a member of a service, a builtin
+    /// value, or a builtin or config enum called `q`. Then a file named
+    /// `q` cannot be named that way there.
+    pub(super) fn member_of_other(&self, q: &str, name: &str) -> bool {
+        let record_has = |r: crate::ty::RecordId| {
+            let d = self.types.record(r);
+            d.fields.iter().any(|f| f.name == name)
+                || d.methods.iter().any(|m| m.name == name)
+                || d.events.iter().any(|e| e.name == name)
+        };
+        let enum_has = |e: crate::ty::EnumId| self.types.enum_(e).variant(name).is_some();
+        for d in self.global_decls.get(q).into_iter().flatten() {
+            match self.defs[d.0 as usize].kind {
+                DefKind::Enum(e) if enum_has(e) => return true,
+                DefKind::Service(r) if record_has(r) => return true,
+                _ => {}
+            }
+        }
+        if let Some(r) = self.schema.service(q)
+            && record_has(r)
+        {
+            return true;
+        }
+        if let Some(ty) = self.schema.values.get(q) {
+            if let crate::ty::Ty::Record(r) = ty
+                && record_has(*r)
+            {
+                return true;
+            }
+            let shown = self.types.show(ty).to_string();
+            if self
+                .schema
+                .methods_of(&shown)
+                .iter()
+                .any(|m| m.name == name)
+            {
+                return true;
+            }
+        }
+        if let Some(e) = self.schema.types.find_enum(q) {
+            return enum_has(e);
+        }
+        false
+    }
+
+    /// (M6) Whether `stem.name` here would name file `stem`'s
+    /// declaration at a position taking `want`: in an element or a type
+    /// when no local or file-level name `stem` is in scope; in an
+    /// expression also when nothing else gives `stem.name` a meaning.
+    pub(super) fn qualified_reaches(&self, stem: &str, name: &str, want: Want) -> bool {
+        self.file_for_name(stem).is_some()
+            && (matches!(want, Want::Component | Want::Type) || !self.member_of_other(stem, name))
+    }
+
+    /// (M6) The stems whose `stem.name` an expression cannot write, for
+    /// each name declared in more than one file (`hir::Program::
+    /// unqualifiable`): a `fn`, type or enum in a file named like a
+    /// service, value or enum with that member.
+    pub(super) fn unqualifiable(&self) -> std::collections::BTreeSet<(String, String)> {
+        let mut out = std::collections::BTreeSet::new();
+        for (name, decls) in &self.global_decls {
+            if decls.len() < 2 {
+                continue;
+            }
+            for d in decls {
+                let def = &self.defs[d.0 as usize];
+                if matches!(def.kind, DefKind::Fn | DefKind::Type(_) | DefKind::Enum(_)) {
+                    let stem = self.stem_of(def.file);
+                    if self.member_of_other(stem, name) {
+                        out.insert((stem.to_string(), name.clone()));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The stem of `file` (`tray` for `tray.strand`).
@@ -229,7 +319,7 @@ impl<'a> Checker<'a> {
     /// `name`, used at `span`, is declared in two or more other files.
     /// Reported once per use: the mark is in `reported`, which an
     /// overloaded call's discarded attempts restore with their errors.
-    fn ambiguous(&mut self, name: &str, span: Span, decls: &[DefId]) {
+    fn ambiguous(&mut self, name: &str, span: Span, decls: &[DefId], want: Want) {
         if !self.reported.insert((self.file(), span)) {
             return;
         }
@@ -242,6 +332,11 @@ impl<'a> Checker<'a> {
             .collect();
         files.sort_by(|a, b| a.0.cmp(b.0));
         let stems: Vec<&str> = files.iter().map(|f| f.0).collect();
+        let hidden: Vec<&str> = stems
+            .iter()
+            .copied()
+            .filter(|s| !self.qualified_reaches(s, name, want))
+            .collect();
         let d = self.error(
             "check::ambiguous_name",
             format!(
@@ -255,7 +350,7 @@ impl<'a> Checker<'a> {
         for (stem, file, at) in &files {
             d.add_secondary(*file, *at, format!("declared in `{stem}.strand`"));
         }
-        let (forms, help) = naming(&stems, |s| format!("{s}.{name}"));
+        let (forms, help) = naming(&stems, |s| format!("{s}.{name}"), |s| hidden.contains(&s));
         for f in forms {
             d.add_suggestion(span, f);
         }
@@ -274,17 +369,25 @@ pub fn listed(stems: &[&str]) -> String {
     }
 }
 
-/// How a use names one of the declarations in the files `stems`: the
-/// forms it can write (`form(stem)`, `a.Row`), and a help saying so that
-/// asks to rename each file whose name cannot be written (not an
-/// identifier, or shared with another file) instead of offering a fix
-/// that would not work.
-pub fn naming(stems: &[&str], form: impl Fn(&str) -> String) -> (Vec<String>, String) {
+/// How a use names a declaration in one of the files `stems`: the forms
+/// it can write (`form(stem)`, `a.Row`), and a help saying so that asks to rename
+/// each file whose `stem.name` would not name it instead of offering a
+/// fix that would not work: a name that is not an identifier, or one
+/// another file shares, or one `hidden` says means something else there
+/// (`battery.percent`, the service's field).
+pub fn naming(
+    stems: &[&str],
+    form: impl Fn(&str) -> String,
+    hidden: impl Fn(&str) -> bool,
+) -> (Vec<String>, String) {
     let ok = nameable(stems);
-    let forms: Vec<String> = ok.iter().map(|s| form(s)).collect();
+    let forms: Vec<String> = ok.iter().filter(|s| !hidden(s)).map(|s| form(s)).collect();
     let mut bad: Vec<&str> = stems.iter().copied().filter(|s| !ok.contains(s)).collect();
     bad.sort_unstable();
     bad.dedup();
+    let mut taken: Vec<&str> = ok.iter().copied().filter(|s| hidden(s)).collect();
+    taken.sort_unstable();
+    taken.dedup();
     let quoted = |v: &[String]| v.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>();
     let mut help = match forms.as_slice() {
         [] => String::new(),
@@ -301,6 +404,15 @@ pub fn naming(stems: &[&str], form: impl Fn(&str) -> String) -> (Vec<String>, St
                 .collect::<Vec<_>>()
                 .join(", "),
             if bad.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    for s in taken {
+        if !help.is_empty() {
+            help.push_str("; ");
+        }
+        help.push_str(&format!(
+            "`{}` already means something else, so rename `{s}.strand` to name it so",
+            form(s)
         ));
     }
     (forms, help)
@@ -352,7 +464,11 @@ pub fn notes(program: &hir::Program) -> Vec<Diagnostic> {
             }
             let mut stems: Vec<&str> = files.iter().map(|f| stem(*f)).collect();
             stems.sort_unstable();
-            let (_, how) = naming(&stems, |s| format!("{s}.{name}"));
+            let (_, how) = naming(
+                &stems,
+                |s| format!("{s}.{name}"),
+                |s| !program.can_qualify(s, name),
+            );
             n.help = Some(format!(
                 "not a problem: a file that declares `{name}` uses its own; a file \
                  without one uses the only declaration elsewhere, and where two or more \

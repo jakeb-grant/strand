@@ -775,6 +775,7 @@ impl<'a> Checker<'a> {
         });
         self.diags.dedup();
         let tokens = all;
+        let unqualifiable = self.unqualifiable();
         Checked {
             program: Program {
                 files,
@@ -786,6 +787,7 @@ impl<'a> Checker<'a> {
                 file_texts: self.file_texts,
                 file_templates: self.file_templates,
                 call_screens: self.call_screens,
+                unqualifiable,
             },
             diagnostics: self.diags,
             passes: 1,
@@ -1322,6 +1324,11 @@ impl<'a> Checker<'a> {
     /// Whether a bare `name` resolves to anything at a value position
     /// (ignoring enum variants, which need an expected type).
     pub fn names_something(&self, name: &str) -> bool {
+        self.names_other_than_a_file(name) || self.file_index.contains_key(name)
+    }
+
+    /// [`Checker::names_something`] but a file of the config.
+    pub fn names_other_than_a_file(&self, name: &str) -> bool {
         self.lookup_scope(name).is_some()
             || NODE_BOOLS.contains(&name)
             || name == "self"
@@ -1329,7 +1336,6 @@ impl<'a> Checker<'a> {
             || self.globals.contains_key(name)
             || self.schema.services.contains_key(name)
             || self.schema.values.contains_key(name)
-            || self.file_index.contains_key(name)
     }
 
     /// Whether an unknown name in the current file may still compute a
@@ -1490,7 +1496,7 @@ impl<'a> Checker<'a> {
                 // (M6) `tray.Item`: the type or enum file `tray` declares
                 // (spec.md 4.2).
                 if let [f, n] = path.as_slice()
-                    && let Some(m) = self.names_only_a_file(&f.name)
+                    && let Some(m) = self.file_for_name(&f.name)
                     && self.module_globals[m].contains_key(&n.name)
                 {
                     match self.qualified(f, n) {

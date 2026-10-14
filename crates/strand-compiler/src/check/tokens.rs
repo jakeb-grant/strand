@@ -381,7 +381,8 @@ impl<'a> Checker<'a> {
             _ => {
                 let stems: Vec<&str> = others.iter().map(|o| o.0).collect();
                 let dollar = if key.dollar { "$" } else { "" };
-                let (forms, help) = super::names::naming(&stems, |s| format!("{dollar}{s}.{path}"));
+                let (forms, help) =
+                    super::names::naming(&stems, |s| format!("{dollar}{s}.{path}"), |_| false);
                 let whole = key.segments.len() == path.split('.').count();
                 let places: Vec<(&str, crate::source::FileId, Span)> = others
                     .iter()

@@ -801,12 +801,18 @@ impl<'a> Checker<'a> {
         let kind = el.kind.name.as_str();
         // (M6) `tray.Row e { … }`: the component file `tray` declares.
         if let Some(q) = &el.qual {
-            // `n.expire 3`, `svc.x 1`: a name in scope, a service or a
-            // value before the `.` is a statement in the wrong place, as
-            // the parser says of `n.expire()`.
-            if self.names_only_a_file(&q.name).is_none()
-                && (self.file_index.contains_key(&q.name) || self.names_something(&q.name))
-            {
+            // A file's component whenever no local or file-level name
+            // `q` is in scope: a service or value cannot be placed, so
+            // `tray.Row` is `tray.strand`'s even beside the `tray`
+            // service. Otherwise `n.expire 3`, `svc.x 1`: a name in
+            // scope, a service or a value before the `.` is a statement
+            // in the wrong place, as the parser says of `n.expire()`.
+            let in_file = self.file_for_name(&q.name).is_some_and(|m| {
+                self.module_globals[m]
+                    .get(&el.kind.name)
+                    .is_some_and(|d| super::names::shareable(&self.defs[d.0 as usize].kind))
+            });
+            if !in_file && self.names_other_than_a_file(&q.name) {
                 let dot = Span::new(q.span.end, q.span.end + 1);
                 self.error(
                     "syntax::expected",

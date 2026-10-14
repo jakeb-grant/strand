@@ -177,7 +177,7 @@ pub fn token_edit(files: &Json, path: &str, origin: &str, value: &str) -> Result
     }
     // (M6) `component tray.Row`: a component another file has a `Row`
     // of too, found in the file of that stem (spec.md 4.2).
-    let (stem, component) = match component.map(|c| c.split_once('.')) {
+    let (stem, component) = match component.map(|c| c.rsplit_once('.')) {
         Some(Some((s, c))) => (Some(s), Some(c)),
         _ => (None, component),
     };

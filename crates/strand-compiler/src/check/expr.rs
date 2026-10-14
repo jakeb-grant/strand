@@ -422,22 +422,6 @@ impl<'a> Checker<'a> {
         self.binding_expr(Binding::Def(d), span)
     }
 
-    /// (M6) Whether `name`, read as `name.x`, can only be a file: no
-    /// binding, global, builtin service, value or type has that name
-    /// (spec.md 4.2), so a file `Edge.strand` never changes `Edge.top`.
-    pub(super) fn names_only_a_file(&self, name: &str) -> Option<usize> {
-        if self.lookup_scope(name).is_some()
-            || self.file_scopes[self.module].contains_key(name)
-            || self.globals.contains_key(name)
-            || self.schema.services.contains_key(name)
-            || self.schema.values.contains_key(name)
-            || self.schema.named_type(name).is_some()
-        {
-            return None;
-        }
-        self.file_index.get(name).copied()
-    }
-
     /// Whether a declaration of the config claims `name` at a position
     /// that accepts `want`, hiding a builtin of that name: a name
     /// declared once always does, as before; a name declared in several
@@ -446,15 +430,18 @@ impl<'a> Checker<'a> {
         !matches!(self.global_in(self.module, name, want), Global::Missing)
     }
 
-    /// (M6) `tray.Name` where file `tray` declares a component, type,
-    /// enum or `fn` called `Name` (and no `state` or `let` of it).
+    /// (M6) `tray.Name` in an expression where file `tray` declares a
+    /// component, type, enum or `fn` called `Name` (and no `state` or
+    /// `let` of it), no local or file-level name `tray` is in scope, and
+    /// no service, value or enum called `tray` has a member `Name`, which
+    /// keeps the meaning it had (spec.md 4.2, 14).
     fn qualifies(&self, file: &str, name: &str) -> bool {
-        self.names_only_a_file(file).is_some_and(|m| {
+        self.file_for_name(file).is_some_and(|m| {
             !self.file_scopes[m].contains_key(name)
                 && self.module_globals[m]
                     .get(name)
                     .is_some_and(|d| super::names::shareable(&self.defs[d.0 as usize].kind))
-        })
+        }) && !self.member_of_other(file, name)
     }
 
     pub fn name_expr(&mut self, id: &ast::Ident, expected: Option<&Ty>) -> hir::Expr {

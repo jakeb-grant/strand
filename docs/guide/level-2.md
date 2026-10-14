@@ -139,15 +139,15 @@ changing how it looks.
 
 **The same name in two files.** Two files may each declare a component
 with the same name (or a `type`, `enum` or `fn`): say `dot.strand` and
-`tray.strand` both have a `component Item`. A file that declares a name
-uses its own, so `Item` in `tray.strand` is the tray's. A file without
+`menu.strand` both have a `component Item`. A file that declares a name
+uses its own, so `Item` in `menu.strand` is the menu's. A file without
 one of its own, like `bar.strand`, names the file it means: `dot.Item ws`
-or `tray.Item t`. A bare `Item` there is an error that names both files
+or `menu.Item t`. A bare `Item` there is an error that names both files
 and offers both fixes:
 
 ```text
-× `Item` is declared in 2 files, `dot.strand` and `tray.strand`, and not in this one
-help: name the file it comes from: `dot.Item` or `tray.Item` (or declare `Item` in this file, which then uses its own)
+× `Item` is declared in 2 files, `dot.strand` and `menu.strand`, and not in this one
+help: name the file it comes from: `dot.Item` or `menu.Item` (or declare `Item` in this file, which then uses its own)
 ```
 
 Tokens follow the same rules: inside `dot.strand`, `$Item.gap` is the

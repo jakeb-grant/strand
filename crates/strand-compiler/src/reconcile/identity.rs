@@ -178,6 +178,16 @@ impl FileSkel {
     }
 }
 
+/// The group at the top of node `i`'s chain of parents.
+fn root_group(nodes: &[SkelNode], mut i: usize) -> &Group {
+    loop {
+        match &nodes[i].group {
+            Group::Child(p, _) => i = *p,
+            g => return g,
+        }
+    }
+}
+
 /// The identity of every node of one program, derived from the previous
 /// program's (see the module docs).
 #[derive(Clone, Debug, Default)]
@@ -187,10 +197,11 @@ pub struct Identity {
     by_span: HashMap<(FileId, u32, u32), Sid>,
     next: Sid,
     warnings: Vec<String>,
-    /// (M6) How many files declare each component name: a component
-    /// whose name is unique on both sides keeps its body's identity when
-    /// it moves to another file.
-    components: HashMap<String, usize>,
+    /// (M6) The files (modules) declaring each component name: a
+    /// component whose old file no longer declares it keeps its body's
+    /// identity in the one file that does now (moved, or pasted then
+    /// cut).
+    components: HashMap<String, Vec<String>>,
 }
 
 impl Identity {
@@ -257,6 +268,66 @@ impl Identity {
         self.files.iter().position(|f| f.id == id)
     }
 
+    /// (M6) For each component name declared in one file now and, before,
+    /// in that file and exactly one other that no longer declares it
+    /// (pasted, then cut), match the new body's nodes to the cut body's
+    /// through the token diff between the cut file's old text and the
+    /// new file's text.
+    fn take_over_moved_bodies(
+        &self,
+        prev: &Identity,
+        matched: &mut [Option<usize>],
+        taken: &mut [bool],
+    ) {
+        for (name, now) in &self.components {
+            let [m] = now.as_slice() else { continue };
+            let Some(before) = prev.components.get(name) else {
+                continue;
+            };
+            if !before.contains(m) {
+                continue;
+            }
+            let gone: Vec<&String> = before.iter().filter(|b| *b != m).collect();
+            let [g] = gone.as_slice() else { continue };
+            let file_of = |files: &[FileSkel], module: &str| {
+                files
+                    .iter()
+                    .position(|f| crate::module_name(&f.name) == module)
+            };
+            let (Some(fi), Some(ofi)) = (file_of(&self.files, m), file_of(&prev.files, g)) else {
+                continue;
+            };
+            let new_group = Group::Component(format!("{m}.{name}"));
+            let old_group = Group::Component(format!("{g}.{name}"));
+            let image = token_image(&prev.files[ofi].toks, &self.files[fi].toks);
+            let mut old_at: HashMap<(usize, &str), usize> = HashMap::new();
+            for (j, o) in prev.nodes.iter().enumerate() {
+                if o.file == ofi
+                    && let Some(a) = o.anchor
+                    && *root_group(&prev.nodes, j) == old_group
+                {
+                    old_at.insert((a, o.label.as_str()), j);
+                }
+            }
+            for (i, node) in self.nodes.iter().enumerate() {
+                if node.file != fi
+                    || matched[i].is_some()
+                    || *root_group(&self.nodes, i) != new_group
+                {
+                    continue;
+                }
+                let Some(a) = node.anchor else { continue };
+                let Some(oa) = image[a] else { continue };
+                if let Some(&j) = old_at.get(&(oa, node.label.as_str()))
+                    && !taken[j]
+                {
+                    matched[i] = Some(j);
+                    taken[j] = true;
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------
     // The skeleton
 
@@ -269,10 +340,11 @@ impl Identity {
             // (M6) By file and name: a name becoming shared keeps it
             // (and a unique one moving to another file, in `inherit`).
             let g = Group::Component(prog.owner_key(c.def));
-            *self
-                .components
-                .entry(prog.def(c.def).name.clone())
-                .or_default() += 1;
+            let d = prog.def(c.def);
+            self.components
+                .entry(d.name.clone())
+                .or_default()
+                .push(d.module.clone());
             self.walk(prog, &c.body.nodes, &g);
         }
     }
@@ -420,6 +492,11 @@ impl Identity {
         let n = self.nodes.len();
         let mut matched: Vec<Option<usize>> = vec![None; n];
         let mut taken: Vec<bool> = vec![false; prev.nodes.len()];
+        // (M6) A component pasted into another file and then cut from its
+        // own: the one declaration left takes over the cut one's body (its
+        // mounted nodes), not the pasted copy's, by the token diff between
+        // the two files.
+        self.take_over_moved_bodies(prev, &mut matched, &mut taken);
         // 0. Unchanged text: a node whose own text (label and tokens
         // outside its children) appears as often before as now, in the
         // same file, is the one at the same place in tree order.
@@ -442,8 +519,10 @@ impl Identity {
                 && olds.len() == news.len()
             {
                 for (&i, &j) in news.iter().zip(olds) {
-                    matched[i] = Some(j);
-                    taken[j] = true;
+                    if matched[i].is_none() && !taken[j] {
+                        matched[i] = Some(j);
+                        taken[j] = true;
+                    }
                 }
             }
         }
@@ -510,27 +589,23 @@ impl Identity {
             let Some(cg) = counterpart else { continue };
             let olds = match old_groups.get(&cg) {
                 Some(o) => o,
-                // A component moved to another file, its name unique
-                // before and after: the old file's body.
+                // A component moved to another file: the body of the one
+                // old file that declared one of its name and no longer
+                // does.
                 None => match &cg {
                     Group::Component(k) => {
                         let name = k.rsplit_once('.').map_or(k.as_str(), |(_, n)| n);
-                        let unique = |m: &HashMap<String, usize>| m.get(name) == Some(&1);
-                        let moved = (unique(&self.components) && unique(&prev.components))
-                            .then(|| {
-                                old_groups.iter().find_map(|(g, o)| match g {
-                                    Group::Component(ok)
-                                        if ok.rsplit_once('.').map(|(_, n)| n) == Some(name) =>
-                                    {
-                                        Some(o)
-                                    }
-                                    _ => None,
-                                })
-                            })
-                            .flatten();
-                        match moved {
-                            Some(o) => o,
-                            None => continue,
+                        let now = self.components.get(name).cloned().unwrap_or_default();
+                        let mut gone = old_groups.iter().filter_map(|(g, o)| match g {
+                            Group::Component(ok) => match ok.rsplit_once('.') {
+                                Some((m, n)) if n == name && !now.iter().any(|x| x == m) => Some(o),
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                        match (gone.next(), gone.next()) {
+                            (Some(o), None) => o,
+                            _ => continue,
                         }
                     }
                     _ => continue,

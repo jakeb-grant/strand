@@ -796,3 +796,37 @@ mod tests {
         assert_eq!(t.show(&ty).to_string(), "Async<[text?]>");
     }
 }
+
+/// (M6) A cell's type as a reload compares it: kept when either form
+/// is unchanged. `stable` names every config type with its file, so a
+/// name becoming shared (or unique again) changes nothing; `shown` names
+/// a unique one bare, so a type moved to another file with its name
+/// unique on both sides changes nothing either.
+#[derive(Clone, Debug)]
+pub(crate) struct CellTy {
+    stable: String,
+    shown: String,
+}
+
+impl CellTy {
+    pub(crate) fn of(types: &TypeTable, ty: &Ty) -> Self {
+        Self {
+            stable: types.stable(ty).to_string(),
+            shown: types.show(ty).to_string(),
+        }
+    }
+
+    pub(crate) fn stable(&self) -> &str {
+        &self.stable
+    }
+
+    pub(crate) fn same(&self, other: &CellTy) -> bool {
+        self.stable == other.stable || self.shown == other.shown
+    }
+}
+
+impl std::fmt::Display for CellTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.shown)
+    }
+}

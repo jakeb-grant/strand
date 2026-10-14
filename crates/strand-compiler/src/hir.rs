@@ -59,6 +59,11 @@ pub struct Program {
     /// (M6) The component calls that pass their component's `screen`
     /// (spec.md 5.2), by call node, with the `screen` they pass.
     pub call_screens: BTreeMap<NodeIdx, LocalId>,
+    /// (M6) `(stem, name)` for each `fn`, type or enum declared in more
+    /// than one file whose `stem.name` an expression reads as something
+    /// else (`battery.percent`, the service's field): only renaming the
+    /// file names it from other files (spec.md 4.2).
+    pub unqualifiable: std::collections::BTreeSet<(String, String)>,
 }
 
 impl Program {
@@ -85,6 +90,16 @@ impl Program {
             })
             .map(|(i, _)| DefId(i as u32))
             .collect()
+    }
+
+    /// (M6) Whether `stem.name` names the declaration of `name` in the
+    /// file `stem` (an element, a type, a call or a variant; see
+    /// [`Program::unqualifiable`]). The file's name must also be an
+    /// identifier no other file has ([`crate::check::names::nameable`]).
+    pub fn can_qualify(&self, stem: &str, name: &str) -> bool {
+        !self
+            .unqualifiable
+            .contains(&(stem.to_string(), name.to_string()))
     }
 
     /// The stem of `file` (`tray` for `tray.strand`).

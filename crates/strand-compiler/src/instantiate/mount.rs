@@ -641,12 +641,19 @@ impl Ctx {
             .take_cell(&key)
             .or_else(|| self.pending.borrow_mut().remove(&key))
             .or_else(|| {
-                // (M6) Its component moved here from another file.
+                // (M6) Its component moved here from another file: the
+                // same call now names a same-named component whose old
+                // file no longer declares it (a bar parked across the
+                // reload keeps its cells in `pending`).
                 let o = info.owner.filter(|_| !surface_owned)?;
-                let m = self.moved_from(&prog, o)?;
                 let name = &prog.def(o).name;
-                self.take_cell(&format!("{scope_key}#{m}.{name}.{}", info.name))
+                self.moved_from(&prog, o)
+                    .and_then(|m| self.take_cell(&format!("{scope_key}#{m}.{name}.{}", info.name)))
+                    .or_else(|| self.take_parked_moved(&scope_key, &prog, o, &info.name))
             });
+        // A fresh mount (no cell carried, no reload) is where a persisted
+        // value under its path's other form is moved over.
+        let fresh_mount = carried.is_none() && !self.reloading();
 
         let from = carried.as_ref().map(|c| c.1.clone());
         let carried = carried.map(|c| c.0);
@@ -684,6 +691,8 @@ impl Ctx {
         // What a reload does with the old cell: keep it (same type),
         // reset it (`@reset`, a new type), or nothing was there.
         let mut start: Option<Value> = None;
+        // (M6) A kept persisted cell whose path changed form.
+        let mut moved_live = false;
         let mut keep: Option<CellRec> = None;
         match carried {
             None => self.fresh_cell(scope_key.clone(), info.name.clone()),
@@ -874,12 +883,15 @@ impl Ctx {
                     && old != path
                 {
                     self.drop_persisted(old);
+                    moved_live = true;
                 }
             }
         }
         let (holder, (sig, persisted)) = rt.scope(|rt| match (&self.storage.persist, s.persist) {
             (Some(store), true) => {
-                if let Some((alt, prefer)) = moved_path(&prog, s.def, &env.instance_path()) {
+                if fresh_mount
+                    && let Some((alt, prefer)) = moved_path(&prog, s.def, &env.instance_path())
+                {
                     let d = crate::vm::persist::encode_bytes(&prog.types, &info.ty, &default);
                     migrate_persisted(store, &path, &alt, &d, prefer);
                 }
@@ -902,8 +914,10 @@ impl Ctx {
                     self.notices.borrow_mut().push(cell.notice());
                     self.kept.borrow_mut().push(cell);
                 }
-                // Newly persisted in a reload: the value it had.
-                if matches!(cell.restored, strand_core::Restore::Default)
+                // Newly persisted in a reload: the value it had. A kept
+                // cell whose path changed: its live value, whatever an
+                // older copy at the new path says.
+                if (moved_live || matches!(cell.restored, strand_core::Restore::Default))
                     && let Some(v) = &start
                 {
                     let _ = cell.signal.set(rt, v.clone());
@@ -1106,13 +1120,36 @@ impl Ctx {
             specs.push((f.name.clone(), f.ty.clone(), default));
         }
         let resolved = self.storage.resolve(file);
+        // (M6) The type string each field's handle compares: the one it
+        // holds when the type is the same by `CellTy::same` (a type
+        // becoming shared, or a unique one moved to another file), else
+        // the new stable form.
+        let held: Vec<(String, crate::ty::CellTy, String)> = match &carried {
+            Some((CellRec::Settings { slot, .. }, _)) => slot.types.clone(),
+            _ => Vec::new(),
+        };
+        let types: Vec<(String, crate::ty::CellTy, String)> = specs
+            .iter()
+            .map(|(name, ty, _)| {
+                let now = crate::ty::CellTy::of(&prog.types, ty);
+                let passed = match held.iter().find(|h| h.0 == *name) {
+                    Some((_, was, s)) if was.same(&now) => s.clone(),
+                    _ => now.stable().to_string(),
+                };
+                (name.clone(), now, passed)
+            })
+            .collect();
         let make_specs = |specs: Vec<(String, Ty, Value)>| -> Vec<strand_core::FieldSpec<Value>> {
             specs
                 .into_iter()
                 .map(|(name, ty, default)| {
                     let (pd, pe) = (prog.clone(), prog.clone());
                     let (td, te) = (ty.clone(), ty.clone());
-                    let shown = prog.types.stable(&ty).to_string();
+                    let shown = types
+                        .iter()
+                        .find(|t| t.0 == name)
+                        .map(|t| t.2.clone())
+                        .unwrap_or_else(|| prog.types.stable(&ty).to_string());
                     strand_core::FieldSpec::new(
                         name,
                         default,
@@ -1217,7 +1254,11 @@ impl Ctx {
                 ),
             }),
         };
-        let slot = Rc::new(crate::vm::SettingsSlot { fields, handle });
+        let slot = Rc::new(crate::vm::SettingsSlot {
+            fields,
+            handle,
+            types,
+        });
         {
             // Settings declared in a component or branch that was
             // unmounted since leave dead entries: drop them whenever the
@@ -3973,7 +4014,8 @@ fn moved_path(prog: &crate::lower::Program, def: DefId, inst: &str) -> Option<(S
 /// Moves a persisted value from `alt` to `path` (see [`moved_path`]):
 /// when nothing is stored at `path`, or `prefer`. A value equal to the
 /// default it was saved under is not carried (a new default would be
-/// adopted for it); one that differs is kept, stamped with today's
+/// adopted for it), and with `prefer` an older copy at `path` is removed
+/// so the default stands; one that differs is kept, stamped with today's
 /// `default`. `alt` is forgotten either way, so a stale copy never comes
 /// back. Best effort: a store that cannot be read or written keeps both.
 fn migrate_persisted(
@@ -3990,11 +4032,18 @@ fn migrate_persisted(
         return;
     };
     let here = matches!(store.load(path), Ok(Some(_)));
-    if (prefer || !here)
-        && strand_core::persist::value_hash(&old.value) != old.default_hash
-        && store.save(path, default, &old.value).is_err()
-    {
-        return;
+    if prefer || !here {
+        let at_default = strand_core::persist::value_hash(&old.value) == old.default_hash;
+        let moved = if at_default {
+            // The newer copy says "the default": an older one at `path`
+            // must not come back in its place.
+            !here || store.remove(path).is_ok()
+        } else {
+            store.save(path, default, &old.value).is_ok()
+        };
+        if !moved {
+            return;
+        }
     }
     let _ = store.remove(alt);
 }

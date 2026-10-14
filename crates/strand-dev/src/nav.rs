@@ -214,13 +214,19 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
                 let mut all = also.clone();
                 all.push(stem(def.file));
                 let own = stem(def.file);
-                // `a.Row`, unless the file's name cannot be written.
-                let named = if strand_compiler::check::names::nameable(&all).contains(&own) {
-                    format!(" (`{own}.{}` from other files)", def.name)
-                } else {
+                // `a.Row`, unless the file's name cannot be written, or
+                // `a.name` means something else (`battery.percent`).
+                let named = if !strand_compiler::check::names::nameable(&all).contains(&own) {
                     format!(
                         " (rename `{own}.strand` to an identifier no other file has to name it from other files)"
                     )
+                } else if !p.can_qualify(own, &def.name) {
+                    format!(
+                        " (`{own}.{}` means something else, so rename `{own}.strand` to name it from other files)",
+                        def.name
+                    )
+                } else {
+                    format!(" (`{own}.{}` from other files)", def.name)
                 };
                 let from = format!(
                     "From `{own}.strand`{named}; also declared in {}.",

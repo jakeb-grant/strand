@@ -881,7 +881,7 @@ fn the_guide_quotes_the_same_name_error() {
     };
     let mut map = SourceMap::new();
     map.add("dot.strand", item("d"));
-    map.add("tray.strand", item("t"));
+    map.add("menu.strand", item("t"));
     map.add(
         "bar.strand",
         "bar B { Item; text \"x\" { margin: $dot.Item.gap } }\n",
