@@ -103,6 +103,17 @@ pub struct SchemaHost {
     record_actions: bool,
     actions: RefCell<Vec<ActionCall>>,
     refs: RefCell<BTreeMap<String, i64>>,
+    /// (M6) Builtin services a config `service` of the same name shadows
+    /// (spec.md 4.2), with their records: their cells are kept under
+    /// [`shadow_key`] for the runtime's own reads
+    /// ([`ServiceHost::read_builtin`]) and come back when the config's
+    /// declaration goes.
+    shadowed: RefCell<BTreeMap<String, RecordId>>,
+}
+
+/// Where a shadowed builtin service's cells are kept.
+fn shadow_key(name: &str) -> String {
+    format!("\u{0}builtin {name}")
 }
 
 impl std::fmt::Debug for SchemaHost {
@@ -144,6 +155,7 @@ impl SchemaHost {
             record_actions: false,
             actions: RefCell::default(),
             refs: RefCell::default(),
+            shadowed: RefCell::default(),
         };
         for (name, &r) in &crate::schema::Schema::builtin().services {
             host.add_service(rt, name, r);
@@ -165,6 +177,36 @@ impl SchemaHost {
     pub fn real(rt: &Runtime, types: &TypeTable) -> SchemaHost {
         let clock = Clock::new(rt, types, Zone::Local, SystemTime::now());
         SchemaHost::new(rt, types, Some(clock))
+    }
+
+    /// Move service `from`'s fields and events to the name `to`.
+    fn rename_service(&self, from: &str, to: &str) {
+        let mut fields = self.fields.borrow_mut();
+        let keys: Vec<(String, String)> =
+            fields.keys().filter(|(s, _)| s == from).cloned().collect();
+        for k in keys {
+            if let Some(f) = fields.remove(&k) {
+                fields.insert((to.to_string(), k.1), f);
+            }
+        }
+        let mut events = self.events.borrow_mut();
+        let keys: Vec<(String, String)> =
+            events.keys().filter(|(s, _)| s == from).cloned().collect();
+        for k in keys {
+            if let Some(q) = events.remove(&k) {
+                events.insert((to.to_string(), k.1), q);
+            }
+        }
+    }
+
+    /// The name a builtin service's cells are under: its own, or
+    /// [`shadow_key`] while a config's service shadows it.
+    fn builtin_key(&self, service: &str) -> String {
+        if self.shadowed.borrow().contains_key(service) {
+            shadow_key(service)
+        } else {
+            service.to_string()
+        }
     }
 
     /// Dispose service `name`'s fields and forget its events.
@@ -553,8 +595,25 @@ impl SchemaHost {
 
 impl ServiceHost for SchemaHost {
     fn declare(&self, rt: &Runtime, service: &crate::lower::CustomService, _types: &TypeTable) {
-        if !self.services.borrow().contains_key(&service.name) {
-            self.add_service(rt, &service.name, service.record);
+        let name = service.name.as_str();
+        let held = self.services.borrow().get(name).copied();
+        let builtin = crate::schema::Schema::builtin().services.get(name).copied();
+        match held {
+            None => self.add_service(rt, name, service.record),
+            // (M6) A config's `service battery` shadows the builtin
+            // `battery` (spec.md 4.2): the config reads its own record,
+            // and the builtin's cells are kept aside for the runtime's
+            // own reads.
+            Some(r) if Some(r) == builtin && r != service.record => {
+                if !self.shadowed.borrow().contains_key(name) {
+                    self.rename_service(name, &shadow_key(name));
+                    self.shadowed.borrow_mut().insert(name.to_string(), r);
+                } else {
+                    self.drop_service(rt, name);
+                }
+                self.add_service(rt, name, service.record);
+            }
+            Some(_) => {}
         }
     }
 
@@ -585,6 +644,23 @@ impl ServiceHost for SchemaHost {
     }
 
     fn stop(&self, rt: &Runtime, name: &str) {
+        // (M6) A reload dropped the config's service shadowing a builtin
+        // one: it stops, and the builtin is back.
+        let shadowed = self.shadowed.borrow_mut().remove(name);
+        if let Some(r) = shadowed {
+            self.drop_service(rt, name);
+            self.rename_service(&shadow_key(name), name);
+            self.services.borrow_mut().insert(name.to_string(), r);
+            let tys = self
+                .types
+                .records
+                .get(r.0 as usize)
+                .map(|d| d.fields.iter().map(|f| f.ty.clone()).collect());
+            self.custom_tys
+                .borrow_mut()
+                .insert(name.to_string(), (r, tys));
+            return;
+        }
         if crate::schema::Schema::builtin().services.contains_key(name) {
             return;
         }
@@ -595,6 +671,7 @@ impl ServiceHost for SchemaHost {
 
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
         if service == "clock"
+            && !self.shadowed.borrow().contains_key("clock")
             && let Some(c) = &self.clock
         {
             return c.read(rt, field);
@@ -603,6 +680,39 @@ impl ServiceHost for SchemaHost {
             Field::Plain(s) => s.get(rt),
             Field::Keyed(_, list) => list.get(rt),
         }
+    }
+
+    fn read_builtin(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
+        if service == "clock"
+            && let Some(c) = &self.clock
+        {
+            return c.read(rt, field);
+        }
+        match self.field(&self.builtin_key(service), field)? {
+            Field::Plain(s) => s.get(rt),
+            Field::Keyed(_, list) => list.get(rt),
+        }
+    }
+
+    fn sources_builtin(&self, rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
+        let key = self.builtin_key(service);
+        if key == service {
+            return self.sources(rt, service, field);
+        }
+        let fields = self.fields.borrow();
+        let mut out = Vec::new();
+        for ((s, f), x) in fields.iter() {
+            if *s == key && field.is_none_or(|w| w == f) {
+                match x {
+                    Field::Plain(s) => out.push(s.id()),
+                    Field::Keyed(k, l) => {
+                        out.push(k.id());
+                        out.push(l.id());
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn sources(&self, _rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {

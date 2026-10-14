@@ -54,7 +54,7 @@ mod query;
 mod server;
 
 pub use call::call_cli;
-pub(crate) use call::resolve as resolve_call;
+pub(crate) use call::resolve_in as resolve_call;
 // `strand export` asks the shell with it too (S-tools).
 pub use cli::request;
 pub use cli::{reload_cli, set_cli, watch_cli};

@@ -4,7 +4,7 @@ use super::Checker;
 use crate::hir::{self, Event, LocalKind, StmtKind, Target};
 use crate::syntax::Span;
 use crate::syntax::ast::{self, AssignOp};
-use crate::ty::{ParamSig, Ty};
+use crate::ty::{ParamSig, Prim, Ty};
 
 impl<'a> Checker<'a> {
     pub(crate) fn stmts(&mut self, items: &'a [ast::Stmt]) -> Vec<hir::Stmt> {
@@ -122,7 +122,10 @@ impl<'a> Checker<'a> {
     fn stmt_for(&mut self, f: &'a ast::For<ast::Stmt>) -> StmtKind {
         {
             {
-                let iter = self.expr(&f.iter, None);
+                // A literal list of whole numbers is `[int]`, as an untyped
+                // `let`'s is (decisions.md m6-w2-language, Gaps 12).
+                let hint = super::whole_shape(&f.iter);
+                let iter = self.expr(&f.iter, hint.as_ref());
                 let elem = self.iter_elem(&iter, &f.iter);
                 self.push_scope();
                 let binding =
@@ -240,6 +243,7 @@ impl<'a> Checker<'a> {
                 let widened = self.widen(&t, &fraction);
                 let ok = match (t.ty.prim(), v.ty.prim()) {
                     _ if widened || t.ty.is_lenient() || v.ty.is_lenient() => true,
+                    (Some(Prim::Text), Some(Prim::Text)) => op == AssignOp::Add,
                     (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
                         matches!(op, AssignOp::Mul | AssignOp::Div) && b.is_scalar()
                             || self.types.assignable(&v.ty, &t.ty)
@@ -555,14 +559,16 @@ impl<'a> Checker<'a> {
                 }
             }
             [svc, ev] => {
-                let rec = self.schema.service(&svc.name).or_else(|| {
-                    self.globals
-                        .get(&svc.name)
-                        .and_then(|d| match self.defs[d.0 as usize].kind {
-                            hir::DefKind::Service(r) => Some(r),
-                            _ => None,
-                        })
-                });
+                // (M6) A config's `service` first: it shadows the builtin
+                // of its name (spec.md 4.2), events included.
+                let rec = self
+                    .globals
+                    .get(&svc.name)
+                    .and_then(|d| match self.defs[d.0 as usize].kind {
+                        hir::DefKind::Service(r) => Some(r),
+                        _ => None,
+                    })
+                    .or_else(|| self.schema.service(&svc.name));
                 let Some(r) = rec else {
                     let candidates: Vec<String> = self.schema.services.keys().cloned().collect();
                     let fix = Self::closest(&svc.name, &candidates);

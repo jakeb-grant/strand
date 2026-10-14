@@ -3142,8 +3142,85 @@ impl Ctx {
                 ctx.declare_reads(rt, id, &[d], &env, &[]);
             }
             ctx.acquire(rt, &comp.body.services);
+            // (M6) The call's `id:` and handlers are its root element's:
+            // the root shares the call's state (the caller's, or the one
+            // an outer call handed this call as its root).
+            let shared = comp.root.and_then(|root| {
+                let st = if call.id.is_some() || !call.call_handlers.is_empty() {
+                    Some(caller.node_state(rt, call.node))
+                } else {
+                    caller.existing_node_state(call.node)
+                };
+                st.inspect(|st| env.adopt_node(root, st.clone()))
+            });
             ctx.declare(rt, &comp.body.nodes, &env);
             ctx.mount_nodes(rt, &comp.body.nodes, &env, frag, None);
+            if let Some(state) = shared
+                && let Some(scene) = state.scene.get()
+                && !call.call_handlers.is_empty()
+            {
+                ctx.mount_call_handlers(rt, &call.call_handlers, caller, ElemCtx { scene, state });
+            }
+        });
+    }
+
+    /// (M6) A component call's handlers, on its root element `ec`, run
+    /// in the caller's scope; an `on drop` among them adds the types it
+    /// takes to what the root accepts.
+    fn mount_call_handlers(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        handlers: &[Node],
+        caller: &Rc<Env>,
+        ec: ElemCtx,
+    ) {
+        let mut accepts: Vec<PropValue> = Vec::new();
+        for n in handlers {
+            if let Node::Handler(h) = n {
+                if let Some(want) = self.drop_accepts(h) {
+                    accepts.extend(
+                        accept_keys(&self.vm.prog.types, &want)
+                            .into_iter()
+                            .map(PropValue::Keyword),
+                    );
+                }
+                self.mount_handler(rt, h, caller, Some(&ec));
+            }
+        }
+        if accepts.is_empty() {
+            return;
+        }
+        let mut em = self.em.borrow_mut();
+        let mut all = match em
+            .sent
+            .get(&ec.scene)
+            .and_then(|m| m.get(&SceneProp::Accepts))
+        {
+            Some(PropValue::List(l)) => l.clone(),
+            _ => Vec::new(),
+        };
+        for a in accepts {
+            if !all.contains(&a) {
+                all.push(a);
+            }
+        }
+        em.set(
+            ec.scene,
+            SceneProp::Accepts,
+            PropValue::List(all),
+            Transition::Instant,
+        );
+    }
+
+    /// (M6) Hold the builtin `service` for the current scope, whatever
+    /// the config declares (spec.md 4.2), and let go when it goes.
+    pub(crate) fn hold_builtin(self: &Rc<Self>, rt: &Runtime, service: &'static str) {
+        self.vm.host.acquire_builtin(rt, service);
+        let (weak, wrt) = (Rc::downgrade(self), rt.downgrade());
+        rt.on_cleanup(move || {
+            if let (Some(ctx), Some(rt)) = (weak.upgrade(), wrt.upgrade()) {
+                ctx.vm.host.release_builtin(&rt, service);
+            }
         });
     }
 
@@ -3311,7 +3388,7 @@ impl Ctx {
         self.note_surface(ident.clone(), true);
         let (ctx, outer) = (self.clone(), env.clone());
         let list: ListFn = Box::new(move |rt| {
-            let all = ctx.vm.host.read(rt, "screens", "all")?;
+            let all = ctx.vm.host.read_builtin(rt, "screens", "all")?;
             let types = &ctx.vm.prog.types;
             let wanted = match pick {
                 Some(c) => Some(ctx.eval(rt, c, &outer)?),
@@ -3326,7 +3403,7 @@ impl Ctx {
                         .map(String::as_str)
                         == Some("focused") =>
                 {
-                    Some(ctx.vm.host.read(rt, "screens", "focused")?)
+                    Some(ctx.vm.host.read_builtin(rt, "screens", "focused")?)
                 }
                 _ => None,
             };
@@ -3388,7 +3465,7 @@ impl Ctx {
                     pick.into_iter().collect(),
                     ["all", "focused"]
                         .into_iter()
-                        .flat_map(|f| self.vm.host.sources(rt, "screens", Some(f)))
+                        .flat_map(|f| self.vm.host.sources_builtin(rt, "screens", Some(f)))
                         .collect(),
                 ),
             },

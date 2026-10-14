@@ -552,6 +552,37 @@ fn whole_number_lists_are_int_lists_until_a_fraction_arrives() {
     assert_eq!(def_ty(&out.program, "xs"), "[float]");
 }
 
+/// Gaps 12 (decisions.md m6-w2-language): whole numbers stay `int`s
+/// through `?:` and `match` (an empty list fits any list), so a `fn`
+/// returning workspace ids by monitor says `[int]`; a fraction written
+/// to such a declaration still makes it a `float`.
+#[test]
+fn whole_numbers_stay_ints_through_match_and_ternaries() {
+    let out = one("fn rules(name: text) -> [int] {\n\
+                     let r = match name { \"DP-8\" => [1, 2, 3, 4], \"DP-6\" => [9, 10], _ => [] }\n\
+                     r\n\
+                   }\n\
+                   state c = true\n\
+                   let ids = c ? [1, 2] : []\n\
+                   let one = match c { true => 1, false => 2 }\n\
+                   state widened = c ? [1] : [2]\n\
+                   let mixed = c ? [1] : [0.5]\n\
+                   component C {\n\
+                     grid { columns: one + ids[0] + rules(\"DP-8\")[0]\n\
+                       on click { widened = [0.5] } }\n\
+                   }\n");
+    assert_eq!(out.errors(), 0, "{:#?}", out.diagnostics);
+    let p = &out.program;
+    for (name, ty) in [
+        ("ids", "[int]"),
+        ("one", "int"),
+        ("widened", "[float]"),
+        ("mixed", "[float]"),
+    ] {
+        assert_eq!(def_ty(p, name), ty, "{name}");
+    }
+}
+
 /// An untyped `state` or `let` holding a whole number is an `int`, so it
 /// can index, count and fill `int` props; once a fraction is written to
 /// it (directly, through a `float` it is set from, or a slider's `<->`)
@@ -1188,11 +1219,11 @@ fn workspace_and_window_members_check() {
 
 /// Gaps 17 (m6-w2-services): a power menu over the builtin `session`
 /// service checks (its `can_*` fields, its actions, `lock_requested` and
-/// `failed`). A config's own service named `session` is now a taken name
-/// (spec.md 4.2, `check::redeclared`), as for every builtin service: the
-/// tension with spec.md 14 is proposed for the owner's review
-/// (decisions.md m6-w2-services), and this assertion flips if the ruling
-/// lets a config service shadow a builtin one.
+/// `failed`). A config's own service named `session` shadows the builtin
+/// one with a warning, the owner's ruling (spec.md 4.2,
+/// `check::shadows_builtin`; decisions.md m6-w2-services, m6-w2-language
+/// and m6-integration-w2), so a config that declared `service session`
+/// before the builtin existed still loads (spec.md 14).
 #[test]
 fn session_is_a_power_menu() {
     assert_eq!(
@@ -1214,7 +1245,7 @@ fn session_is_a_power_menu() {
             "service session from file \"s.json\" { user: text }\n\
              bar B { text session.user }\n"
         ),
-        ["check::redeclared"]
+        ["check::shadows_builtin"]
     );
 }
 
@@ -1465,4 +1496,495 @@ fn transition_takes_the_design_masks_only() {
         "{:?}",
         out.diagnostics
     );
+}
+
+/// (M6) Declared actions (decisions.md m6-w2-language, the owner's
+/// ruling): the program must be allowed by `permit exec`; a call is
+/// checked like a function's (arity, types) and runs only in a handler;
+/// the command holds texts and parameters only, the program written out;
+/// a parameter's type is one an argument carries; a parameter the
+/// command never passes is a warning.
+#[test]
+fn actions_are_checked_like_calls_and_against_permit_exec() {
+    const OK: &str = "permit exec \"hyprctl\"\n\
+        action dispatch(ws: int, name: text) [\"hyprctl\", \"dispatch\", \"workspace\", ws, name]\n";
+    let with = |decls: &str, body: &str| codes(&format!("{decls}bar B {{ {body} }}\n"));
+    assert!(with(OK, "on click { dispatch(3, \"a b\") }").is_empty());
+    // Not permitted: the program by name, or no `permit exec` at all.
+    assert_eq!(
+        with(
+            "permit exec \"swaymsg\"\naction go(ws: int) [\"hyprctl\", \"dispatch\", ws]\n",
+            "on click { go(1) }"
+        ),
+        ["check::no_permit"]
+    );
+    assert_eq!(
+        with(
+            "action go(ws: int) [\"hyprctl\", ws]\n",
+            "on click { go(1) }"
+        ),
+        ["check::no_permit"]
+    );
+    // A bare `permit exec` allows any program.
+    assert!(
+        with(
+            "permit exec\naction go(ws: int) [\"x\", ws]\n",
+            "on click { go(1) }"
+        )
+        .is_empty()
+    );
+    // Arity and types, as a function's.
+    assert_eq!(with(OK, "on click { dispatch(3) }"), ["check::missing_arg"]);
+    assert_eq!(
+        with(OK, "on click { dispatch(3, \"a\", 4) }"),
+        ["check::too_many_args"]
+    );
+    assert_eq!(
+        with(OK, "on click { dispatch(\"3\", \"a\") }"),
+        ["check::type_mismatch"]
+    );
+    // Only a handler runs it.
+    assert_eq!(
+        with(OK, "text dispatch(1, \"a\")"),
+        ["check::action_in_binding"]
+    );
+    // The command: texts and parameters, the program written out.
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) [p, \"x\"]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) [\"x\", p + \"y\"]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) [\"x\", q]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text) \"x\"\n",
+            "on click { go(\"a\") }"
+        ),
+        ["syntax::expected"]
+    );
+    // A parameter an argument cannot carry, and one never passed.
+    assert_eq!(
+        with(
+            "permit exec\naction go(c: color) [\"x\", c]\n",
+            "on click { go(#fff) }"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text?) [\"x\", p]\n",
+            "on click { go(\"a\") }"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert_eq!(
+        with(
+            "permit exec\naction go(p: text, q: int) [\"x\", p]\n",
+            "on click { go(\"a\", 1) }"
+        ),
+        ["check::unknown_param"]
+    );
+    // A `from dbus` service's action calls a method; other sources have
+    // none.
+    let svc = "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+        profile: text = ActiveProfile\n  \
+        action hold(profile: text, reason: text, app: text) = HoldProfile\n}\n";
+    assert!(
+        with(
+            svc,
+            "on click { ppd.hold(\"performance\", \"x\", \"strand\") }"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        with(svc, "on click { ppd.hold(\"performance\") }"),
+        ["check::missing_arg"]
+    );
+    assert_eq!(
+        with(svc, "text ppd.hold(\"a\", \"b\", \"c\")"),
+        ["check::action_in_binding"]
+    );
+    assert_eq!(
+        with(
+            "service h from file \"/etc/hostname\" {\n  name: text\n  action go() = Go\n}\n",
+            "text h.name"
+        ),
+        ["check::misplaced"]
+    );
+}
+
+/// (M6) A `from dbus` service's actions against its object's methods: a
+/// missing method (with a did-you-mean), another number of arguments, and
+/// a parameter that does not convert to its argument's D-Bus type.
+#[test]
+fn dbus_actions_are_checked_against_introspection() {
+    use strand_compiler::check::dbus::{BusMethod, BusProperty, Introspect, check};
+    struct Fake;
+    impl Introspect for Fake {
+        fn properties(
+            &self,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            Some(Ok(vec![BusProperty {
+                interface: "net.hadess.PowerProfiles".into(),
+                name: "ActiveProfile".into(),
+                signature: "s".into(),
+                writable: true,
+            }]))
+        }
+        fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
+            let m = |name: &str, inputs: &[&str]| BusMethod {
+                interface: "net.hadess.PowerProfiles".into(),
+                name: name.into(),
+                inputs: inputs.iter().map(|s| s.to_string()).collect(),
+            };
+            Some(Ok(vec![
+                m("HoldProfile", &["s", "s", "s"]),
+                m("ReleaseProfile", &["u"]),
+            ]))
+        }
+    }
+    let run = |actions: &str| {
+        let src = format!(
+            "service ppd from dbus system \"net.hadess.PowerProfiles\" {{\n  profile: text = ActiveProfile\n{actions}\n}}\nbar B {{ text \"x\" }}\n"
+        );
+        let (out, _) = compile_files(&[("a.strand", src)]);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        check(&out.program, &Fake)
+    };
+    assert!(
+        run(
+            "  action hold(p: text, r: text, a: text) = HoldProfile\n  action release(c: int) = ReleaseProfile"
+        )
+        .is_empty()
+    );
+    let d = run("  action hold(p: text, r: text, a: text) = HoldProfil");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_method");
+    assert_eq!(d[0].suggestions[0].replacement, "HoldProfile");
+    let d = run("  action hold(p: text) = HoldProfile");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_method");
+    assert!(
+        d[0].message.contains("takes 3 arguments"),
+        "{}",
+        d[0].message
+    );
+    let d = run("  action release(c: text) = ReleaseProfile");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_type");
+    // A `float` never goes to an integer argument.
+    let d = run("  action release(c: float) = ReleaseProfile");
+    assert_eq!(d[0].code, "check::dbus_type", "{d:?}");
+}
+
+/// (M6) `$palette.<name>` outside templates (owner testing Gaps 10): an
+/// extra is a `color` (which ones a palette has is known only when it
+/// is made), `name` and `source` are `text`, `dark` a `bool`; the bare
+/// group is an error, and so is reading the palette where it is made (a
+/// token's value, a `use` clause).
+#[test]
+fn palette_extras_and_identity_check_outside_templates() {
+    let bar = |body: &str| codes(&format!("bar B {{ {body} }}\n"));
+    assert!(bar("box { bg: $palette.mantle }").is_empty());
+    assert!(bar("box { bg: $palette.mantle ?? $accent }").is_empty());
+    assert!(bar("box { bg: $palette.crust.alpha(0.5) }").is_empty());
+    assert!(bar("box { bg: $palette.color.brand_primary }").is_empty());
+    assert!(bar("text $palette.name").is_empty());
+    assert!(bar("text $palette.dark ? \"dark\" : \"light\"").is_empty());
+    assert_eq!(bar("text $palette.mantle"), ["check::type_mismatch"]);
+    assert_eq!(bar("box { bg: $palette.name }"), ["check::type_mismatch"]);
+    assert_eq!(bar("box { bg: $palette }"), ["check::unknown_token"]);
+    assert_eq!(
+        codes("tokens t { panel: $palette.mantle }\nbar B { text \"x\" }\n"),
+        ["check::palette_in_tokens"]
+    );
+    assert_eq!(
+        codes("use palette material(seed: $palette.mauve)\nbar B { text \"x\" }\n"),
+        ["check::palette_in_tokens"]
+    );
+}
+
+/// (M6, the owner's ruling) A config `service` named like a builtin one
+/// shadows it within the config, with a warning, as a `let` or `state`
+/// hiding a name does: the config's own fields are the ones read, and
+/// the builtin's are not there (spec.md 4.2, decisions.md
+/// m6-w2-language).
+#[test]
+fn a_config_service_shadows_a_builtin_one() {
+    let svc = "service battery from file \"/tmp/level\" { level: int }\n";
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        format!("{svc}bar B {{ text \"{{battery.level}}\" }}\n"),
+    )]);
+    let codes: Vec<_> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        ["check::shadows_builtin"],
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert!(!out.diagnostics[0].is_error());
+    assert!(
+        out.diagnostics[0]
+            .message
+            .contains("hides the builtin service `battery`"),
+        "{}",
+        out.diagnostics[0].message
+    );
+    // The builtin's fields are hidden with it.
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        format!("{svc}bar B {{ text battery.percent }}\n"),
+    )]);
+    let c: Vec<_> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        c,
+        ["check::shadows_builtin", "check::unknown_field"],
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
+/// (M6) A literal list of whole numbers is `[int]` where it is looped
+/// over, so its items pass to an `int` parameter, as a bar's workspace
+/// buttons pass them to `workspaces.focus` (owner testing Gaps 12).
+#[test]
+fn a_looped_whole_number_list_gives_ints() {
+    let src = "fn pick(n: int) -> int { n }\n\
+        let ids = [1, 2, 3]\n\
+        bar B {\n  \
+        for w in [1, 2, 3] key w { text join(\" \", pick(w)) }\n  \
+        for w in ids key w { text join(\" \", pick(w)) }\n  \
+        row { for w in [4, 5] key w { box { on click { let k = pick(w) } } } }\n}\n";
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.is_error()),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
+/// (M6 wave 2 integration) A looped literal list of whole numbers
+/// switches workspaces: its items are `int`s (m6-w2-language), which
+/// `workspaces.focus(target: int | text)` takes (m6-w2-services), so a
+/// bar's persistent workspace buttons need no conversion; a looped list
+/// of names is the text arm.
+#[test]
+fn a_looped_whole_number_list_focuses_workspaces() {
+    let src = "bar B {\n  \
+        for w in [1, 2, 3] key w { text \"{w}\" { on click { workspaces.focus(w) } } }\n  \
+        for n in [\"web\", \"mail\"] key n { text n { on click { workspaces.focus(n) } } }\n}\n";
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
+/// (M6, owner testing Gaps 8) A handler or `id:` on a component call is
+/// about its root element: checked against that element's events, and
+/// a load error naming the fix where the component's tree is not one
+/// element.
+#[test]
+fn handlers_on_a_call_are_its_root_elements() {
+    let comps = "component Chip { box { text \"a\" } }\n\
+        component Two { box {}\n  box {} }\n";
+    let ok = codes(&format!(
+        "{comps}state n = 0\nbar B {{ Chip {{ id: c; on click {{ n += 1 }}; on scroll(dy) {{ n += 1 }} }}\n  text \"{{c.hover}}\" }}\n"
+    ));
+    assert!(ok.is_empty(), "{ok:?}");
+    let bad = codes(&format!("{comps}bar B {{ Chip {{ on clack {{ }} }} }}\n"));
+    assert_eq!(bad, ["check::unknown_event"]);
+    let two = codes(&format!("{comps}bar B {{ Two {{ on click {{ }} }} }}\n"));
+    assert_eq!(two, ["check::misplaced"]);
+    let two_id = codes(&format!("{comps}bar B {{ Two {{ id: t }} }}\n"));
+    assert_eq!(two_id, ["check::misplaced"]);
+}
+
+/// (M6, owner testing Gaps 7) A component reads `screen`, the screen of
+/// the bar it is in; a call of one where no bar is (a `panel`) is a load
+/// error at the call, through components that call it too. A
+/// `screen` declared at the top level or as a parameter is the one read.
+#[test]
+fn a_components_screen_comes_from_its_bar() {
+    let comps = "component Name { text screen.name }\ncomponent Line { row { Name } }\n";
+    let ok = codes(&format!("{comps}bar B {{ Line }}\n"));
+    assert!(ok.is_empty(), "{ok:?}");
+    let panel = codes(&format!("{comps}panel P {{ Line }}\n"));
+    assert_eq!(panel, ["check::no_screen"]);
+    // Never called: nothing to pass, nothing to report.
+    assert!(codes(comps).is_empty());
+    // A parameter named `screen` is the one read, and callers pass it.
+    let param = codes("component Name(screen: text) { text screen }\npanel P { Name \"x\" }\n");
+    assert!(param.is_empty(), "{param:?}");
+    // A top-level `screen` is never hidden by a component's.
+    let top = codes("let screen = \"x\"\ncomponent Name { text screen }\npanel P { Name }\n");
+    assert!(top.is_empty(), "{top:?}");
+}
+
+/// (M6, the review of Gaps 12) Programs that loaded before whole-number
+/// lists kept their `int`s through `for`, `?:` and `match` still load: a
+/// declaration whose value is a whole number widens to `float` when a
+/// fraction is written to it, as a literal-initialised one does, and a
+/// fraction pushed or inserted into a whole-number list widens the list.
+#[test]
+fn whole_number_values_widen_where_fractions_are_written() {
+    let cases = [
+        // A `state` from a `for` binding over a whole-number literal.
+        "bar B {\n  row {\n    for w in [1, 2, 3] key w {\n      state size = w\n      \
+         text join(\" \", size) { on click { size = size / 2 } }\n    }\n  }\n}\n",
+        // An inferred parameter from such a binding.
+        "component Dot(n) {\n  state r = n\n  text join(\" \", r) { on click { r += 0.5 } }\n}\n\
+         bar B { row { for x in [4, 8] key x { Dot x } } }\n",
+        // A whole-number list through `?:`, then a fraction pushed.
+        "state big = true\nstate marks = big ? [10, 20] : []\n\
+         bar B { text \"m\" { on click { marks.push(2.5) } } }\n",
+        // An item of a whole-number `let`, then a fraction written.
+        "state wide = true\nlet sizes = wide ? [20, 30] : [10, 20]\nstate cur = sizes[0]\n\
+         bar B { text \"c\" { on click { cur = cur * 1.5 } } }\n",
+        // `insert` too, into a literal-initialised list.
+        "state xs = [1, 2]\nbar B { text \"x\" { on click { xs.insert(0, 0.5) } } }\n",
+    ];
+    for src in cases {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        assert!(
+            out.diagnostics.iter().all(|d| !d.is_error()),
+            "{src}\n{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
+    // Widened, each is a `float` everywhere it is read.
+    let c = codes(
+        "fn f(n: int) -> int { n }\nstate xs = [1, 2]\n\
+         bar B { text \"x\" { on click { xs.push(0.5); let k = f(xs[0]) } } }\n",
+    );
+    assert_eq!(c, ["check::type_mismatch"]);
+}
+
+/// (M6, the review of Gaps 7) A component's own `screen` is found only
+/// where the name is otherwise unknown: an enum variant named `screen`
+/// is still the one a component reads, and the component takes no
+/// `screen` for it.
+#[test]
+fn a_screen_variant_wins_over_a_components_screen() {
+    let src = "enum Shot { screen, window }\nstate s = Shot.window\n\
+        component Pick { text \"x\" { on click { let k = screen; s = k } } }\n\
+        panel P { Pick }\n";
+    let c = codes(src);
+    assert!(c.is_empty(), "{c:?}");
+}
+
+/// (M6, the review of the owner's ruling) `on notifications.received`
+/// with a config `service notifications` is about the config's service:
+/// an event it does not declare is a load error, not the builtin's event.
+#[test]
+fn a_config_services_events_shadow_the_builtins() {
+    let c = codes(
+        "service notifications from file \"/tmp/b.json\" { level: int }\n\
+         bar B { text \"x\" { on notifications.received(n) { } } }\n",
+    );
+    assert!(c.contains(&"check::unknown_event"), "{c:?}");
+}
+
+/// (M6, the review of the owner's ruling) A service whose properties
+/// were read but whose methods could not be is warned about, as an
+/// unread service is: its actions were not checked.
+#[test]
+fn unread_methods_leave_actions_unchecked_with_a_warning() {
+    use strand_compiler::check::dbus::{BusMethod, BusProperty, Introspect, check};
+    struct NoMethods;
+    impl Introspect for NoMethods {
+        fn properties(
+            &self,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            Some(Ok(vec![BusProperty {
+                interface: "net.hadess.PowerProfiles".into(),
+                name: "ActiveProfile".into(),
+                signature: "s".into(),
+                writable: true,
+            }]))
+        }
+        fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
+            Some(Err("timed out".into()))
+        }
+    }
+    let src = "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  profile: text = ActiveProfile\n  action hold(p: text) = HoldProfile\n}\nbar B { text \"x\" }\n".to_string();
+    let (out, _) = compile_files(&[("a.strand", src)]);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    let d = check(&out.program, &NoMethods);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_unchecked");
+    assert!(d[0].message.contains("timed out"), "{}", d[0].message);
+}
+
+/// (M6, the review of the owner's ruling) A command `permit exec` does
+/// not allow keeps no argv (nothing could run it, whatever the loader
+/// does with errors), and a parameter right after a shell's `-c` (alone
+/// or among short options) is warned about: the shell runs it as a
+/// script. A parameter after the script (`$1`) is not.
+#[test]
+fn refused_commands_keep_no_argv_and_shell_scripts_are_warned_about() {
+    let argv = |src: &str| {
+        let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+        let a = out
+            .program
+            .files
+            .iter()
+            .flat_map(|f| &f.items)
+            .find_map(|i| match i {
+                strand_compiler::hir::Item::Action(a) => Some(a.argv.len()),
+                _ => None,
+            });
+        (
+            a,
+            out.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        )
+    };
+    let (n, c) = argv(
+        "permit exec \"swaymsg\"\naction go(ws: int) [\"hyprctl\", ws]\nbar B { text \"x\" }\n",
+    );
+    assert_eq!((n, c), (Some(0), vec!["check::no_permit"]));
+    for cmd in [
+        "[\"sh\", \"-c\", s]",
+        "[\"/bin/bash\", \"-ec\", s]",
+        "[\"dash\", \"-c\", s, \"x\"]",
+    ] {
+        let (n, c) = argv(&format!(
+            "permit exec\naction go(s: text) {cmd}\nbar B {{ text \"x\" }}\n"
+        ));
+        assert_eq!(c, ["check::shell_script"], "{cmd}");
+        assert!(n.unwrap_or(0) > 0, "still runs: {cmd}");
+    }
+    for cmd in [
+        "[\"sh\", \"-c\", \"echo \\\"$1\\\"\", \"sh\", s]",
+        "[\"hyprctl\", \"-c\", s]",
+        "[\"sh\", \"--\", s]",
+    ] {
+        let (_, c) = argv(&format!(
+            "permit exec\naction go(s: text) {cmd}\nbar B {{ text \"x\" }}\n"
+        ));
+        assert!(c.is_empty(), "{cmd}: {c:?}");
+    }
 }

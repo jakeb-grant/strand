@@ -603,6 +603,8 @@ impl Workspace {
 #[derive(Debug)]
 struct Introspector {
     cache: Arc<strand_introspect::Cache>,
+    /// (M6) The objects' methods, for services' actions.
+    methods: Arc<strand_introspect::Cache<Vec<strand_introspect::Method>>>,
     answered: Arc<std::sync::atomic::AtomicU64>,
     wake: (
         crossbeam_channel::Sender<()>,
@@ -614,6 +616,7 @@ fn introspector() -> &'static Introspector {
     static I: std::sync::OnceLock<Introspector> = std::sync::OnceLock::new();
     I.get_or_init(|| Introspector {
         cache: Arc::new(strand_introspect::Cache::default()),
+        methods: Arc::default(),
         answered: Arc::default(),
         wake: crossbeam_channel::unbounded(),
     })
@@ -657,6 +660,35 @@ impl strand_compiler::check::dbus::Introspect for Introspector {
                     name: p.name,
                     signature: p.signature,
                     writable: p.writable,
+                })
+                .collect()
+        }))
+    }
+
+    fn methods(
+        &self,
+        system: bool,
+        name: &str,
+        path: &str,
+    ) -> Option<Result<Vec<strand_compiler::check::dbus::BusMethod>, String>> {
+        let bus = if system {
+            strand_introspect::Bus::System
+        } else {
+            strand_introspect::Bus::Session
+        };
+        let answered = self.answered.clone();
+        let wake = self.wake.0.clone();
+        let answer = self.methods.answer_or_ask(&bus, name, path, move || {
+            answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = wake.send(());
+        })?;
+        Some(answer.map(|methods| {
+            methods
+                .into_iter()
+                .map(|m| strand_compiler::check::dbus::BusMethod {
+                    interface: m.interface,
+                    name: m.name,
+                    inputs: m.inputs,
                 })
                 .collect()
         }))

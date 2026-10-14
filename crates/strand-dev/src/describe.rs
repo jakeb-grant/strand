@@ -125,6 +125,26 @@ pub fn def(an: &Analysis, def: &Def) -> String {
             Ty::Fn(s) => sig(types, &def.name, s),
             t => format!("fn {}: {}", def.name, ty(types, t)),
         },
+        // (M6) The command it runs, a parameter shown as `{name}`.
+        DefKind::Action => {
+            let params = match &def.ty {
+                Ty::Fn(s) => s
+                    .params
+                    .iter()
+                    .map(|q| format!("{}: {}", q.name, ty(types, &q.ty)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => String::new(),
+            };
+            let command = p.files.iter().flat_map(|f| &f.items).find_map(|i| match i {
+                strand_compiler::hir::Item::Action(a) if p.def(a.def) == def => Some(a.shown()),
+                _ => None,
+            });
+            match command {
+                Some(c) => format!("action {}({params})\nruns: {c}", def.name),
+                None => format!("action {}({params})", def.name),
+            }
+        }
         DefKind::Enum(e) => {
             let en = types.enum_(*e);
             format!("enum {} {{ {} }}", en.name, en.variants.join(", "))

@@ -9,6 +9,7 @@
 //! fallback, a [`SchemaHost`] answering at the schema's defaults.
 //! `next_wake` is the earliest any member asks for; `wake` reaches all.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -33,6 +34,22 @@ pub struct Composite {
     /// poll`), when the real services run.
     custom: Option<Rc<super::CustomHost>>,
     types: Rc<TypeTable>,
+    /// (M6) Who took each hold (`acquire` and `acquire_field`, by service
+    /// and field): a release goes to the same host, so a reload that
+    /// adds or drops a config `service` shadowing a builtin one lets go
+    /// of the builtin it held (spec.md 4.2).
+    holds: RefCell<HashMap<HoldKey, Vec<Holder>>>,
+}
+
+/// A hold's service and field.
+type HoldKey = (String, Option<String>);
+
+/// Which host took a hold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Holder {
+    Custom,
+    Member(usize),
+    Fallback,
 }
 
 impl std::fmt::Debug for Composite {
@@ -55,6 +72,7 @@ impl Composite {
             fallback,
             custom: None,
             types,
+            holds: RefCell::default(),
         }
     }
 
@@ -86,13 +104,83 @@ impl Composite {
         }
     }
 
+    /// (M6, the owner's ruling) A declared custom service comes first: a
+    /// config's `service battery` shadows the builtin `battery` (spec.md
+    /// 4.2).
     fn route(&self, service: &str) -> &dyn ServiceHost {
+        if let Some(c) = &self.custom
+            && c.serves(service)
+        {
+            return &**c;
+        }
         match self.by_name.get(service) {
             Some(&i) => &*self.members[i],
-            None => match &self.custom {
-                Some(c) if c.serves(service) => &**c,
-                _ => &*self.fallback,
-            },
+            None => &*self.fallback,
+        }
+    }
+
+    /// The builtin `service`'s host, never a config's shadowing one.
+    fn holder_builtin(&self, service: &str) -> Holder {
+        match self.by_name.get(service) {
+            Some(&i) => Holder::Member(i),
+            None => Holder::Fallback,
+        }
+    }
+
+    /// The host [`Composite::route`] picks, as a [`Holder`].
+    fn holder(&self, service: &str) -> Holder {
+        match &self.custom {
+            Some(c) if c.serves(service) => Holder::Custom,
+            _ => self.holder_builtin(service),
+        }
+    }
+
+    fn host(&self, h: Holder) -> &dyn ServiceHost {
+        match (h, &self.custom) {
+            (Holder::Custom, Some(c)) => &**c,
+            (Holder::Member(i), _) if i < self.members.len() => &*self.members[i],
+            _ => &*self.fallback,
+        }
+    }
+
+    /// Take a hold on `service` (`field`) at the host serving it, and
+    /// remember which.
+    fn take(&self, rt: &Runtime, service: &str, field: Option<&str>, h: Holder) {
+        let host = self.host(h);
+        match field {
+            None => host.acquire(rt, service),
+            Some(f) => host.acquire_field(rt, service, f),
+        }
+        self.holds
+            .borrow_mut()
+            .entry((service.to_string(), field.map(str::to_string)))
+            .or_default()
+            .push(h);
+    }
+
+    /// Let go of a hold where it was taken: a stale one first (taken at
+    /// a host the name no longer routes to, by a scope a reload is
+    /// disposing), else the last.
+    fn give(&self, rt: &Runtime, service: &str, field: Option<&str>, now: Holder) {
+        let key = (service.to_string(), field.map(str::to_string));
+        let h = {
+            let mut holds = self.holds.borrow_mut();
+            let taken = holds.get_mut(&key).and_then(|v| {
+                let at = v
+                    .iter()
+                    .rposition(|x| *x != now)
+                    .unwrap_or(v.len().checked_sub(1)?);
+                Some(v.remove(at))
+            });
+            if holds.get(&key).is_some_and(Vec::is_empty) {
+                holds.remove(&key);
+            }
+            taken.unwrap_or(now)
+        };
+        let host = self.host(h);
+        match field {
+            None => host.release(rt, service),
+            Some(f) => host.release_field(rt, service, f),
         }
     }
 
@@ -143,6 +231,26 @@ impl ServiceHost for Composite {
 
     fn sources(&self, rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
         self.route(service).sources(rt, service, field)
+    }
+
+    fn read_builtin(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
+        self.host(self.holder_builtin(service))
+            .read_builtin(rt, service, field)
+    }
+
+    fn sources_builtin(&self, rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
+        self.host(self.holder_builtin(service))
+            .sources_builtin(rt, service, field)
+    }
+
+    fn acquire_builtin(&self, rt: &Runtime, service: &str) {
+        self.host(self.holder_builtin(service))
+            .acquire_builtin(rt, service);
+    }
+
+    fn release_builtin(&self, rt: &Runtime, service: &str) {
+        self.host(self.holder_builtin(service))
+            .release_builtin(rt, service);
     }
 
     fn action_writes(&self, rt: &Runtime, service: &str) -> Vec<NodeId> {
@@ -215,19 +323,19 @@ impl ServiceHost for Composite {
     }
 
     fn acquire(&self, rt: &Runtime, service: &str) {
-        self.route(service).acquire(rt, service);
+        self.take(rt, service, None, self.holder(service));
     }
 
     fn release(&self, rt: &Runtime, service: &str) {
-        self.route(service).release(rt, service);
+        self.give(rt, service, None, self.holder(service));
     }
 
     fn acquire_field(&self, rt: &Runtime, service: &str, field: &str) {
-        self.route(service).acquire_field(rt, service, field);
+        self.take(rt, service, Some(field), self.holder(service));
     }
 
     fn release_field(&self, rt: &Runtime, service: &str, field: &str) {
-        self.route(service).release_field(rt, service, field);
+        self.give(rt, service, Some(field), self.holder(service));
     }
 
     fn next_wake(&self, rt: &Runtime) -> Option<SystemTime> {

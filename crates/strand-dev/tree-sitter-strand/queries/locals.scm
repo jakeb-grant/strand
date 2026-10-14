@@ -21,6 +21,7 @@
 (enum name: (identifier) @local.definition.type)
 (type name: (identifier) @local.definition.type)
 (function name: (identifier) @local.definition.function)
+(action name: (identifier) @local.definition.function)
 (keyframes name: (identifier) @local.definition.function)
 (service name: (identifier) @local.definition.namespace)
 (state name: (identifier) @local.definition.var)

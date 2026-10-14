@@ -57,7 +57,7 @@ impl<'p, V: Visit<'p>> Walker<'_, 'p, V> {
             Item::State(s) => self.state(s),
             Item::Let(l) => self.expr(&l.value),
             Item::Fn(f) => self.stmts(&f.body),
-            Item::Enum(_) | Item::Type(_) | Item::Permit(_) => {}
+            Item::Enum(_) | Item::Type(_) | Item::Permit(_) | Item::Action(_) => {}
             Item::Tokens(t) => {
                 for d in &t.entries {
                     self.token_def(d);

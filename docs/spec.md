@@ -73,6 +73,7 @@ guide's ladder test use this table as the list of constructs.
 | `fn` | `fn_decl` | 5.5 |
 | `tokens … extends …`, `override`, `use tokens …, palette …` | `tokens_decl`, `use_decl` | 9 |
 | `service … from dbus\|file\|listen\|poll`, `permit exec` | `service`, `permit` | 5.6 |
+| `action name(params) [command]`, `action name(params) = Method` | `action`, `method_action` | 5.7 |
 | `keyframes`, `play` | `keyframes`, `play` | 6.6 |
 | `@reset` | `attribute` | 10.4 |
 | `kind [positional] { props; children }` | `element` | 6.1 |
@@ -132,16 +133,23 @@ guide's ladder test use this table as the list of constructs.
   or a service schema's record or enum, within its scope. A `state` or
   `let` that hides a builtin service, or a builtin value such as the
   time signal `t`, is a warning; so is an `fn`, `type`, `enum` or
-  component named like a builtin service.
-- **Some builtin names are taken.** Three declarations are load errors
+  component named like a builtin service. (M6, the owner's ruling) A
+  config `service` named like a builtin service shadows it within the
+  config, with the same warning: the config's own service is the one
+  its reads, writes, actions, `on` handlers and `strand call` reach,
+  and the builtin's fields and events are not there. The runtime's own
+  reads (the default palette's `system` fields, the `screens` that
+  mount bars, `system.reduced_motion`) still go to the builtin. So a
+  config keeps loading when a release adds a builtin service of a name
+  it uses (section 14).
+- **Some builtin names are taken.** Two declarations are load errors
   rather than shadows: a `type` or `enum` named like one of the
   language's own types (`bool`, `int`, `float`, `length`, `percent`,
   `angle`, `duration`, `color`, `paint`, `text`, `path`, `font`,
-  `shadow`, `insets`, `corners`, `any`, `unit`, `Async`); a
+  `shadow`, `insets`, `corners`, `any`, `unit`, `Async`); and a
   `component` or surface named like a builtin element (`text`, `row`,
-  `popup`, …), since an element is resolved before a component; and a
-  `service` named like a builtin service, since two services under one
-  name would be ambiguous. Palette role names, the 13 hue roles
+  `popup`, …), since an element is resolved before a component.
+  Palette role names, the 13 hue roles
   included, and the token first segment `palette` are taken too
   (section 9.3).
 - **Shadowing is loud.** A name in scope that is also a variant of the
@@ -216,6 +224,25 @@ filling the monitor, the keyboard always).
   load error asking for the type.
 - Parameters are read-only inside the component; assigning to one is a
   load error.
+- A component whose tree is one element (beside its `state`, `let` and
+  handlers; no `if`, `for`, `match` or `slot` at its top) stands for
+  that element: handlers and `id:` written in a call's block are the
+  root element's (`Chip "a" { id: c; on click { n += 1 } }`, then
+  `c.hover`). The handlers run in the caller's scope and are checked
+  against the root element's events; a call whose root is another
+  component's call reaches the element at the bottom. On a call of a
+  component whose tree is not one element, either is a load error
+  naming the fix (wrap the call in a `box`). A component with an `id`
+  parameter takes `id:` as its argument.
+- `screen` in a component is the screen of the bar it is mounted in, as
+  in the bar itself (section 5.1): read-only, and on each monitor's
+  instance that monitor. A component that reads it, or calls one that
+  does, gets it from each call, which passes the `screen` in scope
+  there; a call where there is none (in a `panel`, `popup` or `osd`
+  outside any bar) is a load error at the call. A parameter, local,
+  top-level declaration, enum variant or service named `screen` is the
+  one read instead: the component's `screen` is found only where the
+  name would otherwise be unknown.
 - Children written in a call's block render where the component's tree
   has `slot`. Children passed to a component without a `slot` are a load
   error, and so is `slot` outside a component. Each copy of a slotted
@@ -249,7 +276,17 @@ filling the monitor, the keyboard always).
   props-only block such as a `when`), and in a handler or `fn` body as
   a local binding.
 - An untyped `state i = 0` is an `int` until a fraction is written to
-  it; then it is a `float`.
+  it; then it is a `float`. The same holds for a list literal of whole
+  numbers (`[1, 2]` is an `[int]`, and a `let` or a handler's local
+  holding one is never written, so it stays one) and through `?:` and
+  `match` whose branches all have that shape, an empty list fitting any
+  list (`match name { "DP-8" => [1, 2], _ => [] }` is an `[int]`). A
+  `for` over such a literal loops over `int`s (`for w in [1, 2, 3] key
+  w` gives each `w` as an `int`). An untyped `state` whose first value
+  is whole by any of these (`state size = w`, `state cur = sizes[0]`, a
+  component's inferred parameter) is a `float` once a fraction is
+  written to it, as is the value it came from, and a fraction pushed or
+  inserted into a whole list makes it a `[float]`.
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
   (section 10.3). It is allowed only on a `state` holding plain data:
   not functions, `Async` values, runtime handles or live service items.
@@ -312,6 +349,58 @@ filling the monitor, the keyboard always).
   the running binary does not serve a service a file declares, reads
   give its schema defaults and writes, calls and actions are refused,
   with a notice naming the file while the program reads it.
+
+### 5.7 Actions
+
+(M6, the owner's ruling; decisions.md m6-w2-language.)
+
+- `action name(params) [command]` at the top level declares an action
+  that runs a command. Every parameter has a type and no default; the
+  type is one of `text`, `path`, `int`, `float`, `bool` or an enum.
+  The command is a list literal whose items are text literals and the
+  action's parameters, nothing else; its first item, the program, is a
+  text literal. The program must be allowed by `permit exec` (section
+  5.6), else it is a load error. A parameter the command never uses is
+  a warning.
+- A handler calls it as a function: `on click { dispatch(3) }`. The
+  call is checked as a function's (arity, argument types) and, as every
+  action call is, allowed only in a handler (section 8.3). Each
+  parameter becomes exactly one argument of the program, its value as
+  `text` shows it, never split on spaces: the program is run directly,
+  with no shell between strand and it. What the program does with an
+  argument is its own: a shell's `-c` runs the argument after it as a
+  script (`["sh", "-c", cmd]` runs `cmd`'s value as shell code; pass a
+  value after a written-out script instead, where it is `$1`), and an
+  argument starting with `-` may be read as an option (`--` before it,
+  where the program takes one). A parameter right after a shell's `-c`
+  is a warning (`check::shell_script`).
+- An action runs at most once at a time: a call while its command still
+  runs queues one re-run, the latest call's, started when the command
+  ends, as a `file`'s `run` is (section 9.7).
+- The command runs detached, in its own process group, with stdin and
+  stdout on `/dev/null`; the handler does not wait for it, and logic is
+  never blocked by it. A program that cannot start or exits non-zero is
+  logged and becomes a `strand watch` notice naming the action, as a
+  `file`'s `run` failing does (section 9.7). The handler's next
+  statement has already run: the call's value is `()`.
+- `strand check` lists every action's command, each parameter shown as
+  `{name}` where it is one argument; the language server shows it on an
+  action's hover. Both check its program against `permit exec`.
+- In a `from dbus` service's block, `action name(params) = Method`
+  declares an action that calls a method of the service's object.
+  Parameters are as above, plus `[text]`. The method is checked against
+  the object's introspection as fields are (section 5.6): a missing
+  method is an error with a did-you-mean, as is another number of
+  arguments or a parameter whose type does not convert to the
+  argument's D-Bus type. A handler calls it as a service action:
+  `on click { ppd.hold("performance", "game", "strand") }`. An enum
+  argument is sent as the daemon has spelled it (as a field write is).
+  The call does not hold up the service, and its answer is waited for
+  however long the daemon takes (a method may wait on polkit's password
+  dialog); the daemon's error is logged, as a builtin service's action
+  failing is. When the object's methods cannot be read, the actions are
+  not checked and a warning says so. Any other source's block declaring
+  an action is a load error.
 
 ## 6. Trees
 
@@ -503,7 +592,7 @@ units).
 
 - Precedence and associativity are grammar.md's. `==` and `!=` compare
   values; `<`, `<=`, `>`, `>=` compare ordered values (numbers, lengths,
-  angles, durations, percentages). `&&` and `||` short-circuit.
+  angles, durations, percentages, dates). `&&` and `||` short-circuit.
 - An ordering comparison takes two plain numbers, or two values of the
   same kind (`10px < 20px`, `1s < 500ms`), or a length, angle or
   percentage beside a plain number, which is read in the other side's
@@ -512,7 +601,11 @@ units).
   as written: a comparison resolves neither a `ch` against a font nor a
   percentage against a size, so `2ch < 10px` is true. A duration
   compares only with a duration, and other units never mix (`1s < 2`,
-  `90deg < 10px`): a load error.
+  `90deg < 10px`): a load error. Two `Date`s order by time, earlier
+  first (`d.date < clock.today`); a date without a time of day comes
+  before every time on that day.
+- `+` on two `text`s joins them (`name + "…"`, and `s += "!"` in a
+  handler); `+` between a `text` and anything else is a load error.
 - `==` and `!=` take two numbers exactly when an ordering comparison
   would, and compare their numbers as written, read the same way as for
   order (`10px == 10`, `2ch == 2px` and `50% == 50px` are true;
@@ -579,7 +672,8 @@ units).
 - A **handler** is the body of `on`, `after` or `every`. It is a
   coroutine: it may `await`, and other handlers run while it waits.
 - Statements are `let`, `if`, `match`, `for`, `play`, expressions (an
-  action call such as `ws.focus()`) and assignments.
+  action call such as `ws.focus()`, or of a declared action, section
+  5.7) and assignments.
 - **Assignment** (`=`, `+=`, `-=`, `*=`, `/=`) writes a place: a
   `state`, a field or item of one, an `rw` service field (including one
   on an item of a service's keyed list), or a settings field (written
@@ -610,10 +704,17 @@ units).
   them).
 - **`on change a after T { … }`** debounces: it runs once, `T` after
   the last change.
-- **`after T while c { … }`** runs once, after `c` has held for a total
-  of `T`; it counts only time during which `c` holds, and schedules
-  nothing while `c` is false. **`every T while c { … }`** runs every `T`
-  while `c` holds. Without `while`, the condition is always true.
+- **`after T while c { … }`** is one-shot: it runs at most once per
+  mount of the node or component it is written in (once for the program
+  at the top level), after `c` has held for a total of `T`. It counts
+  only time during which `c` holds and schedules nothing while `c` is
+  false; when `c` turns false the count pauses and is not reset, and
+  once the body has run the timer is done, so `c` turning false and
+  true again never re-arms it. A delay that runs each time a condition
+  ends (a hover popup closing 200 ms after the pointer leaves) is
+  `on change c after T { if !c { … } }`. **`every T while c { … }`**
+  runs every `T` while `c` holds. Without `while`, the condition is
+  always true.
   `every` keeps its phase: host latency does not accumulate. After a
   gap longer than its period it runs once and re-phases, so its next
   run is one period after that one; it never replays missed runs. A
@@ -701,7 +802,7 @@ units).
 
 | Tier | What it holds | Example |
 | --- | --- | --- |
-| Palette | A typed schema of colour roles: Material 3's system roles one to one, plus 13 hue roles; its source's own colours and its identity ride along for templates | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve`, `$palette.name` |
+| Palette | A typed schema of colour roles: Material 3's system roles one to one, plus 13 hue roles; its source's own colours and its identity ride along | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; `$palette.mauve`, `$palette.name` |
 | Base tokens | Scales and derived roles, written as expressions over the palette | `$space.2`, `$radius.lg`, `$font.ui`, `$motion.spatial`, `$surface.hi` |
 | Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius` |
 
@@ -806,9 +907,17 @@ units).
   to the same name are an import error naming both. A role's own colour
   is kept as an extra too (matugen's `primary` is both `$accent` and
   `$palette.primary`). `material()` and the built-in palette keep one
-  extra, `source_color`, the seed. Extras and identity are read only in
-  the template scope (section 9.8), never in a prop; a missing extra
-  without `??` is an error.
+  extra, `source_color`, the seed. Extras and identity are read in
+  the template scope (section 9.8) and (M6) anywhere else an
+  expression reads tokens: a prop, a binding, a handler. There an extra
+  is a `color` (which extras a palette has is known only when it is
+  made), `$palette.name` and `$palette.source` are `text` and
+  `$palette.dark` a `bool`; an extra is read as a token, so a swap
+  springs it as it springs a role. A missing extra without `??` is an
+  error where it is read (in a prop, a runtime error naming it; the
+  prop keeps its last value), and `$palette.<name> ?? fallback` gives
+  the fallback. A token's own value and a `use` clause make the palette
+  and cannot read it (a load error).
 - `system.dark`, `system.accent` and `system.contrast` follow the
   desktop's portal settings live.
 - The last palette is persisted, so boot never shows default colours

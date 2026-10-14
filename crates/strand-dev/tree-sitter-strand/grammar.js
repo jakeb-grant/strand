@@ -139,6 +139,7 @@ module.exports = grammar({
       $.export,
       $.use,
       $.permit,
+      $.action,
       alias($._top_file_bare, $.element),
     ),
 
@@ -237,7 +238,8 @@ module.exports = grammar({
 
     field_block: $ => block($, $.field),
     field: $ => seq(
-      field('name', $.identifier),
+      // `action` starts an action in a service block only before a name.
+      field('name', choice($.identifier, alias('action', $.identifier))),
       ':',
       field('type', $._type),
       optional('rw'),
@@ -316,7 +318,19 @@ module.exports = grammar({
       ),
     ),
 
-    service_block: $ => block($, choice($.field, $.permit)),
+    service_block: $ => block($, choice($.field, $.permit, $.action)),
+
+    // (M6) `action name(params) [command]` at the top level, `action
+    // name(params) = Method` in a `from dbus` service's block.
+    action: $ => seq(
+      'action',
+      field('name', $.identifier),
+      field('parameters', $.parameters),
+      choice(
+        seq('=', field('method', $.identifier)),
+        field('command', $._expression),
+      ),
+    ),
 
     permit: $ => seq(
       'permit',

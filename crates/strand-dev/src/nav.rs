@@ -250,6 +250,25 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
             let variant = en.variants.get(*v as usize).map_or("", String::as_str);
             describe::markdown(&format!("{}.{variant}", en.name), None)
         }
+        // (M6) The palette's identity and extras (decisions.md
+        // m6-w2-language).
+        Found::Ref(Target::Token(path)) if is_palette_path(path) => {
+            let name = path.strip_prefix("palette.").unwrap_or("");
+            let (ty, doc) = match name {
+                "name" => (
+                    "text",
+                    "The palette's name: its scheme's own, else its source.",
+                ),
+                "source" => ("text", "The palette's source (`catppuccin:mocha`)."),
+                "dark" => ("bool", "Whether the palette is a dark one."),
+                _ => (
+                    "color",
+                    "A colour of the palette's source, by its name. A palette without it \
+                     is an error where it is read; `??` gives a fallback.",
+                ),
+            };
+            describe::markdown(&format!("${path}: {ty}"), Some(doc))
+        }
         Found::Ref(Target::Token(path)) => {
             let ty = p
                 .tokens
@@ -447,7 +466,11 @@ fn renamable(an: &Analysis, found: &Found) -> Result<(), String> {
             _ => Ok(()),
         },
         Found::Ref(Target::Token(path)) => {
-            if an.schema.tokens.contains_key(path) {
+            if is_palette_path(path) {
+                Err(format!(
+                    "`${path}` is named by the palette; it cannot be renamed"
+                ))
+            } else if an.schema.tokens.contains_key(path) {
                 Err(format!(
                     "`${path}` is a palette role or base token the schema names; it cannot be renamed"
                 ))
@@ -682,4 +705,10 @@ fn is_token_path(s: &str) -> bool {
     !s.is_empty()
         && s.split('.')
             .all(|seg| is_ident(seg) || !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// (M6) `$palette` or `$palette.<name>`: the palette's identity and
+/// extras, named by the palette rather than the config.
+fn is_palette_path(path: &str) -> bool {
+    path == "palette" || path.starts_with("palette.")
 }

@@ -318,3 +318,15 @@ proptest! {
         assert_formats(name, &input);
     }
 }
+
+/// (M6) Actions, top level and in a service block, format to the
+/// written style and keep their tree.
+#[test]
+fn actions_format() {
+    let src = "permit exec  \"hyprctl\"\naction  dispatch( ws:int ,name : text )  [\"hyprctl\",\"dispatch\" , ws,name]\nservice ppd from dbus system \"net.hadess.PowerProfiles\" {\n  action: text = Action\n    action hold( p:text )=HoldProfile\n}\n";
+    let out = assert_formats("actions", src);
+    assert_eq!(
+        out,
+        "permit exec \"hyprctl\"\naction dispatch(ws: int, name: text) [\"hyprctl\", \"dispatch\", ws, name]\nservice ppd from dbus system \"net.hadess.PowerProfiles\" {\n  action: text = Action\n  action hold(p: text) = HoldProfile\n}\n"
+    );
+}

@@ -307,6 +307,13 @@ pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error>
             Value::Async(x) => x.usable().cloned().unwrap_or_else(|| b.clone()),
             v => v.clone(),
         },
+        // `a + b` on texts joins them (decisions.md m6-w2-language, Gaps 11).
+        Add if matches!((a, b), (Value::Text(_), Value::Text(_))) => {
+            let (Value::Text(x), Value::Text(y)) = (a, b) else {
+                return Ok(Value::Null);
+            };
+            Value::text(format!("{x}{y}"))
+        }
         Add | Sub | Mul | Div | Rem => {
             let symbolic = |v: &Value| matches!(v, Value::Token(_) | Value::Time(_));
             if symbolic(a) || symbolic(b) {
@@ -484,6 +491,19 @@ pub fn dur(d: Duration) -> String {
     }
 }
 
+/// `dur(…, clock: true)`: `0:05`, `3:45`, `1:02:03` (decisions.md
+/// m6-w2-language, Gaps 14). Seconds are whole, rounded down, as a
+/// player's clock counts them.
+pub fn clock_dur(d: Duration) -> String {
+    let s = d.as_secs();
+    let (h, m, s) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 pub(crate) fn call(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -513,6 +533,7 @@ pub(crate) fn call(
             _ => Value::Null,
         },
         "dur" => match args.get(0).and_then(Value::as_duration) {
+            Some(d) if args.get(1).is_some_and(Value::truthy) => Value::text(clock_dur(d)),
             Some(d) => Value::text(dur(d)),
             None => Value::Null,
         },
@@ -988,6 +1009,29 @@ fn list_method(
             Value::list(items.iter().skip(n).cloned().collect())
         }
         "reverse" => Value::list(items.iter().rev().cloned().collect()),
+        "distinct" => {
+            let mut out: Vec<Value> = Vec::new();
+            for v in items {
+                if !out.iter().any(|o| equal(o, v)) {
+                    out.push(v.clone());
+                }
+            }
+            Value::list(out)
+        }
+        "sum" => {
+            let mut total = Value::int(0);
+            for v in items {
+                let v = if f.is_null() {
+                    v.clone()
+                } else {
+                    vm.call(rt, &f, vec![v.clone()])?
+                };
+                if !v.is_null() {
+                    total = binary(BinaryOp::Add, &total, &v)?;
+                }
+            }
+            total
+        }
         "join" => {
             let sep = f.as_text().unwrap_or("").to_string();
             Value::text(

@@ -201,12 +201,23 @@ critical ones while do-not-disturb is on. `.take(5)` keeps the first
 five. Both keep each notification's key, so the `for` still knows
 which card is which as notifications come and go.
 
-**`after T while cond { … }` is a timer.** It runs once, after `cond`
-has held for `T` in total. While the pointer is on the card, `!hover`
-is false and the timer pauses; it picks up where it left off when the
-pointer leaves. A critical notification never counts down at all. `T`
-is the sender's timeout, or six seconds when it gave none.
-`n.expire()` ends the popup, as a timeout should.
+**`after T while cond { … }` is a one-shot timer.** It runs once per
+card, after `cond` has held for `T` in total. While the pointer is on
+the card, `!hover` is false and the timer pauses; it picks up where it
+left off when the pointer leaves. A critical notification never counts
+down at all. `T` is the sender's timeout, or six seconds when it gave
+none. `n.expire()` ends the popup, as a timeout should.
+
+Once means once: after its body has run, the timer is done for as long
+as the card is on screen, and `cond` turning false and true again does
+not start it over. So it is not a grace delay. To do something each
+time a condition ends, a little after it ends (close a hover popup
+200 ms after the pointer leaves it, unless the pointer comes back), use
+`on change … after` and check the condition in the body:
+
+```
+on change card.hover after 200ms { if !card.hover { open = false } }
+```
 
 There is a repeating twin, `every T while cond { … }`, which runs every
 `T` while `cond` holds. The lock screen below uses one.

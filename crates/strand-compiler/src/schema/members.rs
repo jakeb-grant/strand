@@ -136,9 +136,32 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
         m(
             "reverse",
             vec![],
-            list,
+            list.clone(),
             false,
             "The items in reverse order.",
+        ),
+        m(
+            "distinct",
+            vec![],
+            list,
+            false,
+            "The items without repeats: the first of each equal item, in order.",
+        ),
+        MemberInfo::method(
+            "sum",
+            FnSig::new(
+                vec![ParamSig {
+                    has_default: true,
+                    ..param(
+                        "of",
+                        Ty::Fn(Arc::new(FnSig::positional(vec![t.clone()], Ty::Any))),
+                    )
+                }],
+                Ty::Any,
+            ),
+            false,
+            "The items added up (`xs.sum()`), or what `of` gives for each \
+             (`ws.sum(w => w.width)`); 0 for no items. Numbers of one unit.",
         ),
         m(
             "join",

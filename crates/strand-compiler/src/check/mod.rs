@@ -21,6 +21,7 @@
 //! each file in order. `let`s, `state`s and fns without a return type are
 //! checked on first use, which is also how static cycles are found.
 
+mod actions;
 mod collect;
 mod cycles;
 pub mod dbus;
@@ -36,7 +37,7 @@ mod surfaces;
 mod tokens;
 mod tree;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, suggest};
 use crate::hir::{
@@ -180,8 +181,11 @@ pub(crate) fn is_whole_literal(e: &ast::Expr) -> bool {
 
 /// The type a whole-number value takes where nothing else fixes it: `int`
 /// for a whole-number literal, `[int]` for a list literal of them (`[1,
-/// 2]`), `[[int]]` for a list of those, and so on. `None` for anything
-/// else, an empty list included.
+/// 2]`), `[[int]]` for a list of those, and so on; through `?:` and
+/// `match` when every branch has that shape or is an empty list (`match
+/// name { "DP-8" => [1, 2], _ => [] }` is `[int]`, decisions.md
+/// m6-w2-language, Gaps 12). `None` for anything else, a lone empty list
+/// included.
 pub(crate) fn whole_shape(e: &ast::Expr) -> Option<Ty> {
     if is_whole_literal(e) {
         return Some(Ty::INT);
@@ -195,16 +199,59 @@ pub(crate) fn whole_shape(e: &ast::Expr) -> Option<Ty> {
                 .all(|t| t.as_ref() == Some(&first))
                 .then(|| Ty::list(first))
         }
+        ast::ExprKind::Ternary { then, else_, .. } => branches_shape([&**then, &**else_]),
+        ast::ExprKind::Match(m) => branches_shape(m.arms.iter().map(|a| &a.body)),
         _ => None,
+    }
+}
+
+/// The one whole-number shape every branch has, an empty list fitting
+/// any list shape; `None` when they differ or none has one.
+fn branches_shape<'e>(branches: impl IntoIterator<Item = &'e ast::Expr>) -> Option<Ty> {
+    let mut shape: Option<Ty> = None;
+    let mut empties = false;
+    for b in branches {
+        if is_empty_list(b) {
+            empties = true;
+            continue;
+        }
+        let s = whole_shape(b)?;
+        match &shape {
+            Some(prev) if *prev != s => return None,
+            _ => shape = Some(s),
+        }
+    }
+    match shape {
+        Some(Ty::List(..)) | None => shape,
+        // `c ? 1 : []` is no shape at all.
+        Some(_) if empties => None,
+        s => s,
+    }
+}
+
+fn is_empty_list(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::Paren(inner) => is_empty_list(inner),
+        ast::ExprKind::Array(items) => items.is_empty(),
+        _ => false,
     }
 }
 
 /// `shape` with its `int`s made `float`s: what a whole-number declaration
 /// becomes once a fraction is written to it.
-fn fractional(shape: &Ty) -> Ty {
+pub(crate) fn fractional(shape: &Ty) -> Ty {
     match shape {
         Ty::List(t, keyed) => Ty::List(Box::new(fractional(t)), *keyed),
         _ => Ty::FLOAT,
+    }
+}
+
+/// Whether `ty` is a whole-number shape: `int`, `[int]`, `[[int]]` and
+/// so on (what [`fractional`] widens).
+pub(crate) fn is_whole_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::List(t, _) => is_whole_ty(t),
+        t => *t == Ty::INT,
     }
 }
 
@@ -271,6 +318,9 @@ pub(crate) struct Ctx {
     /// In a lambda a binding makes (not a handler's, not a `fn`'s): an
     /// async service call there never gets its answer.
     pub binding_lambda: bool,
+    /// (M6) In a `use tokens …, palette …` clause: the palette is being
+    /// chosen, so `$palette.<name>` cannot be read there.
+    pub in_use: bool,
 }
 
 /// An element being checked.
@@ -318,6 +368,10 @@ pub(crate) enum DoneHir {
 pub(crate) struct CompSig {
     pub params: Vec<CompParam>,
     pub has_slot: bool,
+    /// (M6) The kind of the one element the component's tree is (an
+    /// element or component name), which a call's `id:` and handlers
+    /// are about; `None` when the tree is not one element.
+    pub root: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -466,6 +520,27 @@ pub(crate) struct Checker<'a> {
     /// Raw colours in the `let` values being checked (see
     /// [`Checker::let_colour_lint`]).
     pub let_colours: Vec<Span>,
+    /// (M6) Each component's `screen` (spec.md 5.2): the screen of the
+    /// bar it is mounted in, a hidden parameter its callers pass. By
+    /// component, and every such local made by component.
+    pub comp_screen: HashMap<DefId, LocalId>,
+    pub screen_owner: HashMap<LocalId, DefId>,
+    /// Components that read their `screen` themselves.
+    pub screen_read: HashSet<DefId>,
+    /// Component calls and the `screen` in scope at each.
+    pub screen_calls: Vec<ScreenCall>,
+    /// The calls that pass `screen`, by call node, with what they pass.
+    pub call_screens: BTreeMap<NodeIdx, LocalId>,
+}
+
+/// (M6) A component call and the `screen` in scope where it is made.
+#[derive(Clone, Debug)]
+pub(crate) struct ScreenCall {
+    pub callee: DefId,
+    pub at: Option<LocalId>,
+    pub node: NodeIdx,
+    pub module: usize,
+    pub span: Span,
 }
 
 impl<'a> Checker<'a> {
@@ -532,6 +607,11 @@ impl<'a> Checker<'a> {
             kept: Vec::new(),
             kept_refs: Vec::new(),
             let_colours: Vec::new(),
+            comp_screen: HashMap::new(),
+            screen_owner: HashMap::new(),
+            screen_read: HashSet::new(),
+            screen_calls: Vec::new(),
+            call_screens: BTreeMap::new(),
         }
     }
 
@@ -553,6 +633,7 @@ impl<'a> Checker<'a> {
         self.after(&files);
         self.component_cycles(&files);
         self.fetching_fn_calls();
+        self.component_screens(&mut files);
         self.out_files = files;
     }
 
@@ -597,6 +678,69 @@ impl<'a> Checker<'a> {
         self.module = saved;
     }
 
+    /// (M6) `screen` in a component is the screen of the bar it is
+    /// mounted in (spec.md 5.2): a hidden parameter, which a component
+    /// takes when it reads `screen` or calls one that takes it, and its
+    /// callers pass from the `screen` in scope at the call. A call with
+    /// no `screen` there (outside any bar) is a load error.
+    fn component_screens(&mut self, files: &mut [hir::FileHir]) {
+        if self.comp_screen.is_empty() {
+            return;
+        }
+        let mut need = self.screen_read.clone();
+        loop {
+            let before = need.len();
+            for c in &self.screen_calls {
+                if need.contains(&c.callee)
+                    && let Some(d) = c.at.and_then(|l| self.screen_owner.get(&l))
+                {
+                    need.insert(*d);
+                }
+            }
+            if need.len() == before {
+                break;
+            }
+        }
+        if need.is_empty() {
+            return;
+        }
+        let calls = std::mem::take(&mut self.screen_calls);
+        let saved = self.module;
+        for c in calls {
+            if !need.contains(&c.callee) {
+                continue;
+            }
+            match c.at {
+                Some(l) => {
+                    self.call_screens.insert(c.node, l);
+                }
+                None => {
+                    self.module = c.module;
+                    let name = self.defs[c.callee.0 as usize].name.clone();
+                    self.error(
+                        "check::no_screen",
+                        format!("`{name}` reads `screen`, and there is no `screen` here"),
+                        c.span,
+                        "not in a bar",
+                    )
+                    .help = Some(format!(
+                        "`screen` is the monitor of the bar a component is in: use `{name}` inside a `bar`, or give it a `screen: Screen` parameter and pass one"
+                    ));
+                }
+            }
+        }
+        self.module = saved;
+        for f in files.iter_mut() {
+            for item in &mut f.items {
+                if let hir::Item::Component(c) = item
+                    && need.contains(&c.def)
+                {
+                    c.screen = self.comp_screen.get(&c.def).copied();
+                }
+            }
+        }
+    }
+
     fn finish(mut self) -> Checked {
         let files = std::mem::take(&mut self.out_files);
         self.diags.extend(lock::check(self.modules));
@@ -628,6 +772,7 @@ impl<'a> Checker<'a> {
                 refs: self.refs,
                 file_texts: self.file_texts,
                 file_templates: self.file_templates,
+                call_screens: self.call_screens,
             },
             diagnostics: self.diags,
             passes: 1,

@@ -18,6 +18,7 @@
 use serde_json::Value as Json;
 use strand_compiler::diagnostic::suggest;
 use strand_compiler::instantiate::parse_text;
+use strand_compiler::lower::Program;
 use strand_compiler::schema::Schema;
 use strand_compiler::ty::{FnSig, Ty};
 use strand_compiler::vm::Value;
@@ -38,7 +39,20 @@ const NOT_FROM_IPC: &[&str] = &["auth"];
 
 /// `target` (`notifications.clear`) and its text `args`, checked and
 /// read against `schema`.
+#[cfg(test)]
 pub(crate) fn resolve(schema: &Schema, target: &str, args: &[String]) -> Result<Call, String> {
+    resolve_in(schema, None, target, args)
+}
+
+/// `resolve` against the running `config` too: (M6) a service it
+/// declares shadows the builtin of that name (spec.md 4.2), so
+/// `strand call battery.ping` runs the config's `battery` action.
+pub(crate) fn resolve_in(
+    schema: &Schema,
+    config: Option<&Program>,
+    target: &str,
+    args: &[String],
+) -> Result<Call, String> {
     let Some((service, action)) = target.split_once('.') else {
         return Err(format!(
             "`{target}`: name a service action, `<service>.<action>` (`notifications.clear`)"
@@ -49,21 +63,25 @@ pub(crate) fn resolve(schema: &Schema, target: &str, args: &[String]) -> Result<
             "`{target}`: `call` runs service-level actions only (`notifications.clear`)"
         ));
     }
-    let Some(&record) = schema.services.get(service) else {
-        // `suggest` over a `Vec<&str>` here and below: one instantiation
-        // the binary already has, not one per iterator.
-        let names: Vec<&str> = schema.services.keys().map(String::as_str).collect();
-        let hint = suggest(service, names)
-            .map(|s| format!("; did you mean `{s}`?"))
-            .unwrap_or_default();
-        return Err(format!("no service `{service}`{hint}"));
+    let declared = config.and_then(|p| {
+        p.services
+            .values()
+            .find(|s| s.name == service)
+            .map(|s| (s.record, &p.types))
+    });
+    let (record, types) = match declared {
+        Some(d) => d,
+        None => match schema.services.get(service) {
+            Some(&r) => (r, &schema.types),
+            None => return Err(unknown_service(schema, config, service)),
+        },
     };
-    if NOT_FROM_IPC.contains(&service) {
+    if declared.is_none() && NOT_FROM_IPC.contains(&service) {
         return Err(format!(
             "`{target}`: the lock's `{service}` actions are not run over IPC"
         ));
     }
-    let methods = &schema.types.record(record).methods;
+    let methods = &types.record(record).methods;
     let actions: Vec<(&str, &FnSig)> = methods
         .iter()
         .flat_map(|m| {
@@ -88,7 +106,6 @@ pub(crate) fn resolve(schema: &Schema, target: &str, args: &[String]) -> Result<
         };
         return Err(format!("`{service}` has no action `{action}`{hint}"));
     };
-    let types = &schema.types;
     let shown = || {
         sig.params
             .iter()
@@ -164,6 +181,20 @@ pub(crate) fn resolve(schema: &Schema, target: &str, args: &[String]) -> Result<
         action: action.to_string(),
         args: values,
     })
+}
+
+/// `no service `x`` with the closest name the schema or `config` has.
+fn unknown_service(schema: &Schema, config: Option<&Program>, service: &str) -> String {
+    // `suggest` over a `Vec<&str>` here and below: one instantiation the
+    // binary already has, not one per iterator.
+    let mut names: Vec<&str> = schema.services.keys().map(String::as_str).collect();
+    if let Some(p) = config {
+        names.extend(p.services.values().map(|s| s.name.as_str()));
+    }
+    let hint = suggest(service, names)
+        .map(|s| format!("; did you mean `{s}`?"))
+        .unwrap_or_default();
+    format!("no service `{service}`{hint}")
 }
 
 /// `strand call [--json] <service.action> [args…]`.
@@ -291,6 +322,36 @@ mod tests {
         assert!(why("notifications", &[]).contains("<service>.<action>"));
         assert!(why("notifications.popups.clear", &[]).contains("service-level actions only"));
         assert!(why("auth.submit", &["hunter2"]).contains("not run over IPC"));
+    }
+
+    /// (M6, the review of the owner's ruling) A service the running
+    /// config declares is the one `strand call` resolves, shadowing the
+    /// builtin of its name (spec.md 4.2): its declared actions, read by
+    /// their parameters' types.
+    #[test]
+    fn a_config_service_is_the_one_called() {
+        let s = crate::services::schema();
+        let mut map = strand_compiler::source::SourceMap::new();
+        map.add(
+            "a.strand",
+            "service battery from dbus system \"org.example.Power\" {\n  level: int = Level\n  action boost(by: int) = Boost\n}\nbar B { text \"x\" }\n"
+                .to_string(),
+        );
+        let compiled = strand_compiler::compile_with(&map, s);
+        assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+        let prog = strand_compiler::lower::lower(&compiled.program, s);
+        assert_eq!(
+            resolve_in(s, Some(&prog), "battery.boost", &args(&["3"])),
+            Ok(Call {
+                service: "battery".into(),
+                action: "boost".into(),
+                args: vec![Value::int(3)],
+            })
+        );
+        let why = resolve_in(s, Some(&prog), "battery.zzz", &[]).unwrap_err();
+        assert!(why.ends_with("its actions: boost"), "{why}");
+        // Without the config, the builtin `battery` (no `boost`).
+        assert!(resolve(s, "battery.boost", &args(&["3"])).is_err());
     }
 
     #[test]

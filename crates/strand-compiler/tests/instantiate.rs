@@ -496,6 +496,42 @@ fn every_while_repeats_only_while_true() {
     assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(4));
 }
 
+/// spec.md 8.4 (decisions.md m6-w2-language, Docs 1): `after T while c`
+/// runs once per mount and is never re-armed by `c` turning false and
+/// true again, while the grace-delay idiom `on change c after T { if
+/// !c { … } }` runs each time `c` ends and stays ended for `T`.
+#[test]
+fn after_while_is_one_shot_and_the_grace_idiom_runs_each_time() {
+    let src = "state over = true\nstate fired = 0\nstate closed = 0\nafter 1s while over { fired += 1 }\non change over after 200ms { if !over { closed += 1 } }\n";
+    let mut shell = boot(&[("t.strand", src)], |_, _| {});
+    let value = |s: &Shell, n: &str| s.inst.value_of("t", n).unwrap();
+    let set = |s: &mut Shell, v: bool, at: f64| {
+        s.inst.set_value("t", "over", Value::Bool(v)).unwrap();
+        s.at(at);
+    };
+    shell.at(0.5);
+    shell.at(1.0);
+    assert_eq!(value(&shell, "fired"), Value::int(1));
+    // Leave, come back within the grace: nothing closes.
+    set(&mut shell, false, 2.0);
+    set(&mut shell, true, 2.1);
+    shell.at(2.5);
+    assert_eq!(value(&shell, "closed"), Value::int(0));
+    // Leave for good: it closes 200 ms later.
+    set(&mut shell, false, 3.0);
+    shell.at(3.3);
+    assert_eq!(value(&shell, "closed"), Value::int(1));
+    // Again: the idiom runs each time, the timer never again.
+    set(&mut shell, true, 4.0);
+    for s in [5.0, 6.0, 7.0] {
+        shell.at(s);
+    }
+    set(&mut shell, false, 8.0);
+    shell.at(8.3);
+    assert_eq!(value(&shell, "closed"), Value::int(2));
+    assert_eq!(value(&shell, "fired"), Value::int(1), "one-shot");
+}
+
 /// `<->`: widget writes reach state and `rw` service fields, and
 /// bindings follow (the launcher's query, the volume slider).
 #[test]
@@ -4693,4 +4729,183 @@ fn bundled_effect_knobs_reach_the_scene() {
     let glass = prop(2, Prop::Backdrop);
     assert_eq!(glass, Some(call("glass", vec![PropValue::Number(20.0)])));
     assert_eq!(calls(prop(3, Prop::Backdrop))[0].0, "glass");
+}
+
+/// (M6) A click's call of a declared action asks for its command, each
+/// parameter exactly one argument as its text: a title with spaces,
+/// quotes and `$` stays whole, an `int`, a `bool` and an enum show as
+/// written. A `from dbus` service's action goes to the service host by
+/// name with its arguments (decisions.md m6-w2-language).
+#[test]
+fn a_declared_action_asks_for_its_command_with_whole_arguments() {
+    use strand_compiler::vm::ExecRequest;
+    let src = "permit exec \"notify-send\"\n\
+        enum Urgency { low, critical }\n\
+        state title = \"it's \\\"two\\\" words; $HOME\"\n\
+        action say(summary: text, ms: int, wait: bool, u: Urgency) \
+        [\"notify-send\", \"-t\", ms, \"-u\", u, summary, wait]\n\
+        service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+        profile: text = ActiveProfile\n  action hold(profile: text) = HoldProfile\n}\n\
+        bar B {\n  box { on click { say(title, 1500, true, critical) } }\n  \
+        box { on click { ppd.hold(\"performance\") } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(shell.inst.take_execs().is_empty(), "nothing runs at boot");
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(
+        shell.inst.take_execs(),
+        [ExecRequest {
+            action: "say".into(),
+            argv: [
+                "notify-send",
+                "-t",
+                "1500",
+                "-u",
+                "critical",
+                "it's \"two\" words; $HOME",
+                "true"
+            ]
+            .map(String::from)
+            .to_vec(),
+        }]
+    );
+    assert!(shell.inst.take_execs().is_empty(), "taken once");
+    shell.inst.event(boxes[1], "click", Vec::new());
+    shell.flush();
+    let calls = shell.host.take_actions();
+    let held: Vec<_> = calls
+        .iter()
+        .filter(|c| c.target == "ppd")
+        .map(|c| (c.name.as_str(), c.args.clone()))
+        .collect();
+    assert_eq!(held, [("hold", vec![Value::text("performance")])]);
+}
+
+/// (M6, the owner's ruling) A config's `service battery` is the one its
+/// config reads: the host is asked for the declared service's field, not
+/// the builtin's (decisions.md m6-w2-language).
+#[test]
+fn a_config_service_named_like_a_builtin_is_the_one_read() {
+    let src = "service battery from file \"/tmp/level\" { level: int }\n\
+        bar B { text join(\" \", \"level\", battery.level) }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(
+        shell.scene.find_text("level 0").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    shell
+        .host
+        .set(&shell.rt, "battery.level", Value::int(7))
+        .unwrap();
+    shell.flush();
+    assert!(
+        shell.scene.find_text("level 7").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+}
+
+/// (M6, owner testing Gaps 8 and 6) A component call's handlers and
+/// `id:` are its root element's: a click on the root runs the caller's
+/// handler in the caller's scope, `id:` reads the root's `hover`, a
+/// call whose root is another call reaches the element at the bottom,
+/// and a `slot`'s children stay children.
+#[test]
+fn a_calls_handlers_and_id_are_its_root_elements() {
+    let src = "state n = 0\n\
+        component Chip(label: text) { box { text label } }\n\
+        component Wrap(label: text) { Chip label }\n\
+        component Frame { box { slot } }\n\
+        bar B {\n  row {\n    \
+        Chip \"a\" { id: c; on click { n += 1 } }\n    \
+        Wrap \"b\" { on click { n += 10 } }\n    \
+        Frame { on click { n += 100 }; text \"inside\" }\n    \
+        text \"hover\" { when c.hover { opacity: 0.5 } }\n    \
+        text join(\" \", \"n\", n)\n  }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(
+        shell.scene.find_text("inside").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 3);
+    assert!(shell.inst.event(boxes[0], "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("n 1").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    assert!(shell.inst.event(boxes[1], "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("n 11").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    assert!(shell.inst.event(boxes[2], "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("n 111").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    let hover = shell.scene.find_text("hover").unwrap();
+    assert_eq!(shell.scene.prop(hover, Prop::Opacity), None);
+    shell.inst.set_flag(boxes[0], NodeFlag::Hover, true);
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(hover, Prop::Opacity),
+        Some(&PropValue::Number(0.5))
+    );
+}
+
+/// (M6, owner testing Gaps 7) `screen` in a component is the screen of
+/// the bar it is in, on each monitor: read directly, through a component
+/// that calls it, and through a `slot`'s children.
+#[test]
+fn a_component_reads_its_bars_screen() {
+    let src = "component Name { text join(\" \", \"on\", screen.name) }\n\
+        component Line { row { Name } }\n\
+        component Frame { box { slot } }\n\
+        bar B { row { Line; Frame { text join(\" \", \"in\", screen.name); Name } } }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1", "HDMI-A-1"])
+    });
+    let mut texts = shell.scene.texts();
+    texts.sort();
+    assert_eq!(
+        texts,
+        [
+            "in DP-1",
+            "in HDMI-A-1",
+            "on DP-1",
+            "on DP-1",
+            "on HDMI-A-1",
+            "on HDMI-A-1"
+        ],
+        "{texts:?}"
+    );
 }

@@ -151,6 +151,10 @@
           "name": "permit"
         },
         {
+          "type": "SYMBOL",
+          "name": "action"
+        },
+        {
           "type": "ALIAS",
           "content": {
             "type": "SYMBOL",
@@ -899,8 +903,22 @@
           "type": "FIELD",
           "name": "name",
           "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "identifier"
+              },
+              {
+                "type": "ALIAS",
+                "content": {
+                  "type": "STRING",
+                  "value": "action"
+                },
+                "named": true,
+                "value": "identifier"
+              }
+            ]
           }
         },
         {
@@ -1677,6 +1695,10 @@
                         {
                           "type": "SYMBOL",
                           "name": "permit"
+                        },
+                        {
+                          "type": "SYMBOL",
+                          "name": "action"
                         }
                       ]
                     },
@@ -1699,6 +1721,10 @@
                               {
                                 "type": "SYMBOL",
                                 "name": "permit"
+                              },
+                              {
+                                "type": "SYMBOL",
+                                "name": "action"
                               }
                             ]
                           }
@@ -1729,6 +1755,61 @@
         {
           "type": "STRING",
           "value": "}"
+        }
+      ]
+    },
+    "action": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "action"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "parameters",
+          "content": {
+            "type": "SYMBOL",
+            "name": "parameters"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "="
+                },
+                {
+                  "type": "FIELD",
+                  "name": "method",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "FIELD",
+              "name": "command",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_expression"
+              }
+            }
+          ]
         }
       ]
     },

@@ -4,8 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use strand_compiler::instantiate::Instance;
-use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
+use strand_compiler::vm::{Num, Value};
 use strand_compiler::{SourceMap, lower};
 use strand_core::Runtime;
 
@@ -491,4 +491,60 @@ bar B {\n  box { rotate: spin; on click { x = t } }\n  box { on click { log = \"
     inst.event(boxes[1], "click", Vec::new());
     assert!(inst.flush().errors.is_empty());
     assert_eq!(get(&inst, "log"), Value::text("ok"));
+}
+
+/// Gaps 16 (decisions.md m6-w2-language): dates order, earlier first.
+#[test]
+fn dates_order() {
+    let src = "let m = clock.today.month_start()\nlet earlier = m.add(days: -1) < m\nlet later = m.add(months: 1) > m\nlet same = m <= m && m >= m\nlet not_less = m < m\nlet before = calendar.days(m).count(d => d.date < m)\n";
+    let (_, _, inst) = run(src);
+    assert_eq!(get(&inst, "earlier"), Value::Bool(true));
+    assert_eq!(get(&inst, "later"), Value::Bool(true));
+    assert_eq!(get(&inst, "same"), Value::Bool(true));
+    assert_eq!(get(&inst, "not_less"), Value::Bool(false));
+    // The grid's leading days are the previous month's.
+    let lead = get(&inst, "before").as_f64().unwrap();
+    assert!((0.0..7.0).contains(&lead), "{lead}");
+}
+
+/// Gaps 11 (decisions.md m6-w2-language): `+` joins texts, `distinct`
+/// drops repeats keeping the first, `sum` adds numbers of one unit.
+#[test]
+fn text_plus_distinct_and_sum() {
+    let src = "state name = \"Str\"\nlet joined = name + \"and\"\nstate xs = [3, 1, 3, 2, 1]\nlet uniq = xs.distinct()\nlet total = xs.sum()\nlet widths = xs.sum(x => x * 2px)\nlet none = xs.filter(x => x > 9).sum()\nlet glyphs = [\"web\", \"code\", \"web\"].distinct().join(\",\")\nlet idle = xs.filter(x => x > 9).sum(x => x * 1ms)\nlet waits = xs.filter(x => x > 9).map(x => x * 1s).sum()\nlet shares = xs.filter(x => x > 9).sum(x => x * 1%)\nbar B { box { on click { name += \"!\" } } }\n";
+    let (rt, host, inst) = run(src);
+    let shown = |n: &str| get(&inst, n).show(inst.vm().types());
+    assert_eq!(get(&inst, "joined"), Value::text("Strand"));
+    assert_eq!(shown("uniq"), "3, 1, 2");
+    assert_eq!(get(&inst, "total"), Value::int(10));
+    assert_eq!(shown("widths"), "20px");
+    assert_eq!(get(&inst, "none"), Value::int(0));
+    assert_eq!(get(&inst, "glyphs"), Value::text("web,code"));
+    // (M6, the review) An empty list's sum is its unit's zero.
+    assert_eq!(get(&inst, "idle"), Value::Num(0.0, Num::Ms));
+    assert_eq!(get(&inst, "waits"), Value::Num(0.0, Num::Ms));
+    assert_eq!(get(&inst, "shares"), Value::Num(0.0, Num::Percent));
+    assert_eq!(shown("idle"), shown("waits"));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    inst.event(boxes[0], "click", Vec::new());
+    inst.flush();
+    assert_eq!(get(&inst, "joined"), Value::text("Str!and"));
+}
+
+/// Gaps 14 (decisions.md m6-w2-language): `dur(d, clock: true)` reads as
+/// a player's clock.
+#[test]
+fn dur_has_a_clock_form() {
+    let src = "let a = dur(5s, clock: true)\nlet b = dur(225s, clock: true)\nlet c = dur(3723s, clock: true)\nlet d = dur(225s)\nlet e = dur(media.length, clock: true)\nlet f = dur((media.length ?? 0s) * media.position, clock: true)\n";
+    let (_, _, inst) = run(src);
+    assert_eq!(get(&inst, "a"), Value::text("0:05"));
+    assert_eq!(get(&inst, "b"), Value::text("3:45"));
+    assert_eq!(get(&inst, "c"), Value::text("1:02:03"));
+    assert_eq!(get(&inst, "d"), Value::text("3 min"));
+    assert_eq!(get(&inst, "e"), Value::Null, "null in, null out");
+    assert_eq!(get(&inst, "f"), Value::text("0:00"));
 }

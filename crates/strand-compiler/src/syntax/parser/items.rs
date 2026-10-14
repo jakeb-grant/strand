@@ -333,6 +333,11 @@ impl Parser<'_> {
                 top_only(self, "keyframes");
                 self.keyframes()
             }
+            // (M6) A word of its own only where it starts a declaration:
+            // `action` stays an element or a prop's name elsewhere.
+            "action" if matches!(ctx, Ctx::Top | Ctx::Service) && self.nth_kind(1) == K::Ident => {
+                self.action(ctx)
+            }
             "permit" => {
                 if !matches!(ctx, Ctx::Top | Ctx::Service) {
                     self.misplaced(
@@ -1370,6 +1375,39 @@ impl Parser<'_> {
             }
         }
         ItemKind::Permit(Permit { capability, args })
+    }
+
+    /// `action name(params) [argv]` (top level) or `action name(params) =
+    /// Method` (in a service).
+    fn action(&mut self, ctx: Ctx) -> ItemKind {
+        let start = self.cur().span.start;
+        self.bump();
+        let name = self.ident("an action name");
+        let params = if self.at(K::LParen) {
+            self.params()
+        } else {
+            self.expected("`(` and the parameters");
+            Vec::new()
+        };
+        let body = if ctx == Ctx::Service {
+            if self.eat(K::Eq).is_some() {
+                ActionBody::Method(self.ident("the D-Bus method it calls"))
+            } else {
+                self.expected("`=` and the D-Bus method it calls");
+                ActionBody::Missing
+            }
+        } else if self.same_line() && self.at(K::LBracket) {
+            ActionBody::Command(self.expr())
+        } else {
+            self.expected("the command, a list such as `[\"hyprctl\", \"dispatch\", ws]`");
+            ActionBody::Missing
+        };
+        ItemKind::Action(ActionDecl {
+            name,
+            params,
+            body,
+            span: self.finish(start),
+        })
     }
 
     fn keyframes(&mut self) -> ItemKind {

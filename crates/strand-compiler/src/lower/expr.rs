@@ -451,6 +451,7 @@ impl Lowerer<'_> {
             ExprKind::EnumType(en) => {
                 c.emit(Op::EnumType(*en), span);
             }
+            ExprKind::Token(p) if palette_name(p).is_some() => self.palette(c, p, false, span),
             ExprKind::Token(p) => {
                 let n = c.name(p);
                 c.emit(Op::Token(n), span);
@@ -530,7 +531,16 @@ impl Lowerer<'_> {
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                self.expr(c, lhs);
+                match &lhs.kind {
+                    // `$palette.mauve ?? $accent`: a palette without it
+                    // gives the fallback.
+                    ExprKind::Token(p)
+                        if *op == BinaryOp::Coalesce && palette_name(p).is_some() =>
+                    {
+                        self.palette(c, p, true, lhs.span)
+                    }
+                    _ => self.expr(c, lhs),
+                }
                 let jump = match op {
                     BinaryOp::And => Some(Op::AndJump(0)),
                     BinaryOp::Or => Some(Op::OrJump(0)),
@@ -638,6 +648,18 @@ impl Lowerer<'_> {
                     c.emit(Op::AsyncSite(site), span);
                 } else {
                     self.call(c, callee, args, span, service_async && self.frame > 0);
+                    // (M6) `xs.sum()` of numbers with a unit: plus the
+                    // unit's zero, so an empty list's sum is `0ms` (or
+                    // `0%`, `0.0`), not the whole `0` the VM starts from.
+                    if let Callee::Method { receiver, name, .. } = callee
+                        && name == "sum"
+                        && matches!(receiver.ty.non_null(), Ty::List(..))
+                        && let Some(unit) = unit_of(&e.ty)
+                    {
+                        let zero = c.constant(Const::Num(0.0, unit));
+                        c.emit(Op::Const(zero), span);
+                        c.emit(Op::Binary(BinaryOp::Add), span);
+                    }
                 }
             }
         }
@@ -729,6 +751,11 @@ impl Lowerer<'_> {
                 self.expr(c, f);
                 let map = self.push_args(c, args, args.len(), None);
                 c.emit(Op::CallValue { args: map }, span);
+            }
+            Callee::Action(d) => {
+                let arity = self.out_fn_arity(*d);
+                let map = self.push_args(c, args, arity, None);
+                c.emit(Op::Exec { def: *d, args: map }, span);
             }
             Callee::Error => {
                 c.emit(Op::Null, span);
@@ -866,6 +893,20 @@ fn mutation_arity(name: &str) -> usize {
     }
 }
 
+/// The unit of a number type other than `int` (`None` for `int` and
+/// for anything not a number).
+fn unit_of(ty: &Ty) -> Option<Num> {
+    use crate::ty::Prim;
+    Some(match ty.non_null() {
+        Ty::Prim(Prim::Float) => Num::Float,
+        Ty::Prim(Prim::Length) => Num::Px,
+        Ty::Prim(Prim::Percent) => Num::Percent,
+        Ty::Prim(Prim::Angle) => Num::Deg,
+        Ty::Prim(Prim::Duration) => Num::Ms,
+        _ => return None,
+    })
+}
+
 /// A number literal as a constant, its unit from the literal or, for a
 /// plain number, from the type the checker gave it.
 fn num_const(value: f64, unit: Option<Unit>, ty: &Ty) -> Const {
@@ -933,4 +974,25 @@ struct PlaceParts<'e> {
     indices: Vec<&'e hir::Expr>,
     /// The item expression of a [`PlaceRoot::Item`] place.
     item: Option<&'e hir::Expr>,
+}
+
+/// (M6) `$palette.<name>`'s name, if `path` is one.
+fn palette_name(path: &str) -> Option<&str> {
+    path.strip_prefix(strand_scene::tokens::PALETTE_SEGMENT)?
+        .strip_prefix('.')
+}
+
+impl Lowerer<'_> {
+    /// (M6) `$palette.<name>` (decisions.md m6-w2-language): an extra is
+    /// read as the token `palette.<name>`, which the token table holds
+    /// for each extra the program reads, so it springs with a swap as a
+    /// palette root does.
+    fn palette(&mut self, c: &mut Chunk, path: &str, soft: bool, span: Span) {
+        let name = palette_name(path).unwrap_or_default();
+        if !matches!(name, "name" | "source" | "dark") {
+            self.out.palette_reads.insert(name.to_string());
+        }
+        let name = c.name(name);
+        c.emit(Op::Palette { name, soft }, span);
+    }
 }

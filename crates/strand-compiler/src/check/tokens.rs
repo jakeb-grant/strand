@@ -708,6 +708,9 @@ impl<'a> Checker<'a> {
     }
 
     fn token_ty(&mut self, path: &str, span: Span) -> Ty {
+        if strand_scene::tokens::is_palette_path(path) {
+            return self.palette_ty(path, span);
+        }
         if let Some(cur) = self.ctx.token_entry
             && let Owner::Set(s) = self.tokens.entries[cur].owner
         {
@@ -767,6 +770,54 @@ impl<'a> Checker<'a> {
         )
         .suggest_opt(span, fix);
         Ty::Error
+    }
+
+    /// (M6) `$palette.<name>` outside a template (decisions.md
+    /// m6-w2-language, owner testing Gaps 10): the palette's identity
+    /// (`name` and `source` texts, `dark` a bool) and its extras
+    /// (colours). Which extras a palette has is known only when it is
+    /// made, so any other name is a colour here, and a missing one is an
+    /// error when read (a fallback with `??`). A token's own value and a
+    /// `use` clause make the palette, so they cannot read it.
+    fn palette_ty(&mut self, path: &str, span: Span) -> Ty {
+        let rest = path
+            .strip_prefix(strand_scene::tokens::PALETTE_SEGMENT)
+            .unwrap_or("")
+            .trim_start_matches('.');
+        if self.ctx.token_entry.is_some() || self.ctx.in_use {
+            let where_ = if self.ctx.in_use {
+                "a `use` clause"
+            } else {
+                "a token's value"
+            };
+            self.error(
+                "check::palette_in_tokens",
+                format!("`${path}` cannot be read in {where_}"),
+                span,
+                "the palette is made from these",
+            )
+            .help = Some(
+                "the palette's extras and identity are read in props, bindings and \
+                 handlers (and templates), after the palette is made"
+                    .into(),
+            );
+            return Ty::Error;
+        }
+        match rest {
+            "" => {
+                self.error(
+                    "check::unknown_token",
+                    "`$palette` is the palette's extras and identity, read one at a time",
+                    span,
+                    "a group",
+                )
+                .help = Some("`$palette.name`, `$palette.dark`, `$palette.mauve`".into());
+                Ty::Error
+            }
+            "name" | "source" => Ty::TEXT,
+            "dark" => Ty::BOOL,
+            _ => Ty::COLOR,
+        }
     }
 
     /// `$fg-muted`: the parser reads a subtraction (and warns); when the
@@ -869,6 +920,11 @@ impl<'a> Checker<'a> {
             tokens: None,
             palette: None,
         };
+        let saved = std::mem::take(&mut self.ctx);
+        self.ctx = Ctx {
+            in_use: true,
+            ..saved
+        };
         for c in &u.clauses {
             match c.kind.name.as_str() {
                 "tokens" => {
@@ -886,6 +942,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.ctx = saved;
         out
     }
 }

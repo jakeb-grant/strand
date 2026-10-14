@@ -233,6 +233,12 @@ impl Facts {
                 self.items(&s.body.items);
             }
             ItemKind::Permit(p) => self.exprs(&p.args),
+            ItemKind::Action(a) => {
+                self.params(&a.params);
+                if let ActionBody::Command(e) = &a.body {
+                    self.expr(e);
+                }
+            }
             ItemKind::Keyframes(k) => self.items(&k.body.items),
             ItemKind::Field(f) => self.field(f),
             ItemKind::KeyframeStop(k) => {

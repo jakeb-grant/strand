@@ -805,6 +805,7 @@ fn the_guide_host_service_reads_the_kernels_name() {
             key: vec!["name".into()],
             rw: false,
         }],
+        actions: Vec::new(),
     });
     client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
     client.acquire(&rt);

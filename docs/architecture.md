@@ -580,6 +580,18 @@ running service reads signatures from. The compiler's
 `check::dbus::Introspect::properties` answers `None` while a question is
 out (the LSP's, which never waits on a bus: an unanswered service is
 unchecked until the answer wakes the server to publish again).
+(M6, decisions.md m6-w2-language) It reads an object's methods from the
+same XML: `Method { interface, name, inputs }` (the in-argument
+signatures, an argument without a direction counting as in),
+`parse_methods(xml)`, `methods(&Bus, name, path)` blocking, and
+`members_on(conn, name, path) -> Result<(Vec<Property>, Vec<Method>),
+String>`, which the running custom service binds its actions' methods
+with. `Cache<T>` is generic over the answer (`Cache<Vec<Property>>` the
+default, `Cache::<Vec<Method>>::methods(ttl)`); `answer`/`answer_or_ask`
+are the generic forms of `properties`/`properties_or_ask`. The
+compiler's `Introspect::methods(system, name, path) ->
+Option<Result<Vec<BusMethod>, String>>` defaults to `None` (unchecked),
+so an implementor that predates it compiles unchanged.
 
 `strand-scene` has no heavy dependencies; it is what lets render and surface
 be built and tested without the language, and the language without pixels.
@@ -1646,7 +1658,14 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `TokenTable` sent by `SetTokens` holds plain values (palette roots,
   scales, fonts, `PropValue::Transition` springs for `$motion.*`) and
   derived tokens as expressions; render evaluates references at flatten
-  time, every frame, so only palette roots need to spring. Derived
+  time, every frame, so only palette roots need to spring. (M6,
+  decisions.md m6-w2-language) Each palette extra the program reads
+  outside templates (`lower::Program::palette_reads`) is also a plain
+  colour at `palette.<name>`, so it springs as a root does; logic reads
+  the palette for `$palette.<name>` through `VmHooks::palette(rt, name)`
+  (`Op::Palette`), over the instance's palette memo, which the token
+  table's memo is made over. `strand export json` leaves those paths out
+  of `tokens` (they are under `extras`). Derived
   colours are gamut-mapped (`Color::gamut_mapped`, CSS Color 4). The
   table also carries the contrast guard's declared pairs
   (`TokenTable::contrast`: a text token and its background tokens, the
@@ -3051,7 +3070,27 @@ Public interfaces other crates and later stages build on:
   path); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
   its `dbus` fields with an object's introspection (`Introspect::
   properties(system, name, path) -> Result<Vec<BusProperty>, String>`;
-  the caller brings the bus: `strand check`, the loader, the LSP).
+  the caller brings the bus: `strand check`, the loader, the LSP), and
+  (M6) its actions (`hir::ServiceDecl::actions`, each a
+  `hir::ServiceAction { name, params, method }`) with the object's
+  methods (`Introspect::methods`, `BusMethod { interface, name, inputs
+  }`). A top-level `action` is `hir::Item::Action(hir::ActionDecl {
+  def, params, argv: Vec<ArgvPart> })`, `ArgvPart::Text` or
+  `ArgvPart::Param(index)`, with `ActionDecl::shown()` the line `strand
+  check` lists (`argv` empty when the command was refused, `permit
+  exec` included); a call of it is `Callee::Action(def)`.
+  (M6, owner testing Gaps 7) A component that reads `screen` (or calls
+  one that does) has `hir::Component::screen: Option<LocalId>`, its
+  hidden parameter, and `hir::Program::call_screens: BTreeMap<NodeIdx,
+  LocalId>` gives each call of such a component the local whose
+  `screen` it passes (lowered into the call's arguments, so the
+  instance needs nothing new). (M6, owner testing Gaps 8) A call's
+  handlers and `id:` are its root element's: `lower::Component::root:
+  Option<NodeIdx>` is the root element of a one-element component, the
+  call's `lower::Element::call_handlers: Arc<Vec<Node>>` are its block's
+  handlers, run in the caller's scope and attached to the root's scene
+  node once it mounts, and `vm::Env::adopt_node(idx, state)` gives the
+  root the call's element state, so `c.hover` is the root's.
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
   `from poll` path names a program (executable, `#!` or ELF; stat before
@@ -3070,11 +3109,13 @@ Public interfaces other crates and later stages build on:
   `tooltip`, `page`; `ElementFlags::on_demand`) mounts its children only
   on demand, which the component-cycle check reads like an `if`.
   Configs see contributed names as a prelude
-  their own declarations shadow, with one exception: a config `service`
-  named like a builtin or contributed service is `check::redeclared`
-  (services are identified by name at runtime), so a crate that adds a
-  service name a config already declares breaks that config; namespace
-  new service names. An element's positional names the prop it fills,
+  their own declarations shadow, services included: (M6, the owner's
+  ruling, spec.md 4.2) a config `service` named like a builtin or
+  contributed service shadows it with the `check::shadows_builtin`
+  warning, the runtime's own reads still reaching the builtin (the
+  `*_builtin` host methods below), so a crate that adds a service name a
+  config already declares (M6 wave 2's `session`) leaves that config
+  loading (decisions.md m6-w2-language, m6-integration-w2). An element's positional names the prop it fills,
   `element meter(float -> value)` (`ElementSchema::arg_prop`), which the
   checker and lowering both read. The LSP reads the same
   table for completion and hover (M3, "service schemas drive type checking
@@ -3241,6 +3282,35 @@ Public interfaces other crates and later stages build on:
     service that does not restart; `SchemaHost` remounts it at the new
     defaults when its record or field types moved). All default to
     nothing.
+  - (M6) A `from dbus` declaration's actions are
+    `CustomService::actions` (`lower::CustomAction { name, method,
+    arity }`, in declaration order) and methods on its record, so a
+    call reaches the host as `action(rt, ActionTarget::Service(name),
+    action, args, ctx)`; the strand host sends the custom service
+    `strand_services::custom::CustomAction { index, args: Vec<Data> }`,
+    and the service calls the method (`custom::Spec::actions`, each an
+    `ActionSpec { name, method }`). A top-level `action`'s command is not
+    a host call: the VM queues an `ExecRequest { action, argv }`
+    (`lower::Program::execs` maps its def to its `ExecAction { name,
+    argv }`), and after each tick's diff logic takes them
+    (`Instance::take_execs() -> Vec<ExecRequest>`) and starts each on a
+    thread of its own (`run/exec.rs`), one run per action at a time with
+    one re-run queued.
+  - (M6, decisions.md m6-w2-language, a config `service` shadowing a
+    builtin) `read_builtin(rt, service, field)`, `sources_builtin(rt,
+    service, field)`, `acquire_builtin(rt, service)` and
+    `release_builtin(rt, service)` are the runtime's own reads by name
+    (the default palette's `system` fields, the `screens` that mount
+    bars, `system.reduced_motion`): they reach the builtin service even
+    when the program declares one of that name. Each defaults to the
+    plain method, so a host without shadowing is unchanged; `Composite`
+    routes them past its `CustomHost`, and `SchemaHost` reads the
+    builtin's cells it moved aside. `lower::Program::declares_service(name)`
+    says whether the program shadows `name`. A hold taken through
+    `acquire`/`acquire_field` is released on the host that took it
+    (`Composite` remembers it), so a reload that adds or removes a
+    shadow lets go of the right one. `SchemaHost::declare` of a builtin's
+    name moves the builtin's cells aside, and `stop` puts them back.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
@@ -4875,7 +4945,9 @@ transparent huge pages for life.
   action or write by the record's name to the member whose
   `item_records()` name it, `declare`d custom services to its
   `CustomHost` (`set_custom`; without one, under `STRAND_MOCK`, the
-  fallback answers them at their defaults), and everything else (the
+  fallback answers them at their defaults; (M6) a declared one first, so
+  a config's `service battery` shadows the builtin, spec.md 4.2, except
+  for the `*_builtin` reads, which skip it), and everything else (the
   clock and calendar, services no crate serves yet) to the `SchemaHost`
   fallback;
   `next_wake` is the earliest of all, `wake` reaches all. A service

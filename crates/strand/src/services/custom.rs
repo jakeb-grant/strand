@@ -14,7 +14,10 @@
 //! the value, until a value converts again ([`Mismatch`]). An
 //! `rw` field written (`ppd.profile = "performance"`, `<-> ppd.profile`)
 //! is an item write of its value, so the service sets the property and
-//! its echo is ignored. A reload that changes a declaration restarts only
+//! its echo is ignored. (M6) An action (`ppd.hold("performance")`, of
+//! `action hold(profile: text, …) = HoldProfile`) is sent to the service
+//! by its index with its arguments as data, and the service calls the
+//! method. A reload that changes a declaration restarts only
 //! that service ([`ServiceHost::restart`]); one that removes it stops it;
 //! one that keeps it re-types its values as the new program numbers its
 //! types ([`ServiceHost::retype`]) without restarting it.
@@ -33,7 +36,9 @@ use strand_compiler::vm::host::{ActionCtx, ActionTarget, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
-use strand_services::custom::{self, Custom, CustomValue, FieldSpec, Source, Spec};
+use strand_services::custom::{
+    self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Source, Spec,
+};
 use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, ToData};
 
 use super::convert::{to_data, to_value};
@@ -161,6 +166,14 @@ pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>) -> Spec {
                 name: f.name.clone(),
                 key: f.key.clone(),
                 rw: f.rw,
+            })
+            .collect(),
+        actions: decl
+            .actions
+            .iter()
+            .map(|a| ActionSpec {
+                name: a.name.clone(),
+                method: a.method.clone(),
             })
             .collect(),
     }
@@ -617,15 +630,32 @@ impl ServiceHost for CustomHost {
 
     fn action(
         &self,
-        _rt: &Runtime,
-        _target: ActionTarget<'_>,
+        rt: &Runtime,
+        target: ActionTarget<'_>,
         name: &str,
-        _args: &[Value],
-        _ctx: ActionCtx,
+        args: &[Value],
+        ctx: ActionCtx,
     ) -> Result<(), Error> {
-        Err(Error::failed(format!(
-            "a no-code service has no action `{name}`"
-        )))
+        let ActionTarget::Service(service) = target else {
+            return Err(Error::failed(format!(
+                "a no-code service has no item action `{name}`"
+            )));
+        };
+        let (client, index, table) = {
+            let entries = self.entries.borrow();
+            let e = entries
+                .get(service)
+                .ok_or_else(|| Error::failed(format!("no service `{service}`")))?;
+            let index = e
+                .decl
+                .actions
+                .iter()
+                .position(|a| a.name == name)
+                .ok_or_else(|| Error::failed(format!("`{service}` has no action `{name}`")))?;
+            (e.client.clone(), index, e.typing.borrow().table.clone())
+        };
+        let args = args.iter().map(|v| to_data(&table, v)).collect();
+        client.act_with(rt, CustomAction { index, args }, ctx, false)
     }
 
     fn call(
@@ -677,6 +707,8 @@ impl ServiceHost for CustomHost {
 #[derive(Default)]
 pub struct BusIntrospector {
     cache: Arc<strand_introspect::Cache>,
+    /// (M6) The objects' methods, for services' actions.
+    methods: Arc<strand_introspect::Cache<Vec<strand_introspect::Method>>>,
     /// Not waiting: what to call when a late answer differs.
     ask: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Still waiting for answers (`ask` is used once this is false).
@@ -734,6 +766,42 @@ impl strand_compiler::check::dbus::Introspect for BusIntrospector {
         };
         Some(answer.map(bus_properties))
     }
+
+    fn methods(
+        &self,
+        system: bool,
+        name: &str,
+        path: &str,
+    ) -> Option<Result<Vec<strand_compiler::check::dbus::BusMethod>, String>> {
+        let bus = if system {
+            strand_introspect::Bus::System
+        } else {
+            strand_introspect::Bus::Session
+        };
+        let answer = match &self.ask {
+            Some(ask) if !self.waits() => {
+                let ask = ask.clone();
+                self.methods
+                    .answer_or_ask(&bus, name, path, move || ask())?
+            }
+            _ => self.methods.answer(&bus, name, path),
+        };
+        Some(answer.map(bus_methods))
+    }
+}
+
+/// (M6) Introspected methods as the compiler's check reads them.
+pub fn bus_methods(
+    methods: Vec<strand_introspect::Method>,
+) -> Vec<strand_compiler::check::dbus::BusMethod> {
+    methods
+        .into_iter()
+        .map(|m| strand_compiler::check::dbus::BusMethod {
+            interface: m.interface,
+            name: m.name,
+            inputs: m.inputs,
+        })
+        .collect()
 }
 
 /// Ends the waiting of a [`dbus_check`].
@@ -777,6 +845,7 @@ fn dbus_check_on(
     let waits = Arc::new(AtomicBool::new(true));
     let intro = BusIntrospector {
         cache,
+        methods: Arc::default(),
         ask: Some(Arc::new(recheck)),
         waits: waits.clone(),
     };
@@ -796,6 +865,78 @@ fn dbus_check_on(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    /// (M6, the review of the owner's ruling) `BusIntrospector::methods`
+    /// hands the check the object's methods as the bus answered them,
+    /// failures included; without waiting, an answer not yet in is `None`
+    /// and the recheck is asked for once it is.
+    #[test]
+    fn the_introspector_answers_methods_as_the_bus_does() {
+        let method = strand_introspect::Method {
+            interface: "net.hadess.PowerProfiles".into(),
+            name: "HoldProfile".into(),
+            inputs: vec!["s".into(), "s".into(), "s".into()],
+        };
+        let answer = method.clone();
+        let methods = Arc::new(strand_introspect::Cache::with_fetch(
+            strand_introspect::TTL,
+            move |_, name, _| {
+                if name == "org.example.Gone" {
+                    Err("no answer".into())
+                } else {
+                    Ok(vec![answer.clone()])
+                }
+            },
+        ));
+        let waiting = BusIntrospector {
+            cache: Arc::default(),
+            methods: methods.clone(),
+            ask: None,
+            waits: Arc::default(),
+        };
+        use strand_compiler::check::dbus::Introspect;
+        let got = waiting.methods(
+            true,
+            "net.hadess.PowerProfiles",
+            "/net/hadess/PowerProfiles",
+        );
+        let got = got.unwrap().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (
+                got[0].interface.as_str(),
+                got[0].name.as_str(),
+                got[0].inputs.len()
+            ),
+            ("net.hadess.PowerProfiles", "HoldProfile", 3)
+        );
+        assert_eq!(
+            waiting.methods(false, "org.example.Gone", "/"),
+            Some(Err("no answer".into()))
+        );
+        // Not waiting: asked off the caller's thread, then answered.
+        let asked = Arc::new(AtomicBool::new(false));
+        let flag = asked.clone();
+        let quick = BusIntrospector {
+            cache: Arc::default(),
+            methods: Arc::new(strand_introspect::Cache::with_fetch(
+                strand_introspect::TTL,
+                move |_, _, _| Ok(vec![method.clone()]),
+            )),
+            ask: Some(Arc::new(move || flag.store(true, Ordering::SeqCst))),
+            waits: Arc::new(AtomicBool::new(false)),
+        };
+        assert_eq!(quick.methods(false, "org.example.Late", "/"), None);
+        let start = std::time::Instant::now();
+        while !asked.load(Ordering::SeqCst) {
+            assert!(start.elapsed() < Duration::from_secs(10), "never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(
+            quick.methods(false, "org.example.Late", "/"),
+            Some(Ok(m)) if m.len() == 1
+        ));
+    }
 
     use strand_compiler::schema::Schema;
     use strand_services::Data;

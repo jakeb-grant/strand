@@ -2296,3 +2296,21 @@ fn the_lsp_binary_reads_plugin_schemas() {
     assert!(status.success());
     assert!(h.contains("The last greeting, from the plugin."), "{h}");
 }
+
+/// (M6) `$palette.<name>` outside templates: hover says what it is, and
+/// it cannot be renamed (decisions.md m6-w2-language).
+#[test]
+fn palette_entries_hover_and_refuse_a_rename() {
+    let src = "bar B {\n  box { bg: $palette.mantle ?? $accent }\n  text $palette.name\n}\n";
+    let mut c = Client::start(&[("p.strand", src.to_string())]);
+    c.open("p.strand");
+    let h = c.hover("p.strand", Client::pos(src, "$palette.mantle", 0, 10));
+    assert!(
+        h.contains("$palette.mantle: color") && h.contains("`??`"),
+        "{h}"
+    );
+    let h = c.hover("p.strand", Client::pos(src, "$palette.name", 0, 10));
+    assert!(h.contains("$palette.name: text"), "{h}");
+    let e = c.rename_err("p.strand", Client::pos(src, "$palette.mantle", 0, 10), "x");
+    assert!(e.contains("named by the palette"), "{e}");
+}

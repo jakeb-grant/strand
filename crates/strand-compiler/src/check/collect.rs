@@ -131,6 +131,9 @@ impl<'a> Checker<'a> {
                 let pending = self.pending(LazyAst::Fn(f));
                 self.declare_global(&f.name, DefKind::Fn, Ty::Error, pending);
             }
+            ItemKind::Action(a) => {
+                self.declare_global(&a.name, DefKind::Action, Ty::Error, LazyState::Ready);
+            }
             ItemKind::Tokens(t) => {
                 let id = self.declare_global(
                     &t.name,
@@ -270,20 +273,29 @@ impl<'a> Checker<'a> {
         lazy: LazyState<'a>,
     ) -> DefId {
         // Builtin elements are resolved before components in a tree, so a
-        // component named like one could never be placed; two services
-        // under one name would be ambiguous. Other builtin names are a
-        // prelude the declaration shadows (see `shadows_builtin`).
+        // component named like one could never be placed. Other builtin
+        // names, builtin services included, are a prelude the declaration
+        // shadows (see `shadows_builtin`): (M6, the owner's ruling) a
+        // config's `service battery` is the one its config reads, so a
+        // config keeps loading when a release adds a builtin service of
+        // its name (spec.md 4.2 and 14).
         let builtin = match &kind {
             DefKind::Component | DefKind::Surface(_) => {
                 self.schema.element(&name.name).map(|_| "a builtin element")
             }
-            DefKind::Service(_) => self.schema.service(&name.name).map(|_| "a builtin service"),
             _ => None,
         };
         match &kind {
-            DefKind::Fn | DefKind::Type(_) | DefKind::Enum(_) | DefKind::Component => {
+            DefKind::Fn
+            | DefKind::Type(_)
+            | DefKind::Enum(_)
+            | DefKind::Component
+            | DefKind::Service(_)
+            | DefKind::Action => {
                 let what = match &kind {
                     DefKind::Fn => "`fn`",
+                    DefKind::Action => "action",
+                    DefKind::Service(_) => "service",
                     DefKind::Component => "component",
                     _ => "type",
                 };
@@ -441,6 +453,7 @@ impl<'a> Checker<'a> {
                 match &item.kind {
                     ItemKind::Component(c) => self.component_sig(c),
                     ItemKind::Fn(f) => self.fn_sig(f),
+                    ItemKind::Action(a) => self.action_sig(a),
                     _ => {}
                 }
             }
@@ -503,7 +516,29 @@ impl<'a> Checker<'a> {
             return;
         };
         let mut fields: Vec<FieldDef> = Vec::new();
+        let mut methods: Vec<crate::ty::MethodDef> = Vec::new();
         for item in &s.body.items {
+            // (M6) `action hold(profile: text) = HoldProfile`: a method
+            // handlers call (`ppd.hold("performance")`).
+            if let ItemKind::Action(a) = &item.kind {
+                if methods.iter().any(|m| m.name == a.name.name) {
+                    self.error(
+                        "check::redeclared",
+                        format!("action `{}` is declared twice", a.name.name),
+                        a.name.span,
+                        "declared again here",
+                    );
+                    continue;
+                }
+                let params = self.action_params(&a.params, true);
+                let mut sig = FnSig::new(params, Ty::Unit);
+                sig.action = true;
+                methods.push(crate::ty::MethodDef {
+                    name: a.name.name.clone(),
+                    sigs: vec![std::sync::Arc::new(sig)],
+                });
+                continue;
+            }
             let ItemKind::Field(f) = &item.kind else {
                 continue;
             };
@@ -523,7 +558,29 @@ impl<'a> Checker<'a> {
                 rw: f.rw.is_some(),
             });
         }
-        self.types.record_mut(rid).fields = fields;
+        for m in &methods {
+            if let Some(f) = fields.iter().find(|f| f.name == m.name) {
+                let name = f.name.clone();
+                let span = s
+                    .body
+                    .items
+                    .iter()
+                    .find_map(|i| match &i.kind {
+                        ItemKind::Action(a) if a.name.name == name => Some(a.name.span),
+                        _ => None,
+                    })
+                    .unwrap_or(s.name.span);
+                self.error(
+                    "check::redeclared",
+                    format!("`{name}` is both a field and an action"),
+                    span,
+                    "declared again here",
+                );
+            }
+        }
+        let rec = self.types.record_mut(rid);
+        rec.fields = fields;
+        rec.methods = methods;
     }
 
     fn component_sig(&mut self, c: &'a ast::Component) {
@@ -566,7 +623,15 @@ impl<'a> Checker<'a> {
             });
         }
         let has_slot = has_slot(&c.body.items);
-        self.comp_sigs.insert(id, CompSig { params, has_slot });
+        let root = single_root(&c.body.items);
+        self.comp_sigs.insert(
+            id,
+            CompSig {
+                params,
+                has_slot,
+                root,
+            },
+        );
     }
 
     fn fn_sig(&mut self, f: &'a ast::FnDecl) {
@@ -701,6 +766,11 @@ impl<'a> Checker<'a> {
                 ItemKind::Keyframes(k) => {
                     if let Some(id) = def(self, &k.name) {
                         out.push(hir::Item::Keyframes(self.keyframes(id, k)));
+                    }
+                }
+                ItemKind::Action(a) => {
+                    if let Some(id) = def(self, &a.name) {
+                        out.push(hir::Item::Action(self.action_decl(id, a)));
                     }
                 }
                 ItemKind::Permit(p) => out.push(hir::Item::Permit(hir::Permit {
@@ -1112,6 +1182,28 @@ fn if_element_names<'t>(f: &'t ast::If<ast::Item>, out: &mut HashSet<&'t str>) {
         Some(ast::Else::Block(b)) => element_names(&b.items, out),
         None => {}
     }
+}
+
+/// (M6) The kind of the one element a component's tree is: its body
+/// holds exactly one element and nothing else that renders (`if`, `for`,
+/// `match`, `slot`); `state`, `let`, `fn` and handlers may sit beside it.
+fn single_root(items: &[ast::Item]) -> Option<String> {
+    let mut root = None;
+    for i in items {
+        match &i.kind {
+            ItemKind::Element(e) => {
+                if root.is_some() {
+                    return None;
+                }
+                root = Some(e.kind.name.clone());
+            }
+            ItemKind::If(_) | ItemKind::For(_) | ItemKind::Match(_) | ItemKind::Slot => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    root
 }
 
 /// Whether a component body renders its children (`slot` anywhere in it).

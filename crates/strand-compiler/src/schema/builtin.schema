@@ -716,8 +716,11 @@ provisional service session {
 
 /// A fraction as a percentage: `pct(battery.percent)`. Null in, null out.
 fn pct(fraction: float) -> text lift
-/// A duration as text: `dur(battery.time_left)`. Null in, null out.
-fn dur(duration: duration) -> text lift
+/// A duration as text: `dur(battery.time_left)` is `45 s`, `12 min` or
+/// `2 h 5 min`; with `clock: true` it is a clock reading, `m:ss` or
+/// `h:mm:ss` (`dur(media.length, clock: true)` is `3:45`). Null in, null
+/// out.
+fn dur(duration: duration, clock: bool = false) -> text lift
 /// Joins the parts that are not null.
 fn join(sep: text, ...parts: any?) -> text
 

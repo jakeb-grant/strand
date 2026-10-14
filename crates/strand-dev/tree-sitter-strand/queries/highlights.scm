@@ -36,6 +36,8 @@
 (keyframes name: (identifier) @function)
 (service name: (identifier) @module)
 (function name: (identifier) @function)
+(action name: (identifier) @function)
+(action method: (identifier) @function.method)
 (permit kind: (identifier) @keyword)
 
 (element name: (identifier) @tag)
@@ -82,6 +84,7 @@
   "listen"
   "poll"
   "permit"
+  "action"
   "keyframes"
   "rw"
   "persist"

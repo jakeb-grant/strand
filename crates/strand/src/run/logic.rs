@@ -130,6 +130,7 @@ pub fn logic(
     let rt = Runtime::new();
     let services_ping = ping.clone();
     let files_ping = ping.clone();
+    let exec_ping = ping.clone();
     let own_writes = live.own_writes;
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
@@ -284,6 +285,7 @@ pub fn logic(
         secrets: Default::default(),
         exports: Vec::new(),
         files: super::outputs::Files::new(files_ping, manifest, own_writes),
+        execs: super::exec::Execs::new(exec_ping),
         to_main: live.to_main,
         reports: Vec::new(),
         next_snapshot: 0,
@@ -330,7 +332,7 @@ pub fn logic(
         let reduced = {
             let rt = shell.inst.runtime();
             let host = live_host(&shell.host, &shell.real);
-            rt.untrack(|rt| host.read(rt, "system", "reduced_motion"))
+            rt.untrack(|rt| host.read_builtin(rt, "system", "reduced_motion"))
                 .ok()
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
@@ -347,6 +349,8 @@ pub fn logic(
         // (M5) The theming hub's work after the diff: `file` outputs and
         // waiting `export` requests (`outputs.rs`).
         shell.after_diff();
+        // (M6) Declared actions' commands, started off this thread.
+        shell.run_execs();
         // Output a client's socket cannot take yet waits for its write
         // source to wake the loop (no polling).
         if let Some(s) = shell.server.as_mut() {

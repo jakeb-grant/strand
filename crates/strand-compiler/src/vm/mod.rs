@@ -55,6 +55,16 @@ pub trait VmHooks {
     /// `propagate()` in a handler of `ctx`: deliver the event to the next
     /// ancestor that handles it.
     fn propagate(&self, rt: &Runtime, ctx: &EventCtx);
+    /// (M6) The current palette's entry `name` (`mauve`, `name`, `dark`),
+    /// tracked: `$palette.<name>` outside a template. `None` when the
+    /// palette has no such entry (or there is no palette).
+    fn palette(
+        &self,
+        _rt: &Runtime,
+        _name: &str,
+    ) -> Result<Option<strand_scene::PropValue>, Error> {
+        Ok(None)
+    }
 }
 
 /// A scope of names: a component, surface or `for` item instance (or the
@@ -325,6 +335,15 @@ impl Env {
         found.or_else(|| self.parent.as_ref().and_then(|p| p.def(id)))
     }
 
+    /// (M6) Make `state` the state of element `idx` in this scope: a
+    /// component's root element shares its call's state, so the
+    /// caller's `id:` name and handlers are about the root.
+    pub fn adopt_node(&self, idx: NodeIdx, state: Rc<NodeState>) {
+        let mut nodes = self.nodes.borrow_mut();
+        nodes.retain(|(i, _)| *i != idx);
+        nodes.push((idx, state));
+    }
+
     /// The live state of element `idx` in this scope chain, created on
     /// first use in the scope that owns it.
     pub fn node_state(self: &Rc<Self>, rt: &Runtime, idx: NodeIdx) -> Rc<NodeState> {
@@ -395,6 +414,19 @@ pub struct Vm {
     /// ([`Vm::in_other_mode`]): `system.dark` reads negated and the
     /// `let`s that reach it read from these slots.
     other: RefCell<Option<Rc<OtherEnv>>>,
+    /// (M6) Commands declared actions asked to run since the last
+    /// [`Vm::take_execs`].
+    execs: RefCell<Vec<ExecRequest>>,
+}
+
+/// (M6) A command a handler's call of a declared action (`dispatch(3)`)
+/// asked to run: the host starts it detached, off the logic thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecRequest {
+    /// The action's name, for its notices.
+    pub action: String,
+    /// The program, then its arguments: each parameter exactly one.
+    pub argv: Vec<String>,
 }
 
 /// (M5) The other mode's env (decisions.md m5-tools, "a template reads
@@ -454,7 +486,39 @@ impl Vm {
             watched: RefCell::default(),
             canvas: RefCell::default(),
             other: RefCell::default(),
+            execs: RefCell::default(),
         })
+    }
+
+    /// (M6) Asks for declared action `def`'s command with `args` filling
+    /// its parameters, each one argument as its text (never split; the
+    /// program runs with no shell between). It runs when the host takes it
+    /// ([`Vm::take_execs`]).
+    pub(crate) fn exec(&self, def: DefId, args: &[Value]) -> Result<(), Error> {
+        let Some(action) = self.prog.execs.get(&def) else {
+            return Err(Error::failed("no such action"));
+        };
+        let types = self.types();
+        let argv = action
+            .argv
+            .iter()
+            .map(|p| match p {
+                crate::hir::ArgvPart::Text(t) => t.clone(),
+                crate::hir::ArgvPart::Param(i) => {
+                    args.get(*i).map(|v| v.show(types)).unwrap_or_default()
+                }
+            })
+            .collect();
+        self.execs.borrow_mut().push(ExecRequest {
+            action: action.name.clone(),
+            argv,
+        });
+        Ok(())
+    }
+
+    /// (M6) The commands asked for since the last call, in order.
+    pub fn take_execs(&self) -> Vec<ExecRequest> {
+        std::mem::take(&mut *self.execs.borrow_mut())
     }
 
     /// (M5) Runs `f` in the other mode: `system.dark` reads negated (the
@@ -481,7 +545,11 @@ impl Vm {
         field: &str,
     ) -> Result<Value, Error> {
         let v = self.host.read(rt, service, field)?;
-        if service == "system" && field == "dark" && self.other_mode_active() {
+        if service == "system"
+            && field == "dark"
+            && self.other_mode_active()
+            && !self.prog.declares_service("system")
+        {
             return Ok(Value::Bool(!v.truthy()));
         }
         Ok(v)

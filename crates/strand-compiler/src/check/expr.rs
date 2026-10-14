@@ -516,6 +516,12 @@ impl<'a> Checker<'a> {
             .help = Some(format!("read what it exports: `{name}.something`"));
             return hir::Expr::error(span);
         }
+        // (M6) A component's `screen` is found last, where the name would
+        // otherwise be unknown, so it never changes what a name that
+        // loads today means (spec.md 5.2 and 14).
+        if let Some(b) = self.implicit_screen(name) {
+            return self.binding_expr(b, span);
+        }
         self.unknown_name(id, expected, field_base);
         hir::Expr::error(span)
     }
@@ -1236,6 +1242,25 @@ impl<'a> Checker<'a> {
                     self.add_ref(id.span, Target::Def(d));
                     return self.construct(r, args, span);
                 }
+                DefKind::Action => {
+                    self.add_ref(id.span, Target::Def(d));
+                    let reported = self.action_check(name, id.span);
+                    let Ty::Fn(sig) = self.defs[d.0 as usize].ty.clone() else {
+                        for a in args {
+                            self.expr(&a.value, None);
+                        }
+                        return hir::Expr::error(span);
+                    };
+                    let (args, _) = self.call_args(&sig, args, &format!("`{name}`"), span);
+                    return hir::Expr {
+                        kind: ExprKind::Call {
+                            callee: Callee::Action(d),
+                            args,
+                        },
+                        ty: if reported { Ty::Error } else { Ty::Unit },
+                        span,
+                    };
+                }
                 DefKind::Component => {
                     self.error(
                         "check::not_a_value",
@@ -1336,6 +1361,7 @@ impl<'a> Checker<'a> {
             DefKind::Keyframes => format!("export keyframes {n} {{ … }}"),
             DefKind::Service(_) => format!("export service {n} from …"),
             DefKind::Surface(k) => format!("export {k} {n}"),
+            DefKind::Action => format!("action {n}(…)"),
         }
     }
 
@@ -1945,8 +1971,47 @@ impl<'a> Checker<'a> {
             )
             .help = Some("turn the items into text first: `.map(x => …)`".into());
         }
+        // (M6) A fraction pushed or inserted into a whole-number list
+        // widens it, as a fraction written to it does (see [`super::check`]).
+        let mut sig = sig;
+        let whole_item = match self.whole_target(recv) {
+            Some((_, Ty::List(item, _))) if matches!(n, "push" | "insert") => {
+                if let Some(p) = sig.params.iter_mut().find(|p| p.name == "item") {
+                    p.ty = super::fractional(&item);
+                }
+                Some(*item)
+            }
+            _ => None,
+        };
         let (out, ret) = self.call_args(&sig, args, &format!("`{label}`"), span);
-        let ret = if n == "map" {
+        if let Some(item) = whole_item {
+            let item_param = sig.params.iter().position(|p| p.name == "item");
+            for a in out
+                .iter()
+                .filter(|a| a.param.is_some() && a.param == item_param)
+            {
+                let literal = args
+                    .iter()
+                    .find(|x| x.value.span == a.value.span)
+                    .is_some_and(|x| super::whole_shape(&x.value).is_some());
+                let from = self.written_ty(&a.value);
+                if !literal && !self.types.assignable(&from, &item) {
+                    let target = hir::Expr {
+                        kind: ExprKind::Index {
+                            base: Box::new(recv.clone()),
+                            index: Box::new(hir::Expr::error(a.span)),
+                        },
+                        ty: item.clone(),
+                        span: a.span,
+                    };
+                    self.widen(&target, &from);
+                }
+                self.record_flow(recv, &a.value);
+            }
+        }
+        let ret = if n == "sum" {
+            self.sum_type(&out, &t, recv.span)
+        } else if n == "map" {
             let produced = out
                 .first()
                 .and_then(|a| match &a.value.ty {
@@ -1959,6 +2024,33 @@ impl<'a> Checker<'a> {
             ret
         };
         (out, ret)
+    }
+
+    /// `xs.sum()` or `xs.sum(x => …)`: numbers of one kind, added up
+    /// (decisions.md m6-w2-language, Gaps 11).
+    fn sum_type(&mut self, out: &[CallArg], elem: &Ty, span: Span) -> Ty {
+        let added = match out.first().map(|a| &a.value.ty) {
+            Some(Ty::Fn(s)) => s.ret.clone(),
+            Some(_) => return Ty::Error,
+            None => elem.clone(),
+        };
+        if added.is_lenient() {
+            return Ty::Error;
+        }
+        match added.prim() {
+            Some(p) if p.is_numeric() => added,
+            _ => {
+                let shown = self.show(&added);
+                self.error(
+                    "check::type_mismatch",
+                    format!("`sum` adds numbers, not `{shown}`"),
+                    span,
+                    "not numbers",
+                )
+                .help = Some("give the number to add for each item: `.sum(x => x.width)`".into());
+                Ty::Error
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2231,10 +2323,19 @@ impl<'a> Checker<'a> {
     ) -> (hir::Expr, hir::Expr, Ty) {
         let l = self.expr(lhs, None);
         let r = self.expr(rhs, Some(&l.ty.clone()));
-        if self.operand_ok(&l, lhs) && self.operand_ok(&r, rhs) {
+        if self.operand_ok(&l, lhs) && self.operand_ok(&r, rhs) && !self.both_dates(&l, &r) {
             self.arith(op, &l, &r, span);
         }
         (l, r, Ty::BOOL)
+    }
+
+    /// Two builtin `Date`s order by time (spec.md 7.2; decisions.md
+    /// m6-w2-language, Gaps 16): `d.date < clock.today`.
+    fn both_dates(&self, l: &hir::Expr, r: &hir::Expr) -> bool {
+        let Some(date) = self.schema.types.find_record("Date") else {
+            return false;
+        };
+        l.ty == Ty::Record(date) && r.ty == Ty::Record(date)
     }
 
     #[inline(never)]
@@ -2263,11 +2364,16 @@ impl<'a> Checker<'a> {
         use Prim::*;
         let (a, b) = match (l.ty.prim(), r.ty.prim()) {
             _ if l.ty.is_lenient() || r.ty.is_lenient() => return Ty::Error,
+            // `a + b` joins two texts (decisions.md m6-w2-language, Gaps 11).
+            (Some(Text), Some(Text)) if op == BinaryOp::Add => return Ty::TEXT,
             (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => (a, b),
             _ => {
                 let (sa, sb) = (self.show(&l.ty), self.show(&r.ty));
-                let help = (op == BinaryOp::Add && l.ty == Ty::TEXT)
-                    .then(|| "join text with `join(\"\", a, b)`".to_string());
+                let text = |t: &Ty| *t == Ty::TEXT;
+                let help = (op == BinaryOp::Add && (text(&l.ty) || text(&r.ty))).then(|| {
+                    "`+` joins two texts; make the other one text, or use `join(\"\", a, b)`"
+                        .to_string()
+                });
                 self.error(
                     "check::type_mismatch",
                     format!("`{}` needs numbers, found `{sa}` and `{sb}`", op.as_str()),
@@ -2918,7 +3024,8 @@ impl<'a> Checker<'a> {
                 | DefKind::Enum(_)
                 | DefKind::Type(_)
                 | DefKind::Tokens
-                | DefKind::Keyframes => false,
+                | DefKind::Keyframes
+                | DefKind::Action => false,
             },
             K::Service(_) | K::Value(_) | K::Node(_) | K::Token(_) | K::Error => true,
             K::Local(l) => !matches!(self.locals[l.0 as usize].kind, LocalKind::Channel),
