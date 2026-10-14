@@ -335,6 +335,15 @@ impl Env {
         found.or_else(|| self.parent.as_ref().and_then(|p| p.def(id)))
     }
 
+    /// (M6) Make `state` the state of element `idx` in this scope: a
+    /// component's root element shares its call's state, so the
+    /// caller's `id:` name and handlers are about the root.
+    pub fn adopt_node(&self, idx: NodeIdx, state: Rc<NodeState>) {
+        let mut nodes = self.nodes.borrow_mut();
+        nodes.retain(|(i, _)| *i != idx);
+        nodes.push((idx, state));
+    }
+
     /// The live state of element `idx` in this scope chain, created on
     /// first use in the scope that owns it.
     pub fn node_state(self: &Rc<Self>, rt: &Runtime, idx: NodeIdx) -> Rc<NodeState> {

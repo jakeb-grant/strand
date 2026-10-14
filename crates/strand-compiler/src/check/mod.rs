@@ -37,7 +37,7 @@ mod surfaces;
 mod tokens;
 mod tree;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, suggest};
 use crate::hir::{
@@ -359,6 +359,10 @@ pub(crate) enum DoneHir {
 pub(crate) struct CompSig {
     pub params: Vec<CompParam>,
     pub has_slot: bool,
+    /// (M6) The kind of the one element the component's tree is (an
+    /// element or component name), which a call's `id:` and handlers
+    /// are about; `None` when the tree is not one element.
+    pub root: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -507,6 +511,27 @@ pub(crate) struct Checker<'a> {
     /// Raw colours in the `let` values being checked (see
     /// [`Checker::let_colour_lint`]).
     pub let_colours: Vec<Span>,
+    /// (M6) Each component's `screen` (spec.md 5.2): the screen of the
+    /// bar it is mounted in, a hidden parameter its callers pass. By
+    /// component, and every such local made by component.
+    pub comp_screen: HashMap<DefId, LocalId>,
+    pub screen_owner: HashMap<LocalId, DefId>,
+    /// Components that read their `screen` themselves.
+    pub screen_read: HashSet<DefId>,
+    /// Component calls and the `screen` in scope at each.
+    pub screen_calls: Vec<ScreenCall>,
+    /// The calls that pass `screen`, by call node, with what they pass.
+    pub call_screens: BTreeMap<NodeIdx, LocalId>,
+}
+
+/// (M6) A component call and the `screen` in scope where it is made.
+#[derive(Clone, Debug)]
+pub(crate) struct ScreenCall {
+    pub callee: DefId,
+    pub at: Option<LocalId>,
+    pub node: NodeIdx,
+    pub module: usize,
+    pub span: Span,
 }
 
 impl<'a> Checker<'a> {
@@ -573,6 +598,11 @@ impl<'a> Checker<'a> {
             kept: Vec::new(),
             kept_refs: Vec::new(),
             let_colours: Vec::new(),
+            comp_screen: HashMap::new(),
+            screen_owner: HashMap::new(),
+            screen_read: HashSet::new(),
+            screen_calls: Vec::new(),
+            call_screens: BTreeMap::new(),
         }
     }
 
@@ -594,6 +624,7 @@ impl<'a> Checker<'a> {
         self.after(&files);
         self.component_cycles(&files);
         self.fetching_fn_calls();
+        self.component_screens(&mut files);
         self.out_files = files;
     }
 
@@ -638,6 +669,69 @@ impl<'a> Checker<'a> {
         self.module = saved;
     }
 
+    /// (M6) `screen` in a component is the screen of the bar it is
+    /// mounted in (spec.md 5.2): a hidden parameter, which a component
+    /// takes when it reads `screen` or calls one that takes it, and its
+    /// callers pass from the `screen` in scope at the call. A call with
+    /// no `screen` there (outside any bar) is a load error.
+    fn component_screens(&mut self, files: &mut [hir::FileHir]) {
+        if self.comp_screen.is_empty() {
+            return;
+        }
+        let mut need = self.screen_read.clone();
+        loop {
+            let before = need.len();
+            for c in &self.screen_calls {
+                if need.contains(&c.callee)
+                    && let Some(d) = c.at.and_then(|l| self.screen_owner.get(&l))
+                {
+                    need.insert(*d);
+                }
+            }
+            if need.len() == before {
+                break;
+            }
+        }
+        if need.is_empty() {
+            return;
+        }
+        let calls = std::mem::take(&mut self.screen_calls);
+        let saved = self.module;
+        for c in calls {
+            if !need.contains(&c.callee) {
+                continue;
+            }
+            match c.at {
+                Some(l) => {
+                    self.call_screens.insert(c.node, l);
+                }
+                None => {
+                    self.module = c.module;
+                    let name = self.defs[c.callee.0 as usize].name.clone();
+                    self.error(
+                        "check::no_screen",
+                        format!("`{name}` reads `screen`, and there is no `screen` here"),
+                        c.span,
+                        "not in a bar",
+                    )
+                    .help = Some(format!(
+                        "`screen` is the monitor of the bar a component is in: use `{name}` inside a `bar`, or give it a `screen: Screen` parameter and pass one"
+                    ));
+                }
+            }
+        }
+        self.module = saved;
+        for f in files.iter_mut() {
+            for item in &mut f.items {
+                if let hir::Item::Component(c) = item
+                    && need.contains(&c.def)
+                {
+                    c.screen = self.comp_screen.get(&c.def).copied();
+                }
+            }
+        }
+    }
+
     fn finish(mut self) -> Checked {
         let files = std::mem::take(&mut self.out_files);
         self.diags.extend(lock::check(self.modules));
@@ -669,6 +763,7 @@ impl<'a> Checker<'a> {
                 refs: self.refs,
                 file_texts: self.file_texts,
                 file_templates: self.file_templates,
+                call_screens: self.call_screens,
             },
             diagnostics: self.diags,
             passes: 1,

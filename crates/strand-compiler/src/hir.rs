@@ -56,6 +56,9 @@ pub struct Program {
     /// (M5) Each `file` element's literal `template:` path, for
     /// [`crate::check::files::templates`].
     pub file_templates: Vec<crate::check::files::TemplatePath>,
+    /// (M6) The component calls that pass their component's `screen`
+    /// (spec.md 5.2), by call node, with the `screen` they pass.
+    pub call_screens: BTreeMap<NodeIdx, LocalId>,
 }
 
 impl Program {
@@ -267,6 +270,9 @@ pub struct Component {
     pub tokens: Vec<TokenDef>,
     pub body: Vec<Node>,
     pub has_slot: bool,
+    /// (M6) Its `screen`, when it reads it or calls a component that
+    /// does: a parameter its callers pass (spec.md 5.2).
+    pub screen: Option<LocalId>,
 }
 
 #[derive(Clone, Debug)]

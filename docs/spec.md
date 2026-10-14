@@ -221,6 +221,23 @@ filling the monitor, the keyboard always).
   load error asking for the type.
 - Parameters are read-only inside the component; assigning to one is a
   load error.
+- A component whose tree is one element (beside its `state`, `let` and
+  handlers; no `if`, `for`, `match` or `slot` at its top) stands for
+  that element: handlers and `id:` written in a call's block are the
+  root element's (`Chip "a" { id: c; on click { n += 1 } }`, then
+  `c.hover`). The handlers run in the caller's scope and are checked
+  against the root element's events; a call whose root is another
+  component's call reaches the element at the bottom. On a call of a
+  component whose tree is not one element, either is a load error
+  naming the fix (wrap the call in a `box`). A component with an `id`
+  parameter takes `id:` as its argument.
+- `screen` in a component is the screen of the bar it is mounted in, as
+  in the bar itself (section 5.1): read-only, and on each monitor's
+  instance that monitor. A component that reads it, or calls one that
+  does, gets it from each call, which passes the `screen` in scope
+  there; a call where there is none (in a `panel`, `popup` or `osd`
+  outside any bar) is a load error at the call. A parameter, local or
+  top-level declaration named `screen` is the one read instead.
 - Children written in a call's block render where the component's tree
   has `slot`. Children passed to a component without a `slot` are a load
   error, and so is `slot` outside a component. Each copy of a slotted

@@ -623,7 +623,15 @@ impl<'a> Checker<'a> {
             });
         }
         let has_slot = has_slot(&c.body.items);
-        self.comp_sigs.insert(id, CompSig { params, has_slot });
+        let root = single_root(&c.body.items);
+        self.comp_sigs.insert(
+            id,
+            CompSig {
+                params,
+                has_slot,
+                root,
+            },
+        );
     }
 
     fn fn_sig(&mut self, f: &'a ast::FnDecl) {
@@ -1174,6 +1182,28 @@ fn if_element_names<'t>(f: &'t ast::If<ast::Item>, out: &mut HashSet<&'t str>) {
         Some(ast::Else::Block(b)) => element_names(&b.items, out),
         None => {}
     }
+}
+
+/// (M6) The kind of the one element a component's tree is: its body
+/// holds exactly one element and nothing else that renders (`if`, `for`,
+/// `match`, `slot`); `state`, `let`, `fn` and handlers may sit beside it.
+fn single_root(items: &[ast::Item]) -> Option<String> {
+    let mut root = None;
+    for i in items {
+        match &i.kind {
+            ItemKind::Element(e) => {
+                if root.is_some() {
+                    return None;
+                }
+                root = Some(e.kind.name.clone());
+            }
+            ItemKind::If(_) | ItemKind::For(_) | ItemKind::Match(_) | ItemKind::Slot => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    root
 }
 
 /// Whether a component body renders its children (`slot` anywhere in it).

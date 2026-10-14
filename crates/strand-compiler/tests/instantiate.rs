@@ -4815,3 +4815,97 @@ fn a_config_service_named_like_a_builtin_is_the_one_read() {
         shell.scene.texts()
     );
 }
+
+/// (M6, owner testing Gaps 8 and 6) A component call's handlers and
+/// `id:` are its root element's: a click on the root runs the caller's
+/// handler in the caller's scope, `id:` reads the root's `hover`, a
+/// call whose root is another call reaches the element at the bottom,
+/// and a `slot`'s children stay children.
+#[test]
+fn a_calls_handlers_and_id_are_its_root_elements() {
+    let src = "state n = 0\n\
+        component Chip(label: text) { box { text label } }\n\
+        component Wrap(label: text) { Chip label }\n\
+        component Frame { box { slot } }\n\
+        bar B {\n  row {\n    \
+        Chip \"a\" { id: c; on click { n += 1 } }\n    \
+        Wrap \"b\" { on click { n += 10 } }\n    \
+        Frame { on click { n += 100 }; text \"inside\" }\n    \
+        text \"hover\" { when c.hover { opacity: 0.5 } }\n    \
+        text join(\" \", \"n\", n)\n  }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(
+        shell.scene.find_text("inside").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 3);
+    assert!(shell.inst.event(boxes[0], "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("n 1").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    assert!(shell.inst.event(boxes[1], "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("n 11").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    assert!(shell.inst.event(boxes[2], "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("n 111").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    let hover = shell.scene.find_text("hover").unwrap();
+    assert_eq!(shell.scene.prop(hover, Prop::Opacity), None);
+    shell.inst.set_flag(boxes[0], NodeFlag::Hover, true);
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(hover, Prop::Opacity),
+        Some(&PropValue::Number(0.5))
+    );
+}
+
+/// (M6, owner testing Gaps 7) `screen` in a component is the screen of
+/// the bar it is in, on each monitor: read directly, through a component
+/// that calls it, and through a `slot`'s children.
+#[test]
+fn a_component_reads_its_bars_screen() {
+    let src = "component Name { text join(\" \", \"on\", screen.name) }\n\
+        component Line { row { Name } }\n\
+        component Frame { box { slot } }\n\
+        bar B { row { Line; Frame { text join(\" \", \"in\", screen.name); Name } } }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1", "HDMI-A-1"])
+    });
+    let mut texts = shell.scene.texts();
+    texts.sort();
+    assert_eq!(
+        texts,
+        [
+            "in DP-1",
+            "in HDMI-A-1",
+            "on DP-1",
+            "on DP-1",
+            "on HDMI-A-1",
+            "on HDMI-A-1"
+        ],
+        "{texts:?}"
+    );
+}

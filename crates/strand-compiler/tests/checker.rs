@@ -1707,3 +1707,44 @@ fn a_looped_whole_number_list_gives_ints() {
         render(&out.diagnostics, &map, Style::Plain)
     );
 }
+
+/// (M6, owner testing Gaps 8) A handler or `id:` on a component call is
+/// about its root element: checked against that element's events, and
+/// a load error naming the fix where the component's tree is not one
+/// element.
+#[test]
+fn handlers_on_a_call_are_its_root_elements() {
+    let comps = "component Chip { box { text \"a\" } }\n\
+        component Two { box {}\n  box {} }\n";
+    let ok = codes(&format!(
+        "{comps}state n = 0\nbar B {{ Chip {{ id: c; on click {{ n += 1 }}; on scroll(dy) {{ n += 1 }} }}\n  text \"{{c.hover}}\" }}\n"
+    ));
+    assert!(ok.is_empty(), "{ok:?}");
+    let bad = codes(&format!("{comps}bar B {{ Chip {{ on clack {{ }} }} }}\n"));
+    assert_eq!(bad, ["check::unknown_event"]);
+    let two = codes(&format!("{comps}bar B {{ Two {{ on click {{ }} }} }}\n"));
+    assert_eq!(two, ["check::misplaced"]);
+    let two_id = codes(&format!("{comps}bar B {{ Two {{ id: t }} }}\n"));
+    assert_eq!(two_id, ["check::misplaced"]);
+}
+
+/// (M6, owner testing Gaps 7) A component reads `screen`, the screen of
+/// the bar it is in; a call of one where no bar is (a `panel`) is a load
+/// error at the call, through components that call it too. A
+/// `screen` declared at the top level or as a parameter is the one read.
+#[test]
+fn a_components_screen_comes_from_its_bar() {
+    let comps = "component Name { text screen.name }\ncomponent Line { row { Name } }\n";
+    let ok = codes(&format!("{comps}bar B {{ Line }}\n"));
+    assert!(ok.is_empty(), "{ok:?}");
+    let panel = codes(&format!("{comps}panel P {{ Line }}\n"));
+    assert_eq!(panel, ["check::no_screen"]);
+    // Never called: nothing to pass, nothing to report.
+    assert!(codes(comps).is_empty());
+    // A parameter named `screen` is the one read, and callers pass it.
+    let param = codes("component Name(screen: text) { text screen }\npanel P { Name \"x\" }\n");
+    assert!(param.is_empty(), "{param:?}");
+    // A top-level `screen` is never hidden by a component's.
+    let top = codes("let screen = \"x\"\ncomponent Name { text screen }\npanel P { Name }\n");
+    assert!(top.is_empty(), "{top:?}");
+}

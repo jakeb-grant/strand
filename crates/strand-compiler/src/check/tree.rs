@@ -73,6 +73,8 @@ impl<'a> PropRef<'a> {
 #[derive(Clone, Debug)]
 pub(crate) struct CallCtx {
     pub def: DefId,
+    /// The call's node: its `id:` and handlers are its root element's.
+    pub node: hir::NodeIdx,
     pub name: String,
     pub filled: Vec<bool>,
     /// The parameters the call sets anywhere (the positional argument,
@@ -118,6 +120,15 @@ impl<'a> Checker<'a> {
                 default: self.param_defaults.remove(&(id, i)),
             });
         }
+        // (M6) `screen` is the screen of the bar the component is in,
+        // read where no other `screen` is (spec.md 5.2).
+        if !c.params.iter().flatten().any(|p| p.name.name == "screen")
+            && let Some(ty) = self.bar_screen_ty()
+        {
+            let l = self.add_local("screen", ty, c.name.span, LocalKind::ElementScope);
+            self.comp_screen.insert(id, l);
+            self.screen_owner.insert(l, id);
+        }
         let tokens = match self.comp_tokens.get(&id).cloned() {
             Some(entries) => self.token_defs(&entries),
             None => Vec::new(),
@@ -152,6 +163,7 @@ impl<'a> Checker<'a> {
             tokens,
             body,
             has_slot: sig.is_some_and(|s| s.has_slot),
+            screen: None,
         }
     }
 
@@ -403,9 +415,26 @@ impl<'a> Checker<'a> {
 
     #[inline(never)]
     fn item_on(&mut self, o: &'a ast::On, span: Span, place: Place) -> Option<Node> {
-        if matches!(place, Place::Props | Place::Call) {
+        if place == Place::Props {
             self.not_here(place, span, "handlers");
             return None;
+        }
+        if place == Place::Call {
+            // (M6) A handler on a call is its root element's: checked
+            // against that element's events, run in the caller's scope.
+            let call = self.calls.last()?.clone();
+            let Some((kind, schema)) = self.call_root(call.def) else {
+                self.no_call_root(span, "a handler");
+                return None;
+            };
+            self.nodes.push(NodeCtx {
+                idx: call.node,
+                kind,
+                schema: Some(schema),
+            });
+            let h = self.handler(o, span);
+            self.nodes.pop();
+            return h.map(Node::Handler);
         }
         self.handler(o, span).map(Node::Handler)
     }
@@ -1127,8 +1156,13 @@ impl<'a> Checker<'a> {
         let sig = self.comp_sigs.get(&d).cloned().unwrap_or(super::CompSig {
             params: Vec::new(),
             has_slot: false,
+            root: None,
         });
-        let node = self.new_node();
+        // (M6) `id:` on a call names the component's root element.
+        let (id, node) = match self.ids.get(&(self.module, span)) {
+            Some(&(l, n)) => (Some(l), n),
+            None => (None, self.new_node()),
+        };
         let mut filled = vec![false; sig.params.len()];
         let saved = self.ctx;
         self.ctx.prop = true;
@@ -1168,8 +1202,17 @@ impl<'a> Checker<'a> {
                 _ => None,
             }));
         }
+        let at = self.screen_here();
+        self.screen_calls.push(super::ScreenCall {
+            callee: d,
+            at,
+            node,
+            module: self.module,
+            span: el.kind.span,
+        });
         self.calls.push(CallCtx {
             def: d,
+            node,
             name: kind.clone(),
             filled,
             given,
@@ -1211,10 +1254,88 @@ impl<'a> Checker<'a> {
             kind: ElementKind::Component(d),
             span,
             arg,
-            id: None,
+            id,
             props,
             children,
         })
+    }
+
+    /// (M6) The element kind and schema a call of `d` stands for: its
+    /// one root element, through components whose root is another
+    /// component's call.
+    pub(crate) fn call_root(&self, d: DefId) -> Option<(String, &'a crate::schema::ElementSchema)> {
+        let mut def = d;
+        for _ in 0..64 {
+            let root = self.comp_sigs.get(&def)?.root.clone()?;
+            if let Some(schema) = self.schema.element(&root) {
+                return Some((root, schema));
+            }
+            def = match self.globals.get(&root) {
+                Some(&g) if matches!(self.defs[g.0 as usize].kind, hir::DefKind::Component) => g,
+                _ => return None,
+            };
+        }
+        None
+    }
+
+    /// (M6) The type of a bar's `screen`.
+    pub(crate) fn bar_screen_ty(&self) -> Option<Ty> {
+        self.schema
+            .element("bar")?
+            .scope
+            .iter()
+            .find(|(n, _)| n == "screen")
+            .map(|(_, t)| t.clone())
+    }
+
+    /// (M6) Whether `screen` names a top-level declaration here, which
+    /// a component's implicit `screen` never hides.
+    fn screen_declared(&self) -> bool {
+        self.file_scopes[self.module].contains_key("screen") || self.globals.contains_key("screen")
+    }
+
+    /// (M6) The `screen` in scope here, for a component call to pass: a
+    /// bar's, a local of its type, or the calling component's own.
+    fn screen_here(&self) -> Option<hir::LocalId> {
+        match self.lookup_scope("screen") {
+            Some(super::Binding::Local(l)) => {
+                let want = self.bar_screen_ty()?;
+                (self.locals[l.0 as usize].ty == want).then_some(l)
+            }
+            Some(super::Binding::Def(_)) => None,
+            None if self.screen_declared() => None,
+            None => self.comp_screen.get(&self.ctx.component?).copied(),
+        }
+    }
+
+    /// (M6) `screen` read in a component where nothing else is named
+    /// so: the component's own (the screen of the bar it is in).
+    pub(crate) fn implicit_screen(&mut self, name: &str) -> Option<super::Binding> {
+        if name != "screen" || self.screen_declared() {
+            return None;
+        }
+        let c = self.ctx.component?;
+        let l = *self.comp_screen.get(&c)?;
+        self.screen_read.insert(c);
+        Some(super::Binding::Local(l))
+    }
+
+    /// (M6) A call's `id:` or handler where its component's tree is not
+    /// one element.
+    fn no_call_root(&mut self, span: Span, what: &str) {
+        let Some(call) = self.calls.last() else {
+            return;
+        };
+        let name = call.name.clone();
+        self.error(
+            "check::misplaced",
+            format!("{what} on a call of `{name}` needs one element to be about"),
+            span,
+            format!("`{name}`'s tree is not one element"),
+        )
+        .help = Some(format!(
+            "wrap the call (`box {{ {name} … }}`) and put it there, or give `{name}` one root element"
+        ));
     }
 
     /// The argument `e` to parameter `i` (`p`) of component `comp`.
@@ -1349,6 +1470,27 @@ impl<'a> Checker<'a> {
         let saved = self.ctx;
         self.ctx.prop = true;
         let out = match sig.params.iter().position(|q| q.name == name) {
+            // (M6) `id:` on a call names its root element (bound by
+            // `collect_ids`), unless the component has an `id` parameter.
+            None if name == "id" => {
+                if self.call_root(call.def).is_none() {
+                    self.no_call_root(p.name.span, "`id:`");
+                } else if let ast::ExprKind::Name(n) = &p.value.kind {
+                    if let Some(b @ super::Binding::Local(_)) = self.lookup_scope(&n.name) {
+                        // For hover, go-to and rename.
+                        let _ = self.binding_expr(b, n.span);
+                    }
+                } else {
+                    self.error(
+                        "check::type_mismatch",
+                        "`id` takes a name",
+                        p.value.span,
+                        "not a name",
+                    )
+                    .help = Some("write `id: card`, then read `card.hover`".into());
+                }
+                None
+            }
             Some(i) => {
                 if let Some(c) = self.calls.last_mut() {
                     if c.filled[i] {

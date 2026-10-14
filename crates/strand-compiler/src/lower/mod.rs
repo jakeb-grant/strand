@@ -166,6 +166,9 @@ pub struct Component {
     /// when the caller passes nothing).
     pub params: Vec<(LocalId, Option<ChunkId>)>,
     pub body: Body,
+    /// (M6) The one element its tree is, which a call's `id:` and
+    /// handlers are about.
+    pub root: Option<NodeIdx>,
     /// `tokens { radius: … }` as `Name.radius` entries.
     pub tokens: Vec<TokenDef>,
 }
@@ -351,6 +354,9 @@ pub struct Element {
     /// children read, held only while it is shown. A nested surface's
     /// reads do not count for the body around it.
     pub services: Option<Arc<ServiceUses>>,
+    /// (M6) For a component call: its handlers, which are its root
+    /// element's and run in the caller's scope.
+    pub call_handlers: Arc<Vec<Node>>,
 }
 
 /// A prop binding.
@@ -633,14 +639,17 @@ impl Lowerer<'_> {
                 // Defaults, tokens and body read services for the
                 // component, which acquires them when mounted.
                 self.begin_body();
-                let params = c
+                let mut params: Vec<(LocalId, Option<ChunkId>)> = c
                     .params
                     .iter()
                     .map(|p| (p.local, p.default.as_ref().map(|d| self.expr_chunk(d))))
                     .collect();
+                // (M6) Its `screen`, which its callers pass.
+                params.extend(c.screen.map(|l| (l, None)));
                 // Paths already carry the component's name (`Toast.radius`).
                 let tokens = c.tokens.iter().map(|t| self.token_def(t)).collect();
                 let nodes = self.nodes(&c.body);
+                let root = single_root(&nodes);
                 let body = self.end_body(nodes, false);
                 self.out.components.insert(
                     c.def,
@@ -649,6 +658,7 @@ impl Lowerer<'_> {
                         name: self.hir.def(c.def).name.clone(),
                         params,
                         body,
+                        root,
                         tokens,
                     },
                 );
@@ -1050,7 +1060,26 @@ impl Lowerer<'_> {
                 sub: Vec::new(),
             }
         });
-        let props = self.props(&e.props, schema);
+        let mut props = self.props(&e.props, schema);
+        // (M6) A call passes the `screen` in scope to a component that
+        // reads it (spec.md 5.2).
+        if let (ElementKind::Component(_), Some(&l)) = (&kind, self.hir.call_screens.get(&e.node)) {
+            let local = self.hir.local(l);
+            let value = hir::Expr {
+                kind: hir::ExprKind::Local(l),
+                ty: local.ty.clone(),
+                span: e.span,
+            };
+            props.push(Prop {
+                name: local.name.clone(),
+                prop: None,
+                ty: value.ty.clone(),
+                value: self.expr_chunk(&value),
+                two_way: None,
+                transition: None,
+                sub: Vec::new(),
+            });
+        }
         let scope = match schema {
             Some(s) => s
                 .scope
@@ -1064,8 +1093,22 @@ impl Lowerer<'_> {
             self.push_frame();
         }
         let outer = std::mem::replace(&mut self.elem, schema);
-        let children = Arc::new(self.nodes(&e.children));
+        let mut children = self.nodes(&e.children);
         self.elem = outer;
+        // (M6) A call's handlers are its root element's, not children
+        // for its `slot`.
+        let call_handlers = if matches!(kind, ElementKind::Component(_))
+            && children.iter().any(|n| matches!(n, Node::Handler(_)))
+        {
+            let (h, rest) = children
+                .into_iter()
+                .partition(|n| matches!(n, Node::Handler(_)));
+            children = rest;
+            Arc::new(h)
+        } else {
+            Arc::default()
+        };
+        let children = Arc::new(children);
         let services = surface.then(|| self.pop_frame(false));
         Element {
             node: e.node,
@@ -1078,6 +1121,7 @@ impl Lowerer<'_> {
             span: e.span,
             file: self.file,
             services,
+            call_handlers,
         }
     }
 
@@ -1133,6 +1177,7 @@ impl Lowerer<'_> {
             span: e.span,
             file: self.file,
             services: None,
+            call_handlers: Arc::default(),
         }
     }
 
@@ -1169,6 +1214,7 @@ impl Lowerer<'_> {
             span: sel.span,
             file: self.file,
             services: None,
+            call_handlers: Arc::default(),
         }
     }
 
@@ -1582,6 +1628,27 @@ fn collect_keys<'a>(
         hir::Item::Surface(s) => nodes(&s.element.children, out, lets),
         _ => {}
     }
+}
+
+/// (M6) The one element a component's lowered tree is: exactly one
+/// element and nothing else that renders.
+fn single_root(nodes: &[Node]) -> Option<NodeIdx> {
+    let mut root = None;
+    for n in nodes {
+        match n {
+            Node::Element(e) => {
+                if root.is_some() {
+                    return None;
+                }
+                root = Some(e.node);
+            }
+            Node::Surface(_) | Node::If { .. } | Node::For(_) | Node::Match { .. } | Node::Slot => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    root
 }
 
 #[cfg(test)]

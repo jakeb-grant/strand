@@ -467,6 +467,9 @@ impl<'a> Checker<'a> {
             }
             return self.binding_expr(Binding::Def(d), span);
         }
+        if let Some(b) = self.implicit_screen(name) {
+            return self.binding_expr(b, span);
+        }
         if let Some(&rec) = self.schema.services.get(name) {
             self.add_ref(span, Target::Service(name.to_string()));
             return mk(ExprKind::Service(name.to_string()), Ty::Record(rec));
