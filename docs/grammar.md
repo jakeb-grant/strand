@@ -481,9 +481,20 @@ space-separation, then ordinary expression precedence. So:
 ### Elements: one call shape
 
 ```
-element  = IDENT head_arg? ( SAME_LINE tree_block )?
+element  = ( IDENT TOUCH '.' TOUCH )? IDENT head_arg? ( SAME_LINE tree_block )?
 head_arg = SAME_LINE ( IDENT ':' expr | expr )
 ```
+
+**Qualified names.** (M6) `tray.Row e { … }` calls the component `Row`
+declared in `tray.strand` (spec.md 4.2): the `.` touches both names. A
+touching `.` followed by a name and then a touching `(`, `[`, `.`, `?.` or
+an assignment is still a statement in the wrong place (`n.expire()`), not
+an element. Elsewhere the existing productions already carry the form: a
+type is `IDENT ( '.' IDENT )*` (`x: tray.Item?`), a pattern is
+`IDENT ( '.' IDENT )*` (`tray.Kind.dark =>`), and `tray.fmt(x)`,
+`tray.Item(a: 1)` and `tray.Kind.dark` are member expressions the
+checker reads as the file's declaration when `tray` names a file of the
+config and nothing in scope.
 
 `kind [positional] { props; children }` for built-in elements and components
 alike: `text clock.format("%H:%M")`, `Dot ws`, `Toast n { dense: true }`,

@@ -1309,3 +1309,39 @@ fn a_shadowing_service_leaves_the_runtimes_reads_and_stops_on_reload() {
         shell.scene.texts()
     );
 }
+
+/// (M6, spec.md 4.2) Two files' components named `Row`, each file's
+/// surfaces calling their own and a third calling `b.Row`: each call
+/// shows its own file's component, the two keep their state apart
+/// through a reload of one of them, and the report names them `a.Row`
+/// and `b.Row`.
+#[test]
+fn same_named_components_in_two_files_stay_apart() {
+    let row = |s: &str| {
+        format!(
+            "component Row {{\n  state open = false\n  text open ? \"{s} open\" : \"{s}\" {{ on click {{ open = !open }} }}\n}}\n"
+        )
+    };
+    let a = format!("{}bar A {{ Row }}\n", row("a"));
+    let b = format!("{}bar B {{ Row }}\n", row("b"));
+    let c = "bar C { b.Row }\n";
+    let mut shell = boot(&[("a.strand", &a), ("b.strand", &b), ("c.strand", c)]);
+    let t = shell.scene.find_text("a").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    assert!(shell.scene.find_text("a open").is_some());
+    // `b`'s `Row` shown twice (in `B` and in `C`), still shut.
+    let edited = b.replace("\"b\"", "\"bee\"");
+    let (report, _) = shell.reload(&[("a.strand", &a), ("b.strand", &edited), ("c.strand", c)]);
+    assert!(
+        shell.scene.find_text("a open").is_some(),
+        "a.Row's state kept"
+    );
+    assert!(shell.scene.find_text("bee").is_some());
+    assert!(shell.scene.find_text("b").is_none());
+    assert!(
+        report.kept.iter().any(|k| k == "a.Row.open")
+            && report.kept.iter().any(|k| k == "b.Row.open"),
+        "{report:?}"
+    );
+}

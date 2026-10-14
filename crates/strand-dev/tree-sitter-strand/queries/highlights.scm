@@ -41,6 +41,7 @@
 (permit kind: (identifier) @keyword)
 
 (element name: (identifier) @tag)
+(element file: (identifier) @module)
 (prop name: (identifier) @property)
 (field name: (identifier) @property)
 (named_argument name: (identifier) @variable.parameter)

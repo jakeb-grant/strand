@@ -330,3 +330,17 @@ fn actions_format() {
         "permit exec \"hyprctl\"\naction dispatch(ws: int, name: text) [\"hyprctl\", \"dispatch\", ws, name]\nservice ppd from dbus system \"net.hadess.PowerProfiles\" {\n  action: text = Action\n  action hold(p: text) = HoldProfile\n}\n"
     );
 }
+
+/// (M6) `tray.Row e { … }`, a component named from its file, keeps its
+/// `.` touching both names; a spaced `tray .Row` is a different tree.
+#[test]
+fn qualified_component_calls_format() {
+    let src = "bar Top {\n  row {\n    tray.Row  3\n    tray.Row 4 {  on click { n += 1 } }\n    let x: tray.Item? = null\n  }\n}\n";
+    let out = assert_formats("qualified", src);
+    assert_eq!(
+        out,
+        "bar Top {\n  row {\n    tray.Row 3\n    tray.Row 4 { on click { n += 1 } }\n    let x: tray.Item? = null\n  }\n}\n"
+    );
+    let tree = strand_compiler::syntax::dump::tree(&parse(FileId::default(), &out).file).render();
+    assert!(tree.contains("element tray.Row"), "{tree}");
+}

@@ -311,6 +311,9 @@ pub struct Prop {
 /// `kind [positional] { … }`: built-in elements and components alike.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
+    /// (M6) The file a component is named from: `tray` in `tray.Row e
+    /// { … }` (spec.md 4.2).
+    pub qual: Option<Ident>,
     pub kind: Ident,
     pub arg: Option<HeadArg>,
     pub block: Option<Block<Item>>,

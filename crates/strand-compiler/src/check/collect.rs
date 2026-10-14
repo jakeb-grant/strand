@@ -24,6 +24,41 @@ impl<'a> Checker<'a> {
                 self.collect_item(item);
             }
         }
+        self.qualify_shared_types();
+        for (id, m, t) in std::mem::take(&mut self.token_blocks) {
+            let name = self.defs[id.0 as usize].name.clone();
+            let shared = self.global_decls.get(&name).is_some_and(|d| d.len() > 1);
+            let prefix = match shared {
+                true => format!("{}.{name}", self.modules[m].name),
+                false => name,
+            };
+            let entries = self.tokens.add_component(id, m, &prefix, t);
+            self.comp_tokens.insert(id, entries);
+        }
+    }
+
+    /// (M6) A type or enum whose name more than one file declares is
+    /// named after its file in the type table (`tray.Item`), as a use
+    /// writes it: messages tell the two apart, and a reload carries a
+    /// value over to the type of the same file and name.
+    fn qualify_shared_types(&mut self) {
+        for (name, decls) in &self.global_decls {
+            if decls.len() < 2 {
+                continue;
+            }
+            for d in decls {
+                let def = &self.defs[d.0 as usize];
+                let Some(m) = self.modules.iter().find(|m| m.file == def.file) else {
+                    continue;
+                };
+                let qualified = format!("{}.{name}", m.name);
+                match def.kind {
+                    DefKind::Type(r) => self.types.records[r.0 as usize].name = qualified,
+                    DefKind::Enum(e) => self.types.enums[e.0 as usize].name = qualified,
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// `@reset` is the only attribute, and only on `state` and `let`.
@@ -66,8 +101,7 @@ impl<'a> Checker<'a> {
                 let id =
                     self.declare_global(&c.name, DefKind::Component, Ty::Unit, LazyState::Ready);
                 if let Some(t) = &c.tokens {
-                    let entries = self.tokens.add_component(id, self.module, &c.name.name, t);
-                    self.comp_tokens.insert(id, entries);
+                    self.token_blocks.push((id, self.module, t));
                 }
             }
             ItemKind::Surface(s) => {
@@ -312,6 +346,7 @@ impl<'a> Checker<'a> {
             )
             .help = Some("choose another name".into());
         }
+        let shareable = super::names::shareable(&kind);
         let def = Def {
             name: name.name.clone(),
             kind,
@@ -324,10 +359,39 @@ impl<'a> Checker<'a> {
         let id = self.add_def(def, lazy);
         self.item_defs.insert((self.module, name.span), id);
         self.add_ref(name.span, Target::Def(id));
-        match self.globals.get(&name.name).copied() {
-            Some(prev) => self.redeclared(name, prev, "component, type and other global"),
-            None => {
+        // (M6, the owner's ruling) Components, types, enums and `fn`s may
+        // share a name across files (`names.rs`); within one file, and
+        // for every other kind across files, a name is declared once.
+        let own = self.module_globals[self.module].get(&name.name).copied();
+        match (own, self.globals.get(&name.name).copied()) {
+            (Some(prev), _) => self.redeclared(name, prev, "file"),
+            (None, Some(prev)) => {
+                let others_share = self.global_decls.get(&name.name).is_some_and(|ds| {
+                    ds.iter()
+                        .all(|d| super::names::shareable(&self.defs[d.0 as usize].kind))
+                });
+                if shareable && others_share {
+                    self.module_globals[self.module].insert(name.name.clone(), id);
+                    self.global_decls
+                        .entry(name.name.clone())
+                        .or_default()
+                        .push(id);
+                } else {
+                    self.redeclared(name, prev, "global");
+                    if let Some(d) = self.diags.last_mut() {
+                        d.help = Some(
+                            "rename one: a component, type, enum or `fn` may share its name \
+                             with another file's, but a surface, service, action, token set or \
+                             keyframes name is the whole config's"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            (None, None) => {
                 self.globals.insert(name.name.clone(), id);
+                self.module_globals[self.module].insert(name.name.clone(), id);
+                self.global_decls.insert(name.name.clone(), vec![id]);
             }
         }
         id
@@ -804,10 +868,10 @@ impl<'a> Checker<'a> {
     pub(super) fn deferred_components(&mut self, files: &mut [hir::FileHir]) {
         let mut pending = std::mem::take(&mut self.deferred);
         let n = pending.len();
-        let index: HashMap<&str, usize> = pending
+        let index: HashMap<DefId, usize> = pending
             .iter()
             .enumerate()
-            .map(|(i, d)| (d.ast.name.name.as_str(), i))
+            .map(|(i, d)| (d.def, i))
             .collect();
         // callees[j]: the pending components component j's body uses;
         // waiting[i]: how many of component i's pending callers are
@@ -817,9 +881,11 @@ impl<'a> Checker<'a> {
         for (j, d) in pending.iter().enumerate() {
             let mut used = HashSet::new();
             element_names(&d.ast.body.items, &mut used);
+            // Each name as the component's own file reads it (`names.rs`).
             let mut out: Vec<usize> = used
                 .iter()
-                .filter_map(|name| index.get(name).copied())
+                .filter_map(|name| self.global_named(d.module, name))
+                .filter_map(|def| index.get(&def).copied())
                 .filter(|&i| i != j)
                 .collect();
             out.sort_unstable();
@@ -1150,11 +1216,11 @@ fn snake_case(s: &str) -> String {
 }
 
 /// The element kinds a tree uses (component calls among them).
-fn element_names<'t>(items: &'t [ast::Item], out: &mut HashSet<&'t str>) {
+fn element_names(items: &[ast::Item], out: &mut HashSet<String>) {
     for i in items {
         match &i.kind {
             ItemKind::Element(e) => {
-                out.insert(e.kind.name.as_str());
+                out.insert(written_kind(e));
                 if let Some(b) = &e.block {
                     element_names(&b.items, out);
                 }
@@ -1175,7 +1241,15 @@ fn element_names<'t>(items: &'t [ast::Item], out: &mut HashSet<&'t str>) {
     }
 }
 
-fn if_element_names<'t>(f: &'t ast::If<ast::Item>, out: &mut HashSet<&'t str>) {
+/// An element's kind as written: `Row`, or (M6) `tray.Row`.
+fn written_kind(e: &ast::Element) -> String {
+    match &e.qual {
+        Some(q) => format!("{}.{}", q.name, e.kind.name),
+        None => e.kind.name.clone(),
+    }
+}
+
+fn if_element_names(f: &ast::If<ast::Item>, out: &mut HashSet<String>) {
     element_names(&f.then.items, out);
     match &f.else_ {
         Some(ast::Else::If(i, _)) => if_element_names(i, out),
@@ -1195,7 +1269,7 @@ fn single_root(items: &[ast::Item]) -> Option<String> {
                 if root.is_some() {
                     return None;
                 }
-                root = Some(e.kind.name.clone());
+                root = Some(written_kind(e));
             }
             ItemKind::If(_) | ItemKind::For(_) | ItemKind::Match(_) | ItemKind::Slot => {
                 return None;

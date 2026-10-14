@@ -117,8 +117,32 @@ guide's ladder test use this table as the list of constructs.
 ### 4.2 Names across files
 
 - **Global names** are shared by every module: components, surfaces,
-  enums, types, `fn`s, token sets and services. Declaring one twice, in
-  one file or two, is a load error naming both places.
+  enums, types, `fn`s, token sets, keyframes, actions and services.
+  Declaring a surface, service, token set, keyframes or action twice, in
+  one file or two, is a load error naming both places; so is declaring
+  any global name twice in one file, or a component, type, enum or `fn`
+  under the name of one of those.
+- **The same name in two files.** (M6, the owner's ruling) A component,
+  type, enum or `fn` may be declared under one name in more than one
+  file. A use resolves by three rules: (1) a file that declares the name
+  uses its own declaration; (2) a file without its own uses the single
+  declaration elsewhere, as when the name is unique; (3) where two or
+  more other files declare it, a bare use is a load error at the use
+  (`check::ambiguous_name`) that names every declaring file and offers
+  `file.Name`. **`file.Name`** names the declaration in `file`, wherever
+  a bare name can stand: a component call (`tray.Row e { … }`), a type
+  (`x: tray.Item?`, `tray.Item(a: 1)`), an enum and its variants
+  (`tray.Kind.dark`, in a pattern too) and a `fn` call (`tray.fmt(x)`).
+  It is the form exports already use, with the same rule: the file's
+  name must be an identifier. A file's own `state` or `let` of that
+  name, or an exported one, keeps the existing reading. `strand check`
+  and the language server put a note (`check::same_name`, not an error
+  or a warning) at each declaration of a name declared in more than one
+  file, listing the other files; a load never reports it. Messages,
+  hover, the inspector and live reload show such a name as `file.Name`,
+  and a component's `tokens { }` keep its tokens under
+  `$file.Name.…`. Every program that loaded before resolves exactly as
+  before (section 14).
 - **File names.** A top-level `state` or `let` belongs to its file.
   Another file reads it as `file.name`, and only if it is declared
   `export`; a name that is another file's private declaration is a load

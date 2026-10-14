@@ -799,6 +799,39 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn element(&mut self, el: &'a ast::Element, span: Span, list_item: bool) -> Option<Node> {
         let kind = el.kind.name.as_str();
+        // (M6) `tray.Row e { … }`: the component file `tray` declares.
+        if let Some(q) = &el.qual {
+            return match self.qualified(q, &el.kind) {
+                super::names::Qualified::Found(d)
+                    if self.defs[d.0 as usize].kind == DefKind::Component =>
+                {
+                    Some(self.component_call(d, el, span))
+                }
+                super::names::Qualified::Found(_) => {
+                    self.error(
+                        "check::misplaced",
+                        format!("`{}.{kind}` is not a component", q.name),
+                        el.kind.span,
+                        "cannot be placed",
+                    )
+                    .help = Some("only a component is placed as an element".into());
+                    None
+                }
+                super::names::Qualified::Reported => None,
+                super::names::Qualified::NotAFile => {
+                    let files: Vec<&str> = self.file_index.keys().map(String::as_str).collect();
+                    let fix = crate::diagnostic::suggest(&q.name, files).map(str::to_string);
+                    self.error(
+                        "check::unknown_name",
+                        format!("no file `{}.strand` in this config", q.name),
+                        q.span,
+                        "not a file",
+                    )
+                    .suggest_opt(q.span, fix);
+                    None
+                }
+            };
+        }
         if kind == "file" {
             return Some(self.file_element(el, span));
         }
@@ -811,7 +844,7 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn other_element(&mut self, el: &'a ast::Element, span: Span) -> Option<Node> {
         let kind = el.kind.name.as_str();
-        if let Some(&d) = self.globals.get(kind) {
+        if let Some(d) = self.global(kind, el.kind.span) {
             match self.defs[d.0 as usize].kind {
                 DefKind::Component => return Some(self.component_call(d, el, span)),
                 DefKind::Surface(_) => {
@@ -1270,8 +1303,13 @@ impl<'a> Checker<'a> {
             if let Some(schema) = self.schema.element(&root) {
                 return Some((root, schema));
             }
-            def = match self.globals.get(&root) {
-                Some(&g) if matches!(self.defs[g.0 as usize].kind, hir::DefKind::Component) => g,
+            // Named from the component's own file (`names.rs`).
+            let module = self
+                .modules
+                .iter()
+                .position(|m| m.file == self.defs[def.0 as usize].file)?;
+            def = match self.global_named(module, &root) {
+                Some(g) if matches!(self.defs[g.0 as usize].kind, hir::DefKind::Component) => g,
                 _ => return None,
             };
         }

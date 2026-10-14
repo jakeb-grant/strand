@@ -66,6 +66,46 @@ impl Program {
         &self.defs[id.0 as usize]
     }
 
+    /// (M6) The other files' declarations of top-level component, type,
+    /// enum or `fn` `id`'s name (spec.md 4.2): empty when it is the only
+    /// one.
+    pub fn same_named(&self, id: DefId) -> Vec<DefId> {
+        let d = self.def(id);
+        if d.owner.is_some() || !crate::check::names::shareable(&d.kind) {
+            return Vec::new();
+        }
+        self.defs
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| {
+                o.name == d.name
+                    && o.file != d.file
+                    && o.owner.is_none()
+                    && crate::check::names::shareable(&o.kind)
+            })
+            .map(|(i, _)| DefId(i as u32))
+            .collect()
+    }
+
+    /// The stem of `file` (`tray` for `tray.strand`).
+    pub fn file_stem(&self, file: FileId) -> Option<&str> {
+        self.files
+            .iter()
+            .find(|f| f.file == file)
+            .map(|f| f.name.as_str())
+    }
+
+    /// (M6) `id`'s name as a use in a file without its own would have to
+    /// write it: `tray.Row` when another file declares a `Row` too, else
+    /// `Row`.
+    pub fn qualified_name(&self, id: DefId) -> String {
+        let d = self.def(id);
+        match self.file_stem(d.file) {
+            Some(stem) if !self.same_named(id).is_empty() => format!("{stem}.{}", d.name),
+            _ => d.name.clone(),
+        }
+    }
+
     pub fn local(&self, id: LocalId) -> &Local {
         &self.locals[id.0 as usize]
     }

@@ -2314,3 +2314,88 @@ fn palette_entries_hover_and_refuse_a_rename() {
     let e = c.rename_err("p.strand", Client::pos(src, "$palette.mantle", 0, 10), "x");
     assert!(e.contains("named by the palette"), "{e}");
 }
+
+/// (M6, spec.md 4.2) A component declared in two files: each
+/// declaration carries the `check::same_name` note (Information, never
+/// an error), go-to-definition follows rule 1 (a file's own) and the
+/// qualified form, and hover says which file the name came from.
+#[test]
+fn same_named_declarations_in_two_files() {
+    let a = "component Row { text \"a\" }\nbar A { Row }\n";
+    let b = "component Row { text \"b\" }\nbar B { Row }\n";
+    let c = "bar C { a.Row }\n";
+    let mut cl = Client::start(&[
+        ("a.strand", a.to_string()),
+        ("b.strand", b.to_string()),
+        ("c.strand", c.to_string()),
+    ]);
+    cl.open_text("b.strand", b);
+    let diags = cl.diagnostics("b.strand");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0]["severity"], 3, "a note, not an error: {diags:?}");
+    assert_eq!(diags[0]["code"], "check::same_name");
+    // The message explains rules 1 to 3.
+    let msg = diags[0]["message"].as_str().unwrap();
+    assert!(
+        msg.starts_with("`Row` is also declared in `a.strand`")
+            && msg.contains("a file that declares `Row` uses its own")
+            && msg.contains("`a.Row`, `b.Row`"),
+        "{msg}"
+    );
+    assert_eq!(
+        diags[0]["range"]["start"],
+        json!(Client::pos(b, "Row {", 0, 0))
+    );
+    // Rule 1: `b`'s `Row` is its own.
+    let r = cl.request(
+        "textDocument/definition",
+        cl.at("b.strand", Client::pos(b, "Row }", 0, 1)),
+    );
+    assert_eq!(r[0]["uri"], cl.uri("b.strand"), "{r}");
+    assert_eq!(r[0]["range"]["start"], json!(Client::pos(b, "Row {", 0, 0)));
+    // `a.Row` from `c`: `a`'s, and `a` itself goes to the file.
+    cl.open_text("c.strand", c);
+    let r = cl.request(
+        "textDocument/definition",
+        cl.at("c.strand", Client::pos(c, "Row", 0, 1)),
+    );
+    assert_eq!(r[0]["uri"], cl.uri("a.strand"), "{r}");
+    assert_eq!(r[0]["range"]["start"], json!(Client::pos(a, "Row {", 0, 0)));
+    // Hover names the file.
+    let h = cl.hover("c.strand", Client::pos(c, "Row", 0, 1));
+    assert!(
+        h.contains("From `a.strand` (`a.Row`); also declared in `b.strand`."),
+        "{h}"
+    );
+    let h = cl.hover("b.strand", Client::pos(b, "Row }", 0, 1));
+    assert!(
+        h.contains("From `b.strand` (`b.Row`); also declared in `a.strand`."),
+        "{h}"
+    );
+}
+
+/// (M6) A bare use of a name two other files declare is the
+/// `check::ambiguous_name` error with a quick fix per file.
+#[test]
+fn an_ambiguous_name_offers_each_file() {
+    let c = "bar C { Row }\n";
+    let mut cl = Client::start(&[
+        ("a.strand", "component Row { text \"a\" }\n".to_string()),
+        ("b.strand", "component Row { text \"b\" }\n".to_string()),
+        ("c.strand", c.to_string()),
+    ]);
+    let fixes = fixes_for(&mut cl, "c.strand", c);
+    let titles: Vec<&str> = fixes.iter().map(|f| f["title"].as_str().unwrap()).collect();
+    assert!(
+        titles.iter().any(|t| t.contains("a.Row")) && titles.iter().any(|t| t.contains("b.Row")),
+        "{titles:?}"
+    );
+    let edited: Vec<String> = fixes
+        .iter()
+        .map(|f| cl.applied(&f["edit"], "c.strand", c))
+        .collect();
+    assert!(
+        edited.contains(&"bar C { a.Row }\n".to_string()),
+        "{edited:?}"
+    );
+}

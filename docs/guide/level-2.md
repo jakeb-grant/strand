@@ -137,6 +137,23 @@ that workspace. Service values have actions like this one, called with
 small target, so its clickable area grows 6 pixels on every side without
 changing how it looks.
 
+**The same name in two files.** Two files may each declare a component
+with the same name (or a `type`, `enum` or `fn`): say `dot.strand` and
+`tray.strand` both have a `component Item`. A file that declares a name
+uses its own, so `Item` in `tray.strand` is the tray's. A file without
+one of its own, like `bar.strand`, names the file it means: `dot.Item ws`
+or `tray.Item t`. A bare `Item` there is an error that names both files
+and offers both fixes:
+
+```text
+× `Item` is declared in 2 files, `dot.strand` and `tray.strand`, and not in this one
+help: name the file it comes from: `dot.Item` or `tray.Item`
+```
+
+`strand check` also puts a note, not an error, on each declaration of a
+shared name, listing the other files. A name only one file declares, like
+`Dot`, is used by its bare name everywhere.
+
 ## The tray
 
 Add the system tray at the end of the bar:

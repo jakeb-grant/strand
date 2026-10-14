@@ -418,11 +418,14 @@ module.exports = grammar({
       repeat1(prec.left(seq(optional($._group_term), $._expression))),
     )),
 
+    // `tray.Row e { … }`: a component named from its file (M6).
     _element_bare: $ => seq(
+      optional(seq(field('file', $.identifier), token.immediate('.'))),
       field('name', $.identifier),
       optional(field('argument', $._head)),
     ),
     _element_block: $ => seq(
+      optional(seq(field('file', $.identifier), token.immediate('.'))),
       field('name', $.identifier),
       optional(field('argument', $._head)),
       field('body', $.tree_block),

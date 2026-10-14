@@ -608,7 +608,7 @@ impl Ctx {
         // (or a surface's), qualified by the instance when there are
         // several: `TopBar[<monitor>].expanded`, `Row[<key>].open`.
         let owner = match info.owner {
-            Some(o) => prog.def(o).name.clone(),
+            Some(o) => prog.owner_name(o),
             None => info.module.clone(),
         };
         let path = format!("{owner}{}.{}", env.instance_path(), info.name);

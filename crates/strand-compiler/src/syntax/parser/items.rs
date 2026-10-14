@@ -515,7 +515,21 @@ impl Parser<'_> {
     /// starts a handler statement instead (`x = 1`, `n.expire()`), which
     /// is reported (in a tree) and skipped to the end of the line.
     fn element(&mut self, report_typo: bool) -> (Element, bool) {
-        let kind = self.ident("an element");
+        let mut kind = self.ident("an element");
+        // (M6) `tray.Row e { … }`: a component named from its file
+        // (spec.md 4.2), the `.` touching both names. `n.expire()` and
+        // `a.b = 1` stay statements, reported below.
+        let mut qual = None;
+        if self.at(K::Dot)
+            && !self.cur().ws_before
+            && self.nth_kind(1) == K::Ident
+            && !self.nth(1).ws_before
+            && !cannot_follow_keyword(self.nth(2))
+        {
+            self.bump();
+            let name = self.ident("a component");
+            qual = Some(std::mem::replace(&mut kind, name));
+        }
         let next = self.cur();
         if self.same_line() && starts_statement(next) {
             if report_typo {
@@ -526,6 +540,7 @@ impl Parser<'_> {
             }
             self.recover_line();
             let el = Element {
+                qual,
                 kind,
                 arg: None,
                 block: None,
@@ -571,7 +586,15 @@ impl Parser<'_> {
                 );
             }
         }
-        (Element { kind, arg, block }, false)
+        (
+            Element {
+                qual,
+                kind,
+                arg,
+                block,
+            },
+            false,
+        )
     }
 
     /// From an item's first word: a `{` later on the line whose first

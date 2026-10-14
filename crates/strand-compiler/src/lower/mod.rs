@@ -507,6 +507,16 @@ impl Program {
         &self.defs[id.0 as usize]
     }
 
+    /// The name a component or surface is shown and kept by: (M6)
+    /// `tray.Row` for a component another file has a `Row` of too
+    /// (spec.md 4.2), else its name.
+    pub fn owner_name(&self, id: DefId) -> String {
+        match self.components.get(&id) {
+            Some(c) => c.name.clone(),
+            None => self.def(id).name.clone(),
+        }
+    }
+
     /// The read set of `chunk` (empty for an unknown chunk).
     pub fn reads(&self, chunk: ChunkId) -> &Reads {
         static EMPTY: std::sync::LazyLock<Reads> = std::sync::LazyLock::new(Reads::default);
@@ -661,7 +671,9 @@ impl Lowerer<'_> {
                     c.def,
                     Component {
                         def: c.def,
-                        name: self.hir.def(c.def).name.clone(),
+                        // (M6) `tray.Row` when another file has a `Row`:
+                        // reload identity and the inspector tell them apart.
+                        name: self.hir.qualified_name(c.def),
                         params,
                         body,
                         root,

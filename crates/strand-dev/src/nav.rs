@@ -202,10 +202,30 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
     match found {
         Found::Ref(Target::Def(d)) => {
             let def = p.def(*d);
-            describe::markdown(
-                &describe::def(an, def),
-                describe::def_doc(an, def.file, def.span).as_deref(),
-            )
+            let mut doc = describe::def_doc(an, def.file, def.span);
+            // (M6) A name declared in more than one file: which one this
+            // is (spec.md 4.2).
+            let others = p.same_named(*d);
+            if !others.is_empty() {
+                let stem = |f| p.file_stem(f).unwrap_or("?");
+                let mut also: Vec<String> = others
+                    .iter()
+                    .map(|o| format!("`{}.strand`", stem(p.def(*o).file)))
+                    .collect();
+                also.sort();
+                also.dedup();
+                let from = format!(
+                    "From `{}.strand` (`{}`); also declared in {}.",
+                    stem(def.file),
+                    p.qualified_name(*d),
+                    also.join(", ")
+                );
+                doc = Some(match doc {
+                    Some(d) => format!("{from}\n\n{d}"),
+                    None => from,
+                });
+            }
+            describe::markdown(&describe::def(an, def), doc.as_deref())
         }
         Found::Ref(Target::Local(l)) | Found::CallProp(l) => {
             let local = p.local(*l);

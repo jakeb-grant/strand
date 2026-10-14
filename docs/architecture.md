@@ -3024,7 +3024,11 @@ Public interfaces other crates and later stages build on:
   code: &'static str, message, labels: Vec<Label { file: FileId, span,
   message, primary }>, help: Option<String>, suggestions: Vec<Suggestion {
   file, span, replacement }> }`, built with
-  `Diagnostic::error/warning(code, msg).with_label(span, msg)`,
+  `Diagnostic::error/warning/note(code, msg).with_label(span, msg)`
+  (M6: `Severity::Note`, which is not a problem and never a load notice:
+  only `check::names::notes` makes one, the LSP sends it as
+  Information and `strand check` counts it apart from errors and
+  warnings),
   `.with_secondary(..)`, `.with_label_in(file, ..)`,
   `.with_secondary_in(file, ..)`, `.with_help(..)`, and `.in_file(file)` for
   single-file stages (it moves suggestions too). A suggestion is the
@@ -3091,6 +3095,19 @@ Public interfaces other crates and later stages build on:
   handlers, run in the caller's scope and attached to the root's scene
   node once it mounts, and `vm::Env::adopt_node(idx, state)` gives the
   root the call's element state, so `c.hover` is the root's.
+  (M6, decisions.md m6-w2-language "the same name in two files")
+  `check::names::notes(&hir::Program) -> Vec<Diagnostic>` gives the
+  `check::same_name` note at each declaration of a component, type, enum
+  or `fn` whose name more than one file declares; `strand check` and the
+  LSP call it as they call the paths check, and a load never does.
+  `ast::Element { qual: Option<Ident>, kind, … }` holds the file of a
+  `tray.Row` call. `hir::Program::same_named(DefId)`,
+  `::qualified_name(DefId)` and `::file_stem(FileId)` answer which other
+  files declare a name and how a use would write it; shared types and
+  enums are named `file.Name` in the `TypeTable`, and a shared
+  component's `lower::Component::name` (read by reload identity, state
+  paths through `lower::Program::owner_name` and the inspector) is
+  `file.Name` too.
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
   `from poll` path names a program (executable, `#!` or ELF; stat before

@@ -11,14 +11,15 @@ check::redeclared
    ·            ╰── declared again here
  2 │ state x = 1
    ╰────
-  help: rename one: component, type and other global names are shared by every file of the config
+  help: rename one: a component, type, enum or `fn` may share its name with another file's, but a
+        surface, service, action, token set or keyframes name is the whole config's
 
 Error: 
   × see also bar.strand
-   ╭─[bar.strand:1:11]
- 1 │ component Dot { box { size: 8 } }
-   ·           ─┬─
-   ·            ╰── first declared here
+   ╭─[bar.strand:1:5]
+ 1 │ bar Dot { box { size: 8 } }
+   ·     ─┬─
+   ·      ╰── first declared here
  2 │ enum Kind { a, b }
    ╰────
 

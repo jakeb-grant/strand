@@ -312,7 +312,11 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
             n
         }
         ItemKind::Element(e) => {
-            let mut n = TreeNode::node(format!("element {}", e.kind.name), span);
+            let name = match &e.qual {
+                Some(q) => format!("{}.{}", q.name, e.kind.name),
+                None => e.kind.name.clone(),
+            };
+            let mut n = TreeNode::node(format!("element {name}"), span);
             match &e.arg {
                 Some(HeadArg::Positional(x)) => n = n.with(expr(x)),
                 Some(HeadArg::Named(name, x)) => {

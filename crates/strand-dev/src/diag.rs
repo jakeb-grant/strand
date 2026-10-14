@@ -48,6 +48,7 @@ fn convert(an: &Analysis, d: &Diagnostic) -> lsp_types::Diagnostic {
         severity: Some(match d.severity {
             Severity::Error => DiagnosticSeverity::ERROR,
             Severity::Warning => DiagnosticSeverity::WARNING,
+            Severity::Note => DiagnosticSeverity::INFORMATION,
         }),
         code: Some(NumberOrString::String(d.code.to_string())),
         source: Some("strand".into()),

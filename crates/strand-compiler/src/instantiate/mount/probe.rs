@@ -102,7 +102,7 @@ impl Ctx {
         for s in states {
             let info = prog.def(s.def);
             let owner = match info.owner {
-                Some(o) => prog.def(o).name.clone(),
+                Some(o) => prog.owner_name(o),
                 None => info.module.clone(),
             };
             let surface_owned = info

@@ -794,3 +794,33 @@ fn strings_hold_slashes_and_escapes() {
     );
     assert!(sexp.contains("(comment)"), "{sexp}");
 }
+
+/// (M6, grammar.md "Qualified names") `tray.Row e { … }` is one element
+/// in both parsers, its file captured as a module and its name as a tag;
+/// `n.expire()` in a tree stays an error in both.
+#[test]
+fn a_qualified_component_call_is_one_element() {
+    let src = "bar Top {\n  tray.Row 3\n  tray.Row 4 { on click { n += 1 } }\n}\n";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let mut caps: Vec<(&str, String)> = first_captures(&tree, src)
+        .into_values()
+        .filter(|(n, _)| n.parent().is_some_and(|p| p.kind() == "element"))
+        .filter(|(n, _)| matches!(&src[n.byte_range()], "tray" | "Row"))
+        .map(|(n, name)| (&src[n.byte_range()], name))
+        .collect();
+    caps.sort();
+    assert_eq!(
+        caps,
+        [
+            ("Row", "tag".to_string()),
+            ("Row", "tag".to_string()),
+            ("tray", "module".to_string()),
+            ("tray", "module".to_string()),
+        ]
+    );
+    let bad = "component A {\n  n.expire()\n}\n";
+    assert!(!syntax_errors(bad).is_empty());
+    assert!(first_error(&ts_parse(bad)).is_some());
+}

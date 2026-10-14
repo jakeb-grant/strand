@@ -388,7 +388,10 @@ impl Identity {
             Some(l) => l.to_string(),
             None => match &e.kind {
                 ElementKind::Builtin(k) => k.name().to_string(),
-                ElementKind::Component(d) => prog.def(*d).name.clone(),
+                ElementKind::Component(d) => prog
+                    .components
+                    .get(d)
+                    .map_or_else(|| prog.def(*d).name.clone(), |c| c.name.clone()),
                 ElementKind::Unknown(n) => format!("?{n}"),
                 ElementKind::File(_) => "file".to_string(),
             },

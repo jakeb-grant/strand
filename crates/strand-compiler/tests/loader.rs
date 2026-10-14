@@ -363,3 +363,43 @@ fn the_same_broken_files_are_not_compiled_twice() {
     assert!(out.errors() > 0 && !out.repeated);
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// (M6, spec.md 4.2) A saved file that declares a second `Row` makes a
+/// third file's bare `Row` ambiguous: `check::ambiguous_name` at the
+/// use, the new file held back and the last good tree kept. Naming the
+/// file (`a.Row`) commits both.
+#[test]
+fn a_second_declaration_that_makes_a_use_ambiguous_is_held_back() {
+    let d = dir("ambiguous");
+    write(&d, "a.strand", "component Row { text \"a\" }\n");
+    let c = write(&d, "c.strand", "bar C { Row }\n");
+    let mut l = loader(&d);
+    let first = l.boot().build.unwrap();
+    let b = write(&d, "b.strand", "component Row { text \"b\" }\n");
+    let out = l.changed([(b.clone(), true)]);
+    assert!(out.build.is_none(), "{:?}", out.diagnostics);
+    assert_eq!(out.held, std::slice::from_ref(&b));
+    let amb = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::ambiguous_name")
+        .unwrap_or_else(|| panic!("{:?}", out.diagnostics));
+    assert_eq!(
+        amb.message,
+        "`Row` is declared in 2 files, `a.strand` and `b.strand`, and not in this one"
+    );
+    let shown = strand_compiler::diagnostic::render_short(&out.diagnostics, &out.sources);
+    assert!(shown.contains("c.strand"), "{shown}");
+    assert!(std::sync::Arc::ptr_eq(
+        &l.last().unwrap().program,
+        &first.program
+    ));
+    // The use names its file: both commit, and `c` calls `a`'s `Row`.
+    std::fs::write(&c, "bar C { a.Row }\n").unwrap();
+    let out = l.changed([(c.clone(), true)]);
+    assert!(out.build.is_some(), "{:?}", out.diagnostics);
+    let mut both = out.committed.clone();
+    both.sort();
+    assert_eq!(both, [b, c]);
+    let _ = std::fs::remove_dir_all(d);
+}

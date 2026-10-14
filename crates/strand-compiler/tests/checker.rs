@@ -1896,3 +1896,343 @@ fn refused_commands_keep_no_argv_and_shell_scripts_are_warned_about() {
         assert!(c.is_empty(), "{cmd}: {c:?}");
     }
 }
+
+/// (M6, the owner's ruling of 2026-10-14) Two files may each declare a
+/// component, type, enum and `fn` of one name. The files `a` and `b`
+/// below give each kind a different shape, so a use resolved to the
+/// wrong declaration is a type error.
+const SAME_A: &str = "component Row(n: int) { text \"a\" }\n\
+    type Item { a: int }\n\
+    enum Kind { x, y }\n\
+    fn f() -> int { 1 }\n\
+    let item = Item(a: 1)\n\
+    state kind = Kind.x\n\
+    let n: int = f()\n\
+    bar A { Row 3 }\n";
+const SAME_B: &str = "component Row(s: text) { text s }\n\
+    type Item { b: text }\n\
+    enum Kind { p, q }\n\
+    fn f() -> text { \"b\" }\n\
+    let item = Item(b: \"s\")\n\
+    state kind = Kind.p\n\
+    let label: text = f()\n\
+    panel P { Row \"s\" }\n";
+
+fn same_named(c: &str) -> (Compiled, SourceMap) {
+    compile_files(&[
+        ("a.strand", SAME_A.to_string()),
+        ("b.strand", SAME_B.to_string()),
+        ("c.strand", c.to_string()),
+    ])
+}
+
+/// Rule 1: a file that declares a name and uses it gets its own, for
+/// each kind; rule 2: a name only one file declares is the one every
+/// other file gets, as before.
+#[test]
+fn a_file_uses_its_own_declaration_of_a_shared_name() {
+    let (out, map) = same_named("let only = solo()\nfn solo() -> int { 2 }\n");
+    let errs: Vec<_> = out.diagnostics.iter().filter(|d| d.is_error()).collect();
+    assert!(
+        errs.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    // Rule 2: `Unique`, declared in `a` alone, is read from `c`.
+    let (out, map) = compile_files(&[
+        (
+            "a.strand",
+            "component Unique { text \"u\" }\ntype Pair { x: int }\n".to_string(),
+        ),
+        (
+            "c.strand",
+            "let p = Pair(x: 1)\nbar C { Unique }\n".to_string(),
+        ),
+    ]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    // Each use refers to its own file's declaration.
+    let (out, _) = same_named("");
+    for file in ["a.strand", "b.strand"] {
+        let id = map_id(&out, file);
+        for r in out.program.refs.iter().filter(|r| r.file == id) {
+            if let Target::Def(d) = r.target {
+                let def = out.program.def(d);
+                if ["Row", "Item", "Kind", "f"].contains(&def.name.as_str()) {
+                    assert_eq!(
+                        def.file, id,
+                        "{file}: `{}` read from another file",
+                        def.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn map_id(out: &Compiled, file: &str) -> strand_compiler::source::FileId {
+    out.program
+        .files
+        .iter()
+        .find(|f| format!("{}.strand", f.name) == file)
+        .unwrap()
+        .file
+}
+
+/// Rule 3: a bare use in a file without its own, with two declarations
+/// elsewhere, is `check::ambiguous_name` at the use, for each kind; the
+/// error names both files and offers both qualified forms.
+#[test]
+fn a_bare_use_of_a_name_two_other_files_declare_is_ambiguous() {
+    for (c, at) in [
+        ("bar C { Row 3 }\n", "Row 3"),
+        ("let i = Item(a: 1)\n", "Item(a"),
+        ("let i: Item? = null\n", "Item? "),
+        ("state k = Kind.x\n", "Kind.x"),
+        ("let n = f()\n", "f()"),
+        (
+            "fn g(k: Kind) -> int { match k { Kind.x => 1, _ => 2 } }\n",
+            "Kind)",
+        ),
+    ] {
+        let (out, map) = same_named(c);
+        let amb: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "check::ambiguous_name")
+            .collect();
+        assert!(
+            !amb.is_empty(),
+            "{c}: {}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        let d = amb[0];
+        let name = &at[..at
+            .find(|ch: char| !ch.is_alphanumeric())
+            .unwrap_or(at.len())];
+        assert_eq!(
+            d.message,
+            format!(
+                "`{name}` is declared in 2 files, `a.strand` and `b.strand`, and not in this one"
+            ),
+            "{c}"
+        );
+        let span = d.primary_span().unwrap();
+        assert_eq!(&c[span.start as usize..span.end as usize], name, "{c}");
+        let fixes: Vec<&str> = d
+            .suggestions
+            .iter()
+            .map(|s| s.replacement.as_str())
+            .collect();
+        assert_eq!(fixes, [format!("a.{name}"), format!("b.{name}")], "{c}");
+        assert_eq!(
+            d.help.as_deref(),
+            Some(
+                format!(
+                    "name the file it comes from: `a.{name}` or `b.{name}` (or declare `{name}` in this file, which then uses its own)"
+                )
+                .as_str()
+            ),
+            "{c}"
+        );
+        // Each declaring file is a secondary label.
+        assert_eq!(d.labels.iter().filter(|l| !l.primary).count(), 2, "{c}");
+    }
+}
+
+/// `file.Name` names the declaration of that file everywhere a bare
+/// name stands: a component call (bare, with an argument, with a
+/// block), a type in an annotation, a constructor, an enum's variant in
+/// a value and a pattern, an enum as a type, and a `fn` call.
+#[test]
+fn qualified_names_reach_one_files_declaration() {
+    let c = "let i = b.Item(b: \"x\")\n\
+        let j: a.Item = a.Item(a: 2)\n\
+        state k: a.Kind = a.Kind.y\n\
+        let kb = b.Kind.q\n\
+        let n: int = a.f()\n\
+        let label: text = b.f()\n\
+        let m = match k { a.Kind.x => 1, a.Kind.y => 2 }\n\
+        fn g(k: a.Kind) -> a.Kind { k }\n\
+        bar C {\n  row {\n    a.Row 3\n    b.Row \"s\" { on click { } }\n  }\n}\n";
+    let (out, map) = same_named(c);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.is_error()),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    // A file that declares no such name, and a name no file has.
+    let (out, _) = same_named("bar C { a.Rwo 3 }\n");
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::unknown_name")
+        .unwrap();
+    assert_eq!(d.message, "`a.strand` declares no `Rwo`");
+    assert_eq!(d.suggestions[0].replacement, "Row");
+    let (out, _) = same_named("bar C { zz.Row 3 }\n");
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.message == "no file `zz.strand` in this config"),
+        "{:?}",
+        out.diagnostics
+    );
+    // Types and enums named in two files are shown qualified.
+    let (out, _) = same_named("let i: a.Item = b.Item(b: \"x\")\n");
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::type_mismatch")
+        .unwrap();
+    assert!(
+        d.message.contains("a.Item") && d.message.contains("b.Item"),
+        "{}",
+        d.message
+    );
+}
+
+/// A file whose name is not an identifier cannot be named in
+/// `file.Name`: the ambiguity's fix offers only the other file and says
+/// to rename it.
+#[test]
+fn an_ambiguous_names_fix_needs_identifier_file_names() {
+    let (out, _) = compile_files(&[
+        (
+            "my-row.strand",
+            "component Row { text \"m\" }\n".to_string(),
+        ),
+        ("b.strand", "component Row { text \"b\" }\n".to_string()),
+        ("c.strand", "bar C { Row }\n".to_string()),
+    ]);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::ambiguous_name")
+        .unwrap();
+    let fixes: Vec<&str> = d
+        .suggestions
+        .iter()
+        .map(|s| s.replacement.as_str())
+        .collect();
+    assert_eq!(fixes, ["b.Row"]);
+    assert!(
+        d.help
+            .as_deref()
+            .unwrap()
+            .contains("rename `my-row.strand` to an identifier"),
+        "{:?}",
+        d.help
+    );
+}
+
+/// `check::same_name`: a note (never an error or a warning) at every
+/// declaration of a name declared in more than one file, listing the
+/// other files and saying how a use resolves; none for a unique name,
+/// and none in a load's diagnostics.
+#[test]
+fn a_shared_name_is_a_note_at_each_declaration() {
+    let (out, _) = same_named("");
+    assert!(
+        out.diagnostics.iter().all(|d| d.code != "check::same_name"),
+        "a load never reports it"
+    );
+    let notes = strand_compiler::check::names::notes(&out.program);
+    assert_eq!(notes.len(), 8, "{notes:?}");
+    assert!(
+        notes
+            .iter()
+            .all(|n| n.severity == strand_compiler::Severity::Note)
+    );
+    let a = map_id(&out, "a.strand");
+    let row: Vec<_> = notes
+        .iter()
+        .filter(|n| n.message == "`Row` is also declared in `b.strand`")
+        .collect();
+    assert_eq!(row.len(), 1, "{notes:?}");
+    assert_eq!(row[0].primary().unwrap().file, a);
+    assert!(
+        row[0].help.as_deref().unwrap().contains("uses its own")
+            && row[0].help.as_deref().unwrap().contains("`a.Row`, `b.Row`"),
+        "{:?}",
+        row[0].help
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.message == "`Row` is also declared in `a.strand`")
+    );
+    // A name in one file only: no note.
+    let (out, _) = compile_files(&[("a.strand", "component Row { text \"a\" }\n".to_string())]);
+    assert!(strand_compiler::check::names::notes(&out.program).is_empty());
+}
+
+/// Surfaces and services keep one name across the config, and no kind
+/// may share a name within one file or with a surface or service.
+#[test]
+fn surfaces_and_services_stay_unique() {
+    for (a, b) in [
+        ("bar Top { text \"a\" }\n", "bar Top { text \"b\" }\n"),
+        (
+            "service s from file \"/tmp/a.json\" { n: int }\n",
+            "service s from file \"/tmp/b.json\" { n: int }\n",
+        ),
+        ("component Top { text \"a\" }\n", "bar Top { text \"b\" }\n"),
+        ("bar Top { text \"a\" }\n", "component Top { text \"b\" }\n"),
+        (
+            "action go() [\"true\"]\npermit exec\n",
+            "action go() [\"true\"]\n",
+        ),
+    ] {
+        let (out, _) = compile_files(&[("a.strand", a.to_string()), ("b.strand", b.to_string())]);
+        let c: Vec<_> = out.diagnostics.iter().map(|d| d.code).collect();
+        assert!(c.contains(&"check::redeclared"), "{a} / {b}: {c:?}");
+    }
+    let c = codes("component Row { text \"a\" }\ncomponent Row { text \"b\" }\n");
+    assert_eq!(c, ["check::redeclared"]);
+}
+
+/// (M6) A component whose name another file declares too keeps its
+/// `tokens { }` under `$file.Name.…`, so the two never collide; a
+/// unique component's stay at `$Name.…`, as before.
+#[test]
+fn same_named_components_keep_their_tokens_apart() {
+    let row = |gap: &str| {
+        format!("component Row tokens {{ gap: {gap} }} {{\n  row {{ gap: $Row.gap }}\n}}\n")
+    };
+    let (out, map) = compile_files(&[
+        ("a.strand", row("4px").replace("$Row.gap", "$a.Row.gap")),
+        (
+            "b.strand",
+            format!(
+                "{}bar B {{ Row }}\n",
+                row("8px").replace("$Row.gap", "$b.Row.gap")
+            ),
+        ),
+        (
+            "c.strand",
+            "component Solo tokens { pad: 2px } { row { gap: $Solo.pad } }\nbar C { a.Row }\n"
+                .to_string(),
+        ),
+    ]);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.is_error()),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    // The bare path no longer names either.
+    let (out, _) = compile_files(&[
+        ("a.strand", row("4px")),
+        ("b.strand", row("8px").replace("$Row.gap", "$b.Row.gap")),
+    ]);
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.code == "check::unknown_token"),
+        "{:?}",
+        out.diagnostics
+    );
+}
