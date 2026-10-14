@@ -467,6 +467,7 @@ impl Renderer {
         }
         self.content_sized.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
+        self.held_reach.retain(|id, _| live.contains(id));
         self.opening.retain(|id| live.contains(id));
         self.closing_content.retain(|id, _| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));

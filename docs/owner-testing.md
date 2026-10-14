@@ -245,6 +245,24 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    pixels one by one, so fills stay crisp); an even logical width (2 or
    4) keeps every bar's width. decisions.md m6-owner-fixes.
 
+11. **A drop shadow breaks the card's shrink.** (2026-10-14, the notch
+   config; B-a) With a constant `shadow: 0 10px 28px …` on the card,
+   its width and height jumped to their targets while its `x` still
+   sprang; without the shadow they sprang.
+   **Fixed.** Strand's: the shadow reaches past the popup's box once
+   the card is grown, so the popup's overhang followed the springing
+   card and changed every frame, and the popup was resized every frame
+   (13 times in one grow). Hyprland repositions it each time; sway 1.9
+   (`xdg_wm_base` 2) makes it again, and a popup made again snapped
+   the size springs (bug 12's cause), as headless sway showed both
+   ways. Now while a size springs on a surface, its overhang is the
+   larger of the reach where the spring started and where it lands,
+   kept until it settles: one resize at most each way, and none mid
+   spring (`crates/strand-render/tests/morph.rs::a_shadowed_card_springs_its_size_without_resizing_its_popup`,
+   which failed before: 13 resizes on a reposition, the width at 400
+   on every frame when made again). decisions.md m6-owner-fixes. The
+   config is right.
+
 12. **A size in a popup's `enter` pose does not play as it opens.**
    (2026-10-14, the notch config; B-c) The card's `enter { width: …;
    height: … }` showed it at its own size on the popup's first frame;

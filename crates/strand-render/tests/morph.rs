@@ -431,6 +431,78 @@ fn a_mounted_text_moves_its_siblings_once() {
     }
 }
 
+/// The owner's card, reduced (owner-testing.md bug 11, B-a): one popup
+/// holding a card whose `x`, `width` and `height` spring between an
+/// island (100 × 30) and a dashboard (400 × 200), with a constant drop
+/// shadow that reaches past the popup's box once the card is grown.
+const CARD: &str = "
+state grown = false
+bar Top {
+  height: 30
+  box { width: 100; height: 30
+    popup { id: big; open: true; width: 500; height: 228; margin: 0; align: start
+      col { align: center; clip: true; bg: #ff0000
+            width: 400 ~ spring(320, 0.62)
+            height: 200 ~ spring(190, 0.74)
+            x: 50 ~ spring(320, 0.62)
+            when !grown { width: 100 ~ spring(360, 0.92); height: 30 ~ spring(360, 0.92); x: 200 ~ spring(360, 0.92) }
+            shadow: 0 10px 28px #00000080
+        box { width: 400; height: 150; shrink: 0; bg: #00ff00 }
+      }
+    }
+  }
+}
+";
+
+/// (owner-testing.md bug 11, B-a) A constant shadow on a card whose size
+/// springs does not resize its popup on every frame of the spring: the
+/// overhang the shadow asks for is taken once as the spring starts (the
+/// larger of where it starts and where it lands) and kept until it
+/// settles, so the popup is configured at most once each way. Before,
+/// the overhang followed the card frame by frame; a compositor that
+/// makes a popup again for a new size (sway 1.9, `xdg_wm_base` 2) then
+/// showed each frame on a new surface, where the size springs snapped
+/// to their targets while `x` still sprang, and Hyprland repositioned
+/// the popup every frame. Its width springs both ways, in both modes.
+#[test]
+fn a_shadowed_card_springs_its_size_without_resizing_its_popup() {
+    for remake in [false, true] {
+        let mut sh = Shell::boot(CARD, 1.0, 800);
+        sh.remake = remake;
+        run(&mut sh, NodeId::new(0, 0));
+        let card = sh.find(sh.popup_node(), NodeKind::Col);
+        let pop = sh.popup().expect("the popup is shown");
+        assert_eq!(sh.rect(pop, card).map(|r| (r.w, r.h)), Some((100.0, 30.0)));
+        for (grown, from, to) in [(true, 100.0, 400.0), (false, 400.0, 100.0)] {
+            sh.reconfigured = 0;
+            sh.set("grown", Value::Bool(grown));
+            let mut ws = Vec::new();
+            let mut n = 0;
+            while sh.wants() {
+                sh.paint();
+                let pop = sh.popup().expect("the popup is shown");
+                ws.extend(sh.rect(pop, card).map(|r| r.w));
+                n += 1;
+                assert!(n < 600, "never settled");
+            }
+            let between = ws
+                .iter()
+                .filter(|w| (**w - from).abs() > 1.0 && (**w - to).abs() > 1.0)
+                .count();
+            assert!(
+                between > 5,
+                "remake {remake}, grown {grown}: the width springs: {ws:?}"
+            );
+            assert_eq!(ws.last(), Some(&to));
+            assert!(
+                sh.reconfigured <= 1,
+                "remake {remake}, grown {grown}: the popup's size changed {} times",
+                sh.reconfigured
+            );
+        }
+    }
+}
+
 /// A popup opened with its card (owner-testing.md bug 12, B-c): the
 /// card mounts as the popup opens, its `enter` pose at the island's size.
 const OPENING: &str = "

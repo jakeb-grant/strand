@@ -265,6 +265,9 @@ pub struct Renderer {
     new_text_wait: Duration,
     estimate_wait: Duration,
     busy_window: Duration,
+    /// (owner-testing.md bug 11) Per surface node whose sizes spring:
+    /// the shadows' reach its overhang keeps until they settle.
+    held_reach: HashMap<NodeId, strand_scene::Insets>,
     /// Scroll offsets and list row heights, by `scroll`/`list` node.
     scrolls: HashMap<NodeId, ScrollState>,
     /// (M4) List windows asked of logic, touchpad scrolls, gap stats
@@ -437,6 +440,7 @@ impl Renderer {
             new_text_wait: NEW_TEXT_WAIT,
             estimate_wait: ESTIMATE_WAIT,
             busy_window: BUSY_WINDOW,
+            held_reach: HashMap::new(),
             scrolls: HashMap::new(),
             lists: lists::Lists::default(),
             layout_passes: 0,
