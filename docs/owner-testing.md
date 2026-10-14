@@ -245,6 +245,21 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    pixels one by one, so fills stay crisp); an even logical width (2 or
    4) keeps every bar's width. decisions.md m6-owner-fixes.
 
+12. **A size in a popup's `enter` pose does not play as it opens.**
+   (2026-10-14, the notch config; B-c) The card's `enter { width: …;
+   height: … }` showed it at its own size on the popup's first frame;
+   the pose's `x` and `opacity` played.
+   **Fixed.** Strand's: a surface just made is laid out once before its
+   first frame (`configure_surface`), with no clock yet, and that
+   layout snapped every size spring under it to its target: it took
+   the `enter` sizes waiting to start and dropped them, and (bug 11) a
+   spring in flight on a popup made again. Now a layout with no clock
+   leaves size springs alone and the first frame painted starts them
+   (`crates/strand-render/tests/morph.rs::a_size_in_an_enter_pose_plays_as_its_popup_opens`,
+   which failed before: 400 × 200 on every frame), as spec.md 6.6 says
+   (a node starts at its `enter` values and springs to its own).
+   decisions.md m6-owner-fixes. The config is right.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,

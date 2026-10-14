@@ -312,7 +312,10 @@ impl Renderer {
                 );
             }
         }
-        let moving = self.anim.sizes_moving(&self.tree, root);
+        // Springs a clockless preview left to start lay out again on the
+        // first frame painted.
+        let moving = self.anim.sizes_moving(&self.tree, root)
+            || self.anim.size_pending(&self.tree, root);
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.boxes = Some(boxes);
             s.layout_dirty = false;

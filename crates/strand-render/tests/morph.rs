@@ -430,3 +430,57 @@ fn a_mounted_text_moves_its_siblings_once() {
         assert_eq!(worker, inline, "scale {scale}");
     }
 }
+
+/// A popup opened with its card (owner-testing.md bug 12, B-c): the
+/// card mounts as the popup opens, its `enter` pose at the island's size.
+const OPENING: &str = "
+state shown = false
+bar Top {
+  height: 30
+  box { width: 100; height: 30
+    popup { id: big; open: shown; width: 500; height: 228; margin: 0; align: start
+      if shown {
+        col { bg: #ff0000; width: 400; height: 200; x: 50
+              enter { width: 100; height: 30; x: 200 } }
+      }
+    }
+  }
+}
+";
+
+/// (owner-testing.md bug 12, B-c) A size in the `enter` pose of content
+/// mounted as its popup opens plays from the popup's first frame, as
+/// the pose's `x` does: the popup is laid out at rest before its first
+/// frame (`configure_surface`, with no clock yet), and that preview took
+/// the size springs waiting to start and dropped them. The card's first
+/// frame is at the pose's size and it springs to its own.
+#[test]
+fn a_size_in_an_enter_pose_plays_as_its_popup_opens() {
+    let mut sh = Shell::boot(OPENING, 1.0, 800);
+    run(&mut sh, NodeId::new(0, 0));
+    assert!(sh.popup().is_none());
+    sh.set("shown", Value::Bool(true));
+    let card = sh.find(sh.popup_node(), NodeKind::Col);
+    let mut seen = Vec::new();
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        let pop = sh.popup().expect("the popup is shown");
+        seen.extend(sh.rect(pop, card).map(|r| (r.w, r.h)));
+        n += 1;
+        assert!(n < 600, "never settled");
+    }
+    let first = seen.first().copied().expect("frames");
+    assert!(
+        first.0 < 150.0 && first.1 < 60.0,
+        "starts at the pose's size: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .filter(|(w, _)| *w > 120.0 && *w < 380.0)
+            .count()
+            >= 2,
+        "springs: {seen:?}"
+    );
+    assert_eq!(seen.last(), Some(&(400.0, 200.0)));
+}
