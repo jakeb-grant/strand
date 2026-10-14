@@ -170,6 +170,13 @@ pub trait InputScene {
         let _ = (surface, node);
         None
     }
+    /// (m6-owner-fixes) `at` moved into `node`'s laid-out box, undoing
+    /// the paint offsets and transforms it is drawn with (see
+    /// [`Renderer::to_laid`]); by default `at`.
+    fn to_laid(&self, surface: SurfaceId, node: NodeId, at: LogicalPoint) -> LogicalPoint {
+        let _ = (surface, node);
+        at
+    }
     /// An `input`'s caret (`None`: at the end of its text).
     fn caret(&self, node: NodeId) -> Option<Caret> {
         let _ = node;
@@ -240,6 +247,9 @@ impl InputScene for Renderer {
     }
     fn node_rect(&self, surface: SurfaceId, node: NodeId) -> Option<LogicalRect> {
         Renderer::node_rect(self, surface, node)
+    }
+    fn to_laid(&self, surface: SurfaceId, node: NodeId, at: LogicalPoint) -> LogicalPoint {
+        Renderer::to_laid(self, surface, node, at)
     }
     fn caret(&self, node: NodeId) -> Option<Caret> {
         self.widgets().carets.get(&node).copied()
@@ -1983,6 +1993,10 @@ impl Router {
         let Some(r) = scene.node_rect(surface, slider) else {
             return;
         };
+        // Where the slider is drawn: its laid-out box moved by the paint
+        // offsets and transforms of it and its ancestors (a card that
+        // springs by `x`).
+        let at = scene.to_laid(surface, slider, at);
         // Pressed, so drawn with its larger knob: the same span.
         let (x0, x1) = crate::widgets::slider_span(r.x as f64, (r.x + r.w) as f64, true, 1.0);
         let v = (((at.x as f64 - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0)) as f32;
@@ -2034,6 +2048,7 @@ impl Router {
         if opts.is_empty() || r.w <= 0.0 {
             return;
         }
+        let at = scene.to_laid(surface, seg, at);
         let i = (((at.x - r.x) / r.w * opts.len() as f32).floor().max(0.0) as usize)
             .min(opts.len() - 1);
         self.emit(Intent::Write {

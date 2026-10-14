@@ -178,6 +178,24 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    **Verified by the owner on Hyprland, 2026-10-14** (the GitHub CI
    build of `0cba252`, with bug 6): "They behave well and I'm not
    seeing flicker."
+9. **Sliders and scrubbers register away from the pointer.**
+   (2026-10-14, Hyprland at scales 1 and 1.5, the island config
+   `target/try/island/`) Where the pointer presses a slider and where
+   its value lands do not match. **Fixed.** Strand's, at any scale and
+   on any compositor: a slider (and a `segmented`) read the pointer
+   against its laid-out box, while it is drawn, and hit, moved by the
+   paint offsets and transforms of it and its ancestors. The island's
+   card springs by `x: slack + ear` (50 px), so its sliders took the
+   pointer 50 px ahead of it (headless sway at 1.5: a press 60% along
+   the brightness slider wrote 100%). Now the router moves the pointer
+   into the widget's laid-out box first (`Renderer::to_laid`, from the
+   drawn hit shape)
+   (`crates/strand-render/tests/widgets.rs::widgets_moved_by_paint_offsets_read_the_pointer_where_drawn`,
+   at scales 1 and 1.5, which failed before). The window-geometry
+   overhang, the negative margin and bug 6's placement shift are not
+   it: pointer coordinates are surface-local and hit testing used them
+   right (the press found the slider). decisions.md m6-owner-fixes.
+   The config is right.
 
 ## Capability gaps
 

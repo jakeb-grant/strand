@@ -726,7 +726,9 @@ filling the monitor, the keyboard always).
   lengths (`size`, `width` or `height` in px or `ch`, none a percentage)
   defaults to `shrink: 0`. An explicit `shrink:` overrides either
   default.
-- **Hit testing** follows the node's rounded shape. `hit: grow(n)`
+- **Hit testing** follows the node's rounded shape where it is drawn
+  (its paint offsets and transforms, and its ancestors', move it; a
+  slider or `segmented` reads the pointer there too). `hit: grow(n)`
   enlarges it by `n` for small targets. Shadows enlarge the buffer but
   not the input region.
 - **A `trigger: hover` popup that draws nothing itself** (no `bg`,

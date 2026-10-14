@@ -348,6 +348,96 @@ fn a_slider_follows_a_drag_and_writes_its_value() {
     assert!(writes(&out, c.dragged).is_empty(), "{out:?}");
 }
 
+/// (m6-owner-fixes, owner-testing.md bug 9) A slider and a `segmented`
+/// inside a card moved by a paint offset (`x: 60; y: 6`, the island
+/// card that springs by `x`) and shrunk by `scale: 0.8` (a `when pressed`
+/// squeeze) read the pointer where they are drawn, at scales 1 and 1.5:
+/// a press on the drawn knob's place for 0.25 writes 0.25, and a click on
+/// the drawn middle option writes it. Before, they read it against their
+/// laid-out box, so the island's slider jumped 50 px ahead of the
+/// pointer.
+#[test]
+fn widgets_moved_by_paint_offsets_read_the_pointer_where_drawn() {
+    for scale in [Scale::ONE, Scale::from_f64(1.5).unwrap()] {
+        let mut r = renderer();
+        let mut b = Builder::default();
+        let col = panel(&mut b, 360.0, 160.0);
+        let card = b.node(
+            NodeKind::Col,
+            Some(col),
+            vec![
+                (Prop::X, num(60.0)),
+                (Prop::Y, num(6.0)),
+                (Prop::Scale, num(0.8)),
+                (Prop::Gap, num(8.0)),
+            ],
+        );
+        let slider = b.node(
+            NodeKind::Slider,
+            Some(card),
+            vec![
+                (Prop::Width, num(200.0)),
+                (Prop::Value, num(0.6)),
+                (Prop::TwoWay, PropValue::List(vec![kw("value")])),
+            ],
+        );
+        let seg = b.node(
+            NodeKind::Segmented,
+            Some(card),
+            vec![
+                (Prop::Width, num(210.0)),
+                (
+                    Prop::Options,
+                    PropValue::List(vec![kw("auto"), kw("light"), kw("dark")]),
+                ),
+                (Prop::Value, kw("dark")),
+                (Prop::TwoWay, PropValue::List(vec![kw("value")])),
+            ],
+        );
+        assert!(r.apply(b.diff).is_empty());
+        let root = r.tree().roots()[0];
+        let s = SurfaceId(1);
+        let k = scale.as_f64();
+        let size = Size::new((360.0 * k).round() as u32, (160.0 * k).round() as u32);
+        r.attach_surface(s, root);
+        r.configure_surface(s, size, scale);
+        let mut buf = Buffer::new(size.w, size.h, scale);
+        buf.paint(&mut r, s, 0);
+        let mut router = Router::new();
+        router.attached(s, root);
+        // The card's laid-out box, and where it is drawn: moved by its
+        // offsets, then scaled 0.8 about its centre.
+        let cb = r.boxes(s).unwrap().rects[&card];
+        let (cx, cy) = (cb.x + 60.0 + cb.w / 2.0, cb.y + 6.0 + cb.h / 2.0);
+        let drawn = |x: f32, y: f32| {
+            let (x, y) = (x + 60.0, y + 6.0);
+            (cx + (x - cx) * 0.8, cy + (y - cy) * 0.8)
+        };
+        let sb = r.boxes(s).unwrap().rects[&slider];
+        let (x0, x1) =
+            strand_render::widgets::slider_span(sb.x as f64, (sb.x + sb.w) as f64, true, 1.0);
+        let (px, py) = drawn((x0 + 0.25 * (x1 - x0)) as f32, sb.y + sb.h / 2.0);
+        let mut out = router.handle(&press(s, px, py, ButtonState::Pressed), &mut r);
+        let (qx, qy) = drawn((x0 + 0.5 * (x1 - x0)) as f32, sb.y + sb.h / 2.0);
+        out.extend(router.handle(&motion(s, qx, qy), &mut r));
+        out.extend(router.handle(&press(s, qx, qy, ButtonState::Released), &mut r));
+        let v: Vec<f32> = writes(&out, slider)
+            .iter()
+            .map(|v| v.as_number().unwrap())
+            .collect();
+        assert_eq!(v.len(), 3, "{scale:?}: {v:?}");
+        for (got, want) in v.iter().zip([0.25, 0.5, 0.5]) {
+            assert!((got - want).abs() < 0.01, "{scale:?}: {v:?}");
+        }
+        let gb = r.boxes(s).unwrap().rects[&seg];
+        // The middle third, drawn: laid out, it is over "auto".
+        let (x, y) = drawn(gb.x + gb.w * 0.5, gb.y + gb.h / 2.0);
+        let mut out = router.handle(&press(s, x, y, ButtonState::Pressed), &mut r);
+        out.extend(router.handle(&press(s, x, y, ButtonState::Released), &mut r));
+        assert_eq!(writes(&out, seg), [kw("light")], "{scale:?}");
+    }
+}
+
 /// `segmented { options: Look; value: <-> theme.look }`: a click writes
 /// the option under it.
 #[test]
