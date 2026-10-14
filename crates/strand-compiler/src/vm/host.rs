@@ -96,6 +96,32 @@ pub trait ServiceHost {
         Vec::new()
     }
 
+    /// (M6) [`ServiceHost::read`] of the builtin service `service`, never
+    /// a config `service` that shadows it (spec.md 4.2): the runtime's
+    /// own reads go here (the built-in palette's `system.dark`, `accent`
+    /// and `contrast`, the bars' `screens.all` and `focused`,
+    /// `system.reduced_motion`). The default: [`ServiceHost::read`].
+    fn read_builtin(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
+        self.read(rt, service, field)
+    }
+
+    /// (M6) [`ServiceHost::sources`] of the builtin service, as
+    /// [`ServiceHost::read_builtin`].
+    fn sources_builtin(&self, rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
+        self.sources(rt, service, field)
+    }
+
+    /// (M6) [`ServiceHost::acquire`] of the builtin service, as
+    /// [`ServiceHost::read_builtin`] (the bars hold `screens`).
+    fn acquire_builtin(&self, rt: &Runtime, service: &str) {
+        self.acquire(rt, service)
+    }
+
+    /// (M6) The matching release.
+    fn release_builtin(&self, rt: &Runtime, service: &str) {
+        self.release(rt, service)
+    }
+
     /// The graph cells an action of `service` can write (`n.expire()`
     /// changes `notifications.popups`), declared as write edges of the
     /// handlers that call it so their readers are ranked after them from

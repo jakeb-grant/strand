@@ -239,10 +239,19 @@ fn is_empty_list(e: &ast::Expr) -> bool {
 
 /// `shape` with its `int`s made `float`s: what a whole-number declaration
 /// becomes once a fraction is written to it.
-fn fractional(shape: &Ty) -> Ty {
+pub(crate) fn fractional(shape: &Ty) -> Ty {
     match shape {
         Ty::List(t, keyed) => Ty::List(Box::new(fractional(t)), *keyed),
         _ => Ty::FLOAT,
+    }
+}
+
+/// Whether `ty` is a whole-number shape: `int`, `[int]`, `[[int]]` and
+/// so on (what [`fractional`] widens).
+pub(crate) fn is_whole_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::List(t, _) => is_whole_ty(t),
+        t => *t == Ty::INT,
     }
 }
 

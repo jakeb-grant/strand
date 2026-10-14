@@ -491,8 +491,8 @@ impl Vm {
     }
 
     /// (M6) Asks for declared action `def`'s command with `args` filling
-    /// its parameters, each one argument as its text (never split, never
-    /// read by a shell). It runs when the host takes it
+    /// its parameters, each one argument as its text (never split; the
+    /// program runs with no shell between). It runs when the host takes it
     /// ([`Vm::take_execs`]).
     pub(crate) fn exec(&self, def: DefId, args: &[Value]) -> Result<(), Error> {
         let Some(action) = self.prog.execs.get(&def) else {
@@ -545,7 +545,11 @@ impl Vm {
         field: &str,
     ) -> Result<Value, Error> {
         let v = self.host.read(rt, service, field)?;
-        if service == "system" && field == "dark" && self.other_mode_active() {
+        if service == "system"
+            && field == "dark"
+            && self.other_mode_active()
+            && !self.prog.declares_service("system")
+        {
             return Ok(Value::Bool(!v.truthy()));
         }
         Ok(v)

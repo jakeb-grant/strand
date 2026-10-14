@@ -399,7 +399,7 @@ in a service block is still a field). At the top level the command
 follows the parameters on the same line; a missing command is one
 `syntax::expected`. In a service block an action names its method after
 `=`. Every parameter has a type and no default. What the command may
-hold, and the checks, are in spec.md 5.6 (decisions.md
+hold, and the checks, are in spec.md 5.7 (decisions.md
 m6-w2-language).
 
 ### Keyframes and play

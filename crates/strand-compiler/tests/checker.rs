@@ -1748,3 +1748,151 @@ fn a_components_screen_comes_from_its_bar() {
     let top = codes("let screen = \"x\"\ncomponent Name { text screen }\npanel P { Name }\n");
     assert!(top.is_empty(), "{top:?}");
 }
+
+/// (M6, the review of Gaps 12) Programs that loaded before whole-number
+/// lists kept their `int`s through `for`, `?:` and `match` still load: a
+/// declaration whose value is a whole number widens to `float` when a
+/// fraction is written to it, as a literal-initialised one does, and a
+/// fraction pushed or inserted into a whole-number list widens the list.
+#[test]
+fn whole_number_values_widen_where_fractions_are_written() {
+    let cases = [
+        // A `state` from a `for` binding over a whole-number literal.
+        "bar B {\n  row {\n    for w in [1, 2, 3] key w {\n      state size = w\n      \
+         text join(\" \", size) { on click { size = size / 2 } }\n    }\n  }\n}\n",
+        // An inferred parameter from such a binding.
+        "component Dot(n) {\n  state r = n\n  text join(\" \", r) { on click { r += 0.5 } }\n}\n\
+         bar B { row { for x in [4, 8] key x { Dot x } } }\n",
+        // A whole-number list through `?:`, then a fraction pushed.
+        "state big = true\nstate marks = big ? [10, 20] : []\n\
+         bar B { text \"m\" { on click { marks.push(2.5) } } }\n",
+        // An item of a whole-number `let`, then a fraction written.
+        "state wide = true\nlet sizes = wide ? [20, 30] : [10, 20]\nstate cur = sizes[0]\n\
+         bar B { text \"c\" { on click { cur = cur * 1.5 } } }\n",
+        // `insert` too, into a literal-initialised list.
+        "state xs = [1, 2]\nbar B { text \"x\" { on click { xs.insert(0, 0.5) } } }\n",
+    ];
+    for src in cases {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        assert!(
+            out.diagnostics.iter().all(|d| !d.is_error()),
+            "{src}\n{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
+    // Widened, each is a `float` everywhere it is read.
+    let c = codes(
+        "fn f(n: int) -> int { n }\nstate xs = [1, 2]\n\
+         bar B { text \"x\" { on click { xs.push(0.5); let k = f(xs[0]) } } }\n",
+    );
+    assert_eq!(c, ["check::type_mismatch"]);
+}
+
+/// (M6, the review of Gaps 7) A component's own `screen` is found only
+/// where the name is otherwise unknown: an enum variant named `screen`
+/// is still the one a component reads, and the component takes no
+/// `screen` for it.
+#[test]
+fn a_screen_variant_wins_over_a_components_screen() {
+    let src = "enum Shot { screen, window }\nstate s = Shot.window\n\
+        component Pick { text \"x\" { on click { let k = screen; s = k } } }\n\
+        panel P { Pick }\n";
+    let c = codes(src);
+    assert!(c.is_empty(), "{c:?}");
+}
+
+/// (M6, the review of the owner's ruling) `on notifications.received`
+/// with a config `service notifications` is about the config's service:
+/// an event it does not declare is a load error, not the builtin's event.
+#[test]
+fn a_config_services_events_shadow_the_builtins() {
+    let c = codes(
+        "service notifications from file \"/tmp/b.json\" { level: int }\n\
+         bar B { text \"x\" { on notifications.received(n) { } } }\n",
+    );
+    assert!(c.contains(&"check::unknown_event"), "{c:?}");
+}
+
+/// (M6, the review of the owner's ruling) A service whose properties
+/// were read but whose methods could not be is warned about, as an
+/// unread service is: its actions were not checked.
+#[test]
+fn unread_methods_leave_actions_unchecked_with_a_warning() {
+    use strand_compiler::check::dbus::{BusMethod, BusProperty, Introspect, check};
+    struct NoMethods;
+    impl Introspect for NoMethods {
+        fn properties(
+            &self,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            Some(Ok(vec![BusProperty {
+                interface: "net.hadess.PowerProfiles".into(),
+                name: "ActiveProfile".into(),
+                signature: "s".into(),
+                writable: true,
+            }]))
+        }
+        fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
+            Some(Err("timed out".into()))
+        }
+    }
+    let src = "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  profile: text = ActiveProfile\n  action hold(p: text) = HoldProfile\n}\nbar B { text \"x\" }\n".to_string();
+    let (out, _) = compile_files(&[("a.strand", src)]);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    let d = check(&out.program, &NoMethods);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_unchecked");
+    assert!(d[0].message.contains("timed out"), "{}", d[0].message);
+}
+
+/// (M6, the review of the owner's ruling) A command `permit exec` does
+/// not allow keeps no argv (nothing could run it, whatever the loader
+/// does with errors), and a parameter right after a shell's `-c` (alone
+/// or among short options) is warned about: the shell runs it as a
+/// script. A parameter after the script (`$1`) is not.
+#[test]
+fn refused_commands_keep_no_argv_and_shell_scripts_are_warned_about() {
+    let argv = |src: &str| {
+        let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+        let a = out
+            .program
+            .files
+            .iter()
+            .flat_map(|f| &f.items)
+            .find_map(|i| match i {
+                strand_compiler::hir::Item::Action(a) => Some(a.argv.len()),
+                _ => None,
+            });
+        (
+            a,
+            out.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        )
+    };
+    let (n, c) = argv(
+        "permit exec \"swaymsg\"\naction go(ws: int) [\"hyprctl\", ws]\nbar B { text \"x\" }\n",
+    );
+    assert_eq!((n, c), (Some(0), vec!["check::no_permit"]));
+    for cmd in [
+        "[\"sh\", \"-c\", s]",
+        "[\"/bin/bash\", \"-ec\", s]",
+        "[\"dash\", \"-c\", s, \"x\"]",
+    ] {
+        let (n, c) = argv(&format!(
+            "permit exec\naction go(s: text) {cmd}\nbar B {{ text \"x\" }}\n"
+        ));
+        assert_eq!(c, ["check::shell_script"], "{cmd}");
+        assert!(n.unwrap_or(0) > 0, "still runs: {cmd}");
+    }
+    for cmd in [
+        "[\"sh\", \"-c\", \"echo \\\"$1\\\"\", \"sh\", s]",
+        "[\"hyprctl\", \"-c\", s]",
+        "[\"sh\", \"--\", s]",
+    ] {
+        let (_, c) = argv(&format!(
+            "permit exec\naction go(s: text) {cmd}\nbar B {{ text \"x\" }}\n"
+        ));
+        assert!(c.is_empty(), "{cmd}: {c:?}");
+    }
+}

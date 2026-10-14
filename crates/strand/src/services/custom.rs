@@ -866,6 +866,78 @@ fn dbus_check_on(
 mod tests {
     use std::time::Duration;
 
+    /// (M6, the review of the owner's ruling) `BusIntrospector::methods`
+    /// hands the check the object's methods as the bus answered them,
+    /// failures included; without waiting, an answer not yet in is `None`
+    /// and the recheck is asked for once it is.
+    #[test]
+    fn the_introspector_answers_methods_as_the_bus_does() {
+        let method = strand_introspect::Method {
+            interface: "net.hadess.PowerProfiles".into(),
+            name: "HoldProfile".into(),
+            inputs: vec!["s".into(), "s".into(), "s".into()],
+        };
+        let answer = method.clone();
+        let methods = Arc::new(strand_introspect::Cache::with_fetch(
+            strand_introspect::TTL,
+            move |_, name, _| {
+                if name == "org.example.Gone" {
+                    Err("no answer".into())
+                } else {
+                    Ok(vec![answer.clone()])
+                }
+            },
+        ));
+        let waiting = BusIntrospector {
+            cache: Arc::default(),
+            methods: methods.clone(),
+            ask: None,
+            waits: Arc::default(),
+        };
+        use strand_compiler::check::dbus::Introspect;
+        let got = waiting.methods(
+            true,
+            "net.hadess.PowerProfiles",
+            "/net/hadess/PowerProfiles",
+        );
+        let got = got.unwrap().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (
+                got[0].interface.as_str(),
+                got[0].name.as_str(),
+                got[0].inputs.len()
+            ),
+            ("net.hadess.PowerProfiles", "HoldProfile", 3)
+        );
+        assert_eq!(
+            waiting.methods(false, "org.example.Gone", "/"),
+            Some(Err("no answer".into()))
+        );
+        // Not waiting: asked off the caller's thread, then answered.
+        let asked = Arc::new(AtomicBool::new(false));
+        let flag = asked.clone();
+        let quick = BusIntrospector {
+            cache: Arc::default(),
+            methods: Arc::new(strand_introspect::Cache::with_fetch(
+                strand_introspect::TTL,
+                move |_, _, _| Ok(vec![method.clone()]),
+            )),
+            ask: Some(Arc::new(move || flag.store(true, Ordering::SeqCst))),
+            waits: Arc::new(AtomicBool::new(false)),
+        };
+        assert_eq!(quick.methods(false, "org.example.Late", "/"), None);
+        let start = std::time::Instant::now();
+        while !asked.load(Ordering::SeqCst) {
+            assert!(start.elapsed() < Duration::from_secs(10), "never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(
+            quick.methods(false, "org.example.Late", "/"),
+            Some(Ok(m)) if m.len() == 1
+        ));
+    }
+
     use strand_compiler::schema::Schema;
     use strand_services::Data;
 

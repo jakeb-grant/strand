@@ -3212,6 +3212,18 @@ impl Ctx {
         );
     }
 
+    /// (M6) Hold the builtin `service` for the current scope, whatever
+    /// the config declares (spec.md 4.2), and let go when it goes.
+    pub(crate) fn hold_builtin(self: &Rc<Self>, rt: &Runtime, service: &'static str) {
+        self.vm.host.acquire_builtin(rt, service);
+        let (weak, wrt) = (Rc::downgrade(self), rt.downgrade());
+        rt.on_cleanup(move || {
+            if let (Some(ctx), Some(rt)) = (weak.upgrade(), wrt.upgrade()) {
+                ctx.vm.host.release_builtin(&rt, service);
+            }
+        });
+    }
+
     /// Acquire services for the current scope and release them when it
     /// goes.
     pub(crate) fn acquire(self: &Rc<Self>, rt: &Runtime, services: &crate::lower::ServiceUses) {
@@ -3376,7 +3388,7 @@ impl Ctx {
         self.note_surface(ident.clone(), true);
         let (ctx, outer) = (self.clone(), env.clone());
         let list: ListFn = Box::new(move |rt| {
-            let all = ctx.vm.host.read(rt, "screens", "all")?;
+            let all = ctx.vm.host.read_builtin(rt, "screens", "all")?;
             let types = &ctx.vm.prog.types;
             let wanted = match pick {
                 Some(c) => Some(ctx.eval(rt, c, &outer)?),
@@ -3391,7 +3403,7 @@ impl Ctx {
                         .map(String::as_str)
                         == Some("focused") =>
                 {
-                    Some(ctx.vm.host.read(rt, "screens", "focused")?)
+                    Some(ctx.vm.host.read_builtin(rt, "screens", "focused")?)
                 }
                 _ => None,
             };
@@ -3453,7 +3465,7 @@ impl Ctx {
                     pick.into_iter().collect(),
                     ["all", "focused"]
                         .into_iter()
-                        .flat_map(|f| self.vm.host.sources(rt, "screens", Some(f)))
+                        .flat_map(|f| self.vm.host.sources_builtin(rt, "screens", Some(f)))
                         .collect(),
                 ),
             },

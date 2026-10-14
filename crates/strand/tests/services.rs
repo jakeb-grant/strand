@@ -1068,7 +1068,7 @@ bar Bottom {
 /// (M6) A click runs a declared action's command (decisions.md
 /// m6-w2-language, the owner's ruling): `strand run` on the headless sway,
 /// a virtual pointer clicking the bar. The command receives its argument
-/// whole (spaces, quotes and `$` as written: no shell reads it), and a
+/// whole (spaces, quotes and `$` as written: no shell between), and a
 /// command that fails is logged with the action's name while the shell
 /// keeps running.
 #[test]

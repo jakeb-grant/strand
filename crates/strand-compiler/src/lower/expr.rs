@@ -648,6 +648,18 @@ impl Lowerer<'_> {
                     c.emit(Op::AsyncSite(site), span);
                 } else {
                     self.call(c, callee, args, span, service_async && self.frame > 0);
+                    // (M6) `xs.sum()` of numbers with a unit: plus the
+                    // unit's zero, so an empty list's sum is `0ms` (or
+                    // `0%`, `0.0`), not the whole `0` the VM starts from.
+                    if let Callee::Method { receiver, name, .. } = callee
+                        && name == "sum"
+                        && matches!(receiver.ty.non_null(), Ty::List(..))
+                        && let Some(unit) = unit_of(&e.ty)
+                    {
+                        let zero = c.constant(Const::Num(0.0, unit));
+                        c.emit(Op::Const(zero), span);
+                        c.emit(Op::Binary(BinaryOp::Add), span);
+                    }
                 }
             }
         }
@@ -879,6 +891,20 @@ fn mutation_arity(name: &str) -> usize {
         "insert" | "move" | "update" => 2,
         _ => 1,
     }
+}
+
+/// The unit of a number type other than `int` (`None` for `int` and
+/// for anything not a number).
+fn unit_of(ty: &Ty) -> Option<Num> {
+    use crate::ty::Prim;
+    Some(match ty.non_null() {
+        Ty::Prim(Prim::Float) => Num::Float,
+        Ty::Prim(Prim::Length) => Num::Px,
+        Ty::Prim(Prim::Percent) => Num::Percent,
+        Ty::Prim(Prim::Angle) => Num::Deg,
+        Ty::Prim(Prim::Duration) => Num::Ms,
+        _ => return None,
+    })
 }
 
 /// A number literal as a constant, its unit from the literal or, for a

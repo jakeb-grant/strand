@@ -332,7 +332,7 @@ pub fn logic(
         let reduced = {
             let rt = shell.inst.runtime();
             let host = live_host(&shell.host, &shell.real);
-            rt.untrack(|rt| host.read(rt, "system", "reduced_motion"))
+            rt.untrack(|rt| host.read_builtin(rt, "system", "reduced_motion"))
                 .ok()
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)

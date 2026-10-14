@@ -319,7 +319,10 @@ parameters in it, and call it like a function:
 `action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]`,
 with `permit exec "hyprctl"`, then `on click { dispatch(3) }`. Each
 parameter is exactly one argument of the program, as it is: a title
-with spaces or quotes is never split, and no shell reads it. The
+with spaces or quotes is never split, and no shell stands between
+strand and the program. (The program reads the argument its own way:
+`["sh", "-c", cmd]` runs `cmd` as a shell script, and `strand check`
+warns about that; a value starting with `-` may look like an option.) The
 program must be written out and allowed by `permit exec`, so every
 command your config can run is listed where it is declared: `strand
 check` lists them all with their parameters. The command runs on its

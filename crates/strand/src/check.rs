@@ -407,7 +407,7 @@ mod tests {
 
     /// (M6) `strand check` lists every declared action's command with its
     /// parameters, and an action whose program `permit exec` does not
-    /// allow is an error naming it.
+    /// allow is an error naming it, and not listed.
     #[test]
     fn actions_are_listed_and_checked_against_permit_exec() {
         let d = TempDir::new();
@@ -425,11 +425,12 @@ mod tests {
             "{}",
             r.text
         );
+        // (M6, the review) A refused command never runs, so it is not
+        // listed as one that does.
         assert!(
             r.text
                 .contains("  dispatch(ws: int) runs: hyprctl dispatch workspace {ws}")
-                && r.text
-                    .contains("  say(msg: text) runs: notify-send \"Strand says\" {msg}"),
+                && !r.text.contains("say(msg: text) runs:"),
             "{}",
             r.text
         );

@@ -136,9 +136,12 @@ guide's ladder test use this table as the list of constructs.
   component named like a builtin service. (M6, the owner's ruling) A
   config `service` named like a builtin service shadows it within the
   config, with the same warning: the config's own service is the one
-  its reads, writes and actions reach, and the builtin's fields are not
-  there. So a config keeps loading when a release adds a builtin
-  service of a name it uses (section 14).
+  its reads, writes, actions, `on` handlers and `strand call` reach,
+  and the builtin's fields and events are not there. The runtime's own
+  reads (the default palette's `system` fields, the `screens` that
+  mount bars, `system.reduced_motion`) still go to the builtin. So a
+  config keeps loading when a release adds a builtin service of a name
+  it uses (section 14).
 - **Some builtin names are taken.** Two declarations are load errors
   rather than shadows: a `type` or `enum` named like one of the
   language's own types (`bool`, `int`, `float`, `length`, `percent`,
@@ -236,8 +239,10 @@ filling the monitor, the keyboard always).
   instance that monitor. A component that reads it, or calls one that
   does, gets it from each call, which passes the `screen` in scope
   there; a call where there is none (in a `panel`, `popup` or `osd`
-  outside any bar) is a load error at the call. A parameter, local or
-  top-level declaration named `screen` is the one read instead.
+  outside any bar) is a load error at the call. A parameter, local,
+  top-level declaration, enum variant or service named `screen` is the
+  one read instead: the component's `screen` is found only where the
+  name would otherwise be unknown.
 - Children written in a call's block render where the component's tree
   has `slot`. Children passed to a component without a `slot` are a load
   error, and so is `slot` outside a component. Each copy of a slotted
@@ -277,7 +282,11 @@ filling the monitor, the keyboard always).
   `match` whose branches all have that shape, an empty list fitting any
   list (`match name { "DP-8" => [1, 2], _ => [] }` is an `[int]`). A
   `for` over such a literal loops over `int`s (`for w in [1, 2, 3] key
-  w` gives each `w` as an `int`).
+  w` gives each `w` as an `int`). An untyped `state` whose first value
+  is whole by any of these (`state size = w`, `state cur = sizes[0]`, a
+  component's inferred parameter) is a `float` once a fraction is
+  written to it, as is the value it came from, and a fraction pushed or
+  inserted into a whole list makes it a `[float]`.
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
   (section 10.3). It is allowed only on a `state` holding plain data:
   not functions, `Async` values, runtime handles or live service items.
@@ -357,8 +366,17 @@ filling the monitor, the keyboard always).
   call is checked as a function's (arity, argument types) and, as every
   action call is, allowed only in a handler (section 8.3). Each
   parameter becomes exactly one argument of the program, its value as
-  `text` shows it: never split on spaces, never read by a shell. The
-  program is run directly, never through a shell.
+  `text` shows it, never split on spaces: the program is run directly,
+  with no shell between strand and it. What the program does with an
+  argument is its own: a shell's `-c` runs the argument after it as a
+  script (`["sh", "-c", cmd]` runs `cmd`'s value as shell code; pass a
+  value after a written-out script instead, where it is `$1`), and an
+  argument starting with `-` may be read as an option (`--` before it,
+  where the program takes one). A parameter right after a shell's `-c`
+  is a warning (`check::shell_script`).
+- An action runs at most once at a time: a call while its command still
+  runs queues one re-run, the latest call's, started when the command
+  ends, as a `file`'s `run` is (section 9.7).
 - The command runs detached, in its own process group, with stdin and
   stdout on `/dev/null`; the handler does not wait for it, and logic is
   never blocked by it. A program that cannot start or exits non-zero is
@@ -375,9 +393,14 @@ filling the monitor, the keyboard always).
   method is an error with a did-you-mean, as is another number of
   arguments or a parameter whose type does not convert to the
   argument's D-Bus type. A handler calls it as a service action:
-  `on click { ppd.hold("performance", "game", "strand") }`. A failed
-  call is logged, as a builtin service's action failing is. Any other
-  source's block declaring an action is a load error.
+  `on click { ppd.hold("performance", "game", "strand") }`. An enum
+  argument is sent as the daemon has spelled it (as a field write is).
+  The call does not hold up the service, and its answer is waited for
+  however long the daemon takes (a method may wait on polkit's password
+  dialog); the daemon's error is logged, as a builtin service's action
+  failing is. When the object's methods cannot be read, the actions are
+  not checked and a warning says so. Any other source's block declaring
+  an action is a load error.
 
 ## 6. Trees
 

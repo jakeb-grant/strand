@@ -7,9 +7,13 @@
 //!
 //! A command is a list literal of texts and the action's parameters: the
 //! program is written out and allowed by `permit exec`, and each
-//! parameter is exactly one argument when it runs (never split, never
-//! read by a shell), so every command a config can run is listed where
-//! it is declared and checked with the rest of the config.
+//! parameter is exactly one argument when it runs (never split into
+//! words, and no shell stands between strand and the program), so every
+//! command a config can run is listed where it is declared and checked
+//! with the rest of the config. What the program does with an argument
+//! is its own: a shell's `-c` runs it as a script, and an argument
+//! starting with `-` may be read as an option. A parameter right after a
+//! shell's `-c` is warned about (`check::shell_script`).
 
 use std::sync::Arc;
 
@@ -29,7 +33,58 @@ fn passable(ty: &Ty, dbus: bool) -> bool {
     }
 }
 
+/// Whether `program` (a name or a path) is a shell that runs its `-c`
+/// argument as a script.
+fn is_shell(program: &str) -> bool {
+    let name = program.rsplit('/').next().unwrap_or(program);
+    matches!(
+        name,
+        "sh" | "bash" | "dash" | "zsh" | "ksh" | "mksh" | "ash" | "fish" | "busybox"
+    )
+}
+
+/// Whether `arg` is a shell's `-c` (alone or among short options, `-ec`).
+fn is_dash_c(arg: &str) -> bool {
+    arg.strip_prefix('-')
+        .is_some_and(|o| !o.is_empty() && !o.starts_with('-') && o.contains('c'))
+}
+
 impl<'a> Checker<'a> {
+    /// (M6, the review of the owner's ruling) Warn about a parameter that
+    /// a shell reads as its script (`["sh", "-c", cmd]`): its value is
+    /// run as shell code, which a text from a service or a user may not
+    /// be meant to be.
+    fn shell_scripts(&mut self, a: &'a ast::ActionDecl, argv: &[ArgvPart]) {
+        let ActionBody::Command(e) = &a.body else {
+            return;
+        };
+        let ast::ExprKind::Array(items) = &e.kind else {
+            return;
+        };
+        for (i, w) in argv.windows(2).enumerate() {
+            let [ArgvPart::Text(flag), ArgvPart::Param(p)] = w else {
+                continue;
+            };
+            if !is_dash_c(flag) {
+                continue;
+            }
+            let Some(item) = items.get(i + 1) else {
+                continue;
+            };
+            let name = a.params.get(*p).map_or("?", |p| p.name.name.as_str());
+            self.warning(
+                "check::shell_script",
+                format!("`{name}` is run as a shell script"),
+                item.span,
+                "the shell's script",
+            )
+            .help = Some(format!(
+                "write the script out and pass `{name}` after it, where the script reads \
+                 it as `$1`: `[\"sh\", \"-c\", \"… \\\"$1\\\"\", \"sh\", {name}]`"
+            ));
+        }
+    }
+
     /// An action's parameters, each typed as an argument can carry it.
     /// `dbus`: a method's (a list of texts is an `as` there).
     pub(super) fn action_params(&mut self, params: &[ast::Param], dbus: bool) -> Vec<ParamSig> {
@@ -190,6 +245,11 @@ impl<'a> Checker<'a> {
                     "not permitted",
                 )
                 .help = Some(format!("add `permit exec \"{program}\"` at the top level"));
+                // Never run, as any other refused command.
+                ok = false;
+            }
+            if ok && is_shell(&program) {
+                self.shell_scripts(a, &argv);
             }
         }
         if ok {

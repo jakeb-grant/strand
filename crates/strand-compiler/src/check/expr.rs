@@ -467,9 +467,6 @@ impl<'a> Checker<'a> {
             }
             return self.binding_expr(Binding::Def(d), span);
         }
-        if let Some(b) = self.implicit_screen(name) {
-            return self.binding_expr(b, span);
-        }
         if let Some(&rec) = self.schema.services.get(name) {
             self.add_ref(span, Target::Service(name.to_string()));
             return mk(ExprKind::Service(name.to_string()), Ty::Record(rec));
@@ -518,6 +515,12 @@ impl<'a> Checker<'a> {
             )
             .help = Some(format!("read what it exports: `{name}.something`"));
             return hir::Expr::error(span);
+        }
+        // (M6) A component's `screen` is found last, where the name would
+        // otherwise be unknown, so it never changes what a name that
+        // loads today means (spec.md 5.2 and 14).
+        if let Some(b) = self.implicit_screen(name) {
+            return self.binding_expr(b, span);
         }
         self.unknown_name(id, expected, field_base);
         hir::Expr::error(span)
@@ -1968,7 +1971,44 @@ impl<'a> Checker<'a> {
             )
             .help = Some("turn the items into text first: `.map(x => …)`".into());
         }
+        // (M6) A fraction pushed or inserted into a whole-number list
+        // widens it, as a fraction written to it does (see [`super::check`]).
+        let mut sig = sig;
+        let whole_item = match self.whole_target(recv) {
+            Some((_, Ty::List(item, _))) if matches!(n, "push" | "insert") => {
+                if let Some(p) = sig.params.iter_mut().find(|p| p.name == "item") {
+                    p.ty = super::fractional(&item);
+                }
+                Some(*item)
+            }
+            _ => None,
+        };
         let (out, ret) = self.call_args(&sig, args, &format!("`{label}`"), span);
+        if let Some(item) = whole_item {
+            let item_param = sig.params.iter().position(|p| p.name == "item");
+            for a in out
+                .iter()
+                .filter(|a| a.param.is_some() && a.param == item_param)
+            {
+                let literal = args
+                    .iter()
+                    .find(|x| x.value.span == a.value.span)
+                    .is_some_and(|x| super::whole_shape(&x.value).is_some());
+                let from = self.written_ty(&a.value);
+                if !literal && !self.types.assignable(&from, &item) {
+                    let target = hir::Expr {
+                        kind: ExprKind::Index {
+                            base: Box::new(recv.clone()),
+                            index: Box::new(hir::Expr::error(a.span)),
+                        },
+                        ty: item.clone(),
+                        span: a.span,
+                    };
+                    self.widen(&target, &from);
+                }
+                self.record_flow(recv, &a.value);
+            }
+        }
         let ret = if n == "sum" {
             self.sum_type(&out, &t, recv.span)
         } else if n == "map" {

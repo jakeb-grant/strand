@@ -218,9 +218,27 @@ fn check_actions(
     if s.actions.is_empty() {
         return;
     }
-    // Unanswered, or not reached: the properties' answer says so.
-    let Some(Ok(methods)) = intro.methods(system, name, path) else {
-        return;
+    // Unanswered: checked once the answer is in.
+    let methods = match intro.methods(system, name, path) {
+        None => return,
+        Some(Ok(m)) => m,
+        Some(Err(why)) => {
+            let service = &program.def(s.def).name;
+            let at = s.actions.first().map_or(s.source_span, |a| a.method_span);
+            let mut d = Diagnostic::warning(
+                "check::dbus_unchecked",
+                format!(
+                    "`{service}`'s actions were not checked against D-Bus introspection: {why}"
+                ),
+            )
+            .with_label_in(s.file, at, "not checked");
+            d.help = Some(format!(
+                "they are checked whenever `{name}` answers on the {} bus",
+                if system { "system" } else { "session" }
+            ));
+            out.push(d);
+            return;
+        }
     };
     for a in &s.actions {
         // The interface named like the bus name first.

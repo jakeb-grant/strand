@@ -3077,7 +3077,20 @@ Public interfaces other crates and later stages build on:
   }`). A top-level `action` is `hir::Item::Action(hir::ActionDecl {
   def, params, argv: Vec<ArgvPart> })`, `ArgvPart::Text` or
   `ArgvPart::Param(index)`, with `ActionDecl::shown()` the line `strand
-  check` lists; a call of it is `Callee::Action(def)`.
+  check` lists (`argv` empty when the command was refused, `permit
+  exec` included); a call of it is `Callee::Action(def)`.
+  (M6, owner testing Gaps 7) A component that reads `screen` (or calls
+  one that does) has `hir::Component::screen: Option<LocalId>`, its
+  hidden parameter, and `hir::Program::call_screens: BTreeMap<NodeIdx,
+  LocalId>` gives each call of such a component the local whose
+  `screen` it passes (lowered into the call's arguments, so the
+  instance needs nothing new). (M6, owner testing Gaps 8) A call's
+  handlers and `id:` are its root element's: `lower::Component::root:
+  Option<NodeIdx>` is the root element of a one-element component, the
+  call's `lower::Element::call_handlers: Arc<Vec<Node>>` are its block's
+  handlers, run in the caller's scope and attached to the root's scene
+  node once it mounts, and `vm::Env::adopt_node(idx, state)` gives the
+  root the call's element state, so `c.hover` is the root's.
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
   `from poll` path names a program (executable, `#!` or ELF; stat before
@@ -3279,7 +3292,23 @@ Public interfaces other crates and later stages build on:
     (`lower::Program::execs` maps its def to its `ExecAction { name,
     argv }`), and after each tick's diff logic takes them
     (`Instance::take_execs() -> Vec<ExecRequest>`) and starts each on a
-    thread of its own (`run/exec.rs`).
+    thread of its own (`run/exec.rs`), one run per action at a time with
+    one re-run queued.
+  - (M6, decisions.md m6-w2-language, a config `service` shadowing a
+    builtin) `read_builtin(rt, service, field)`, `sources_builtin(rt,
+    service, field)`, `acquire_builtin(rt, service)` and
+    `release_builtin(rt, service)` are the runtime's own reads by name
+    (the default palette's `system` fields, the `screens` that mount
+    bars, `system.reduced_motion`): they reach the builtin service even
+    when the program declares one of that name. Each defaults to the
+    plain method, so a host without shadowing is unchanged; `Composite`
+    routes them past its `CustomHost`, and `SchemaHost` reads the
+    builtin's cells it moved aside. `lower::Program::declares_service(name)`
+    says whether the program shadows `name`. A hold taken through
+    `acquire`/`acquire_field` is released on the host that took it
+    (`Composite` remembers it), so a reload that adds or removes a
+    shadow lets go of the right one. `SchemaHost::declare` of a builtin's
+    name moves the builtin's cells aside, and `stop` puts them back.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
@@ -4901,7 +4930,8 @@ transparent huge pages for life.
   `item_records()` name it, `declare`d custom services to its
   `CustomHost` (`set_custom`; without one, under `STRAND_MOCK`, the
   fallback answers them at their defaults; (M6) a declared one first, so
-  a config's `service battery` shadows the builtin, spec.md 4.2), and everything else (the
+  a config's `service battery` shadows the builtin, spec.md 4.2, except
+  for the `*_builtin` reads, which skip it), and everything else (the
   clock and calendar, services no crate serves yet) to the `SchemaHost`
   fallback;
   `next_wake` is the earliest of all, `wake` reaches all. A service

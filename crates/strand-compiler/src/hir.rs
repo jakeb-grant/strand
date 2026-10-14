@@ -219,8 +219,9 @@ pub enum Item {
 }
 
 /// (M6) `action name(params) [argv]`: the command a handler's call
-/// (`dispatch(3)`) runs, each parameter one argument of it, never split
-/// and never read by a shell.
+/// (`dispatch(3)`) runs, each parameter one argument of it, never split,
+/// the program run with no shell between. Empty when the command was
+/// refused (an error, `permit exec`'s included).
 #[derive(Clone, Debug)]
 pub struct ActionDecl {
     pub def: DefId,

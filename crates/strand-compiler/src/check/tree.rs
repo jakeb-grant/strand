@@ -2034,7 +2034,21 @@ impl<'a> Checker<'a> {
                     self.inferable(&h.ty, &s.name, value.span, "state");
                     self.record_value_sources(id, &h);
                 }
+                let untyped = declared.is_none();
                 let mut final_ty = declared.unwrap_or_else(|| h.ty.clone());
+                // (M6) An untyped `state` whose value is a whole number it
+                // did not get from a literal (`state size = w`, `state cur
+                // = sizes[0]`) widens to `float` when a fraction is
+                // written to it, as `state i = 0` does (see
+                // [`super::check`]).
+                if untyped && !self.whole.contains_key(&id) && super::is_whole_ty(&h.ty) {
+                    let def = &self.defs[id.0 as usize];
+                    if self.float_pins.contains(&(def.file, def.span)) {
+                        final_ty = super::fractional(&h.ty);
+                    } else {
+                        self.whole.insert(id, h.ty.clone());
+                    }
+                }
                 let key_path = key.as_ref().and_then(|k| self.state_key(&mut final_ty, k));
                 if let Some(path) = &key_path {
                     self.state_keys.insert(id, path.clone());

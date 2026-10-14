@@ -3327,3 +3327,57 @@ fn a_drop_reaches_its_handler_with_the_hidden_rows_judged() {
     drop(compiler);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// (M6, the review of the owner's ruling) A declared action's command
+/// that fails is a `strand watch` notice naming the action, and the bar
+/// goes on.
+#[test]
+fn a_failing_actions_command_is_a_watch_notice() {
+    let dir = temp_dir("exec-notice");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "permit exec \"sh\"\naction fail() [\"sh\", \"-c\", \"exit 3\"]\nbar Top {\n  state n = 0\n  on click {\n    n += 1\n    fail()\n  }\n  text join(\"\", n)\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (heard, events) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
+    let live = Live {
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["0"]);
+    let a = m.scene.roots()[0];
+    to_logic
+        .send(ToLogic::Event {
+            input: None,
+            node: a,
+            event: NodeEvent::Click,
+        })
+        .unwrap();
+    m.until("the click", |s| s.texts() == ["1"]);
+    let ev = loop {
+        let ev = events.recv_timeout(Duration::from_secs(10)).unwrap();
+        if ev["event"] == "notices" {
+            break ev;
+        }
+    };
+    let notice = ev["notices"][0].as_str().unwrap_or_default();
+    assert!(
+        notice.starts_with("action fail: `sh` failed") && notice.contains('3'),
+        "{ev}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}

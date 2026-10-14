@@ -4,8 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use strand_compiler::instantiate::Instance;
-use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
+use strand_compiler::vm::{Num, Value};
 use strand_compiler::{SourceMap, lower};
 use strand_core::Runtime;
 
@@ -511,7 +511,7 @@ fn dates_order() {
 /// drops repeats keeping the first, `sum` adds numbers of one unit.
 #[test]
 fn text_plus_distinct_and_sum() {
-    let src = "state name = \"Str\"\nlet joined = name + \"and\"\nstate xs = [3, 1, 3, 2, 1]\nlet uniq = xs.distinct()\nlet total = xs.sum()\nlet widths = xs.sum(x => x * 2px)\nlet none = xs.filter(x => x > 9).sum()\nlet glyphs = [\"web\", \"code\", \"web\"].distinct().join(\",\")\nbar B { box { on click { name += \"!\" } } }\n";
+    let src = "state name = \"Str\"\nlet joined = name + \"and\"\nstate xs = [3, 1, 3, 2, 1]\nlet uniq = xs.distinct()\nlet total = xs.sum()\nlet widths = xs.sum(x => x * 2px)\nlet none = xs.filter(x => x > 9).sum()\nlet glyphs = [\"web\", \"code\", \"web\"].distinct().join(\",\")\nlet idle = xs.filter(x => x > 9).sum(x => x * 1ms)\nlet waits = xs.filter(x => x > 9).map(x => x * 1s).sum()\nlet shares = xs.filter(x => x > 9).sum(x => x * 1%)\nbar B { box { on click { name += \"!\" } } }\n";
     let (rt, host, inst) = run(src);
     let shown = |n: &str| get(&inst, n).show(inst.vm().types());
     assert_eq!(get(&inst, "joined"), Value::text("Strand"));
@@ -520,6 +520,11 @@ fn text_plus_distinct_and_sum() {
     assert_eq!(shown("widths"), "20px");
     assert_eq!(get(&inst, "none"), Value::int(0));
     assert_eq!(get(&inst, "glyphs"), Value::text("web,code"));
+    // (M6, the review) An empty list's sum is its unit's zero.
+    assert_eq!(get(&inst, "idle"), Value::Num(0.0, Num::Ms));
+    assert_eq!(get(&inst, "waits"), Value::Num(0.0, Num::Ms));
+    assert_eq!(get(&inst, "shares"), Value::Num(0.0, Num::Percent));
+    assert_eq!(shown("idle"), shown("waits"));
     let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
     host.set(&rt, "screens.all", Value::list(vec![screen]))
         .unwrap();

@@ -489,12 +489,13 @@ impl Ctx {
     /// (M5) `system.dark` reads negated.
     pub(crate) fn default_palette(&self, rt: &Runtime) -> Result<strand_theme::Palette, Error> {
         let host = &self.vm.host;
-        let dark = host.read(rt, "system", "dark")?.truthy() != self.vm.other_mode_active();
-        let seed = match host.read(rt, "system", "accent")? {
+        // The builtin `system`, whatever the config declares (spec.md 4.2).
+        let dark = host.read_builtin(rt, "system", "dark")?.truthy() != self.vm.other_mode_active();
+        let seed = match host.read_builtin(rt, "system", "accent")? {
             Value::Color(c) => c,
             _ => Color::from_hex(DEFAULT_SEED).unwrap_or(Color::BLACK),
         };
-        let contrast = match host.read(rt, "system", "contrast")? {
+        let contrast = match host.read_builtin(rt, "system", "contrast")? {
             Value::Num(n, _) => n,
             _ => 0.0,
         };
@@ -1016,8 +1017,12 @@ impl Instance {
                 .iter()
                 .flat_map(|f| f.items.iter())
                 .any(|n| matches!(n, Node::Surface(s) if s.screen.is_some()));
-            if bars {
+            // Bars hold the builtin `screens` (a config's `service
+            // screens` shadows it for the config's reads only).
+            if bars && !prog.declares_service("screens") {
                 services.insert(("screens".to_string(), None));
+            } else if bars {
+                ctx.hold_builtin(rt, "screens");
             }
             ctx.acquire(rt, &services);
             let root_frag = ctx.em.borrow_mut().new_frag(None, None);
@@ -1052,7 +1057,7 @@ impl Instance {
             .collect();
         let system: Vec<_> = ["dark", "accent", "contrast"]
             .into_iter()
-            .flat_map(|f| ctx.vm.host.sources(&rt, "system", Some(f)))
+            .flat_map(|f| ctx.vm.host.sources_builtin(&rt, "system", Some(f)))
             .collect();
         ctx.declare_reads(&rt, memo.id(), &chunks, &root_env, &system);
         if fresh {

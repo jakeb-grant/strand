@@ -1281,3 +1281,31 @@ fn a_reopened_popup_keeps_its_state_across_a_reload() {
     shell.flush();
     assert_eq!(shell.scene.texts(), ["Month 2"]);
 }
+
+/// (M6, the review of the owner's ruling) On the schema host, a config
+/// `service screens` or `service system` shadows the builtin for the
+/// config's reads only: the bars still mount on the builtin `screens`
+/// and the built-in palette reads the builtin `system` (boot asserts no
+/// runtime error). A reload that drops the declaration stops it, and the
+/// builtin of that name is back.
+#[test]
+fn a_shadowing_service_leaves_the_runtimes_reads_and_stops_on_reload() {
+    let shadow = "service screens from file \"/tmp/s.json\" { n: int }\n\
+        service system from file \"/tmp/y.json\" { up: int }\n\
+        bar B { text join(\" \", \"n\", screens.n, system.up) }\n";
+    let mut shell = boot(&[("bar.strand", shadow)]);
+    assert!(
+        shell.scene.find_text("n 0 0").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    shell.reload(&[(
+        "bar.strand",
+        "bar B { text join(\" \", \"n\", screens.all.len, system.dark) }\n",
+    )]);
+    assert!(
+        shell.scene.find_text("n 1 false").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+}

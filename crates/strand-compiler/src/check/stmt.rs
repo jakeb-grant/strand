@@ -559,14 +559,16 @@ impl<'a> Checker<'a> {
                 }
             }
             [svc, ev] => {
-                let rec = self.schema.service(&svc.name).or_else(|| {
-                    self.globals
-                        .get(&svc.name)
-                        .and_then(|d| match self.defs[d.0 as usize].kind {
-                            hir::DefKind::Service(r) => Some(r),
-                            _ => None,
-                        })
-                });
+                // (M6) A config's `service` first: it shadows the builtin
+                // of its name (spec.md 4.2), events included.
+                let rec = self
+                    .globals
+                    .get(&svc.name)
+                    .and_then(|d| match self.defs[d.0 as usize].kind {
+                        hir::DefKind::Service(r) => Some(r),
+                        _ => None,
+                    })
+                    .or_else(|| self.schema.service(&svc.name));
                 let Some(r) = rec else {
                     let candidates: Vec<String> = self.schema.services.keys().cloned().collect();
                     let fix = Self::closest(&svc.name, &candidates);

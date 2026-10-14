@@ -2401,6 +2401,48 @@ service shelf {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// (M6, the review of the owner's ruling) A config `service
+        /// system` or `service screens` shadows the builtin for the
+        /// config's reads only: the built-in palette still reads the
+        /// builtin `system.dark`, `accent` and `contrast`, and the bars
+        /// still mount on the builtin `screens` (each `tick` asserts no
+        /// runtime error).
+        #[test]
+        fn the_runtimes_own_reads_go_to_the_builtin_services() {
+            let svc = "permit exec \"true\"\n";
+            let system = format!(
+                "{svc}service system from poll [\"true\"] every 30s {{ up: int }}\nbar B {{ text join(\" \", system.up) {{ color: $accent; on click {{ }} }} }}\n"
+            );
+            let live = Live::boot(&system, Buses::none());
+            assert_eq!(live.inst.nodes_handling("click").len(), 1);
+            let dark = live
+                .rt
+                .untrack(|rt| live.real.host.read_builtin(rt, "system", "dark"));
+            assert!(matches!(dark, Ok(Value::Bool(_))), "{dark:?}");
+            drop(live);
+            let screens = format!(
+                "{svc}service screens from poll [\"true\"] every 30s {{ n: int }}\nbar B {{ text join(\" \", screens.n) {{ on click {{ }} }} }}\n"
+            );
+            let live = Live::boot(&screens, Buses::none());
+            assert_eq!(live.inst.nodes_handling("click").len(), 1, "the bar mounts");
+        }
+
+        /// (M6, the review) A reload that adds a config `service cpu`
+        /// lets go of the builtin `cpu` its old scopes held: a release
+        /// goes to the host that took the hold, not to the one the name
+        /// routes to now.
+        #[test]
+        fn a_reload_adding_a_shadow_lets_go_of_the_builtin() {
+            let mut live = Live::boot("bar B { text pct(cpu.usage) }\n", Buses::none());
+            let cpu = live.real.builtin.cpu.clone();
+            assert_eq!(cpu.readers(), 1);
+            live.reload(
+                "permit exec \"true\"\nservice cpu from poll [\"true\"] every 30s { usage: float }\nbar B { text pct(cpu.usage) }\n",
+            );
+            assert_eq!(cpu.readers(), 0, "the builtin is let go");
+            assert!(live.real.custom.client("cpu").is_some());
+        }
+
         /// A file whose directory does not exist yet (an app's cache
         /// before its first run) is waited for, not failed and retried:
         /// the directories are followed as they appear, and again after
@@ -2843,7 +2885,7 @@ service shelf {
             ) else {
                 return;
             };
-            let src = "enum Profile { power_saver, balanced, performance }\nservice ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded }\nservice mode from dbus system \"net.hadess.PowerProfiles\" { active: Profile rw = ActiveProfile }\nbar B { text join(\" \", ppd.profile, mode.active) }\n";
+            let src = "enum Profile { power_saver, balanced, performance }\nservice ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded }\nservice mode from dbus system \"net.hadess.PowerProfiles\" { active: Profile rw = ActiveProfile; action hold(profile: Profile, reason: text, app: text) = HoldProfile }\nbar B { text join(\" \", ppd.profile, mode.active) }\n";
             // The check against introspection, on the mock's bus.
             let address = match bus.buses().system {
                 strand_services::Bus::Address(a) => a,
@@ -2984,6 +3026,76 @@ service shelf {
                 live.until("the daemon has the enum's spelling", |_| get() == spelled);
                 live.until("read back", |l| l.value("mode", "active") == variant(name));
             }
+            // (M6, the review of the owner's ruling) An action calls its
+            // method through `CustomHost::action`, an enum argument
+            // spelled as the daemon spells it (`power-saver`), as a field
+            // write is.
+            live.real
+                .host
+                .action(
+                    &live.rt,
+                    strand_compiler::vm::host::ActionTarget::Service("mode"),
+                    "hold",
+                    &[
+                        variant("power_saver"),
+                        Value::text("a reason with spaces"),
+                        Value::text("strand"),
+                    ],
+                    strand_compiler::vm::host::ActionCtx::default(),
+                )
+                .unwrap();
+            let held = || -> Vec<Vec<String>> {
+                let tokio = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                tokio.block_on(async {
+                    let c = zbus::connection::Builder::address(address.as_str())
+                        .unwrap()
+                        .build()
+                        .await
+                        .unwrap();
+                    let reply = c
+                        .call_method(
+                            Some("net.hadess.PowerProfiles"),
+                            "/net/hadess/PowerProfiles",
+                            Some("org.freedesktop.DBus.Mock"),
+                            "GetMethodCalls",
+                            &("HoldProfile",),
+                        )
+                        .await
+                        .unwrap();
+                    let calls: Vec<(u64, Vec<zbus::zvariant::OwnedValue>)> =
+                        reply.body().deserialize().unwrap();
+                    calls
+                        .into_iter()
+                        .map(|(_, args)| {
+                            args.into_iter()
+                                .map(|v| String::try_from(v).unwrap_or_default())
+                                .collect()
+                        })
+                        .collect()
+                })
+            };
+            live.until("the method was called", |_| !held().is_empty());
+            assert_eq!(
+                held(),
+                [["power-saver", "a reason with spaces", "strand"]],
+                "the enum as the daemon spells it"
+            );
+            assert!(
+                live.real
+                    .host
+                    .action(
+                        &live.rt,
+                        strand_compiler::vm::host::ActionTarget::Service("mode"),
+                        "nope",
+                        &[],
+                        strand_compiler::vm::host::ActionCtx::default(),
+                    )
+                    .is_err(),
+                "an undeclared action"
+            );
             // A read-only field refuses writes.
             assert!(
                 live.real

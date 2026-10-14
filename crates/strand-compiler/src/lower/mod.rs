@@ -493,6 +493,12 @@ pub struct Timer {
 }
 
 impl Program {
+    /// (M6) Whether the config declares a `service` named `name`, which
+    /// shadows a builtin one of that name (spec.md 4.2).
+    pub fn declares_service(&self, name: &str) -> bool {
+        self.services.values().any(|s| s.name == name)
+    }
+
     pub fn chunk(&self, id: ChunkId) -> &Chunk {
         &self.chunks[id as usize]
     }

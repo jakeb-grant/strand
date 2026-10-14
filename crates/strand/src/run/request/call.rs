@@ -15,13 +15,16 @@ impl Shell {
     #[cold]
     #[inline(never)]
     pub(super) fn call_request(&mut self, from: Caller, target: &str, args: &[String]) {
-        let ans = match crate::ipc::resolve_call(crate::services::schema(), target, args) {
-            Ok(call) => match self.run_action(&call.service, &call.action, &call.args) {
-                Ok(()) => json!({"ok": true}),
-                Err(e) => proto::refused(format!("{target}: {e}")),
-            },
-            Err(e) => proto::refused(e),
-        };
+        // (M6) A service the config declares is the one called (spec.md 4.2).
+        let prog = self.inst.vm().prog.clone();
+        let ans =
+            match crate::ipc::resolve_call(crate::services::schema(), Some(&prog), target, args) {
+                Ok(call) => match self.run_action(&call.service, &call.action, &call.args) {
+                    Ok(()) => json!({"ok": true}),
+                    Err(e) => proto::refused(format!("{target}: {e}")),
+                },
+                Err(e) => proto::refused(e),
+            };
         self.answer(from, ans);
     }
 
@@ -37,7 +40,13 @@ impl Shell {
         let Some(real) = &self.real else {
             return self.host.action(rt, target, action, args, ctx);
         };
-        let svc = real.served(service);
+        // A config's `service` of this name is the one called; the
+        // builtin it shadows is not started for it.
+        let svc = if self.inst.vm().prog.declares_service(service) {
+            None
+        } else {
+            real.served(service)
+        };
         if let Some(svc) = &svc {
             svc.acquire(rt);
             real.services
