@@ -551,7 +551,13 @@ filling the monitor, the keyboard always).
   `trigger: hover` popup is open from a surface at a time: when another
   opens from the same surface (the pointer went straight to the next
   bar item), the open one closes at once. Its `enter` and `exit` poses
-  play as it opens and closes. It takes no `open:`, and `trigger`,
+  play as it opens and closes. Its `open:` opens it from code: while
+  that is true it is open whatever the pointer does (opening at once,
+  without its `delay`, and closing another opened from the same
+  surface), and once it is false the pointer holds it as above, so it
+  closes after its `grace` unless the pointer is on it or its element
+  (decisions.md m6-owner-fixes). That `open:` is never two-way: what
+  shows is `p.open`. `trigger`,
   written on the popup itself, is `open` (the default: `open:` decides)
   or `hover`; anything else, and `delay` or `grace` without `trigger:
   hover`, is a load error.

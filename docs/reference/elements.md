@@ -573,7 +573,7 @@ Also every prop and event of [`surface`](#surface).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `trigger` | `PopupTrigger` | What opens it: `open` (the default), its `open:` prop; `hover`, the pointer. A `trigger: hover` popup opens while the pointer is on the element it is anchored to (after `delay`), stays open while the pointer is on that element or on the popup (popups opened from it too), and 200 ms more to cross the gap, or while a drag that started in it goes on. It never takes the keyboard, and opening one closes the other `trigger: hover` popup open from the same surface. It takes no `open:`. |
+| `trigger` | `PopupTrigger` | What opens it: `open` (the default), its `open:` prop; `hover`, the pointer. A `trigger: hover` popup opens while the pointer is on the element it is anchored to (after `delay`), stays open while the pointer is on that element or on the popup (popups opened from it too), and 200 ms more to cross the gap, or while a drag that started in it goes on. It never takes the keyboard, and opening one closes the other `trigger: hover` popup open from the same surface. Its `open:` (never two-way) opens it from code and holds it open while true; then the pointer holds it as usual. |
 | `delay` | `duration` | How long the pointer rests on the element before a `trigger: hover` popup opens. At once by default. |
 | `grace` | `duration` | How long a `trigger: hover` popup stays open after the pointer leaves both it and its element, to cross the gap. 200 ms by default. |
 

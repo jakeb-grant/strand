@@ -1159,6 +1159,22 @@ impl Lowerer<'_> {
         let outer = std::mem::replace(&mut self.elem, schema);
         let mut children = self.nodes(&e.children);
         self.elem = outer;
+        // (m6-owner-fixes, G-b) `open:` on a `trigger: hover` popup holds
+        // it open (spec.md 6.3): the router's, as `hold`, while the
+        // popup's `open` stays the router's to write.
+        if matches!(kind, ElementKind::Builtin(NodeKind::Popup)) && self.hover_trigger(&e.props) {
+            let hold = |p: &mut Prop| {
+                if p.prop == Some(SceneProp::Open) {
+                    p.prop = Some(SceneProp::Hold);
+                }
+            };
+            props.iter_mut().for_each(hold);
+            for c in children.iter_mut() {
+                if let Node::When { props, .. } = c {
+                    props.iter_mut().for_each(hold);
+                }
+            }
+        }
         // (M6) A call's handlers are its root element's, not children
         // for its `slot`.
         let call_handlers = if matches!(kind, ElementKind::Component(_))
@@ -1353,6 +1369,16 @@ impl Lowerer<'_> {
                 self.prop(p, ty)
             })
             .collect()
+    }
+
+    /// (m6-owner-fixes) Whether `props` hold `trigger: hover`, as
+    /// written (the checker refuses any other form).
+    fn hover_trigger(&self, props: &[hir::Prop]) -> bool {
+        props.iter().any(|p| {
+            p.name == "trigger"
+                && matches!(p.value.kind, hir::ExprKind::Variant(en, v)
+                    if self.hir.types.enum_(en).variants.get(v as usize).is_some_and(|n| n == "hover"))
+        })
     }
 
     fn prop(&mut self, p: &hir::Prop, ty: Ty) -> Prop {

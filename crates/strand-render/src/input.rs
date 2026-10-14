@@ -467,6 +467,9 @@ struct HoverPopups {
     /// pointer was on its anchor: it opens again only once the pointer
     /// has left that anchor.
     dismissed: HashSet<NodeId>,
+    /// (m6-owner-fixes) Those whose `open:` the program holds true
+    /// (`Prop::Hold`): open, and kept open, whatever the pointer does.
+    held: HashSet<NodeId>,
 }
 
 /// (M6) Whether `node` is a `trigger: hover` popup (never a tooltip's).
@@ -555,6 +558,22 @@ impl Router {
                     } else {
                         h.open.remove(id);
                     }
+                }
+            }
+        }
+        // (m6-owner-fixes) `open:` on a `trigger: hover` popup.
+        for op in &diff.ops {
+            if let SceneOp::SetProp {
+                id,
+                prop: Prop::Hold,
+                value,
+                ..
+            } = op
+            {
+                if *value == PropValue::Bool(true) {
+                    self.hover_popups.held.insert(*id);
+                } else {
+                    self.hover_popups.held.remove(id);
                 }
             }
         }
@@ -784,6 +803,7 @@ impl Router {
         h.pending.retain(|n, _| ours(n));
         h.written.retain(|n, _| tree.contains_live(*n));
         h.dismissed.retain(|n| ours(n));
+        h.held.retain(|n| ours(n));
         if self.picking {
             let graced: Vec<NodeId> = self
                 .hover_popups
@@ -825,16 +845,28 @@ impl Router {
                 }
             }
         }
+        // (m6-owner-fixes) A popup the program holds open opens at once,
+        // before what the pointer opens from the same surface.
+        let mut held: Vec<NodeId> = self.hover_popups.held.iter().copied().collect();
+        held.sort();
+        for p in held {
+            if let Some(from) = opened_from(tree, p) {
+                want.insert(from, p);
+            }
+        }
+        let held = &self.hover_popups.held;
         let wanted = |p: &NodeId| want.values().any(|w| w == p);
         self.hover_popups.pending.retain(|p, _| wanted(p));
         self.hover_popups.dismissed.retain(|p| wanted(p));
         let mut opening = Vec::new();
         for (&from, &p) in &want {
-            if self.hover_popups.open.contains_key(&p) || self.hover_popups.dismissed.contains(&p) {
+            if self.hover_popups.open.contains_key(&p)
+                || (self.hover_popups.dismissed.contains(&p) && !held.contains(&p))
+            {
                 continue;
             }
             let delay = match tree.get(p).and_then(|n| n.get(Prop::Delay)) {
-                Some(PropValue::Duration(d)) => *d,
+                Some(PropValue::Duration(d)) if !held.contains(&p) => *d,
                 _ => Duration::ZERO,
             };
             if !delay.is_zero() {
@@ -870,7 +902,7 @@ impl Router {
             let Some(due) = self.hover_popups.open.get_mut(&p) else {
                 continue; // closed with the popup it was opened from
             };
-            if anchor.is_some_and(|a| under.contains(&a)) {
+            if anchor.is_some_and(|a| under.contains(&a)) || self.hover_popups.held.contains(&p) {
                 *due = None;
                 continue;
             }
