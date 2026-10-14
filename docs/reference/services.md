@@ -75,10 +75,11 @@ devices paired with it.
 | --- | --- | --- |
 | `powered` | `bool rw` | The adapter is on. Writable. |
 | `devices` | `[BluetoothDevice]` | Paired devices, keyed by `address`. |
+| `available` | `bool` | BlueZ answers and has an adapter: false without them (or without a system bus), so a menu can hide what cannot work. |
 
 | Event | |
 | --- | --- |
-| `on bluetooth.failed(address: text, error: text)` | Connecting or disconnecting a device failed (out of range, turned off, timed out after 30 s): `on bluetooth.failed(address, error) { … }`. |
+| `on bluetooth.failed(address: text, error: text)` | Connecting or disconnecting a device failed (out of range, turned off, timed out after 30 s, or the service not running): `on bluetooth.failed(address, error) { … }`. |
 
 ## `brightness`
 
@@ -172,10 +173,11 @@ starting or stopping switches to the other.
 | `strength` | `float` | The Wi-Fi signal strength, 0 to 1. |
 | `wifi` | `bool rw` | The Wi-Fi radio is on. Writable. |
 | `access_points` | `[AccessPoint]` | The Wi-Fi networks in range, keyed by `ssid`. Scanned only while a visible reader reads them (a network menu that is open). |
+| `available` | `bool` | NetworkManager or iwd answers: false without either (or without a system bus), so a menu can hide what cannot work. |
 
 | Event | |
 | --- | --- |
-| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out): `on network.failed(ssid, error) { … }`. |
+| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running): `on network.failed(ssid, error) { … }`. |
 
 ## `notifications`
 
@@ -211,7 +213,8 @@ Monitors.
 The login session and the machine's power, from logind
 (`org.freedesktop.login1`): a power menu. Each `can_*` says whether
 logind allows it, so a menu greys out what it does not; an action
-that fails (polkit refused it, no login session) is `session.failed`.
+that fails (polkit refused it, no login session, no logind) is
+`session.failed`.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -219,6 +222,7 @@ that fails (polkit refused it, no login session) is `session.failed`.
 | `can_hibernate` | `bool` | Hibernating is allowed (`CanHibernate`, as `can_suspend`). |
 | `can_reboot` | `bool` | Rebooting is allowed (`CanReboot`, as `can_suspend`). |
 | `can_power_off` | `bool` | Powering off is allowed (`CanPowerOff`, as `can_suspend`). |
+| `available` | `bool` | logind answers: false without it (or without a system bus), when every action fails with `session.failed`. |
 
 | Method | |
 | --- | --- |
@@ -232,7 +236,7 @@ that fails (polkit refused it, no login session) is `session.failed`.
 | Event | |
 | --- | --- |
 | `on session.lock_requested()` | logind asks this session's locker to lock it (`session.lock()`, `loginctl lock-session`, an idle daemon): `on session.lock_requested { locked = true }` puts a shell's own `lock` up. |
-| `on session.failed(action: text, error: text)` | An action failed (polkit refused it, no login session to lock or end): `on session.failed(action, error) { … }`, `action` as written (`"reboot"`). A power action waiting on polkit's password dialog has not failed: it fails only when logind refuses it. |
+| `on session.failed(action: text, error: text)` | An action failed (polkit refused it, no login session to lock or end, logind or the system bus missing): `on session.failed(action, error) { … }`, `action` as written (`"reboot"`). A power action waiting on polkit's password dialog has not failed: it fails only when logind refuses it. |
 
 ## `system`
 

@@ -1117,6 +1117,16 @@ fn list_method(
             }
             Value::Null
         }
+        // (M6, owner-testing gap 23) `find`'s position: what `xs[i]`
+        // reads back.
+        "index_of" => {
+            for (i, v) in items.iter().enumerate() {
+                if test(v)? {
+                    return Ok(Value::int(i as i64));
+                }
+            }
+            Value::Null
+        }
         _ => return Err(fail(format!("lists have no method `{name}` here"))),
     })
 }

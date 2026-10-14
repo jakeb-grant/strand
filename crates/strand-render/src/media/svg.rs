@@ -283,15 +283,21 @@ struct Svg {
     parts: Vec<Part>,
     fit: Fit,
     fill: Option<[u8; 4]>,
+    /// (M6) The file changed on disk: read again, the old text drawn
+    /// until the new one is in ([`SvgSource::file_changed`]).
+    reload: bool,
+    /// (M6) Texts taken in for this source: in the state, so a new text
+    /// draws anew though nothing else changed.
+    generation: u32,
 }
 
 impl Svg {
     /// Asks for the source's text (from `props`' worker), and wraps its
     /// parts when either changed.
     fn prepare(&mut self, props: &RasterProps<'_>) {
-        if self.text.is_none() && !self.source.is_empty() {
+        if (self.text.is_none() || self.reload) && !self.source.is_empty() {
             let src = self.source.clone();
-            self.text = props
+            let got = props
                 .load_file(&format!("svg:{}", self.source), move || {
                     crate::image::read_local(&src, MAX_SVG_BYTES)
                         .map_err(|e| e.to_string())
@@ -307,6 +313,16 @@ impl Svg {
                             .map_err(|_| "not text".to_string())
                     })
                 });
+            if !self.reload {
+                self.text = got;
+            } else if let Some(text) = got {
+                // The new text replaces the old (drawn meanwhile).
+                self.text = Some(text);
+                self.reload = false;
+                self.generation = self.generation.wrapping_add(1);
+                self.doc = None;
+                self.failed = None;
+            }
         }
         let names: Vec<String> = self.parts.iter().map(|p| p.name.clone()).collect();
         let stale = self.doc.as_ref().is_none_or(|d| d.names != names)
@@ -324,6 +340,22 @@ impl Svg {
 #[derive(Debug, Default)]
 pub struct SvgSource {
     inner: Mutex<Svg>,
+}
+
+impl SvgSource {
+    /// (M6) Files changed on disk: true if this node's source is one of
+    /// `paths`, which is then read again on its next draw (the old text
+    /// drawn until the new one is in).
+    pub(crate) fn file_changed(&self, paths: &[std::path::PathBuf]) -> bool {
+        let Ok(mut s) = self.inner.lock() else {
+            return false;
+        };
+        if s.source.is_empty() || !paths.contains(&crate::image::local_path(&s.source)) {
+            return false;
+        }
+        s.reload = true;
+        true
+    }
 }
 
 /// Draws `text` into a `w × h` RGBA buffer by `fit`.
@@ -422,6 +454,7 @@ impl RasterSource for SvgSource {
             s.text = None;
             s.doc = None;
             s.failed = None;
+            s.reload = false;
         }
         s.fit = match (props.get)(Prop::Fit) {
             Some(PropValue::Keyword(k)) => Fit::from_name(k).unwrap_or_default(),
@@ -439,6 +472,7 @@ impl RasterSource for SvgSource {
         s.fit.hash(&mut h);
         s.fill.hash(&mut h);
         matches!(s.text, Some(Ok(_))).hash(&mut h);
+        s.generation.hash(&mut h);
         for p in &s.parts {
             p.hash_into(&mut h);
         }

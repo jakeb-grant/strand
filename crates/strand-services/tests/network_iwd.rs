@@ -367,6 +367,7 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
     assert_eq!(cells.connected.get_untracked(&rt), Ok(true));
     assert_eq!(cells.ssid.get_untracked(&rt), Ok(Some("Home".into())));
     assert_eq!(cells.wifi.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.available.get_untracked(&rt), Ok(true), "iwd answers");
     // -60 dBm, from `GetOrderedNetworks`.
     assert_eq!(cells.strength.get_untracked(&rt), Ok(iwd::quality(-60.0)));
 

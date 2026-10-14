@@ -1,7 +1,8 @@
 /// The login session and the machine's power, from logind
 /// (`org.freedesktop.login1`): a power menu. Each `can_*` says whether
 /// logind allows it, so a menu greys out what it does not; an action
-/// that fails (polkit refused it, no login session) is `session.failed`.
+/// that fails (polkit refused it, no login session, no logind) is
+/// `session.failed`.
 service session {
   /// Suspending is allowed (logind's `CanSuspend` is `yes`, or
   /// `challenge`: polkit asks for a password first).
@@ -12,6 +13,9 @@ service session {
   can_reboot: bool
   /// Powering off is allowed (`CanPowerOff`, as `can_suspend`).
   can_power_off: bool
+  /// logind answers: false without it (or without a system bus), when
+  /// every action fails with `session.failed`.
+  available: bool
   /// Suspends the machine.
   action suspend()
   /// Hibernates the machine.
@@ -33,8 +37,9 @@ service session {
   /// up.
   event lock_requested
   /// An action failed (polkit refused it, no login session to lock or
-  /// end): `on session.failed(action, error) { … }`, `action` as written
-  /// (`"reboot"`). A power action waiting on polkit's password dialog has
-  /// not failed: it fails only when logind refuses it.
+  /// end, logind or the system bus missing): `on session.failed(action,
+  /// error) { … }`, `action` as written (`"reboot"`). A power action
+  /// waiting on polkit's password dialog has not failed: it fails only
+  /// when logind refuses it.
   event failed(action: text, error: text)
 }

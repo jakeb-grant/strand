@@ -193,10 +193,14 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    (`check::assets::local_source`), and `strand check` warns
    (`check::missing_file`) on a literal path that names no file, never
    on an icon name (the rule render draws by, now
-   `strand_scene::source_is_file`). spec.md 6.1 says so. Edits to such a
-   file while the shell runs are still not watched
+   `strand_scene::source_is_file`). spec.md 6.1 says so
    (`crates/strand-compiler/tests/render.rs::relative_media_paths_are_under_the_config_directory`,
    `crates/strand-compiler/tests/checker.rs::a_missing_literal_file_is_a_warning`).
+   Since the owner's approval the same day, such a file is watched and
+   saving it redraws it with no reload
+   (`crates/strand/tests/demo.rs::strand_run_redraws_an_edited_svg_without_a_reload`,
+   `crates/strand-render/tests/local_assets.rs`); decisions.md
+   m6-owner-fixes.
    The island test bar (`target/try/island`, built the same day) avoided
    `svg` entirely because of this bug.
 
@@ -645,7 +649,7 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
 Gaps 20 to 27 come from the island test bar (see the note before bug 9):
 findings only.
 
-20. **No way to tell whether a builtin service is running.** (open,
+20. **No way to tell whether a builtin service is running.** (fixed,
     2026-10-14; found by the island test bar (`target/try/island`),
     headless sway; not yet reproduced minimally) `network`, `bluetooth`
     and `session` have no field saying their daemon answers
@@ -660,6 +664,15 @@ findings only.
     `bt_seen`, `fn logind()` from the `can_*` fields). Likely direction:
     a `running`/`available` field per service, or actions and writes
     failing as values.
+    **Fixed; pending the owner's check on Hyprland** (m6-owner-fixes,
+    decisions.md): both. The fault was a bug against spec.md 12: an
+    action a service cannot take is now its `failed` event
+    (`session.failed("lock", …)` included) and a write is dropped,
+    neither a fault; `network.available`, `bluetooth.available` and
+    `session.available` say whether the daemon answers
+    (`crates/strand-services/tests/session.rs::without_logind_session_is_unavailable_and_its_actions_fail_as_events`,
+    strand's
+    `services::tests::a_service_that_cannot_run_fails_as_values_not_faults`).
 21. **A `trigger: hover` popup cannot be opened from code.** (fixed,
     2026-10-14; found by the island test bar (`target/try/island`),
     headless sway; not yet reproduced minimally) It takes no `open:`
@@ -696,7 +709,7 @@ findings only.
     input region to its children's boxes
     (`crates/strand-render/tests/boxes.rs::hit_none_takes_no_input_in_its_own_box`);
     spec.md 6.7, decisions.md m6-owner-fixes.
-23. **No index-of on lists.** (open, 2026-10-14; found by the island
+23. **No index-of on lists.** (fixed, 2026-10-14; found by the island
     test bar (`target/try/island`), headless sway; not yet reproduced
     minimally) Lists have `find`, `filter`, `first` and `last` but
     nothing gives an item's position, so stepping workspaces by scroll
@@ -706,6 +719,11 @@ findings only.
     where `id` is not the number `focus(int)` takes. Not tried there.
     Likely direction: an index-of (or index-carrying `find`) so the next
     slot's record can be focused with `ws.focus()`.
+    **Fixed; pending the owner's check on Hyprland** (m6-owner-fixes,
+    decisions.md): `xs.index_of(test)`, an `int?`, is `find`'s position,
+    so the next slot is
+    `slots[(slots.index_of(w => w.focused) ?? -1) + 1]?.focus()`
+    (`crates/strand-compiler/tests/vm.rs::index_of_finds_the_first_position`).
 24. **A popup's gap side: a negative `margin` and a `margin` of 0.**
     (diagnosed, 2026-10-14; found by the island test bar
     (`target/try/island`), headless sway; not yet reproduced minimally)

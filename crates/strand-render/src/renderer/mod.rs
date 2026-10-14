@@ -18,6 +18,7 @@ use crate::raster::{AtlasMirror, Raster};
 use crate::tree::SceneTree;
 
 mod apply;
+mod assets;
 #[cfg(feature = "gpu")]
 pub(crate) mod backend;
 

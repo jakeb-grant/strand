@@ -1043,6 +1043,58 @@ fn paint_config(dir: &std::path::Path, src: &str, w: u32, at: &[u32]) -> Vec<(u8
         .collect()
 }
 
+/// (M6, the owner's approval of 2026-10-14) The local files the mounted
+/// `image`s, `svg`s and `lottie`s draw, for the watcher: absolute (a
+/// relative one under the config directory), a computed source by its
+/// current value, never an icon name; a source that changes or a node
+/// that unmounts changes the set, and says so once.
+#[test]
+fn the_drawn_local_files_follow_the_mounted_sources() {
+    let dir = std::path::PathBuf::from("/cfg-assets");
+    let src = "state pic = \"a.svg\"\nstate on = true\n\
+        bar Top {\n  height: 24\n  row {\n    \
+        svg pic { size: 24 }\n    image \"firefox\" { size: 24 }\n    \
+        image \"/abs/x.png\" { size: 24 }\n    \
+        if on { lottie \"anim/l.json\" { size: 24 } }\n    \
+        box { on click { pic = \"b.svg\"\n on = false } }\n  }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("bar.strand".to_string(), src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let storage = strand_compiler::instantiate::Storage::in_dirs(dir.join(".state"), &dir);
+    let inst = Instance::new(&rt, program, host.clone(), storage);
+    inst.flush();
+    let p = |s: &str| std::path::PathBuf::from(s);
+    assert_eq!(
+        inst.asset_files(),
+        [
+            p("/abs/x.png"),
+            p("/cfg-assets/a.svg"),
+            p("/cfg-assets/anim/l.json")
+        ]
+    );
+    assert!(inst.take_assets_changed());
+    assert!(!inst.take_assets_changed(), "said once");
+    let boxes = inst.nodes_handling("click");
+    inst.event(boxes[0], "click", Vec::new());
+    inst.flush();
+    assert_eq!(
+        inst.asset_files(),
+        [p("/abs/x.png"), p("/cfg-assets/b.svg")],
+        "the new value; the unmounted lottie's file gone"
+    );
+    assert!(inst.take_assets_changed());
+}
+
 /// (Bug 8, owner testing 2026-10-14) A relative `svg` and `image` path,
 /// a subdirectory's (`icons/b.svg`, `icons/g.png`) too, is read under the
 /// config directory, not the process's (the test's is the crate's): each

@@ -200,10 +200,18 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
         ),
         m(
             "find",
-            vec![param("test", pred)],
+            vec![param("test", pred.clone())],
             t.clone().optional(),
             false,
             "The first item `test` is true for, or null.",
+        ),
+        m(
+            "index_of",
+            vec![param("test", pred)],
+            Ty::INT.optional(),
+            false,
+            "The index of the first item `test` is true for (0 for the first \
+             item, as `xs[i]` reads it), or null.",
         ),
         m(
             "push",

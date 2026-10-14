@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use strand_compiler::schema::{DocKey, ElementSchema, PropSchema, Schema};
+use strand_compiler::schema::{DocKey, ElementSchema, PropSchema, Schema, list_members};
 use strand_compiler::ty::{FnSig, Origin, RecordDef, Ty, TypeTable};
 
 use crate::describe;
@@ -622,6 +622,32 @@ fn functions(s: &Schema) -> String {
         }
         o.push('\n');
     }
+    // (M6, owner-testing gap 23) A list's members are generic over its
+    // item, built by the compiler for the type at hand: shown for an item
+    // `T` keyed by `K`.
+    let _ = writeln!(o, "### `[T]`\n");
+    let _ = writeln!(
+        o,
+        "A list of `T` items. `remove_key`, `move` and `update` are a keyed \
+         list's (`[T] key field`, or a keyed record's), `K` its key's type.\n"
+    );
+    let _ = writeln!(o, "| Member | |");
+    let _ = writeln!(o, "| --- | --- |");
+    let item = Ty::Opaque("T".into());
+    for m in list_members(&item, true, &Ty::Opaque("K".into())) {
+        let doc = cell(m.doc.as_deref());
+        if m.sigs.is_empty() {
+            let _ = writeln!(
+                o,
+                "| {} | {doc} |",
+                code(&format!("{}: {}", m.name, ty(&s.types, &m.ty)))
+            );
+        }
+        for f in &m.sigs {
+            let _ = writeln!(o, "| {} | {doc} |", code(&sig(&s.types, &m.name, f)));
+        }
+    }
+    o.push('\n');
     o
 }
 

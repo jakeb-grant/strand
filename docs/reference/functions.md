@@ -94,3 +94,35 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn split(sep: text) -> [text]` | The pieces between each `sep`. |
 | `fn replace(from: text, to: text) -> text` | Every `from` replaced with `to`. |
 
+### `[T]`
+
+A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.
+
+| Member | |
+| --- | --- |
+| `len: int` | How many items. |
+| `first: T?` | The first item; null if empty. |
+| `last: T?` | The last item; null if empty. |
+| `fn filter(keep: fn(T) -> bool) -> [T]` | The items `keep` is true for. |
+| `fn map(f: fn(T) -> any) -> [any]` | Each item through `f`. |
+| `fn sort_by(by: fn(T) -> any) -> [T]` | The items ordered by `by`. |
+| `fn take(count: int) -> [T]` | The first `count` items. |
+| `fn skip(count: int) -> [T]` | All but the first `count` items. |
+| `fn reverse() -> [T]` | The items in reverse order. |
+| `fn distinct() -> [T]` | The items without repeats: the first of each equal item, in order. |
+| `fn sum(of: fn(T) -> any) -> any` | The items added up (`xs.sum()`), or what `of` gives for each (`ws.sum(w => w.width)`); 0 for no items. Numbers of one unit. |
+| `fn join(sep: text) -> text` | The text items joined with `sep`. |
+| `fn contains(item: T) -> bool` | Whether `item` is in the list. |
+| `fn any(test: fn(T) -> bool) -> bool` | Whether `test` is true for some item. |
+| `fn all(test: fn(T) -> bool) -> bool` | Whether `test` is true for every item. |
+| `fn count(test: fn(T) -> bool) -> int` | How many items `test` is true for. |
+| `fn find(test: fn(T) -> bool) -> T?` | The first item `test` is true for, or null. |
+| `fn index_of(test: fn(T) -> bool) -> int?` | The index of the first item `test` is true for (0 for the first item, as `xs[i]` reads it), or null. |
+| `fn push(item: T)` | Adds `item` at the end (handlers only). |
+| `fn insert(at: int, item: T)` | Inserts `item` at `at` (handlers only). |
+| `fn remove(at: int)` | Removes the item at `at` (handlers only). |
+| `fn clear()` | Removes every item (handlers only). |
+| `fn remove_key(key: K)` | Removes the item with `key` (keyed lists, handlers only). |
+| `fn move(key: K, to: int)` | Moves the item with `key` to `to` (keyed lists, handlers only). |
+| `fn update(key: K, f: fn(T) -> T)` | Replaces the item with `key` by `f` of it (keyed lists, handlers only). |
+

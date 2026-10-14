@@ -2,7 +2,8 @@
 //! (`org.freedesktop.login1`) on the system bus (owner-testing gaps 1 and
 //! 17, decisions.md m6-w2-services).
 //!
-//! `can_*` are logind's `CanSuspend`, `CanHibernate`, `CanReboot` and
+//! `available` is logind owning its name on the system bus (owner-testing
+//! gap 20). `can_*` are logind's `CanSuspend`, `CanHibernate`, `CanReboot` and
 //! `CanPowerOff`, asked when the service starts and again when logind
 //! restarts (they are methods: logind signals no change). `yes` and
 //! `challenge` (polkit asks first) are true; `no` and `na` false.
@@ -84,7 +85,7 @@ impl SessionAction {
 }
 
 /// See the module docs.
-#[service(name = "session", action = SessionAction)]
+#[service(name = "session", action = SessionAction, refused = refused)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Session {
     /// Suspending is allowed (logind's `CanSuspend` is `yes`, or
@@ -96,16 +97,29 @@ pub struct Session {
     pub can_reboot: bool,
     /// Powering off is allowed (`CanPowerOff`, as `can_suspend`).
     pub can_power_off: bool,
+    /// logind answers: false without it (or without a system bus), when
+    /// every action fails with `session.failed`.
+    pub available: bool,
     /// logind asks this session's locker to lock it (`session.lock()`,
     /// `loginctl lock-session`, an idle daemon): `on
     /// session.lock_requested { locked = true }` puts a shell's own `lock`
     /// up.
     pub lock_requested: Event<()>,
     /// An action failed (polkit refused it, no login session to lock or
-    /// end): `on session.failed(action, error) { … }`, `action` as written
-    /// (`"reboot"`). A power action waiting on polkit's password dialog has
-    /// not failed: it fails only when logind refuses it.
+    /// end, logind or the system bus missing): `on session.failed(action,
+    /// error) { … }`, `action` as written (`"reboot"`). A power action
+    /// waiting on polkit's password dialog has not failed: it fails only
+    /// when logind refuses it.
     pub failed: Event<(String, String)>,
+}
+
+/// An action the service could not take (no system bus, its run backing
+/// off): `failed(action, error)`, as logind refusing it is.
+fn refused(action: &SessionAction, error: &str) -> Option<SessionEvent> {
+    Some(SessionEvent::Failed((
+        action.name().to_string(),
+        error.to_string(),
+    )))
 }
 
 /// Whether a `Can*` answer allows it.
@@ -166,6 +180,7 @@ async fn read(conn: &zbus::Connection) -> (Session, Option<Own>) {
         can_hibernate,
         can_reboot,
         can_power_off,
+        available: true,
         ..Session::default()
     };
     (state, own)
