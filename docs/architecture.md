@@ -4684,7 +4684,13 @@ transparent huge pages for life.
   one per network at a time and stopped when NetworkManager is
   replaced, an enterprise (802.1X) network joins only through a profile
   saved in NetworkManager, and `AccessPoint.secure` is true exactly
-  where `connect_with(password)` joins: WPA personal or WEP), `bluetooth` (BlueZ's object manager),
+  where `connect_with(password)` joins: WPA personal or WEP; M6 wave 2,
+  m6-w2-services: where NetworkManager does not run and iwd does, the
+  body is `network::iwd::run`, iwd's object manager with a passphrase
+  agent and a signal level agent served at `iwd::AGENT_PATH` on the
+  shared system connection, and either daemon appearing or going chooses
+  again; `dbus::Daemon::watch` follows a name without D-Bus activation,
+  so iwd is never started for us), `bluetooth` (BlueZ's object manager),
   `notifications` (our own `org.freedesktop.Notifications` server;
   `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only

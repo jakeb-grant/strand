@@ -8,7 +8,7 @@ The records, enums, aliases and opaque types of the builtin schema. The language
 
 ### `AccessPoint`
 
-A Wi-Fi network in range, from NetworkManager's last scan; access
+A Wi-Fi network in range, from the last scan; access
 points of one network name are one entry (the strongest). Keyed by
 `ssid`.
 
@@ -23,7 +23,7 @@ Keyed by `ssid`.
 
 | Method | |
 | --- | --- |
-| `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
+| `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password; iwd joins only a network it knows this way); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings, or iwd's provisioning file). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
 | `action connect_with(password: text)` | Joins a `secure` network with `password` (its WPA key or WEP key), saved in its connection: a network menu's password field. On any other network it fails. A failure is `network.failed`. |
 
 ### `App`

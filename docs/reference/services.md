@@ -161,11 +161,13 @@ Memory use, sampled once a second while a reader is visible.
 
 ## `network`
 
-The network, from NetworkManager, followed live.
+The network, followed live: from NetworkManager, or from iwd
+(`net.connman.iwd`) where NetworkManager does not run. Either one
+starting or stopping switches to the other.
 
 | Field | Type | |
 | --- | --- | --- |
-| `connected` | `bool` | A network connection is up. |
+| `connected` | `bool` | A network connection is up. Over iwd, which knows only Wi-Fi: the Wi-Fi network is joined. |
 | `ssid` | `text?` | The Wi-Fi network joined, if any. |
 | `strength` | `float` | The Wi-Fi signal strength, 0 to 1. |
 | `wifi` | `bool rw` | The Wi-Fi radio is on. Writable. |

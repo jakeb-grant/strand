@@ -635,7 +635,8 @@ provisional service wm {
   event config_reloaded(failed: bool?)
 }
 
-/// The network, from NetworkManager.
+/// The network, from NetworkManager, or from iwd where NetworkManager
+/// does not run.
 provisional service network {
   /// A network connection is up.
   connected: bool
