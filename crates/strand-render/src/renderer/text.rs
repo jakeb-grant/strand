@@ -400,6 +400,58 @@ impl Renderer {
         out
     }
 
+    /// Waits up to the estimate wait for the text worker to deliver the
+    /// unbounded layouts of `needs` whose nodes have none at any scale
+    /// (layout measured them by an estimate). Returns true if any arrived
+    /// (lay out again).
+    pub(super) fn await_unmeasured(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
+        if self.estimate_wait.is_zero() || !matches!(self.text, TextBackend::Worker(_)) {
+            return false;
+        }
+        let measured = |texts: &HashMap<TextSlot, TextState>, node: NodeId, part: u8| {
+            texts.iter().any(|(slot, t)| {
+                slot.node == node && slot.part == part && slot.width.is_none() && t.layout.is_some()
+            })
+        };
+        let unmeasured: Vec<TextSlot> = needs
+            .iter()
+            .filter(|(node, spec)| {
+                spec.max_width.is_none() && !measured(&self.texts, *node, spec.part)
+            })
+            .map(|(node, spec)| TextSlot::of(*node, spec))
+            .collect();
+        let waiting = |texts: &HashMap<TextSlot, TextState>| {
+            unmeasured.iter().any(|slot| {
+                texts
+                    .get(slot)
+                    .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
+            })
+        };
+        let deadline = Instant::now() + self.estimate_wait;
+        let mut delivered = false;
+        while waiting(&self.texts) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let TextBackend::Worker(w) = &self.text else {
+                break;
+            };
+            if left.is_zero() {
+                break;
+            }
+            match w.recv_timeout(left) {
+                Ok(Some(l)) => {
+                    self.deliver(l);
+                    delivered = true;
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    self.pending.clear();
+                    break;
+                }
+            }
+        }
+        delivered
+    }
+
     pub(super) fn request_text(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
         let mut delivered = false;
         for (node, spec) in needs {

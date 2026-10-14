@@ -1328,6 +1328,50 @@ fn transitions_reach_set_prop() {
     );
 }
 
+/// (owner-testing.md B-b) A `~` that depends on state is evaluated with
+/// the value it goes with: the change that switches it is sent with the
+/// transition it switched to, whichever state the node mounted in, as a
+/// `when`'s own `~` is.
+#[test]
+fn a_conditional_transition_applies_to_the_change_that_switches_it() {
+    use strand_scene::{Easing, Transition};
+    let src = "state grown = true\nbar B {\n  box { opacity: grown ? 1 : 0 ~ (grown ? ease(ease_out, 160ms) : ease(ease_in, 1000ms)) }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let sent = |u: &Update| -> Vec<(PropValue, Transition)> {
+        u.diff
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                SceneOp::SetProp {
+                    prop: Prop::Opacity,
+                    value,
+                    transition,
+                    ..
+                } => Some((value.clone(), transition.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let ease = |name: &str, ms: u64| Transition::Duration {
+        duration: Duration::from_millis(ms),
+        easing: Easing::named(name).unwrap(),
+    };
+    for (grown, value, t) in [
+        (false, 0.0, ease("ease_in", 1000)),
+        (true, 1.0, ease("ease_out", 160)),
+        (false, 0.0, ease("ease_in", 1000)),
+    ] {
+        shell
+            .inst
+            .set_value("t", "grown", Value::Bool(grown))
+            .unwrap();
+        let u = shell.flush();
+        assert_eq!(sent(&u), [(PropValue::Number(value), t)], "grown {grown}");
+    }
+}
+
 /// Writes in one tick coalesce: one diff, one `SetProp` per changed prop.
 #[test]
 fn one_diff_per_tick() {

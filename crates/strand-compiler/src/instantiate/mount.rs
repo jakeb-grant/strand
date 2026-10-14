@@ -43,7 +43,10 @@ pub const QUERY_HYSTERESIS: f64 = 4.0;
 struct Source {
     cond: Option<ChunkId>,
     value: SourceValue,
-    transition: Transition,
+    /// Its `~` expression, evaluated with the value it goes with: a
+    /// transition that depends on state applies to the change that
+    /// switched it (spec.md 6.6). `None`: the default.
+    transition: Option<ChunkId>,
 }
 
 #[derive(Clone)]
@@ -1852,17 +1855,12 @@ impl Ctx {
         };
         let add = |p: &Prop, cond: Option<ChunkId>, push: &mut dyn FnMut(SceneProp, Source)| {
             if let Some(sp) = p.prop {
-                let transition = p.transition.map_or(Transition::Default, |t| {
-                    rt.untrack(|rt| self.eval(rt, t, env))
-                        .map(|v| convert::transition(&self.vm.prog.types, &v))
-                        .unwrap_or_default()
-                });
                 push(
                     sp,
                     Source {
                         cond,
                         value: SourceValue::Chunk(p.value, p.ty.clone()),
-                        transition,
+                        transition: p.transition,
                     },
                 );
             }
@@ -1873,7 +1871,7 @@ impl Ctx {
                         Source {
                             cond,
                             value: SourceValue::Chunk(s.value, s.ty.clone()),
-                            transition: Transition::Default,
+                            transition: None,
                         },
                     );
                 }
@@ -1903,7 +1901,7 @@ impl Ctx {
                         Source {
                             cond: None,
                             value: SourceValue::Pose(props.clone()),
-                            transition: Transition::Default,
+                            transition: None,
                         },
                     );
                 }
@@ -1913,7 +1911,7 @@ impl Ctx {
                     Source {
                         cond: None,
                         value: SourceValue::Play(*c),
-                        transition: Transition::Default,
+                        transition: None,
                     },
                 ),
                 _ => {}
@@ -1928,7 +1926,7 @@ impl Ctx {
                 Source {
                     cond: None,
                     value: SourceValue::Tokens(sets),
-                    transition: Transition::Default,
+                    transition: None,
                 },
             );
         }
@@ -1988,7 +1986,7 @@ impl Ctx {
                 Source {
                     cond: None,
                     value: SourceValue::Uniforms(base),
-                    transition: Transition::Default,
+                    transition: None,
                 },
             );
             for (cond, props) in whens {
@@ -1997,7 +1995,7 @@ impl Ctx {
                     Source {
                         cond: Some(cond),
                         value: SourceValue::Uniforms(props),
-                        transition: Transition::Default,
+                        transition: None,
                     },
                 );
             }
@@ -2016,7 +2014,7 @@ impl Ctx {
                 Source {
                     cond: None,
                     value: SourceValue::Shader(code.clone()),
-                    transition: Transition::Default,
+                    transition: None,
                 },
             );
         }
@@ -2105,8 +2103,6 @@ impl Ctx {
         kind: NodeKind,
         at: (crate::source::FileId, crate::syntax::Span),
     ) {
-        let transitions: Rc<Vec<Transition>> =
-            Rc::new(sources.iter().map(|s| s.transition.clone()).collect());
         let sources = Rc::new(sources);
         let (ctx, e, srcs) = (self.clone(), env.clone(), sources.clone());
         // Which `when` held last time: a container query (a condition on
@@ -2178,7 +2174,11 @@ impl Ctx {
                     ))]));
                     let value = PropValue::List(items);
                     ctx.drags.borrow_mut().insert(id, v);
-                    return Ok(PropOut { value, source: i });
+                    return Ok(PropOut {
+                        value,
+                        source: i,
+                        transition: Transition::Default,
+                    });
                 }
                 let value = match (ctx.source_value(rt, prop, &s.value, &e)?, &base) {
                     (PropValue::Text(t), Some(dir)) => PropValue::Text(
@@ -2186,7 +2186,20 @@ impl Ctx {
                     ),
                     (v, _) => v,
                 };
-                return Ok(PropOut { value, source: i });
+                // Read with the value, so a `~` that depends on state
+                // (`~ (open ? 160ms : 1s)`) gives the change that switched
+                // it its new transition. A transition that fails to
+                // evaluate is the default.
+                let transition = s.transition.map_or(Transition::Default, |t| {
+                    ctx.eval(rt, t, &e)
+                        .map(|v| convert::transition(&ctx.vm.prog.types, &v))
+                        .unwrap_or_default()
+                });
+                return Ok(PropOut {
+                    value,
+                    source: i,
+                    transition,
+                });
             }
             if drag {
                 ctx.drags.borrow_mut().remove(&id);
@@ -2194,6 +2207,7 @@ impl Ctx {
             Ok(PropOut {
                 value: PropValue::Unset,
                 source: 0,
+                transition: Transition::Default,
             })
         };
         let boot: Rc<super::emit::BootRead> = Rc::default();
@@ -2243,8 +2257,7 @@ impl Ctx {
                 {
                     self.late_nodes.borrow_mut().push((id, prop, n));
                 }
-                let t = transitions.get(out.source).cloned().unwrap_or_default();
-                let t = boot.transition(t);
+                let t = boot.transition(out.transition);
                 self.em.borrow_mut().set(id, prop, out.value, t);
             }
             Err(e) => {
@@ -2260,7 +2273,6 @@ impl Ctx {
                     scene: id,
                     prop,
                     memo,
-                    transitions,
                     site,
                     boot,
                 },
@@ -2290,6 +2302,7 @@ impl Ctx {
             Ok(PropOut {
                 value: PropValue::Bool(shown.get(rt)?),
                 source: 0,
+                transition: Transition::Instant,
             })
         });
         let _ = rt.reads_from(memo.id(), &[shown.id()]);
@@ -2316,7 +2329,6 @@ impl Ctx {
                     scene: id,
                     prop: SceneProp::Open,
                     memo,
-                    transitions: Rc::new(vec![Transition::Instant]),
                     site,
                     boot: Default::default(),
                 },

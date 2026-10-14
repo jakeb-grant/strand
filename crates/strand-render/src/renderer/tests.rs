@@ -290,6 +290,9 @@ fn text_collected_while_painting_holds_a_resized_surface() {
 #[test]
 fn crashing_requests_are_not_retried() {
     let mut r = Renderer::new(worker());
+    // Flattening waits for no new text here (`ESTIMATE_WAIT`): the
+    // requests must stay in flight for the test to answer them.
+    r.set_estimate_wait(Duration::ZERO);
     let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
     let (d, root) = texts_diff(&[(1, "crash"), (2, "fine")]);
     assert!(r.apply(d).is_empty());

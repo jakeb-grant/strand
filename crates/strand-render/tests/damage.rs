@@ -1348,6 +1348,9 @@ fn a_new_text_node_holds_the_frame_for_its_glyphs() {
     };
     let mut r = worker_renderer();
     r.set_new_text_wait(Duration::from_secs(30));
+    // A worker slower than the layout's own short wait for new text
+    // (`ESTIMATE_WAIT`, owner-testing.md bug 14): the frame is held.
+    r.set_estimate_wait(Duration::ZERO);
     let (diff, clock) = bar("12:59");
     r.apply(diff);
     let root = r.tree().roots()[0];

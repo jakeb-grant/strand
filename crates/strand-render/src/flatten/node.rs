@@ -401,7 +401,9 @@ impl<'a> Flattener<'a> {
                     });
                 (None, placed)
             } else {
-                place_text(shaped, self.scale, content, align)
+                let (fit, placed, clip) = place_text(shaped, self.scale, content, align);
+                clip_text = clip;
+                (fit, placed)
             };
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
