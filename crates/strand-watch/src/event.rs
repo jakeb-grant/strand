@@ -29,6 +29,9 @@ pub enum Role {
     Wallpaper,
     /// Any other referenced file (`service … from file`, …).
     Other,
+    /// (M6) A local file an `image`, `svg` or `lottie` draws: drawn anew
+    /// when it changes, with no reload.
+    Asset,
     /// A file under an app, icon or font directory: invalidate that cache.
     Cache(CacheKind),
 }

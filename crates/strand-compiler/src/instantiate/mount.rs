@@ -2120,10 +2120,22 @@ impl Ctx {
         // An `image`'s, `svg`'s or `lottie`'s relative file goes to render
         // under the config directory (spec.md 6.1): render reads the path
         // it is handed, and the process's directory is not the config's.
-        let base = (prop == SceneProp::Source
-            && crate::check::assets::KINDS.contains(&kind.name()))
-        .then(|| self.storage.config_dir.clone())
-        .flatten();
+        let media = prop == SceneProp::Source && crate::check::assets::KINDS.contains(&kind.name());
+        let base = media.then(|| self.storage.config_dir.clone()).flatten();
+        // (M6) The file it draws, while it is bound, for the watcher
+        // ([`Instance::asset_files`]): a slot of its own, so a reload
+        // binding the same node again is not undone by the old binding's
+        // cleanup.
+        let asset = media.then(|| Rc::new(()));
+        if let Some(slot) = &asset {
+            let weak = Rc::downgrade(self);
+            let slot = slot.clone();
+            rt.on_cleanup(move || {
+                if let Some(ctx) = weak.upgrade() {
+                    ctx.set_asset(&slot, None);
+                }
+            });
+        }
         if drag {
             // The source's value goes with its node.
             let weak = Rc::downgrade(self);
@@ -2198,10 +2210,20 @@ impl Ctx {
         };
         let boot: Rc<super::emit::BootRead> = Rc::default();
         let boot_in = boot.clone();
+        let assets = asset.map(|slot| (slot, self.clone()));
         let memo = rt.memo(move |rt| {
             let (out, read) = crate::vm::builtins::reads_boot_box(|| pick(rt));
             boot_in.now.set(read);
             let out = out?;
+            if let Some((slot, ctx)) = &assets {
+                let file = match &out.value {
+                    PropValue::Text(t) if crate::check::assets::is_local(kind.name(), t) => {
+                        crate::check::assets::file_of(t, None)
+                    }
+                    _ => None,
+                };
+                ctx.set_asset(slot, file);
+            }
             Ok(match &lock_open {
                 Some(ctx) => ctx.hold_lock_open(rt, out),
                 None => out,

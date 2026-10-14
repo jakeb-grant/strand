@@ -5621,7 +5621,7 @@ It does not depend on `strand-compiler` or `strand-core`.
   `set_referenced(impl IntoIterator<Item = impl Into<Referenced>>)`,
   each item `(path, role)` or `(path, role, hash)` with `hash` the
   `hash_bytes` of what the loader read, for every `(path,
-  Role::{Shader, Settings, Wallpaper, Other})` the program references;
+  Role::{Shader, Settings, Wallpaper, Other, Asset})` the program references;
   it replaces the loader's previous set (and only that), and a file that
   no longer holds the bytes its `hash` names (saved between the read
   and the call) is reported. `watch_file(path, role)` /
@@ -5644,6 +5644,22 @@ It does not depend on `strand-compiler` or `strand-core`.
   alike (`run::cache_changed`: all three of the apps service, the icon
   lookup and the renderer's icons), since an installed app may bring an
   icon the icon watch does not see.
+  (M6) `Role::Asset` is a local file a mounted `image`, `svg` or
+  `lottie` draws: `Instance::asset_files()` (each bound `source`'s
+  current value made a path, `check::assets::file_of`; kept per binding
+  and dropped by its cleanup; `take_assets_changed()` says when it
+  moved) joins the logic thread's `Job::Referenced` list
+  (`Shell::watch_settings`). The worker hands the asset files a batch
+  changed to `live::Job::Assets(AssetSink)`'s sink, which `strand run`
+  forwards to the main thread's `Renderer::assets_changed(&paths)`: no
+  reload. There `ImageStore::invalidate_files` keeps a drawn decode of
+  such a path as outdated (drawn until its re-decode replaces it,
+  undrawn ones dropped, in-flight decodes and `svg:`/`lottie:` file jobs
+  stale, an animated source's timeline and worker players
+  (`image::Job::Forget`) gone), each `SvgSource`/`LottieSource` whose
+  source is one reads its file again (the old text or composition drawn
+  meanwhile; a generation in its `state` draws the new one), and the
+  surfaces showing them paint whole.
   **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait for
   the watcher thread (watches synced; a new path given without a hash
   is read before they return, one given with a hash is compared later

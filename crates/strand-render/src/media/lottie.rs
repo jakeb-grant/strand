@@ -458,6 +458,12 @@ struct Lottie {
     comp: Option<Result<Arc<File>, String>>,
     /// Its read is on the worker.
     waiting: bool,
+    /// (M6) The file changed on disk: read again, the old one drawn until
+    /// the new one is in ([`LottieSource::file_changed`]).
+    reload: bool,
+    /// (M6) Files taken in for this source: in the state, so a new file
+    /// draws anew though nothing else changed.
+    generation: u32,
     speed: f32,
     renderer: velato::Renderer,
 }
@@ -489,6 +495,23 @@ pub fn frame_at(comp: &velato::Composition, t: f32, speed: f32) -> f64 {
 #[derive(Debug, Default)]
 pub struct LottieSource {
     inner: Mutex<Lottie>,
+}
+
+impl LottieSource {
+    /// (M6) Files changed on disk: true if this node's source is one of
+    /// `paths`, which is then read again on its next draw (the old file
+    /// drawn until the new one is in). Images a file names beside it are
+    /// read with it, not watched of their own.
+    pub(crate) fn file_changed(&self, paths: &[std::path::PathBuf]) -> bool {
+        let Ok(mut s) = self.inner.lock() else {
+            return false;
+        };
+        if s.source.is_empty() || !paths.contains(&crate::image::local_path(&s.source)) {
+            return false;
+        }
+        s.reload = true;
+        true
+    }
 }
 
 impl RasterSource for LottieSource {
@@ -552,9 +575,10 @@ impl RasterSource for LottieSource {
         if source != s.source {
             s.comp = None;
             s.waiting = false;
+            s.reload = false;
             s.source = source;
         }
-        if s.comp.is_none() {
+        if s.comp.is_none() || s.reload {
             // No source (a value not set yet) is no animation: no clock,
             // as for a file that could not be read.
             let got = if s.source.is_empty() {
@@ -572,8 +596,15 @@ impl RasterSource for LottieSource {
                         })
                     })
             };
-            s.waiting = got.is_none();
-            s.comp = got;
+            if !s.reload {
+                s.waiting = got.is_none();
+                s.comp = got;
+            } else if let Some(file) = got {
+                // The new file replaces the old (drawn meanwhile).
+                s.comp = Some(file);
+                s.reload = false;
+                s.generation = s.generation.wrapping_add(1);
+            }
         }
         s.speed = number((props.get)(Prop::Speed))
             .filter(|v| v.is_finite())
@@ -583,6 +614,7 @@ impl RasterSource for LottieSource {
         s.source.hash(&mut h);
         s.speed.to_bits().hash(&mut h);
         matches!(s.comp, Some(Ok(_))).hash(&mut h);
+        s.generation.hash(&mut h);
         h.finish()
     }
 }

@@ -2386,6 +2386,93 @@ fn save(path: &Path, text: &str) {
     std::fs::rename(&tmp, path).unwrap();
 }
 
+/// (M6, the owner's approval of 2026-10-14) An `svg`'s and an `image`'s
+/// local file saved while `strand run` runs (as an editor saves: a
+/// temporary file renamed over it) is drawn anew within a frame or two,
+/// with no reload (`strand watch` hears none) and the bar's state kept.
+/// Before, the old drawing stayed until a restart.
+#[test]
+fn strand_run_redraws_an_edited_svg_without_a_reload() {
+    let Some(sway) = Sway::start_as("assets") else {
+        return;
+    };
+    let config = sway.dir.join("config");
+    std::fs::create_dir_all(config.join("art")).unwrap();
+    let square = |fill: &str| {
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\">\
+             <rect width=\"32\" height=\"32\" fill=\"{fill}\"/></svg>"
+        )
+    };
+    let dot = config.join("dot.svg");
+    let pic = config.join("art/pic.svg");
+    std::fs::write(&dot, square("#ff0000")).unwrap();
+    std::fs::write(&pic, square("#0000ff")).unwrap();
+    std::fs::write(
+        config.join("bar.strand"),
+        "bar Top {\n\
+         \x20 state n = 0\n\
+         \x20 edge: top; height: 32; bg: #000000\n\
+         \x20 on click { n += 1 }\n\
+         \x20 row {\n\
+         \x20   svg \"dot.svg\" { size: 32 }\n\
+         \x20   image \"art/pic.svg\" { size: 32 }\n\
+         \x20   box { width: 32; height: 32; bg: n > 0 ? #ffffff : #000000 }\n\
+         \x20 }\n\
+         }\n",
+    )
+    .unwrap();
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_LOG", "info")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let px = |x: usize| Shot::take(&sway, "HEADLESS-1").px(x, 16);
+    let reaches = |x: usize, want: [u8; 3]| poll::until(|| px(x), |c| *c == want);
+    assert_eq!(reaches(16, [0xff, 0, 0]), [0xff, 0, 0], "{}", text());
+    assert_eq!(reaches(48, [0, 0, 0xff]), [0, 0, 0xff], "{}", text());
+    // State the bar keeps: a click makes its third square white.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click(1800, 10, 2560, 1440);
+    assert_eq!(reaches(80, [0xff; 3]), [0xff; 3], "{}", text());
+    let watch = Watch::start(&sway);
+    watch.ready();
+    save(&dot, &square("#00ff00"));
+    assert_eq!(
+        reaches(16, [0, 0xff, 0]),
+        [0, 0xff, 0],
+        "the svg drawn anew: {}",
+        text()
+    );
+    save(&pic, &square("#ffff00"));
+    assert_eq!(
+        reaches(48, [0xff, 0xff, 0]),
+        [0xff, 0xff, 0],
+        "the image drawn anew: {}",
+        text()
+    );
+    assert_eq!(px(80), [0xff; 3], "the bar's state kept");
+    std::thread::sleep(Duration::from_millis(300));
+    let reloads: Vec<_> = watch
+        .events
+        .try_iter()
+        .filter(|ev| ev["event"] == "reload")
+        .collect();
+    assert!(reloads.is_empty(), "no reload: {reloads:?}");
+    assert!(strand.0.try_wait().unwrap().is_none(), "{}", text());
+}
+
 /// The acceptance run of live reload (M1): the hello bar from a config
 /// directory, then a token edit, a prop edit, a node added and removed,
 /// and a broken save then its fix, each reloaded live with the bar's

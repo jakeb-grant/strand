@@ -87,8 +87,9 @@ pub enum Job {
         client: Option<u64>,
     },
     /// Watch these referenced files (settings files the program mounts,
-    /// wallpapers and imported palette files the theme reads); `settings`
-    /// reads the settings files when they change.
+    /// wallpapers and imported palette files the theme reads, the local
+    /// files its `image`s, `svg`s and `lottie`s draw); `settings` reads
+    /// the settings files when they change.
     Referenced {
         files: Vec<(PathBuf, Role)>,
         settings: Vec<strand_core::SettingsSources>,
@@ -99,6 +100,10 @@ pub enum Job {
         sources: Vec<CacheSource>,
         changed: CacheSink,
     },
+    /// (M6) Tell `changed` which of the referenced files of
+    /// [`Role::Asset`] a batch changed (on the worker thread): render
+    /// reads them again, with no reload.
+    Assets(AssetSink),
     /// The `from dbus` check heard an answer that differs from the one
     /// the last compile used: check the running files again
     /// (`Loader::recheck`).
@@ -112,6 +117,16 @@ pub struct CacheSink(pub Box<dyn Fn(CacheKind) + Send>);
 impl std::fmt::Debug for CacheSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CacheSink")
+    }
+}
+
+/// (M6) Called (on the worker thread) with the [`Role::Asset`] files a
+/// batch changed.
+pub struct AssetSink(pub Box<dyn Fn(Vec<PathBuf>) + Send>);
+
+impl std::fmt::Debug for AssetSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AssetSink")
     }
 }
 
@@ -407,6 +422,8 @@ fn run(
         std::collections::HashMap::new();
     // Who is told when a cache source changes.
     let mut caches: Option<CacheSink> = None;
+    // (M6) Who is told when a drawn local file changes.
+    let mut assets: Option<AssetSink> = None;
     // The referenced files the program gave (settings, theme files) and
     // the shader files the loader read: the watcher has both, as one set.
     let mut given: Vec<(PathBuf, Role)> = Vec::new();
@@ -442,6 +459,7 @@ fn run(
                     }
                     caches = Some(changed);
                 }
+                Job::Assets(sink) => assets = Some(sink),
                 Job::Poll => {}
                 Job::Recheck => recheck = true,
                 Job::Reload { hard, client } => {
@@ -498,6 +516,7 @@ fn run(
         let mut saved: Option<Instant> = None;
         let mut notices = Vec::new();
         let mut invalid: std::collections::BTreeSet<CacheKind> = std::collections::BTreeSet::new();
+        let mut drawn: Vec<PathBuf> = Vec::new();
         for b in &batches {
             rescan |= b.rescan.is_some();
             if b.rescan == Some(strand_watch::RescanReason::Overflow) {
@@ -523,6 +542,9 @@ fn run(
                     Role::Cache(kind) => {
                         invalid.insert(kind);
                     }
+                    Role::Asset if !drawn.contains(&c.path) => {
+                        drawn.push(c.path.clone());
+                    }
                     _ => {}
                 }
             }
@@ -531,6 +553,11 @@ fn run(
             for kind in &invalid {
                 (sink.0)(*kind);
             }
+        }
+        if let Some(sink) = &assets
+            && !drawn.is_empty()
+        {
+            (sink.0)(drawn);
         }
         for n in &notices {
             log::warn!("{n}");
@@ -959,6 +986,69 @@ mod tests {
         assert_eq!(next(), CacheKind::Icons, "removed");
         drain();
         assert!(rx.try_recv().is_err(), "no reload for an icon file");
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (M6) A drawn local file ([`Role::Asset`]) saved as an editor saves
+    /// it (a temporary file renamed over it), in the config directory or
+    /// out of it, reaches the asset sink and nothing else: no reload, no
+    /// settings or theme read; a file no longer referenced is not
+    /// reported.
+    #[test]
+    fn a_saved_drawn_file_reaches_the_asset_sink_without_a_reload() {
+        let dir = std::env::temp_dir().join(format!("strand-live-assets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(dir.join("art")).unwrap();
+        std::fs::write(config.join("shell.strand"), "").unwrap();
+        let dot = config.join("dot.svg");
+        let art = dir.join("art/a.png");
+        std::fs::write(&dot, "<svg/>").unwrap();
+        std::fs::write(&art, b"png").unwrap();
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&config, None, out).unwrap();
+        let (tx, saved) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+        let tx = std::sync::Mutex::new(tx);
+        worker
+            .jobs()
+            .send(Job::Assets(AssetSink(Box::new(move |p| {
+                let _ = tx.lock().map(|t| t.send(p));
+            }))))
+            .unwrap();
+        let refer = |files: Vec<PathBuf>| Job::Referenced {
+            files: files.into_iter().map(|f| (f, Role::Asset)).collect(),
+            settings: Vec::new(),
+        };
+        worker
+            .jobs()
+            .send(refer(vec![dot.clone(), art.clone()]))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let save = |p: &Path, text: &[u8]| {
+            let tmp = p.with_extension("swp");
+            std::fs::write(&tmp, text).unwrap();
+            std::fs::rename(&tmp, p).unwrap();
+        };
+        let next = || {
+            saved
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("no saved file reported")
+        };
+        save(&dot, b"<svg></svg>");
+        assert_eq!(next(), vec![dot.clone()], "in the config directory");
+        save(&art, b"png2");
+        assert_eq!(next(), vec![art.clone()], "outside it");
+        // No longer drawn: not reported.
+        worker.jobs().send(refer(vec![art.clone()])).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        save(&dot, b"<svg>2</svg>");
+        save(&art, b"png3");
+        assert_eq!(next(), vec![art.clone()]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(saved.try_recv().is_err(), "{dot:?} is not watched");
+        assert!(rx.try_recv().is_err(), "no reload, settings or theme read");
         assert!(worker.join().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }

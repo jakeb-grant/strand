@@ -266,6 +266,11 @@ pub(crate) struct Ctx {
     /// (M4) Each mounted `drag:` source's current value, by node: what a
     /// drop of that node delivers ([`Instance::drag_value`]).
     pub drags: RefCell<HashMap<NodeId, Value>>,
+    /// (M6) The local file each bound `image`, `svg` or `lottie` source
+    /// draws, by its binding's slot ([`Instance::asset_files`]).
+    pub(crate) assets: RefCell<HashMap<usize, PathBuf>>,
+    /// (M6) `assets` changed since [`Instance::take_assets_changed`].
+    pub(crate) assets_changed: Cell<bool>,
     /// (M5) The other-mode memo while something holds it (`theme.rs`).
     pub(crate) other: RefCell<Option<theme::OtherHold>>,
     /// (M5) Mounted `file` outputs (`outputs.rs`).
@@ -283,6 +288,22 @@ pub(crate) struct Ctx {
     /// ([`Ctx::current_palette`]), which `$palette.<name>` outside
     /// templates reads too.
     pub(crate) palette_memo: Cell<Option<Memo<Rc<strand_theme::Palette>>>>,
+}
+
+impl Ctx {
+    /// (M6) The file the binding of `slot` draws now (`None`: none, or
+    /// unbound), for [`Instance::asset_files`].
+    pub(crate) fn set_asset(&self, slot: &Rc<()>, file: Option<PathBuf>) {
+        let key = Rc::as_ptr(slot) as usize;
+        let mut assets = self.assets.borrow_mut();
+        let changed = match file {
+            Some(f) => assets.insert(key, f.clone()).is_none_or(|old| old != f),
+            None => assets.remove(&key).is_some(),
+        };
+        if changed {
+            self.assets_changed.set(true);
+        }
+    }
 }
 
 impl VmHooks for Ctx {
@@ -693,6 +714,8 @@ impl Ctx {
             lock: RefCell::default(),
             list_windows: RefCell::default(),
             drags: RefCell::default(),
+            assets: RefCell::default(),
+            assets_changed: Cell::new(false),
             pages: RefCell::default(),
             other: RefCell::default(),
             outputs: RefCell::default(),
@@ -2136,6 +2159,24 @@ impl Instance {
             .vm
             .theme()
             .is_some_and(|t| t.files_changed(&self.rt, paths))
+    }
+
+    /// (M6) The local files the mounted `image`s, `svg`s and `lottie`s
+    /// draw (their sources as render reads them: a relative path under
+    /// the config directory), sorted, for the watcher: a saved one is
+    /// drawn anew with no reload (spec.md 6.1). Computed sources count
+    /// with their current value; icon names and URLs are not files.
+    pub fn asset_files(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self.ctx.assets.borrow().values().cloned().collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Whether [`Instance::asset_files`] may have changed since the last
+    /// call (a source bound, changed or unmounted).
+    pub fn take_assets_changed(&self) -> bool {
+        self.ctx.assets_changed.replace(false)
     }
 
     /// The instance's theme host (tests: wait for wallpaper jobs).

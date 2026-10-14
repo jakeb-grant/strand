@@ -517,7 +517,12 @@ filling the monitor, the keyboard always).
   `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp` or `.apng`; anything else is
   an icon name. `strand check` warns (`check::missing_file`) when a
   literal path names no file; an icon name and a computed source are
-  not checked.
+  not checked. While the shell runs, saving a file a mounted `image`,
+  `svg` or `lottie` draws (by its source's current value, a computed one
+  too) draws it again within a frame or two: the config is not
+  reloaded and no state changes, and the old drawing stays until the
+  new one is read. A file a Lottie names beside it is read again only
+  with the Lottie file (decisions.md m6-owner-fixes).
 - **Icon names.** An icon name (an `icon`'s source, an `image` source
   that is not a path, and so every app, window and tray item icon a
   config draws by name) is looked up first in the config directory's
