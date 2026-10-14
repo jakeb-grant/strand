@@ -34,6 +34,7 @@ service session {
   event lock_requested
   /// An action failed (polkit refused it, no login session to lock or
   /// end): `on session.failed(action, error) { … }`, `action` as written
-  /// (`"reboot"`).
+  /// (`"reboot"`). A power action waiting on polkit's password dialog has
+  /// not failed: it fails only when logind refuses it.
   event failed(action: text, error: text)
 }

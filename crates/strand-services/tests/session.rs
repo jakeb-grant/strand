@@ -36,19 +36,36 @@ fn session_reads_logind_and_acts_through_it() {
     ) else {
         return;
     };
-    // This process's session (`GetSession("auto")` answers it).
+    // This process's session, `c2`, which `GetSession("auto")` names (the
+    // template would answer `…/session/auto`): lock and log out must go
+    // by its id, not by "auto" (review minor 8).
     let session: String = mock(
         &tokio,
         &conn,
         LOGIND,
         MANAGER,
         "AddSession",
-        &("auto", "seat0", 1000u32, "user", true),
+        &("c2", "seat0", 1000u32, "user", true),
     )
     .body()
     .deserialize()
     .unwrap();
 
+    mock(
+        &tokio,
+        &conn,
+        LOGIND,
+        MANAGER,
+        "AddMethod",
+        &(
+            MANAGER_IFACE,
+            "GetSession",
+            "s",
+            "o",
+            "ret = '/org/freedesktop/login1/session/c2' if args[0] == 'auto' else \
+             '/org/freedesktop/login1/session/' + args[0]",
+        ),
+    );
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     let cells = b.session.cells();
@@ -115,12 +132,12 @@ fn session_reads_logind_and_acts_through_it() {
     act("lock");
     assert_eq!(
         called("LockSession")[0][0],
-        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from("auto")).unwrap()
+        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from("c2")).unwrap()
     );
     act("log_out");
     assert_eq!(
         called("TerminateSession")[0][0],
-        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from("auto")).unwrap()
+        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from("c2")).unwrap()
     );
 
     // logind asks the session's locker to lock (`loginctl lock-session`):

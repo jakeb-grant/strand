@@ -727,3 +727,100 @@ fn windows_are_linked_to_their_apps() {
     strand_icons::set_base_dirs(None);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Review minor 10 (m6-w2-services): the compositor's state does not wait
+/// for the desktop entries. A FIFO among them holds the read open: the
+/// windows are published with their app ids meanwhile, and patched with
+/// their entries' icons and apps once the read ends.
+#[test]
+fn windows_are_published_before_the_desktop_entries_are_read() {
+    use std::os::unix::fs::OpenOptionsExt;
+    /// Ends the held read whatever happens (a writer opened and closed
+    /// without blocking: the reader sees the end of the file).
+    struct Release(std::path::PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            // O_NONBLOCK: fails (no reader) rather than waits.
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(0o4000)
+                .open(&self.0);
+        }
+    }
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let root = std::env::temp_dir().join(format!("strand-wm-slow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("chromium.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Chromium\nExec=chromium\nIcon=chromium\n",
+    )
+    .unwrap();
+    let fifo = dir.join("zz-slow.desktop");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let release = Release(fifo.clone());
+    let theme = root.join("icons/hicolor");
+    std::fs::create_dir_all(theme.join("48x48/apps")).unwrap();
+    std::fs::write(
+        theme.join("index.theme"),
+        "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
+    )
+    .unwrap();
+    std::fs::write(theme.join("48x48/apps/chromium.png"), "png").unwrap();
+    strand_icons::set_base_dirs(Some(vec![root.join("icons")]));
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![dir.clone()],
+        ..Default::default()
+    }));
+    let fake = common::hyprland::FakeHyprland::start();
+    let clients = serde_json::json!([{
+        "address": "0xa1", "mapped": true, "hidden": false,
+        "workspace": {"id": 1, "name": "1"},
+        "class": "Chromium-browser", "title": "Chromium", "xwayland": false,
+        "fullscreen": 0, "stableId": "a1",
+    }]);
+    fake.set_reply("j/clients", clients.to_string().as_bytes());
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    let window = || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()?
+            .all
+            .into_iter()
+            .find(|w| w.app_id == "Chromium-browser")
+    };
+    until(&rt, &s, "the window, while the entries are read", || {
+        window().is_some_and(|w| w.icon == "Chromium-browser" && w.app.is_none())
+    });
+    drop(release);
+    until(&rt, &s, "the window linked", || {
+        window().is_some_and(|w| {
+            w.icon == "chromium" && w.app.as_ref().is_some_and(|a| a.id == "chromium")
+        })
+    });
+    s.shutdown();
+    wm::configure(None);
+    strand_services::apps::set_config(None);
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}

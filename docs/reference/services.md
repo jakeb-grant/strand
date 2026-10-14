@@ -232,7 +232,7 @@ that fails (polkit refused it, no login session) is `session.failed`.
 | Event | |
 | --- | --- |
 | `on session.lock_requested()` | logind asks this session's locker to lock it (`session.lock()`, `loginctl lock-session`, an idle daemon): `on session.lock_requested { locked = true }` puts a shell's own `lock` up. |
-| `on session.failed(action: text, error: text)` | An action failed (polkit refused it, no login session to lock or end): `on session.failed(action, error) { … }`, `action` as written (`"reboot"`). |
+| `on session.failed(action: text, error: text)` | An action failed (polkit refused it, no login session to lock or end): `on session.failed(action, error) { … }`, `action` as written (`"reboot"`). A power action waiting on polkit's password dialog has not failed: it fails only when logind refuses it. |
 
 ## `system`
 
@@ -291,6 +291,6 @@ in what the protocol does not cover yet.
 | Method | |
 | --- | --- |
 | `fn on(screen: Screen) -> [Workspace]` | The workspaces on `screen`: `for ws in workspaces.on(screen)`. |
-| `fn slots(screen: Screen) -> [Workspace]` | A bar's slots on `screen`: its workspaces and the configured ones not made yet, by the number their name starts with, then the rest: `for ws in workspaces.slots(screen) { Dot ws }`. |
-| `action focus(target: int \| text)` | Switches to a workspace by id (`int`, a configured one's included) or by name (`text`), making it where the compositor makes workspaces it is switched to (Hyprland, sway; on niri a number is the n-th workspace of the focused screen): `on click { workspaces.focus(4) }`. |
+| `fn slots(screen: Screen) -> [Workspace]` | A bar's slots on `screen`: its workspaces and the configured ones not made yet, by their number (Hyprland's id, else the number their name starts with), then the rest: `for ws in workspaces.slots(screen) { Dot ws }`, each switched to with `ws.focus()`. |
+| `action focus(target: int \| text)` | Switches to a workspace by number (`int`) or by name (`text`), making it where the compositor makes workspaces it is switched to (Hyprland, sway): `on click { workspaces.focus(4) }`. A number is the same on every compositor: Hyprland's workspace 4, sway's `workspace number 4`, niri's fourth workspace of the focused screen. A workspace record is switched to with `ws.focus()`, not by its `id`. |
 

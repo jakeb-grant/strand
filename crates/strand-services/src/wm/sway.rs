@@ -479,6 +479,16 @@ impl State {
                 };
                 Self::switch_to(&name)?
             }
+            // `workspace number n`: the workspace whose name starts with
+            // n, made when there is none; a negative n is a configured
+            // workspace's slot id.
+            WmAction::FocusWorkspaceNumber(n) if *n > 0 => {
+                format!("workspace --no-auto-back-and-forth number {n}")
+            }
+            WmAction::FocusWorkspaceNumber(n) if *n < 0 => {
+                return self.command_for(&WmAction::FocusWorkspace(*n));
+            }
+            WmAction::FocusWorkspaceNumber(n) => return Err(WmError::UnknownWorkspace(*n)),
             WmAction::FocusWorkspaceNamed(name) => Self::switch_to(name)?,
             WmAction::FocusWindow(id) => format!("[con_id={}] focus", window(id)?),
             WmAction::CloseWindow(id) => format!("[con_id={}] kill", window(id)?),
@@ -511,10 +521,18 @@ async fn query(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
     state.workspaces = conn.request(CommandType::GetWorkspaces, "").await?;
     let tree: Node = conn.request(CommandType::GetTree, "").await?;
     state.set_tree(&tree);
-    // The outputs only matter to the config's assignments.
-    if !state.assignments.is_empty() {
-        state.outputs = extra(conn.request(CommandType::GetOutputs, "").await)?.unwrap_or_default();
-    }
+    Ok(())
+}
+
+/// The outputs (`get_outputs`), which only the config's assignments
+/// need: read when a session starts, on `reload` and on an `output`
+/// event (a hotplug, an output switched on or off), not on every re-read.
+async fn read_outputs(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
+    state.outputs = if state.assignments.is_empty() {
+        Vec::new()
+    } else {
+        extra(conn.request(CommandType::GetOutputs, "").await)?.unwrap_or_default()
+    };
     Ok(())
 }
 
@@ -582,6 +600,8 @@ enum Effect {
     Changed,
     Requery,
     Reloaded,
+    /// The outputs changed: read them again.
+    Outputs,
     Shutdown,
 }
 
@@ -603,6 +623,7 @@ fn effect(state: &mut State, event: Event) -> Effect {
             _ => Effect::Requery,
         },
         Event::Shutdown(_) => Effect::Shutdown,
+        Event::Output(_) => Effect::Outputs,
         _ => Effect::None,
     }
 }
@@ -642,17 +663,18 @@ async fn session(
     let subscribed: Success = events
         .request(
             CommandType::Subscribe,
-            r#"["workspace","window","shutdown"]"#,
+            r#"["workspace","window","output","shutdown"]"#,
         )
         .await?;
     if !subscribed.success {
         return Err(SessionEnd::reply(
-            "the subscription to workspace, window and shutdown events (refused)",
+            "the subscription to workspace, window, output and shutdown events (refused)",
         ));
     }
     let mut conn = Conn::connect(socket).await?;
     let mut state = State::default();
     read_assignments(&mut conn, &mut state).await?;
+    read_outputs(&mut conn, &mut state).await?;
     query(&mut conn, &mut state).await?;
     // Actions this sway refused stay refused until it reports another
     // version.
@@ -671,6 +693,7 @@ async fn session(
                 let mut changed = false;
                 let mut requery = false;
                 let mut reloads = 0;
+                let mut outputs = false;
                 let mut shutdown = false;
                 let mut pending = Some(event);
                 while let Some(event) = pending.take() {
@@ -698,6 +721,10 @@ async fn session(
                                     reloads += 1;
                                     requery = true;
                                 }
+                                Effect::Outputs => {
+                                    outputs = true;
+                                    changed = true;
+                                }
                                 Effect::Shutdown => shutdown = true,
                             }
                         }
@@ -710,6 +737,9 @@ async fn session(
                 }
                 if reloads > 0 {
                     read_assignments(&mut conn, &mut state).await?;
+                }
+                if reloads > 0 || outputs {
+                    read_outputs(&mut conn, &mut state).await?;
                 }
                 if requery {
                     query(&mut conn, &mut state).await?;
@@ -794,6 +824,27 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review minor 12: an `output` event (a hotplug, an output switched
+    /// on or off) has the outputs read again, so configured slots follow
+    /// it without waiting for a workspace event; nothing else re-reads
+    /// them.
+    #[test]
+    fn an_output_event_reads_the_outputs_again() {
+        let mut state = State::default();
+        let Decoded::Event(ev) = decode_event(0x8000_0001, br#"{"change":"unspecified"}"#.to_vec())
+        else {
+            panic!("an output event");
+        };
+        assert!(matches!(effect(&mut state, ev), Effect::Outputs));
+        let Decoded::Event(ev) = decode_event(
+            0x8000_0000,
+            br#"{"change":"focus","current":null,"old":null}"#.to_vec(),
+        ) else {
+            panic!("a workspace event");
+        };
+        assert!(matches!(effect(&mut state, ev), Effect::Requery));
+    }
 
     /// Only sway's unknown-command reply refuses the syntax; the
     /// `CMD_INVALID` replies its `focus`, `kill` and `workspace` give for

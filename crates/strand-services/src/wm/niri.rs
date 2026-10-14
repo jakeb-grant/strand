@@ -349,6 +349,14 @@ impl State {
                 }
                 json!({"Action": {"FocusWorkspace": {"reference": {"Id": id}}}})
             }
+            // The n-th workspace of the focused output, as `niri msg
+            // action focus-workspace 3` (past the last, niri's empty one).
+            WmAction::FocusWorkspaceNumber(n) => match u8::try_from(*n) {
+                Ok(n) if n > 0 => {
+                    json!({"Action": {"FocusWorkspace": {"reference": {"Index": n}}}})
+                }
+                _ => return Err(WmError::UnknownWorkspace(*n)),
+            },
             // A named workspace (niri's always exist), else a number: the
             // n-th workspace of the focused output, as `niri msg action
             // focus-workspace 3` (past the last, niri's empty one).
@@ -796,6 +804,20 @@ mod tests {
                 .to_string(),
             r#"{"Action":{"FocusWorkspace":{"reference":{"Id":4}}}}"#
         );
+        // Review M1: `workspaces.focus(n)` is the n-th of the focused
+        // output, not niri's id n.
+        assert_eq!(
+            s.action_for(&WmAction::FocusWorkspaceNumber(4))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"FocusWorkspace":{"reference":{"Index":4}}}}"#
+        );
+        for n in [0, -2, 256] {
+            assert_eq!(
+                s.action_for(&WmAction::FocusWorkspaceNumber(n)),
+                Err(WmError::UnknownWorkspace(n))
+            );
+        }
         // Gaps 2 (m6-w2-services): by name, a named workspace; a number,
         // the n-th of the focused output (niri's own empty one past the
         // last); anything else is no workspace niri can switch to.

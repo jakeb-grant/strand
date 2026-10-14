@@ -71,12 +71,19 @@ pub use service::{
 /// An action on a workspace or window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WmAction {
-    /// `ws.focus()`, `workspaces.focus(id)`: switch to the workspace with
-    /// this id. One that does not exist yet is made where the compositor
-    /// makes workspaces on switching: Hyprland, whose numbered
-    /// workspaces' ids are their numbers, and a configured workspace
-    /// ([`WmState::configured`]) on any adapter.
+    /// `ws.focus()`: switch to the workspace with this id. One that does
+    /// not exist yet is made where the compositor makes workspaces on
+    /// switching: Hyprland, whose numbered workspaces' ids are their
+    /// numbers, and a configured workspace ([`WmState::configured`]) on
+    /// any adapter.
     FocusWorkspace(i64),
+    /// `workspaces.focus(n)`: switch to the workspace numbered `n`, the
+    /// same on every compositor (Hyprland's id, sway's `workspace number
+    /// n`, niri's n-th workspace of the focused output), made where the
+    /// compositor makes workspaces on switching. On sway a negative `n`
+    /// is a configured workspace's slot id (sway's own ids are its
+    /// containers').
+    FocusWorkspaceNumber(i64),
     /// `workspaces.focus(name)`: switch to the workspace named `name`,
     /// made when it does not exist yet and the compositor makes
     /// workspaces on switching (Hyprland, sway). A name that is a number
@@ -624,19 +631,30 @@ pub(crate) async fn drive<S>(
         let mut requests_open = true;
         let mut first = true;
         // (Bugs 3, gaps 9) The desktop entries windows are linked to, read
-        // off the runtime thread at the start and again when the apps
-        // service's sources change; the state waits for the first read.
+        // on the blocking pool at the start and again when the apps
+        // service's sources change: one read at a time, a change meanwhile
+        // reading once more after it. The state does not wait for them:
+        // a window shows its app id until its lookup (also on the blocking
+        // pool, one batch at a time) lands, and is patched then.
         let apps_config = crate::apps::Config::current();
         let read_apps = |c: crate::apps::Config| {
             tokio::task::spawn_blocking(move || crate::apps::AppIndex::load(&c))
         };
         let mut apps_reading = Some(read_apps(apps_config.clone()));
+        let mut apps_dirty = false;
         let mut apps_changes = crate::apps::changes();
         let mut apps_open = true;
-        let mut apps: Option<crate::apps::AppIndex> = None;
-        // Each app id's icon and app, while the index stands.
-        let mut linked: std::collections::HashMap<String, (String, Option<crate::apps::App>)> =
-            std::collections::HashMap::new();
+        let mut apps: Option<std::sync::Arc<crate::apps::AppIndex>> = None;
+        // Which index read `linked` answers for (each read is the next).
+        let mut apps_generation = 0u64;
+        // Each app id's icon and app, and the index read it came from: an
+        // older one stands until the newer lookup lands.
+        let mut linked: std::collections::HashMap<
+            String,
+            (u64, (String, Option<crate::apps::App>)),
+        > = std::collections::HashMap::new();
+        type Found = Vec<(String, (String, Option<crate::apps::App>))>;
+        let mut looking: Option<(u64, Vec<String>, tokio::task::JoinHandle<Found>)> = None;
         loop {
             let mut changes = Vec::new();
             let mut reloads = Vec::new();
@@ -692,14 +710,34 @@ pub(crate) async fn drive<S>(
                             None => std::future::pending().await,
                         }
                     }, if apps_reading.is_some() => {
-                        apps_reading = None;
-                        apps = Some(read.unwrap_or_else(|e| {
+                        apps_reading = std::mem::take(&mut apps_dirty)
+                            .then(|| read_apps(apps_config.clone()));
+                        apps = Some(std::sync::Arc::new(read.unwrap_or_else(|e| {
                             log::warn!("reading desktop entries for windows: {e}");
                             crate::apps::AppIndex::default()
-                        }));
-                        linked.clear();
+                        })));
+                        apps_generation += 1;
+                    }
+                    found = async {
+                        match looking.as_mut() {
+                            Some((_, _, j)) => j.await,
+                            None => std::future::pending().await,
+                        }
+                    }, if looking.is_some() => {
+                        if let Some((generation, asked, _)) = looking.take() {
+                            let found = found.unwrap_or_else(|e| {
+                                // Not asked again under this index: as if
+                                // none matched.
+                                log::warn!("linking windows to desktop entries: {e}");
+                                asked.into_iter().map(|id| (id.clone(), (id, None))).collect()
+                            });
+                            for (id, link) in found {
+                                linked.insert(id, (generation, link));
+                            }
+                        }
                     }
                     r = apps_changes.changed(), if apps_open => match r {
+                        Ok(()) if apps_reading.is_some() => apps_dirty = true,
                         Ok(()) => apps_reading = Some(read_apps(apps_config.clone())),
                         Err(_) => apps_open = false,
                     },
@@ -712,11 +750,10 @@ pub(crate) async fn drive<S>(
                     else => std::future::pending::<()>().await,
                 }
             }
-            let ready = apps.is_some()
-                && match kind {
-                    None => proto_ready,
-                    Some(_) => ipc.is_some() || (proto_ready && adapter_failed),
-                };
+            let ready = match kind {
+                None => proto_ready,
+                Some(_) => ipc.is_some() || (proto_ready && adapter_failed),
+            };
             if ready {
                 let mut state = merge_with(
                     ipc.as_ref().map(|i| &i.state),
@@ -728,14 +765,36 @@ pub(crate) async fn drive<S>(
                     Some(k) => k.name().to_string(),
                     None => desktop.clone().unwrap_or_default(),
                 };
-                if let Some(index) = &apps {
-                    state.link_apps(|app_id| {
-                        linked
-                            .entry(app_id.to_string())
-                            .or_insert_with(|| index.window(app_id))
-                            .clone()
-                    });
+                // App ids the current index has not answered for: looked
+                // up off this thread, the state patched when they land.
+                if let (Some(index), None) = (&apps, &looking) {
+                    let mut ask: Vec<String> = state
+                        .windows
+                        .iter()
+                        .filter(|w| {
+                            linked
+                                .get(&w.app_id)
+                                .is_none_or(|(g, _)| *g != apps_generation)
+                        })
+                        .map(|w| w.app_id.clone())
+                        .collect();
+                    ask.sort();
+                    ask.dedup();
+                    if !ask.is_empty() {
+                        let index = index.clone();
+                        let ids = ask.clone();
+                        let job = tokio::task::spawn_blocking(move || {
+                            ids.into_iter()
+                                .map(|id| {
+                                    let link = index.window(&id);
+                                    (id, link)
+                                })
+                                .collect::<Found>()
+                        });
+                        looking = Some((apps_generation, ask, job));
+                    }
                 }
+                state.link_apps(|app_id| linked.get(app_id).map(|(_, link)| link.clone()));
                 // The adapter came up after the protocols' state went out:
                 // equal ids may name different workspaces, so the lists
                 // start over (a `Reset`) instead of updating in place.
@@ -824,6 +883,20 @@ fn route(
             };
             let Some(p) = proto.workspaces.iter().find(|p| p.key as i64 == id) else {
                 return fail(req.reply, WmError::UnknownWorkspace(id));
+            };
+            return client.send(protocol::ProtoCmd::Activate(p.key, req.reply));
+        }
+        // A workspace the protocol lists whose name is that number.
+        WmAction::FocusWorkspaceNumber(n) => {
+            let Some(client) = protocol.filter(|_| proto.workspace_manager) else {
+                return fail(req.reply, unsupported("no workspace source"));
+            };
+            let Some(p) = proto
+                .workspaces
+                .iter()
+                .find(|p| !p.hidden && p.name.trim().parse::<i64>().ok() == Some(n))
+            else {
+                return fail(req.reply, WmError::UnknownWorkspace(n));
             };
             return client.send(protocol::ProtoCmd::Activate(p.key, req.reply));
         }

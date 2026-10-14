@@ -112,17 +112,20 @@ impl WmState {
     }
 
     /// Sets each window's `icon` and `app` from `find` (by its app id), in
-    /// `windows` and in the workspaces' copies alike.
+    /// `windows` and in the workspaces' copies alike; a window `find` knows
+    /// nothing of yet keeps its icon (its app id) and no app.
     pub(crate) fn link_apps(
         &mut self,
-        mut find: impl FnMut(&str) -> (String, Option<crate::apps::App>),
+        mut find: impl FnMut(&str) -> Option<(String, Option<crate::apps::App>)>,
     ) {
         let copies = self
             .workspaces
             .iter_mut()
             .flat_map(|ws| ws.windows.iter_mut());
         for w in self.windows.iter_mut().chain(copies) {
-            (w.icon, w.app) = find(&w.app_id);
+            if let Some(found) = find(&w.app_id) {
+                (w.icon, w.app) = found;
+            }
         }
     }
 

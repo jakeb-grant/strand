@@ -38,6 +38,12 @@ struct World {
     calls: Vec<String>,
     /// The networks in range, strongest first: path, hundredths of a dBm.
     ordered: Vec<(String, i16)>,
+    /// `Connect` waits while this is set (a join in flight).
+    stall: bool,
+    /// `RegisterSignalLevelAgent` is refused (another tool holds it).
+    refuse_levels: bool,
+    /// How often `RegisterSignalLevelAgent` was asked.
+    level_registrations: u32,
 }
 
 type W = Arc<Mutex<World>>;
@@ -138,9 +144,15 @@ impl Station {
         #[zbus(header)] h: zbus::message::Header<'_>,
         agent: ObjectPath<'_>,
         levels: Vec<i16>,
-    ) {
+    ) -> Result<(), IwdError> {
+        let mut w = self.0.lock().unwrap();
+        w.level_registrations += 1;
+        if w.refuse_levels {
+            return Err(IwdError::Failed("Operation failed".into()));
+        }
         let sender = h.sender().unwrap().to_string();
-        self.0.lock().unwrap().levels = Some((sender, agent.to_string(), levels));
+        w.levels = Some((sender, agent.to_string(), levels));
+        Ok(())
     }
 
     fn unregister_signal_level_agent(&self, _agent: ObjectPath<'_>) {
@@ -191,7 +203,11 @@ impl Net {
     #[zbus(property)]
     fn known_network(&self) -> OwnedObjectPath {
         let known = self.w.lock().unwrap().known.contains(&self.path);
-        path(if known { "/net/connman/iwd/known" } else { "/" })
+        if known {
+            path(&format!("{}_known", self.path))
+        } else {
+            path("/")
+        }
     }
 
     /// Joins: a personal network iwd does not know asks the agent for
@@ -201,9 +217,16 @@ impl Net {
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> Result<(), IwdError> {
+        self.w
+            .lock()
+            .unwrap()
+            .calls
+            .push(format!("Connect {}", self.name));
+        while self.w.lock().unwrap().stall {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let (ask, agent) = {
-            let mut w = self.w.lock().unwrap();
-            w.calls.push(format!("Connect {}", self.name));
+            let w = self.w.lock().unwrap();
             (
                 self.kind == "psk" && !w.known.contains(&self.path),
                 w.agent.clone(),
@@ -242,6 +265,18 @@ impl Net {
     }
 }
 
+/// A network iwd knows: forgetting it drops its passphrase.
+struct Known(W, String, String);
+
+#[zbus::interface(name = "net.connman.iwd.KnownNetwork")]
+impl Known {
+    fn forget(&self) {
+        let mut w = self.0.lock().unwrap();
+        w.calls.push(format!("Forget {}", self.2));
+        w.known.remove(&self.1);
+    }
+}
+
 struct AgentManager(W);
 
 #[zbus::interface(name = "net.connman.iwd.AgentManager")]
@@ -273,6 +308,11 @@ fn fake_iwd(tokio: &tokio::runtime::Runtime, address: &str, w: &W) -> zbus::Conn
             .serve_at(DEV, Station(w.clone()))
             .unwrap()
             .serve_at(HOME, Net::new(w, HOME, "Home", "psk"))
+            .unwrap()
+            .serve_at(
+                format!("{HOME}_known"),
+                Known(w.clone(), HOME.into(), "Home".into()),
+            )
             .unwrap()
             .serve_at(ATTIC, Net::new(w, ATTIC, "Attic", "psk"))
             .unwrap()
@@ -345,6 +385,24 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
     until(&rt, &s, "the new level", || {
         cells.strength.get_untracked(&rt) == Ok(iwd::level_strength(5))
     });
+    // Review minor 7: another peer on the bus is not iwd.
+    let other = connect(&tokio, &bus.address);
+    tokio
+        .block_on(other.call_method(
+            Some(sender.as_str()),
+            agent.as_str(),
+            Some("net.connman.iwd.SignalLevelAgent"),
+            "Changed",
+            &(ObjectPath::try_from(DEV).unwrap(), 0u8),
+        ))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    s.pump(&rt);
+    assert_eq!(
+        cells.strength.get_untracked(&rt),
+        Ok(iwd::level_strength(5)),
+        "a level from another peer"
+    );
     assert!(
         !w.lock().unwrap().calls.contains(&"Scan".to_string()),
         "no scan while nobody reads the networks"
@@ -402,7 +460,31 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
     };
 
     // Attic with its password: iwd asks the agent, and it is joined.
+    // While the join is in flight, the agent answers iwd alone (review
+    // minor 7).
+    w.lock().unwrap().stall = true;
     join("Attic", Some("hunter22"));
+    let in_flight = || {
+        w.lock()
+            .unwrap()
+            .calls
+            .contains(&"Connect Attic".to_string())
+    };
+    until(&rt, &s, "the Attic join in flight", in_flight);
+    let (agent_owner, agent_path) = w.lock().unwrap().agent.clone().unwrap();
+    let ask = |conn: &zbus::Connection| {
+        tokio.block_on(conn.call_method(
+            Some(agent_owner.as_str()),
+            agent_path.as_str(),
+            Some("net.connman.iwd.Agent"),
+            "RequestPassphrase",
+            &(ObjectPath::try_from(ATTIC).unwrap(),),
+        ))
+    };
+    assert!(ask(&other).is_err(), "another peer gets no password");
+    let given: String = ask(&iwd_conn).unwrap().body().deserialize().unwrap();
+    assert_eq!(given, "hunter22");
+    w.lock().unwrap().stall = false;
     until(&rt, &s, "Attic joined", || {
         cells.ssid.get_untracked(&rt) == Ok(Some("Attic".into()))
     });
@@ -431,6 +513,20 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
             .calls
             .contains(&"Connect Cafe".to_string())
     );
+
+    // Review minor 6: a password for Home, which iwd knows, replaces the
+    // kept one: Home is forgotten, then joined asking the agent.
+    join("Home", Some("hunter22"));
+    until(&rt, &s, "Home joined again", || {
+        cells.ssid.get_untracked(&rt) == Ok(Some("Home".into()))
+    });
+    {
+        let w = w.lock().unwrap();
+        let forget = w.calls.iter().position(|c| c == "Forget Home");
+        let connect = w.calls.iter().rposition(|c| c == "Connect Home");
+        assert!(forget.is_some() && forget < connect, "{:?}", w.calls);
+        assert!(w.known.contains(HOME), "the new passphrase is kept");
+    }
     b.network.release_field(field);
 
     // The radio is switched off from the shell: the device's `Powered`.
@@ -446,8 +542,23 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
         !w.lock().unwrap().powered && cells.wifi.get_untracked(&rt) == Ok(false)
     });
 
-    // NetworkManager appears: the network is its now (this one has no
-    // objects: offline), and the agents are taken down.
+    // NetworkManager appears while Loft is being joined: the network is
+    // its now (this one has no objects: offline), the agents are taken
+    // down, and the join is reported failed (review minor 2).
+    w.lock().unwrap().stall = true;
+    let loft_joins = |w: &W| {
+        w.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == "Connect Loft")
+            .count()
+    };
+    let before = loft_joins(&w);
+    join("Loft", Some("hunter22"));
+    until(&rt, &s, "the Loft join in flight", || {
+        loft_joins(&w) > before
+    });
     let nm = tokio.block_on(async {
         zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
@@ -460,6 +571,11 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
             .await
             .unwrap()
     });
+    assert_eq!(
+        failed(4),
+        ("Loft".to_string(), "NetworkManager took over".to_string())
+    );
+    w.lock().unwrap().stall = false;
     until(&rt, &s, "NetworkManager's", || {
         cells.ssid.get_untracked(&rt) == Ok(None) && cells.connected.get_untracked(&rt) == Ok(false)
     });
@@ -470,9 +586,55 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
     // It goes: iwd's again.
     drop(nm);
     until(&rt, &s, "iwd's again", || {
-        cells.ssid.get_untracked(&rt) == Ok(Some("Attic".into()))
+        cells.ssid.get_untracked(&rt) == Ok(Some("Home".into()))
     });
     assert!(w.lock().unwrap().agent.is_some());
     assert_eq!(b.network.starts(), 1, "one body throughout");
+    s.shutdown();
+}
+
+/// Review minor 3: a signal level agent iwd refuses (another tool holds
+/// the station's one) is asked once, not again on every signal.
+#[test]
+fn a_refused_signal_agent_is_asked_once() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w: W = Arc::new(Mutex::new(World {
+        powered: true,
+        connected: Some(HOME.into()),
+        known: HashSet::from([HOME.to_string()]),
+        ordered: vec![(HOME.into(), -6000)],
+        refuse_levels: true,
+        ..World::default()
+    }));
+    let iwd_conn = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(Some("Home".into())));
+    // Signals from iwd: the radio toggled three times.
+    for on in [false, true, false] {
+        w.lock().unwrap().powered = on;
+        tokio.block_on(async {
+            let d = iwd_conn
+                .object_server()
+                .interface::<_, Device>(DEV)
+                .await
+                .unwrap();
+            d.get()
+                .await
+                .powered_changed(d.signal_emitter())
+                .await
+                .unwrap();
+        });
+        until(&rt, &s, "the radio", || {
+            cells.wifi.get_untracked(&rt) == Ok(on)
+        });
+    }
+    assert_eq!(w.lock().unwrap().level_registrations, 1);
     s.shutdown();
 }

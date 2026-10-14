@@ -140,7 +140,10 @@ impl SessionEnd {
 pub(crate) fn tells_syntax(action: &WmAction) -> bool {
     matches!(
         action,
-        WmAction::FocusWorkspace(_) | WmAction::FocusWindow(_) | WmAction::CloseWindow(_)
+        WmAction::FocusWorkspace(_)
+            | WmAction::FocusWorkspaceNumber(_)
+            | WmAction::FocusWindow(_)
+            | WmAction::CloseWindow(_)
     )
 }
 

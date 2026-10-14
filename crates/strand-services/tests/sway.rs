@@ -8,7 +8,8 @@ use std::time::Duration;
 use common::window::TestWindow;
 use common::{Collector, Sway, fixture};
 use strand_services::wm::{
-    self, Backend, ProtocolClient, ProtocolState, WaylandTarget, WmAction, WmConfig, WmRequest,
+    self, Backend, ProtocolClient, ProtocolState, WaylandTarget, WmAction, WmConfig, WmError,
+    WmRequest,
 };
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -913,5 +914,33 @@ async fn sway_config_assignments_are_configured_workspaces() {
             .is_some_and(|w| w.name == "chat")
     })
     .await;
+    // Review M1: a number is sway's `workspace number n` (3 is made),
+    // and a negative one a configured slot's id ("7: mail").
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspaceNumber(3));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("3 made and focused", |m| {
+        m.focused_workspace.as_ref().is_some_and(|w| w.name == "3")
+    })
+    .await;
+    let mail = c
+        .mirror
+        .configured
+        .iter()
+        .find(|(_, w)| w.name == "7: mail")
+        .map(|(_, w)| w.id)
+        .unwrap();
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspaceNumber(mail));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("7: mail made and focused", |m| {
+        m.focused_workspace
+            .as_ref()
+            .is_some_and(|w| w.name == "7: mail")
+    })
+    .await;
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspaceNumber(0));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Err(WmError::UnknownWorkspace(0)));
     service.abort();
 }

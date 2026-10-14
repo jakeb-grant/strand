@@ -551,6 +551,9 @@ impl State {
         };
         match action {
             WmAction::FocusWorkspace(id) => self.workspace_target(*id).map(workspace),
+            // A numbered workspace's id is its number.
+            WmAction::FocusWorkspaceNumber(n) if *n > 0 => Ok(workspace(n.to_string())),
+            WmAction::FocusWorkspaceNumber(n) => Err(WmError::UnknownWorkspace(*n)),
             WmAction::FocusWorkspaceNamed(name) => self.named_target(name).map(workspace),
             WmAction::FocusWindow(a) => {
                 self.client(a)?;

@@ -18,6 +18,7 @@
 
 use std::cell::RefCell;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use strand_core::VecDiff;
 
@@ -176,10 +177,11 @@ pub enum WorkspaceAction {
 }
 
 /// What `workspaces.focus(target)` switches to: an `int` is a
-/// workspace's id (a configured one's included), a `text` its name.
+/// workspace's number (on sway a negative one is a configured slot's
+/// id), a `text` its name.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceTarget {
-    /// By id.
+    /// By number.
     Id(i64),
     /// By name.
     Name(String),
@@ -189,8 +191,9 @@ impl crate::FromData for WorkspaceTarget {
     fn from_data(d: &Data) -> Result<Self, crate::DataError> {
         match d {
             Data::Int(n) => Ok(Self::Id(*n)),
-            // A number literal in a list is a float (owner-testing.md,
-            // gaps 12): a whole one is an id.
+            // Defensive only: the checker passes an `int` here, never a
+            // float (`int | text`); a whole float that arrives anyway
+            // (a host calling the action directly) is taken as its number.
             Data::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Ok(Self::Id(*f as i64)),
             Data::Text(t) => Ok(Self::Name(t.to_string())),
             other => Err(crate::DataError::new(format!(
@@ -301,7 +304,7 @@ fn workspace_fns(
                     .filter(|(_, w)| on(w))
                     .map(|(_, w)| w.clone());
                 Data::List(
-                    slots(made, configured)
+                    slots(made, configured, IDS_ARE_NUMBERS.load(Ordering::Relaxed))
                         .iter()
                         .map(ToData::to_data)
                         .collect(),
@@ -312,16 +315,26 @@ fn workspace_fns(
     }
 }
 
+/// The workspaces' ids are their numbers (Hyprland: a positive id is a
+/// numbered workspace, whatever its `defaultName:`). One compositor per
+/// process, so one flag, set from the hub's `Sources`.
+static IDS_ARE_NUMBERS: AtomicBool = AtomicBool::new(false);
+
 /// A screen's slots: its workspaces and the configured ones not made yet,
-/// by the number their name starts with (as compositors number them),
-/// then the rest in their own order (Gaps 3, decisions.md
+/// by their number (a positive id when `ids_are_numbers`, as on
+/// Hyprland, else the number their name starts with, as sway and niri
+/// number them), then the rest in their own order (Gaps 3, decisions.md
 /// m6-w2-services).
 pub fn slots(
     made: impl IntoIterator<Item = WorkspaceItem>,
     configured: impl IntoIterator<Item = WorkspaceItem>,
+    ids_are_numbers: bool,
 ) -> Vec<WorkspaceItem> {
     let mut all: Vec<WorkspaceItem> = made.into_iter().chain(configured).collect();
     let number = |w: &WorkspaceItem| -> Option<u64> {
+        if ids_are_numbers {
+            return u64::try_from(w.id).ok().filter(|n| *n > 0);
+        }
         let digits: String = w.name.chars().take_while(char::is_ascii_digit).collect();
         digits.parse().ok()
     };
@@ -473,6 +486,12 @@ impl Workspaces {
                                 WorkspaceItem::from,
                             )));
                         }
+                        WmChange::Sources(s) => {
+                            IDS_ARE_NUMBERS.store(
+                                s.ipc == Some(model::CompositorKind::Hyprland),
+                                Ordering::Relaxed,
+                            );
+                        }
                         _ => {}
                     }
                 }
@@ -483,7 +502,7 @@ impl Workspaces {
                     WorkspaceAction::Focus { item } => WmAction::FocusWorkspace(item.id),
                     WorkspaceAction::FocusTarget {
                         target: WorkspaceTarget::Id(id),
-                    } => WmAction::FocusWorkspace(id),
+                    } => WmAction::FocusWorkspaceNumber(id),
                     WorkspaceAction::FocusTarget {
                         target: WorkspaceTarget::Name(name),
                     } => WmAction::FocusWorkspaceNamed(name),
@@ -601,5 +620,28 @@ mod tests {
         drop(tx);
         let fut = super::super::run(WmConfig::default(), |_| {}, rx);
         send(&fut);
+    }
+
+    /// Review minor 11: on Hyprland a positive id is the workspace's
+    /// number, so workspace 1 named `web` (`defaultName:`) leads; elsewhere
+    /// the name's number orders, unnumbered names last.
+    #[test]
+    fn slots_follow_the_compositors_numbers() {
+        let ws = |id: i64, name: &str| WorkspaceItem {
+            id,
+            name: name.into(),
+            ..Default::default()
+        };
+        let names = |v: Vec<WorkspaceItem>| v.into_iter().map(|w| w.name).collect::<Vec<_>>();
+        let made = || vec![ws(3, "3"), ws(1, "web")];
+        let configured = || vec![ws(2, "2")];
+        assert_eq!(names(slots(made(), configured(), true)), ["web", "2", "3"]);
+        assert_eq!(names(slots(made(), configured(), false)), ["2", "3", "web"]);
+        // sway: container ids are no numbers; the names order.
+        let sway = vec![ws(912, "4"), ws(7, "1: mail")];
+        assert_eq!(
+            names(slots(sway, vec![ws(-1, "2")], false)),
+            ["1: mail", "2", "4"]
+        );
     }
 }

@@ -31,6 +31,8 @@ struct Track {
     trackid: Option<String>,
     /// Its `CanSeek`.
     can_seek: bool,
+    /// It seeks without saying so (no `Seeked`).
+    quiet: bool,
 }
 
 struct Player(Arc<Mutex<Track>>);
@@ -78,6 +80,9 @@ impl Player {
                 return;
             }
             t.position_us = position;
+            if t.quiet {
+                return;
+            }
         }
         Self::seeked(&e, position).await.unwrap();
     }
@@ -188,6 +193,7 @@ fn player_with(
         art: "file:///tmp/art.png".into(),
         trackid: None,
         can_seek: true,
+        quiet: false,
     };
     f(&mut t);
     let track = Arc::new(Mutex::new(t));
@@ -657,7 +663,10 @@ fn writing_the_position_seeks_the_player() {
         rt.flush();
     };
 
-    // Halfway: SetPosition on its track, 100 s into 200 s.
+    // Halfway: SetPosition on its track, 100 s into 200 s. The player
+    // says nothing (no `Seeked`): the position stands at the target from
+    // the write itself (review minor 9).
+    a.lock().unwrap().quiet = true;
     seek(0.5);
     until(&rt, &s, "the SetPosition", || {
         a.lock().unwrap().calls == ["SetPosition /org/mpv/track/7 100000000"]
@@ -667,6 +676,7 @@ fn writing_the_position_seeks_the_player() {
             && cells.position.get_untracked(&rt) == Ok(0.5)
     });
     assert_eq!(a.lock().unwrap().position_us, 100_000_000);
+    a.lock().unwrap().quiet = false;
 
     // A track without an id: Seek by the offset from where it is.
     a.lock().unwrap().trackid = None;

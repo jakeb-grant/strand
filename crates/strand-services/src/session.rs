@@ -12,7 +12,9 @@
 //! and `LockSession` and `TerminateSession` on this process's own
 //! session (`GetSession("auto")`: the caller's session, else the user's
 //! graphical one). Each is a task of its own, so a polkit dialog holds
-//! up nothing; a failure is `failed(action, error)`. logind's `Lock`
+//! up nothing; a failure is `failed(action, error)`. A power action
+//! waits for logind's answer however long polkit's dialog stays open
+//! (it is never reported failed while logind may still act). logind's `Lock`
 //! signal on that session is `lock_requested`. Nothing polls.
 
 use std::time::Duration;
@@ -32,7 +34,11 @@ pub const MANAGER: &str = "/org/freedesktop/login1";
 const MANAGER_IFACE: &str = "org.freedesktop.login1.Manager";
 const SESSION_IFACE: &str = "org.freedesktop.login1.Session";
 
-/// How long an action may take: polkit's password dialog included.
+/// How long `lock()` and `log_out()` may take. The power actions are not
+/// bounded: polkit's password dialog may stay open as long as the user
+/// leaves it, and logind acts once it is answered, so a bound would report
+/// a failure for an action that then happens (review minor 13). Their
+/// `failed` comes only from logind's refusal.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// `session`'s actions.
@@ -97,7 +103,8 @@ pub struct Session {
     pub lock_requested: Event<()>,
     /// An action failed (polkit refused it, no login session to lock or
     /// end): `on session.failed(action, error) { … }`, `action` as written
-    /// (`"reboot"`).
+    /// (`"reboot"`). A power action waiting on polkit's password dialog has
+    /// not failed: it fails only when logind refuses it.
     pub failed: Event<(String, String)>,
 }
 
@@ -196,7 +203,7 @@ async fn act(
         }
     };
     let r = match (action.power_method(), own) {
-        (Some(method), _) => dbus::timed_for(ACTION_TIMEOUT, call(method, None)).await,
+        (Some(method), _) => call(method, None).await,
         (None, Some(own)) => {
             let method = if action == SessionAction::Lock {
                 "LockSession"

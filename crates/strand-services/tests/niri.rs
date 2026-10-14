@@ -411,6 +411,22 @@ fn the_stores_follow_niri() {
             .iter()
             .any(|r| r.starts_with("{\"Action\"") && r.contains("FocusWorkspace"))
     });
+    // Review M1: `workspaces.focus(2)` is workspace number 2, the
+    // focused output's second (niri's `Index`), never niri's id 2.
+    b.workspaces
+        .dynamic()
+        .action(&rt, "focus", None, &[Data::Int(2)], Default::default())
+        .unwrap();
+    until("workspace number 2", &|| {
+        fake.requests()
+            .iter()
+            .any(|r| r == r#"{"Action":{"FocusWorkspace":{"reference":{"Index":2}}}}"#)
+    });
+    assert!(
+        !fake.requests().iter().any(|r| r.contains(r#"{"Id":2}"#)),
+        "{:?}",
+        fake.requests()
+    );
     fake.send(&bursts["reload-failed"]);
     until("the failed reload", &|| {
         reloads.borrow().as_slice() == [vec![Data::Bool(true)]]

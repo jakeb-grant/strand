@@ -25,8 +25,9 @@
 //! open network takes no password, an enterprise one joins only once
 //! iwd knows it (its provisioning file).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures_lite::StreamExt;
 use tokio::sync::mpsc;
@@ -44,6 +45,8 @@ pub const MANAGER: &str = "/net/connman/iwd";
 const DEVICE: &str = "net.connman.iwd.Device";
 const STATION: &str = "net.connman.iwd.Station";
 const NETWORK: &str = "net.connman.iwd.Network";
+const KNOWN_NETWORK: &str = "net.connman.iwd.KnownNetwork";
+const AGENT_MANAGER: &str = "net.connman.iwd.AgentManager";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 /// Where this process serves its agents (the passphrase agent and the
 /// signal level agent).
@@ -70,6 +73,40 @@ pub fn level_strength(level: u8) -> f64 {
         i => (f64::from(LEVELS[i - 1]) + f64::from(LEVELS[i])) / 2.0,
     };
     quality(dbm)
+}
+
+/// Calls iwd's `method` of `iface` on `path`, bounded by `limit`, with
+/// `NO_AUTO_START`: a call that reaches the bus while iwd is gone (it
+/// exited and its owner change is not handled yet) is refused rather than
+/// having the bus start iwd beside a NetworkManager that runs
+/// wpa_supplicant (review minor 5; `Daemon::watch` follows iwd without
+/// starting it for the same reason).
+pub async fn call<B, R>(
+    conn: &zbus::Connection,
+    path: &str,
+    iface: &str,
+    method: &str,
+    body: &B,
+    limit: Duration,
+) -> zbus::Result<R>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    dbus::timed_for(limit, async {
+        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(conn)
+            .destination(IWD)?
+            .path(path.to_string())?
+            .interface(iface.to_string())?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        proxy
+            .call_with_flags(method, zbus::proxy::MethodFlags::NoAutoStart.into(), body)
+            .await?
+            .ok_or_else(|| zbus::Error::Failure(format!("iwd's {method} did not answer")))
+    })
+    .await
 }
 
 /// iwd's objects: path, interface, properties.
@@ -200,8 +237,11 @@ impl Iwd {
     }
 
     /// The network named `ssid` to join (on the Wi-Fi device when it
-    /// lists one there), or why not.
-    fn to_join(&self, ssid: &str, password: bool) -> Result<String, String> {
+    /// lists one there), and the known network to forget first: iwd uses
+    /// a passphrase it keeps without asking, so a password given for a
+    /// network it knows replaces the kept one (review minor 6). Or why
+    /// not.
+    fn to_join(&self, ssid: &str, password: bool) -> Result<(String, Option<String>), String> {
         let device = self.device().map(|(p, _)| p.clone());
         let mut named = self.objects.iter().filter_map(|(path, ifaces)| {
             let n = ifaces.get(NETWORK)?;
@@ -214,11 +254,11 @@ impl Iwd {
             .find(|(_, n)| object_path(n, "Device") == device)
             .or(first)
             .ok_or_else(|| format!("`{ssid}` is not in range"))?;
-        let known = object_path(n, "KnownNetwork").is_some_and(|k| k != "/");
+        let known = object_path(n, "KnownNetwork").filter(|k| k != "/");
         let kind = self.kind(path).unwrap_or(Kind::Personal("psk"));
-        match refusal(ssid, kind, known, password) {
+        match refusal(ssid, kind, known.is_some(), password) {
             Some(why) => Err(why),
-            None => Ok(path.clone()),
+            None => Ok((path.clone(), known.filter(|_| password))),
         }
     }
 
@@ -229,19 +269,15 @@ impl Iwd {
             return Ok(());
         }
         let conn = daemon.conn();
-        let reply = dbus::timed_for(
+        let objects: HashMap<OwnedObjectPath, HashMap<String, Props>> = call(
+            conn,
+            "/",
+            OBJECT_MANAGER,
+            "GetManagedObjects",
+            &(),
             dbus::READ_TIMEOUT,
-            conn.call_method(
-                Some(IWD),
-                "/",
-                Some(OBJECT_MANAGER),
-                "GetManagedObjects",
-                &(),
-            ),
         )
         .await?;
-        let objects: HashMap<OwnedObjectPath, HashMap<String, Props>> =
-            reply.body().deserialize()?;
         self.objects = objects
             .into_iter()
             .map(|(path, ifaces)| (path.to_string(), ifaces.into_iter().collect()))
@@ -257,18 +293,16 @@ impl Iwd {
             return;
         };
         let station = station.clone();
-        let reply = dbus::timed_for(
+        let reply: zbus::Result<Vec<(OwnedObjectPath, i16)>> = call(
+            conn,
+            &station,
+            STATION,
+            "GetOrderedNetworks",
+            &(),
             dbus::READ_TIMEOUT,
-            conn.call_method(
-                Some(IWD),
-                station.as_str(),
-                Some(STATION),
-                "GetOrderedNetworks",
-                &(),
-            ),
         )
         .await;
-        match reply.and_then(|r| r.body().deserialize::<Vec<(OwnedObjectPath, i16)>>()) {
+        match reply {
             // Hundredths of a dBm.
             Ok(nets) => {
                 self.ordered = nets
@@ -319,6 +353,11 @@ impl Iwd {
                     return Change::default();
                 };
                 let station = ifaces.contains_key(STATION);
+                if station {
+                    // A level told before the radio went off is no
+                    // longer the signal (review minor 4).
+                    self.level = None;
+                }
                 self.objects
                     .entry(path.to_string())
                     .or_default()
@@ -334,6 +373,9 @@ impl Iwd {
                     return Change::default();
                 };
                 let path = path.to_string();
+                if ifaces.iter().any(|i| i == STATION) {
+                    self.level = None;
+                }
                 if let Some(o) = self.objects.get_mut(&path) {
                     o.retain(|i, _| !ifaces.contains(i));
                     if o.is_empty() {
@@ -354,8 +396,24 @@ impl Iwd {
 /// The passwords `connect_with` gives, by network path, for the agent.
 type Passwords = Arc<Mutex<HashMap<String, String>>>;
 
+/// iwd's unique bus name: the only peer the agents answer (review minor
+/// 7: a password goes to iwd, never to another process on the bus).
+type Owner = Arc<Mutex<Option<String>>>;
+
+/// Whether the call `h` heads came from iwd.
+fn from_iwd(iwd: &Owner, h: &zbus::message::Header<'_>) -> bool {
+    let owner = iwd.lock().ok().and_then(|o| o.clone());
+    match (owner, h.sender()) {
+        (Some(o), Some(s)) => o == s.as_str(),
+        _ => false,
+    }
+}
+
 /// The passphrase agent (`net.connman.iwd.Agent`).
-struct Agent(Passwords);
+struct Agent {
+    passwords: Passwords,
+    iwd: Owner,
+}
 
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "net.connman.iwd.Agent.Error")]
@@ -370,10 +428,18 @@ impl Agent {
     fn release(&self) {}
 
     /// The password `connect_with` gave for `network`; refused when none
-    /// was (a `connect()` of a network iwd does not know).
-    fn request_passphrase(&self, network: ObjectPath<'_>) -> Result<String, AgentError> {
+    /// was (a `connect()` of a network iwd does not know), and to anyone
+    /// but iwd.
+    fn request_passphrase(
+        &self,
+        #[zbus(header)] h: zbus::message::Header<'_>,
+        network: ObjectPath<'_>,
+    ) -> Result<String, AgentError> {
+        if !from_iwd(&self.iwd, &h) {
+            return Err(AgentError::Canceled("only iwd is answered".into()));
+        }
         let given = self
-            .0
+            .passwords
             .lock()
             .ok()
             .and_then(|p| p.get(network.as_str()).cloned());
@@ -386,23 +452,41 @@ impl Agent {
 }
 
 /// The signal level agent (`net.connman.iwd.SignalLevelAgent`).
-struct Levels(mpsc::UnboundedSender<u8>);
+struct Levels {
+    levels: mpsc::UnboundedSender<u8>,
+    iwd: Owner,
+}
 
 #[zbus::interface(name = "net.connman.iwd.SignalLevelAgent")]
 impl Levels {
     fn release(&self, _device: ObjectPath<'_>) {}
 
-    fn changed(&self, _device: ObjectPath<'_>, level: u8) {
-        let _ = self.0.send(level);
+    /// A level from iwd; anyone else's is ignored.
+    fn changed(
+        &self,
+        #[zbus(header)] h: zbus::message::Header<'_>,
+        _device: ObjectPath<'_>,
+        level: u8,
+    ) {
+        if from_iwd(&self.iwd, &h) {
+            let _ = self.levels.send(level);
+        }
     }
 }
 
-/// The agents served, registered with iwd, and taken down again.
+/// The agents served, registered with iwd, and taken down again. Each
+/// registration is tried once per iwd (a body follows one owner) and,
+/// for the signal level agent, once per station: one refused (another
+/// tool holds the station's one signal agent) is not asked again on
+/// every signal (review minor 3).
 struct Agents {
     conn: zbus::Connection,
     /// The station the signal level agent is registered with.
     station: Option<String>,
+    /// The station last tried (`Some(None)`: tried with none).
+    tried_station: Option<Option<String>>,
     registered: bool,
+    tried_agent: bool,
 }
 
 impl Agents {
@@ -410,66 +494,68 @@ impl Agents {
         conn: &zbus::Connection,
         passwords: Passwords,
         levels: mpsc::UnboundedSender<u8>,
+        iwd: Owner,
     ) -> zbus::Result<Agents> {
         let server = conn.object_server();
         // A body that ended without taking them down.
         let _ = server.remove::<Agent, _>(AGENT_PATH).await;
         let _ = server.remove::<Levels, _>(AGENT_PATH).await;
-        server.at(AGENT_PATH, Agent(passwords)).await?;
-        server.at(AGENT_PATH, Levels(levels)).await?;
+        let agent = Agent {
+            passwords,
+            iwd: iwd.clone(),
+        };
+        server.at(AGENT_PATH, agent).await?;
+        server.at(AGENT_PATH, Levels { levels, iwd }).await?;
         Ok(Agents {
             conn: conn.clone(),
             station: None,
+            tried_station: None,
             registered: false,
+            tried_agent: false,
         })
     }
 
     /// Register the passphrase agent once, and the signal level agent
-    /// with the station iwd has now.
+    /// with the station iwd has now (once per station).
     async fn register(&mut self, iwd: &Iwd) {
-        let path = || ObjectPath::try_from(AGENT_PATH);
-        if !self.registered {
-            let r = match path() {
-                Ok(p) => {
-                    dbus::timed(self.conn.call_method(
-                        Some(IWD),
-                        MANAGER,
-                        Some("net.connman.iwd.AgentManager"),
-                        "RegisterAgent",
-                        &(p,),
-                    ))
-                    .await
-                }
-                Err(e) => Err(e.into()),
-            };
+        let Ok(path) = ObjectPath::try_from(AGENT_PATH) else {
+            return;
+        };
+        if !std::mem::replace(&mut self.tried_agent, true) {
+            let r: zbus::Result<()> = call(
+                &self.conn,
+                MANAGER,
+                AGENT_MANAGER,
+                "RegisterAgent",
+                &(path.clone(),),
+                dbus::CALL_TIMEOUT,
+            )
+            .await;
             match r {
-                Ok(_) => self.registered = true,
+                Ok(()) => self.registered = true,
                 Err(e) => log::warn!("network: no iwd agent (joining asks no password): {e}"),
             }
         }
         let station = iwd.station().map(|(p, _)| p.clone());
-        if station == self.station {
+        if self.tried_station.as_ref() == Some(&station) {
             return;
         }
+        self.tried_station = Some(station.clone());
         self.station = None;
         let Some(station) = station else {
             return;
         };
-        let r = match path() {
-            Ok(p) => {
-                dbus::timed(self.conn.call_method(
-                    Some(IWD),
-                    station.as_str(),
-                    Some(STATION),
-                    "RegisterSignalLevelAgent",
-                    &(p, LEVELS.to_vec()),
-                ))
-                .await
-            }
-            Err(e) => Err(e.into()),
-        };
+        let r: zbus::Result<()> = call(
+            &self.conn,
+            &station,
+            STATION,
+            "RegisterSignalLevelAgent",
+            &(path, LEVELS.to_vec()),
+            dbus::CALL_TIMEOUT,
+        )
+        .await;
         match r {
-            Ok(_) => self.station = Some(station),
+            Ok(()) => self.station = Some(station),
             Err(e) => log::warn!("network: iwd tells no signal levels: {e}"),
         }
     }
@@ -478,23 +564,25 @@ impl Agents {
     async fn down(self, iwd_runs: bool) {
         if iwd_runs && let Ok(p) = ObjectPath::try_from(AGENT_PATH) {
             if self.registered {
-                let _ = dbus::timed(self.conn.call_method(
-                    Some(IWD),
+                let _: zbus::Result<()> = call(
+                    &self.conn,
                     MANAGER,
-                    Some("net.connman.iwd.AgentManager"),
+                    AGENT_MANAGER,
                     "UnregisterAgent",
                     &(p.clone(),),
-                ))
+                    dbus::CALL_TIMEOUT,
+                )
                 .await;
             }
             if let Some(station) = &self.station {
-                let _ = dbus::timed(self.conn.call_method(
-                    Some(IWD),
-                    station.as_str(),
-                    Some(STATION),
+                let _: zbus::Result<()> = call(
+                    &self.conn,
+                    station,
+                    STATION,
                     "UnregisterSignalLevelAgent",
                     &(p,),
-                ))
+                    dbus::CALL_TIMEOUT,
+                )
                 .await;
             }
         }
@@ -509,9 +597,8 @@ async fn scan(conn: &zbus::Connection, iwd: &Iwd) -> bool {
     let Some((station, _)) = iwd.station() else {
         return false;
     };
-    if let Err(e) =
-        dbus::timed(conn.call_method(Some(IWD), station.as_str(), Some(STATION), "Scan", &())).await
-    {
+    let r: zbus::Result<()> = call(conn, station, STATION, "Scan", &(), dbus::CALL_TIMEOUT).await;
+    if let Err(e) = r {
         // `Busy`: iwd is scanning already, which ends as well.
         log::debug!("network: iwd scan not started: {e}");
     }
@@ -533,19 +620,46 @@ fn join_error(e: zbus::Error) -> String {
     }
 }
 
-/// Join network `path` (`ssid`): iwd answers once it is joined or not.
-async fn join(
-    conn: zbus::Connection,
-    ssid: String,
-    path: String,
-) -> (String, String, Result<(), String>) {
+/// Join network `path`, forgetting the known network `forget` first (a
+/// new password for it): iwd answers once it is joined or not.
+async fn join(conn: zbus::Connection, path: String, forget: Option<String>) -> Result<(), String> {
+    if let Some(known) = forget {
+        let r: zbus::Result<()> = call(
+            &conn,
+            &known,
+            KNOWN_NETWORK,
+            "Forget",
+            &(),
+            dbus::CALL_TIMEOUT,
+        )
+        .await;
+        r.map_err(join_error)?;
+    }
     // iwd's own handshake and DHCP limits are well under this.
-    let r = dbus::timed_for(
+    let r: zbus::Result<()> = call(
+        &conn,
+        &path,
+        NETWORK,
+        "Connect",
+        &(),
         super::ACTIVATE_TIMEOUT,
-        conn.call_method(Some(IWD), path.as_str(), Some(NETWORK), "Connect", &()),
     )
     .await;
-    (ssid, path, r.map(|_| ()).map_err(join_error))
+    r.map_err(join_error)
+}
+
+/// Joins asked and not answered: their network's name and path.
+type Joining = HashMap<tokio::task::Id, (String, String)>;
+
+/// Every join in flight fails with `why` (its task is dropped with the
+/// body); `false` once the service was stopped.
+fn fail_joins(cx: &mut Cx<Network>, joining: &mut Joining, why: &str) -> bool {
+    for (ssid, _) in std::mem::take(joining).into_values() {
+        if !cx.emit(NetworkEvent::Failed((ssid, why.to_string()))) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether `name` has an owner on `conn` now.
@@ -579,12 +693,13 @@ pub(super) async fn run(
     if owned(conn, super::NM).await || daemon.owner().is_none() {
         return Ok(Next::Again);
     }
+    let owner: Owner = Arc::new(Mutex::new(daemon.owner().map(|o| o.to_string())));
     let passwords = Passwords::default();
     let (levels_tx, mut levels) = mpsc::unbounded_channel();
-    let mut agents = Agents::serve(conn, passwords.clone(), levels_tx).await?;
+    let mut agents = Agents::serve(conn, passwords.clone(), levels_tx, owner).await?;
     let mut iwd = Iwd::default();
-    let mut joins: JoinSet<(String, String, Result<(), String>)> = JoinSet::new();
-    let mut joining: HashSet<String> = HashSet::new();
+    let mut joins: JoinSet<Result<(), String>> = JoinSet::new();
+    let mut joining = Joining::new();
     let mut scanning = cx.watched("access_points");
     let mut want_scan = scanning;
     let next = 'body: {
@@ -608,10 +723,8 @@ pub(super) async fn run(
                         return Err(ServiceError("the system bus connection ended".into()));
                     }
                     Some(DaemonEvent::Owner) => {
-                        for ssid in joining.drain() {
-                            if !cx.emit(NetworkEvent::Failed((ssid, "iwd stopped".into()))) {
-                                break 'body Next::Stop;
-                            }
+                        if !fail_joins(cx, &mut joining, "iwd stopped") {
+                            break 'body Next::Stop;
                         }
                         break 'body Next::Again;
                     }
@@ -632,6 +745,11 @@ pub(super) async fn run(
                 },
                 Some(o) = nm_owners.next() => {
                     if o.args().ok().is_some_and(|a| a.new_owner().is_some()) {
+                        // Its joins are dropped with this body (review
+                        // minor 2).
+                        if !fail_joins(cx, &mut joining, "NetworkManager took over") {
+                            break 'body Next::Stop;
+                        }
                         break 'body Next::Again;
                     }
                 }
@@ -641,14 +759,17 @@ pub(super) async fn run(
                         break 'body Next::Stop;
                     }
                 }
-                Some(done) = joins.join_next(), if !joins.is_empty() => {
-                    let Ok((ssid, path, r)) = done else {
+                Some(done) = joins.join_next_with_id(), if !joins.is_empty() => {
+                    let (id, r) = match done {
+                        Ok((id, r)) => (id, r),
+                        Err(e) => (e.id(), Err("the join stopped".to_string())),
+                    };
+                    let Some((ssid, path)) = joining.remove(&id) else {
                         continue;
                     };
                     if let Ok(mut p) = passwords.lock() {
                         p.remove(&path);
                     }
-                    joining.remove(&ssid);
                     if let Err(error) = r {
                         log::info!("network: joining {ssid} failed: {error}");
                         if !cx.emit(NetworkEvent::Failed((ssid, error))) {
@@ -676,7 +797,16 @@ pub(super) async fn run(
                         let on: bool = w.value().unwrap_or(was);
                         let now = match iwd.device().map(|(p, _)| p.clone()) {
                             Some(dev) => {
-                                match dbus::set(conn, IWD, &dev, DEVICE, "Powered", Value::from(on)).await {
+                                let set: zbus::Result<()> = call(
+                                    conn,
+                                    &dev,
+                                    dbus::PROPERTIES,
+                                    "Set",
+                                    &(DEVICE, "Powered", Value::from(on)),
+                                    dbus::READ_TIMEOUT,
+                                )
+                                .await;
+                                match set {
                                     Ok(()) => on,
                                     Err(e) => {
                                         log::warn!("network: Wi-Fi not switched: {e}");
@@ -697,7 +827,7 @@ pub(super) async fn run(
                         };
                         // One join of a network at a time; a repeat is
                         // dropped.
-                        if joining.contains(&item.ssid) {
+                        if joining.values().any(|(ssid, _)| *ssid == item.ssid) {
                             continue;
                         }
                         match iwd.to_join(&item.ssid, password.is_some()) {
@@ -707,14 +837,14 @@ pub(super) async fn run(
                                     break 'body Next::Stop;
                                 }
                             }
-                            Ok(path) => {
+                            Ok((path, forget)) => {
                                 if let Some(password) = password
                                     && let Ok(mut p) = passwords.lock()
                                 {
                                     p.insert(path.clone(), password);
                                 }
-                                joining.insert(item.ssid.clone());
-                                joins.spawn(join(conn.clone(), item.ssid, path));
+                                let task = joins.spawn(join(conn.clone(), path.clone(), forget));
+                                joining.insert(task.id(), (item.ssid, path));
                             }
                         }
                     }
@@ -838,8 +968,8 @@ mod tests {
     fn joins_are_refused_as_networkmanager_refuses_them() {
         let iwd = wlan0();
         assert_eq!(
-            iwd.to_join("Home", true).as_deref(),
-            Ok("/net/connman/iwd/0/4/486f6d65_psk")
+            iwd.to_join("Home", true),
+            Ok(("/net/connman/iwd/0/4/486f6d65_psk".to_string(), None))
         );
         assert!(iwd.to_join("Cafe", false).is_ok());
         assert!(
@@ -871,5 +1001,99 @@ mod tests {
         let s = iwd.state(true);
         assert!(!s.connected && !s.wifi);
         assert_eq!((s.ssid, s.strength), (None, 0.0));
+    }
+
+    /// Review minor 6: a password for a network iwd knows comes with the
+    /// known network to forget first; without one, or for an unknown
+    /// network, nothing is forgotten.
+    #[test]
+    fn a_new_password_for_a_known_network_forgets_it_first() {
+        let mut iwd = wlan0();
+        let home = "/net/connman/iwd/0/4/486f6d65_psk";
+        iwd.objects
+            .get_mut(home)
+            .unwrap()
+            .get_mut(NETWORK)
+            .unwrap()
+            .insert(
+                "KnownNetwork".into(),
+                OwnedValue::try_from(path("/net/connman/iwd/486f6d65_psk")).unwrap(),
+            );
+        assert_eq!(
+            iwd.to_join("Home", true),
+            Ok((
+                home.to_string(),
+                Some("/net/connman/iwd/486f6d65_psk".to_string())
+            ))
+        );
+        assert_eq!(iwd.to_join("Home", false), Ok((home.to_string(), None)));
+    }
+
+    /// Review minor 4: the station going (the radio off) or coming back
+    /// drops the level iwd told, which may be another network's.
+    #[test]
+    fn a_station_coming_or_going_drops_the_level() {
+        let dev = "/net/connman/iwd/0/4";
+        let removed = zbus::Message::signal("/", OBJECT_MANAGER, "InterfacesRemoved")
+            .unwrap()
+            .build(&(
+                ObjectPath::try_from(dev).unwrap(),
+                vec![STATION.to_string()],
+            ))
+            .unwrap();
+        let mut iwd = wlan0();
+        iwd.level = Some(level_strength(2));
+        iwd.signal(&removed);
+        assert_eq!(iwd.level, None);
+        let station: HashMap<String, Props> = HashMap::from([(
+            STATION.to_string(),
+            props(&[("State", Value::from("connected"))]),
+        )]);
+        let added = zbus::Message::signal("/", OBJECT_MANAGER, "InterfacesAdded")
+            .unwrap()
+            .build(&(ObjectPath::try_from(dev).unwrap(), station))
+            .unwrap();
+        iwd.level = Some(level_strength(2));
+        iwd.signal(&added);
+        assert_eq!(iwd.level, None);
+    }
+
+    /// Review minor 5: a call to iwd while iwd is not running is refused
+    /// at once, never D-Bus-activated, even where a service file could
+    /// start it (here one whose process never takes the name, so an
+    /// activation would hold the call until the limit).
+    #[test]
+    fn iwd_is_never_started_by_a_call() {
+        let Some(bus) = crate::testing::PrivateBus::start_activating(&[("logind", true, IWD)])
+        else {
+            return;
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let conn = zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let started = std::time::Instant::now();
+            let r: zbus::Result<()> = call(
+                &conn,
+                MANAGER,
+                AGENT_MANAGER,
+                "RegisterAgent",
+                &(ObjectPath::try_from(AGENT_PATH).unwrap(),),
+                Duration::from_secs(8),
+            )
+            .await;
+            assert!(r.is_err());
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the call waited {:?}: iwd was being started",
+                started.elapsed()
+            );
+        });
     }
 }

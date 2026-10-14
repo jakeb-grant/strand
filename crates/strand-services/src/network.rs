@@ -492,6 +492,12 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
         .receive_name_owner_changed_with_args(&[(0, iwd::IWD)])
         .await?;
     let mut daemon = Daemon::new(conn, NM).await?;
+    // iwd may have come up between the choice and the subscription to its
+    // name (a boot race, review minor 1): choose again rather than follow
+    // an absent NetworkManager until a daemon changes.
+    if daemon.owner().is_none() && iwd::owned(conn, iwd::IWD).await {
+        return Ok(Next::Again);
+    }
     // The manager and the active connections; the devices' Wi-Fi
     // interface (access points coming and going) and the access
     // points only while scanning.
