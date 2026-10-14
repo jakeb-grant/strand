@@ -100,6 +100,29 @@ pub(crate) struct Monitor {
     pub active_workspace: WsRef,
     #[serde(default)]
     pub disabled: bool,
+    /// Make, model and serial, as a rule's `desc:` names a monitor.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// One of `j/workspacerules`' rules (0.56.2's `getWorkspaceRuleData`:
+/// each field only when the rule sets it). Only what places a workspace
+/// on a monitor is read; a reply that does not parse is no rules (an old
+/// Hyprland, or a new shape), never a reason to degrade.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(crate) struct Rule {
+    /// The workspace selector: `3`, `name:web`, `r[1-5]`, `special:…`.
+    #[serde(rename = "workspaceString")]
+    pub workspace: String,
+    /// The monitor: a connector name, or `desc:` and its description.
+    #[serde(default)]
+    pub monitor: String,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -173,6 +196,8 @@ pub(crate) struct State {
     pub active: Option<String>,
     pub urgent: HashSet<String>,
     pub minimized: HashSet<String>,
+    /// `j/workspacerules`: where workspaces go before they exist.
+    pub rules: Vec<Rule>,
 }
 
 /// Addresses come as `0x55d…` from requests and as `55d…` in events.
@@ -385,6 +410,7 @@ impl State {
         // Numbered workspaces by number, then named ones (negative ids
         // from -1337 down) in creation order.
         workspaces.sort_by_key(|w| (w.id < 0, w.id.unsigned_abs()));
+        let configured = self.configured();
         let mut toplevel_ids = Vec::new();
         let windows = self
             .clients
@@ -406,6 +432,8 @@ impl State {
                     maximized: c.is_maximized(),
                     fullscreen: c.is_fullscreen(),
                     urgent: self.urgent.contains(&c.address),
+                    // Set by the service from the desktop entries.
+                    app: None,
                     // Set by `merge` from `toplevel_ids`.
                     toplevel: None,
                 }
@@ -417,10 +445,90 @@ impl State {
                 workspaces,
                 windows,
                 focused_screen: focused_mon.map(|m| m.name.clone()),
+                configured,
             },
             toplevel_ids,
             window_states: true,
         }
+    }
+
+    /// The workspaces the rules place on a monitor that is on, and that
+    /// do not exist yet, by number (Gaps 3, decisions.md m6-w2-services).
+    /// Only a numbered rule (`workspace = 4, monitor:DP-1`) makes one: a
+    /// numbered workspace's id is its number, so the slot keeps its id
+    /// when Hyprland makes it, and `dispatch workspace 4` makes it on the
+    /// rule's monitor. A named rule's workspace gets an id only when made,
+    /// and a selector (`r[1-5]`, `m[…]`) names no one workspace. The
+    /// first rule naming a monitor for a number places it.
+    pub(crate) fn configured(&self) -> Vec<Workspace> {
+        let mut out: Vec<Workspace> = Vec::new();
+        for rule in self.rules.iter().filter(|r| r.enabled) {
+            let Ok(id) = rule.workspace.trim().parse::<i64>() else {
+                continue;
+            };
+            if id <= 0
+                || out.iter().any(|w| w.id == id)
+                || self.workspaces.iter().any(|w| w.id == id)
+            {
+                continue;
+            }
+            let monitor = rule.monitor.trim();
+            let on = self.monitors.iter().filter(|m| !m.disabled).find(|m| {
+                match monitor.strip_prefix("desc:") {
+                    Some(desc) => {
+                        let desc = desc.trim();
+                        !desc.is_empty() && m.description.starts_with(desc)
+                    }
+                    None => !monitor.is_empty() && m.name == monitor,
+                }
+            });
+            let Some(m) = on else {
+                continue;
+            };
+            out.push(Workspace {
+                id,
+                name: id.to_string(),
+                screen: m.name.clone(),
+                ..Default::default()
+            });
+        }
+        out.sort_by_key(|w| w.id);
+        out
+    }
+
+    /// The `workspace` dispatcher's argument for workspace `id`: an
+    /// existing one by number (a named one by `name:`), else a number not
+    /// made yet (Hyprland makes it, on its rule's monitor if any).
+    fn workspace_target(&self, id: i64) -> Result<String, WmError> {
+        match self.workspaces.iter().find(|w| w.id == id) {
+            Some(_) if id > 0 => Ok(id.to_string()),
+            Some(ws) => Ok(format!("name:{}", ws.name)),
+            None if id > 0 => Ok(id.to_string()),
+            None => Err(WmError::UnknownWorkspace(id)),
+        }
+    }
+
+    /// The `workspace` dispatcher's argument for the workspace named
+    /// `name`: an existing one by its id, else a number by number, else a
+    /// new named workspace (`name:`).
+    fn named_target(&self, name: &str) -> Result<String, WmError> {
+        if let Some(ws) = self
+            .workspaces
+            .iter()
+            .find(|w| w.name == name && !is_special(&w.name))
+        {
+            return self.workspace_target(ws.id);
+        }
+        let name = name.trim();
+        if let Ok(n) = name.parse::<i64>()
+            && n > 0
+        {
+            return Ok(n.to_string());
+        }
+        if name.is_empty() || is_special(name) {
+            return Err(WmError::UnknownWorkspaceName(name.to_string()));
+        }
+        Ok(format!("name:{name}"))
     }
 
     /// The `dispatch` request for an action in `dialect` (see the module
@@ -431,27 +539,22 @@ impl State {
         dialect: Dialect,
     ) -> Result<String, WmError> {
         let lua = dialect == Dialect::Lua;
-        match action {
-            WmAction::FocusWorkspace(id) => {
-                let ws = self
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == *id)
-                    .ok_or(WmError::UnknownWorkspace(*id))?;
-                let target = if *id > 0 {
-                    id.to_string()
-                } else {
-                    format!("name:{}", ws.name)
-                };
-                Ok(if lua {
-                    format!(
-                        "dispatch hl.dsp.focus({{ workspace = {} }})",
-                        lua_string(&target)
-                    )
-                } else {
-                    format!("dispatch workspace {target}")
-                })
+        let workspace = |target: String| {
+            if lua {
+                format!(
+                    "dispatch hl.dsp.focus({{ workspace = {} }})",
+                    lua_string(&target)
+                )
+            } else {
+                format!("dispatch workspace {target}")
             }
+        };
+        match action {
+            WmAction::FocusWorkspace(id) => self.workspace_target(*id).map(workspace),
+            // A numbered workspace's id is its number.
+            WmAction::FocusWorkspaceNumber(n) if *n > 0 => Ok(workspace(n.to_string())),
+            WmAction::FocusWorkspaceNumber(n) => Err(WmError::UnknownWorkspace(*n)),
+            WmAction::FocusWorkspaceNamed(name) => self.named_target(name).map(workspace),
             WmAction::FocusWindow(a) => {
                 self.client(a)?;
                 Ok(if lua {
@@ -577,6 +680,22 @@ async fn query(requests: &Path, state: &mut State) -> Result<(), SessionEnd> {
     Ok(())
 }
 
+/// Reads the workspace rules (`j/workspacerules`), at connection and
+/// after a config reload (only a reload or a `keyword` changes them).
+/// They are extra: a Hyprland that does not answer them, or answers in
+/// another shape, has none and is understood all the same.
+async fn read_rules(requests: &Path, state: &mut State) -> Result<(), SessionEnd> {
+    let text = request_text(requests, "j/workspacerules").await?;
+    state.rules = match parse_reply::<Vec<Rule>>("j/workspacerules", &text) {
+        Ok(rules) => rules,
+        Err(e) => {
+            log::debug!("Hyprland IPC: no workspace rules: {e}");
+            Vec::new()
+        }
+    };
+    Ok(())
+}
+
 /// The version Hyprland reports (`j/version`'s `version`, else its
 /// `tag` without the `v`), for a diagnostic; `None` when it does not say.
 async fn version(requests: &Path) -> Option<String> {
@@ -652,6 +771,7 @@ async fn session(
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     query(requests, state).await?;
+    read_rules(requests, state).await?;
     // Actions this Hyprland refused in both dialects stay refused until
     // it reports another version.
     degradation.check_refusal(version(requests)).await?;
@@ -706,6 +826,9 @@ async fn session(
                 }
                 if requery {
                     query(requests, state).await?;
+                }
+                if reloads > 0 {
+                    read_rules(requests, state).await?;
                 }
                 if !up {
                     if !strikes.seen_event() {
@@ -907,6 +1030,7 @@ mod tests {
                         name: "1".into(),
                     },
                     disabled: false,
+                    description: String::new(),
                 },
                 Monitor {
                     id: 1,
@@ -917,6 +1041,7 @@ mod tests {
                         name: "3".into(),
                     },
                     disabled: false,
+                    description: String::new(),
                 },
             ],
             vec![
@@ -1066,14 +1191,127 @@ mod tests {
                 .unwrap(),
             "dispatch focuswindow address:0xa1"
         );
+        // Gaps 2 (m6-w2-services): a number not made yet is made, as
+        // Hyprland makes a workspace it is switched to; a named one's id
+        // (negative) exists only once made.
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(9), Dialect::Classic),
-            Err(WmError::UnknownWorkspace(9))
+            s.dispatch_for(&WmAction::FocusWorkspace(9), Dialect::Classic)
+                .unwrap(),
+            "dispatch workspace 9"
+        );
+        assert_eq!(
+            s.dispatch_for(&WmAction::FocusWorkspace(-1340), Dialect::Classic),
+            Err(WmError::UnknownWorkspace(-1340))
         );
         assert!(matches!(
             s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into()), Dialect::Classic),
             Err(WmError::Unsupported(_))
         ));
+    }
+
+    /// Gaps 2 (m6-w2-services): `workspaces.focus(name)`. An existing
+    /// workspace by its id, a number by number (made if need be), any
+    /// other name as a new named workspace; never a special one.
+    #[test]
+    fn named_switches_make_what_hyprland_makes() {
+        let mut s = state();
+        s.workspaces.push(HWorkspace {
+            id: -1337,
+            name: "web".into(),
+            monitor: "DP-1".into(),
+        });
+        let named = |s: &State, name: &str, d| {
+            s.dispatch_for(&WmAction::FocusWorkspaceNamed(name.into()), d)
+        };
+        assert_eq!(
+            named(&s, "2", Dialect::Classic).unwrap(),
+            "dispatch workspace 2"
+        );
+        assert_eq!(
+            named(&s, "7", Dialect::Classic).unwrap(),
+            "dispatch workspace 7"
+        );
+        assert_eq!(
+            named(&s, "web", Dialect::Classic).unwrap(),
+            "dispatch workspace name:web"
+        );
+        assert_eq!(
+            named(&s, "chat", Dialect::Lua).unwrap(),
+            r#"dispatch hl.dsp.focus({ workspace = "name:chat" })"#
+        );
+        assert_eq!(
+            named(&s, "special:magic", Dialect::Classic),
+            Err(WmError::UnknownWorkspaceName("special:magic".into()))
+        );
+        assert_eq!(
+            named(&s, " ", Dialect::Classic),
+            Err(WmError::UnknownWorkspaceName(String::new()))
+        );
+    }
+
+    /// Gaps 3 (m6-w2-services): the workspaces Hyprland's rules place on
+    /// a monitor that is on, by number, while they do not exist; a rule
+    /// by `desc:`, a disabled rule, a selector, a named rule, a monitor
+    /// that is off or unplugged, and a workspace that exists make none.
+    #[test]
+    fn numbered_rules_are_configured_workspaces() {
+        let mut s = state();
+        s.monitors[1].description = "LG Electronics LG HDR 4K 0x00071F43".into();
+        // Rules as `j/workspacerules` (0.56.2) writes them.
+        s.rules = serde_json::from_str(
+            r#"[
+                {"workspaceString": "1", "enabled": true, "monitor": "DP-1", "default": true},
+                {"workspaceString": "5", "enabled": true, "monitor": "DP-1"},
+                {"workspaceString": "4", "enabled": true, "monitor": "DP-1"},
+                {"workspaceString": "6", "enabled": true, "monitor": "desc:LG Electronics LG HDR"},
+                {"workspaceString": "7", "enabled": false, "monitor": "DP-1"},
+                {"workspaceString": "8", "enabled": true, "monitor": "DP-9"},
+                {"workspaceString": "9", "enabled": true},
+                {"workspaceString": "name:web", "enabled": true, "monitor": "DP-1"},
+                {"workspaceString": "r[1-5]", "enabled": true, "monitor": "DP-1"},
+                {"workspaceString": "5", "enabled": true, "monitor": "HDMI-A-1"}
+            ]"#,
+        )
+        .unwrap();
+        let snap = s.snapshot().state;
+        let slots: Vec<(i64, &str, &str)> = snap
+            .configured
+            .iter()
+            .map(|w| (w.id, w.name.as_str(), w.screen.as_str()))
+            .collect();
+        assert_eq!(
+            slots,
+            [(4, "4", "DP-1"), (5, "5", "DP-1"), (6, "6", "HDMI-A-1")]
+        );
+        assert!(
+            snap.configured
+                .iter()
+                .all(|w| !w.active && !w.focused && !w.occupied)
+        );
+        // Each is switched to (and made) by its number.
+        assert_eq!(
+            s.dispatch_for(&WmAction::FocusWorkspace(6), Dialect::Classic)
+                .unwrap(),
+            "dispatch workspace 6"
+        );
+        // A monitor turned off takes its slots with it; Hyprland making
+        // workspace 4 takes it out of the configured ones.
+        s.monitors[1].disabled = true;
+        s.workspaces.push(HWorkspace {
+            id: 4,
+            name: "4".into(),
+            monitor: "DP-1".into(),
+        });
+        let ids: Vec<i64> = s.snapshot().state.configured.iter().map(|w| w.id).collect();
+        assert_eq!(ids, [5]);
+        // The live reply's shape, from a Hyprland 0.56.2 (the owner's).
+        let live: Vec<Rule> = serde_json::from_str(
+            r#"[{"workspaceString": "1", "enabled": true, "monitor": "eDP-1", "default": true}]"#,
+        )
+        .unwrap();
+        assert_eq!(live[0].monitor, "eDP-1");
+        // An answer that is not rules is none.
+        assert!(serde_json::from_str::<Vec<Rule>>("unknown request").is_err());
     }
 
     /// Hyprland with a Lua config (0.55 on) evaluates a dispatch's

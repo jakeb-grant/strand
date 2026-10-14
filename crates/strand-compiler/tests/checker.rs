@@ -1144,6 +1144,80 @@ fn a_config_services_rw_field_is_writable() {
     }
 }
 
+/// Gaps 13 (m6-w2-services): `media.position` is writable, so a
+/// scrubber binds it both ways and a click assigns it; the rest of
+/// `media` stays read-only.
+#[test]
+fn media_position_is_a_scrubber() {
+    assert_eq!(
+        codes(
+            "bar B {\n  slider { value: <-> media.position }\n  \
+             text media.title ?? \"\"\n  on click { media.position = 0 }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { on click { media.elapsed = media.elapsed } }\n"),
+        ["check::read_only"]
+    );
+}
+
+/// Gaps 2, 3 and 9 (m6-w2-services, review M2): the members a
+/// workspace bar and a window list reach for check as written:
+/// `workspaces.focus` with a number or a name, `workspaces.slots(screen)`,
+/// `workspaces.configured`, and a window's `win.app?.categories`. A float
+/// is no workspace number (`int | text`).
+#[test]
+fn workspace_and_window_members_check() {
+    assert_eq!(
+        codes(
+            "bar B {\n  \
+             for ws in workspaces.slots(screen) { text ws.name { on click { ws.focus() } } }\n  \
+             text \"4\" { on click { workspaces.focus(4) } }\n  \
+             text \"web\" { on click { workspaces.focus(\"web\") } }\n  \
+             for ws in workspaces.configured { text ws.name }\n  \
+             for win in windows.all { for c in win.app?.categories ?? [] key c { text c } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { text \"x\" { on click { workspaces.focus(true) } } }\n"),
+        ["check::type_mismatch"]
+    );
+}
+
+/// Gaps 17 (m6-w2-services): a power menu over the builtin `session`
+/// service checks (its `can_*` fields, its actions, `lock_requested` and
+/// `failed`). A config's own service named `session` is now a taken name
+/// (spec.md 4.2, `check::redeclared`), as for every builtin service: the
+/// tension with spec.md 14 is proposed for the owner's review
+/// (decisions.md m6-w2-services), and this assertion flips if the ruling
+/// lets a config service shadow a builtin one.
+#[test]
+fn session_is_a_power_menu() {
+    assert_eq!(
+        codes(
+            "export state locked = false\n\
+             bar B {\n  state why = \"\"\n  \
+             on session.lock_requested { locked = true }\n  \
+             on session.failed(action, error) { why = join(\" \", action, error) }\n  \
+             text why\n  \
+             if session.can_suspend { text \"Suspend\" { on click { session.suspend() } } }\n  \
+             text \"Off\" { on click { if session.can_power_off { session.power_off() } } }\n  \
+             text \"Lock\" { on click { session.lock() } }\n  \
+             text \"Out\" { on click { session.log_out() } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes(
+            "service session from file \"s.json\" { user: text }\n\
+             bar B { text session.user }\n"
+        ),
+        ["check::redeclared"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

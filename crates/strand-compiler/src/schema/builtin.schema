@@ -175,6 +175,10 @@ provisional record Window key id {
   fullscreen: bool
   /// It asks for attention.
   urgent: bool
+  /// The installed app it belongs to, found from its app id (the desktop
+  /// entry's id, `StartupWMClass`, a reverse-DNS id's last part, its
+  /// name): `win.app?.categories`. Null when no entry matches.
+  app: App?
   /// Raises and focuses it.
   action focus()
   /// Asks it to close.
@@ -475,8 +479,27 @@ provisional service workspaces {
   all: [Workspace]
   /// The focused workspace, if any.
   focused: Workspace?
+  /// The workspaces the compositor's config places on a screen that do
+  /// not exist yet (Hyprland's numbered workspace rules, sway's
+  /// `workspace … output …`), keyed by `id`: empty and inactive, made
+  /// by `ws.focus()`. `workspaces.slots(screen)` puts them in place.
+  configured: [Workspace]
   /// The workspaces on `screen`: `for ws in workspaces.on(screen)`.
   fn on(screen: Screen) -> [Workspace]
+  /// A bar's slots on `screen`: its workspaces and the configured ones
+  /// not made yet, by their number (Hyprland's id, else the number their
+  /// name starts with), then the rest: `for ws in
+  /// workspaces.slots(screen) { Dot ws }`, each switched to with
+  /// `ws.focus()`.
+  fn slots(screen: Screen) -> [Workspace]
+  /// Switches to a workspace by number (`int`) or by name (`text`),
+  /// making it where the compositor makes workspaces it is switched to
+  /// (Hyprland, sway): `on click { workspaces.focus(4) }`. A number is
+  /// the same on every compositor: Hyprland's workspace 4, sway's
+  /// `workspace number 4`, niri's fourth workspace of the focused
+  /// screen. A workspace record is switched to with `ws.focus()`, not by
+  /// its `id`.
+  action focus(target: int | text)
 }
 
 /// Audio devices, from PipeWire.
@@ -545,8 +568,11 @@ provisional service media {
   album: text?
   /// The album art: `image media.art { fit: cover }`.
   art: text?
-  /// Fraction of the track played, 0 to 1.
-  position: float
+  /// Fraction of the track played, 0 to 1. Writable: a scrubber's
+  /// `slider { value: <-> media.position }` seeks the player (MPRIS
+  /// `SetPosition`, or `Seek` when the track has no id). A player that
+  /// cannot seek, or a track of unknown length, keeps its place.
+  position: float rw
   /// Time played.
   elapsed: duration
   /// The track's length, when known.
@@ -613,7 +639,8 @@ provisional service wm {
   event config_reloaded(failed: bool?)
 }
 
-/// The network, from NetworkManager.
+/// The network, from NetworkManager, or from iwd where NetworkManager
+/// does not run.
 provisional service network {
   /// A network connection is up.
   connected: bool
@@ -653,6 +680,34 @@ provisional service auth {
   prompt: text
   /// Checks `password`.
   action submit(password: text)
+}
+
+/// The login session and the machine's power, from logind.
+provisional service session {
+  /// Suspending is allowed.
+  can_suspend: bool
+  /// Hibernating is allowed.
+  can_hibernate: bool
+  /// Rebooting is allowed.
+  can_reboot: bool
+  /// Powering off is allowed.
+  can_power_off: bool
+  /// Suspends the machine.
+  action suspend()
+  /// Hibernates the machine.
+  action hibernate()
+  /// Reboots the machine.
+  action reboot()
+  /// Powers the machine off.
+  action power_off()
+  /// Asks logind to lock this session.
+  action lock()
+  /// Ends this login session.
+  action log_out()
+  /// logind asks this session's locker to lock it.
+  event lock_requested
+  /// An action failed: `on session.failed(action, error) { … }`.
+  event failed(action: text, error: text)
 }
 
 // ---------------------------------------------------------------------------

@@ -124,6 +124,11 @@ impl Sway {
     /// Starts sway; `None` (after saying why) when it is not installed and
     /// `STRAND_REQUIRE_SWAY` is unset.
     pub fn start(test: &str) -> Option<Sway> {
+        Self::start_with(test, "")
+    }
+
+    /// [`Sway::start`] with `extra` lines appended to its config.
+    pub fn start_with(test: &str, extra: &str) -> Option<Sway> {
         if Command::new("sway").arg("--version").output().is_err() {
             assert!(
                 std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
@@ -141,7 +146,9 @@ impl Sway {
         let cfg = dir.join("sway.cfg");
         std::fs::write(
             &cfg,
-            "xwayland disable\noutput HEADLESS-1 resolution 1280x720@60Hz position 0 0\n",
+            format!(
+                "xwayland disable\noutput HEADLESS-1 resolution 1280x720@60Hz position 0 0\n{extra}"
+            ),
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();

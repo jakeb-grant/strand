@@ -28,7 +28,8 @@
 //! (BlueZ), [`notifications`] (the shell's own notification server),
 //! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu);
 //! [`apps`] (desktop entries, fuzzy search, frecency, launching); and
-//! [`auth`] (the lock screen's password check, through `strand-auth`).
+//! [`auth`] (the lock screen's password check, through `strand-auth`);
+//! and [`session`] (logind: suspend, reboot, power off, lock, log out).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -63,6 +64,7 @@ pub mod notifications;
 pub mod pixmap;
 mod procfs;
 mod service;
+pub mod session;
 mod store;
 pub mod system;
 pub mod testing;
@@ -102,6 +104,7 @@ pub struct Builtin {
     #[cfg(feature = "pipewire")]
     pub audio: Client<audio::AudioStore>,
     pub auth: Client<auth::Auth>,
+    pub session: Client<session::Session>,
 }
 
 impl Builtin {
@@ -125,6 +128,7 @@ impl Builtin {
             #[cfg(feature = "pipewire")]
             audio: services.register(rt),
             auth: services.register(rt),
+            session: services.register(rt),
         }
     }
 
@@ -148,6 +152,7 @@ impl Builtin {
             #[cfg(feature = "pipewire")]
             self.audio.dynamic(),
             self.auth.dynamic(),
+            self.session.dynamic(),
         ]
     }
 }

@@ -18,6 +18,7 @@
 
 use std::cell::RefCell;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use strand_core::VecDiff;
 
@@ -76,6 +77,7 @@ pub struct WindowItem {
     pub maximized: bool,
     pub fullscreen: bool,
     pub urgent: bool,
+    pub app: Option<crate::apps::App>,
 }
 
 impl From<model::Window> for WindowItem {
@@ -91,6 +93,7 @@ impl From<model::Window> for WindowItem {
             maximized: w.maximized,
             fullscreen: w.fullscreen,
             urgent: w.urgent,
+            app: w.app,
         }
     }
 }
@@ -163,11 +166,42 @@ pub enum WindowAction {
     Fullscreen { item: WindowItem },
 }
 
-/// `workspaces`' actions (on a `Workspace` item).
+/// `workspaces`' actions: on a `Workspace` item, and the service's own.
 #[derive(Call, Debug)]
 pub enum WorkspaceAction {
     /// `ws.focus()`.
     Focus { item: WorkspaceItem },
+    /// `workspaces.focus(target)`: by id or by name (Gaps 2).
+    #[call(name = "focus")]
+    FocusTarget { target: WorkspaceTarget },
+}
+
+/// What `workspaces.focus(target)` switches to: an `int` is a
+/// workspace's number (on sway a negative one is a configured slot's
+/// id), a `text` its name.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkspaceTarget {
+    /// By number.
+    Id(i64),
+    /// By name.
+    Name(String),
+}
+
+impl crate::FromData for WorkspaceTarget {
+    fn from_data(d: &Data) -> Result<Self, crate::DataError> {
+        match d {
+            Data::Int(n) => Ok(Self::Id(*n)),
+            // Defensive only: the checker passes an `int` here, never a
+            // float (`int | text`); a whole float that arrives anyway
+            // (a host calling the action directly) is taken as its number.
+            Data::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Ok(Self::Id(*f as i64)),
+            Data::Text(t) => Ok(Self::Name(t.to_string())),
+            other => Err(crate::DataError::new(format!(
+                "a workspace is an id (int) or a name (text), not {}",
+                other.kind()
+            ))),
+        }
+    }
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.
@@ -196,6 +230,12 @@ pub struct Workspaces {
     pub all: Vec<WorkspaceItem>,
     /// The focused workspace, if any.
     pub focused: Option<WorkspaceItem>,
+    /// The workspaces the compositor's config places on a screen that do
+    /// not exist yet (Hyprland's numbered workspace rules, sway's
+    /// `workspace … output …`), keyed by `id`: empty and inactive, made
+    /// by `ws.focus()`. `workspaces.slots(screen)` puts them in place.
+    #[store(keyed)]
+    pub configured: Vec<WorkspaceItem>,
 }
 
 /// The compositor.
@@ -238,8 +278,69 @@ fn workspace_fns(
                 )
             }))
         }
+        "slots" => {
+            let name = match args
+                .first()
+                .map(|s| crate::record_field(s, "Screen", "name"))
+            {
+                Some(Ok(Data::Text(t))) => Some(t.to_string()),
+                _ => None,
+            };
+            let on = |w: &WorkspaceItem| name.as_deref() == Some(w.screen.as_str());
+            let made = match cells.all.with(rt, |v| {
+                v.items()
+                    .iter()
+                    .filter(|(_, w)| on(w))
+                    .map(|(_, w)| w.clone())
+                    .collect::<Vec<_>>()
+            }) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            Some(cells.configured.with(rt, |v| {
+                let configured = v
+                    .items()
+                    .iter()
+                    .filter(|(_, w)| on(w))
+                    .map(|(_, w)| w.clone());
+                Data::List(
+                    slots(made, configured, IDS_ARE_NUMBERS.load(Ordering::Relaxed))
+                        .iter()
+                        .map(ToData::to_data)
+                        .collect(),
+                )
+            }))
+        }
         _ => None,
     }
+}
+
+/// The workspaces' ids are their numbers (Hyprland: a positive id is a
+/// numbered workspace, whatever its `defaultName:`). One compositor per
+/// process, so one flag, set from the hub's `Sources`.
+static IDS_ARE_NUMBERS: AtomicBool = AtomicBool::new(false);
+
+/// A screen's slots: its workspaces and the configured ones not made yet,
+/// by their number (a positive id when `ids_are_numbers`, as on
+/// Hyprland, else the number their name starts with, as sway and niri
+/// number them), then the rest in their own order (Gaps 3, decisions.md
+/// m6-w2-services).
+pub fn slots(
+    made: impl IntoIterator<Item = WorkspaceItem>,
+    configured: impl IntoIterator<Item = WorkspaceItem>,
+    ids_are_numbers: bool,
+) -> Vec<WorkspaceItem> {
+    let mut all: Vec<WorkspaceItem> = made.into_iter().chain(configured).collect();
+    let number = |w: &WorkspaceItem| -> Option<u64> {
+        if ids_are_numbers {
+            return u64::try_from(w.id).ok().filter(|n| *n > 0);
+        }
+        let digits: String = w.name.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    // Stable: unnumbered ones keep their order, after the numbered.
+    all.sort_by_key(|w| (number(w).is_none(), number(w)));
+    all
 }
 
 /// The hub's subscription, or the error that ends the body.
@@ -379,13 +480,33 @@ impl Workspaces {
                         WmChange::FocusedWorkspace(w) => {
                             patches.push(WorkspacesPatch::Focused(w.map(WorkspaceItem::from)));
                         }
+                        WmChange::Configured(d) => {
+                            patches.push(WorkspacesPatch::Configured(map_diffs(
+                                d,
+                                WorkspaceItem::from,
+                            )));
+                        }
+                        WmChange::Sources(s) => {
+                            IDS_ARE_NUMBERS.store(
+                                s.ipc == Some(model::CompositorKind::Hyprland),
+                                Ordering::Relaxed,
+                            );
+                        }
                         _ => {}
                     }
                 }
                 cx.send(patches).then_some(known)
             },
-            |a| match a {
-                WorkspaceAction::Focus { item } => Some(WmAction::FocusWorkspace(item.id)),
+            |a| {
+                Some(match a {
+                    WorkspaceAction::Focus { item } => WmAction::FocusWorkspace(item.id),
+                    WorkspaceAction::FocusTarget {
+                        target: WorkspaceTarget::Id(id),
+                    } => WmAction::FocusWorkspaceNumber(id),
+                    WorkspaceAction::FocusTarget {
+                        target: WorkspaceTarget::Name(name),
+                    } => WmAction::FocusWorkspaceNamed(name),
+                })
             },
         )
         .await
@@ -437,7 +558,7 @@ mod tests {
         assert_eq!(<Workspaces as Service>::NAME, "workspaces");
         assert_eq!(<Wm as Service>::NAME, "wm");
         let names: Vec<&str> = Workspaces::FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(names, ["all", "focused"]);
+        assert_eq!(names, ["all", "focused", "configured"]);
         assert_eq!((Workspaces::FIELDS[0].ty)(), "[Workspace]");
         assert_eq!((Windows::FIELDS[0].ty)(), "Window?");
         assert_eq!(Wm::EVENTS[0].name, "config_reloaded");
@@ -499,5 +620,28 @@ mod tests {
         drop(tx);
         let fut = super::super::run(WmConfig::default(), |_| {}, rx);
         send(&fut);
+    }
+
+    /// Review minor 11: on Hyprland a positive id is the workspace's
+    /// number, so workspace 1 named `web` (`defaultName:`) leads; elsewhere
+    /// the name's number orders, unnumbered names last.
+    #[test]
+    fn slots_follow_the_compositors_numbers() {
+        let ws = |id: i64, name: &str| WorkspaceItem {
+            id,
+            name: name.into(),
+            ..Default::default()
+        };
+        let names = |v: Vec<WorkspaceItem>| v.into_iter().map(|w| w.name).collect::<Vec<_>>();
+        let made = || vec![ws(3, "3"), ws(1, "web")];
+        let configured = || vec![ws(2, "2")];
+        assert_eq!(names(slots(made(), configured(), true)), ["web", "2", "3"]);
+        assert_eq!(names(slots(made(), configured(), false)), ["2", "3", "web"]);
+        // sway: container ids are no numbers; the names order.
+        let sway = vec![ws(912, "4"), ws(7, "1: mail")];
+        assert_eq!(
+            names(slots(sway, vec![ws(-1, "2")], false)),
+            ["1: mail", "2", "4"]
+        );
     }
 }

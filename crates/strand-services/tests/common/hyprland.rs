@@ -218,6 +218,12 @@ pub fn answer(scene: &str, req: &str) -> Vec<u8> {
         }
         "j/clients" => file("clients.json"),
         "j/activewindow" => file("activewindow.json"),
+        // The shape a live 0.56.2 answers (the owner's `hyprctl -j
+        // workspacerules`): numbered rules on DP-1 and HDMI-A-1 (one by
+        // `desc:`) and a named one, which makes no slot (Gaps 3).
+        "j/workspacerules" => {
+            std::fs::read(fixture("hyprland-0.56.2/workspacerules.json")).unwrap()
+        }
         // Captured from a live 0.56.2 (`version.json` there).
         "j/version" => std::fs::read(fixture("hyprland-0.56.2-captured/version.json")).unwrap(),
         // `dispatchRequest` (src/debug/HyprCtl.cpp, 0.54.3 and a hyprlang

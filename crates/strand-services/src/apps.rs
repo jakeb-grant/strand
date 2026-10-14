@@ -60,7 +60,7 @@ pub const MAX_HITS: usize = 200;
 pub const FORGET_AFTER: u64 = 90 * 86_400;
 
 /// An installed app.
-#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[derive(crate::Data, Clone, Debug, Default, PartialEq, Eq)]
 #[data(name = "App", key = id)]
 pub struct App {
     /// Its desktop entry id.
@@ -219,6 +219,9 @@ pub struct Entry {
     pub icon_key: Option<String>,
     /// Generic name and keywords: matched when the name is not.
     pub also: Vec<String>,
+    /// `StartupWMClass`: the window class (Wayland app id) its windows
+    /// have, when it is not the entry's id.
+    pub wm_class: Option<String>,
 }
 
 /// The `.desktop` files under `dir`, with their ids (the path below `dir`,
@@ -393,7 +396,115 @@ fn listed(
         file,
         icon_key,
         also,
+        wm_class: entry
+            .startup_wm_class()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string),
     })
+}
+
+// --- Windows' apps -------------------------------------------------------
+
+/// The listed entries, for finding a window's app by its app id (Bugs 3
+/// and gaps 9, decisions.md m6-w2-services).
+#[derive(Clone, Debug, Default)]
+pub struct AppIndex {
+    entries: Vec<Entry>,
+}
+
+impl AppIndex {
+    /// An index of `entries` (as [`load`] reads them).
+    pub fn new(entries: Vec<Entry>) -> AppIndex {
+        AppIndex { entries }
+    }
+
+    /// The entries under `config`'s directories.
+    pub fn load(config: &Config) -> AppIndex {
+        AppIndex::new(load(config))
+    }
+
+    /// The entry of the windows whose app id (a Wayland app id, an X11
+    /// `WM_CLASS`, Hyprland's `class`) is `app_id`, tried in this order,
+    /// each first match winning: the entry's id (`firefox`), the same
+    /// ignoring case (`Spotify`), its `StartupWMClass` ignoring case, the
+    /// last part of a reverse-DNS id (`org.gnome.Nautilus` for
+    /// `nautilus`, or the app id's last part for an entry named by it),
+    /// its name ignoring case, and last a dash-separated head of the app
+    /// id that is an entry's id (`chromium` for `Chromium-browser`), the
+    /// longest. `None` when nothing matches.
+    pub fn find(&self, app_id: &str) -> Option<&Entry> {
+        let app_id = app_id.trim();
+        if app_id.is_empty() {
+            return None;
+        }
+        let lower = app_id.to_lowercase();
+        let tail = |id: &str| -> String { id.rsplit('.').next().unwrap_or(id).to_lowercase() };
+        let by = |f: &dyn Fn(&Entry) -> bool| self.entries.iter().find(|e| f(e));
+        by(&|e| e.app.id == app_id)
+            .or_else(|| by(&|e| e.app.id.to_lowercase() == lower))
+            .or_else(|| {
+                by(&|e| {
+                    e.wm_class
+                        .as_deref()
+                        .is_some_and(|c| c.to_lowercase() == lower)
+                })
+            })
+            .or_else(|| by(&|e| e.app.id.contains('.') && tail(&e.app.id) == lower))
+            .or_else(|| by(&|e| app_id.contains('.') && e.app.id.to_lowercase() == tail(app_id)))
+            .or_else(|| by(&|e| e.app.name.to_lowercase() == lower))
+            .or_else(|| {
+                // `Chromium-browser`: the longest head before a `-` that
+                // is an entry's id.
+                let mut heads: Vec<&str> = lower
+                    .match_indices('-')
+                    .map(|(i, _)| &lower[..i])
+                    .filter(|h| !h.is_empty())
+                    .collect();
+                heads.reverse();
+                heads
+                    .into_iter()
+                    .find_map(|h| by(&|e| e.app.id.to_lowercase() == h))
+            })
+    }
+
+    /// The icon and app a window with `app_id` shows: [`window_icon`] of
+    /// [`AppIndex::find`]'s entry.
+    pub fn window(&self, app_id: &str) -> (String, Option<App>) {
+        let entry = self.find(app_id);
+        (window_icon(app_id, entry), entry.map(|e| e.app.clone()))
+    }
+}
+
+/// The icon a window with `app_id` draws: its entry's when the icon
+/// theme has it, else the app id when the theme has that (as written,
+/// then lowercased: `Spotify` draws `spotify`), else the entry's
+/// fallback, else the app id as it is (the name a theme installed later
+/// may have).
+pub fn window_icon(app_id: &str, entry: Option<&Entry>) -> String {
+    if let Some(e) = entry
+        && e.app.icon != FALLBACK_ICON
+    {
+        return e.app.icon.clone();
+    }
+    let lower = app_id.to_lowercase();
+    for name in [app_id, lower.as_str()] {
+        if !name.is_empty() && !name.contains('/') && strand_icons::exists(name) {
+            return name.to_string();
+        }
+    }
+    match entry {
+        Some(e) => e.app.icon.clone(),
+        None => app_id.to_string(),
+    }
+}
+
+/// The receiver of [`changed`]'s count: the compositor service reads the
+/// entries again when it moves (a window's app may be installed later).
+pub(crate) fn changes() -> tokio::sync::watch::Receiver<u64> {
+    let mut rx = CHANGES.subscribe();
+    rx.mark_unchanged();
+    rx
 }
 
 // --- Frecency ---------------------------------------------------------------
@@ -980,6 +1091,7 @@ mod tests {
             file: PathBuf::from("/a/x.desktop"),
             icon_key: Some("x-icon".into()),
             also: Vec::new(),
+            wm_class: None,
         }
     }
 

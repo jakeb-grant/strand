@@ -4684,7 +4684,15 @@ transparent huge pages for life.
   one per network at a time and stopped when NetworkManager is
   replaced, an enterprise (802.1X) network joins only through a profile
   saved in NetworkManager, and `AccessPoint.secure` is true exactly
-  where `connect_with(password)` joins: WPA personal or WEP), `bluetooth` (BlueZ's object manager),
+  where `connect_with(password)` joins: WPA personal or WEP; M6 wave 2,
+  m6-w2-services: where NetworkManager does not run and iwd does, the
+  body is `network::iwd::run`, iwd's object manager with a passphrase
+  agent and a signal level agent served at `iwd::AGENT_PATH` on the
+  shared system connection, and either daemon appearing or going chooses
+  again; `dbus::Daemon::watch` follows a name without D-Bus activation,
+  and every call to iwd goes through `iwd::call` with `NO_AUTO_START`,
+  so iwd is never started for us; both agents answer only iwd's current
+  unique name), `bluetooth` (BlueZ's object manager),
   `notifications` (our own `org.freedesktop.Notifications` server;
   `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
@@ -4788,7 +4796,13 @@ transparent huge pages for life.
   keeps every stub field with its `rw` mark and every stub event);
   `Builtin::register(&services, rt)` registers them all. A new service
   module adds its text to `strand-services-schema` and its store to
-  `Builtin`.
+  `Builtin`. (M6 wave 2, m6-w2-services) `session`
+  (`strand_services::session`, `strand_services_schema::SESSION`,
+  `Builtin.session`): logind's `Can*` answers as `can_*`, its power and
+  session calls as actions (each a task of the body's, `failed(action,
+  error)` on a refusal) and the own session's `Lock` signal as
+  `lock_requested`; a provisional stub in builtin.schema carries its
+  members.
 - **Failures are diagnostics.** A run that ends with an error (or
   panics) is a `ServiceDiagnostic { service, message, notice: false }`
   (`service: String`, the registered name);
@@ -4960,6 +4974,44 @@ transparent huge pages for life.
   sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
+  (M6 wave 2, m6-w2-services) `WmState::configured` holds the workspaces
+  the compositor's config places on a screen that do not exist yet
+  (Hyprland's numbered `j/workspacerules` with a monitor that is on,
+  read at connection and on `configreloaded`; sway's `workspace <name>
+  output <outputs…>` lines of `get_config`, read at connection and on
+  `reload`, placed on the first of their outputs `get_outputs` says is
+  active, the outputs read again on every `output` event; niri none, its named workspaces always exist), published as
+  `WmChange::Configured` (keyed by id, a `Reset` on the first publish and
+  in the hub's replay) and served as `workspaces.configured`; a slot's id
+  is its number on Hyprland and `-(n + 1)` for the n-th assignment on
+  sway, and `ws.focus()` on it makes it. `workspaces.slots(screen)` is a
+  `fn` over `all` and `configured` (`wm::service::slots`: by number,
+  the id on Hyprland and the number a name starts with elsewhere, then
+  the rest in order). `workspaces.focus(target:
+  int | text)` is a service-level action (`WorkspaceAction::FocusTarget`,
+  a `WorkspaceTarget::{Id, Name}`), sent as
+  `WmAction::FocusWorkspaceNumber(n)` or `WmAction::FocusWorkspaceNamed(name)`;
+  `FocusWorkspaceNumber` is the same number everywhere: Hyprland's id
+  (`dispatch workspace N`), sway's `workspace number N` (a negative n
+  being a configured slot's id), niri's `{"Index": n}` on the focused
+  output and a protocol workspace named n, else `UnknownWorkspace`;
+  `FocusWorkspace` of an id no workspace has is a number Hyprland makes
+  or a sway slot's name, else `UnknownWorkspace`; `FocusWorkspaceNamed` is
+  Hyprland's `name:` (a number by number), sway's `workspace "<name>"`,
+  niri's `{"Name": …}` reference (a number not named: `{"Index": n}`) and
+  `ext-workspace-v1`'s activation of a listed workspace, else
+  `WmError::UnknownWorkspaceName`.
+  (M6 wave 2, m6-w2-services) A window carries `app: Option<apps::App>`
+  (`Window.app: App?`), and its `icon` is its desktop entry's: `wm::run`
+  reads `apps::AppIndex::load(&apps::Config::current())` on the blocking
+  pool at its start and again when `apps::changed()` is called (the
+  watcher's `CacheKind::Apps` and `CacheKind::Icons`; one read at a
+  time), publishes the compositor's state without waiting for it, and
+  patches each window's `icon` and `app` from `AppIndex::window(app_id)`
+  (`AppIndex::find`, then `apps::window_icon`), looked up on the blocking
+  pool one batch at a time and kept per app id until the next read;
+  `WmState::link_apps` leaves a window not yet looked up as it is. `apps::Entry`
+  gains `wm_class` (`StartupWMClass`); `App` is `Eq`.
   `wm::live_runs()` counts live `run`s (tests). `screens.focused` is the
   `screens` service's, which no crate serves yet; when one does it takes
   `FocusedScreen` from the same hub, with a store's lifecycle (it drops
@@ -4969,8 +5021,10 @@ transparent huge pages for life.
   replacing the provisional stubs and adding `Workspace.active`,
   `Window.urgent`, `Window.maximized` and `event
   config_reloaded(failed: bool?)`. `requests` takes
-  `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
-  CloseWindow, MinimizeWindow, MaximizeWindow, FullscreenWindow},
+  `WmRequest { action: WmAction::{FocusWorkspace, FocusWorkspaceNumber,
+  FocusWorkspaceNamed,
+  FocusWindow, CloseWindow, MinimizeWindow, MaximizeWindow,
+  FullscreenWindow},
   reply: Option<oneshot> }`
   (`WmRequest::new(action) -> (WmRequest, WmReply)`;
   `WmSubscription::request(action) -> WmReply`), answered

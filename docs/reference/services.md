@@ -138,7 +138,7 @@ and only while a visible reader shows it.
 | `artist` | `text?` | The track's artist. |
 | `album` | `text?` | The track's album. |
 | `art` | `text?` | The album art: `image media.art { fit: cover }`. Local art (a `file://` URL or a path) as the player sent it; remote (`https://`, `http://`) art fetched and shown as a file once it is in. Null when the player sent none, while remote art loads, or when it failed, so `media.art ?? "audio-x-generic"` falls back. |
-| `position` | `float` | Fraction of the track played, 0 to 1. |
+| `position` | `float rw` | Fraction of the track played, 0 to 1. Writable: a scrubber's `slider { value: <-> media.position }` seeks the player (MPRIS `SetPosition`, or `Seek` when the track has no id). A player that cannot seek, or a track of unknown length, keeps its place. |
 | `elapsed` | `duration` | Time played. |
 | `length` | `duration?` | The track's length, when known. |
 | `player` | `text?` | The active player's name, such as `Firefox` or `mpv`; null when no player runs. |
@@ -161,11 +161,13 @@ Memory use, sampled once a second while a reader is visible.
 
 ## `network`
 
-The network, from NetworkManager, followed live.
+The network, followed live: from NetworkManager, or from iwd
+(`net.connman.iwd`) where NetworkManager does not run. Either one
+starting or stopping switches to the other.
 
 | Field | Type | |
 | --- | --- | --- |
-| `connected` | `bool` | A network connection is up. |
+| `connected` | `bool` | A network connection is up. Over iwd, which knows only Wi-Fi: the Wi-Fi network is joined. |
 | `ssid` | `text?` | The Wi-Fi network joined, if any. |
 | `strength` | `float` | The Wi-Fi signal strength, 0 to 1. |
 | `wifi` | `bool rw` | The Wi-Fi radio is on. Writable. |
@@ -203,6 +205,34 @@ Monitors.
 | --- | --- | --- |
 | `all` | `[Screen]` | Every monitor, keyed by `name`. |
 | `focused` | `Screen?` | The monitor with keyboard focus. |
+
+## `session`
+
+The login session and the machine's power, from logind
+(`org.freedesktop.login1`): a power menu. Each `can_*` says whether
+logind allows it, so a menu greys out what it does not; an action
+that fails (polkit refused it, no login session) is `session.failed`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `can_suspend` | `bool` | Suspending is allowed (logind's `CanSuspend` is `yes`, or `challenge`: polkit asks for a password first). |
+| `can_hibernate` | `bool` | Hibernating is allowed (`CanHibernate`, as `can_suspend`). |
+| `can_reboot` | `bool` | Rebooting is allowed (`CanReboot`, as `can_suspend`). |
+| `can_power_off` | `bool` | Powering off is allowed (`CanPowerOff`, as `can_suspend`). |
+
+| Method | |
+| --- | --- |
+| `action suspend()` | Suspends the machine. |
+| `action hibernate()` | Hibernates the machine. |
+| `action reboot()` | Reboots the machine. |
+| `action power_off()` | Powers the machine off. |
+| `action lock()` | Asks logind to lock this session: the locker that follows logind puts its lock up, and `lock_requested` fires, so a shell's own `lock` can follow too. |
+| `action log_out()` | Ends this login session (logind's `TerminateSession`): every app in it is closed. |
+
+| Event | |
+| --- | --- |
+| `on session.lock_requested()` | logind asks this session's locker to lock it (`session.lock()`, `loginctl lock-session`, an idle daemon): `on session.lock_requested { locked = true }` puts a shell's own `lock` up. |
+| `on session.failed(action: text, error: text)` | An action failed (polkit refused it, no login session to lock or end): `on session.failed(action, error) { … }`, `action` as written (`"reboot"`). A power action waiting on polkit's password dialog has not failed: it fails only when logind refuses it. |
 
 ## `system`
 
@@ -256,8 +286,11 @@ in what the protocol does not cover yet.
 | --- | --- | --- |
 | `all` | `[Workspace]` | Every workspace, keyed by `id`. |
 | `focused` | `Workspace?` | The focused workspace, if any. |
+| `configured` | `[Workspace]` | The workspaces the compositor's config places on a screen that do not exist yet (Hyprland's numbered workspace rules, sway's `workspace … output …`), keyed by `id`: empty and inactive, made by `ws.focus()`. `workspaces.slots(screen)` puts them in place. |
 
 | Method | |
 | --- | --- |
 | `fn on(screen: Screen) -> [Workspace]` | The workspaces on `screen`: `for ws in workspaces.on(screen)`. |
+| `fn slots(screen: Screen) -> [Workspace]` | A bar's slots on `screen`: its workspaces and the configured ones not made yet, by their number (Hyprland's id, else the number their name starts with), then the rest: `for ws in workspaces.slots(screen) { Dot ws }`, each switched to with `ws.focus()`. |
+| `action focus(target: int \| text)` | Switches to a workspace by number (`int`) or by name (`text`), making it where the compositor makes workspaces it is switched to (Hyprland, sway): `on click { workspaces.focus(4) }`. A number is the same on every compositor: Hyprland's workspace 4, sway's `workspace number 4`, niri's fourth workspace of the focused screen. A workspace record is switched to with `ws.focus()`, not by its `id`. |
 

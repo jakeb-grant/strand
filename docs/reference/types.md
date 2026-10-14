@@ -8,7 +8,7 @@ The records, enums, aliases and opaque types of the builtin schema. The language
 
 ### `AccessPoint`
 
-A Wi-Fi network in range, from NetworkManager's last scan; access
+A Wi-Fi network in range, from the last scan; access
 points of one network name are one entry (the strongest). Keyed by
 `ssid`.
 
@@ -23,7 +23,7 @@ Keyed by `ssid`.
 
 | Method | |
 | --- | --- |
-| `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
+| `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password; iwd joins only a network it knows this way); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings, or iwd's provisioning file). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
 | `action connect_with(password: text)` | Joins a `secure` network with `password` (its WPA key or WEP key), saved in its connection: a network menu's password field. On any other network it fails. A failure is `network.failed`. |
 
 ### `App`
@@ -348,13 +348,14 @@ Keyed by `id`.
 | `id` | `text` | Its identity: the compositor's id when its IPC is used, else the protocol's identifier. |
 | `title` | `text` | Its title: `windows.focused?.title`. |
 | `app_id` | `text` | The app's id, such as `firefox`. |
-| `icon` | `text` | An icon name for its app. |
+| `icon` | `text` | An icon name for its app: its desktop entry's icon, else its app id (lowercased when only that is in the icon theme). |
 | `workspace` | `int?` | The workspace it is on, when known. |
 | `focused` | `bool` | It has focus. |
 | `minimized` | `bool` | It is minimised. |
 | `maximized` | `bool` | It is maximised. |
 | `fullscreen` | `bool` | It is fullscreen.  `win.fullscreen()` makes it fullscreen, or restores it when it is fullscreen. |
 | `urgent` | `bool` | It asks for attention. |
+| `app` | `App?` | The installed app it belongs to, found from its app id (the desktop entry's id, `StartupWMClass`, a reverse-DNS id's last part, its name): `win.app?.categories`. Null when no entry matches. |
 
 | Method | |
 | --- | --- |

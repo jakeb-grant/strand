@@ -1,4 +1,4 @@
-/// A Wi-Fi network in range, from NetworkManager's last scan; access
+/// A Wi-Fi network in range, from the last scan; access
 /// points of one network name are one entry (the strongest). Keyed by
 /// `ssid`.
 record AccessPoint key ssid {
@@ -15,8 +15,9 @@ record AccessPoint key ssid {
   active: bool
   /// Joins it: with its saved connection if there is one, else a new one
   /// (for a `secure` network NetworkManager asks its secret agent for the
-  /// password); an enterprise (802.1X) network with no saved profile is
-  /// refused (it is set up in the system's network settings). A failure,
+  /// password; iwd joins only a network it knows this way); an enterprise
+  /// (802.1X) network with no saved profile is refused (it is set up in
+  /// the system's network settings, or iwd's provisioning file). A failure,
   /// including one NetworkManager reports later (no password, a wrong
   /// one, a timeout), is `network.failed`.
   action connect()
@@ -26,9 +27,12 @@ record AccessPoint key ssid {
   action connect_with(password: text)
 }
 
-/// The network, from NetworkManager, followed live.
+/// The network, followed live: from NetworkManager, or from iwd
+/// (`net.connman.iwd`) where NetworkManager does not run. Either one
+/// starting or stopping switches to the other.
 service network {
-  /// A network connection is up.
+  /// A network connection is up. Over iwd, which knows only Wi-Fi: the
+  /// Wi-Fi network is joined.
   connected: bool
   /// The Wi-Fi network joined, if any.
   ssid: text?

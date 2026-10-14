@@ -18,8 +18,11 @@ service media {
   /// the player sent none, while remote art loads, or when it failed, so
   /// `media.art ?? "audio-x-generic"` falls back.
   art: text?
-  /// Fraction of the track played, 0 to 1.
-  position: float
+  /// Fraction of the track played, 0 to 1. Writable: a scrubber's
+  /// `slider { value: <-> media.position }` seeks the player (MPRIS
+  /// `SetPosition`, or `Seek` when the track has no id). A player that
+  /// cannot seek, or a track of unknown length, keeps its place.
+  position: float rw
   /// Time played.
   elapsed: duration
   /// The track's length, when known.

@@ -54,10 +54,25 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     assert!(pavu.minimized && pavu.workspace.is_none());
     assert_eq!(m.focused_screen.as_deref(), Some("DP-1"));
     assert_eq!(m.focused_window.as_ref().unwrap().app_id, "kitty");
+    // The workspace rules once, at connection (Gaps 3).
     assert_eq!(
         fake.requests(),
-        ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]
+        [
+            "j/monitors",
+            "j/workspaces",
+            "j/clients",
+            "j/activewindow",
+            "j/workspacerules"
+        ]
     );
+    // The rules' numbered workspaces not made yet, on monitors that are
+    // on (6 by `desc:`); 1 to 3 exist, a named rule makes none.
+    let slots: Vec<(i64, &str)> = m
+        .configured
+        .iter()
+        .map(|(id, w)| (*id, w.screen.as_str()))
+        .collect();
+    assert_eq!(slots, [(4, "DP-1"), (6, "HDMI-A-1")]);
 
     // Switching workspaces patches in place: no request.
     fake.send(&bursts["switch"]);
@@ -66,7 +81,7 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     })
     .await;
     assert!(!c.mirror.workspace("1").unwrap().active);
-    assert_eq!(fake.requests().len(), 4, "patched without a request");
+    assert_eq!(fake.requests().len(), 5, "patched without a request");
 
     // A window opens: one re-read for the whole burst.
     fake.set_scene("opened");
@@ -80,7 +95,7 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     // Hyprland sends the new window's title and an urgent hint before
     // `openwindow` (as captured): the unknown window costs no extra read,
     // and the hint does not outlive the focus that follows it.
-    assert_eq!(fake.requests().len(), 8, "one re-read for the burst");
+    assert_eq!(fake.requests().len(), 9, "one re-read for the burst");
     let ws2 = c.mirror.workspace("2").unwrap();
     assert!(ws2.occupied && ws2.focused);
     assert!(!ws2.urgent, "the focus ends the urgent hint");
@@ -94,7 +109,7 @@ async fn hyprland_adapter_follows_replayed_traffic() {
             .is_some_and(|w| w.title == "~/src, strand")
     })
     .await;
-    assert_eq!(fake.requests().len(), 8);
+    assert_eq!(fake.requests().len(), 9);
 
     // Urgency lands on the window and its workspace.
     fake.send(&bursts["urgent"]);
@@ -200,8 +215,9 @@ async fn hyprland_adapter_reconnects_after_losing_its_socket() {
     c.until("reconnected", |m| m.sources.connected).await;
     c.until("caught up", |m| m.window_by_app("foot").is_some())
         .await;
-    // One fresh read on reconnecting, and only the difference went out.
-    assert_eq!(fake.requests().len(), 8);
+    // One fresh read (and the rules) on reconnecting, and only the
+    // difference went out.
+    assert_eq!(fake.requests().len(), 10);
     let resets = c
         .log
         .iter()
@@ -373,7 +389,7 @@ async fn titles_that_are_not_utf8_keep_the_connection() {
     );
     assert_eq!(
         fake.requests().len(),
-        8,
+        9,
         "boot and one re-read; no reconnect"
     );
     service.abort();
@@ -456,7 +472,7 @@ async fn the_hub_shares_one_adapter_between_stores() {
     }
     assert_eq!(mb, ma);
     assert_eq!(hub.starts(), 1);
-    assert_eq!(fake.requests().len(), 4, "one read for both");
+    assert_eq!(fake.requests().len(), 5, "one read for both");
 
     // Both follow the stream; actions go through either.
     let bursts = bursts("hyprland-0.56.2/events.txt");
@@ -819,5 +835,75 @@ async fn a_hyprland_refusing_both_dispatch_dialects_degrades_until_its_version_c
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Ok(()));
+    service.abort();
+}
+
+/// Gaps 2 and 3 (m6-w2-services): a configured workspace that does not
+/// exist yet is switched to (and so made) by its id, any workspace by
+/// its name, a new one by a new name; the rules are read again on a
+/// config reload, and a monitor's workspace made takes its slot away.
+#[tokio::test]
+async fn configured_and_named_workspaces_are_switched_to_and_made() {
+    let fake = FakeHyprland::start();
+    let bursts = bursts("hyprland-0.56.2/events.txt");
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.configured.is_empty())
+        .await;
+    assert!(c.mirror.workspace("4").is_none(), "4 does not exist yet");
+    let ask = |action| {
+        let (r, done) = WmRequest::new(action);
+        req_tx.send(r).unwrap();
+        done
+    };
+    assert_eq!(ask(WmAction::FocusWorkspace(4)).await, Ok(()));
+    assert_eq!(ask(WmAction::FocusWorkspaceNamed("2".into())).await, Ok(()));
+    assert_eq!(
+        ask(WmAction::FocusWorkspaceNamed("chat".into())).await,
+        Ok(())
+    );
+    assert_eq!(
+        ask(WmAction::FocusWorkspaceNamed("special:magic".into())).await,
+        Err(WmError::UnknownWorkspaceName("special:magic".into()))
+    );
+    let sent: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.starts_with("dispatch"))
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            r#"dispatch hl.dsp.focus({ workspace = "4" })"#,
+            "dispatch workspace 4",
+            "dispatch workspace 2",
+            "dispatch workspace name:chat",
+        ]
+    );
+    // A reload reads the rules again: one now names workspace 5.
+    let rules = |n: usize| {
+        fake.requests()
+            .iter()
+            .filter(|r| *r == "j/workspacerules")
+            .count()
+            == n
+    };
+    assert!(rules(1));
+    fake.set_reply(
+        "j/workspacerules",
+        br#"[{"workspaceString": "5", "enabled": true, "monitor": "DP-1"}]"#,
+    );
+    fake.send(&bursts["reload"]);
+    c.until("the new rules", |m| {
+        m.configured.iter().map(|(id, _)| *id).collect::<Vec<_>>() == [5]
+    })
+    .await;
+    assert!(rules(2));
     service.abort();
 }

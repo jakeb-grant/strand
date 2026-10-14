@@ -293,15 +293,23 @@ impl Daemon {
     /// ([`Daemon::subscribe`]); its owner is asked for once the
     /// owner-change subscription is in place.
     pub async fn new(conn: &Connection, name: &str) -> zbus::Result<Daemon> {
+        let d = Self::watch(conn, name).await?;
+        if d.owner.is_none() {
+            activate(conn, d.name.as_str()).await;
+        }
+        Ok(d)
+    }
+
+    /// [`Daemon::new`] without starting the daemon when it is not
+    /// running: for one that must not be started for us (iwd, which
+    /// would contend with a wpa_supplicant NetworkManager runs).
+    pub async fn watch(conn: &Connection, name: &str) -> zbus::Result<Daemon> {
         let name = BusName::try_from(name.to_string())?;
         let dbus = zbus::fdo::DBusProxy::new(conn).await?;
         let owners = dbus
             .receive_name_owner_changed_with_args(&[(0, name.as_str())])
             .await?;
         let owner = dbus.get_name_owner(name.clone()).await.ok();
-        if owner.is_none() {
-            activate(conn, name.as_str()).await;
-        }
         Ok(Daemon {
             conn: conn.clone(),
             name,

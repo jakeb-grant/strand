@@ -26,15 +26,32 @@
 //! m6-services). A join of a network already being joined with the same
 //! password is a repeat, dropped, whether it is still being asked or
 //! already activating.
+//!
+//! Where NetworkManager is not running and iwd is, the network is iwd's
+//! ([`iwd`], owner-testing gaps 15): NetworkManager is chosen whenever it
+//! runs (it may run iwd as its own Wi-Fi backend), iwd otherwise; either
+//! appearing or going chooses again.
 
 use std::collections::{BTreeMap, HashMap};
 
+use futures_lite::StreamExt;
 use tokio::task::JoinSet;
 
 use zbus::zvariant::OwnedValue;
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
 use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
+
+pub mod iwd;
+
+/// How a backend's body ended.
+#[derive(Debug, PartialEq)]
+enum Next {
+    /// The service stopped.
+    Stop,
+    /// The daemons changed: choose the backend again.
+    Again,
+}
 
 /// The schema the `network` service serves.
 pub const SCHEMA: &str = strand_services_schema::NETWORK;
@@ -74,7 +91,8 @@ pub enum NetworkAction {
 #[service(name = "network", action = NetworkAction)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Network {
-    /// A network connection is up.
+    /// A network connection is up. Over iwd, which knows only Wi-Fi: the
+    /// Wi-Fi network is joined.
     pub connected: bool,
     /// The Wi-Fi network joined, if any.
     pub ssid: Option<String>,
@@ -450,202 +468,238 @@ impl Network {
             Ok(c) => c,
             Err(e) => return crate::dbus::idle_without_bus(&mut cx, "system", e).await,
         };
-        let mut daemon = Daemon::new(&conn, NM).await?;
-        // The manager and the active connections; the devices' Wi-Fi
-        // interface (access points coming and going) and the access
-        // points only while scanning.
-        // The active connections first: their `StateChanged` (a join's
-        // outcome and reason) is taken before the manager's list change
-        // that drops a failed one.
-        daemon
-            .subscribe(
-                "active",
-                dbus::namespace_rule("/org/freedesktop/NetworkManager/ActiveConnection")?,
-            )
-            .await?;
-        daemon.subscribe("manager", dbus::path_rule(ROOT)?).await?;
-        let mut nm = Nm::default();
-        let mut joining: BTreeMap<String, Joining> = BTreeMap::new();
-        // Joins asked for and not answered yet (each a task of its own,
-        // one per network at a time): the active connection each made, or
-        // why not.
-        let mut asking: JoinSet<zbus::Result<String>> = JoinSet::new();
-        let mut asked = Asked::default();
-        // How active connections no join followed yet ended, while joins
-        // are asked: an answer naming one settles at once.
-        let mut ended = Ended::default();
-        let mut scanning = cx.watched("access_points");
-        let mut used = None;
-        // A scan is asked for when scanning starts and when a new
-        // NetworkManager appears, not on every re-read.
-        let mut want_scan = scanning;
         loop {
-            if scanning {
-                sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
+            // NetworkManager when it runs, or when nothing else does (it
+            // may be started for us); iwd when only iwd runs.
+            let next = if !iwd::owned(&conn, NM).await && iwd::owned(&conn, iwd::IWD).await {
+                iwd::run(&mut cx, &conn).await?
+            } else {
+                with_nm(&mut cx, &conn).await?
+            };
+            if next == Next::Stop {
+                return Ok(());
             }
-            if let Err(e) = nm.read(&daemon, scanning).await {
-                return Err(ServiceError(format!("NetworkManager did not answer: {e}")));
-            }
+        }
+    }
+}
+
+/// The `network` body over NetworkManager, until it goes while iwd runs,
+/// or iwd appears while it is not running ([`Next::Again`]), or the
+/// service stops.
+async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, ServiceError> {
+    let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await?;
+    let mut iwd_owners = dbus_proxy
+        .receive_name_owner_changed_with_args(&[(0, iwd::IWD)])
+        .await?;
+    let mut daemon = Daemon::new(conn, NM).await?;
+    // iwd may have come up between the choice and the subscription to its
+    // name (a boot race, review minor 1): choose again rather than follow
+    // an absent NetworkManager until a daemon changes.
+    if daemon.owner().is_none() && iwd::owned(conn, iwd::IWD).await {
+        return Ok(Next::Again);
+    }
+    // The manager and the active connections; the devices' Wi-Fi
+    // interface (access points coming and going) and the access
+    // points only while scanning.
+    // The active connections first: their `StateChanged` (a join's
+    // outcome and reason) is taken before the manager's list change
+    // that drops a failed one.
+    daemon
+        .subscribe(
+            "active",
+            dbus::namespace_rule("/org/freedesktop/NetworkManager/ActiveConnection")?,
+        )
+        .await?;
+    daemon.subscribe("manager", dbus::path_rule(ROOT)?).await?;
+    let mut nm = Nm::default();
+    let mut joining: BTreeMap<String, Joining> = BTreeMap::new();
+    // Joins asked for and not answered yet (each a task of its own,
+    // one per network at a time): the active connection each made, or
+    // why not.
+    let mut asking: JoinSet<zbus::Result<String>> = JoinSet::new();
+    let mut asked = Asked::default();
+    // How active connections no join followed yet ended, while joins
+    // are asked: an answer naming one settles at once.
+    let mut ended = Ended::default();
+    let mut scanning = cx.watched("access_points");
+    let mut used = None;
+    // A scan is asked for when scanning starts and when a new
+    // NetworkManager appears, not on every re-read.
+    let mut want_scan = scanning;
+    loop {
+        if scanning {
             sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
-            if !settle_joins(&mut cx, &nm, &mut joining) {
-                return Ok(());
-            }
-            // Asked once there is a Wi-Fi device to ask (a NetworkManager
-            // that just appeared may not list its devices yet).
-            if scanning && want_scan && request_scan(&daemon, &nm).await {
-                want_scan = false;
-            }
-            if !cx.update(|s| *s = nm.state(scanning)) {
-                return Ok(());
-            }
-            cx.ready();
-            'follow: loop {
-                tokio::select! {
-                    ev = daemon.next() => match ev {
-                        None => return Err(ServiceError("the system bus connection ended".into())),
-                        Some(DaemonEvent::Owner) => {
-                            want_scan = scanning;
-                            ended.clear();
-                            // Its activations went with it, and the joins
-                            // still asking stop here: their next call would
-                            // reach the new NetworkManager, whose answer
-                            // this would not follow.
-                            asking.shutdown().await;
-                            let stopped = asked.clear().into_iter().chain(
-                                std::mem::take(&mut joining).into_values().map(|j| j.ssid),
-                            );
-                            for ssid in stopped {
-                                if !cx.emit(NetworkEvent::Failed((ssid, "NetworkManager stopped".into()))) {
-                                    return Ok(());
-                                }
-                            }
-                            break 'follow;
-                        }
-                        Some(DaemonEvent::Signal(m)) => {
-                            if let Some((path, state, reason)) = active_state(&m) {
-                                if let Some(j) = joining.get(&path) {
-                                    let ssid = j.ssid.clone();
-                                    if state == ACTIVATED {
-                                        joining.remove(&path);
-                                    } else if state == DEACTIVATED {
-                                        joining.remove(&path);
-                                        log::info!("network: joining {ssid} failed: reason {reason}");
-                                        if !cx.emit(NetworkEvent::Failed((ssid, reason_text(reason)))) {
-                                            return Ok(());
-                                        }
-                                    }
-                                } else if !asking.is_empty() {
-                                    // Perhaps a join whose answer is still
-                                    // on its way.
-                                    ended.note(path, state, reason);
-                                }
-                            }
-                            match nm.signal(&daemon, &m, scanning).await {
-                            None => break 'follow,
-                            Some(false) => {}
-                            Some(true) => {
-                                if !cx.update(|s| *s = nm.state(scanning)) {
-                                    return Ok(());
-                                }
-                            }
+        }
+        if let Err(e) = nm.read(&daemon, scanning).await {
+            return Err(ServiceError(format!("NetworkManager did not answer: {e}")));
+        }
+        sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
+        if !settle_joins(cx, &nm, &mut joining) {
+            return Ok(Next::Stop);
+        }
+        // Asked once there is a Wi-Fi device to ask (a NetworkManager
+        // that just appeared may not list its devices yet).
+        if scanning && want_scan && request_scan(&daemon, &nm).await {
+            want_scan = false;
+        }
+        if !cx.update(|s| *s = nm.state(scanning)) {
+            return Ok(Next::Stop);
+        }
+        cx.ready();
+        'follow: loop {
+            tokio::select! {
+                ev = daemon.next() => match ev {
+                    None => return Err(ServiceError("the system bus connection ended".into())),
+                    Some(DaemonEvent::Owner) => {
+                        want_scan = scanning;
+                        ended.clear();
+                        // Its activations went with it, and the joins
+                        // still asking stop here: their next call would
+                        // reach the new NetworkManager, whose answer
+                        // this would not follow.
+                        asking.shutdown().await;
+                        let stopped = asked.clear().into_iter().chain(
+                            std::mem::take(&mut joining).into_values().map(|j| j.ssid),
+                        );
+                        for ssid in stopped {
+                            if !cx.emit(NetworkEvent::Failed((ssid, "NetworkManager stopped".into()))) {
+                                return Ok(Next::Stop);
                             }
                         }
-                    },
-                    Some(done) = asking.join_next_with_id(), if !asking.is_empty() => {
-                        let (id, answer) = match done {
-                            Ok((id, answer)) => (id, answer),
-                            Err(e) => (e.id(), Err(zbus::Error::Failure("the join stopped".into()))),
-                        };
-                        let Some((ssid, asked_with, next)) = asked.answered(id) else {
-                            continue;
-                        };
-                        let failure = match answer {
-                            Ok(active) => match ended.take(&active) {
-                                Some((ACTIVATED, _)) => None,
-                                Some((_, reason)) => {
+                        if daemon.owner().is_none() && iwd::owned(conn, iwd::IWD).await {
+                            return Ok(Next::Again);
+                        }
+                        break 'follow;
+                    }
+                    Some(DaemonEvent::Signal(m)) => {
+                        if let Some((path, state, reason)) = active_state(&m) {
+                            if let Some(j) = joining.get(&path) {
+                                let ssid = j.ssid.clone();
+                                if state == ACTIVATED {
+                                    joining.remove(&path);
+                                } else if state == DEACTIVATED {
+                                    joining.remove(&path);
                                     log::info!("network: joining {ssid} failed: reason {reason}");
-                                    Some(reason_text(reason))
-                                }
-                                None => {
-                                    // Followed until it is up (or not).
-                                    let seen = nm.active.contains_key(&active);
-                                    joining.insert(active, Joining { ssid: ssid.clone(), seen, asked_with });
-                                    if !settle_joins(&mut cx, &nm, &mut joining) {
-                                        return Ok(());
+                                    if !cx.emit(NetworkEvent::Failed((ssid, reason_text(reason)))) {
+                                        return Ok(Next::Stop);
                                     }
-                                    None
                                 }
-                            },
-                            Err(e) => {
-                                log::warn!("network: not joining {ssid}: {e}");
-                                Some(match e {
-                                    zbus::Error::MethodError(_, Some(text), _) => text,
-                                    zbus::Error::Failure(text) => text,
-                                    e => e.to_string(),
-                                })
+                            } else if !asking.is_empty() {
+                                // Perhaps a join whose answer is still
+                                // on its way.
+                                ended.note(path, state, reason);
                             }
-                        };
-                        if asking.is_empty() {
-                            ended.clear();
                         }
-                        if let Some(error) = failure
-                            && !cx.emit(NetworkEvent::Failed((ssid.clone(), error)))
-                        {
-                            return Ok(());
+                        match nm.signal(&daemon, &m, scanning).await {
+                        None => break 'follow,
+                        Some(false) => {}
+                        Some(true) => {
+                            if !cx.update(|s| *s = nm.state(scanning)) {
+                                return Ok(Next::Stop);
+                            }
                         }
-                        // A join of this network asked meanwhile (another
-                        // password): asked now, so it finds the profile
-                        // this one may have saved, and the activation it
-                        // replaces is followed no more.
-                        if let Some(password) = next
-                            && !repeats_joining(&mut joining, &ssid, fingerprint(password.as_deref()))
-                        {
-                            let id = ask(&mut asking, daemon.conn(), &nm, ssid.clone(), password.clone());
-                            asked.started(ssid, id, password.as_deref());
                         }
                     }
-                    m = cx.recv() => match m {
-                        None => return Ok(()),
-                        Some(Msg::Watch { field: "access_points", on }) => {
-                            scanning = on;
-                            want_scan = on;
-                            break 'follow;
-                        }
-                        Some(Msg::Write(w)) if w.field == "wifi" => {
-                            let on: bool = w.value().unwrap_or(nm.state(scanning).wifi);
-                            let set = dbus::set(&conn, NM, ROOT, NM, "WirelessEnabled", on.into()).await;
-                            let now = match set {
-                                Ok(()) => on,
-                                Err(e) => {
-                                    log::warn!("network: Wi-Fi not switched: {e}");
-                                    // The radio as last read.
-                                    nm.state(scanning).wifi
-                                }
-                            };
-                            if !cx.report(&w, |s| s.wifi = now) {
-                                return Ok(());
-                            }
-                        }
-                        Some(Msg::Action(a)) => {
-                            let (item, password) = match a {
-                                NetworkAction::Connect { item } => (item, None),
-                                NetworkAction::ConnectWith { item, password } => (item, Some(password)),
-                            };
-                            // Asked in a task (up to 25 s for the
-                            // activation): NetworkManager's signals, the
-                            // radio and other joins go on meanwhile. One
-                            // network is asked one join at a time, and a
-                            // repeat of one activating is dropped.
-                            if asked.ask(&item.ssid, password.as_deref())
-                                && !repeats_joining(&mut joining, &item.ssid, fingerprint(password.as_deref()))
-                            {
-                                let id = ask(&mut asking, daemon.conn(), &nm, item.ssid.clone(), password.clone());
-                                asked.started(item.ssid, id, password.as_deref());
-                            }
-                        }
-                        Some(_) => {}
-                    },
+                },
+                Some(o) = iwd_owners.next() => {
+                    if daemon.owner().is_none() && o.args().ok().is_some_and(|a| a.new_owner().is_some()) {
+                        return Ok(Next::Again);
+                    }
                 }
+                Some(done) = asking.join_next_with_id(), if !asking.is_empty() => {
+                    let (id, answer) = match done {
+                        Ok((id, answer)) => (id, answer),
+                        Err(e) => (e.id(), Err(zbus::Error::Failure("the join stopped".into()))),
+                    };
+                    let Some((ssid, asked_with, next)) = asked.answered(id) else {
+                        continue;
+                    };
+                    let failure = match answer {
+                        Ok(active) => match ended.take(&active) {
+                            Some((ACTIVATED, _)) => None,
+                            Some((_, reason)) => {
+                                log::info!("network: joining {ssid} failed: reason {reason}");
+                                Some(reason_text(reason))
+                            }
+                            None => {
+                                // Followed until it is up (or not).
+                                let seen = nm.active.contains_key(&active);
+                                joining.insert(active, Joining { ssid: ssid.clone(), seen, asked_with });
+                                if !settle_joins(cx, &nm, &mut joining) {
+                                    return Ok(Next::Stop);
+                                }
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            log::warn!("network: not joining {ssid}: {e}");
+                            Some(match e {
+                                zbus::Error::MethodError(_, Some(text), _) => text,
+                                zbus::Error::Failure(text) => text,
+                                e => e.to_string(),
+                            })
+                        }
+                    };
+                    if asking.is_empty() {
+                        ended.clear();
+                    }
+                    if let Some(error) = failure
+                        && !cx.emit(NetworkEvent::Failed((ssid.clone(), error)))
+                    {
+                        return Ok(Next::Stop);
+                    }
+                    // A join of this network asked meanwhile (another
+                    // password): asked now, so it finds the profile
+                    // this one may have saved, and the activation it
+                    // replaces is followed no more.
+                    if let Some(password) = next
+                        && !repeats_joining(&mut joining, &ssid, fingerprint(password.as_deref()))
+                    {
+                        let id = ask(&mut asking, daemon.conn(), &nm, ssid.clone(), password.clone());
+                        asked.started(ssid, id, password.as_deref());
+                    }
+                }
+                m = cx.recv() => match m {
+                    None => return Ok(Next::Stop),
+                    Some(Msg::Watch { field: "access_points", on }) => {
+                        scanning = on;
+                        want_scan = on;
+                        break 'follow;
+                    }
+                    Some(Msg::Write(w)) if w.field == "wifi" => {
+                        let on: bool = w.value().unwrap_or(nm.state(scanning).wifi);
+                        let set = dbus::set(conn, NM, ROOT, NM, "WirelessEnabled", on.into()).await;
+                        let now = match set {
+                            Ok(()) => on,
+                            Err(e) => {
+                                log::warn!("network: Wi-Fi not switched: {e}");
+                                // The radio as last read.
+                                nm.state(scanning).wifi
+                            }
+                        };
+                        if !cx.report(&w, |s| s.wifi = now) {
+                            return Ok(Next::Stop);
+                        }
+                    }
+                    Some(Msg::Action(a)) => {
+                        let (item, password) = match a {
+                            NetworkAction::Connect { item } => (item, None),
+                            NetworkAction::ConnectWith { item, password } => (item, Some(password)),
+                        };
+                        // Asked in a task (up to 25 s for the
+                        // activation): NetworkManager's signals, the
+                        // radio and other joins go on meanwhile. One
+                        // network is asked one join at a time, and a
+                        // repeat of one activating is dropped.
+                        if asked.ask(&item.ssid, password.as_deref())
+                            && !repeats_joining(&mut joining, &item.ssid, fingerprint(password.as_deref()))
+                        {
+                            let id = ask(&mut asking, daemon.conn(), &nm, item.ssid.clone(), password.clone());
+                            asked.started(item.ssid, id, password.as_deref());
+                        }
+                    }
+                    Some(_) => {}
+                },
             }
         }
     }

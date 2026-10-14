@@ -323,6 +323,9 @@ impl State {
                 workspaces,
                 windows,
                 focused_screen: self.focused_output.clone(),
+                // niri's named workspaces (`workspace "web" {
+                // open-on-output … }`) always exist: they are in `all`.
+                configured: Vec::new(),
             },
             toplevel_ids: Vec::new(),
             // niri's `Window` says neither maximized nor fullscreen: they
@@ -345,6 +348,32 @@ impl State {
                     return Err(WmError::UnknownWorkspace(*id));
                 }
                 json!({"Action": {"FocusWorkspace": {"reference": {"Id": id}}}})
+            }
+            // The n-th workspace of the focused output, as `niri msg
+            // action focus-workspace 3` (past the last, niri's empty one).
+            WmAction::FocusWorkspaceNumber(n) => match u8::try_from(*n) {
+                Ok(n) if n > 0 => {
+                    json!({"Action": {"FocusWorkspace": {"reference": {"Index": n}}}})
+                }
+                _ => return Err(WmError::UnknownWorkspace(*n)),
+            },
+            // A named workspace (niri's always exist), else a number: the
+            // n-th workspace of the focused output, as `niri msg action
+            // focus-workspace 3` (past the last, niri's empty one).
+            WmAction::FocusWorkspaceNamed(name) => {
+                if self
+                    .workspaces
+                    .iter()
+                    .any(|w| w.name.as_deref() == Some(name.as_str()))
+                {
+                    json!({"Action": {"FocusWorkspace": {"reference": {"Name": name}}}})
+                } else if let Ok(n) = name.trim().parse::<u8>()
+                    && n > 0
+                {
+                    json!({"Action": {"FocusWorkspace": {"reference": {"Index": n}}}})
+                } else {
+                    return Err(WmError::UnknownWorkspaceName(name.clone()));
+                }
             }
             WmAction::FocusWindow(id) => {
                 json!({"Action": {"FocusWindow": {"id": window(id)?}}})
@@ -774,6 +803,45 @@ mod tests {
                 .unwrap()
                 .to_string(),
             r#"{"Action":{"FocusWorkspace":{"reference":{"Id":4}}}}"#
+        );
+        // Review M1: `workspaces.focus(n)` is the n-th of the focused
+        // output, not niri's id n.
+        assert_eq!(
+            s.action_for(&WmAction::FocusWorkspaceNumber(4))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"FocusWorkspace":{"reference":{"Index":4}}}}"#
+        );
+        for n in [0, -2, 256] {
+            assert_eq!(
+                s.action_for(&WmAction::FocusWorkspaceNumber(n)),
+                Err(WmError::UnknownWorkspace(n))
+            );
+        }
+        // Gaps 2 (m6-w2-services): by name, a named workspace; a number,
+        // the n-th of the focused output (niri's own empty one past the
+        // last); anything else is no workspace niri can switch to.
+        s.workspaces.push(NWorkspace {
+            id: 5,
+            idx: 2,
+            name: Some("web".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            s.action_for(&WmAction::FocusWorkspaceNamed("web".into()))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"FocusWorkspace":{"reference":{"Name":"web"}}}}"#
+        );
+        assert_eq!(
+            s.action_for(&WmAction::FocusWorkspaceNamed("3".into()))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"FocusWorkspace":{"reference":{"Index":3}}}}"#
+        );
+        assert_eq!(
+            s.action_for(&WmAction::FocusWorkspaceNamed("chat".into())),
+            Err(WmError::UnknownWorkspaceName("chat".into()))
         );
         assert_eq!(
             s.action_for(&WmAction::FocusWindow("3".into())),

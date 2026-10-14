@@ -348,6 +348,57 @@ fn the_compositor_stores_follow_hyprland() {
         s.pump(&rt);
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Gaps 3 (m6-w2-services): the rules' slots not made yet, and a
+    // screen's slots in number order with its workspaces.
+    let configured: Vec<i64> = b
+        .workspaces
+        .cells()
+        .configured
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(configured, [4, 6]);
+    let screen = |name: &str| Data::Record {
+        ty: "Screen".into(),
+        fields: vec![("name".into(), Data::Text(name.into()))],
+    };
+    let slots = |name: &str| -> Vec<String> {
+        let Some(Ok(Data::List(items))) =
+            b.workspaces.dynamic().call(&rt, "slots", &[screen(name)])
+        else {
+            panic!("slots({name}) is no list");
+        };
+        items
+            .iter()
+            .map(
+                |w| match strand_services::record_field(w, "Workspace", "name") {
+                    Ok(Data::Text(t)) => t.to_string(),
+                    other => panic!("{other:?}"),
+                },
+            )
+            .collect()
+    };
+    assert_eq!(slots("DP-1"), ["1", "2", "4"]);
+    assert_eq!(slots("HDMI-A-1"), ["3", "6"]);
+    // Gaps 2: `workspaces.focus(4)` makes a slot, `focus("chat")` a new
+    // named workspace.
+    for (target, sent) in [
+        (Data::Int(4), "dispatch workspace 4"),
+        (Data::Text("chat".into()), "dispatch workspace name:chat"),
+    ] {
+        b.workspaces
+            .dynamic()
+            .action(&rt, "focus", None, &[target], Default::default())
+            .unwrap();
+        while !fake.requests().iter().any(|r| r == sent) {
+            assert!(Instant::now() < deadline, "{:?}", fake.requests());
+            s.pump(&rt);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     fake.send(&bursts["reload"]);
     until(&rt, &s, "configreloaded", || {
         reloads.borrow().as_slice() == [vec![Data::Null]]
@@ -565,4 +616,211 @@ fn a_hyprland_the_adapter_cannot_read_falls_back_to_the_protocols_with_a_diagnos
     });
     s.shutdown();
     wm::configure(None);
+}
+
+/// Bugs 3 and gaps 9 (m6-w2-services): a window is linked to its desktop
+/// entry, `win.app`, and draws the entry's icon: the owner's Chromium
+/// (`Chromium-browser`) and Spotify (`Spotify`, XWayland) on Hyprland,
+/// in `windows.all` and in their workspaces' copies. An app installed
+/// while the shell runs is linked once the entries are read again.
+#[test]
+fn windows_are_linked_to_their_apps() {
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let root = std::env::temp_dir().join(format!("strand-wm-apps-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    let icons = root.join("icons/hicolor");
+    let write = |p: &std::path::Path, text: &str| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    write(
+        &icons.join("index.theme"),
+        "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
+    );
+    write(&icons.join("48x48/apps/chromium.png"), "png");
+    write(&icons.join("48x48/apps/spotify-client.png"), "png");
+    write(
+        &dir.join("chromium.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Chromium\nExec=chromium %U\n\
+         Icon=chromium\nStartupWMClass=chromium\nCategories=Network;WebBrowser;\n",
+    );
+    strand_icons::set_base_dirs(Some(vec![root.join("icons")]));
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![dir.clone()],
+        ..Default::default()
+    }));
+    let fake = common::hyprland::FakeHyprland::start();
+    let client = |address: &str, ws: i64, class: &str, xwayland: bool| {
+        serde_json::json!({
+            "address": address, "mapped": true, "hidden": false,
+            "workspace": {"id": ws, "name": ws.to_string()},
+            "class": class, "title": class, "xwayland": xwayland,
+            "fullscreen": 0, "stableId": address.trim_start_matches("0x"),
+        })
+    };
+    let clients = serde_json::json!([
+        client("0xa1", 1, "Chromium-browser", false),
+        client("0xb2", 2, "Spotify", true),
+    ]);
+    fake.set_reply("j/clients", clients.to_string().as_bytes());
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    b.workspaces.acquire(&rt);
+    let window = |class: &str| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()?
+            .all
+            .into_iter()
+            .find(|w| w.app_id == class)
+    };
+    until(&rt, &s, "the windows", || {
+        window("Chromium-browser").is_some() && window("Spotify").is_some()
+    });
+    let chromium = window("Chromium-browser").unwrap();
+    assert_eq!(chromium.icon, "chromium");
+    let app = chromium.app.clone().unwrap();
+    assert_eq!(app.id, "chromium");
+    assert!(app.categories.contains(&"WebBrowser".to_string()));
+    // Not installed: the app id as it is, no app.
+    let spotify = window("Spotify").unwrap();
+    assert_eq!(
+        (spotify.icon.as_str(), spotify.app.as_ref()),
+        ("Spotify", None)
+    );
+    // The workspace's copy says the same.
+    until(&rt, &s, "workspace 1's copy", || {
+        workspace(&b, &rt, "1").is_some_and(|w| w.windows.first() == Some(&chromium))
+    });
+
+    // Spotify is installed while the shell runs: its window is linked.
+    std::fs::write(
+        dir.join("spotify.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Spotify\nExec=spotify %U\n\
+         Icon=spotify-client\nCategories=Audio;Music;Player;AudioVideo;\n",
+    )
+    .unwrap();
+    strand_services::apps::changed();
+    until(&rt, &s, "Spotify linked", || {
+        window("Spotify").is_some_and(|w| {
+            w.icon == "spotify-client" && w.app.as_ref().is_some_and(|a| a.id == "spotify")
+        })
+    });
+    s.shutdown();
+    wm::configure(None);
+    strand_services::apps::set_config(None);
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Review minor 10 (m6-w2-services): the compositor's state does not wait
+/// for the desktop entries. A FIFO among them holds the read open: the
+/// windows are published with their app ids meanwhile, and patched with
+/// their entries' icons and apps once the read ends.
+#[test]
+fn windows_are_published_before_the_desktop_entries_are_read() {
+    use std::os::unix::fs::OpenOptionsExt;
+    /// Ends the held read whatever happens (a writer opened and closed
+    /// without blocking: the reader sees the end of the file).
+    struct Release(std::path::PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            // O_NONBLOCK: fails (no reader) rather than waits.
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(0o4000)
+                .open(&self.0);
+        }
+    }
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let root = std::env::temp_dir().join(format!("strand-wm-slow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("chromium.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Chromium\nExec=chromium\nIcon=chromium\n",
+    )
+    .unwrap();
+    let fifo = dir.join("zz-slow.desktop");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let release = Release(fifo.clone());
+    let theme = root.join("icons/hicolor");
+    std::fs::create_dir_all(theme.join("48x48/apps")).unwrap();
+    std::fs::write(
+        theme.join("index.theme"),
+        "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
+    )
+    .unwrap();
+    std::fs::write(theme.join("48x48/apps/chromium.png"), "png").unwrap();
+    strand_icons::set_base_dirs(Some(vec![root.join("icons")]));
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![dir.clone()],
+        ..Default::default()
+    }));
+    let fake = common::hyprland::FakeHyprland::start();
+    let clients = serde_json::json!([{
+        "address": "0xa1", "mapped": true, "hidden": false,
+        "workspace": {"id": 1, "name": "1"},
+        "class": "Chromium-browser", "title": "Chromium", "xwayland": false,
+        "fullscreen": 0, "stableId": "a1",
+    }]);
+    fake.set_reply("j/clients", clients.to_string().as_bytes());
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    let window = || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()?
+            .all
+            .into_iter()
+            .find(|w| w.app_id == "Chromium-browser")
+    };
+    until(&rt, &s, "the window, while the entries are read", || {
+        window().is_some_and(|w| w.icon == "Chromium-browser" && w.app.is_none())
+    });
+    drop(release);
+    until(&rt, &s, "the window linked", || {
+        window().is_some_and(|w| {
+            w.icon == "chromium" && w.app.as_ref().is_some_and(|a| a.id == "chromium")
+        })
+    });
+    s.shutdown();
+    wm::configure(None);
+    strand_services::apps::set_config(None);
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
 }
