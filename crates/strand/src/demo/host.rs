@@ -653,7 +653,7 @@ impl Host {
         }
     }
 
-    /// Hands laid-out sizes that changed to logic (`self.width`).
+    /// Hands laid-out boxes that changed to logic (`self.width`, `id.box`).
     pub(crate) fn forward_facts(&mut self) {
         let facts = self.renderer.take_layout_facts();
         if !facts.is_empty()
@@ -826,6 +826,13 @@ impl Painter for Host {
 
     fn surface_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
         self.renderer.surface_pose(surface)
+    }
+
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
+        if self.lock.shown_on(surface) {
+            return None;
+        }
+        self.renderer.input_region(surface)
     }
 }
 
@@ -2112,7 +2119,7 @@ mod tests {
         assert!(
             sent.iter()
                 .any(|m| matches!(m, ToLogic::Layout { sizes, .. }
-                if sizes.iter().any(|f| f.0 == child && f.2 == 30.0))),
+                if sizes.iter().any(|f| f.0 == child && f.1.h == 30.0))),
             "{sent:?}"
         );
     }

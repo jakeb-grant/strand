@@ -672,6 +672,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             last_damage: Vec::new(),
             click_through: false,
             input_region: None,
+            painted_input: None,
             stats: Stats::default(),
         };
         self.surfaces.insert(id, surface);

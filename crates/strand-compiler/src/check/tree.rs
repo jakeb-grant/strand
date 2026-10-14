@@ -216,21 +216,39 @@ impl<'a> Checker<'a> {
     }
 
     /// Finds the `id:` names of a component or surface body, so they can be
-    /// read anywhere in it, and binds them in a new scope.
+    /// read anywhere in it, and binds them in a new scope. (M6) An `id:`
+    /// in an element's `when` block is a conditional id: it names that
+    /// element while the condition holds (one in a `for` copy names the
+    /// copy whose condition holds), and the same name may be given in
+    /// several `when`s; it cannot also be a plain id.
     fn collect_ids(&mut self, items: &'a [ast::Item]) {
         self.push_scope();
-        let mut found: Vec<(&'a ast::Ident, Span)> = Vec::new();
-        fn walk<'b>(items: &'b [ast::Item], out: &mut Vec<(&'b ast::Ident, Span)>) {
+        /// A name, the element it names, and whether a `when` gives it.
+        type Found<'b> = Vec<(&'b ast::Ident, Span, bool)>;
+        fn id_of(items: &[ast::Item]) -> Option<&ast::Ident> {
+            items.iter().find_map(|p| match &p.kind {
+                ItemKind::Prop(p)
+                    if p.name.name == "id"
+                        && let ast::ExprKind::Name(n) = &p.value.kind =>
+                {
+                    Some(n)
+                }
+                _ => None,
+            })
+        }
+        fn walk<'b>(items: &'b [ast::Item], out: &mut Found<'b>) {
             for i in items {
                 match &i.kind {
                     ItemKind::Element(e) => {
                         if let Some(b) = &e.block {
-                            for p in &b.items {
-                                if let ItemKind::Prop(p) = &p.kind
-                                    && p.name.name == "id"
-                                    && let ast::ExprKind::Name(n) = &p.value.kind
+                            if let Some(n) = id_of(&b.items) {
+                                out.push((n, i.span, false));
+                            }
+                            for w in &b.items {
+                                if let ItemKind::When(w) = &w.kind
+                                    && let Some(n) = id_of(&w.body.items)
                                 {
-                                    out.push((n, i.span));
+                                    out.push((n, i.span, true));
                                 }
                             }
                             walk(&b.items, out);
@@ -250,7 +268,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        fn walk_if<'b>(f: &'b ast::If<ast::Item>, out: &mut Vec<(&'b ast::Ident, Span)>) {
+        fn walk_if<'b>(f: &'b ast::If<ast::Item>, out: &mut Found<'b>) {
             walk(&f.then.items, out);
             match &f.else_ {
                 Some(ast::Else::If(i, _)) => walk_if(i, out),
@@ -258,11 +276,32 @@ impl<'a> Checker<'a> {
                 None => {}
             }
         }
+        let mut found: Found<'a> = Vec::new();
         walk(items, &mut found);
-        let node_ty = self.types.find_record("Node").map_or(Ty::Error, Ty::Record);
-        let mut seen: Vec<(String, Span)> = Vec::new();
-        for (name, el_span) in found {
-            if let Some((_, prev)) = seen.iter().find(|(n, _)| *n == name.name) {
+        let node_ty = self
+            .types
+            .find_schema_record("Node")
+            .map_or(Ty::Error, Ty::Record);
+        // Plain ids first: a `when` naming one of them keeps the meaning
+        // it had before conditional ids (none).
+        let plain: Vec<(String, Span)> = found
+            .iter()
+            .filter(|(_, _, cond)| !cond)
+            .map(|(n, _, _)| (n.name.clone(), n.span))
+            .collect();
+        // Name → where first named, and whether conditionally.
+        let mut seen: Vec<(String, Span, bool)> = Vec::new();
+        for (name, el_span, cond) in found {
+            if cond {
+                if seen.iter().any(|(n, _, was)| *n == name.name && *was) {
+                    // Another `when` naming it: the same conditional id.
+                    continue;
+                }
+                if let Some(what) = self.taken_name(&name.name, items, &plain) {
+                    self.conditional_id_ignored(name, what, &plain);
+                    continue;
+                }
+            } else if let Some((_, prev, _)) = seen.iter().find(|(n, _, _)| *n == name.name) {
                 let (file, prev) = (self.file(), *prev);
                 self.error(
                     "check::redeclared",
@@ -273,16 +312,87 @@ impl<'a> Checker<'a> {
                 .add_secondary(file, prev, "first named here");
                 continue;
             }
-            seen.push((name.name.clone(), name.span));
+            seen.push((name.name.clone(), name.span, cond));
             let idx = self.new_node();
-            let local = self.bind_local(
-                &name.name,
-                node_ty.clone(),
-                name.span,
-                LocalKind::NodeId(idx),
-            );
-            self.ids.insert((self.module, el_span), (local, idx));
+            let kind = if cond {
+                LocalKind::NodeAlias(idx)
+            } else {
+                LocalKind::NodeId(idx)
+            };
+            let local = self.bind_local(&name.name, node_ty.clone(), name.span, kind);
+            if !cond {
+                self.ids.insert((self.module, el_span), (local, idx));
+            }
         }
+    }
+
+    /// (M6) What `name` already means where a conditional id would bind
+    /// it (`None`: nothing). Before conditional ids, `when c { id: x }`
+    /// loaded and did nothing (spec.md 14): a name that means something
+    /// there keeps that meaning, and the `when`'s `id:` keeps doing
+    /// nothing.
+    fn taken_name(
+        &self,
+        name: &str,
+        items: &[ast::Item],
+        plain: &[(String, Span)],
+    ) -> Option<String> {
+        if plain.iter().any(|(n, _)| n == name) {
+            return Some("the plain `id:` of another element here".into());
+        }
+        let declared_here = items.iter().any(|i| match &i.kind {
+            ItemKind::State(s) => s.name.name == name,
+            ItemKind::Let(l) => l.name.name == name,
+            _ => false,
+        });
+        if declared_here || self.lookup_scope(name).is_some() {
+            return Some("a name in scope here".into());
+        }
+        if self.file_scopes[self.module].contains_key(name) || self.globals.contains_key(name) {
+            return Some("a declaration of this config".into());
+        }
+        if self.schema.services.contains_key(name)
+            || self.schema.values.contains_key(name)
+            || self.schema.functions.contains_key(name)
+            || super::NODE_BOOLS.contains(&name)
+            || name == "self"
+        {
+            return Some("a builtin name".into());
+        }
+        if let Some(e) = self.types.enums.iter().find(|e| e.variant(name).is_some()) {
+            return Some(format!("a variant of `{}`", e.name));
+        }
+        if self.file_index.contains_key(name) {
+            return Some("a file of this config".into());
+        }
+        None
+    }
+
+    /// Warns that a `when`'s `id:` names nothing, as before conditional
+    /// ids, because its name already means `what`.
+    fn conditional_id_ignored(
+        &mut self,
+        name: &ast::Ident,
+        what: String,
+        plain: &[(String, Span)],
+    ) {
+        let file = self.file();
+        let d = self.warning(
+            "check::conditional_id_ignored",
+            format!(
+                "this `id: {}` names nothing: `{}` is already {what}",
+                name.name, name.name
+            ),
+            name.span,
+            "kept as before conditional ids: no effect",
+        );
+        if let Some((_, at)) = plain.iter().find(|(n, _)| *n == name.name) {
+            d.add_secondary(file, *at, "the plain id");
+        }
+        d.help = Some(format!(
+            "a name given in `when` blocks names whichever element's condition holds, but only a name that means nothing else there; rename it (`id: current_{}`) to make it one",
+            name.name
+        ));
     }
 
     // -----------------------------------------------------------------------

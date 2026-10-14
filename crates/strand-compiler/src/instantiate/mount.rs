@@ -1358,6 +1358,10 @@ impl Ctx {
             for f in [st.hover, st.pressed, st.focused, st.selected] {
                 let _ = f.set(rt, false);
             }
+            // (M6) Conditional ids naming it name nothing now.
+            for a in st.claims.borrow().iter() {
+                let _ = a.hold(rt, &st, false);
+            }
         }
     }
 
@@ -1516,9 +1520,15 @@ impl Ctx {
                     let _ = b.set(rt, v);
                 }
             }
+            if let Some(a) = was.rect_cell.get()
+                && let Ok(v) = a.get_untracked(rt)
+            {
+                let _ = state.rect(rt).set(rt, v);
+            }
         }
         state.scene.set(Some(id));
         self.note_node(key.clone(), id, kind, state.clone());
+        self.mount_aliases(rt, e, env, &state);
         for &l in &e.scope {
             if env.local(l).is_none() {
                 // A letter's `index`/`count` is render's (per letter).
@@ -1785,6 +1795,46 @@ impl Ctx {
         }
     }
 
+    /// (M6) `e`'s conditional ids (`when c { id: name }`): each names it
+    /// while its condition holds, and lets go when the condition stops
+    /// holding or `e` unmounts ([`Ctx::unmount`]). Where several
+    /// elements' conditions hold, the last to start holding is named. Render
+    /// reports each such element's box (`Prop::Watch`), so a value
+    /// following `name.box` moves from one to the next.
+    fn mount_aliases(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        e: &Element,
+        env: &Rc<Env>,
+        state: &Rc<NodeState>,
+    ) {
+        for c in e.children.iter() {
+            let Node::When {
+                cond,
+                alias: Some(a),
+                ..
+            } = c
+            else {
+                continue;
+            };
+            let alias = env.node_state(rt, *a);
+            state.claims.borrow_mut().push(alias.clone());
+            // What is read through the name is measured on each element it
+            // may name before the name moves there, so a value following
+            // `name.box` travels from the last box rather than from zeros.
+            // A name read only for its booleans measures nothing.
+            if let Some(bits) = self.vm.prog.alias_watch.get(a).filter(|b| **b != 0) {
+                self.vm.watch(state, *bits);
+            }
+            let (ctx, env, me, cond) = (self.clone(), env.clone(), state.clone(), *cond);
+            let effect = rt.effect(move |rt| {
+                let on = ctx.eval(rt, cond, &env)?.truthy();
+                rt.untrack(|rt| alias.hold(rt, &me, on))
+            });
+            rt.set_name(effect.id(), "conditional id");
+        }
+    }
+
     /// The sources of each scene prop of `e`, in first-mention order:
     /// the base binding (the positional argument, a prop, a sub-prop),
     /// then each `when` in source order (later wins), poses, `set { }`
@@ -1838,7 +1888,7 @@ impl Ctx {
         let mut sets: Vec<TokenDef> = Vec::new();
         for c in e.children.iter() {
             match c {
-                Node::When { cond, props } => {
+                Node::When { cond, props, .. } => {
                     for p in props {
                         add(p, Some(*cond), &mut push);
                     }
@@ -1918,7 +1968,7 @@ impl Ctx {
         let base: Vec<Prop> = e.props.iter().filter(uniform).cloned().collect();
         let mut whens: Vec<(ChunkId, Vec<Prop>)> = Vec::new();
         for c in e.children.iter() {
-            if let Node::When { cond, props } = c {
+            if let Node::When { cond, props, .. } = c {
                 let own: Vec<&Prop> = props.iter().filter(uniform).collect();
                 if own.is_empty() {
                     continue;
@@ -2136,8 +2186,12 @@ impl Ctx {
                 source: 0,
             })
         };
+        let boot: Rc<super::emit::BootRead> = Rc::default();
+        let boot_in = boot.clone();
         let memo = rt.memo(move |rt| {
-            let out = pick(rt)?;
+            let (out, read) = crate::vm::builtins::reads_boot_box(|| pick(rt));
+            boot_in.now.set(read);
+            let out = out?;
             Ok(match &lock_open {
                 Some(ctx) => ctx.hold_lock_open(rt, out),
                 None => out,
@@ -2180,6 +2234,7 @@ impl Ctx {
                     self.late_nodes.borrow_mut().push((id, prop, n));
                 }
                 let t = transitions.get(out.source).cloned().unwrap_or_default();
+                let t = boot.transition(t);
                 self.em.borrow_mut().set(id, prop, out.value, t);
             }
             Err(e) => {
@@ -2197,6 +2252,7 @@ impl Ctx {
                     memo,
                     transitions,
                     site,
+                    boot,
                 },
             );
             if let Some(entry) = em.nodes.get_mut(&id) {
@@ -2252,6 +2308,7 @@ impl Ctx {
                     memo,
                     transitions: Rc::new(vec![Transition::Instant]),
                     site,
+                    boot: Default::default(),
                 },
             );
             if let Some(entry) = em.nodes.get_mut(&id) {

@@ -225,6 +225,25 @@ impl Painter for Renderer {
             .get(&surface)
             .map_or_else(Damage::new, |s| s.opaque)
     }
+
+    /// (M6) A `trigger: hover` popup that draws nothing itself (no
+    /// background, border, shadow, blur or backdrop of its own) takes
+    /// input only in the boxes of its top-level elements that drew
+    /// anything in the last frame (a blur or backdrop counts), as drawn
+    /// (spec.md 6.7): an island moving inside a wide popup lets the
+    /// pointer through everywhere else. Every other surface keeps the
+    /// surface manager's region: a popup opened by `open:` takes clicks
+    /// in its gaps as it always did (spec.md 14, decisions.md
+    /// m6-w2-surface).
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
+        let s = self.surfaces.get(&surface)?;
+        let hover = self.specs.get(&s.root).is_some_and(|sp| sp.hover_trigger);
+        let f = s.cache.as_ref()?;
+        if !hover || f.root_paints {
+            return None;
+        }
+        Some(f.input.clone())
+    }
 }
 
 impl Renderer {

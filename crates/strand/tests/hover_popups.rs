@@ -479,12 +479,14 @@ fn going_straight_from_item_to_item_swaps_the_islands() {
             pointer.motion(ax, ay, LW, LH);
             sh.wait("a's island again", |one, _| one.region(ISLAND_A, 2000));
         }
-        // Straight onto `b`.
+        // Straight onto `b`: the first shot that shows b's island shows
+        // no trace of a's (no grace overlap, review r2 minor 6).
         pointer.motion(bx, by, LW, LH);
-        sh.wait("b's island alone", |one, _| {
-            (one.region(ISLAND_B, 2000).is_some() && one.region(ISLAND_A, 1).is_none())
-                .then_some(())
+        let a_left = sh.wait("b's island", |one, _| {
+            one.region(ISLAND_B, 2000)?;
+            Some(one.region(ISLAND_A, 1))
         });
+        assert_eq!(a_left, None, "{name}: a's island beside b's");
         sh.keep(name);
         // It stays, alone.
         std::thread::sleep(Duration::from_millis(400));

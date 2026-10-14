@@ -3128,3 +3128,148 @@ fn a_hover_popup_takes_its_own_grace() {
     f.out.extend(f.router.tick(&mut scene));
     assert_eq!(opens(&mut f), [(POP_A, false)]);
 }
+
+/// A diff setting `open` on popups, as logic sends it.
+fn open_diff(popups: &[(NodeId, bool)]) -> strand_scene::SceneDiff {
+    let mut d = strand_scene::SceneDiff::new();
+    for (p, on) in popups {
+        d.set(*p, Prop::Open, PropValue::Bool(*on));
+    }
+    d
+}
+
+/// (Review r2 minor 3) The router's open popups follow logic: its own
+/// writes coming back change nothing, even late and in order (closed
+/// then opened again); a `trigger: hover` popup logic opened itself (a
+/// reload remounting it open) is taken on and closed after the grace,
+/// one logic closed itself is not closed again, and one a reload made
+/// the program's (`trigger` gone) is never written again.
+#[test]
+fn the_routers_open_popups_follow_logics_diffs() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    // Its own writes, answered late: a, then b, then a again.
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.input(&at_x(S_BAR, 15.0), &mut scene);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(
+        opens(&mut f),
+        [
+            (POP_A, true),
+            (POP_A, false),
+            (POP_B, true),
+            (POP_B, false),
+            (POP_A, true)
+        ]
+    );
+    for d in [
+        open_diff(&[(POP_A, true)]),
+        open_diff(&[(POP_A, false), (POP_B, true)]),
+        open_diff(&[(POP_B, false), (POP_A, true)]),
+    ] {
+        f.router.observe(&d);
+    }
+    f.input(&at_x(S_BAR, 50.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, false)], "a, still the router's");
+    f.router.observe(&open_diff(&[(POP_A, false)]));
+
+    // Logic opens b itself, the pointer away: closed after the grace.
+    f.router.observe(&open_diff(&[(POP_B, true)]));
+    f.out.extend(f.router.tick(&mut scene));
+    assert!(f.router.next_wake().is_some(), "b's grace runs");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_B, false)]);
+    f.router.observe(&open_diff(&[(POP_B, false)]));
+
+    // Logic closes a itself while the router holds it: not again.
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.router.observe(&open_diff(&[(POP_A, true)]));
+    f.router.observe(&open_diff(&[(POP_A, false)]));
+    f.input(&at_x(S_BAR, 50.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)], "no second close");
+
+    // A reload makes b the program's while it is open: never written
+    // again.
+    f.input(&at_x(S_BAR, 15.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_B, true)]);
+    f.router.observe(&open_diff(&[(POP_B, true)]));
+    let mut d = strand_scene::SceneDiff::new();
+    d.set(POP_B, Prop::Trigger, PropValue::Keyword("open".into()));
+    assert!(scene.tree.apply(d).is_empty());
+    f.input(&at_x(S_BAR, 50.0), &mut scene);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), []);
+    assert_eq!(f.router.next_wake(), None);
+}
+
+/// (Review r2 minor 3) The compositor closing a `trigger: hover`
+/// popup's surface (`popup_done`, told as a click away on it) closes it
+/// in logic too, and it opens again only once the pointer has left its
+/// anchor and come back.
+#[test]
+fn popup_done_closes_a_hover_popup_until_the_pointer_comes_back() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+    f.attached(S_A, POP_A);
+    f.input(&InputEvent::ClickAway { surface: S_A }, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, false)]);
+    f.input(&at_x(S_BAR, 6.0), &mut scene);
+    assert_eq!(opens(&mut f), [], "not again under the same stay");
+    assert_eq!(f.router.next_wake(), None);
+    f.input(&at_x(S_BAR, 50.0), &mut scene);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)], "back on its anchor");
+}
+
+/// (Review r2 minor 4) A `delay` or `grace` too long for the clock
+/// never comes due: no overflow, nothing to wake for, the popup stays
+/// as it is.
+#[test]
+fn a_huge_delay_or_grace_never_comes_due() {
+    use std::time::Duration;
+    let mut scene = Islands::new(true, None);
+    let mut d = strand_scene::SceneDiff::new();
+    d.set(POP_A, Prop::Grace, PropValue::Duration(Duration::MAX))
+        .set(POP_B, Prop::Delay, PropValue::Duration(Duration::MAX));
+    assert!(scene.tree.apply(d).is_empty());
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+    f.input(&leave(S_BAR), &mut scene);
+    assert_eq!(f.router.next_wake(), None, "a grace that never ends");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [], "still open");
+    // `b` waits for ever: going there closes a, opens nothing.
+    f.input(&enter(S_BAR, 15.0), &mut scene);
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), []);
+    assert_eq!(f.router.next_wake(), None);
+}
+
+/// (Review r2 minor 5) Pick mode ending gives the pointer its hover back
+/// at once: the `trigger: hover` popup under it stays open, with no
+/// grace started as if the pointer had gone.
+#[test]
+fn pick_mode_ending_rebuilds_the_hover_under_the_pointer() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+    f.out.extend(f.router.set_picking(true, &mut scene));
+    assert_eq!(opens(&mut f), [], "held: no grace ran");
+    flags(&mut f);
+    f.out.extend(f.router.set_picking(false, &mut scene));
+    assert_eq!(f.router.next_wake(), None, "no grace starts");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), []);
+    assert_eq!(flags(&mut f), [hover(BAR_N, true), hover(ITEM_A, true)]);
+    assert_eq!(f.router.hovered(S_BAR), [ITEM_A, BAR_N]);
+}

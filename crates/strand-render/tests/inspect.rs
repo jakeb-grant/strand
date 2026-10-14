@@ -336,8 +336,31 @@ fn pick_follows_the_pointer_across_surfaces() {
     assert_eq!(r.pick(S, LogicalPoint::new(5.0, 2.0)), Some(root));
 
     // Ending pick mode: the outline goes, and the pointer reaches the
-    // handlers again.
-    assert!(router.set_picking(false, &mut r).is_empty());
+    // handlers again, hovering what it is over at once (M6, review r2
+    // minor 5).
+    let hover = router.set_picking(false, &mut r);
+    let mut under = InputScene::hit(&r, S2, LogicalPoint::new(160.0, 18.0));
+    assert!(!under.is_empty());
+    under.reverse();
+    let flagged: Vec<NodeId> = hover
+        .iter()
+        .filter_map(|i| match i {
+            strand_render::Intent::Flag { node, .. } => Some(*node),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flagged, under, "the hover under the pointer: {hover:?}");
+    assert!(
+        hover.iter().all(|i| matches!(
+            i,
+            strand_render::Intent::Flag {
+                flag: strand_render::Flag::Hover,
+                on: true,
+                ..
+            }
+        )),
+        "{hover:?}"
+    );
     r.pick_ended();
     two.paint_at(&mut r, S2, 1, ms(48));
     assert_ne!(green_ring(&two, 2), RING);

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use strand_scene::Curve;
-use strand_scene::{NodeId, Prop, PropValue, Scale, SurfaceId, TokenScope};
+use strand_scene::{NodeId, Prop, Scale, SurfaceId, TokenScope};
 
 use super::Renderer;
 use super::specs::{centred_overhang, within_edges};
@@ -47,12 +47,17 @@ impl Renderer {
         self.surfaces.get(&surface)?.boxes.as_ref()
     }
 
-    /// Laid-out sizes that changed since the last call, `(node, width,
-    /// height)` in logical pixels, of the nodes logic reads them of
-    /// (`Prop::Watch`): what `self.width` and container queries read. A
-    /// node shown on several surfaces reports the size of the last one
-    /// laid out. A non-empty batch gets the next [`Renderer::layout_seq`].
-    pub fn take_layout_facts(&mut self) -> Vec<(NodeId, f32, f32)> {
+    /// Laid-out boxes that changed since the last call, `(node, box)` in
+    /// logical pixels, of the nodes logic reads them of (`Prop::Watch`):
+    /// what `self.width`, container queries and (M6) `id.box` read. A
+    /// box is in its surface's coordinates (`facts.rs`); a node read
+    /// only for its size reports a move only with a size change. A node
+    /// shown on several surfaces reports the box of the last one laid
+    /// out. A non-empty batch gets the next [`Renderer::layout_seq`].
+    pub fn take_layout_facts(&mut self) -> Vec<(NodeId, strand_scene::LogicalRect)> {
+        if std::mem::take(&mut self.placed_dirty) {
+            self.report_placed();
+        }
         let facts = std::mem::take(&mut self.facts);
         if !facts.is_empty() {
             self.facts_seq += 1;
@@ -312,40 +317,6 @@ impl Renderer {
             s.anim_layout = moving;
         }
         self.report_facts(id);
-    }
-
-    /// Hands the laid-out sizes of watched nodes that changed to logic,
-    /// holding the frame for a container query's answer.
-    pub(super) fn report_facts(&mut self, id: SurfaceId) {
-        let Some(boxes) = self.surfaces.get(&id).and_then(|s| s.boxes.as_ref()) else {
-            return;
-        };
-        let mut query = false;
-        let mut facts = Vec::new();
-        for (node, r) in &boxes.rects {
-            if self.tree.is_ghost(*node) {
-                continue;
-            }
-            let Some(watch) = self.tree.get(*node).and_then(|n| n.get(Prop::Watch)) else {
-                continue;
-            };
-            let size = (r.w, r.h);
-            if self.facts_sent.get(&(id, *node)) != Some(&size) {
-                facts.push((*node, size));
-                query |= matches!(watch, PropValue::Keyword(k) if k == "query");
-            }
-        }
-        for (node, size) in facts {
-            self.facts_sent.insert((id, node), size);
-            self.facts.push((node, size.0, size.1));
-        }
-        let (wait, window) = (self.query_wait, self.busy_window);
-        let seq = self.facts_seq + 1;
-        if let Some(s) = self.surfaces.get_mut(&id)
-            && query
-        {
-            s.hold_for_query(seq, wait, window);
-        }
     }
 
     /// Lays out only what size springs move: the subtree under each

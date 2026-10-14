@@ -515,6 +515,16 @@ impl TypeTable {
         EnumId(self.enums.len() as u32 - 1)
     }
 
+    /// The schema's own record called `name`, whatever the config
+    /// declares (a user `type Rect` or `type Node` hides it by name, but
+    /// what the runtime builds is the schema's).
+    pub fn find_schema_record(&self, name: &str) -> Option<RecordId> {
+        self.records
+            .iter()
+            .position(|r| r.name == name && matches!(r.origin, Origin::Schema))
+            .map(|i| RecordId(i as u32))
+    }
+
     pub fn find_record(&self, name: &str) -> Option<RecordId> {
         self.records
             .iter()

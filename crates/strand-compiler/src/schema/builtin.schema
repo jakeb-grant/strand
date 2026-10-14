@@ -70,6 +70,31 @@ handle record Node {
   /// `when cal.open { bg: $surface.hi }` styles an anchor while its
   /// popup shows.
   open: bool
+  /// Its laid-out box, in its surface's logical pixels from the top-left
+  /// corner of the surface's box (paint offsets, transforms and poses
+  /// not applied). A popup's own box is where it sits in the surface it
+  /// opens from; a bar's, panel's or OSD's is at 0, 0. It updates a
+  /// frame after layout moves it, and springs like any value: `x:
+  /// item.box.x - row.box.x ~ $motion.spatial`. It may drive anything
+  /// that does not lay it out again, through any chain of bindings: paint
+  /// props (`x`, `y`, `opacity`, colours, transforms; a surface's
+  /// effects), the size of a `place: absolute` element it is not inside,
+  /// or what is on another surface that reads nothing back; a load error
+  /// shows the loop otherwise. A loop through another node's `width` or
+  /// `height` with no `box` on it is a warning, `check::size_loop`.
+  box: Rect
+}
+
+/// A laid-out box (`id.box`), logical pixels.
+record Rect {
+  /// Its left edge.
+  x: float
+  /// Its top edge.
+  y: float
+  /// Its width.
+  width: float
+  /// Its height.
+  height: float
 }
 
 /// A span of characters: from `start` up to, not including, `end`.

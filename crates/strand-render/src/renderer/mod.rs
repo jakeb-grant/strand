@@ -21,6 +21,7 @@ mod apply;
 #[cfg(feature = "gpu")]
 pub(crate) mod backend;
 
+mod facts;
 mod feed;
 mod frame;
 mod layout_pass;
@@ -252,8 +253,12 @@ pub struct Renderer {
     /// last size each surface laid a watched node out at (a node shown on
     /// two surfaces of different sizes reports a change of either, never
     /// flip-flops between them).
-    facts: Vec<(NodeId, f32, f32)>,
-    facts_sent: HashMap<(SurfaceId, NodeId), (f32, f32)>,
+    facts: Vec<(NodeId, strand_scene::LogicalRect)>,
+    facts_sent: HashMap<(SurfaceId, NodeId), strand_scene::LogicalRect>,
+    /// (M6) A surface was placed since facts were last taken: the
+    /// popups' own boxes are reported then, once every surface moved
+    /// with it is placed too ([`Renderer::take_layout_facts`]).
+    placed_dirty: bool,
     /// Fact batches handed out ([`Renderer::layout_seq`]).
     facts_seq: u64,
     /// How long a frame waits for logic's answer to a container query
@@ -413,6 +418,7 @@ impl Renderer {
             layout_passes: 0,
             facts: Vec::new(),
             facts_sent: HashMap::new(),
+            placed_dirty: false,
             facts_seq: 0,
             query_wait: Duration::ZERO,
             spec_wanted: HashMap::new(),
@@ -590,6 +596,11 @@ impl Renderer {
             }
         }
         self.resolve_origins();
+        // (M6) A popup's `id.box` is its place in its parent: reported
+        // when facts are next taken, so a parent and the popups the
+        // surface manager places again with it report one box, not a
+        // stale one in between.
+        self.placed_dirty = true;
     }
 
     /// Rebuilds `extras.origins` from what the host placed, each surface

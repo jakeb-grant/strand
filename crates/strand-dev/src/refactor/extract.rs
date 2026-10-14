@@ -128,7 +128,7 @@ fn plan(
                 if inside(local.file, local.span) {
                     continue;
                 }
-                if let LocalKind::NodeId(_) = local.kind {
+                if let LocalKind::NodeId(_) | LocalKind::NodeAlias(_) = local.kind {
                     return Err(format!(
                         "it refers to `{}`, an element outside the selection",
                         local.name

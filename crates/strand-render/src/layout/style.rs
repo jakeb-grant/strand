@@ -450,8 +450,9 @@ impl<'a> Build<'a> {
                     .filter(|_| placed)
                     .unwrap_or(0.0)
             };
+            let moves = placed && (get(Prop::X).is_some() || get(Prop::Y).is_some());
             self.shadows
-                .push((node.id, (off(Prop::X), off(Prop::Y)), list.clone()));
+                .push((node.id, (off(Prop::X), off(Prop::Y)), moves, list.clone()));
         }
     }
 }

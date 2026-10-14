@@ -252,6 +252,12 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
                 LocalKind::ElementScope => format!("{}: {ty}  // in scope here", local.name),
                 LocalKind::Channel => format!("{}: {ty}  // colour channel", local.name),
                 LocalKind::NodeId(_) => format!("id {}: {ty}", local.name),
+                LocalKind::NodeAlias(_) => {
+                    format!(
+                        "id {}: {ty}  // names whichever element's `when` holds",
+                        local.name
+                    )
+                }
             };
             describe::markdown(&code, None)
         }

@@ -70,6 +70,7 @@ pub fn text(s: &str) -> PropValue {
 }
 
 /// A tightly packed ARGB8888 buffer.
+#[derive(Clone)]
 pub struct Buffer {
     pub size: Size,
     pub scale: Scale,

@@ -2710,3 +2710,468 @@ fn a_file_named_self_is_not_a_qualifier() {
         "`self` named the file"
     );
 }
+
+/// (M6, spec.md 6.3) `.box` drives what layout does not place: paint
+/// props anywhere, the size of a `place: absolute` element it is not
+/// inside, and anything on another surface (a popup sized from the bar
+/// item it opens from, an island in it following the hovered item);
+/// a conditional id (`when c { id: name }`) names the `for` copy whose
+/// condition holds, read outside the `for`. None of it is an error.
+#[test]
+fn box_drives_paint_absolute_and_other_surfaces() {
+    let src = r#"
+state current = 1
+state hovered = 0
+bar Top {
+  height: 30
+  row {
+    id: ws
+    for n in [1, 2, 3] key n {
+      box { size: 20; when n == current { id: cur }; text "{n}" }
+    }
+    box {
+      place: absolute; height: 2; bg: $fg
+      x: cur.box.x - ws.box.x ~ spring(300, 30)
+      width: cur.box.width ~ spring(300, 30)
+      opacity: cur.box.width > 0 ? 1 : 0
+    }
+  }
+  row {
+    id: pill
+    text "vol" { id: vol; when hovered == 1 { id: it } }
+    text "net" { id: net; when hovered == 2 { id: it } }
+    popup {
+      id: pop
+      trigger: hover
+      width: pill.box.width; height: 80
+      col {
+        place: absolute; height: 60; bg: $surface
+        x: it.box.x - pop.box.x ~ spring(300, 30)
+        width: it.box.width + 16 ~ spring(300, 30)
+        text hovered == 1 ? "volume" : "network"
+      }
+    }
+  }
+}
+"#;
+    one(src);
+}
+
+/// (M6, spec.md 14) Before conditional ids, `when c { id: x }` loaded and
+/// did nothing. Where binding the name would change a program that loads
+/// that way, it keeps that meaning, with a warning: beside a plain `id:
+/// x` (one error before this ruling's first cut), and where `x` already
+/// names a `state`, a parameter or an enum variant (each would now fail
+/// to check). A name that means nothing else there is a conditional id.
+#[test]
+fn a_conditional_id_never_changes_a_name_that_loads_today() {
+    let cases = [
+        // Beside a plain id: the plain one keeps the name.
+        "state on = true\nbar Top {\n  height: 30\n  text \"a\" { when on { id: x } }\n  text \"b\" { when !on { id: x } }\n  text \"c\" { id: x }\n  text x.hover ? \"h\" : \"-\"\n}\n",
+        // A state: `x > 0` still reads the number.
+        "state x = 1\nbar Top {\n  height: 30\n  text \"a\" { when x > 0 { id: x } }\n  text x > 0 ? \"pos\" : \"neg\"\n}\n",
+        // A parameter.
+        "component C(x: int) {\n  text \"a\" { when x > 0 { id: x } }\n  text x > 0 ? \"pos\" : \"neg\"\n}\nbar Top {\n  height: 30\n  C { x: 1 }\n}\n",
+        // An enum variant read by an `edge:`.
+        "state on = true\nbar Top {\n  edge: top\n  height: 30\n  text \"a\" { when on { id: top } }\n}\n",
+    ];
+    for src in cases {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            !codes.is_empty() && codes.iter().all(|c| *c == "check::conditional_id_ignored"),
+            "{src}\n{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        assert!(out.diagnostics.iter().all(|d| !d.is_error()));
+    }
+    // A free name is one conditional id however many `when`s give it.
+    one(
+        "state on = true\nbar Top {\n  height: 30\n  text \"a\" { when on { id: x } }\n  text \"b\" { when !on { id: x } }\n  text x.hover ? \"h\" : \"-\"\n}\n",
+    );
+}
+
+/// The `check::box_layout_loop` messages of `src`, each with its path.
+fn box_loops(src: &str) -> Vec<String> {
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    let others: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.code != "check::box_layout_loop")
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    out.diagnostics
+        .iter()
+        .filter(|d| d.code == "check::box_layout_loop")
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// (M6, the review of 66c2f03) A box may not drive a cycle of bindings
+/// that lays it out again, however long: two absolutes each sized from
+/// the other's box (each was "absolute, not inside it" alone), a bar item
+/// and a popup's content each sized from the other's (each was "another
+/// surface" alone), and the oscillating variant that goes through a
+/// state a handler sets from a box and a ternary that flips each frame.
+/// Each binding on the loop is refused, the loop's path in its message.
+#[test]
+fn a_box_loop_through_several_bindings_is_refused() {
+    let two_absolutes = "bar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: b.box.width + 1 }\n    box { id: b; place: absolute; height: 4; width: a.box.width + 1 }\n  }\n}\n";
+    assert_eq!(
+        box_loops(two_absolutes),
+        [
+            "`width` depends on `b.box`, which it moves again: `b.box` → `width` of `a` → `a.box` → `width` of `b` → `b.box`",
+            "`width` depends on `a.box`, which it moves again: `a.box` → `width` of `b` → `b.box` → `width` of `a` → `a.box`",
+        ]
+    );
+    let across = "bar Top {\n  height: 30\n  row {\n    text \"i\" { id: item; width: island.box.width }\n    popup {\n      width: 200; height: 50\n      box { id: island; height: 20; width: item.box.width + 10 }\n    }\n  }\n}\n";
+    assert_eq!(
+        box_loops(across),
+        [
+            // `item`'s width lays out the bar, the popup's box on it and so
+            // what the popup holds.
+            "`width` depends on `island.box`, which it moves again: `island.box` → `width` of `item` → `island.box`",
+            "`width` depends on `item.box`, which it moves again: `item.box` → `width` of `island` → `island.box` → `width` of `item` → `item.box`",
+        ]
+    );
+    let oscillating = "state wide = false\nbar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: b.box.width / 2 }\n    box { id: b; place: absolute; height: 4; width: wide ? 100 : 20 }\n    on change a.box.width { wide = a.box.width < 30 }\n  }\n}\n";
+    let got = box_loops(oscillating);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got.iter()
+            .any(|m| m.ends_with("`b.box` → `width` of `a` → `a.box` → `width` of `b` → `b.box`")),
+        "{got:?}"
+    );
+    // Each alone is fine: one absolute following another's box.
+    one(
+        "bar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: 20 }\n    box { id: b; place: absolute; height: 4; width: a.box.width + 1 }\n  }\n}\n",
+    );
+}
+
+/// (M6, the review of 66c2f03) A conditional id's conditions decide which
+/// box its name reads: they taint `name.box` and every read of the name.
+/// A `when { id: }` whose condition reads a box of its own surface is
+/// refused like an `if` (the flip-flop: the name picked by where the
+/// named box is, which moves it to the other copy and back each frame),
+/// and a name picked by a popup's box cannot size that popup's content,
+/// even read only as a value.
+#[test]
+fn a_conditional_ids_condition_is_followed() {
+    let flip_flop = "bar Top {\n  height: 30\n  row {\n    for n in [1, 2] key n {\n      box { width: 20; height: 20; when n == (cur.box.x > 10 ? 1 : 2) { id: cur } }\n    }\n    box { place: absolute; height: 2; x: cur.box.x }\n  }\n}\n";
+    let got = box_loops(flip_flop);
+    assert_eq!(
+        got,
+        [
+            "this `when`'s condition depends on `cur.box`, which it moves again: `cur.box` → the `when` naming `cur` → `cur.box`"
+        ]
+    );
+    let by_value = "bar Top {\n  height: 30\n  row {\n    text \"a\" { id: a; when big.box.width > 50 { id: cur } }\n    text \"b\" { id: b; when big.box.width <= 50 { id: cur } }\n    popup {\n      width: 200; height: 50\n      box { id: big; height: 20; width: cur == a ? 100 : 30 }\n    }\n  }\n}\n";
+    let got = box_loops(by_value);
+    // Each condition renames on the bar, which holds the popup: what the
+    // popup holds moves with it.
+    assert_eq!(
+        got,
+        [
+            "this `when`'s condition depends on `big.box`, which it moves again: `big.box` → the `when` naming `cur` → `big.box`",
+            "this `when`'s condition depends on `big.box`, which it moves again: `big.box` → the `when` naming `cur` → `big.box`",
+            "`width` depends on `big.box`, which it moves again: `big.box` → `width` of `big` → `big.box`"
+        ]
+    );
+}
+
+/// (M6, the review of 66c2f03) An element is absolute only if no `when`
+/// or pose changes its `place`: one that a `when` may put back in flow
+/// lays out its siblings and its row, so it may not follow its row's box.
+#[test]
+fn absolute_only_while_a_when_says_so_moves_its_surface() {
+    let always = "state free = false\nbar Top {\n  height: 30\n  row {\n    id: r\n    box { place: absolute; height: 4; width: r.box.width / 2 }\n  }\n}\n";
+    one(always);
+    let sometimes = always.replace(
+        "width: r.box.width / 2 }",
+        "width: r.box.width / 2; when free { place: flow } }",
+    );
+    assert_eq!(
+        box_loops(&sometimes),
+        [
+            "`width` depends on `r.box`, which it moves again: `r.box` → `width` of a `box` → `r.box`"
+        ]
+    );
+}
+
+/// (M6, the review of 66c2f03) Every channel that lays a surface out is
+/// followed: a `set { $token }` its subtree reads, a component's tokens
+/// (any element may read them), `pages`' `current` (it mounts a page by
+/// value, like `match`), a `segmented`'s `options` (their count sizes
+/// it), and another node's `.width` and `.height` (the same frame-late
+/// fact as its `.box`, a loop through them alone a warning:
+/// `a_loop_through_sizes_alone_is_a_warning`). An element's own size in
+/// its own props stays a container query, and a surface's paint props
+/// may follow a box.
+#[test]
+fn every_layout_channel_is_followed() {
+    let set = "bar Top {\n  height: 30\n  row { id: r; set { $radius.lg: r.box.width * 1px }; box { radius: $radius.lg } }\n}\n";
+    assert_eq!(box_loops(set).len(), 1, "set");
+    let component = "state w = 0\ncomponent Card tokens { pad: w * 1px } { box { pad: $Card.pad } }\nbar Top {\n  height: 30\n  row { id: r; Card {} }\n  on change r.box.width { w = r.box.width }\n}\n";
+    assert_eq!(box_loops(component).len(), 1, "component tokens");
+    let pages = "enum Pg { w, n }\nbar Top {\n  height: 30\n  row {\n    id: r\n    pages current: r.box.width > 10 ? w : n { page w { text \"w\" }; page n { text \"n\" } }\n  }\n}\n";
+    assert_eq!(box_loops(pages).len(), 1, "pages");
+    let options = "bar Top {\n  height: 30\n  row {\n    id: r\n    segmented { options: r.box.width > 100 ? [\"a\", \"b\"] : [\"a\"] }\n  }\n}\n";
+    assert_eq!(box_loops(options).len(), 1, "options");
+    let size = "bar Top {\n  height: 30\n  row {\n    id: r\n    box { width: r.width / 2 }\n    box { height: r.height }\n  }\n}\n";
+    assert_eq!(size_loops(size).len(), 2, "width and height");
+    // Its own size: a container query.
+    one("bar Top {\n  height: 30\n  box { when self.width < 300 { pad: 4 } }\n}\n");
+    // A surface's paint props may follow a box on it; its size may not.
+    one(
+        "bar Top {\n  height: 30\n  opacity: r.box.width > 100 ? 1 : 0.5\n  row { id: r; text \"a\" }\n}\n",
+    );
+    assert_eq!(
+        box_loops("bar Top {\n  height: r.box.height\n  row { id: r; text \"a\" }\n}\n").len(),
+        1
+    );
+}
+
+/// The `check::size_loop` warnings of `src`, which must have no other
+/// diagnostic.
+fn size_loops(src: &str) -> Vec<String> {
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    let others: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.code != "check::size_loop")
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert_eq!(out.errors(), 0);
+    out.diagnostics.iter().map(|d| d.message.clone()).collect()
+}
+
+/// (M6, spec.md 14) Another node's `.width` and `.height` loaded on
+/// `main` before `.box` and still load with the same meaning: a loop of
+/// bindings through them alone is a `check::size_loop` warning naming
+/// its path, not an error. `instantiate.rs::only_measured_nodes_are_watched`'s
+/// bar loads with that warning; a node passed as a value is not followed
+/// by its size. A loop with a `.box` read on it stays an error, wherever
+/// the sizes are.
+#[test]
+fn a_loop_through_sizes_alone_is_a_warning() {
+    let measured = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
+    let got = size_loops(measured);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].starts_with("`text` depends on `b`'s size, which it changes again: `b`'s size → "),
+        "{got:?}"
+    );
+    assert!(got[0].ends_with(" → `b`'s size"), "{got:?}");
+    let by_value = "component Half(n: Node) { box { width: n.width / 2 } }\nbar Top {\n  height: 30\n  row { id: r; Half r }\n}\n";
+    one(by_value);
+    // `.box` on the loop, a size after it: both bindings refused.
+    let mixed = "bar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: b.box.width + 1 }\n    box { id: b; place: absolute; height: 4; width: a.width + 1 }\n  }\n}\n";
+    assert_eq!(
+        box_loops(mixed),
+        [
+            "`width` depends on `b.box`, which it moves again: `b.box` → `width` of `a` → `a`'s size → `width` of `b` → `b.box`",
+            "`width` depends on `a`'s size, which it moves again: `a`'s size → `width` of `b` → `b.box` → `width` of `a` → `a`'s size",
+        ]
+    );
+}
+
+/// (M6, the third review of the box graph) Inherited values reach into
+/// popups: a `set`, `font` or `weight` on an element, or a surface's own
+/// props, lays out every surface nested in what it sets, so a binding
+/// that moves a popup's box moves what the popup holds too, through
+/// popups inside popups. Each program here sizes a popup's content from
+/// a box inside it by one of those routes, and each is refused.
+#[test]
+fn inherited_values_reach_nested_popups() {
+    let popup =
+        |inner: &str| format!("box {{ size: 20; popup {{ width: 200; height: 50; {inner} }} }}");
+    let chip = "row { pad: $space.2; text \"c\" { id: chip } }";
+    let set = "set { $space.2: chip.box.width > 60 ? 4px : 48px }";
+    let cases = [
+        // The review's program: a token set on the row.
+        (
+            "set",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    {set}\n    {}\n  }}\n}}\n",
+                popup(chip)
+            ),
+        ),
+        // The popup's own size through an ancestor's token.
+        (
+            "popup width",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    {set}\n    box {{ size: 20; popup {{ width: $space.2 * 4; height: 50; text \"c\" {{ id: chip }} }} }}\n  }}\n}}\n"
+            ),
+        ),
+        // An `if` mounting a `set`.
+        (
+            "if",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    if chip.box.width > 60 {{ set {{ $space.2: 4px }} }}\n    {}\n  }}\n}}\n",
+                popup(chip)
+            ),
+        ),
+        // An inherited prop on an element, and on the surface itself.
+        (
+            "weight",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    weight: chip.box.width > 60 ? 700 : 400\n    {}\n  }}\n}}\n",
+                popup("text \"c\" { id: chip }")
+            ),
+        ),
+        (
+            "surface",
+            format!(
+                "bar Top {{\n  height: 30\n  weight: chip.box.width > 60 ? 700 : 400\n  row {{ {} }}\n}}\n",
+                popup("text \"c\" { id: chip }")
+            ),
+        ),
+        // A popup inside a popup, set from the outer one's content.
+        (
+            "nested",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    {}\n  }}\n}}\n",
+                popup(&format!("{set}; {}", popup(chip)))
+            ),
+        ),
+    ];
+    for (what, src) in cases {
+        let got = box_loops(&src);
+        assert!(
+            got.iter().any(|m| m.ends_with("`chip.box`")),
+            "{what}: {got:?}\n{src}"
+        );
+    }
+}
+
+/// (M6, the third review) The dependences settle however long a chain
+/// is: 100 `let`s, one a round, then a width on the last.
+#[test]
+fn a_long_let_chain_is_followed_to_its_end() {
+    let mut src =
+        String::from("bar Top {\n  height: 30\n  row {\n    id: r\n    let v0 = r.box.width\n");
+    for i in 1..100 {
+        src.push_str(&format!("    let v{i} = v{} + 1\n", i - 1));
+    }
+    src.push_str("    box { width: v99 }\n  }\n}\n");
+    let got = box_loops(&src);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].starts_with("`width` depends on `r.box`"), "{got:?}");
+}
+
+/// (M6, the third review) A service field a handler writes from a box
+/// carries the box to every read of it: the backlight level set from a
+/// row's width sizes a box in that row.
+#[test]
+fn a_service_field_written_from_a_box_is_followed() {
+    let src = "bar Top {\n  height: 30\n  row {\n    id: r\n    on change r.box.width { brightness.level = r.box.width / 1000 }\n    box { width: brightness.level * 100 }\n  }\n}\n";
+    let got = box_loops(src);
+    assert_eq!(
+        got,
+        [
+            "`width` depends on `r.box`, which it moves again: `r.box` → `width` of a `box` → `r.box`"
+        ]
+    );
+    // Read for paint only, it loads.
+    one(&src.replace(
+        "box { width: brightness.level * 100 }",
+        "box { opacity: brightness.level }",
+    ));
+}
+
+/// (M6, the third review) A bar's thickness is its exclusive zone, which
+/// places and sizes the other layer surfaces: a top bar sized from a box
+/// on a side bar (through a state) moves that box again. A bar's paint
+/// may follow it, and so may a panel's size, which reserves nothing.
+#[test]
+fn a_bars_exclusive_zone_moves_the_other_layer_surfaces() {
+    let two_bars = "state h = 0\nbar Top {\n  height: h + 10\n  text \"t\"\n}\nbar Side {\n  edge: left; width: 40\n  col { box { id: s; height: 20 }; on change s.box.y { h = s.box.y } }\n}\n";
+    let got = box_loops(two_bars);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].starts_with(
+            "`height` depends on `s.box`, which it moves again: `s.box` → `height` of a `bar`"
+        ),
+        "{got:?}"
+    );
+    // Its content sizes a bar with no thickness written: the same.
+    let auto = "state h = 0\nbar Top {\n  text \"t\" { height: h + 10 }\n}\nbar Side {\n  edge: left; width: 40\n  col { box { id: s; height: 20 }; on change s.box.y { h = s.box.y } }\n}\n";
+    assert_eq!(box_loops(auto).len(), 1);
+    one(&two_bars.replace("height: h + 10", "height: 30; opacity: h > 5 ? 1 : 0.5"));
+    one(&two_bars.replace(
+        "bar Top {\n  height: h + 10",
+        "panel Top {\n  height: h + 10",
+    ));
+}
+
+/// (M6) spec.md 6.3's travelling island, as written there, checks with
+/// no diagnostic.
+#[test]
+fn the_specs_travelling_island_checks() {
+    let spec =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec.md"))
+            .unwrap();
+    let at = spec.find("- **A travelling island**").expect("the island");
+    let rest = &spec[at..];
+    let start = rest.find("```strand\n").unwrap() + "```strand\n".len();
+    let end = start + rest[start..].find("  ```").unwrap();
+    let src: String = rest[start..end]
+        .lines()
+        .map(|l| l.strip_prefix("  ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    one(&src);
+}
+
+/// (M6, decisions.md m6-integration-w2, the final pass) Where the
+/// surface stream's ids meet the language stream's file names: a plain
+/// `id: a` in a file beside `a.strand` is read by `a.box` as the id, as
+/// a name in scope always was; a `when`'s `id: a` names nothing, since
+/// `a` is already a file whose `a.Row` still reads, and nor does one
+/// named like a component two files share; and a box's `float` written
+/// into a state started from a whole number widens it.
+#[test]
+fn file_stems_and_shared_names_meet_ids_and_boxes() {
+    let row = |t: &str| format!("component Row {{ text \"{t}\" }}\n");
+    let plain = "bar One {\n  height: 30\n  row { id: a; text \"x\" }\n  \
+        box { place: absolute; height: 2; width: a.box.width }\n}\n";
+    let (out, map) = compile_files(&[
+        ("a.strand", row("a")),
+        ("b.strand", row("b")),
+        ("m.strand", plain.to_string()),
+    ]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    let conditional = "state on = true\nbar Two {\n  height: 30\n  \
+        text \"p\" { when on { id: a } }\n  text \"q\" { when !on { id: Row } }\n  a.Row\n}\n";
+    let (out, map) = compile_files(&[
+        ("a.strand", row("a")),
+        ("b.strand", row("b")),
+        ("m.strand", conditional.to_string()),
+    ]);
+    let shown = render(&out.diagnostics, &map, Style::Plain);
+    assert_eq!(
+        codes_of(&out),
+        [
+            "check::conditional_id_ignored",
+            "check::conditional_id_ignored"
+        ],
+        "{shown}"
+    );
+    assert!(shown.contains("a file of this config"), "{shown}");
+    assert!(shown.contains("a declaration of this config"), "{shown}");
+    one("state w = 0\nbar Three {\n  height: 30\n  \
+         text \"t\" { id: t; opacity: w > 10 ? 1 : 0.5\n    \
+         on change t.box.width { w = t.box.width } }\n}\n");
+}

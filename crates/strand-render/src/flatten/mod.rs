@@ -218,6 +218,15 @@ pub struct Flattened {
     /// frame, taken out of the root's props ([`crate::pose`]); `None`
     /// when nothing is delegated.
     pub pose: Option<strand_scene::SurfacePose>,
+    /// (M6) The boxes of the root's children whose subtrees draw
+    /// something, as drawn (paint offsets in), logical: where a popup
+    /// that draws nothing itself takes input ([`Renderer::input_region`]).
+    ///
+    /// [`Renderer::input_region`]: crate::Renderer
+    pub input: Vec<LogicalRect>,
+    /// (M6) The surface root draws something itself (a background, a
+    /// border): its whole box takes input.
+    pub root_paints: bool,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -315,6 +324,9 @@ struct Inherited<'a> {
     /// (M4) How far the effect layers around this node spread its
     /// pixels, physical: its damage grows by it.
     reach: u32,
+    /// (M6) Below a child of the surface root: that child's box takes
+    /// this node's input (`Flattened::input`).
+    input_done: bool,
 }
 
 /// What flattening reads besides the tree, layout and springs.
@@ -440,6 +452,7 @@ pub fn flatten(
         inert: false,
         timed: false,
         reach: 0,
+        input_done: false,
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.

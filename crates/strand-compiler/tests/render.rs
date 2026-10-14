@@ -184,9 +184,9 @@ fn container_queries_settle_before_the_frame_paints() {
     // What logic would do: take the facts in and answer with its diff.
     let answer = |r: &mut Renderer| {
         let facts = r.take_layout_facts();
-        assert!(facts.iter().any(|(n, _, _)| *n == row), "{facts:?}");
-        for (n, w, h) in facts {
-            inst.set_size(n, w, h);
+        assert!(facts.iter().any(|(n, _)| *n == row), "{facts:?}");
+        for (n, b) in facts {
+            inst.set_box(n, b);
         }
         let mut diff = inst.flush().diff;
         diff.layout_seen = Some(r.layout_seq());
@@ -222,8 +222,8 @@ fn answer_if_any(r: &mut Renderer, inst: &Instance) {
     if facts.is_empty() {
         return;
     }
-    for (n, w, h) in facts {
-        inst.set_size(n, w, h);
+    for (n, b) in facts {
+        inst.set_box(n, b);
     }
     let mut diff = inst.flush().diff;
     diff.layout_seen = Some(r.layout_seq());

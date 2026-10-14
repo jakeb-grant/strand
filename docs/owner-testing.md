@@ -1,9 +1,10 @@
 # Owner testing: issues and capability gaps
 
 **Wave 2 (2026-10-14).** The states below reflect `laptop/m6-w2`: M6
-wave 2's services stream (through `6103464`) and language stream
-(through `f65ec82`, the same name across files) and the surface stream
-up to `ea17b69` (its travelling island merges later). Each entry's
+wave 2's services stream (through `6103464`), language stream
+(through `f65ec82`, the same name across files) and surface stream
+(through `15a0de7`: `id.box`, conditional ids and the travelling
+island, with the reviews' fixes). Each entry's
 **Wave 2** line gives its state with the test that proves a fix, or
 the decisions.md section that holds a proposal.
 
@@ -181,10 +182,29 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    and `exit` play only when the group opens from nothing or closes;
    the travel direction is readable for effects. Reading an element's
    laid-out box by id stays proposed as the general capability.
-   **Wave 2: in progress on `laptop/m6-w2-surface`** (after
-   `ea17b69`; it merges into `laptop/m6-w2` later). `vol.box` stays
-   proposed (decisions.md m6-w2-surface, "one island that travels
-   between items").
+   **Owner's ruling (2026-10-14):** the general capability instead of
+   `group:` (the proposal's option (a)): `id.box`.
+   **Wave 2: fixed**: `id.box` is an element's laid-out box (`Rect`,
+   logical, from its surface's top-left), the first one snapping and
+   later ones springing; a binding on it may set only what cannot lay
+   that box out again (`check::box_layout_loop`); `when c { id: cur }`
+   names whichever element's condition holds, so the workspace
+   indicator is `x: cur.box.x - ws.box.x`. The travelling island is
+   one `trigger: hover` popup sized from the pill's box, its island an
+   absolute element following the hovered item's box, letting input
+   through outside the island and keeping its popup still while it
+   travels
+   (`crates/strand-render/tests/boxes.rs::the_island_travels_between_items`,
+   `::input_passes_through_outside_the_island`,
+   `::a_shadowed_island_keeps_its_popup_still`,
+   `::the_workspace_indicator_follows_the_current_box`,
+   `::boxes_are_logical_on_mixed_scale_outputs`,
+   `crates/strand-compiler/tests/checker.rs::the_specs_travelling_island_checks`,
+   `::a_box_loop_through_several_bindings_is_refused`,
+   `crates/strand-compiler/tests/instantiate.rs::box_reads_the_reported_box_from_the_popups_tree`,
+   `::a_conditional_id_names_the_copy_whose_condition_holds`,
+   `crates/strand-surface/tests/sway.rs::a_popups_painted_input_region_lets_the_rest_pass_through`);
+   decisions.md m6-w2-surface.
 6. **An `id:` inside a component is invisible outside it.** A
    component cannot expose its `hover` (or any state) to its caller,
    so a reusable island component could not report that the pointer

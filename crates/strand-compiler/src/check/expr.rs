@@ -753,7 +753,9 @@ impl<'a> Checker<'a> {
     }
 
     fn node_record(&self) -> Ty {
-        self.types.find_record("Node").map_or(Ty::Error, Ty::Record)
+        self.types
+            .find_schema_record("Node")
+            .map_or(Ty::Error, Ty::Record)
     }
 
     fn node_expr(&mut self, name: &str, span: Span) -> hir::Expr {

@@ -74,6 +74,10 @@ pub struct Program {
     /// Each chunk's assignment targets, by chunk id: what a handler
     /// running it declares with `rt.writes_to`.
     pub writes: Vec<Vec<WriteTarget>>,
+    /// (M6) Per conditional id (its alias index), the laid-out facts read
+    /// through it, as node watch bits ([`reads::alias_watch`]): the
+    /// elements it may name are measured only for those.
+    pub alias_watch: BTreeMap<NodeIdx, u8>,
     /// The checked `shader` files, by path as written (M4): what a
     /// `shader` node's `Prop::Shader` carries. Set from
     /// [`crate::Compiled::shaders`] by `Build::lowered`.
@@ -269,6 +273,9 @@ pub enum Node {
     When {
         cond: ChunkId,
         props: Vec<Prop>,
+        /// (M6) Its `id: name`: the conditional id (its alias index) that
+        /// names the element while `cond` holds.
+        alias: Option<NodeIdx>,
     },
     Pose {
         kind: PoseKind,
@@ -566,6 +573,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         },
         file: FileId(0),
         owned: Vec::new(),
+        id_body: Vec::new(),
         services: Vec::new(),
         frame_chunks: Vec::new(),
         pending: Vec::new(),
@@ -623,6 +631,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         l.out.files.push(fp);
     }
     reads::compute(&mut l.out);
+    reads::alias_watch(&mut l.out);
     l.resolve_services();
     l.out
 }
@@ -634,6 +643,9 @@ pub(crate) struct Lowerer<'a> {
     pub(crate) file: FileId,
     /// Elements of the bodies being lowered, innermost last.
     owned: Vec<BTreeSet<NodeIdx>>,
+    /// (M6) The index in `owned` of the component or surface body being
+    /// lowered: its conditional ids belong to it (read anywhere in it).
+    id_body: Vec<usize>,
     /// Services read by the bodies being lowered, innermost last.
     pub(crate) services: Vec<ServiceUses>,
     /// The chunks lowered in each frame of `services`: their reads (the
@@ -667,6 +679,7 @@ impl Lowerer<'_> {
                 // Defaults, tokens and body read services for the
                 // component, which acquires them when mounted.
                 self.begin_body();
+                self.id_body.push(self.owned.len() - 1);
                 let mut params: Vec<(LocalId, Option<ChunkId>)> = c
                     .params
                     .iter()
@@ -678,6 +691,7 @@ impl Lowerer<'_> {
                 let tokens = c.tokens.iter().map(|t| self.token_def(t)).collect();
                 let nodes = self.nodes(&c.body);
                 let root = single_root(&nodes);
+                self.id_body.pop();
                 let body = self.end_body(nodes, false);
                 self.out.components.insert(
                     c.def,
@@ -695,7 +709,9 @@ impl Lowerer<'_> {
             }
             hir::Item::Surface(s) => {
                 self.begin_body();
+                self.id_body.push(self.owned.len() - 1);
                 let element = self.element(&s.element);
+                self.id_body.pop();
                 // Its `open` binding is read while it is closed too (it
                 // is what opens it): its reads count for the file's top
                 // level, not only for the surface while shown (design.md's
@@ -912,6 +928,7 @@ impl Lowerer<'_> {
             hir::Node::When(w) => Node::When {
                 cond: self.expr_chunk(&w.cond),
                 props: self.props(&w.props, self.elem),
+                alias: self.when_alias(w),
             },
             hir::Node::If(i) => Node::If {
                 cond: self.expr_chunk(&i.cond),
@@ -1051,6 +1068,23 @@ impl Lowerer<'_> {
             }
             _ => None,
         }
+    }
+
+    /// (M6) A `when`'s `id: name` (a conditional id): its alias index,
+    /// owned by the component or surface body around it.
+    fn when_alias(&mut self, w: &hir::When) -> Option<NodeIdx> {
+        let p = w.props.iter().find(|p| p.name == "id")?;
+        let hir::ExprKind::Local(l) = p.value.kind else {
+            return None;
+        };
+        let hir::LocalKind::NodeAlias(n) = self.hir.local(l).kind else {
+            return None;
+        };
+        let at = self.id_body.last().copied().unwrap_or(0);
+        if let Some(set) = self.owned.get_mut(at) {
+            set.insert(n);
+        }
+        Some(n)
     }
 
     fn element(&mut self, e: &hir::Element) -> Element {

@@ -137,6 +137,10 @@ impl Painter for Host {
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
         self.renderer.opaque_region(surface)
     }
+
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
+        self.renderer.input_region(surface)
+    }
 }
 
 impl SurfaceHost for Host {

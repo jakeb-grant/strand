@@ -377,6 +377,11 @@ impl Env {
             open: rt.signal(false),
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
+            rect_cell: Default::default(),
+            alias_cell: Default::default(),
+            claims: Default::default(),
+            holders: Default::default(),
+            scope: owner.owner.get().or_else(|| rt.current_owner()),
             watch: Cell::new(0),
             laid_out: Cell::new(false),
         };

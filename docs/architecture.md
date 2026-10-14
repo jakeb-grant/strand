@@ -34,9 +34,14 @@ their own unnamed threads.
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
-(`self.width` for container queries: `Renderer::take_layout_facts`, the
-laid-out sizes that changed of nodes carrying `Prop::Watch`, sent as
-`run::ToLogic::Layout { seq, sizes }` with `Renderer::layout_seq`). The
+(`self.width` for container queries and (M6) `id.box`:
+`Renderer::take_layout_facts`, the laid-out boxes that changed of nodes
+carrying `Prop::Watch`, each `(NodeId, LogicalRect)` from the top-left
+of its surface's box (a popup's own, its place in its parent surface;
+render's `renderer/facts.rs`), sent as `run::ToLogic::Layout { seq,
+sizes }` with `Renderer::layout_seq`; a `box` watch also reports a move,
+a size watch only a resize, and a node's first box holds its frame as a
+query's change does). The
 next diff logic sends echoes the last batch it took in as
 `SceneDiff::layout_seen` (sent even with no ops): render holds a frame
 whose layout changed a `watch: query` node's size until then, or for
@@ -45,12 +50,17 @@ so container queries settle inside the frame. `SceneDiff::reduced_motion`
 carries a change of the desktop's reduced-motion preference
 (`system.reduced_motion`) to render (sent even with no ops).
 `SceneDiff::press: Option<u32>` (M6, m6-w2-surface) is the compositor
-serial of the last press whose event or two-way write logic handled
-(`ToLogic::Event`'s and `ToLogic::Write`'s `input`), kept on every diff
-until a hover change is handled; the host marks each popup a diff
-creates or opens with it (`demo::popup_causes`,
-`State::set_popup_cause`) before applying it, so the surface grabs
-only for the press that opened it. No locks are shared across
+serial of the press that caused the diff (`run::PressCause`): the last
+press among the events and two-way writes logic handled since the last
+step (`ToLogic::Event`'s and `ToLogic::Write`'s `input`; a hover change
+or an input-less write handled after it does not take it away), else,
+on the step after the services reported a change, the press of the
+last action a handler ran with one (`Composite::action_press`, from
+`ActionCtx::input`), up to `GRAB_WINDOW` after it: the tray's `opened`
+answering `item.menu.open()`. The host marks each popup a diff creates
+or opens with it (`demo::popup_causes`, `State::set_popup_cause`)
+before applying it, so the surface grabs only for the press that
+opened it. No locks are shared across
 threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run/`) is this wiring: the main
@@ -196,7 +206,9 @@ config started (the portal's boot read among them). Settings-file notices from c
 shadowed field's `[clear]`) and `strand watch` notices. Layout facts
 (`ToLogic::Layout`) address the laid-out nodes logic measures (the
 instance sets `Prop::Watch` on an element whose `width`/`height` a
-binding read: `size`, or `query` from a `when`); a surface's configured
+binding read: `size`, or `query` from a `when`; (M6) `box` or
+`box_query` when one read its `box`, and on every element a
+conditional id may name what is read through the name, `Program::alias_watch`); a surface's configured
 size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
 host with a mock desktop for screenshots before M3 (`mock.rs`);
 `STRAND_MOCK=acceptance` is the same desktop with no notifications at
@@ -1535,6 +1547,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
 - **Geometry**: `Rect { x, y, w, h }` in physical pixels as `i32`/`u32`,
   `Size`, `Point`, and a logical-pixel `f32` variant; `Scale` is the
   fractional scale as numerator/120 (`wp_fractional_scale_v1`).
+- **Props** (M6, m6-w2-surface): `Prop::affects_layout` says which props
+  layout reads (render relays out for them; `strand_render::affects_layout`
+  forwards it; `options` among them since the review of 66c2f03) and so
+  which bindings on `id.box` lay boxes out again (the compiler's
+  box-dependency graph, `check::box_layout_loop`).
 - **Colour**: `Color` stored as straight-alpha sRGB `f32`, with exact
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
 - **Motion** (`strand_scene::motion`, shared by the renderer's prop
@@ -2365,7 +2382,17 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     left press that went down there is held, and closes it
     `Prop::Grace` (default `strand_render::HOVER_GRACE`, 200 ms) after,
     the popups opened from it first. Pick mode opens nothing and ends
-    the graces. `Router::next_wake() -> Option<Instant>` is the earliest
+    the graces; leaving it hit-tests the pointer again, so the hover
+    (and the popup under it) comes back at once. The router's open
+    popups follow logic: `Router::observe` matches each `SetProp { Open
+    }` on a popup against the values it wrote and not yet saw, in
+    order, and takes any other value as logic's own (a reload
+    remounting one open or closed); only live `trigger: hover` popups
+    stay its own (a reload that drops `trigger` hands one back to the
+    program). A `ClickAway` on such a popup's surface (`popup_done`)
+    closes it in logic too, and it opens again only once the pointer
+    has left its anchor. A `delay` or `grace` too long for the clock
+    never comes due. `Router::next_wake() -> Option<Instant>` is the earliest
     delay or grace to end and `Router::tick(&mut dyn InputScene) ->
     Vec<Intent>` runs them. The host hands `next_wake` to
     `Renderer::set_input_wake(Option<Instant>)` after each routed event
@@ -3690,7 +3717,9 @@ Public interfaces other crates and later stages build on:
     …; delivered through core input queues to the innermost element
     with a handler, every handler of that event on it in source order,
     `propagate()` passes it on once), `set_flag(node, NodeFlag, on)`,
-    `set_size(node, w, h)` (layout facts for `self.width`) and
+    `set_size(node, w, h)` (layout facts for `self.width`), (M6)
+    `set_box(node, LogicalRect)` (a fact with its place, for `id.box`;
+    it sets the size too) and
     `write(node, prop, PropValue)` (`<->` writes, outside any handler,
     checked against the place's type); call `step` and send the diff to
     render; sleep until `Wake::deadline` (logic clock), `Wake::wall`
@@ -3986,7 +4015,18 @@ and the connection):
 - A spec's `overhang` grows the layer size and moves the margins out
   (`placement::layer_config`), the exclusive zone grows by the overhang
   on its edge so margin + zone is unchanged, and the input region is the
-  box inside it (`SurfaceInfo::input_region`; an OSD's is empty). Render
+  box inside it (`SurfaceInfo::input_region`; an OSD's is empty). (M6,
+  m6-w2-surface) A painter may replace it (`Painter::input_region`,
+  surface-local logical rects, applied by `sync_painted_input` at each
+  commit and kept in `SurfaceInfo::painted_input`): render asks it for a
+  `trigger: hover` popup that draws nothing itself, the boxes of its
+  top-level elements that drew (a blur or backdrop counts), so the
+  pointer passes through the rest (a travelling island); `None`, for
+  every other surface, keeps the manager's region. A popup keeps its
+  configure position (`Role::Popup::at`) and is placed again whenever
+  its parent's origin changes, so `SurfaceHost::surface_placed` tells
+  the host its new place after its parent's; render reports a popup's
+  own box from both when facts are next taken. Render
   makes the overhang even on the axes the anchor leaves centred, so the
   compositor centres the box, and (M6, m6-w2-surface) no larger than the
   margin on a side the surface is anchored to, so its buffer never
@@ -4035,8 +4075,9 @@ and the connection):
   its own; when the keys move on, the old target gets `KeyboardLeave`
   unless the new one is nested in it, and when the grab ends the surface
   with focus gets `KeyboardEnter` again). A popup opened with no grab
-  (later than `GRAB_WINDOW` after a press) takes no keyboard and leaves
-  other popups open.
+  takes no keyboard and leaves
+  other popups open: one no press opened, or opened more than
+  `GRAB_WINDOW` after it.
   `popup_done` is sent as `InputEvent::ClickAway { surface }` (before the
   surface goes), then the popup and the popups nested in it are destroyed
   (innermost first, as any surface's are), and it is not shown again until

@@ -420,6 +420,8 @@ impl Lowerer<'_> {
                     c.emit(Op::Const(k), span);
                 } else if let LocalKind::NodeId(n) = local.kind {
                     c.emit(Op::Node(n), span);
+                } else if let LocalKind::NodeAlias(n) = local.kind {
+                    c.emit(Op::NodeAlias(n), span);
                 } else {
                     c.emit(Op::Local(*l), span);
                 }

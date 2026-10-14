@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use strand_compiler::lower::CustomService;
 use strand_compiler::ty::TypeTable;
@@ -39,6 +39,9 @@ pub struct Composite {
     /// adds or drops a config `service` shadowing a builtin one lets go
     /// of the builtin it held (spec.md 4.2).
     holds: RefCell<HashMap<HoldKey, Vec<Holder>>>,
+    /// (M6) The press of the last action a handler ran with one, and when
+    /// ([`Composite::action_press`]).
+    action_press: std::cell::Cell<Option<(u32, Instant)>>,
 }
 
 /// A hold's service and field.
@@ -73,7 +76,16 @@ impl Composite {
             custom: None,
             types,
             holds: RefCell::default(),
+            action_press: std::cell::Cell::new(None),
         }
+    }
+
+    /// (M6) The press of the last action a handler ran with one (an
+    /// `on secondary { item.menu.open() }`), and when it ran: a popup the
+    /// service's answer opens (the tray's `opened`) was opened by that
+    /// press (`run::PressCause`).
+    pub fn action_press(&self) -> Option<(u32, Instant)> {
+        self.action_press.get()
     }
 
     /// Serve declared custom services with `host` (else the fallback
@@ -312,6 +324,9 @@ impl ServiceHost for Composite {
         args: &[Value],
         ctx: ActionCtx,
     ) -> Result<(), Error> {
+        if let Some(i) = ctx.input {
+            self.action_press.set(Some((i.serial, Instant::now())));
+        }
         match target {
             ActionTarget::Service(s) => self.route(s).action(rt, target, name, args, ctx),
             ActionTarget::Item(v) => self.route_item(v).action(rt, target, name, args, ctx),

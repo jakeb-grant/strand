@@ -163,6 +163,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         // So does a new opaque region: a delegated fade that settles
         // claims its region with the bare commit that ends it.
         let opaqued = self.sync_opaque(id, scale);
+        // (M6) And where a popup that draws nothing itself takes input.
+        let inputs = self.sync_painted_input(id);
         // And a blur region a scale pose moved, on a frame that drew
         // nothing.
         let blurred =
@@ -172,7 +174,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let wl = s.wl().clone();
         if damage.is_empty() {
-            if posed || opaqued || blurred {
+            if posed || opaqued || blurred || inputs {
                 s.ack_pending = true;
             }
             // Nothing drawn, nothing recorded: the buffer keeps its age.
@@ -274,6 +276,60 @@ impl<H: SurfaceHost + 'static> State<H> {
             let node = s.node;
             self.reconcile_children(node);
         }
+    }
+
+    /// (M6) Sets `id`'s input region to where the painter asks for
+    /// input (`Painter::input_region`: where a popup that draws nothing
+    /// itself drew its content, so input anywhere else on it passes
+    /// through), rounded out to whole logical pixels, as pending state
+    /// when it changed; true if one was sent. A painter that asks for
+    /// none leaves the region `sync_input_region` keeps (and gets it
+    /// back when it stops asking).
+    pub(super) fn sync_painted_input(&mut self, id: SurfaceId) -> bool {
+        let asked = self.host.input_region(id);
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return false;
+        };
+        let Some(asked) = asked else {
+            // The painter stopped asking: the manager's own region again.
+            if s.painted_input.take().is_some() {
+                s.input_region = Some(Some((i32::MIN, 0, 0, 0)));
+                self.sync_input_region(id);
+                return true;
+            }
+            return false;
+        };
+        // Rounded out to whole pixels, in the coordinates of its pose's
+        // scale (as `sync_input_region` places its box).
+        let factor = s.pose_factor();
+        let rects: Vec<Rect> = asked
+            .iter()
+            .filter(|r| r.w > 0.0 && r.h > 0.0 && r.x.is_finite() && r.y.is_finite())
+            .filter_map(|r| {
+                let (x0, y0) = (r.x.floor(), r.y.floor());
+                let (x1, y1) = ((r.x + r.w).ceil(), (r.y + r.h).ceil());
+                let c = |v: f32| v.clamp(-1e6, 1e6) as i64;
+                let (x, y, w, h) =
+                    pose::posed_rect((c(x0), c(y0), c(x1 - x0), c(y1 - y0)), factor, false)?;
+                Some(Rect::new(x, y, w.max(0) as u32, h.max(0) as u32))
+            })
+            .collect();
+        if s.painted_input.as_ref() == Some(&rects) {
+            return false;
+        }
+        let region = match Region::new(&self.compositor) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("{}: no input region: {e}", s.config.namespace);
+                return false;
+            }
+        };
+        for r in &rects {
+            region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
+        }
+        s.wl().set_input_region(Some(region.wl_region()));
+        s.painted_input = Some(rects);
+        true
     }
 
     /// Sets `id`'s opaque region as pending state when the host's

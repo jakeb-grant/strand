@@ -237,14 +237,15 @@ pub enum ToLogic {
         width: f32,
         height: f32,
     },
-    /// Laid-out sizes that changed (`self.width`, container queries):
-    /// `(node, width, height)` in logical pixels, as fact batch `seq`
+    /// Laid-out boxes that changed (`self.width`, container queries,
+    /// (M6) `id.box`): `(node, box)` in its surface's logical pixels
+    /// (`Renderer::take_layout_facts`), as fact batch `seq`
     /// (`Renderer::layout_seq`); the next diff echoes it as
     /// `SceneDiff::layout_seen`, even with no ops, which releases a frame
     /// render held for a container query's answer.
     Layout {
         seq: u64,
-        sizes: Vec<(NodeId, f32, f32)>,
+        sizes: Vec<(NodeId, strand_scene::LogicalRect)>,
     },
     /// A widget or the surface wrote a two-way prop: an `input`'s
     /// `text`, a surface's `open` (Escape, click-away, focus loss, Right

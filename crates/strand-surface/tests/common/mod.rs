@@ -344,6 +344,10 @@ pub struct TestHost {
     /// answers the last one taken.
     pub poses: std::collections::VecDeque<strand_scene::SurfacePose>,
     pub pose: Option<strand_scene::SurfacePose>,
+    /// (M6) What [`Painter::input_region`] answers for every surface (or
+    /// only `input_only`, when set).
+    pub input_rects: Option<Vec<LogicalRect>>,
+    pub input_only: Option<SurfaceId>,
 }
 
 impl TestHost {
@@ -503,6 +507,13 @@ impl Painter for TestHost {
 
     fn blur_region(&self, _: SurfaceId) -> Vec<BlurRegion> {
         self.blur.clone()
+    }
+
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<LogicalRect>> {
+        if self.input_only.is_some_and(|only| only != surface) {
+            return None;
+        }
+        self.input_rects.clone()
     }
 }
 

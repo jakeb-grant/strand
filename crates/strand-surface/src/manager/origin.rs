@@ -101,9 +101,27 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     /// Places popup `id` from its configure's position `at`: its box's
-    /// top-left corner relative to its parent's window geometry.
-    pub(super) fn place_popup(&mut self, id: SurfaceId, (x, y): (i32, i32)) {
-        let Some(Role::Popup { parent, config, .. }) = self.surfaces.get(&id).map(|s| &s.role)
+    /// top-left corner relative to its parent's window geometry. The
+    /// position is kept: when the parent moves (an exclusive zone, its
+    /// output or its pose's margins changed) or is first placed, the
+    /// popup is placed again from it (`set_origin`), so its place on the
+    /// parent, which `id.box` reads, stays right. A parent with no origin
+    /// yet leaves the popup with none until it has one.
+    pub(super) fn place_popup(&mut self, id: SurfaceId, at: (i32, i32)) {
+        if let Some(Role::Popup { at: kept, .. }) = self.surfaces.get_mut(&id).map(|s| &mut s.role)
+        {
+            *kept = Some(at);
+        }
+        self.place_popup_again(id);
+    }
+
+    fn place_popup_again(&mut self, id: SurfaceId) {
+        let Some(Role::Popup {
+            parent,
+            config,
+            at: Some((x, y)),
+            ..
+        }) = self.surfaces.get(&id).map(|s| &s.role)
         else {
             return;
         };
@@ -117,8 +135,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                 _ => (0, 0),
             };
             Some((
-                px.saturating_add(gx).saturating_add(x).saturating_sub(l),
-                py.saturating_add(gy).saturating_add(y).saturating_sub(t),
+                px.saturating_add(gx).saturating_add(*x).saturating_sub(l),
+                py.saturating_add(gy).saturating_add(*y).saturating_sub(t),
             ))
         });
         self.set_origin(id, origin);
@@ -134,6 +152,17 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.origin = origin;
         if let Some(o) = origin {
             self.host.surface_placed(id, o);
+        }
+        // Its popups sit where their configures put them on it: they move
+        // with it (and a popup of a popup with that one).
+        let children: Vec<SurfaceId> = self
+            .surfaces
+            .values()
+            .filter(|c| c.role.popup_parent() == Some(id))
+            .map(|c| c.id)
+            .collect();
+        for c in children {
+            self.place_popup_again(c);
         }
     }
 }
