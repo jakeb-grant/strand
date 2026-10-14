@@ -178,6 +178,32 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    **Verified by the owner on Hyprland, 2026-10-14** (the GitHub CI
    build of `0cba252`, with bug 6): "They behave well and I'm not
    seeing flicker."
+8. **The island closes or stops responding while a slider is
+   dragged.** (2026-10-14, Hyprland, the island config
+   `target/try/island/`) Dragging the brightness slider (and others)
+   on the dashboard folds the card or closes it, or the slider stops
+   following. **Fixed where Strand can; pending the owner's check on
+   Hyprland.** Not the config: its fold reads `card.hover ||
+   notch.hover`, and a held press keeps `hover` on its whole chain, the
+   card included (spec.md 6.3), so on headless sway a drag carried
+   below the popup keeps the card grown and the slider following, and
+   the release outside folds it (target/try/shots/input/drag15). The
+   cause is Hyprland's: it keeps the pointer on the pressed surface
+   only while some surface has keyboard focus
+   (`src/managers/input/InputManager.cpp:412-413`, v0.56.2). Without
+   one (an empty workspace) the pointer goes to whatever is under it as
+   soon as it leaves the popup's input region, the drawn card: the
+   popup gets `wl_pointer.leave`, which ends Strand's drag and drops
+   `hover` (it never hears the release), so the card folds after the
+   config's 350 ms and the popup closes after its grace, and coming
+   back with the button down drags nothing. Strand now gives a hover
+   popup its whole box as input region while a press on it is held, so
+   the drag survives leaving the card inside the popup's box (50 px
+   each side, 28 below, for the island)
+   (`crates/strand-render/tests/boxes.rs::a_held_press_takes_the_hover_popups_whole_box`,
+   which failed before). Past the popup's box Hyprland still takes the
+   pointer away and no client can keep it. decisions.md
+   m6-owner-fixes.
 9. **Sliders and scrubbers register away from the pointer.**
    (2026-10-14, Hyprland at scales 1 and 1.5, the island config
    `target/try/island/`) Where the pointer presses a slider and where

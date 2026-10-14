@@ -737,7 +737,8 @@ filling the monitor, the keyboard always).
   counts), as they are drawn this frame: the pointer passes through the
   rest of it to what is below. A travelling island (section 6.3) moves
   inside a popup wider than it, and only the island takes the pointer.
-  Any other popup takes the pointer in its whole box, gaps included.
+  While a press that went down on it is held (a slider's drag), it
+  takes its whole box. Any other popup takes the pointer in its whole box, gaps included.
   (decisions.md m6-w2-surface, 2026-10-14)
 - **Events go to the innermost node with a handler** for them.
   `propagate()` in a handler passes the event on to the next enclosing

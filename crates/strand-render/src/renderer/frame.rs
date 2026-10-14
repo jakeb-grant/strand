@@ -237,12 +237,18 @@ impl Painter for Renderer {
     /// pointer through everywhere else. Every other surface keeps the
     /// surface manager's region: a popup opened by `open:` takes clicks
     /// in its gaps as it always did (spec.md 14, decisions.md
-    /// m6-w2-surface).
+    /// m6-w2-surface). While a press that went down on the popup is
+    /// held (a slider's drag) it takes its whole box: a compositor that
+    /// does not keep the pointer on the pressed surface (Hyprland with no
+    /// keyboard focus anywhere) would otherwise send it elsewhere, and
+    /// end the drag, as soon as it leaves the drawn content
+    /// (decisions.md m6-owner-fixes, owner-testing.md bug 8).
     fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
         let s = self.surfaces.get(&surface)?;
         let hover = self.specs.get(&s.root).is_some_and(|sp| sp.hover_trigger);
         let f = s.cache.as_ref()?;
-        if !hover || f.root_paints {
+        let held = self.extras.widgets.pressed.contains(&s.root);
+        if !hover || f.root_paints || held {
             return None;
         }
         Some(f.input.clone())

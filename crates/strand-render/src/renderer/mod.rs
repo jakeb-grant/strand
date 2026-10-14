@@ -684,6 +684,19 @@ impl Renderer {
         if changed && draws {
             self.mark_node_dirty(node);
         }
+        // (m6-owner-fixes) A press held on a `trigger: hover` popup takes
+        // its input region to its whole box (`input_region`): a frame
+        // commits it.
+        if changed
+            && flag == crate::Flag::Pressed
+            && self.specs.get(&node).is_some_and(|sp| sp.hover_trigger)
+        {
+            for s in self.surfaces.values_mut() {
+                if s.root == node {
+                    s.dirty = true;
+                }
+            }
+        }
         if changed && matches!(flag, crate::Flag::Hover | crate::Flag::Pressed) {
             self.refresh_tooltip();
         }
