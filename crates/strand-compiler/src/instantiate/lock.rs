@@ -139,10 +139,7 @@ impl super::Ctx {
         if let Some(n) = notice {
             self.notices.borrow_mut().push(n.to_string());
         }
-        super::PropOut {
-            value,
-            source: out.source,
-        }
+        super::PropOut { value, ..out }
     }
 
     /// A mounted `lock`'s `open` turned from false to true.

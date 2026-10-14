@@ -694,7 +694,11 @@ filling the monitor, the keyboard always).
 - **`~` overrides the transition** for one prop:
   `width: 24 ~ $motion.bouncy`, `~ 200ms`, `~ instant`,
   `~ ease(out_back, 300ms)`, `~ bezier(0.05, 0.9, 0.1, 1.05)`. In a
-  `when`, the override applies while that `when` wins.
+  `when`, the override applies while that `when` wins. A change takes
+  the transition in effect after it: the `~` expression is evaluated
+  with the value, so `opacity: open ? 1 : 0 ~ (open ? 160ms : 1s)`
+  fades in over 160 ms and out over 1 s, as the `when` form does.
+  A change of the transition alone moves nothing.
 - **What cannot interpolate snaps**: fonts snap, shadow lists are padded
   to equal length and spring, layout lengths (`pad`) snap while paint
   offsets spring. With the desktop's reduced-motion setting on, every

@@ -179,6 +179,22 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    build of `0cba252`, with bug 6): "They behave well and I'm not
    seeing flicker."
 
+8. **A conditional transition does not switch.** (2026-10-14,
+   Hyprland, the notch config `target/try/island`; B-b) `opacity:
+   grown ? 1 : 0 ~ (grown ? ease(ease_out, 160ms) : ease(ease_in,
+   1000ms))` faded out in about 150 ms when `grown` went false; the
+   `when` form worked.
+   **Fixed.** Strand's: a `~` expression was evaluated once, when its
+   node mounted, so every change used the transition of the state it
+   mounted in (the card's box mounts with `grown` true: 160 ms both
+   ways). Width and height read the same frozen transition, so they
+   only seemed to work where the mount state's transition was the one
+   wanted. spec.md 6.6 now says a change takes the transition in
+   effect after it; the `~` is evaluated with the value
+   (`crates/strand-compiler/tests/instantiate.rs::a_conditional_transition_applies_to_the_change_that_switches_it`,
+   which failed before with 160 ms on the fade out); decisions.md
+   m6-owner-fixes. The config is right.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,
