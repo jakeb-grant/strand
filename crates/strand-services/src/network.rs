@@ -88,7 +88,7 @@ pub enum NetworkAction {
 }
 
 /// See the module docs.
-#[service(name = "network", action = NetworkAction)]
+#[service(name = "network", action = NetworkAction, refused = refused)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Network {
     /// A network connection is up. Over iwd, which knows only Wi-Fi: the
@@ -105,10 +105,20 @@ pub struct Network {
     /// visible reader reads them (a network menu that is open).
     #[store(keyed, stream)]
     pub access_points: Vec<AccessPoint>,
+    /// NetworkManager or iwd answers: false without either (or without a
+    /// system bus), so a menu can hide what cannot work.
+    pub available: bool,
     /// Joining a network failed (no password and no secret agent to ask
-    /// for one, a wrong one, out of range, timed out): `on
-    /// network.failed(ssid, error) { … }`.
+    /// for one, a wrong one, out of range, timed out, or the service not
+    /// running): `on network.failed(ssid, error) { … }`.
     pub failed: Event<(String, String)>,
+}
+
+/// A join the service could not take (no system bus, its run backing
+/// off): `failed(ssid, error)`, as a join that fails is.
+fn refused(action: &NetworkAction, error: &str) -> Option<NetworkEvent> {
+    let (NetworkAction::Connect { item } | NetworkAction::ConnectWith { item, .. }) = action;
+    Some(NetworkEvent::Failed((item.ssid.clone(), error.to_string())))
 }
 
 /// How long NetworkManager may take to accept an activation (its own
@@ -339,6 +349,8 @@ impl Nm {
             strength: joined.map(strength).unwrap_or(0.0),
             wifi: dbus::boolean(&self.manager, "WirelessEnabled").unwrap_or(false),
             access_points,
+            // Its manager object answered the last read.
+            available: !self.manager.is_empty(),
             failed: Event::default(),
         }
     }

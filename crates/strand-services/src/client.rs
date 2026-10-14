@@ -699,6 +699,36 @@ impl<S: Service> ClientInner<S> {
     /// user ([`Cx::notice`]): a [`ServiceDiagnostic`], dropped when it
     /// repeats the last one of its kind (a retry failing the same way),
     /// until a run stays up [`RETRY_MAX`] or ends cleanly.
+    /// (M6, owner-testing gap 20) Action `name` could not reach a run
+    /// (`error`): logged, and reported as the service reports the
+    /// action failing ([`Service::refused`]), applied here as the run's
+    /// own event would be.
+    fn refuse(&self, rt: &Runtime, name: &str, action: Option<&S::Action>, error: &Error) {
+        log::warn!("service `{}`: `{name}` was not taken: {error}", self.name);
+        let Some(event) = action.and_then(|a| S::refused(a, &error.to_string())) else {
+            return;
+        };
+        match self.cells.apply(rt, &event.into(), How::Report(None)) {
+            Ok(Some(applied)) => {
+                for o in self.observers.borrow().iter() {
+                    o(rt, &applied);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => log::warn!("{}: {e}", self.name),
+        }
+    }
+
+    /// (M6, owner-testing gap 20) A write to field `field` could not
+    /// reach a run (`error`): dropped and logged, the field left as the
+    /// service last reported it.
+    fn dropped_write(&self, field: &str, error: &Error) {
+        log::warn!(
+            "service `{}`: a write to `{field}` was dropped: {error}",
+            self.name
+        );
+    }
+
     fn diagnose(&self, rt: &Runtime, message: &str, notice: bool) {
         let stable = self
             .run
@@ -1458,14 +1488,33 @@ impl<S: Service> Client<S> {
         ctx: ActionCtx,
         token: bool,
     ) -> Result<(), Error> {
+        self.act_inner(rt, action, ctx, token).map_err(|(e, _)| e)
+    }
+
+    /// [`Client::act_with`], handing the action back with the error when
+    /// no run took it (what [`Service::refused`] reports it by).
+    fn act_inner(
+        &self,
+        rt: &Runtime,
+        action: S::Action,
+        ctx: ActionCtx,
+        token: bool,
+    ) -> Result<(), (Error, Option<S::Action>)> {
         let reg = self.0.reg.upgrade();
         // Actions handed back before this one go first.
         if let Some(reg) = &reg {
             reg.redeliver(rt);
         }
-        let (tx, notify, stopped) = self.0.with_run(rt, |run| {
+        let got = self.0.with_run(rt, |run| {
             (run.tx.clone(), run.notify.clone(), run.stopped.clone())
-        })?;
+        });
+        let (tx, notify, stopped) = match got {
+            Ok(r) => r,
+            Err(e) => return Err((e, Some(action))),
+        };
+        // Where a send to a run that ended under it puts the action back.
+        let back: Arc<Mutex<Option<S::Action>>> = Arc::default();
+        let put_back = back.clone();
         // While anything is handed back ([`Registry::bounced`], any
         // service's), this action joins it at the back, sent now or later:
         // one held for its token may have been handed back (its run
@@ -1491,8 +1540,11 @@ impl<S: Service> Client<S> {
             };
             let handed_back = match sent {
                 Ok(()) => false,
-                Err(_) if !later && b.is_empty() => {
+                Err(msg) if !later && b.is_empty() => {
                     drop(b);
+                    if let (Msg::Action(a), _) = msg {
+                        *lock(&put_back) = Some(a);
+                    }
                     poke(&notify);
                     return false;
                 }
@@ -1520,7 +1572,8 @@ impl<S: Service> Client<S> {
         if sent {
             Ok(())
         } else {
-            Err(not_running(&self.0.name))
+            let action = lock(&back).take();
+            Err((not_running(&self.0.name), action))
         }
     }
 
@@ -1711,8 +1764,12 @@ impl<S: Service> DynService for Client<S> {
                 S::NAME
             )));
         };
-        // A stopped service starts for the write.
-        self.0.with_run(rt, |_| ())?;
+        // A stopped service starts for the write; one that cannot run
+        // drops it (spec.md 12: a service failure is no fault).
+        if let Err(e) = self.0.with_run(rt, |_| ()) {
+            self.0.dropped_write(info.name, &e);
+            return Ok(());
+        }
         let whole = if path.is_empty() {
             value.clone()
         } else {
@@ -1768,8 +1825,12 @@ impl<S: Service> DynService for Client<S> {
         let key = record_field(item, record, key_name)
             .map_err(|e| Error::failed(format!("{}: {e}", S::NAME)))?
             .clone();
-        // A stopped service starts for the write.
-        self.0.with_run(rt, |_| ())?;
+        // A stopped service starts for the write; one that cannot run
+        // drops it, as a plain field's.
+        if let Err(e) = self.0.with_run(rt, |_| ()) {
+            self.0.dropped_write(S::FIELDS[first].name, &e);
+            return Ok(());
+        }
         let mut last = None;
         for i in lists {
             let (name, me, key2) = (S::FIELDS[i].name, Rc::downgrade(&self.0), key.clone());
@@ -1823,7 +1884,13 @@ impl<S: Service> DynService for Client<S> {
     ) -> Result<(), Error> {
         let a = <S::Action as FromCall>::from_call(name, item, args)
             .map_err(|e| Error::failed(format!("{}.{name}: {e}", S::NAME)))?;
-        self.act_with(rt, a, ctx, S::ACTIVATION.contains(&name))
+        // A service that cannot take it (its body failed and backs off)
+        // reports it as the action failing, never as the caller's error
+        // (spec.md 12; owner-testing gap 20).
+        if let Err((e, a)) = self.act_inner(rt, a, ctx, S::ACTIVATION.contains(&name)) {
+            self.0.refuse(rt, name, a.as_ref(), &e);
+        }
+        Ok(())
     }
 
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>> {

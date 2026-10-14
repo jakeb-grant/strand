@@ -4925,7 +4925,16 @@ transparent huge pages for life.
   guard held that commits with no run (after the 5 s stop, or after the
   body ended) starts one, as a write to a stopped service does. When a
   run ends (its body returned, or the stop), the cells forget the
-  writes it never answered (`Cells::forget_echoes`).
+  writes it never answered (`Cells::forget_echoes`). (M6, gap 20) An
+  action or write that reaches no run (the body failed and backs off)
+  is not `DynService`'s error, so the VM never faults on it: the write
+  is dropped and logged, and the action is logged and applied as
+  `Service::refused(&action, error) -> Option<Event>`
+  (`#[service(refused = path)]`; `None` by default), the event the
+  service reports the action failing with (`session.failed`,
+  `network.failed`, `bluetooth.failed`). A body idling without its bus
+  (`dbus::idle_without_bus`) emits the same event for each action.
+  `Client::act` still returns the refusal to Rust callers.
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
   `hostname`), `cpu` and `memory` (procfs, sampled once a second only

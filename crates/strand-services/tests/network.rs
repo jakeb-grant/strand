@@ -129,6 +129,7 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     assert_eq!(cells.ssid.get_untracked(&rt), Ok(Some("Home".to_string())));
     assert_eq!(cells.strength.get_untracked(&rt), Ok(0.82));
     assert_eq!(cells.wifi.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.available.get_untracked(&rt), Ok(true));
     assert!(names(&b, &rt).is_empty(), "nobody reads the access points");
     let scans = || mock_calls(&tokio, &conn, NM, &dev, "RequestScan").len();
     assert_eq!(scans(), 0, "no scan while nobody reads the access points");
@@ -1395,5 +1396,54 @@ fn a_repeat_while_the_join_is_activating_is_dropped() {
         *failures.lock().unwrap(),
         vec![("Cafe".to_string(), network::reason_text(9))]
     );
+    s.shutdown();
+}
+
+/// (M6, owner-testing gap 20) Where the network cannot be reached (here
+/// a system bus that does not answer, so the body fails and backs off)
+/// `available` is false, a join is `failed(ssid, error)` and the radio's
+/// write is dropped: neither is the caller's error, which a handler
+/// faulted on before (`'network' is not running`).
+#[test]
+fn an_unreachable_network_is_unavailable_and_fails_as_values() {
+    let gone = strand_services::Bus::Address("unix:path=/nonexistent/strand-test-bus".into());
+    let rt = Runtime::new();
+    let (s, b) = services(
+        &rt,
+        strand_services::Buses {
+            session: gone.clone(),
+            system: gone,
+        },
+    );
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "the failed body", || !b.network.running());
+    let cells = b.network.cells();
+    assert_eq!(cells.available.get_untracked(&rt), Ok(false));
+    let wifi = network::Network::FIELDS
+        .iter()
+        .position(|f| f.name == "wifi")
+        .unwrap();
+    b.network
+        .dynamic()
+        .write(&rt, wifi, &[], Data::Bool(true))
+        .unwrap();
+    assert_eq!(cells.wifi.get_untracked(&rt), Ok(false), "dropped");
+    let ap = AccessPoint {
+        ssid: "Home".into(),
+        ..AccessPoint::default()
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "connect", Some(&ap.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    let f = failures.lock().unwrap().clone();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].0, "Home");
+    assert!(f[0].1.contains("not running"), "{f:?}");
     s.shutdown();
 }

@@ -90,6 +90,11 @@ fn session_reads_logind_and_acts_through_it() {
     assert_eq!(cells.can_hibernate.get_untracked(&rt), Ok(false), "na");
     assert_eq!(cells.can_reboot.get_untracked(&rt), Ok(true));
     assert_eq!(cells.can_power_off.get_untracked(&rt), Ok(true));
+    assert_eq!(
+        cells.available.get_untracked(&rt),
+        Ok(true),
+        "logind answers"
+    );
 
     let act = |name: &str| {
         b.session
@@ -194,4 +199,92 @@ fn session_reads_logind_and_acts_through_it() {
         seen.lock().unwrap()
     );
     s.shutdown();
+}
+
+/// Records `session`'s events as (name, texts).
+fn record(b: &strand_services::Builtin) -> Arc<Mutex<Events>> {
+    let seen: Arc<Mutex<Events>> = Arc::default();
+    let log = seen.clone();
+    b.session.dynamic().observe(Box::new(move |_, a| {
+        if let Applied::Event { event, args } = a {
+            let name = <session::Session as Store>::EVENTS[*event].name;
+            let args = args
+                .iter()
+                .map(|d| match d {
+                    Data::Text(t) => t.to_string(),
+                    d => format!("{d:?}"),
+                })
+                .collect();
+            log.lock().unwrap().push((name.to_string(), args));
+        }
+    }));
+    seen
+}
+
+/// (M6, owner-testing gap 20) Without logind `available` is false and
+/// an action is `failed(action, error)`, never the caller's error: with
+/// a bus that has no logind (no login session), with no system bus at
+/// all (the body idles at its defaults), and with a bus that cannot be
+/// reached (the body fails and backs off, so the action never reaches a
+/// run: refused on the logic thread). Before, the last was an error the
+/// handler faulted on, and the second was dropped without a word.
+#[test]
+fn without_logind_session_is_unavailable_and_its_actions_fail_as_events() {
+    let check = |buses: strand_services::Buses, why: &str, fails: bool| {
+        let rt = Runtime::new();
+        let (s, b) = services(&rt, buses);
+        let seen = record(&b);
+        b.session.acquire(&rt);
+        assert!(s.wait_ready(&rt, Duration::from_secs(10)), "{why}");
+        rt.flush();
+        if fails {
+            // Its body failed: the action never reaches a run.
+            until(&rt, &s, "the failed body", || !b.session.running());
+        }
+        assert_eq!(
+            b.session.cells().available.get_untracked(&rt),
+            Ok(false),
+            "{why}"
+        );
+        b.session
+            .dynamic()
+            .action(&rt, "lock", None, &[], Default::default())
+            .unwrap_or_else(|e| panic!("{why}: the action is no error: {e}"));
+        until(&rt, &s, why, || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|(n, a)| n == "failed" && a.first().is_some_and(|x| x == "lock"))
+        });
+        let failed = seen.lock().unwrap().clone();
+        s.shutdown();
+        failed
+    };
+    if let Some(bus) = PrivateBus::start() {
+        let failed = check(bus.buses(), "a bus without logind", false);
+        assert!(
+            failed
+                .iter()
+                .any(|(_, a)| a[1].contains("no login session")),
+            "{failed:?}"
+        );
+    }
+    let failed = check(strand_services::Buses::none(), "no system bus", false);
+    assert!(
+        failed.iter().any(|(_, a)| a[1] == "no system bus"),
+        "{failed:?}"
+    );
+    let gone = strand_services::Bus::Address("unix:path=/nonexistent/strand-test-bus".into());
+    let failed = check(
+        strand_services::Buses {
+            session: gone.clone(),
+            system: gone,
+        },
+        "an unreachable bus",
+        true,
+    );
+    assert!(
+        failed.iter().any(|(_, a)| a[1].contains("not running")),
+        "{failed:?}"
+    );
 }

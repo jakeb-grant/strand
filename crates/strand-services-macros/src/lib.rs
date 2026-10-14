@@ -972,6 +972,7 @@ struct ServiceAttr {
     fns: Option<Path>,
     thread: bool,
     activation: Option<Expr>,
+    refused: Option<Path>,
 }
 
 /// `#[service(name = "cpu")]` on a `Store` struct, its schema text the
@@ -984,9 +985,11 @@ struct ServiceAttr {
 /// `action = T` and `call = T` (`#[derive(Call)]` enums of its actions
 /// and async methods) and `fns = path` (its `fn` methods, computed on
 /// the logic thread: `fn(&Cells, &Runtime, &str, &[Data]) ->
-/// Option<Result<Data, Error>>`), and (M5) `activation = &["launch"]`,
+/// Option<Result<Data, Error>>`), (M5) `activation = &["launch"]`,
 /// its actions sent with an xdg-activation token
-/// (`Service::ACTIVATION`).
+/// (`Service::ACTIVATION`), and (M6) `refused = path`, the event an
+/// action it cannot take is reported as (`Service::refused`:
+/// `fn(&Action, &str) -> Option<Event>`).
 #[proc_macro_attribute]
 pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut attr = ServiceAttr::default();
@@ -1005,9 +1008,11 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             attr.thread = true;
         } else if m.path.is_ident("activation") {
             attr.activation = Some(m.value()?.parse()?);
+        } else if m.path.is_ident("refused") {
+            attr.refused = Some(m.value()?.parse()?);
         } else {
             return Err(m.error(
-                "expected `name`, `schema`, `action`, `call`, `fns`, `thread` or `activation`",
+                "expected `name`, `schema`, `action`, `call`, `fns`, `thread`, `activation` or `refused`",
             ));
         }
         Ok(())
@@ -1045,6 +1050,16 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             const ACTIVATION: &'static [&'static str] = #e;
         }
     });
+    let refused = attr.refused.map(|p| {
+        quote! {
+            fn refused(
+                action: &Self::Action,
+                error: &str,
+            ) -> ::core::option::Option<<Self as #sv::Store>::Event> {
+                #p(action, error)
+            }
+        }
+    });
     let start = if attr.thread {
         quote!(#sv::Start::thread(move || #ty::run(cx)))
     } else {
@@ -1064,6 +1079,8 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             #fns
+
+            #refused
 
             fn start(cx: #sv::Cx<Self>) -> #sv::Start {
                 #start

@@ -684,6 +684,8 @@ provisional service network {
   wifi: bool rw
   /// The Wi-Fi networks in range, keyed by `ssid`.
   access_points: [AccessPoint]
+  /// NetworkManager or iwd answers.
+  available: bool
   /// Joining a network failed: `on network.failed(ssid, error) { … }`.
   event failed(ssid: text, error: text)
 }
@@ -694,6 +696,8 @@ provisional service bluetooth {
   powered: bool rw
   /// Paired devices, keyed by `address`.
   devices: [BluetoothDevice]
+  /// BlueZ answers and has an adapter.
+  available: bool
   /// Connecting or disconnecting a device failed:
   /// `on bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
@@ -724,6 +728,8 @@ provisional service session {
   can_reboot: bool
   /// Powering off is allowed.
   can_power_off: bool
+  /// logind answers.
+  available: bool
   /// Suspends the machine.
   action suspend()
   /// Hibernates the machine.

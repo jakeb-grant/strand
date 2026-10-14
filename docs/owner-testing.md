@@ -515,6 +515,14 @@ findings only.
     `bt_seen`, `fn logind()` from the `can_*` fields). Likely direction:
     a `running`/`available` field per service, or actions and writes
     failing as values.
+    **Fixed** (m6-owner-fixes, decisions.md): both. The fault was a bug
+    against spec.md 12: an action a service cannot take is now its
+    `failed` event (`session.failed("lock", …)` included) and a write
+    is dropped, neither a fault; `network.available`,
+    `bluetooth.available` and `session.available` say whether the
+    daemon answers
+    (`crates/strand-services/tests/session.rs::without_logind_session_is_unavailable_and_its_actions_fail_as_events`,
+    strand `services::tests::a_service_that_cannot_run_fails_as_values_not_faults`).
 21. **A `trigger: hover` popup cannot be opened from code.** (diagnosed,
     2026-10-14; found by the island test bar (`target/try/island`),
     headless sway; not yet reproduced minimally) It takes no `open:`

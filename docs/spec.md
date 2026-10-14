@@ -1385,7 +1385,15 @@ people can edit by hand.
   the `lock` shows the built-in password field (section 5.1).
 - **Service failures** reach the program as values (an action's error,
   an `Async`'s `.error`) and as service diagnostics; they never stop the
-  shell.
+  shell. An action of a builtin service that cannot run (its daemon or
+  bus missing) is never a runtime fault: it is logged and arrives as
+  that service's failure event where it has one (`session.failed`,
+  `network.failed`, `bluetooth.failed`), as the daemon refusing it
+  would; a write to such a service is dropped and logged, the field
+  keeping the service's last value. Where a daemon may be missing,
+  `available` says whether it answers (`network`, `bluetooth`,
+  `session`, `brightness`), so a config can hide what cannot work
+  (decisions.md m6-owner-fixes, gap 20).
 
 ## 13. The command line and IPC
 
