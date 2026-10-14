@@ -1514,7 +1514,9 @@ fn a_box_loop_through_several_bindings_is_refused() {
     assert_eq!(
         box_loops(across),
         [
-            "`width` depends on `island.box`, which it moves again: `island.box` → `width` of `item` → `item.box` → `width` of `island` → `island.box`",
+            // `item`'s width lays out the bar, the popup's box on it and so
+            // what the popup holds.
+            "`width` depends on `island.box`, which it moves again: `island.box` → `width` of `item` → `island.box`",
             "`width` depends on `item.box`, which it moves again: `item.box` → `width` of `island` → `island.box` → `width` of `item` → `item.box`",
         ]
     );
@@ -1551,9 +1553,13 @@ fn a_conditional_ids_condition_is_followed() {
     );
     let by_value = "bar Top {\n  height: 30\n  row {\n    text \"a\" { id: a; when big.box.width > 50 { id: cur } }\n    text \"b\" { id: b; when big.box.width <= 50 { id: cur } }\n    popup {\n      width: 200; height: 50\n      box { id: big; height: 20; width: cur == a ? 100 : 30 }\n    }\n  }\n}\n";
     let got = box_loops(by_value);
+    // Each condition renames on the bar, which holds the popup: what the
+    // popup holds moves with it.
     assert_eq!(
         got,
         [
+            "this `when`'s condition depends on `big.box`, which it moves again: `big.box` → the `when` naming `cur` → `big.box`",
+            "this `when`'s condition depends on `big.box`, which it moves again: `big.box` → the `when` naming `cur` → `big.box`",
             "`width` depends on `big.box`, which it moves again: `big.box` → `width` of `big` → `big.box`"
         ]
     );
@@ -1657,6 +1663,135 @@ fn a_loop_through_sizes_alone_is_a_warning() {
             "`width` depends on `a`'s size, which it moves again: `a`'s size → `width` of `b` → `b.box` → `width` of `a` → `a`'s size",
         ]
     );
+}
+
+/// (M6, the third review of the box graph) Inherited values reach into
+/// popups: a `set`, `font` or `weight` on an element, or a surface's own
+/// props, lays out every surface nested in what it sets, so a binding
+/// that moves a popup's box moves what the popup holds too, through
+/// popups inside popups. Each program here sizes a popup's content from
+/// a box inside it by one of those routes, and each is refused.
+#[test]
+fn inherited_values_reach_nested_popups() {
+    let popup =
+        |inner: &str| format!("box {{ size: 20; popup {{ width: 200; height: 50; {inner} }} }}");
+    let chip = "row { pad: $space.2; text \"c\" { id: chip } }";
+    let set = "set { $space.2: chip.box.width > 60 ? 4px : 48px }";
+    let cases = [
+        // The review's program: a token set on the row.
+        (
+            "set",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    {set}\n    {}\n  }}\n}}\n",
+                popup(chip)
+            ),
+        ),
+        // The popup's own size through an ancestor's token.
+        (
+            "popup width",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    {set}\n    box {{ size: 20; popup {{ width: $space.2 * 4; height: 50; text \"c\" {{ id: chip }} }} }}\n  }}\n}}\n"
+            ),
+        ),
+        // An `if` mounting a `set`.
+        (
+            "if",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    if chip.box.width > 60 {{ set {{ $space.2: 4px }} }}\n    {}\n  }}\n}}\n",
+                popup(chip)
+            ),
+        ),
+        // An inherited prop on an element, and on the surface itself.
+        (
+            "weight",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    weight: chip.box.width > 60 ? 700 : 400\n    {}\n  }}\n}}\n",
+                popup("text \"c\" { id: chip }")
+            ),
+        ),
+        (
+            "surface",
+            format!(
+                "bar Top {{\n  height: 30\n  weight: chip.box.width > 60 ? 700 : 400\n  row {{ {} }}\n}}\n",
+                popup("text \"c\" { id: chip }")
+            ),
+        ),
+        // A popup inside a popup, set from the outer one's content.
+        (
+            "nested",
+            format!(
+                "bar Top {{\n  height: 30\n  row {{\n    {}\n  }}\n}}\n",
+                popup(&format!("{set}; {}", popup(chip)))
+            ),
+        ),
+    ];
+    for (what, src) in cases {
+        let got = box_loops(&src);
+        assert!(
+            got.iter().any(|m| m.ends_with("`chip.box`")),
+            "{what}: {got:?}\n{src}"
+        );
+    }
+}
+
+/// (M6, the third review) The dependences settle however long a chain
+/// is: 100 `let`s, one a round, then a width on the last.
+#[test]
+fn a_long_let_chain_is_followed_to_its_end() {
+    let mut src =
+        String::from("bar Top {\n  height: 30\n  row {\n    id: r\n    let v0 = r.box.width\n");
+    for i in 1..100 {
+        src.push_str(&format!("    let v{i} = v{} + 1\n", i - 1));
+    }
+    src.push_str("    box { width: v99 }\n  }\n}\n");
+    let got = box_loops(&src);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].starts_with("`width` depends on `r.box`"), "{got:?}");
+}
+
+/// (M6, the third review) A service field a handler writes from a box
+/// carries the box to every read of it: the backlight level set from a
+/// row's width sizes a box in that row.
+#[test]
+fn a_service_field_written_from_a_box_is_followed() {
+    let src = "bar Top {\n  height: 30\n  row {\n    id: r\n    on change r.box.width { brightness.level = r.box.width / 1000 }\n    box { width: brightness.level * 100 }\n  }\n}\n";
+    let got = box_loops(src);
+    assert_eq!(
+        got,
+        [
+            "`width` depends on `r.box`, which it moves again: `r.box` → `width` of a `box` → `r.box`"
+        ]
+    );
+    // Read for paint only, it loads.
+    one(&src.replace(
+        "box { width: brightness.level * 100 }",
+        "box { opacity: brightness.level }",
+    ));
+}
+
+/// (M6, the third review) A bar's thickness is its exclusive zone, which
+/// places and sizes the other layer surfaces: a top bar sized from a box
+/// on a side bar (through a state) moves that box again. A bar's paint
+/// may follow it, and so may a panel's size, which reserves nothing.
+#[test]
+fn a_bars_exclusive_zone_moves_the_other_layer_surfaces() {
+    let two_bars = "state h = 0\nbar Top {\n  height: h + 10\n  text \"t\"\n}\nbar Side {\n  edge: left; width: 40\n  col { box { id: s; height: 20 }; on change s.box.y { h = s.box.y } }\n}\n";
+    let got = box_loops(two_bars);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].starts_with(
+            "`height` depends on `s.box`, which it moves again: `s.box` → `height` of a `bar`"
+        ),
+        "{got:?}"
+    );
+    // Its content sizes a bar with no thickness written: the same.
+    let auto = "state h = 0\nbar Top {\n  text \"t\" { height: h + 10 }\n}\nbar Side {\n  edge: left; width: 40\n  col { box { id: s; height: 20 }; on change s.box.y { h = s.box.y } }\n}\n";
+    assert_eq!(box_loops(auto).len(), 1);
+    one(&two_bars.replace("height: h + 10", "height: 30; opacity: h > 5 ? 1 : 0.5"));
+    one(&two_bars.replace(
+        "bar Top {\n  height: h + 10",
+        "panel Top {\n  height: h + 10",
+    ));
 }
 
 /// (M6) spec.md 6.3's travelling island, as written there, checks with

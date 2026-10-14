@@ -262,17 +262,13 @@ check::box_layout_loop
 
 check::box_layout_loop
 
-  × `width` depends on `isl.box`, which it moves again: `isl.box` → `width` of `item` → `item.box`
-  │ → `width` of `isl` → `isl.box`
+  × `width` depends on `isl.box`, which it moves again: `isl.box` → `width` of `item` → `isl.box`
     ╭─[box_layout_loop.strand:47:26]
  46 │     // A bar item and a popup's content each sized from the other.
  47 │     text "i" { id: item; width: isl.box.width }
     ·                          ──┬──
     ·                            ╰── a box loop
  48 │     box { size: 20; popup { width: 100; height: 40; box { id: isl; height: 10; width: item.box.width } } }
-    ·                                                                                ──┬──
-    ·                                                                                  ╰── the loop goes on here
- 49 │   }
     ╰────
   help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
         box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
@@ -292,6 +288,99 @@ check::box_layout_loop
     ·                                                                                ──┬──
     ·                                                                                  ╰── a box loop
  49 │   }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `$space.2` depends on `chip.box`, which it moves again: `chip.box` → `$space.2` of a `row` →
+  │ `chip.box`
+    ╭─[box_layout_loop.strand:57:11]
+ 56 │     // A token on the row, read inside the popup.
+ 57 │     set { $space.2: chip.box.width > 60 ? 4px : 48px }
+    ·           ────┬───
+    ·               ╰── a box loop
+ 58 │     box { size: 20; popup { width: 200; height: 50; row { pad: $space.2; text "c" { id: chip } } } }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `$space.2` depends on `chip.box`, which it moves again: `chip.box` → `$space.2` of a `row` →
+  │ `chip.box`
+    ╭─[box_layout_loop.strand:65:11]
+ 64 │     // The popup's own size through an ancestor's token.
+ 65 │     set { $space.2: chip.box.width > 60 ? 4px : 48px }
+    ·           ────┬───
+    ·               ╰── a box loop
+ 66 │     box { size: 20; popup { width: $space.2 * 4; height: 50; text "c" { id: chip } } }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × this `if` depends on `chip.box`, which it moves again: `chip.box` → an `if` → `chip.box`
+    ╭─[box_layout_loop.strand:73:5]
+ 72 │     // An `if` mounting a `set`.
+ 73 │     if chip.box.width > 60 { set { $space.2: 4px } }
+    ·     ────────────────────────┬───────────────────────
+    ·                             ╰── a box loop
+ 74 │     box { size: 20; popup { width: 200; height: 50; row { pad: $space.2; text "c" { id: chip } } } }
+    ╰────
+  help: choose with something layout does not change (a state, a service value), and move or fade
+        what follows the box with paint props (`x`, `opacity`)
+
+check::box_layout_loop
+
+  × `weight` depends on `chip.box`, which it moves again: `chip.box` → `weight` of a `bar` →
+  │ `chip.box`
+    ╭─[box_layout_loop.strand:80:3]
+ 79 │   // A surface's own inherited prop.
+ 80 │   weight: chip.box.width > 60 ? 700 : 400
+    ·   ───┬──
+    ·      ╰── a box loop
+ 81 │   row {
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `font` depends on `chip.box`, which it moves again: `chip.box` → `font` of a `row` →
+  │ `chip.box`
+    ╭─[box_layout_loop.strand:83:5]
+ 82 │     // An element's.
+ 83 │     font: chip.box.width > 60 ? $font.ui : $font.ui
+    ·     ──┬─
+    ·       ╰── a box loop
+ 84 │     box { size: 20; popup { width: 200; height: 50; text "c" { id: chip } } }
+    ╰────
+  help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
+        box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's
+        effects, the size of a `place: absolute` element it is not inside, or what is on another
+        surface and reads nothing back)
+
+check::box_layout_loop
+
+  × `$space.2` depends on `chip.box`, which it moves again: `chip.box` → `$space.2` of a `popup` →
+  │ `chip.box`
+    ╭─[box_layout_loop.strand:93:13]
+ 92 │       // A popup inside a popup.
+ 93 │       set { $space.2: chip.box.width > 60 ? 4px : 48px }
+    ·             ────┬───
+    ·                 ╰── a box loop
+ 94 │       box { size: 20; popup { width: 100; height: 40; row { pad: $space.2; text "c" { id: chip } } } }
     ╰────
   help: `.box` is where layout put an element, a frame late: a value on it may set what moves no
         box it depends on (paint props such as `x`, `y`, `opacity` and colours, a surface's

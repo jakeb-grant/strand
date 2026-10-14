@@ -413,28 +413,35 @@ filling the monitor, the keyboard always).
   costs nothing. (decisions.md m6-w2-surface, 2026-10-14)
 - **What a box may drive.** Anything that does not lay that box out
   again. The checker follows what each value depends on, directly or
-  through `let`s, the `state`s handlers set from it, `fn`s, component
-  parameters, `for` bindings and conditional ids (the conditions that
-  pick the node), and refuses every loop, however many bindings and
-  surfaces it passes through (`check::box_layout_loop`, which shows the
-  loop's path). What a binding lays out follows from what it sets:
-  paint props (`x`, `y`, `opacity`, colours, transforms) lay out
-  nothing, nor do a surface's effects (`bg`, `opacity`, `shadow`,
+  through `let`s, the `state`s and service fields handlers set from
+  it, `fn`s, component parameters, `for` bindings and conditional ids
+  (the conditions that pick the node), and refuses every loop, however
+  many bindings and surfaces it passes through (`check::box_layout_loop`,
+  which shows the loop's path). What a binding lays out follows from
+  what it sets: paint props (`x`, `y`, `opacity`, colours, transforms)
+  lay out nothing, nor do a surface's effects (`bg`, `opacity`, `shadow`,
   `blur`, …), corners and `open`; the size of an element that is always
   `place: absolute` (no `when` or pose changes its `place`) lays out it
   and what is inside it; any other layout prop, an `if`, `for`, `match`,
   `pages`' `current`, a `segmented`'s `options`, a `set { $token: … }`
   and a `when { id: … }`'s condition lay out their whole surface, and a
   surface's own size and placement also the popups opened from it; a
-  component's or file's tokens reach every surface. So a popup may be
-  sized from the bar item it opens from, unless that item is sized from
-  the popup; two absolute boxes may not each be sized from the other.
+  `bar`'s size, `edge`, `margin`, `open` and `screens` (its exclusive
+  zone), and what lays out a bar sized by its content, lay out every
+  `bar`, `panel` and `osd`; a component's or file's tokens reach every
+  surface. What lays out a popup's own box lays out what the popup
+  holds too, and the popups inside it: inherited values (a `set`,
+  `font`, `weight`, a surface's own props) reach into the popups nested
+  in what they set. So a popup may be sized from the bar item it opens
+  from, unless that item is sized from the popup; two absolute boxes
+  may not each be sized from the other.
   `name.width` and `name.height` of another node arrive a frame late
   like `name.box` and are followed too, but they loaded before `.box`
   (section 14): a loop through them with no `.box` on it is a warning,
   `check::size_loop`, naming the path, and still loads (a node's own
-  size, in its own props, stays a container query). A box read through a node passed as a value counts as any
-  box: it may drive only what lays out nothing.
+  size, in its own props, stays a container query). A box read through
+  a node passed as a value counts as any box: it may drive only what
+  lays out nothing.
 - **Conditional ids.** `id: name` in a `when` block names the node
   while the condition holds: `for n in ids key n { box { when n ==
   current { id: cur } } }` names the current copy, read outside the

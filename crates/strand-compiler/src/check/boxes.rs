@@ -21,18 +21,29 @@
 //!   own box included (its size and its anchor place it);
 //! - any other prop of a surface moves every box on it and the boxes of
 //!   the popups opened from it;
+//! - a `bar`'s size, `edge`, `margin`, `open` or `screens` change its
+//!   exclusive zone, which places and sizes every layer surface (`bar`,
+//!   `panel`, `osd`) on its output: every box on each of them (which
+//!   output is not known here); so does whatever lays out a bar whose
+//!   thickness is its content's;
 //! - an `if`, `for` or `match`, `pages`' `current` and `options`, a `set
 //!   { $token: … }` and the condition of a `when { id: … }` mount,
 //!   restyle or rename on their surface: every box on it. A component's
-//!   or a file's tokens reach anywhere: every box.
+//!   or a file's tokens reach anywhere: every box;
+//! - and what moves a popup's own box moves every box on it, and so on
+//!   through popups inside it: inherited values (`set`, `font`, `weight`,
+//!   a surface's own props) reach into the popups nested in what they
+//!   set, which render lays out again.
 //!
-//! What a value depends on is followed through `let`s, `state`s (what
-//! handlers assign them, and under which conditions), `fn`s, component
-//! parameters (from each call), `for` bindings and conditional ids (the
-//! conditions that pick the node, for every read of the name). `n.width`
-//! and `n.height` are the same frame-late fact as `n.box`, but for an
-//! element's own size read in its own props (a container query, which
-//! switches with hysteresis). A box the checker cannot place (a node
+//! What a value depends on is followed, until nothing changes, through
+//! `let`s, `state`s and service fields (what handlers assign them, and
+//! under which conditions), `fn`s, component parameters (from each
+//! call), `for` bindings and conditional ids (the conditions that pick
+//! the node, for every read of the name). `n.width` and `n.height` are
+//! the same frame-late fact as `n.box`, but for an element's own size
+//! read in its own props (a container query, which switches with
+//! hysteresis); a cycle through them with no `n.box` on it loaded before
+//! `.box` existed and is a warning, `check::size_loop` (spec.md 14). A box the checker cannot place (a node
 //! passed as a value) may be any box: it may drive only what moves none.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -80,6 +91,12 @@ struct Site {
     absolute: bool,
     /// A `slot` lies inside it: what a call passes is inside it too.
     slot: bool,
+    /// A top-level `bar`, `panel` or `osd`: a layer surface, which a
+    /// bar's exclusive zone moves.
+    layer: bool,
+    /// A `bar` whose thickness is its content's (no `width`, `height` or
+    /// `size`): what lays it out changes its exclusive zone.
+    auto_zone: bool,
     kind: String,
     name: Option<String>,
 }
@@ -89,6 +106,9 @@ struct Site {
 enum At {
     /// A prop of the element that can move boxes.
     Prop(NodeIdx),
+    /// A `bar`'s prop that changes its exclusive zone (its size, `edge`,
+    /// `margin`, `open`, `screens`): it moves every layer surface.
+    Zone(NodeIdx),
     /// An `if`, `for` or `match`: its body, the surface around it and the
     /// element it is in.
     Mount(Body, Option<NodeIdx>, Option<NodeIdx>),
@@ -129,6 +149,8 @@ struct Flow<'h> {
     calls: HashMap<DefId, Vec<NodeIdx>>,
     locals: HashMap<LocalId, Taint>,
     defs: HashMap<DefId, Taint>,
+    /// A service field (`brightness.level`) → what handlers write it from.
+    fields: HashMap<(String, String), Taint>,
     uses: Vec<Use<'h>>,
     /// The `fn` bodies and handler/timer bodies with their conditions, for
     /// the fixpoint: (statements, what triggers them).
@@ -227,7 +249,7 @@ impl Checker<'_> {
                 continue;
             }
             let own = match u.at {
-                At::Prop(e) | At::Name(e) => Some(e),
+                At::Prop(e) | At::Zone(e) | At::Name(e) => Some(e),
                 At::Mount(_, _, around) => around,
                 At::Everywhere => None,
             };
@@ -509,6 +531,13 @@ impl<'c, 'k> Walk<'c, 'k> {
             && places.iter().all(|p| is_absolute(p))
             && e.props.iter().any(|p| p.name == "place");
         let name = e.id.map(|l| self.checker.locals[l.0 as usize].name.clone());
+        let top = is_surface && self.surfaces.is_empty() && matches!(self.body, Body::Top(..));
+        let layer = top && matches!(kind_name.as_str(), "bar" | "panel" | "osd");
+        let auto_zone = top
+            && kind_name == "bar"
+            && !props
+                .iter()
+                .any(|(p, _)| matches!(p.name.as_str(), "width" | "height" | "size"));
         flow.sites.insert(
             e.node,
             Site {
@@ -518,6 +547,8 @@ impl<'c, 'k> Walk<'c, 'k> {
                 is_surface,
                 absolute,
                 slot: false,
+                layer,
+                auto_zone,
                 kind: kind_name.clone(),
                 name,
             },
@@ -570,7 +601,7 @@ impl<'c, 'k> Walk<'c, 'k> {
                 if let (Some(a), Some(s)) = (&e.arg, schema)
                     && let Some(name) = &s.arg_prop
                 {
-                    checked.push((name.clone(), a.span, vec![a]));
+                    checked.push((name.clone(), name.clone(), a.span, vec![a]));
                 }
                 for (p, cond) in &props {
                     if p.name == "id" {
@@ -578,20 +609,25 @@ impl<'c, 'k> Walk<'c, 'k> {
                     }
                     let mut exprs = vec![&p.value];
                     exprs.extend(*cond);
-                    checked.push((p.name.clone(), p.span, exprs.clone()));
+                    checked.push((p.name.clone(), p.name.clone(), p.span, exprs.clone()));
                     for s in &p.sub {
                         let mut exprs = vec![&s.value];
                         exprs.extend(*cond);
-                        checked.push((s.name.clone(), s.span, exprs));
+                        checked.push((s.name.clone(), p.name.clone(), s.span, exprs));
                     }
                 }
-                for (name, span, exprs) in checked {
-                    if !moves_boxes(&name, k, is_surface) {
+                // Each with the prop it is in (a sub-prop's parent).
+                for (name, of, span, exprs) in checked {
+                    let at = if layer && k == "bar" && zone_prop(&of) {
+                        At::Zone(e.node)
+                    } else if moves_boxes(&name, k, is_surface) {
+                        At::Prop(e.node)
+                    } else {
                         continue;
-                    }
+                    };
                     flow.uses.push(Use {
                         module: self.module,
-                        at: At::Prop(e.node),
+                        at,
                         what: name,
                         span,
                         exprs,
@@ -610,6 +646,15 @@ impl<'c, 'k> Walk<'c, 'k> {
         }
         self.ancestors.pop();
     }
+}
+
+/// Whether `prop` on a `bar` changes its exclusive zone, which moves the
+/// other layer surfaces on its output.
+fn zone_prop(prop: &str) -> bool {
+    matches!(
+        prop,
+        "width" | "height" | "size" | "edge" | "margin" | "open" | "screens"
+    )
 }
 
 /// Whether `prop`, set on an element of kind `kind`, can move a box: a
@@ -728,6 +773,18 @@ fn target_def(e: &Expr) -> Option<DefId> {
     }
 }
 
+/// The service field an assignment target writes (`brightness.level`).
+fn target_field(e: &Expr) -> Option<(String, String)> {
+    match &e.kind {
+        ExprKind::Field { base, name, .. } => match &base.kind {
+            ExprKind::Service(s) => Some((s.clone(), name.clone())),
+            _ => target_field(base),
+        },
+        ExprKind::Index { base, .. } => target_field(base),
+        _ => None,
+    }
+}
+
 /// Whether two sets of surfaces may meet (`None`: not known, so they may).
 fn meet(a: Option<&BTreeSet<NodeIdx>>, b: Option<&BTreeSet<NodeIdx>>) -> bool {
     match (a, b) {
@@ -787,6 +844,14 @@ impl Flow<'_> {
     fn taint(&self, c: &Checker<'_>, e: &Expr) -> Taint {
         let mut out = Taint::new();
         each(e, &mut |x| match &x.kind {
+            // A service field a handler writes from a box.
+            ExprKind::Field { base, name, .. } if matches!(base.kind, ExprKind::Service(_)) => {
+                if let ExprKind::Service(s) = &base.kind
+                    && let Some(t) = self.fields.get(&(s.clone(), name.clone()))
+                {
+                    out.extend(t.iter().copied());
+                }
+            }
             ExprKind::Local(l) => {
                 if let Some(t) = self.locals.get(l) {
                     out.extend(t.iter().copied());
@@ -846,9 +911,10 @@ impl Flow<'_> {
     /// Follows dependences through `let`s, `state`s, `fn`s, parameters,
     /// bindings and conditional ids until nothing changes.
     fn settle(&mut self, c: &Checker<'_>) {
-        // Each round adds at least one source somewhere or stops; the
-        // bound only guards against a mistake here.
-        for _ in 0..64 {
+        // Each round adds at least one source somewhere or stops: the sets
+        // only grow, and each is finite (the sources a program names), so
+        // it ends, however long a chain is.
+        loop {
             let mut changed = false;
             let mut add_local = |flow: &mut Self, l: LocalId, t: Taint| {
                 if t.is_empty() {
@@ -875,12 +941,20 @@ impl Flow<'_> {
             }
             // Assignments in handlers, timers and fns, and `let`s in them.
             let mut local_adds: Vec<(LocalId, Taint)> = Vec::new();
+            let mut field_adds: Vec<((String, String), Taint)> = Vec::new();
             for (stmts, trig) in &self.bodies {
                 let mut base = Taint::new();
                 for t in trig {
                     base.extend(self.taint(c, t));
                 }
-                self.stmt_flows(c, stmts, &base, &mut def_adds, &mut local_adds);
+                self.stmt_flows(
+                    c,
+                    stmts,
+                    &base,
+                    &mut def_adds,
+                    &mut local_adds,
+                    &mut field_adds,
+                );
             }
             for f in &self.fns {
                 // A `fn`'s value depends on everything its body reads.
@@ -889,7 +963,14 @@ impl Flow<'_> {
                     all.extend(self.taint(c, x));
                 });
                 def_adds.push((f.def, all));
-                self.stmt_flows(c, &f.body, &Taint::new(), &mut def_adds, &mut local_adds);
+                self.stmt_flows(
+                    c,
+                    &f.body,
+                    &Taint::new(),
+                    &mut def_adds,
+                    &mut local_adds,
+                    &mut field_adds,
+                );
             }
             // A `fn`'s parameters take what its callers pass.
             let fns: HashMap<DefId, &hir::FnDecl> = self.fns.iter().map(|f| (f.def, *f)).collect();
@@ -946,6 +1027,15 @@ impl Flow<'_> {
                 have.extend(t);
                 changed |= have.len() != before;
             }
+            for (k, t) in field_adds {
+                if t.is_empty() {
+                    continue;
+                }
+                let have = self.fields.entry(k).or_default();
+                let before = have.len();
+                have.extend(t);
+                changed |= have.len() != before;
+            }
             for (a, t) in alias_adds {
                 if t.is_empty() {
                     continue;
@@ -970,6 +1060,7 @@ impl Flow<'_> {
         base: &Taint,
         defs: &mut Vec<(DefId, Taint)>,
         locals: &mut Vec<(LocalId, Taint)>,
+        fields: &mut Vec<((String, String), Taint)>,
     ) {
         let mut ctx = Vec::new();
         let mut walk = |stmts: &[Stmt], ctx: &mut Vec<&Expr>| {
@@ -980,9 +1071,11 @@ impl Flow<'_> {
                 }
                 match &s.kind {
                     StmtKind::Assign { target, value, .. } => {
+                        under.extend(self.taint(c, value));
                         if let Some(d) = target_def(target) {
-                            under.extend(self.taint(c, value));
                             defs.push((d, under));
+                        } else if let Some(k) = target_field(target) {
+                            fields.push((k, under));
                         }
                     }
                     StmtKind::Let { local, value } => {
@@ -1103,7 +1196,13 @@ impl Flow<'_> {
                 .map(|(n, _)| *n)
                 .collect()
         };
-        match at {
+        let layers: BTreeSet<NodeIdx> = self
+            .sites
+            .iter()
+            .filter(|(_, s)| s.layer)
+            .map(|(n, _)| *n)
+            .collect();
+        let mut out = match at {
             At::Prop(e) => {
                 let Some(site) = self.sites.get(&e) else {
                     return on.keys().copied().collect();
@@ -1111,7 +1210,8 @@ impl Flow<'_> {
                 let t = self.target_surfaces(e);
                 if site.absolute && !site.is_surface {
                     // Itself and what is inside it, on its own surface (a
-                    // popup inside it moves; what the popup holds does not).
+                    // popup inside it moves, and with it what it holds,
+                    // below).
                     on.iter()
                         .filter(|(b, s)| {
                             meet(s.as_ref(), t.as_ref()) && self.inside(**b, e, &mut Vec::new())
@@ -1122,9 +1222,41 @@ impl Flow<'_> {
                     boxes_on(t.as_ref())
                 }
             }
+            // A bar's exclusive zone places and sizes every layer surface
+            // on its output (which output is not known here: all of them).
+            At::Zone(_) => boxes_on(Some(&layers)),
             At::Name(e) => boxes_on(self.target_surfaces(e).as_ref()),
             At::Mount(body, surface, _) => boxes_on(self.around(body, surface).as_ref()),
-            At::Everywhere => on.keys().copied().collect(),
+            At::Everywhere => return on.keys().copied().collect(),
+        };
+        // What moves a surface's box moves what is on it: inherited values
+        // (`set`, `font`, `weight`, a surface's own props) reach into the
+        // popups nested in what they set, which render lays out again, and
+        // a bar sized by its content changes its exclusive zone.
+        loop {
+            let moved: BTreeSet<NodeIdx> = out
+                .iter()
+                .filter(|n| self.sites.get(n).is_some_and(|s| s.is_surface))
+                .copied()
+                .collect();
+            let zone = out
+                .iter()
+                .any(|n| self.sites.get(n).is_some_and(|s| s.auto_zone));
+            let more: Vec<NodeIdx> = on
+                .iter()
+                .filter(|(b, s)| {
+                    !out.contains(b)
+                        && match s {
+                            Some(s) => !s.is_disjoint(&moved) || (zone && !s.is_disjoint(&layers)),
+                            None => !moved.is_empty(),
+                        }
+                })
+                .map(|(n, _)| *n)
+                .collect();
+            if more.is_empty() {
+                return out;
+            }
+            out.extend(more);
         }
     }
 
@@ -1217,7 +1349,7 @@ impl Flow<'_> {
             None => "an element".into(),
         };
         match u.at {
-            At::Prop(e) => format!("`{}` of {}", u.what, of(e)),
+            At::Prop(e) | At::Zone(e) => format!("`{}` of {}", u.what, of(e)),
             At::Mount(..) if u.what == "if" => "an `if`".into(),
             At::Mount(..) => format!("a `{}`", u.what),
             At::Name(_) => format!("the `when` naming `{}`", u.what),

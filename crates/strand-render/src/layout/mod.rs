@@ -160,8 +160,9 @@ struct Build<'a> {
     /// animations spring) and count as zero: the overhang is the
     /// shadows' at rest, so sliding a shadowed toast never resizes the
     /// buffer, and content moved past it is clipped to the surface.
-    /// (M6) The flag: an absolute node that `x` or `y` moves; on a popup
-    /// (an island travelling across it) its overhang does not follow it.
+    /// (M6) The flag: an absolute node that `x` or `y` moves; on a
+    /// `trigger: hover` popup (an island travelling across it) its
+    /// overhang does not follow it.
     shadows: Vec<ShadowAt>,
     vertical_split: bool,
     /// Sizes springs (and exit poses) force on nodes this pass.
@@ -446,8 +447,13 @@ pub(crate) fn layout(
     // Shadow reach past the root's box.
     if let Some(rb) = out.rects.get(&root).copied() {
         let mut o = Insets::default();
-        // (M6) On a popup, an island travels across it.
-        let popup = tree.get(root).is_some_and(|n| n.kind == NodeKind::Popup);
+        // (M6) On a `trigger: hover` popup, an island travels across it.
+        // Only there: an `open:` popup's buffer stays as on `main`
+        // (spec.md 14).
+        let island = tree.get(root).is_some_and(|n| {
+            n.kind == NodeKind::Popup
+                && matches!(n.get(Prop::Trigger), Some(PropValue::Keyword(k)) if k == "hover")
+        });
         for (id, (ox, oy), moves, list) in &b.shadows {
             let Some(r) = out.rects.get(id) else { continue };
             let r = LogicalRect::new(r.x + ox, r.y + oy, r.w, r.h);
@@ -463,7 +469,7 @@ pub(crate) fn layout(
                 o.top = o.top.max(rb.y - (r.y + dy - reach));
                 o.right = o.right.max(r.x + r.w + dx + reach - (rb.x + rb.w));
                 o.bottom = o.bottom.max(r.y + r.h + dy + reach - (rb.y + rb.h));
-                if *moves && popup {
+                if *moves && island {
                     // (M6) It may touch any edge of the popup as it moves
                     // inside it: the reach is the one there, so the
                     // overhang (the buffer's size and the popup's place)

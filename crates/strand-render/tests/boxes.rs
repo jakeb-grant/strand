@@ -544,6 +544,36 @@ fn a_shadowed_island_keeps_its_popup_still() {
     }
 }
 
+/// (M6, spec.md 14) Only a `trigger: hover` popup reserves its moving
+/// island's shadow reach at every edge: an `open:` popup's buffer is
+/// main's, the shadow's reach from where the island is (x: 0, 46 wide,
+/// 40 tall in a 186 by 50 popup; a 24 px blur reaches 37 px, 6 px down),
+/// so it gains nothing on the right and 33 px below, not 37 and 43.
+#[test]
+fn an_open_popups_shadow_overhang_is_mains() {
+    // Placed at x 0 by a constant: the shell does not place a popup again
+    // when its overhang changes, as a compositor would.
+    let shadowed = ISLAND
+        .replace(
+            "          bg: #ff0000\n",
+            "          bg: #ff0000; shadow: 0 6px 24px\n",
+        )
+        .replace("x: it.box.x - pop.box.x - 8 ~ spring(300, 1)", "x: 0");
+    let opened = shadowed.replace("        trigger: hover\n", "        open: hovered > 0\n");
+    let (_, spec) = island_shell(&opened);
+    assert_eq!((spec.width, spec.height), (Some(186.0), Some(50.0)));
+    let o = spec.overhang;
+    assert_eq!(
+        (o.top, o.right, o.bottom, o.left),
+        (31.0, 0.0, 33.0, 37.0),
+        "{spec:?}"
+    );
+    // The hover island's popup keeps the reach at every edge.
+    let (_, spec) = island_shell(&shadowed);
+    let o = spec.overhang;
+    assert_eq!((o.top, o.right, o.bottom, o.left), (31.0, 37.0, 43.0, 37.0));
+}
+
 /// Takes render's layout facts, hands them to logic and its answer back,
 /// and returns them.
 fn take_facts(sh: &mut Shell) -> Vec<(NodeId, LogicalRect)> {

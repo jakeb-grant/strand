@@ -48,3 +48,50 @@ bar Top {
     box { size: 20; popup { width: 100; height: 40; box { id: isl; height: 10; width: item.box.width } } }
   }
 }
+// Inherited values reach into popups: what moves a popup's box lays out
+// what it holds, through popups inside popups.
+bar Tokens {
+  height: 30
+  row {
+    // A token on the row, read inside the popup.
+    set { $space.2: chip.box.width > 60 ? 4px : 48px }
+    box { size: 20; popup { width: 200; height: 50; row { pad: $space.2; text "c" { id: chip } } } }
+  }
+}
+bar PopupWidth {
+  height: 30
+  row {
+    // The popup's own size through an ancestor's token.
+    set { $space.2: chip.box.width > 60 ? 4px : 48px }
+    box { size: 20; popup { width: $space.2 * 4; height: 50; text "c" { id: chip } } }
+  }
+}
+bar MountedSet {
+  height: 30
+  row {
+    // An `if` mounting a `set`.
+    if chip.box.width > 60 { set { $space.2: 4px } }
+    box { size: 20; popup { width: 200; height: 50; row { pad: $space.2; text "c" { id: chip } } } }
+  }
+}
+bar Inherited {
+  height: 30
+  // A surface's own inherited prop.
+  weight: chip.box.width > 60 ? 700 : 400
+  row {
+    // An element's.
+    font: chip.box.width > 60 ? $font.ui : $font.ui
+    box { size: 20; popup { width: 200; height: 50; text "c" { id: chip } } }
+  }
+}
+bar Nested {
+  height: 30
+  row {
+    box { size: 20; popup {
+      width: 200; height: 50
+      // A popup inside a popup.
+      set { $space.2: chip.box.width > 60 ? 4px : 48px }
+      box { size: 20; popup { width: 100; height: 40; row { pad: $space.2; text "c" { id: chip } } } }
+    } }
+  }
+}
