@@ -38,6 +38,8 @@ fn an_idle_compositor_wakes_no_service_thread() {
     let Some(sway) = Sway::start("an_idle_compositor_wakes_no_service_thread") else {
         return;
     };
+    // No link to patch in late, waking the service while it should idle.
+    common::no_desktop_entries();
     let (tx, rx) = std::sync::mpsc::channel::<Vec<WmChange>>();
     let config = WmConfig {
         backend: Some(Backend::Sway {
