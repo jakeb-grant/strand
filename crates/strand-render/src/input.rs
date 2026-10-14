@@ -621,6 +621,15 @@ impl Router {
         }
     }
 
+    /// (m6-owner-fixes) Whether a button that went down on `surface` is
+    /// still held (the compositor keeps the pointer there until it is
+    /// let go).
+    pub fn held(&self, surface: SurfaceId) -> bool {
+        self.pressed.contains_key(&surface)
+            || self.right_down.contains_key(&surface)
+            || self.middle_down.contains_key(&surface)
+    }
+
     /// (M4) The last pointer position on `surface`, while the pointer is
     /// over it (`parallax` and `tilt` read it when they flatten).
     pub fn pointer(&self, surface: SurfaceId) -> Option<LogicalPoint> {

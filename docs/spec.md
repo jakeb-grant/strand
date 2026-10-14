@@ -538,7 +538,9 @@ filling the monitor, the keyboard always).
 - A node's `hover` is true while the pointer is over it or over one of
   its descendants on the same surface. A `popup` is a surface of its
   own: the pointer on a popup does not hover the element it is anchored
-  to.
+  to. A popup that opens or grows under a pointer that has not moved
+  is under the pointer at once, as if it had moved (a compositor may
+  wait for the next motion to say so; decisions.md m6-owner-fixes).
 - **`trigger: hover`** on a `popup` gives its open state to the pointer.
   It opens while the pointer is on the element it is anchored to, after
   its `delay` (none by default). It stays open while the pointer is on
