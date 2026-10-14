@@ -3137,7 +3137,7 @@ fn the_specs_travelling_island_checks() {
 /// a name in scope always was; a `when`'s `id: a` names nothing, since
 /// `a` is already a file whose `a.Row` still reads, and nor does one
 /// named like a component two files share; and a box's `float` written
-/// into a state started from a whole number widens it.
+/// into a state started from a whole number loads.
 #[test]
 fn file_stems_and_shared_names_meet_ids_and_boxes() {
     let row = |t: &str| format!("component Row {{ text \"{t}\" }}\n");

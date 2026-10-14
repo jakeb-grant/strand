@@ -1308,8 +1308,8 @@ impl Flow<'_> {
                 let via_box = reads.get(v).is_some_and(|r| r.boxes.contains(&x));
                 for m in moves.get(v).into_iter().flatten() {
                     let next = (*m, boxed || via_box);
-                    if !from.contains_key(&next) {
-                        from.insert(next, Some(((x, boxed), *v)));
+                    if let std::collections::hash_map::Entry::Vacant(e) = from.entry(next) {
+                        e.insert(Some(((x, boxed), *v)));
                         queue.push_back(next);
                     }
                 }
