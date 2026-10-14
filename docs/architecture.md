@@ -1750,8 +1750,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
 
 - **Surfaces**: `SurfaceSpec` (in `strand-scene`) is what a surface-kind
   node asks of Wayland: kind, name (namespace `strand-<Name>`), edge,
-  anchor, layer, keyboard, margin (`Insets`), requested logical width and
-  height, `screens` (`All`, `Focused`, or `Named` monitor identities, which
+  anchor, layer, keyboard, margin (`Insets`, zero while unset) and
+  `margin_set` (m6-owner-fixes: whether `margin` is set at all, `0`
+  included, since a popup's gap is 6 px only while it is not), requested
+  logical width and height, `screens` (`All`, `Focused`, or `Named` monitor identities, which
   logic uses to pin each per-monitor `bar` instance), `open` and `attach`,
   `overhang` (how far shadows reach past the box, filled in by render
   from layout), plus `exclusive_zone()` and `needs_recreate()` (kind,
@@ -4093,7 +4095,10 @@ and the connection):
   `zwlr_layer_surface.get_popup` or the parent popup's `xdg_surface`,
   positioned by `placement::popup_config` (a `PopupConfig`: box size,
   overhang, anchor rect in the parent's window geometry, side and gap)
-  with slide and flip; its window geometry is its box, its buffer the
+  with slide and flip; the gap is the popup's margin on the side facing
+  its anchor, 6 px only while `SurfaceSpec::margin_set` is false, so
+  `0` touches the anchor and a negative margin overlaps it (spec.md
+  5.1; `attach:` 0, a tooltip 4); its window geometry is its box, its buffer the
   box plus the overhang. Size or anchor changes reposition it
   (`xdg_popup.reposition`; made again below `xdg_wm_base` version 3).
   (m6-owner-fixes, owner-testing.md bug 6) The manager moves the box

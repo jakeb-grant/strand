@@ -562,8 +562,10 @@ impl PopupConfig {
 /// (design.md: popups are anchored xdg_popups that nest). The popup
 /// opens away from a bar's edge, across the bar (below a top bar, so a
 /// calendar under the clock clears the bar), and below its anchor
-/// otherwise; `margin` on that side is the gap (default 6). Waits
-/// (`AutoSize`) until render gave it a size and an anchor.
+/// otherwise; `margin` on the side facing its anchor is the gap: 6 px
+/// only while `margin` is unset, so `0` touches the anchor and a
+/// negative margin overlaps it (spec.md 5.1). Waits (`AutoSize`) until
+/// render gave it a size and an anchor.
 pub fn popup_config(
     spec: &SurfaceSpec,
     parent: &SurfaceSpec,
@@ -627,7 +629,7 @@ pub fn popup_config(
     };
     let gap = if spec.attach.is_some() {
         0
-    } else if gap == 0.0 {
+    } else if !spec.margin_set {
         6
     } else {
         px(gap)
@@ -1223,6 +1225,7 @@ mod tests {
         let mut child = p.clone();
         child.anchor_rect = Some(LogicalRect::new(30.0, 40.0, 50.0, 20.0));
         child.margin = Insets::all(2.0);
+        child.margin_set = true;
         let c = popup_config(&child, &p).unwrap();
         assert_eq!(c.anchor_rect, (20, 30, 50, 20));
         assert_eq!((c.side, c.gap, c.aligned), (PopupSide::Right, 2, true));
@@ -1284,6 +1287,7 @@ mod tests {
             top: 0.0,
             bottom: 0.0,
         };
+        s.margin_set = true;
         s.anchor = Anchor::Left;
         assert_eq!(popup_config(&s, &menu).unwrap().gap, 3, "its margin");
         s.attach = Some(Edge::Top);

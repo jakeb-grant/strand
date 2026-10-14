@@ -84,8 +84,13 @@ pub struct SurfaceSpec {
     /// `None` for kinds that are not layer surfaces (`popup`, `lock`).
     pub layer: Option<Layer>,
     pub keyboard: Keyboard,
-    /// `margin`, expanded like CSS (`$space.2, $space.2, 0`).
+    /// `margin`, expanded like CSS (`$space.2, $space.2, 0`); zero
+    /// while unset.
     pub margin: Insets,
+    /// `margin` is set (`0` included): a popup's gap, its margin on the
+    /// side facing its anchor, is 6 px only while it is not (spec.md
+    /// 5.1).
+    pub margin_set: bool,
     /// Requested width and height in logical pixels; `None` is auto (a
     /// bar stretches along its edge; otherwise layout decides, from M2).
     pub width: Option<f32>,
@@ -224,8 +229,9 @@ impl SurfaceSpec {
                 [i.top, i.right, i.bottom, i.left]
                     .iter()
                     .all(|v| v.is_finite())
-            })
-            .unwrap_or_default();
+            });
+        let margin_set = margin.is_some();
+        let margin = margin.unwrap_or_default();
         let size = px(Prop::Size);
         Self {
             kind,
@@ -242,6 +248,7 @@ impl SurfaceSpec {
                 .and_then(|k| Keyboard::from_name(&k))
                 .unwrap_or(Keyboard::None),
             margin,
+            margin_set,
             width: px(Prop::Width).or(size),
             height: px(Prop::Height).or(size),
             screens,
@@ -397,6 +404,30 @@ mod tests {
         assert_eq!(spec(NodeKind::Popup, &[]).layer, None);
     }
 
+    /// (m6-owner-fixes) An unset `margin` and `margin: 0` resolve to the
+    /// same insets, but only the second is set: a popup's gap is 6 px
+    /// only while its margin is unset (spec.md 5.1).
+    #[test]
+    fn a_zero_margin_is_set_and_an_absent_one_is_not() {
+        let unset = spec(NodeKind::Popup, &[]);
+        assert_eq!((unset.margin, unset.margin_set), (Insets::default(), false));
+        let zero = spec(NodeKind::Popup, &[(Prop::Margin, PropValue::Number(0.0))]);
+        assert_eq!((zero.margin, zero.margin_set), (Insets::default(), true));
+        let negative = spec(
+            NodeKind::Popup,
+            &[(
+                Prop::Margin,
+                PropValue::List(vec![
+                    PropValue::Number(-30.0),
+                    PropValue::Number(0.0),
+                    PropValue::Number(0.0),
+                ]),
+            )],
+        );
+        assert_eq!(negative.margin.top, -30.0);
+        assert!(negative.margin_set);
+    }
+
     #[test]
     fn only_kind_namespace_and_layer_recreate() {
         let a = spec(
@@ -486,6 +517,7 @@ mod tests {
         assert_eq!(s.edge, Some(Edge::Top));
         assert_eq!(s.height, None);
         assert_eq!(s.margin, Insets::default());
+        assert!(!s.margin_set, "a margin it cannot use is unset");
         assert_eq!(s.screens, Screens::Named(vec!["DP-1".into()]));
     }
 }
