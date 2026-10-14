@@ -781,7 +781,7 @@ fn radial(at: Anchor, size: length) -> Mask
 /// A conic gradient: `conic(from: t * 60deg, $accent, $secondary, $accent)`.
 fn conic(from: angle = 0, ...stops: color) -> paint
 
-/// A spring for `~` and the motion tokens: `spring(700, 0.9)`.
+/// A spring for `~` and the motion tokens: `spring(3000, 0.75)`.
 fn spring(stiffness: float, damping: float) -> Spring
 /// A named curve over a duration: `~ ease(out_back, 300ms)`.
 fn ease(curve: Curve, duration: duration) -> Easing

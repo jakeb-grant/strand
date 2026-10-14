@@ -83,7 +83,7 @@ pub fn base_tokens() -> TokenTable {
     t.insert("font.title", font("Inter", 18.0, 600));
     t.insert("font.caption", font("Inter", 11.0, 400));
     t.insert("font.mono", font("JetBrains Mono", 12.0, 400));
-    t.insert("motion.spatial", spring(700.0, 0.9));
+    t.insert("motion.spatial", spring(3000.0, 0.75));
     t.insert("motion.effects", spring(1600.0, 1.0));
     t.insert("motion.bouncy", spring(380.0, 0.75));
     t.insert_derived("elevation.md", shadows(&[(2.0, 8.0, 0.25)]));
@@ -144,6 +144,19 @@ mod tests {
             "border",
         ] {
             assert!(t.lookup(path).is_some(), "{path}");
+        }
+        // The motion springs are the renderer's fallbacks, the same
+        // values (`strand_scene::motion`).
+        for (path, s) in [
+            ("motion.spatial", strand_scene::motion::SPATIAL),
+            ("motion.effects", strand_scene::motion::EFFECTS),
+            ("motion.bouncy", strand_scene::motion::BOUNCY),
+        ] {
+            assert_eq!(
+                t.lookup(path),
+                Some(PropValue::Transition(Transition::of_spring(s))),
+                "{path}"
+            );
         }
         let Some(PropValue::Shadow(s)) = t.lookup("elevation.lg") else {
             panic!()

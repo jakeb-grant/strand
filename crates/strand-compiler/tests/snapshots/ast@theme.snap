@@ -29,7 +29,7 @@ file
       token caption (spaced "Inter" 11px)
       token mono (spaced "JetBrains Mono" 12px)
     token motion
-      token spatial (call spring 700 0.9)
+      token spatial (call spring 3000 0.75)
       token effects (call spring 1600 1)
       token bouncy (call spring 380 0.75)
     token elevation

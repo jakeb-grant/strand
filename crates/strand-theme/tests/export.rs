@@ -93,7 +93,7 @@ fn export_json_golden_from_catppuccin_mocha() {
     );
     assert_eq!(
         v["tokens"]["motion.spatial"],
-        serde_json::json!({"spring": {"stiffness": 700, "damping": 0.9}})
+        serde_json::json!({"spring": {"stiffness": 3000, "damping": 0.75}})
     );
     assert_eq!(v["tokens"]["elevation.md"][0]["blur"], 8);
     // Roles in schema order, extras in source order.

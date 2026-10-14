@@ -63,16 +63,22 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    physical pixels wide), the GPU build not promoting these surfaces,
    and springs (`$motion.spatial`) settling more slowly than
    Quickshell's 200 ms OutBack curves.
-   **Wave 2: proposed** (decisions.md m6-w2-surface, "a snappier
-   default `$motion.spatial`"). Measured at 1.5, there is no raster
-   cost: the 3840×125 bar paints in 4.6 ms, the pill's move at
-   0.16 ms a frame, an island's enter at 1.25 ms a frame
+   **Wave 2: fixed** by the owner's ruling (2026-10-14, option (b) of
+   decisions.md m6-w2-surface, "a snappier default
+   `$motion.spatial`"; recorded in decisions.md m6-owner). Measured at
+   1.5, there is no raster cost: the 3840×125 bar paints in 4.6 ms,
+   the pill's move at 0.16 ms a frame, an island's enter at 1.25 ms a
+   frame
    (`crates/strand-render/tests/owner_motion.rs::the_owners_bar_and_island_at_one_and_a_half`).
    What reads as slow is the test config's `enter` on each island's
    card, which never plays (the pose belongs on the popup), and
    spring(700, 0.9) reaching 90% at 129 ms where OutBack does at 60 ms.
-   spring(3000, 0.75) is proposed as the default for the owner's
-   ruling; nothing is changed.
+   The default `$motion.spatial` is now spring(3000, 0.75): half way
+   at 27 ms, 90% at 52 ms, 2.8% overshoot, settled within 0.2% at
+   142 ms
+   (`crates/strand-scene/src/motion.rs::tests::the_default_spatial_spring_is_snappy`,
+   `crates/strand-theme/src/defaults.rs::tests::the_built_in_theme_resolves_every_base_token`).
+   Whether it feels right is the owner's to judge on their session.
 3. **A window's icon is its raw app id.** (diagnosed) `Window.icon` is
    the app id until "the apps service resolves desktop entries"
    (`crates/strand-services/src/wm/model.rs`, `derive`), and nothing

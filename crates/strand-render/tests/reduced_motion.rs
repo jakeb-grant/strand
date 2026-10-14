@@ -20,7 +20,7 @@ use strand_scene::*;
 
 const THEME: &str = "// theme.strand
 tokens base {
-  motion { spatial: spring(700, 0.9); effects: spring(1600, 1); bouncy: spring(380, 0.75)
+  motion { spatial: spring(3000, 0.75); effects: spring(1600, 1); bouncy: spring(380, 0.75)
            reduced: system.reduced_motion }
 }
 ";

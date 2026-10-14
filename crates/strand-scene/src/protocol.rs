@@ -587,7 +587,7 @@ pub enum PropValue {
     /// `border: 1, $border`), evaluated by render every frame.
     Token(TokenExpr),
     /// A spring or timed curve as a value (`$motion.spatial:
-    /// spring(700, 0.9)`); `Transition::Default` resolves through these.
+    /// spring(3000, 0.75)`); `Transition::Default` resolves through these.
     Transition(Transition),
     /// An `enter { … }` / `exit { … }` pose: the props a node animates in
     /// from or out to.
@@ -914,7 +914,7 @@ pub enum Transition {
     /// [`PropValue::Transition`], resolved like `Default` so a theme swap
     /// reaches props that named it.
     Token(String),
-    /// `~ spring(700, 0.9)`: stiffness and damping ratio.
+    /// `~ spring(3000, 0.75)`: stiffness and damping ratio.
     Spring { stiffness: f32, damping: f32 },
     /// `~ 200ms` or `~ ease(out_back, 300ms)` or `~ bezier(…)`.
     Duration { duration: Duration, easing: Easing },

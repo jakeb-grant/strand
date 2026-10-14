@@ -1557,7 +1557,7 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
 - **Motion** (`strand_scene::motion`, shared by the renderer's prop
   springs and the theme's palette springs): `Spring { stiffness, damping }`
-  is a unit-mass damped oscillator (`spring(700, 0.9)`: stiffness and
+  is a unit-mass damped oscillator (`spring(3000, 0.75)`: stiffness and
   damping *ratio*), `Spring::step(x0, v0, t) -> (x, v)` its closed form;
   `SPATIAL`, `EFFECTS`, `BOUNCY` are the design's `$motion.*` springs.
   `Curve` (`Instant`, `Spring`, `Timed { duration, easing }`) is a

@@ -1135,31 +1135,60 @@ fn toasts_arrive_stack_slide_and_leave() {
         "New message",
         "<b>Ada</b>: the <i>layout</i> pass is in — see <a href=\"https://x\">the PR</a>",
     ));
-    // It slides in: its left edge moves leftwards over several frames.
-    let mut lefts = Vec::new();
+    // It slides in: its left edge moves leftwards, by the spring. Each
+    // shot is timed from the first one that shows the toast.
+    let mut shots = Vec::new();
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(900) {
         if let Some(x) = toast_left(&desk.region("HEADLESS-1", TOASTS), 62..110) {
-            lefts.push(x);
+            shots.push((Instant::now(), x));
         }
     }
+    let lefts: Vec<usize> = shots.iter().map(|(_, x)| *x).collect();
     let one = desk.settled_ref("HEADLESS-1", TOASTS, "toasts_one");
     let rest = toast_left(&one, 62..110).expect("no toast");
     eprintln!("first toast's left edge while entering: {lefts:?}, at rest {rest}");
     assert_eq!(rest, 40, "the toast is not at margin 12");
     // Frames of the slide itself are asserted on an optimised build
     // (CI runs these tests `--release`): a debug build paints too slowly
-    // for grim to catch them reliably.
+    // for grim to catch them reliably. `$motion.spatial` covers 90% of
+    // the 420 px in 52 ms, quicker than grim's shots come, so the shots
+    // are read by time, not counted: within 200 ms of the toast first
+    // showing, one shows it off its place (still entering, or past it
+    // by the spring's overshoot), and from 400 ms on it is at rest.
     let release = !cfg!(debug_assertions);
+    if release {
+        let first = shots.first().expect("the toast never showed").0;
+        let at = |t: &Instant| t.duration_since(first);
+        assert!(
+            shots
+                .iter()
+                .any(|(t, x)| at(t) < Duration::from_millis(200) && x.abs_diff(rest) > 2),
+            "no frames of the slide caught: {lefts:?}"
+        );
+        assert!(
+            shots
+                .iter()
+                .all(|(t, x)| at(t) < Duration::from_millis(400) || *x == rest),
+            "not at rest 400 ms in: {lefts:?}"
+        );
+    }
+    // `$motion.spatial` is `spring(3000, 0.75)`: it passes its place by
+    // up to 2.84% of the 420 px slide (12 px) and comes back, once
+    // (decisions.md m6-owner, 2026-10-14).
+    let reach = (420.0f32 * (0.0284 + 0.002)).ceil() as usize + 1;
     assert!(
-        !release || lefts.iter().filter(|&&x| x > rest + 2).count() >= 2,
-        "no frames of the slide caught: {lefts:?}"
+        lefts.iter().all(|&x| x + reach >= rest),
+        "the slide overshot by more than {reach}: {lefts:?}"
     );
-    // (`$motion.spatial` is `spring(700, 0.9)`: it may overshoot by a
-    // pixel or two and come back.)
+    let steps: Vec<bool> = lefts
+        .windows(2)
+        .filter(|p| p[0] != p[1])
+        .map(|p| p[1] > p[0])
+        .collect();
     assert!(
-        lefts.windows(2).all(|p| p[1] <= p[0] + 2),
-        "the slide went backwards: {lefts:?}"
+        steps.windows(2).filter(|s| s[0] != s[1]).count() <= 1,
+        "the slide went backwards more than once: {lefts:?}"
     );
 
     let mut critical = note(
@@ -1210,15 +1239,16 @@ fn toasts_arrive_stack_slide_and_leave() {
     pointer.click(close.0 as u32, close.1 as u32, LAYOUT.0, LAYOUT.1);
     pointer.motion(1200, 700, LAYOUT.0, LAYOUT.1);
     // The second toast slides up into the first's place: its top moves
-    // up over several frames.
-    let mut tops = Vec::new();
+    // up, by the spring. Each shot is timed from the click.
+    let mut shots = Vec::new();
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(1200) {
         let s = desk.region("HEADLESS-1", TOASTS);
         if let Some(&t) = lit(&s, col).first() {
-            tops.push(t);
+            shots.push((start.elapsed(), t));
         }
     }
+    let tops: Vec<usize> = shots.iter().map(|(_, t)| *t).collect();
     desk.wait("the first toast to leave", 10, |d| {
         runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 2
     });
@@ -1232,15 +1262,24 @@ fn toasts_arrive_stack_slide_and_leave() {
         bands2[0].0.abs_diff(bands[0].0) <= 3,
         "the stack does not start at the top: {bands2:?}"
     );
-    assert!(
-        !release
-            || tops
+    // `$motion.spatial` covers 90% of the way in 52 ms, quicker than
+    // grim's shots come, so the shots are read by time, not counted:
+    // within 400 ms of the click one shows it between the two places,
+    // and from 600 ms on it is in its new one.
+    if release {
+        assert!(
+            shots.iter().any(|(at, t)| *at < Duration::from_millis(400)
+                && *t > bands[0].0 + 4
+                && *t + 4 < below),
+            "no frames of the slide up caught: {tops:?}"
+        );
+        assert!(
+            shots
                 .iter()
-                .filter(|&&t| t > bands[0].0 + 4 && t + 4 < below)
-                .count()
-                >= 2,
-        "no frames of the slide up caught: {tops:?}"
-    );
+                .all(|(at, t)| *at < Duration::from_millis(600) || *t == bands2[0].0),
+            "not in its place 600 ms in: {tops:?}"
+        );
+    }
 
     // A short timeout: it comes and goes by itself (the pointer is away,
     // so `while !hover` lets it run).
@@ -1263,7 +1302,9 @@ fn toasts_arrive_stack_slide_and_leave() {
     desk.wait("the fifth toast", 10, |d| {
         runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 3
     });
-    let fifth = runs(&lit(&desk.region("HEADLESS-1", TOASTS), col))[2];
+    // Its band once it is in place (the shot that first shows three may
+    // catch it entering, which puts the pointer elsewhere on it).
+    let fifth = runs(&lit(&desk.settled("HEADLESS-1", TOASTS), col))[2];
     pointer.motion(
         (TOASTS.x + 40 + 200) as u32,
         ((fifth.0 + fifth.1) / 2) as u32,

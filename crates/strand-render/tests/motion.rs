@@ -25,6 +25,34 @@ fn pose(props: Vec<(Prop, PropValue)>) -> PropValue {
     PropValue::Pose(props)
 }
 
+/// The peak overshoot of the default `$motion.spatial`, spring(3000,
+/// 0.75), released from rest: `exp(-ζπ/√(1-ζ²))` = 2.84%, plus a small
+/// epsilon (decisions.md m6-owner, 2026-10-14).
+const SPATIAL_OVERSHOOT: f32 = 0.0284 + 0.002;
+
+/// Whole-pixel positions of an edge springing from `from` to `to` along
+/// `$motion.spatial`: it ends at `to`, passes it by no more than the
+/// spring's peak overshoot (and a pixel of rounding), and turns back at
+/// most once.
+fn assert_springs_to(xs: &[i32], from: i32, to: i32) {
+    assert_eq!(xs.last(), Some(&to), "ends at its target: {xs:?}");
+    let reach = ((to - from).abs() as f32 * SPATIAL_OVERSHOOT).ceil() as i32 + 1;
+    let past = |x: i32| if to >= from { x - to } else { to - x };
+    assert!(
+        xs.iter().all(|&x| past(x) <= reach),
+        "overshoots by more than {reach}: {xs:?}"
+    );
+    let turns = xs
+        .windows(2)
+        .map(|w| (w[1] - w[0]).signum())
+        .filter(|s| *s != 0)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|s| s[0] != s[1])
+        .count();
+    assert!(turns <= 1, "turns back {turns} times: {xs:?}");
+}
+
 struct Stage {
     r: Renderer,
     buf: Buffer,
@@ -133,9 +161,11 @@ fn springs_sampled_at_fixed_timestamps_match_reference() {
             .unwrap();
         xs.push(x);
     }
-    assert!(xs.windows(2).all(|w| w[0] <= w[1]), "{xs:?}");
+    // From x 2 to 112: past it by at most the spring's peak overshoot,
+    // turning back once, and at rest on it.
+    let xs: Vec<i32> = xs.iter().map(|x| *x as i32).collect();
     assert!(xs[0] > 2, "the first frame already moves: {xs:?}");
-    assert_eq!(*xs.last().unwrap(), 112, "{xs:?}");
+    assert_springs_to(&xs, 2, 112);
     assert!(!st.r.wants_frame(S), "settled by frame 60");
     assert_matches_ref("motion_springs", &strip, 3);
 
@@ -169,25 +199,27 @@ fn retargeting_mid_flight_keeps_velocity() {
     let mut d = SceneDiff::new();
     d.set(id, Prop::X, num(150.0));
     st.apply(d);
+    // Two frames in, $motion.spatial is 64% of the way (from 26% at the
+    // first): mid-flight.
     let mut xs = Vec::new();
-    for k in 1..=5 {
+    for k in 1..=2 {
         st.paint(frame(k));
         xs.push(st.red_from(10).unwrap() as i32);
     }
     // Moving right fast.
-    assert!(xs[4] - xs[3] >= 5, "{xs:?}");
+    assert!(xs[1] - xs[0] >= 5, "{xs:?}");
     let mut d = SceneDiff::new();
     d.set(id, Prop::X, num(20.0));
     st.apply(d);
-    st.paint(frame(6));
+    st.paint(frame(3));
     let after = st.red_from(10).unwrap() as i32;
     assert!(
-        after > xs[4],
+        after > xs[1],
         "kept going right after the retarget: {xs:?} then {after}"
     );
     // No jolt: the step is no bigger than the last one before it.
-    assert!(after - xs[4] <= xs[4] - xs[3] + 1);
-    st.settle(7);
+    assert!(after - xs[1] <= xs[1] - xs[0] + 1);
+    st.settle(4);
     assert_eq!(st.red_from(10), Some(20));
 }
 
@@ -369,15 +401,19 @@ fn keyed_reorder_glides_to_new_slots() {
     st.apply(d);
     st.paint(frame(1));
     assert_eq!(st.rect(ids[0]).y, 48.0, "laid out in its new slot at once");
+    // The first frame is one refresh along $motion.spatial, 26% of the
+    // 48 px move (12.5 px): drawn from its old slot, not in its new one.
     let first = st.red_top(10).unwrap();
-    assert!(first < 12, "still near its old slot: {first}");
-    let mut tops = vec![first];
-    for k in 2..=8 {
+    assert!(first <= 13, "still near its old slot: {first}");
+    let mut tops = vec![first as i32];
+    let mut k = 2;
+    while st.r.wants_frame(S) {
         st.paint(frame(k));
-        tops.push(st.red_top(10).unwrap());
+        tops.push(st.red_top(10).unwrap() as i32);
+        k += 1;
+        assert!(k < 400, "never settled");
     }
-    assert!(tops.windows(2).all(|w| w[0] <= w[1]), "{tops:?}");
-    st.settle(9);
+    assert_springs_to(&tops, 0, 48);
     assert_eq!(st.red_top(10), Some(48));
 }
 
@@ -466,10 +502,12 @@ fn enter_and_exit_poses_and_siblings_slide_to_fill_the_gap() {
         st.paint(frame(end + k));
         xs.push(white(&st).unwrap_or(80));
     }
-    // (Faint at first: its opacity springs from 0 too.)
+    // (Faint at first: its opacity springs from 0 too.) $motion.spatial
+    // is 89% of the way three refreshes in, so it moves on every frame
+    // up to the second and is still short of its place there.
     assert!(xs.windows(2).all(|w| w[1] <= w[0]), "glides in: {xs:?}");
-    assert!(xs[3..].windows(2).all(|w| w[1] < w[0]), "glides in: {xs:?}");
-    assert!(xs[5] > 0, "still moving: {xs:?}");
+    assert!(xs[..3].windows(2).all(|w| w[1] < w[0]), "glides in: {xs:?}");
+    assert!(xs[2] > 0, "still moving: {xs:?}");
     st.settle(end + 6);
     assert_eq!(white(&st), Some(0));
 }
@@ -859,9 +897,11 @@ fn token_swaps_glide_and_popin_scales() {
             })
             .count()
     };
+    // One refresh along $motion.spatial (26%), the scale is about 0.63:
+    // 12.6 of its 20 px; two in (64%), about 0.82.
     let first = green(&st);
-    assert!(first < 12, "faint and small at first: {first}");
-    st.paint(frame(end + 3));
+    assert!(first <= 13, "faint and small at first: {first}");
+    st.paint(frame(end + 1));
     let mid = green(&st);
     assert!(mid > first && mid < 20, "scaled down mid-flight: {mid}");
     st.settle(end + 5);
@@ -958,8 +998,10 @@ fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
         assert!(k < 200);
     }
     assert_eq!(*tops.last().unwrap(), 0, "{tops:?}");
+    // No jump: no step is more than $motion.spatial's largest advance in
+    // one refresh, 38% of the way (from 26% to 64%), of the 62 px slot.
     assert!(
-        tops.windows(2).all(|p| p[1] <= p[0] && p[0] - p[1] <= 12),
+        tops.windows(2).all(|p| p[1] <= p[0] && p[0] - p[1] <= 24),
         "{tops:?}"
     );
     // No plateau: the padding and the gap fold with the collapsing
@@ -1781,6 +1823,9 @@ fn a_lone_toast_enters_with_its_panel_and_leaves_before_it_closes() {
     h.apply(d);
     assert!(h.surface.is_some(), "stays while the toast leaves");
     assert!(h.r.surface_spec(root).unwrap().open);
+    // Read on row 2: its height collapses along $motion.spatial too (64%
+    // two refreshes in), so row 15 leaves it after the first frame.
+    let edge = |h: &Host| (0..100).find(|x| h.px(*x, 2).is_some_and(|p| p[2] > 128));
     let mut edges = Vec::new();
     while h.surface.is_some() && h.frame() {
         edges.push(edge(&h));
@@ -1916,7 +1961,9 @@ fn a_centred_panel_keeps_its_rows_in_place_as_it_grows() {
         assert!(ys.len() < 400);
     }
     assert!(ys.len() >= 4, "{ys:?}");
-    assert!(ys[0] >= -16.0, "stays where it was: {ys:?}");
+    // The first frame is one refresh along $motion.spatial: 26% of the
+    // 12 px the centred row moves (3.1 px), not a jump.
+    assert!(ys[0] >= -19.0, "stays where it was: {ys:?}");
     assert_eq!(*ys.last().unwrap(), -27.0, "{ys:?}");
     assert!(
         ys.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] < 6.0),
@@ -2442,15 +2489,21 @@ fn pages_slide_by_source_order() {
             forward: true
         })
     );
+    // $motion.spatial overshoots by up to 2.84% of the 120 px slide, so
+    // the new page may pass its place by 4 px (its right edge short of
+    // the clip for a frame or two) before it comes back.
+    let reach = (120.0 * SPATIAL_OVERSHOOT).ceil() as u32 + 1;
     let mut k = 1;
-    let mut last_green = 120;
-    let mut frames = 0;
+    let mut greens = vec![120];
     while st.r.wants_frame(S) {
         st.paint(frame(k));
         k += 1;
         let (r, g) = spans(&st, 30);
         let gx = g.map_or(120, |(x0, x1)| {
-            assert_eq!(x1, 119, "the new page's right edge is clipped");
+            assert!(
+                x1 == 119 || x1 + reach >= 119 && x0 == 0,
+                "the new page's right edge is clipped: {g:?}"
+            );
             x0
         });
         if let Some((x0, x1)) = r {
@@ -2460,14 +2513,17 @@ fn pages_slide_by_source_order() {
         for x in 120..200 {
             assert_eq!(st.buf.px(x, 30)[1], st.buf.px(199, 30)[1], "clipped at {x}");
         }
-        assert!(gx <= last_green, "moves left: {gx} after {last_green}");
-        if frames == 0 {
+        if greens.len() == 1 {
             assert!(gx > 40 && gx < 120, "on its way in: {gx}");
         }
-        last_green = gx;
-        frames += 1;
+        greens.push(gx);
         assert!(k < 200, "never settled");
     }
+    // It moves left, by the spring: past its place by no more than the
+    // overshoot, turning back once.
+    let greens: Vec<i32> = greens.iter().map(|x| *x as i32).collect();
+    assert_springs_to(&greens, 120, 0);
+    let frames = greens.len() - 1;
     assert!(frames >= 5, "{frames} frames");
     assert_eq!(spans(&st, 30), (None, Some((0, 119))));
     assert!(st.r.tree().get(a).is_none(), "the old page is gone");

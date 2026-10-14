@@ -328,7 +328,7 @@ fn the_shape_library_draws_every_shape() {
 
 /// design.md: "`shape: cookie` → `when loading { shape: burst }`; morphs
 /// by spring". Mid-morph frames lie between the two outlines (ref
-/// `effects_morph.png` at 80 ms), the morph settles on the new shape, and
+/// `effects_morph.png` at 32 ms, `$motion.spatial` 64% along), the morph settles on the new shape, and
 /// `reduced_motion` snaps.
 #[test]
 fn a_shape_change_morphs_by_spring() {
@@ -340,7 +340,7 @@ fn a_shape_change_morphs_by_spring() {
     let ms = |m: u64| Duration::from_millis(1000 + m);
     buf.paint_at(&mut r, S, 1, ms(16));
     assert!(r.wants_frame(S), "the morph keeps frames coming");
-    buf.paint_at(&mut r, S, 1, ms(80));
+    buf.paint_at(&mut r, S, 1, ms(32));
     assert_matches_ref("effects_morph", &buf, 1);
     let (_, cookie, _) = boxes(vec![vec![(Prop::Shape, kw("cookie"))]], Scale::ONE, 1000);
     let (_, burst, _) = boxes(vec![vec![(Prop::Shape, kw("burst"))]], Scale::ONE, 1000);
@@ -1478,7 +1478,8 @@ fn rolling_numbers_roll_only_the_changed_digit() {
     assert!(r.apply(d).is_empty());
     let mut t = 1016;
     buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
-    t += 50;
+    // Two refreshes in, `$motion.spatial` is 64% of the way: mid-roll.
+    t += 16;
     buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
     assert_matches_ref("effects_roll", &buf, 2);
     let (_, settled, _) = rolling("42%", false);
@@ -2012,8 +2013,9 @@ fn transition_masks_reveal_and_hide() {
     let (_, plain, _) = masked(false, false);
     let full = shown(&plain, 0);
     assert_eq!(full, 1600);
+    // Partway: two refreshes in, `$motion.spatial` is 64% of the way.
     let mut t = 1016;
-    while t < 1080 {
+    while t < 1032 {
         t += 16;
         buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
     }
@@ -2041,7 +2043,7 @@ fn transition_masks_reveal_and_hide() {
     assert!(r.apply(d).is_empty());
     t += 16;
     buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
-    t += 48;
+    t += 16;
     buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
     for i in 0..4 {
         let n = shown(&buf, i);
@@ -2112,8 +2114,9 @@ fn pixelate_draws_a_mosaic_that_refines() {
     };
     let (mut r, mut buf) = build(true);
     let (_, plain) = build(false);
+    // Partway: two refreshes in, `$motion.spatial` is 64% of the way.
     let mut t = 1016;
-    while t < 1064 {
+    while t < 1032 {
         t += 16;
         buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
     }
@@ -2170,8 +2173,9 @@ fn a_pages_transition_wipes_one_page_over_the_other() {
         set_now(&mut d, new, Prop::Bg, color("#a6e3a1"));
         d.set(pages, Prop::RowFirst, num(1.0));
         assert!(r.apply(d).is_empty());
+        // Two refreshes in, `$motion.spatial` is 64% of the way: mid-wipe.
         let mut t = 1000;
-        while t < 1064 {
+        while t < 1032 {
             t += 16;
             buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
         }
@@ -2267,12 +2271,14 @@ fn a_shared_morph_starts_from_the_named_box() {
     morph_box(&mut d, big, bar, (120.0, 5.0, 60.0, 50.0));
     assert!(r.apply(d).is_empty());
     buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
-    // Over the old box, at full opacity (no fade: the morph replaces it),
-    // not yet at its own.
-    assert_eq!(buf.px(20, 30), orange, "starts at the pill");
+    // From the old box, at full opacity (no fade: the morph replaces it),
+    // not yet at its own: the first frame is one refresh along
+    // `$motion.spatial`, 26% of the way from the pill (10..30 × 20..40)
+    // to its box (120..180 × 5..55), so about 39..69 × 16..44.
+    assert_eq!(buf.px(54, 30), orange, "starts at the pill");
     assert_eq!(buf.px(175, 30), bg, "not yet at its box");
     let mut t = 1016;
-    while t < 1064 {
+    while t < 1032 {
         t += 16;
         buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
     }
@@ -2340,8 +2346,9 @@ fn a_shared_morph_crosses_surfaces_on_one_output() {
             // -10..10 on the panel: its lower half shows, in full colour.
             assert_eq!(buf2.px(20, 5), orange, "starts at the pill");
             assert_ne!(buf2.px(70, 40), orange, "not yet at its box");
+            // On its way: two refreshes in, 64% of the way.
             let mut t = 1016;
-            while t < 1064 {
+            while t < 1032 {
                 t += 16;
                 buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
             }
@@ -2502,8 +2509,9 @@ fn an_image_swap_wipes_the_new_image_in() {
         let mut d = SceneDiff::new();
         d.set(img, Prop::Source, text(&blue));
         assert!(r.apply(d).is_empty());
+        // Partway: two refreshes in, `$motion.spatial` is 64% of the way.
         let mut t = 1000;
-        while t < 1064 {
+        while t < 1032 {
             t += 16;
             buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
         }

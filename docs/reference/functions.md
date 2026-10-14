@@ -46,7 +46,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn shape(shape: Shape) -> Mask` | A mask of a shape from the shape library: `mask: shape(cookie)`. |
 | `fn sleep(duration: duration) -> Async<()>` | Waits for `duration` inside a handler. |
 | `fn slide(edge: Edge) -> Pose` | A pose sliding in from an edge: `enter: slide(top)`. |
-| `fn spring(stiffness: float, damping: float) -> Spring` | A spring for `~` and the motion tokens: `spring(700, 0.9)`. |
+| `fn spring(stiffness: float, damping: float) -> Spring` | A spring for `~` and the motion tokens: `spring(3000, 0.75)`. |
 | `fn tint(color: color) -> Filter` | A colour filter tinting toward a colour: `filter: tint($accent)`. |
 | `fn wave(period: duration, phase: float = 0) -> float` | A time signal that swings once per `period`: `10 * wave(2s)`. Only the node reading it repaints, and only while visible. |
 | `fn wipe(edge: Edge) -> SwapTransition` | A transition wiping from an edge: `transition: wipe(left)`. |
