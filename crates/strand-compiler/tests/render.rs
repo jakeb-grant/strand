@@ -993,3 +993,85 @@ fn a_drop_on_a_scrolled_windowed_list_is_exact() {
         .collect();
     assert_eq!(&pins[41..44], ["p42", "p5", "p43"], "let go between them");
 }
+
+/// A 24 px square SVG of one colour.
+fn square_svg(fill: &str) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\">\
+         <rect width=\"24\" height=\"24\" fill=\"{fill}\"/></svg>"
+    )
+}
+
+/// Mounts `src` from the config directory `dir` and paints its bar
+/// (`w` × 24) offline: straight RGB at each of `at`.
+fn paint_config(dir: &std::path::Path, src: &str, w: u32, at: &[u32]) -> Vec<(u8, u8, u8)> {
+    let mut map = SourceMap::new();
+    map.add("bar.strand".to_string(), src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let storage = strand_compiler::instantiate::Storage::in_dirs(dir.join(".state"), dir);
+    let inst = Instance::new(&rt, program, host.clone(), storage);
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bar = r
+        .take_surface_changes()
+        .into_iter()
+        .find_map(|(id, c)| matches!(c, SurfaceChange::Created(_)).then_some(id))
+        .unwrap();
+    let surface = SurfaceId(1);
+    r.attach_surface(surface, bar);
+    r.configure_surface(surface, Size::new(w, 24), Scale::ONE);
+    let mut pixels = vec![0u8; w as usize * 24 * 4];
+    {
+        let mut t = PaintTarget::new(&mut pixels, Size::new(w, 24), w * 4, Scale::ONE, 0).unwrap();
+        r.paint(surface, &mut t);
+    }
+    at.iter()
+        .map(|x| {
+            let i = (12 * w as usize + *x as usize) * 4;
+            (pixels[i + 2], pixels[i + 1], pixels[i])
+        })
+        .collect()
+}
+
+/// (Bug 8, owner testing 2026-10-14) A relative `svg` and `image` path,
+/// a subdirectory's (`icons/b.svg`, `icons/g.png`) too, is read under the
+/// config directory, not the process's (the test's is the crate's): each
+/// draws its colour. Before, every one drew nothing.
+#[test]
+fn relative_media_paths_are_under_the_config_directory() {
+    let dir = std::env::temp_dir().join(format!("strand-local-assets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("icons")).unwrap();
+    std::fs::write(dir.join("dot.svg"), square_svg("#ff0000")).unwrap();
+    std::fs::write(dir.join("icons/b.svg"), square_svg("#0000ff")).unwrap();
+    image::RgbaImage::from_pixel(24, 24, image::Rgba([0, 0xff, 0, 0xff]))
+        .save(dir.join("icons/g.png"))
+        .unwrap();
+    assert_ne!(std::env::current_dir().unwrap(), dir);
+    let src = "bar Top {\n  height: 24; bg: #000000\n  row {\n    \
+        svg \"dot.svg\" { size: 24 }\n    image \"dot.svg\" { size: 24 }\n    \
+        svg \"icons/b.svg\" { size: 24 }\n    image \"./icons/g.png\" { size: 24 }\n  }\n}\n";
+    let got = paint_config(&dir, src, 120, &[12, 36, 60, 84, 108]);
+    assert_eq!(
+        got,
+        [
+            (0xff, 0, 0),
+            (0xff, 0, 0),
+            (0, 0, 0xff),
+            (0, 0xff, 0),
+            (0, 0, 0)
+        ],
+        "red, red, blue, green, then the bar"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

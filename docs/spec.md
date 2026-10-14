@@ -506,6 +506,18 @@ filling the monitor, the keyboard always).
   (`whn` → `when`).
 - **Selectors.** In an `svg` element, `#name { props }` applies props
   to the SVG element with that id.
+- **Local files.** The file an `image`, `svg` or `lottie` draws is
+  found as settings files, service files, shaders and templates are: a
+  relative path (`svg "gauge.svg"`, `image "icons/wifi.svg"`) is
+  resolved against the config directory, in any module, never against
+  the directory Strand was started from; `~/…` is in the home
+  directory; an absolute path or a `file://` URL is used as written.
+  This holds for a computed source too. An `image` source is a path
+  when it starts with `/`, `~/`, `./` or `file://` or ends in `.png`,
+  `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp` or `.apng`; anything else is
+  an icon name. `strand check` warns (`check::missing_file`) when a
+  literal path names no file; an icon name and a computed source are
+  not checked.
 
 ### 6.2 Props and inherited props
 

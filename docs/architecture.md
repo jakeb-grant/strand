@@ -1553,6 +1553,16 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   forwards it; `options` among them since the review of 66c2f03) and so
   which bindings on `id.box` lay boxes out again (the compiler's
   box-dependency graph, `check::box_layout_loop`).
+- **Local sources** (M6, m6-owner-fixes, bug 8): `source_is_file(&str)
+  -> bool` says whether an `image` node's `Prop::Source` is a file
+  (starts with `/`, `~/`, `./` or `file://`, or ends in an image
+  extension) or an icon name. Render's `image::is_icon` and the
+  compiler's `check::assets` both use it, so the renderer draws by the
+  rule the compiler resolves and checks by. A `Prop::Source` of an
+  `image`, `svg` or `lottie` reaches render with a relative path
+  already made absolute under the config directory (the compiler's
+  `check::assets::local_source`, applied as instantiate binds the
+  prop); render reads the path it is handed.
 - **Colour**: `Color` stored as straight-alpha sRGB `f32`, with exact
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
 - **Motion** (`strand_scene::motion`, shared by the renderer's prop
@@ -2601,6 +2611,16 @@ table.
     (read, compiled, tokens known); `strand check` and the LSP run it,
     `strand run`'s loader does not (a template is watched, and its
     errors are its output's notice).
+  - (M6, m6-owner-fixes, bug 8) `check::assets`: `local_source(kind,
+    source, config_dir) -> Option<String>` is an `image`'s, `svg`'s or
+    `lottie`'s relative file made absolute under the config directory
+    (`Storage::config_dir`), which instantiate applies to every value
+    of those nodes' `source` prop, literal or computed; and
+    `check(&Program, Option<&Path>) -> Vec<Diagnostic>` warns
+    (`check::missing_file`) on a literal source that names no file (an
+    `image`'s only when `strand_scene::source_is_file`, so never an
+    icon name). It stats files, so `strand check` and the LSP run it
+    beside `check::files::templates`.
   - Outputs are pulled, not pushed in `Update` (in place of the first
     text's `Update.outputs: Vec<OutputChange>`): each mounted `file` is
     a content memo with equality cut-off (path, template, `run:`, the

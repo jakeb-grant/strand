@@ -1048,6 +1048,27 @@ impl SceneDiff {
     }
 }
 
+/// Whether an `image` node's [`Prop::Source`] names a file rather than an
+/// icon of the icon theme: it starts with `/`, `~/`, `./` or `file://`,
+/// or ends in an image extension (`png`, `jpg`, `jpeg`, `svg`, `gif`,
+/// `webp`, `apng`). Anything else (`firefox`, `audio-volume-high`) is an
+/// icon name. An `svg`'s and a `lottie`'s source is always a file and an
+/// `icon`'s never. The one rule the renderer draws by and the compiler
+/// resolves relative paths and checks literal files by (spec.md 6.1).
+pub fn source_is_file(source: &str) -> bool {
+    let src = source.trim();
+    src.starts_with('/')
+        || src.starts_with("~/")
+        || src.starts_with("file://")
+        || src.starts_with("./")
+        || std::path::Path::new(src).extension().is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().to_str(),
+                Some("png" | "jpg" | "jpeg" | "svg" | "gif" | "webp" | "apng")
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

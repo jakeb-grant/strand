@@ -22,6 +22,7 @@
 //! checked on first use, which is also how static cycles are found.
 
 mod actions;
+pub mod assets;
 mod boxes;
 mod collect;
 mod cycles;

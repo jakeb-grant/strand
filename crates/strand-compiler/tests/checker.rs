@@ -3175,3 +3175,51 @@ fn file_stems_and_shared_names_meet_ids_and_boxes() {
          text \"t\" { id: t; opacity: w > 10 ? 1 : 0.5\n    \
          on change t.box.width { w = t.box.width } }\n}\n");
 }
+
+/// (Bug 8, owner testing 2026-10-14) An `image`, `svg` or `lottie` whose
+/// literal file is not there is a `check::missing_file` warning with a
+/// help line, its relative path under the config directory (as render
+/// reads it, not the process's directory); a file that is there, a
+/// subdirectory's included, an icon name and a computed source are not.
+#[test]
+fn a_missing_literal_file_is_a_warning() {
+    let dir = std::env::temp_dir().join(format!("strand-assets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("icons")).unwrap();
+    std::fs::write(dir.join("dot.svg"), "<svg/>").unwrap();
+    std::fs::write(dir.join("icons/wifi.svg"), "<svg/>").unwrap();
+    let warnings = |src: &str| {
+        let out = one(src);
+        strand_compiler::check::assets::check(&out.program, Some(&dir))
+    };
+    let quiet = "state name = \"wifi\"\nbar B {\n  height: 30\n  \
+        svg \"dot.svg\" { size: 24 }\n  image \"dot.svg\"\n  image \"./dot.svg\"\n  \
+        svg \"icons/wifi.svg\"\n  image \"firefox\"\n  image \"network-wireless-symbolic\"\n  \
+        image \"org.gnome.Nautilus\"\n  icon \"missing.svg\"\n  \
+        svg \"icons/\" + name + \".svg\"\n  image name\n}\n";
+    let w = warnings(quiet);
+    assert!(w.is_empty(), "{w:?}");
+
+    let loud = "bar B {\n  height: 30\n  svg \"gone.svg\"\n  image \"icons/gone.png\"\n  \
+        lottie \"gone.json\"\n  image \"/nonexistent/strand/x.png\"\n}\n";
+    let w = warnings(loud);
+    assert_eq!(
+        w.iter().map(|d| d.code).collect::<Vec<_>>(),
+        ["check::missing_file"; 4],
+        "{w:?}"
+    );
+    assert!(w.iter().all(|d| !d.is_error()));
+    let help = w[0].help.as_deref().unwrap();
+    assert!(help.contains("under the config directory"), "{help}");
+    assert!(
+        help.contains(&dir.join("gone.svg").display().to_string()),
+        "{help}"
+    );
+    assert!(w[1].help.as_deref().unwrap().contains("icon name"));
+    // Without a config directory a relative path is not checked.
+    assert_eq!(
+        strand_compiler::check::assets::check(&one(loud).program, None).len(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

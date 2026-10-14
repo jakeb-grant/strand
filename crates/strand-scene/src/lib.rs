@@ -37,7 +37,7 @@ pub use paint::{
 };
 pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Keyframes, Length, NodeKind, Paint, Prop,
-    PropClass, PropValue, SceneDiff, SceneOp, Shadow, Transition,
+    PropClass, PropValue, SceneDiff, SceneOp, Shadow, Transition, source_is_file,
 };
 pub use provenance::{ProvenanceStep, StepKind};
 pub use shader::{PRELUDE, ShaderCode, UniformSlot, UniformType};

@@ -109,6 +109,25 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    decisions.md m6-w2-surface. The guide's padding examples could say
    so (docs stream).
 
+8. **A relative `svg` or `image` path draws nothing.** (fixed
+   2026-10-14, decisions.md m6-owner-fixes) Found with the GitHub
+   build of `0cba252` on headless sway: `svg "dot.svg"` and
+   `image "dot.svg"`, next to `target/try/svgtest/strand/bar.strand`,
+   drew nothing; the same file by absolute path drew, and `strand
+   check` reported nothing. Cause: render read a relative source
+   against the process's directory (`crates/strand-render/src/image.rs`,
+   `resolve` and `read_local`), where every other path in the language
+   is under the config directory. Fix: instantiate makes an `image`'s,
+   `svg`'s or `lottie`'s relative file absolute under the config
+   directory, a subdirectory's (`icons/wifi.svg`) too
+   (`check::assets::local_source`), and `strand check` warns
+   (`check::missing_file`) on a literal path that names no file, never
+   on an icon name (the rule render draws by, now
+   `strand_scene::source_is_file`). spec.md 6.1 says so. Edits to such a
+   file while the shell runs are still not watched
+   (`crates/strand-compiler/tests/render.rs::relative_media_paths_are_under_the_config_directory`,
+   `crates/strand-compiler/tests/checker.rs::a_missing_literal_file_is_a_warning`).
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,

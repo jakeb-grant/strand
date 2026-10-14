@@ -2117,6 +2117,13 @@ impl Ctx {
         // (`lock.rs`).
         let lock_open = (kind == NodeKind::Lock && prop == SceneProp::Open).then(|| self.clone());
         let drag = prop == SceneProp::Drag;
+        // An `image`'s, `svg`'s or `lottie`'s relative file goes to render
+        // under the config directory (spec.md 6.1): render reads the path
+        // it is handed, and the process's directory is not the config's.
+        let base = (prop == SceneProp::Source
+            && crate::check::assets::KINDS.contains(&kind.name()))
+        .then(|| self.storage.config_dir.clone())
+        .flatten();
         if drag {
             // The source's value goes with its node.
             let weak = Rc::downgrade(self);
@@ -2173,10 +2180,13 @@ impl Ctx {
                     ctx.drags.borrow_mut().insert(id, v);
                     return Ok(PropOut { value, source: i });
                 }
-                return Ok(PropOut {
-                    value: ctx.source_value(rt, prop, &s.value, &e)?,
-                    source: i,
-                });
+                let value = match (ctx.source_value(rt, prop, &s.value, &e)?, &base) {
+                    (PropValue::Text(t), Some(dir)) => PropValue::Text(
+                        crate::check::assets::local_source(kind.name(), &t, dir).unwrap_or(t),
+                    ),
+                    (v, _) => v,
+                };
+                return Ok(PropOut { value, source: i });
             }
             if drag {
                 ctx.drags.borrow_mut().remove(&id);

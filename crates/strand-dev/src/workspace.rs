@@ -187,6 +187,14 @@ impl Analysis {
                 &compiled.program,
                 dir,
             ));
+        // An `image`'s, `svg`'s or `lottie`'s literal file that is not
+        // there (a stat per literal source).
+        compiled
+            .diagnostics
+            .extend(strand_compiler::check::assets::check(
+                &compiled.program,
+                dir,
+            ));
         // `shader "x.wgsl"` files, checked with naga (relative paths only
         // in a config directory).
         use strand_compiler::check::shaders;

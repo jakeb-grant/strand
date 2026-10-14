@@ -188,6 +188,11 @@ fn check_config(
         &compiled.program,
         Some(dir),
     ));
+    // An `image`'s, `svg`'s or `lottie`'s literal file that is not there.
+    diags.extend(strand_compiler::check::assets::check(
+        &compiled.program,
+        Some(dir),
+    ));
     // (M6) A component, type, enum or `fn` declared in more than one
     // file: a note at each declaration (spec.md 4.2).
     diags.extend(strand_compiler::check::names::notes(&compiled.program));

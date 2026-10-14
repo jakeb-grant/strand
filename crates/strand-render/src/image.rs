@@ -6,7 +6,11 @@
 //! (`window-close-symbolic`); a symbolic icon draws as a mask in the
 //! node's `color`. An `image` takes a file path (PNG, JPEG, SVG, GIF or
 //! WebP; `~/` and `file://` work) or, when its source has no path, an
-//! icon name as well (`image h.app.icon`, `image item.icon`). Every
+//! icon name as well (`image h.app.icon`, `image item.icon`). A relative
+//! path in a config is under the config directory: the compiler makes it
+//! absolute before it reaches render (`check::assets::local_source`), so
+//! one that arrives relative is read against the process's directory as
+//! given. Every
 //! decode is at the box's physical size, so the cache holds what is
 //! drawn, never a full-resolution original.
 //!
@@ -217,19 +221,10 @@ impl IconTheme {
 /// Whether `key` is looked up in the icon theme (an `icon`, or an
 /// `image` whose source is no path): what an icon theme change
 /// invalidates.
+/// The rule is [`strand_scene::source_is_file`], the one the compiler
+/// resolves a relative path against the config directory by.
 pub fn is_icon(key: &ImageKey) -> bool {
-    let src = key.source.trim();
-    key.icon
-        || !(src.starts_with('/')
-            || src.starts_with("~/")
-            || src.starts_with("file://")
-            || src.starts_with("./")
-            || Path::new(src).extension().is_some_and(|e| {
-                matches!(
-                    e.to_ascii_lowercase().to_str(),
-                    Some("png" | "jpg" | "jpeg" | "svg" | "gif" | "webp" | "apng")
-                )
-            }))
+    key.icon || !strand_scene::source_is_file(&key.source)
 }
 
 /// Resolves `key`'s source to a file.
