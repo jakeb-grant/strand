@@ -191,7 +191,7 @@ fn squircle_bar_scene() -> SceneDiff {
     b.diff
 }
 
-/// owner-testing.md bug 4: `corners: squircle` with `radius: 20` on a
+/// (M6, decisions.md m6-w2-surface) `corners: squircle` with `radius: 20` on a
 /// 40 px bar drew nearly square corners (a quintic corner squeezed into
 /// the 20 px a circle has), where the round corner draws a pill. A
 /// squircle corner capped at half the side now rounds towards the

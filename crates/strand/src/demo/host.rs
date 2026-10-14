@@ -321,7 +321,12 @@ fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Opt
                 },
             },
         },
-        Intent::Write { node, prop, value } => ToLogic::Write { node, prop, value },
+        Intent::Write { node, prop, value } => ToLogic::Write {
+            node,
+            prop,
+            value,
+            input: press,
+        },
     })
 }
 
@@ -559,10 +564,10 @@ impl Host {
         }
     }
 
-    /// (M6) The router's hover graces that are due end, and the hover a
-    /// detached surface held goes out (`Router::tick`): logic hears of
-    /// it, and the next grace's end is the renderer's input wake. Run on
-    /// every wake of the loop ([`crate::demo::text_ready`]).
+    /// (M6) The `trigger: hover` popups whose delay or grace is up open
+    /// or close (`Router::tick`): logic hears of it, and the next one's
+    /// time is the renderer's input wake. Run on every wake of the loop
+    /// ([`crate::demo::text_ready`]) and after a surface detaches.
     pub(crate) fn tick_input(&mut self) {
         let Some(f) = &mut self.logic else {
             return;
@@ -627,6 +632,9 @@ impl Host {
                     f.send(msg);
                 }
             }
+            // (M6) Settling forgets the hover popups logic removed, and
+            // their graces.
+            self.renderer.set_input_wake(f.router.next_wake());
         }
     }
 
@@ -901,7 +909,8 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
-        // (M6) A popup gone puts out the hover it held on its anchor.
+        // (M6) The pointer gone with the surface may start a hover
+        // popup's grace.
         self.tick_input();
     }
 
@@ -1010,7 +1019,8 @@ impl SurfaceHost for Host {
             // (M4) `parallax` and `tilt` follow the router's pointer.
             let s = event.surface();
             self.renderer.set_pointer(s, f.router.pointer(s));
-            // (M6) A hover grace's end wakes the loop (`tick_input`).
+            // (M6) A hover popup's delay or grace ending wakes the loop
+            // (`tick_input`).
             self.renderer.set_input_wake(f.router.next_wake());
         }
         // A scroll lays out again: its sizes go with it.
@@ -2300,5 +2310,190 @@ mod tests {
             })
             .unwrap();
         (tx, el)
+    }
+
+    /// Two items on a bar, each holding a `trigger: hover` popup: the
+    /// host, its renderer and router, with logic's channel, the bar's
+    /// surface attached and the pointer on item `a`.
+    struct Kept {
+        host: Host,
+        rx: calloop::channel::Channel<ToLogic>,
+        a: NodeId,
+        pop_a: NodeId,
+        pop_b: NodeId,
+        bar_s: SurfaceId,
+        a_at: f32,
+        b_at: f32,
+    }
+
+    impl Kept {
+        fn new() -> Kept {
+            use strand_scene::{NodeKind, PropValue};
+            let font = std::fs::read(strand_text::test_font_path()).unwrap();
+            let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+                std::sync::Arc::new(font),
+            ]));
+            let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+            let (tx, rx) = calloop::channel::channel();
+            let mut host = Host::new(renderer, false).forwarding(tx);
+            let n = NodeId::new;
+            let (bar, row, a, b, pop_a, pop_b) =
+                (n(0, 0), n(1, 0), n(2, 0), n(3, 0), n(4, 0), n(5, 0));
+            let num = PropValue::Number;
+            let mut d = SceneDiff::new();
+            d.create(bar, NodeKind::Bar, None, 0)
+                .set(bar, Prop::Height, num(30.0))
+                .create(row, NodeKind::Row, Some(bar), 0)
+                .create(a, NodeKind::Box, Some(row), 0)
+                .set(a, Prop::Width, num(20.0))
+                .set(a, Prop::Height, num(20.0))
+                .create(b, NodeKind::Box, Some(row), 1)
+                .set(b, Prop::Width, num(20.0))
+                .set(b, Prop::Height, num(20.0));
+            for (i, (item, pop)) in [(a, pop_a), (b, pop_b)].into_iter().enumerate() {
+                d.create(pop, NodeKind::Popup, Some(item), 0)
+                    .set(pop, Prop::Open, PropValue::Bool(false))
+                    .set(pop, Prop::Trigger, PropValue::Keyword("hover".into()))
+                    .create(n(10 + i as u32, 0), NodeKind::Box, Some(pop), 0)
+                    .set(n(10 + i as u32, 0), Prop::Width, num(40.0))
+                    .set(n(10 + i as u32, 0), Prop::Height, num(40.0));
+            }
+            assert!(host.renderer.apply(d).is_empty());
+            let bar_s = SurfaceId(1);
+            host.surface_attached(bar_s, bar, None);
+            host.surface_configured(bar_s, Size::new(200, 30), Scale::ONE);
+            // A paint lays the bar out and records its hit shapes.
+            let mut px = vec![0u8; 200 * 30 * 4];
+            let t = PaintTarget::new(&mut px, Size::new(200, 30), 800, Scale::ONE, 0).unwrap();
+            host.paint(bar_s, &mut t.at(std::time::Duration::from_secs(1)));
+            // Where each item is, by the renderer's own hit test.
+            let first = |host: &mut Host, node| {
+                (0..200)
+                    .map(|x| x as f32 + 0.5)
+                    .find(|x| {
+                        host.renderer
+                            .hit(bar_s, LogicalPoint::new(*x, 10.0))
+                            .first()
+                            == Some(&node)
+                    })
+                    .unwrap_or_else(|| panic!("{node:?} is not on the bar"))
+            };
+            let (a_at, b_at) = (first(&mut host, a), first(&mut host, b));
+            host.input(&InputEvent::PointerEnter {
+                surface: bar_s,
+                position: LogicalPoint::new(a_at, 10.0),
+            });
+            Kept {
+                host,
+                rx,
+                a,
+                pop_a,
+                pop_b,
+                bar_s,
+                a_at,
+                b_at,
+            }
+        }
+
+        /// The hover flags logic was told since the last call.
+        fn hover_flags(&self) -> Vec<(NodeId, bool)> {
+            self.told()
+                .into_iter()
+                .filter_map(|m| match m {
+                    ToLogic::Flag {
+                        node,
+                        flag: NodeFlag::Hover,
+                        on,
+                    } => Some((node, on)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// What logic was told since the last call.
+        fn told(&self) -> Vec<ToLogic> {
+            std::iter::from_fn(|| self.rx.try_recv().ok()).collect()
+        }
+
+        /// A popup's surface shows.
+        fn show(&mut self, surface: u32, popup: NodeId) {
+            let s = SurfaceId(surface);
+            self.host.surface_attached(s, popup, None);
+            self.host
+                .surface_configured(s, Size::new(40, 40), Scale::ONE);
+        }
+
+        /// The pointer moves along the bar to `x`.
+        fn to(&mut self, x: f32) {
+            self.host.input(&InputEvent::PointerMotion {
+                surface: self.bar_s,
+                position: LogicalPoint::new(x, 10.0),
+                time: 0,
+            });
+        }
+    }
+
+    /// (M6, spec.md 6.3, decisions.md m6-w2-surface) The router opens
+    /// and closes `trigger: hover` popups by writing their `open`, which
+    /// the host hands logic as a write with no press (so the diff that
+    /// opens one carries none and it never grabs): onto `a`, `a`'s opens;
+    /// straight on to `b`, `a`'s closes and `b`'s opens in one step; the
+    /// anchors' own `hover` is told as before.
+    #[test]
+    fn the_router_opens_hover_popups_through_logic() {
+        let mut k = Kept::new();
+        let writes = |told: Vec<ToLogic>| -> Vec<(NodeId, bool, bool)> {
+            told.into_iter()
+                .filter_map(|m| match m {
+                    ToLogic::Write {
+                        node,
+                        prop: Prop::Open,
+                        value: strand_scene::PropValue::Bool(on),
+                        input,
+                    } => Some((node, on, input.is_some())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let told = k.told();
+        assert!(
+            told.iter().any(|m| matches!(m, ToLogic::Flag { node, flag: NodeFlag::Hover, on: true } if *node == k.a)),
+            "a is hovered: {told:?}"
+        );
+        assert_eq!(writes(told), [(k.pop_a, true, false)]);
+        k.show(2, k.pop_a);
+        k.to(k.b_at);
+        assert_eq!(
+            writes(k.told()),
+            [(k.pop_a, false, false), (k.pop_b, true, false)]
+        );
+        assert_eq!(k.host.renderer.next_wake(), None, "no grace left");
+    }
+
+    /// (M6, decisions.md m6-w2-surface) A graced hover popup logic
+    /// removes (with its anchor) takes its grace with it when the host
+    /// settles the router on the new scene, and the renderer's input
+    /// wake goes with it: the loop does not wake for a grace that no
+    /// longer exists.
+    #[test]
+    fn settling_a_removed_graced_node_drops_its_wake() {
+        let mut k = Kept::new();
+        k.show(2, k.pop_a);
+        k.to(k.a_at + 100.0);
+        assert!(k.hover_flags().contains(&(k.a, false)), "a's hover goes");
+        assert!(
+            k.host.renderer.next_wake().is_some(),
+            "the grace's end wakes"
+        );
+        let mut d = SceneDiff::new();
+        d.remove(k.a);
+        k.host.observe(&d);
+        assert!(k.host.apply_diff(d).is_empty());
+        k.host.settle_input();
+        assert_eq!(
+            k.host.renderer.next_wake(),
+            None,
+            "no wake for a removed grace"
+        );
     }
 }

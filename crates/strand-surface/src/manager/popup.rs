@@ -181,9 +181,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         Some(p)
     }
 
-    /// Creates `node`'s popup in surface `parent`, grabbing with the last
-    /// button or key press when it came within [`GRAB_WINDOW`] (never for
-    /// a tooltip).
+    /// Creates `node`'s popup in surface `parent`, grabbing with the
+    /// press that opened it ([`State::set_popup_cause`]) when that press
+    /// is the seat's last and came within [`GRAB_WINDOW`] (never for a
+    /// tooltip or (M6) a `trigger: hover` popup, nor in a parent popup
+    /// that has no grab).
     pub(super) fn create_popup(
         &mut self,
         node: NodeId,
@@ -202,11 +204,27 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(positioner) = self.positioner(&config, factor) else {
             return;
         };
-        // It grabs only with the serial of a press just made: a popup
-        // opened later (a timer, `on change`, IPC) has no grab, so it
-        // neither takes the keyboard nor closes other grabbing popups.
+        // It grabs only with the serial of the press that opened it, and
+        // only while that press is fresh: a popup a hover, a timer, `on
+        // change` or IPC opened has no grab, so it neither takes the
+        // keyboard nor closes other grabbing popups. A popup in a parent
+        // popup without a grab has none either: xdg-shell lets a
+        // grabbing popup's parent be only a toplevel or another grabbing
+        // popup. (M6) The pointer opens a `trigger: hover` popup: it
+        // never grabs (spec.md 6.3), though it takes input.
+        let cause = self.popup_cause.remove(&node);
+        let parent_ok = self
+            .surfaces
+            .get(&parent)
+            .is_none_or(|p| !matches!(p.role, Role::Popup { .. }) || p.role.grabbed());
         let grab = match &self.last_action {
-            Some(a) if config.grab && !a.wandered && a.at.elapsed() <= GRAB_WINDOW => {
+            Some(a)
+                if config.grab
+                    && !spec.hover_trigger
+                    && parent_ok
+                    && cause == Some(a.serial)
+                    && a.at.elapsed() <= GRAB_WINDOW =>
+            {
                 Some((a.seat.clone(), a.serial))
             }
             _ => None,

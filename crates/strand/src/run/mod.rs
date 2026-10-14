@@ -246,11 +246,14 @@ pub enum ToLogic {
         sizes: Vec<(NodeId, f32, f32)>,
     },
     /// A widget or the surface wrote a two-way prop: an `input`'s
-    /// `text`, a surface's `open` (Escape, click-away, focus loss).
+    /// `text`, a surface's `open` (Escape, click-away, focus loss, Right
+    /// on a row holding a submenu); (M6) `input` is the press that
+    /// caused it, as an event's is.
     Write {
         node: NodeId,
         prop: strand_scene::Prop,
         value: strand_scene::PropValue,
+        input: Option<strand_compiler::vm::InputCtx>,
     },
     /// The rows a virtualised `list` wants mounted: its view plus
     /// overscan, as global row indexes (`Renderer::take_list_windows`),

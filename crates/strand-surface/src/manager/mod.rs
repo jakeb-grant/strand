@@ -803,6 +803,9 @@ pub struct State<H: SurfaceHost + 'static> {
     /// Popups the compositor dismissed (Escape, a click away) whose spec
     /// still says open: not shown again until it says closed.
     dismissed: BTreeSet<NodeId>,
+    /// (M6) The press each popup node was opened by
+    /// ([`State::set_popup_cause`]): only such a popup grabs.
+    popup_cause: HashMap<NodeId, u32>,
     /// Set by [`State::set_focused_monitor`]; `None` lets the compositor
     /// place `screens: focused` surfaces.
     focused: Option<MonitorId>,
@@ -843,25 +846,11 @@ impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
 /// timer, `on change` or IPC later than this has no grab.
 pub const GRAB_WINDOW: Duration = Duration::from_millis(500);
 
-/// (M6) How far the pointer may move from where it pressed before the
-/// press stops opening grabbing popups, in logical pixels: a click
-/// opens its menu at once, while a popup that opens after the pointer
-/// has gone on (a hover island under the next item, the click having
-/// been on the last) was not opened by it (owner-testing.md bug 1,
-/// decisions.md m6-w2-surface).
-pub const GRAB_SLOP: f64 = 8.0;
-
 /// A button or key press: its seat, serial and when it arrived.
 struct UserAction {
     seat: wl_seat::WlSeat,
     serial: u32,
     at: Instant,
-    /// (M6) A pointer press's surface and position, None for a key or a
-    /// press on a catcher.
-    from: Option<(wl_surface::WlSurface, (f64, f64))>,
-    /// (M6) The pointer left `from`'s surface or moved more than
-    /// [`GRAB_SLOP`] from it since: the press opens no grabbing popup.
-    wandered: bool,
 }
 
 /// A seat's pointer, with the cursor it shows over our surfaces.
@@ -1028,6 +1017,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             held_leave: None,
             grab_focus: None,
             dismissed: BTreeSet::new(),
+            popup_cause: HashMap::new(),
             modifiers: Modifiers::default(),
             focused: None,
             input: None,
@@ -1250,6 +1240,25 @@ impl<H: SurfaceHost + 'static> State<H> {
         let ids: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
         for id in ids {
             self.mark(id);
+        }
+    }
+
+    /// (M6) `node`, a popup a scene diff creates or opens, was opened by
+    /// the press with compositor serial `press` (`SceneDiff::press`: its
+    /// handler or two-way write ran for that press), or by no press
+    /// (`None`: a hover, a timer, IPC). Its surface grabs with that
+    /// serial when it is created, if the press is still the seat's last
+    /// and within [`GRAB_WINDOW`]; a popup no press opened never grabs
+    /// (decisions.md m6-w2-surface). Call it before applying the surface
+    /// changes the diff causes.
+    pub fn set_popup_cause(&mut self, node: NodeId, press: Option<u32>) {
+        match press {
+            Some(serial) => {
+                self.popup_cause.insert(node, serial);
+            }
+            None => {
+                self.popup_cause.remove(&node);
+            }
         }
     }
 

@@ -1996,7 +1996,7 @@ fn a_percentage_sized_image_still_gives_way_in_a_row() {
     );
 }
 
-/// owner-testing.md bug 5 (decisions.md m6-w2-surface): a text's line
+/// (M6, decisions.md m6-w2-surface) A text's line
 /// box is CSS's `line-height: normal`, the font's ascent, descent and
 /// line gap (hhea, as the font asks: Liberation Sans 1854 + 434 + 67 of
 /// 2048 units per em), with half the gap above the first baseline. Qt
@@ -2069,7 +2069,7 @@ fn a_text_line_box_is_css_normal() {
     );
 }
 
-/// owner-testing.md bug 1 (decisions.md m6-w2-surface): a layer
+/// (M6, decisions.md m6-w2-surface) A layer
 /// surface's buffer never reaches past an edge it is anchored to, so its
 /// origin lies on its own output (Hyprland constrains a popup to the
 /// monitor at that origin). The owner's floating bar (`margin: 4, 4, 0`,

@@ -283,8 +283,6 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                                 seat,
                                 serial: *serial,
                                 at: Instant::now(),
-                                from: None,
-                                wandered: false,
                             });
                         }
                         self.send_input(InputEvent::ClickAway { surface });
@@ -292,20 +290,6 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     _ => {}
                 }
                 continue;
-            }
-            // (M6) The pointer going on from a press: it opens no
-            // grabbing popup after that (`GRAB_SLOP`).
-            if let Some(a) = &mut self.last_action
-                && let Some((on, (x, y))) = &a.from
-                && !a.wandered
-            {
-                a.wandered = match &e.kind {
-                    PointerEventKind::Leave { .. } => on == &e.surface,
-                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                        on != &e.surface || (e.position.0 - x).hypot(e.position.1 - y) > GRAB_SLOP
-                    }
-                    _ => false,
-                };
             }
             let Some(surface) = self.surface_for(&e.surface) else {
                 continue;
@@ -346,8 +330,6 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                             seat,
                             serial: *serial,
                             at: Instant::now(),
-                            from: Some((e.surface.clone(), e.position)),
-                            wandered: false,
                         });
                     }
                     self.last_pressed = Some(surface);
@@ -492,8 +474,6 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
                 seat,
                 serial,
                 at: Instant::now(),
-                from: None,
-                wandered: false,
             });
         }
         self.key(event.clone(), ButtonState::Pressed, false);

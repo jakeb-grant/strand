@@ -31,20 +31,12 @@ impl Renderer {
     }
 
     /// The deepest hovered node with a `tooltip`, and its text; none
-    /// while a button is held. (M6) A node holding a shown popup (one of
-    /// its descendants is a surface's root) wants none: the pointer on
-    /// the popup keeps it hovered (decisions.md m6-w2-surface), and the
-    /// popup is what it shows.
+    /// while a button is held.
     pub(super) fn tooltip_wanted(&self) -> Option<(NodeId, String)> {
         let w = &self.extras.widgets;
         if !w.pressed.is_empty() {
             return None;
         }
-        let holds_popup = |n: NodeId| {
-            self.surfaces.values().any(|s| {
-                s.root != n && !self.tree.is_overlay(s.root) && self.tree.is_ancestor(n, s.root)
-            })
-        };
         let depth = |mut n: NodeId| {
             let mut d = 0;
             while let Some(p) = self.tree.get(n).and_then(|x| x.parent) {
@@ -55,7 +47,7 @@ impl Renderer {
         };
         w.hovered
             .iter()
-            .filter(|n| self.tree.contains_live(**n) && !holds_popup(**n))
+            .filter(|n| self.tree.contains_live(**n))
             .filter_map(|n| {
                 let node = self.tree.get(*n)?;
                 let v = node.get(Prop::Tooltip)?;

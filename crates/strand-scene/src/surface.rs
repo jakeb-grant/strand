@@ -119,6 +119,9 @@ pub struct SurfaceSpec {
     /// A `popup` that is a tooltip (`tooltip: expr`): shown without a
     /// grab, takes no input.
     pub tooltip: bool,
+    /// (M6) A `trigger: hover` popup: the router opens and closes it by
+    /// the pointer, and it is shown without a grab (it takes input).
+    pub hover_trigger: bool,
     /// (M4) `scrim: $shadow.alpha(0.3)`: a full-output single-pixel
     /// surface in this colour under the surface while it is open (the
     /// click-away catcher too, when it has one). Only a `popup` or a
@@ -252,6 +255,8 @@ impl SurfaceSpec {
             parent: None,
             anchor_rect: None,
             tooltip: false,
+            hover_trigger: kind == NodeKind::Popup
+                && keyword(Prop::Trigger).is_some_and(|k| k == "hover"),
             scrim: match (kind, get(Prop::Scrim).as_ref().map(AsRef::as_ref)) {
                 (
                     NodeKind::Popup | NodeKind::Panel,

@@ -181,6 +181,7 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "pressed" => Value::Bool(n.pressed.get(rt)?),
             "focused" => Value::Bool(n.focused.get(rt)?),
             "selected" => Value::Bool(n.selected.get(rt)?),
+            "open" => Value::Bool(n.open.get(rt)?),
             "width" => laid_out(vm, n, n.width.get(rt)?),
             "height" => laid_out(vm, n, n.height.get(rt)?),
             _ => Value::Null,

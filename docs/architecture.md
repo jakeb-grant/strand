@@ -43,7 +43,14 @@ whose layout changed a `watch: query` node's size until then, or for
 `strand_render::QUERY_WAIT` (`Renderer::set_query_wait`; zero offline),
 so container queries settle inside the frame. `SceneDiff::reduced_motion`
 carries a change of the desktop's reduced-motion preference
-(`system.reduced_motion`) to render (sent even with no ops). No locks are shared across
+(`system.reduced_motion`) to render (sent even with no ops).
+`SceneDiff::press: Option<u32>` (M6, m6-w2-surface) is the compositor
+serial of the last press whose event or two-way write logic handled
+(`ToLogic::Event`'s and `ToLogic::Write`'s `input`), kept on every diff
+until a hover change is handled; the host marks each popup a diff
+creates or opens with it (`demo::popup_causes`,
+`State::set_popup_cause`) before applying it, so the surface grabs
+only for the press that opened it. No locks are shared across
 threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run/`) is this wiring: the main
@@ -79,7 +86,8 @@ A `KeyboardEnter` with no leave before it (the keyboard back from a
 grabbing popup) keeps the surface's focused node. An `Intent` is `Flag { node, flag, on }`,
 `Event { node, event }` or `Write { node, prop, value }`; the binary's
 host (`demo/host.rs`, `Forward`) only maps them to `ToLogic::Flag`,
-`Event` and `Write` (which logic applies with `Instance::write`, a
+`Event` and `Write` (both with the press they came from, `input`; a
+`Write` logic applies with `Instance::write`, a
 two-way write) (decisions.md, wave3-pixels). Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
 set from `find_files`, rescan callback calling it again), boots the
@@ -2324,21 +2332,30 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     and (M5) the inspector: runtime faults, write errors, and the values
     and notices of cells kept over a changed default (the overlay's rows
     too).
-  - Hover through popups (M6, m6-w2-surface; owner-testing.md gap 4,
-    for review by the router's owner). A surface's hovered chain goes
-    on past a popup's root to its tree ancestors (the anchor element and
-    up), and a node is hovered while it is on any surface's chain. A
-    node that holds a shown popup (an ancestor of the root of a surface
-    the router routes for) keeps `hover` for `strand_render::HOVER_GRACE`
-    (200 ms) after the pointer leaves it and the popup; reaching either
-    again keeps it lit. `Router::next_wake() -> Option<Instant>` is the
-    earliest grace's end and `Router::tick(&mut dyn InputScene) ->
-    Vec<Intent>` ends the graces that are due and puts out hover a
-    detached surface held. The host hands `next_wake` to
+  - `trigger: hover` popups (M6, m6-w2-surface; spec.md 6.3, the
+    owner's ruling). The router opens and closes each popup whose
+    `Prop::Trigger` is `hover` by an `Intent::Write { prop: Open }`
+    (logic sets `NodeState::open`, which drives the popup's `open`
+    binding; `Instance::write` accepts it for such a popup only). It
+    opens one while the pointer is on the element it is anchored to
+    (its tree parent; the innermost such element, after
+    `Prop::Delay`), closing at once the one open from the same surface
+    (the nearest surface node above it). It keeps one open while the
+    pointer, on any surface, is on that element or on a node whose tree
+    ancestors include it (the popup, popups opened from it), or while a
+    left press that went down there is held, and closes it
+    `Prop::Grace` (default `strand_render::HOVER_GRACE`, 200 ms) after,
+    the popups opened from it first. Pick mode opens nothing and ends
+    the graces. `Router::next_wake() -> Option<Instant>` is the earliest
+    delay or grace to end and `Router::tick(&mut dyn InputScene) ->
+    Vec<Intent>` runs them. The host hands `next_wake` to
     `Renderer::set_input_wake(Option<Instant>)` after each routed event
-    (the renderer's timer wakes the loop then) and calls `tick` on every
-    wake (`demo::text_ready`, `Host::tick_input`) and after a surface
-    detaches, sending its intents like `handle`'s.
+    and each settle (which forgets removed popups), so the renderer's
+    timer wakes the loop then, and calls `tick` on every wake before
+    `Renderer::update` (`demo::text_ready`, `Host::tick_input`) and
+    after a surface detaches, sending its intents like `handle`'s.
+    `SurfaceSpec::hover_trigger` marks such a popup for the surface
+    manager, which never grabs for it (it takes input).
 
 - Later (render):
   - `flatten_surface` rebuilds the map of every delivered layout and
@@ -3876,12 +3893,16 @@ and the connection):
   overhang, anchor rect in the parent's window geometry, side and gap)
   with slide and flip; its window geometry is its box, its buffer the
   box plus the overhang. Size or anchor changes reposition it
-  (`xdg_popup.reposition`). It grabs with the last button or key press's
-  serial when that press came within `GRAB_WINDOW` (500 ms) and (M6,
-  m6-w2-surface) the pointer has neither left the surface it pressed on
-  nor moved more than `GRAB_SLOP` (8 logical px) from the press since (a
-  hover island opening under the next item is not the click's), never
-  for a tooltip (`SurfaceSpec::tooltip`: no grab, empty input region);
+  (`xdg_popup.reposition`). (M6, m6-w2-surface) It grabs by its cause:
+  only when the press that opened it (`State::set_popup_cause(node,
+  Option<u32>)`, from `SceneDiff::press`) is the seat's last button or
+  key press and came within `GRAB_WINDOW` (500 ms), so a popup a hover,
+  timer or IPC opened never grabs and a click's menu grabs however far
+  the pointer moved before its surface was made; never under a parent
+  popup that has no grab (xdg-shell allows a grab only under a
+  toplevel, a layer surface or a grabbing popup), never for a
+  `trigger: hover` popup (`SurfaceSpec::hover_trigger`), and never for a
+  tooltip (`SurfaceSpec::tooltip`: no grab, empty input region);
   `Stats::grabs` counts grabs. "Grabbing" is what was sent, not what
   the spec asked for: only a popup made with `xdg_popup.grab` dismisses
   a grabbing chain outside its own first, makes its layer surface

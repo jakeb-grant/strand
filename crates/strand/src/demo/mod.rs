@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use calloop::channel::Event;
 use strand_render::{Renderer, TextBackend};
-use strand_scene::SceneDiff;
+use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp};
 use strand_surface::{Config, State, SurfaceError, SurfaceManager};
 use strand_text::{FontConfig, TextError, TextWorker};
 
@@ -57,6 +57,11 @@ impl From<SurfaceError> for DemoError {
 /// (render loop steps 0 and 3).
 pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
     state.host_mut().observe(&diff);
+    // (M6) The popups this diff creates or opens were opened by its press,
+    // if it has one: only those grab (`State::set_popup_cause`).
+    for (node, press) in popup_causes(&diff) {
+        state.set_popup_cause(node, press);
+    }
     for error in state.host_mut().apply_diff(diff) {
         log::error!("scene: {error:?}");
     }
@@ -65,12 +70,38 @@ pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
     sync(state);
 }
 
+/// (M6) What `diff` says opened each popup it touches: a popup it creates
+/// or sets `open: true` was opened by its press (`SceneDiff::press`,
+/// none for a diff no press caused: a hover, a timer); one it closes or
+/// removes is opened by nothing. Other surfaces' entries are never read.
+pub(crate) fn popup_causes(diff: &SceneDiff) -> Vec<(NodeId, Option<u32>)> {
+    diff.ops
+        .iter()
+        .filter_map(|op| match op {
+            SceneOp::Create {
+                id,
+                kind: NodeKind::Popup,
+                ..
+            } => Some((*id, diff.press)),
+            SceneOp::SetProp {
+                id,
+                prop: Prop::Open,
+                value,
+                ..
+            } => Some((*id, diff.press.filter(|_| *value == PropValue::Bool(true)))),
+            SceneOp::Remove { id, .. } => Some((*id, None)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The text worker delivered layouts: collect them, and hand on what they
 /// changed (a content-sized surface's size, laid-out sizes).
 pub(crate) fn text_ready(state: &mut State<Host>) {
-    state.host_mut().renderer.update();
-    // (M6) A hover grace that ended (the renderer's timer woke for it).
+    // (M6) A hover grace that ended (the renderer's timer woke for it),
+    // before `update` lays out and repaints for it.
     state.host_mut().tick_input();
+    state.host_mut().renderer.update();
     sync(state);
 }
 

@@ -175,6 +175,11 @@ pub struct NodeState {
     pub pressed: Signal<bool>,
     pub focused: Signal<bool>,
     pub selected: Signal<bool>,
+    /// (M6) A surface's open state, `p.open`: a `trigger: hover`
+    /// popup's is the source of its `open` (the router writes it through
+    /// [`crate::instantiate::Instance::write`]); any other surface's
+    /// follows its `open` (true without one); false on other elements.
+    pub open: Signal<bool>,
     pub width: Signal<Value>,
     pub height: Signal<Value>,
     /// Which laid-out sizes bindings read: [`NodeState::WATCH_SIZE`],

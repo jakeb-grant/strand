@@ -184,7 +184,12 @@ filling the monitor, the keyboard always).
 - **`popup { … }`** is an element, not a top-level surface: it is
   anchored to its parent element, shows while its `open` is true, nests
   (a popup may hold popups), and has `on dismiss` (Escape or a click
-  away closed it).
+  away closed it). `trigger: hover` lets the pointer open and close it
+  (section 6.3). A popup takes the keyboard (an `xdg_popup` grab) only
+  when a press opened it: a handler or two-way write running for a
+  click or a key set its `open`; one a hover, a timer or IPC opens
+  does not, nor does a `trigger: hover` popup or one opened from inside
+  a popup without a grab.
 - **`keyboard: none | on_demand | exclusive`** sets how the surface
   takes keyboard focus.
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.
@@ -360,6 +365,29 @@ filling the monitor, the keyboard always).
   **enclosing node** (the node the `when`, `if` or expression is
   written in). `hover` stays true on a pressed node while it is dragged,
   even when the pointer leaves it.
+- A node's `hover` is true while the pointer is over it or over one of
+  its descendants on the same surface. A `popup` is a surface of its
+  own: the pointer on a popup does not hover the element it is anchored
+  to.
+- **`trigger: hover`** on a `popup` gives its open state to the pointer.
+  It opens while the pointer is on the element it is anchored to, after
+  its `delay` (none by default). It stays open while the pointer is on
+  that element or on the popup, popups opened from inside it included,
+  or while a press that went down on it is held (a slider's drag), and
+  for its `grace` after the pointer leaves them (200 ms by default), so
+  the pointer can cross the gap. It never takes the keyboard. One
+  `trigger: hover` popup is open from a surface at a time: when another
+  opens from the same surface (the pointer went straight to the next
+  bar item), the open one closes at once. Its `enter` and `exit` poses
+  play as it opens and closes. It takes no `open:`, and `trigger`,
+  written on the popup itself, is `open` (the default: `open:` decides)
+  or `hover`; anything else, and `delay` or `grace` without `trigger:
+  hover`, is a load error.
+- `p.open` reads the open state of the popup (or other surface) with
+  `id: p`: true from the moment it opens until it closes, as its exit
+  pose starts, whether `open:` or the pointer opens it; false on other
+  elements. `when p.open { … }` styles the anchor while its popup
+  shows.
 - To read another node's booleans, give it `id: name` and read
   `name.hover`. An `id:` name is visible across the whole component or
   surface that holds the node. A node's props are never assignable

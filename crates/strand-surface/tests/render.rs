@@ -680,3 +680,90 @@ fn a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes() {
         assert_ne!(shot.rgb(960, 540), rgb("#f38ba8"), "round {round}: gone");
     }
 }
+
+/// (M6, decisions.md m6-w2-surface) Render's specs placed: a shadowed
+/// layer surface's margin is never negative on a side it is anchored
+/// to, so its buffer never passes its output's edge (Hyprland keeps a
+/// popup on the monitor at its parent's buffer origin), while its box
+/// stays where its own margin puts it. A floating bar, a flush bar, a
+/// corner panel and a centred panel, each with a 24 px shadow.
+#[test]
+fn shadowed_layer_surfaces_stay_inside_their_anchored_edges() {
+    use strand_scene::{Shadow, SurfaceChange};
+    let shadow = PropValue::Shadow(vec![Shadow {
+        x: 0.0,
+        y: 6.0,
+        blur: 24.0,
+        spread: 0.0,
+        color: Color::BLACK.with_alpha(0.35),
+    }]);
+    let margin = |m: [f32; 4]| PropValue::List(m.map(PropValue::Number).to_vec());
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let n = NodeId::new;
+    let mut d = SceneDiff::new();
+    d.create(n(1, 0), NodeKind::Bar, None, 0)
+        .set(n(1, 0), Prop::Name, PropValue::Text("Floating".into()))
+        .set(n(1, 0), Prop::Height, PropValue::Number(36.0))
+        .set(n(1, 0), Prop::Margin, margin([4.0, 4.0, 0.0, 4.0]))
+        .set(n(1, 0), Prop::Shadow, shadow.clone())
+        .create(n(2, 0), NodeKind::Bar, None, 1)
+        .set(n(2, 0), Prop::Name, PropValue::Text("Flush".into()))
+        .set(n(2, 0), Prop::Edge, kw("bottom"))
+        .set(n(2, 0), Prop::Height, PropValue::Number(30.0))
+        .set(n(2, 0), Prop::Shadow, shadow.clone())
+        .create(n(3, 0), NodeKind::Panel, None, 2)
+        .set(n(3, 0), Prop::Name, PropValue::Text("Corner".into()))
+        .set(n(3, 0), Prop::Anchor, kw("top_right"))
+        .set(n(3, 0), Prop::Margin, margin([48.0, 4.0, 0.0, 0.0]))
+        .set(n(3, 0), Prop::Width, PropValue::Number(300.0))
+        .set(n(3, 0), Prop::Height, PropValue::Number(100.0))
+        .set(n(3, 0), Prop::Shadow, shadow.clone())
+        .create(n(4, 0), NodeKind::Panel, None, 3)
+        .set(n(4, 0), Prop::Name, PropValue::Text("Centred".into()))
+        .set(n(4, 0), Prop::Width, PropValue::Number(300.0))
+        .set(n(4, 0), Prop::Height, PropValue::Number(100.0))
+        .set(n(4, 0), Prop::Shadow, shadow);
+    let font = std::fs::read(test_font_path()).unwrap();
+    let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    assert!(r.apply(d).is_empty());
+    let mut specs = std::collections::HashMap::new();
+    for (node, change) in r.take_surface_changes() {
+        if let SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } = change {
+            specs.insert(node, s);
+        }
+    }
+    for (node, own) in [
+        (n(1, 0), [4, 4, 0, 4]),
+        (n(2, 0), [0, 0, 0, 0]),
+        (n(3, 0), [48, 4, 0, 0]),
+        (n(4, 0), [0, 0, 0, 0]),
+    ] {
+        let spec = &specs[&node];
+        let config = strand_surface::layer_config(spec).unwrap();
+        let a = config.anchors;
+        let anchored = [a.top, a.right, a.bottom, a.left];
+        for side in 0..4 {
+            if anchored[side] {
+                assert!(
+                    config.margin[side] >= 0,
+                    "{}: margin {:?} passes an anchored edge (overhang {:?})",
+                    spec.namespace(),
+                    config.margin,
+                    config.overhang
+                );
+                // The box keeps its place: margin plus overhang is the
+                // surface's own margin.
+                assert_eq!(
+                    config.margin[side] + config.overhang[side],
+                    own[side],
+                    "{}",
+                    spec.namespace()
+                );
+            }
+        }
+    }
+    // The centred panel, anchored nowhere, keeps all of its shadow.
+    let c = strand_surface::layer_config(&specs[&n(4, 0)]).unwrap();
+    assert!(c.overhang.iter().all(|o| *o > 0), "{:?}", c.overhang);
+}

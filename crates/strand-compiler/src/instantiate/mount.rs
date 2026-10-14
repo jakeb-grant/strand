@@ -1426,12 +1426,14 @@ impl Ctx {
         if let Some((_, was)) = &claimed
             && !Rc::ptr_eq(was, &state)
         {
-            // Hovered stays hovered across a reload.
+            // Hovered stays hovered across a reload, and (M6) a
+            // `trigger: hover` popup the router opened stays open.
             for (a, b) in [
                 (was.hover, state.hover),
                 (was.pressed, state.pressed),
                 (was.focused, state.focused),
                 (was.selected, state.selected),
+                (was.open, state.open),
             ] {
                 if let Ok(true) = a.get_untracked(rt) {
                     let _ = b.set(rt, true);
@@ -1484,6 +1486,19 @@ impl Ctx {
                 continue;
             }
             self.bind_prop(rt, id, prop, sources, env, kind, (e.file, e.span));
+        }
+        // (M6) A `trigger: hover` popup's `open` is the router's to write
+        // (spec.md 6.3): bound to its node's `shown`, closed until then.
+        if kind == NodeKind::Popup
+            && self
+                .em
+                .borrow()
+                .sent
+                .get(&id)
+                .and_then(|m| m.get(&SceneProp::Trigger))
+                == Some(&PropValue::Keyword("hover".into()))
+        {
+            self.bind_shown(rt, id, &state, env, (e.file, e.span));
         }
         let mut two_way = Vec::new();
         for p in e.props.iter().chain(e.arg.iter()) {
@@ -1616,11 +1631,15 @@ impl Ctx {
         let blocked = Rc::new(Cell::new(false));
         let shown: Rc<Cell<Option<bool>>> = Rc::default();
         let (me, env) = (self.clone(), env.clone());
+        let open_state = ec.state.open;
         let show = move |rt: &Runtime, is_open: bool| {
             let prev = shown.replace(Some(is_open));
             if prev == Some(is_open) {
                 return;
             }
+            // (M6) `p.open` follows it (a `trigger: hover` popup's is
+            // what drives it already).
+            let _ = open_state.set(rt, is_open);
             // A lock's new request is its `open` going false to true; a
             // mount that starts open (a reload) is not one.
             if is_lock && is_open && prev == Some(false) {
@@ -2105,6 +2124,61 @@ impl Ctx {
                     prop,
                     memo,
                     transitions,
+                    site,
+                },
+            );
+            if let Some(entry) = em.nodes.get_mut(&id) {
+                entry.bindings.push(memo.id());
+            }
+        }
+    }
+
+    /// (M6) Binds `id`'s `open` to its node's `shown` (a `trigger: hover`
+    /// popup's, which the router writes through [`Instance::write`]), as
+    /// [`Ctx::bind_prop`] binds a prop to its sources: the surface's body
+    /// mounts while it is true.
+    ///
+    /// [`Instance::write`]: crate::instantiate::Instance::write
+    fn bind_shown(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        id: strand_scene::NodeId,
+        state: &Rc<crate::vm::value::NodeState>,
+        env: &Rc<Env>,
+        at: (crate::source::FileId, crate::syntax::Span),
+    ) {
+        let shown = state.open;
+        let memo = rt.memo(move |rt| {
+            Ok(PropOut {
+                value: PropValue::Bool(shown.get(rt)?),
+                source: 0,
+            })
+        });
+        let _ = rt.reads_from(memo.id(), &[shown.id()]);
+        let what: Rc<str> = "popup.open".into();
+        rt.set_name(memo.id(), &*what);
+        let site = Rc::new(super::Site {
+            what,
+            file: at.0,
+            span: at.1,
+            node: Some(id),
+            component: env.component,
+            scope: env.fault_scope(),
+        });
+        if let Ok(out) = memo.get_untracked(rt) {
+            self.em
+                .borrow_mut()
+                .set(id, SceneProp::Open, out.value, Transition::Instant);
+        }
+        if rt.watch(memo.id()).is_ok() {
+            let mut em = self.em.borrow_mut();
+            em.bindings.insert(
+                memo.id(),
+                Binding {
+                    scene: id,
+                    prop: SceneProp::Open,
+                    memo,
+                    transitions: Rc::new(vec![Transition::Instant]),
                     site,
                 },
             );

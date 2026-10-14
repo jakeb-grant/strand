@@ -54,7 +54,7 @@ pub(super) fn centred_overhang(spec: &SurfaceSpec, o: Insets) -> Insets {
 /// (`CPopup::reposition`, `CMonitorQueryCore::closestTo`): a floating,
 /// shadowed bar's origin lay above and left of its output, nearer the
 /// neighbour on its left, so its hover islands slid onto that monitor
-/// (owner-testing.md bug 1). A popup's box is placed by the compositor,
+/// (decisions.md m6-w2-surface). A popup's box is placed by the compositor,
 /// so its overhang is left alone.
 pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
     let (top, right, bottom, left) = match spec.kind {

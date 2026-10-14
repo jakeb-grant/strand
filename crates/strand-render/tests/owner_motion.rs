@@ -1,4 +1,4 @@
-//! owner-testing.md bug 2: frame times and settle times of the owner's
+//! (M6, decisions.md m6-w2-surface) Frame times and settle times of the owner's
 //! animations at scale 1.5, where a 2560-logical bar is 3840 physical
 //! pixels wide: the workspace pill moving (`x: ix ~ ease(out_back,
 //! 200ms)`) across the floating, shadowed bar, again after the paint

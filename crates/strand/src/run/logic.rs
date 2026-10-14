@@ -280,6 +280,7 @@ pub fn logic(
         blur_notices: Vec::new(),
         settings_reread: Vec::new(),
         layout_seen: None,
+        press: None,
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
         exports: Vec::new(),
@@ -325,6 +326,7 @@ pub fn logic(
         let mut diff = std::mem::take(&mut update.diff);
         shell.secrets.see_diff(&diff);
         diff.layout_seen = shell.layout_seen.take();
+        diff.press = shell.press;
         // `system.reduced_motion` (the portal's, or its last value) goes
         // to render, which snaps every spring while it is on.
         let reduced = {

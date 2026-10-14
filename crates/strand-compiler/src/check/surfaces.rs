@@ -5,6 +5,10 @@
 //! `osd` or `lock` that sets one is caught here: a bar already is the
 //! edge a panel attaches to, and a scrim under a bar or an OSD would dim
 //! the screen for as long as it shows.
+//!
+//! (M6) A `popup`'s `trigger: hover` (spec.md 6.3): the pointer opens
+//! it, so it takes no `open:`, and the trigger is written as is, on the
+//! popup itself, never in a `when` or as an expression.
 
 use super::Checker;
 use crate::hir::{self, Node};
@@ -16,6 +20,9 @@ impl Checker<'_> {
     /// Reports `attach` and `scrim` on a surface of `kind` other than a
     /// `popup` or `panel`, among its props and its `when` blocks'.
     pub(super) fn surface_props(&mut self, kind: &str, props: &[hir::Prop], children: &[Node]) {
+        if kind == "popup" {
+            self.popup_trigger(props, children);
+        }
         if !matches!(kind, "bar" | "osd" | "lock") {
             return;
         }
@@ -39,6 +46,92 @@ impl Checker<'_> {
             .help = Some(format!(
                 "put `{name}` on the `panel` or `popup` that grows out of this `{kind}`"
             ));
+        }
+    }
+}
+
+impl Checker<'_> {
+    /// (M6) A popup's `trigger`: a variant as written, on the popup;
+    /// with `hover`, no `open` beside it (in its props or a `when`).
+    fn popup_trigger(&mut self, props: &[hir::Prop], children: &[Node]) {
+        let whens: Vec<&hir::Prop> = children
+            .iter()
+            .filter_map(|n| match n {
+                Node::When(w) => Some(&w.props),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        for p in whens.iter().filter(|p| p.name == "trigger") {
+            self.error(
+                "check::popup_trigger",
+                "a popup's `trigger` cannot change",
+                p.span,
+                "in a `when`",
+            )
+            .help = Some("write `trigger:` on the `popup` itself".into());
+        }
+        let mut hover = None;
+        for p in props.iter().filter(|p| p.name == "trigger") {
+            match p.value.kind {
+                hir::ExprKind::Variant(e, v) => {
+                    let en = self.types.enum_(e);
+                    if en.variants.get(v as usize).is_some_and(|n| n == "hover") {
+                        hover = Some(p.span);
+                    }
+                }
+                hir::ExprKind::Error => {}
+                _ => {
+                    self.error(
+                        "check::popup_trigger",
+                        "a popup's `trigger` is `open` or `hover`, as written",
+                        p.value.span,
+                        "not a fixed trigger",
+                    )
+                    .help = Some(
+                        "write `trigger: hover` or `trigger: open`; use `open:` for a popup a value opens"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let file = self.file();
+        let Some(trigger) = hover else {
+            // `delay` and `grace` time the pointer: only with the trigger.
+            for p in props
+                .iter()
+                .chain(whens.iter().copied())
+                .filter(|p| matches!(p.name.as_str(), "delay" | "grace"))
+            {
+                self.error(
+                    "check::hover_popup_prop",
+                    format!("`{}` is only for a `trigger: hover` popup", p.name),
+                    p.span,
+                    "this popup's `open:` opens it",
+                )
+                .help = Some(format!(
+                    "add `trigger: hover` (and remove `open:`), or remove `{}`",
+                    p.name
+                ));
+            }
+            return;
+        };
+        for p in props
+            .iter()
+            .chain(whens.iter().copied())
+            .filter(|p| p.name == "open")
+        {
+            self.error(
+                "check::hover_popup_open",
+                "a `trigger: hover` popup takes no `open:`",
+                p.span,
+                "the pointer opens this popup",
+            )
+            .add_secondary(file, trigger, "`trigger: hover` here")
+            .help = Some(
+                "remove `open:` to let the pointer open it, or remove `trigger: hover` to open it with `open:`"
+                    .into(),
+            );
         }
     }
 }
@@ -69,6 +162,54 @@ panel Dash { anchor: top_right; attach: top; scrim: #00000040; width: 300; heigh
 "#;
         let got = codes(src);
         assert!(got.iter().all(|(c, _)| c == "check::raw_color"), "{got:?}");
+    }
+
+    /// (M6) `trigger: hover` takes no `open:` (in the props or a `when`),
+    /// and `trigger` is a fixed variant on the popup itself; `trigger:
+    /// open` with `open:` and `trigger: hover` alone are fine.
+    #[test]
+    fn a_hover_popup_takes_no_open() {
+        let src = r#"
+state on = false
+bar Top { edge: top; height: 30
+  box { size: 20; popup { trigger: hover; delay: 150ms; grace: 400ms; box { size: 40 } } }
+  box { size: 20; popup { open: on; grace: 400ms; box { size: 40 } } }
+  box { size: 20; popup { trigger: open; open: on; box { size: 40 } } }
+  box { size: 20; popup { trigger: hover; open: on; box { size: 40 } } }
+  box { size: 20; popup { trigger: hover; when on { open: true }; box { size: 40 } } }
+  box { size: 20; popup { open: on; when on { trigger: hover }; box { size: 40 } } }
+  box { size: 20; popup { trigger: on ? hover : open; open: on; box { size: 40 } } }
+}
+"#;
+        let got = codes(src);
+        let ours: Vec<(&str, &str)> = got
+            .iter()
+            .filter(|(c, _)| c.starts_with("check::"))
+            .map(|(c, m)| (c.as_str(), m.as_str()))
+            .collect();
+        assert_eq!(
+            ours,
+            [
+                (
+                    "check::hover_popup_prop",
+                    "`grace` is only for a `trigger: hover` popup"
+                ),
+                (
+                    "check::hover_popup_open",
+                    "a `trigger: hover` popup takes no `open:`"
+                ),
+                (
+                    "check::hover_popup_open",
+                    "a `trigger: hover` popup takes no `open:`"
+                ),
+                ("check::popup_trigger", "a popup's `trigger` cannot change"),
+                (
+                    "check::popup_trigger",
+                    "a popup's `trigger` is `open` or `hover`, as written"
+                ),
+            ],
+            "{got:?}"
+        );
     }
 
     /// A `bar`, `osd` or `lock` that sets either is an error, in its

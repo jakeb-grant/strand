@@ -1,4 +1,4 @@
-//! owner-testing.md bug 1 and gap 4: hover islands on mixed-scale
+//! (M6, decisions.md m6-w2-surface) Hover islands on mixed-scale
 //! outputs. `strand run` on a headless sway with HEADLESS-1 (1280×720 at
 //! scale 1, at 0,0) and HEADLESS-2 (1920×1080 at 1.5, 1280×720 logical,
 //! right of it), running the owner's pattern from the test config: a
@@ -69,8 +69,9 @@ component Bar {
 }
 "#;
 
-/// Gap 4's hover island without wiring: the item's own `hover`.
-const IF_HOVER: &str = r#"
+/// The hover island without wiring (spec.md 6.3): a `trigger: hover`
+/// popup in each item.
+const TRIGGER: &str = r#"
 bar Top {
   edge: top; height: 36; margin: 4, 4, 0; radius: 16
   bg: #303030; shadow: 0 6px 24px #000000
@@ -82,11 +83,31 @@ bar Top {
 
 component Item(c: color, island: color) {
   box { size: 28; bg: c
-    if hover {
-      popup { margin: 8, 0, 0
-        box { width: 200; height: 120; bg: island }
-      }
+    popup { trigger: hover; margin: 8, 0, 0
+      box { width: 200; height: 120; bg: island }
     }
+  }
+}
+"#;
+
+/// Two hover islands side by side at the start of the bar, `a` and then
+/// `b` 8 px after it, each `ISLAND`: a `trigger: hover` popup, or (as
+/// before M6) a popup inside the item's `if hover`.
+const SIDE_BY_SIDE: &str = r#"
+bar Top {
+  edge: top; height: 36; margin: 4, 4, 0; radius: 16
+  bg: #303030; shadow: 0 6px 24px #000000
+  split { pad: 4
+    start { gap: 8
+      Item { c: #ff0000; island: #00ff00 }
+      Item { c: #0000ff; island: #00ffff }
+    }
+  }
+}
+
+component Item(c: color, island: color) {
+  box { size: 28; bg: c
+    ISLAND
   }
 }
 "#;
@@ -410,18 +431,70 @@ fn hover_islands_open_under_their_items_on_mixed_scale_outputs() {
     walk(&mut sh);
 }
 
-/// The same islands with no wiring (gap 4): `if hover { popup { … } }`
-/// in each item, as the guide's hover slider is written. The pointer on
-/// an island keeps its item hovered, and the item keeps its hover for
-/// `HOVER_GRACE` while the pointer crosses the gap, so each island opens,
-/// stays across the gap and under the pointer, and closes once the
-/// pointer is away from both.
+/// The same islands with no wiring (spec.md 6.3, decisions.md
+/// m6-w2-surface): `popup { trigger: hover; … }` in each item, as level
+/// 3 of the guide writes it. Each island opens as the pointer reaches
+/// its item, stays across the gap (`HOVER_GRACE`) and under the
+/// pointer, and closes once the pointer is away from both.
 #[test]
-fn if_hover_islands_need_no_wiring() {
-    let Some(mut sh) = start("if-hover", IF_HOVER) else {
+fn hover_trigger_islands_need_no_wiring() {
+    let Some(mut sh) = start("trigger-hover", TRIGGER) else {
         return;
     };
     walk(&mut sh);
+}
+
+/// The pointer going straight from item `a` to item `b` beside it.
+/// With `trigger: hover`, `b`'s island replaces `a`'s at once, and only
+/// `b`'s stays. An island inside `if hover` with no trigger behaves as
+/// before M6: it closes as the pointer leaves its item, into the gap
+/// below it or onto `b`.
+#[test]
+fn going_straight_from_item_to_item_swaps_the_islands() {
+    for keep in [false, true] {
+        let island = if keep {
+            "popup { trigger: hover; margin: 8, 0, 0\n      box { width: 200; height: 120; bg: island }\n    }"
+        } else {
+            "if hover {\n      popup { margin: 8, 0, 0\n        box { width: 200; height: 120; bg: island }\n      }\n    }"
+        };
+        let shell = SIDE_BY_SIDE.replace("ISLAND", island);
+        let name = if keep { "side-trigger" } else { "side-plain" };
+        let Some(mut sh) = start(name, &shell) else {
+            return;
+        };
+        let (a, b) = sh.wait("the items", |one, _| {
+            Some((one.region(ITEM_A, 400)?, one.region(ITEM_B, 400)?))
+        });
+        let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+        let (ax, ay) = centre(a, 0, 1.0);
+        let (bx, by) = centre(b, 0, 1.0);
+        pointer.motion(ax, ay, LW, LH);
+        sh.wait("a's island", |one, _| one.region(ISLAND_A, 2000));
+        if !keep {
+            // Into the gap below `a`: its island is not held.
+            pointer.motion(ax, ay + 18, LW, LH);
+            sh.wait("a's plain island closes in the gap", |one, _| {
+                one.region(ISLAND_A, 1).is_none().then_some(())
+            });
+            pointer.motion(ax, ay, LW, LH);
+            sh.wait("a's island again", |one, _| one.region(ISLAND_A, 2000));
+        }
+        // Straight onto `b`.
+        pointer.motion(bx, by, LW, LH);
+        sh.wait("b's island alone", |one, _| {
+            (one.region(ISLAND_B, 2000).is_some() && one.region(ISLAND_A, 1).is_none())
+                .then_some(())
+        });
+        sh.keep(name);
+        // It stays, alone.
+        std::thread::sleep(Duration::from_millis(400));
+        let one = sh.shot("HEADLESS-1");
+        assert!(
+            one.region(ISLAND_B, 2000).is_some(),
+            "{name}: b's island stays"
+        );
+        assert!(one.region(ISLAND_A, 1).is_none(), "{name}: a's is gone");
+    }
 }
 
 /// Walks the pointer over each item, into its island and away.
@@ -477,28 +550,32 @@ fn walk(sh: &mut Shell) {
             "{what}: the island is {w}×{h} physical pixels at {scale}"
         );
 
-        // From the item down into its island, a few pixels at a time
-        // across the gap: it stays open the whole way.
+        // From the item down into its island, a few pixels at a time at
+        // a hand's pace (12 steps of 15 ms), across the gap: it is still
+        // open once the pointer is on it. (A screenshot per step would
+        // take longer than the 200 ms a hand needs to cross the gap.)
         let (icx, icy) = centre(here, x, scale);
         let steps: i64 = 12;
         let lerp = |a: u32, b: u32, k: i64| (a as i64 + (b as i64 - a as i64) * k / steps) as u32;
         for k in 1..=steps {
             pointer.motion(lerp(cx, icx, k), lerp(cy, icy, k), LW, LH);
             std::thread::sleep(Duration::from_millis(15));
-            let img = sh.shot(if second { "HEADLESS-2" } else { "HEADLESS-1" });
-            assert!(
-                img.region(island, 2000).is_some(),
-                "{what}: the island closed at step {k} on the way to it\n{}",
-                sh.log_text()
-            );
         }
+        assert!(
+            sh.shot(if second { "HEADLESS-2" } else { "HEADLESS-1" })
+                .region(island, 2000)
+                .is_some(),
+            "{what}: the island closed on the way to it\n{}",
+            sh.log_text()
+        );
         // It stays while the pointer rests on it.
         std::thread::sleep(Duration::from_millis(400));
         assert!(
             sh.shot(if second { "HEADLESS-2" } else { "HEADLESS-1" })
                 .region(island, 2000)
                 .is_some(),
-            "{what}: the island closed under the pointer"
+            "{what}: the island closed under the pointer\n{}",
+            sh.log_text()
         );
         // Away, onto the other output's empty desktop: it closes.
         let away = if second { 640 } else { 1280 + 640 };

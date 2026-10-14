@@ -853,6 +853,9 @@ fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
                 recreate: false,
             }
         };
+        // Opened by the key press (`SceneDiff::press`).
+        let serial = *mgr.state().host().press_serials.last().unwrap();
+        mgr.state_mut().set_popup_cause(POPUP, Some(serial));
         mgr.state_mut().apply_surface_change(POPUP, change);
         let ok = mgr
             .dispatch_until(WAIT, |s| {
