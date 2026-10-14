@@ -80,8 +80,8 @@ handle record Node {
   /// props (`x`, `y`, `opacity`, colours, transforms; a surface's
   /// effects), the size of a `place: absolute` element it is not inside,
   /// or what is on another surface that reads nothing back; a load error
-  /// shows the loop otherwise. `width` and `height` of another node are
-  /// the same fact.
+  /// shows the loop otherwise. A loop through another node's `width` or
+  /// `height` with no `box` on it is a warning, `check::size_loop`.
   box: Rect
 }
 

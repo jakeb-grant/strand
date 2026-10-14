@@ -1583,8 +1583,10 @@ fn absolute_only_while_a_when_says_so_moves_its_surface() {
 /// (any element may read them), `pages`' `current` (it mounts a page by
 /// value, like `match`), a `segmented`'s `options` (their count sizes
 /// it), and another node's `.width` and `.height` (the same frame-late
-/// fact as its `.box`). An element's own size in its own props stays a
-/// container query, and a surface's paint props may follow a box.
+/// fact as its `.box`, a loop through them alone a warning:
+/// `a_loop_through_sizes_alone_is_a_warning`). An element's own size in
+/// its own props stays a container query, and a surface's paint props
+/// may follow a box.
 #[test]
 fn every_layout_channel_is_followed() {
     let set = "bar Top {\n  height: 30\n  row { id: r; set { $radius.lg: r.box.width * 1px }; box { radius: $radius.lg } }\n}\n";
@@ -1596,7 +1598,7 @@ fn every_layout_channel_is_followed() {
     let options = "bar Top {\n  height: 30\n  row {\n    id: r\n    segmented { options: r.box.width > 100 ? [\"a\", \"b\"] : [\"a\"] }\n  }\n}\n";
     assert_eq!(box_loops(options).len(), 1, "options");
     let size = "bar Top {\n  height: 30\n  row {\n    id: r\n    box { width: r.width / 2 }\n    box { height: r.height }\n  }\n}\n";
-    assert_eq!(box_loops(size).len(), 2, "width and height");
+    assert_eq!(size_loops(size).len(), 2, "width and height");
     // Its own size: a container query.
     one("bar Top {\n  height: 30\n  box { when self.width < 300 { pad: 4 } }\n}\n");
     // A surface's paint props may follow a box on it; its size may not.
@@ -1606,6 +1608,54 @@ fn every_layout_channel_is_followed() {
     assert_eq!(
         box_loops("bar Top {\n  height: r.box.height\n  row { id: r; text \"a\" }\n}\n").len(),
         1
+    );
+}
+
+/// The `check::size_loop` warnings of `src`, which must have no other
+/// diagnostic.
+fn size_loops(src: &str) -> Vec<String> {
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    let others: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.code != "check::size_loop")
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert_eq!(out.errors(), 0);
+    out.diagnostics.iter().map(|d| d.message.clone()).collect()
+}
+
+/// (M6, spec.md 14) Another node's `.width` and `.height` loaded on
+/// `main` before `.box` and still load with the same meaning: a loop of
+/// bindings through them alone is a `check::size_loop` warning naming
+/// its path, not an error. `instantiate.rs::only_measured_nodes_are_watched`'s
+/// bar loads with that warning; a node passed as a value is not followed
+/// by its size. A loop with a `.box` read on it stays an error, wherever
+/// the sizes are.
+#[test]
+fn a_loop_through_sizes_alone_is_a_warning() {
+    let measured = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
+    let got = size_loops(measured);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].starts_with("`text` depends on `b`'s size, which it changes again: `b`'s size → "),
+        "{got:?}"
+    );
+    assert!(got[0].ends_with(" → `b`'s size"), "{got:?}");
+    let by_value = "component Half(n: Node) { box { width: n.width / 2 } }\nbar Top {\n  height: 30\n  row { id: r; Half r }\n}\n";
+    one(by_value);
+    // `.box` on the loop, a size after it: both bindings refused.
+    let mixed = "bar Top {\n  height: 30\n  row {\n    box { id: a; place: absolute; height: 4; width: b.box.width + 1 }\n    box { id: b; place: absolute; height: 4; width: a.width + 1 }\n  }\n}\n";
+    assert_eq!(
+        box_loops(mixed),
+        [
+            "`width` depends on `b.box`, which it moves again: `b.box` → `width` of `a` → `a`'s size → `width` of `b` → `b.box`",
+            "`width` depends on `a`'s size, which it moves again: `a`'s size → `width` of `b` → `b.box` → `width` of `a` → `a`'s size",
+        ]
     );
 }
 

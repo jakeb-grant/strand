@@ -24,8 +24,6 @@ bar Top {
     on change a.box.x { seen = 1 }
     // Through a component's parameter.
     Sized { w: a.box.width }
-    // Another node's size is the same fact.
-    box { width: a.width + 1 }
     // Mounting by it: `if`, `for`, `match` and `pages`.
     if a.box.width > 10 { text "wide" }
     for k in a.box.width > 10 ? [1] : [1, 2] key k { text "k" }

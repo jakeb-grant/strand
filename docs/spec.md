@@ -429,9 +429,11 @@ filling the monitor, the keyboard always).
   component's or file's tokens reach every surface. So a popup may be
   sized from the bar item it opens from, unless that item is sized from
   the popup; two absolute boxes may not each be sized from the other.
-  `name.width` and `name.height` of another node are the same fact as
-  `name.box` (a node's own, in its own props, stays a container
-  query). A box read through a node passed as a value counts as any
+  `name.width` and `name.height` of another node arrive a frame late
+  like `name.box` and are followed too, but they loaded before `.box`
+  (section 14): a loop through them with no `.box` on it is a warning,
+  `check::size_loop`, naming the path, and still loads (a node's own
+  size, in its own props, stays a container query). A box read through a node passed as a value counts as any
   box: it may drive only what lays out nothing.
 - **Conditional ids.** `id: name` in a `when` block names the node
   while the condition holds: `for n in ids key n { box { when n ==

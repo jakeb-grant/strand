@@ -3404,7 +3404,7 @@ fn a_query_first_laid_out_inside_the_band_takes_the_wide_variant() {
 /// carry nothing, so their size changes never wake logic.
 #[test]
 fn only_measured_nodes_are_watched() {
-    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text \"w\" { opacity: b.width > 10 ? 1 : 0.5 }\n}\n";
+    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
     let shell = boot(&[("w.strand", src)], |rt, host| {
         let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
         host.set(rt, "screens.all", Value::list(vec![screen]))

@@ -98,6 +98,15 @@ enum At {
     Everywhere,
 }
 
+/// What a binding reads: boxes (`n.box`) and other nodes' sizes
+/// (`n.width`, `n.height`), and whether a box it cannot place.
+#[derive(Default)]
+struct Read {
+    boxes: BTreeSet<NodeIdx>,
+    sizes: BTreeSet<NodeIdx>,
+    unknown: bool,
+}
+
 /// A binding to check once the dependences are known.
 struct Use<'h> {
     module: usize,
@@ -202,7 +211,7 @@ impl Checker<'_> {
         let on: HashMap<NodeIdx, Option<BTreeSet<NodeIdx>>> =
             flow.sites.keys().map(|n| (*n, flow.on(*n))).collect();
         // Each binding on a box: the boxes it reads, and those it moves.
-        let mut reads: Vec<(usize, BTreeSet<NodeIdx>, bool)> = Vec::new();
+        let mut reads: HashMap<usize, Read> = HashMap::new();
         let mut moves: HashMap<usize, BTreeSet<NodeIdx>> = HashMap::new();
         let mut readers: HashMap<NodeIdx, Vec<usize>> = HashMap::new();
         for (i, u) in flow.uses.iter().enumerate() {
@@ -222,24 +231,32 @@ impl Checker<'_> {
                 At::Mount(_, _, around) => around,
                 At::Everywhere => None,
             };
-            let read: BTreeSet<NodeIdx> = taint
-                .iter()
-                .filter_map(|s| match *s {
-                    Src::Box(n) => Some(n),
+            let mut read = Read::default();
+            for s in &taint {
+                match *s {
+                    Src::Box(n) => {
+                        read.boxes.insert(n);
+                    }
                     // An element's own size in its own props: a query.
-                    Src::Size(n) => (Some(n) != own).then_some(n),
-                    Src::Unknown => None,
-                })
-                .collect();
-            for n in &read {
+                    Src::Size(n) if Some(n) != own => {
+                        read.sizes.insert(n);
+                    }
+                    Src::Size(_) => {}
+                    Src::Unknown => read.unknown = true,
+                }
+            }
+            for n in read.boxes.union(&read.sizes) {
                 readers.entry(*n).or_default().push(i);
             }
-            reads.push((i, read, taint.contains(&Src::Unknown)));
+            reads.insert(i, read);
             moves.insert(i, moved);
         }
+        let mut order: Vec<usize> = reads.keys().copied().collect();
+        order.sort_unstable();
         let saved = self.module;
-        for (i, read, unknown) in &reads {
+        for i in &order {
             let u = &flow.uses[*i];
+            let unknown = reads.get(i).is_some_and(|r| r.unknown);
             let subject = match u.at {
                 At::Mount(..) => format!("this `{}`", u.what),
                 At::Name(_) => "this `when`'s condition".to_string(),
@@ -254,7 +271,7 @@ impl Checker<'_> {
                 }
             };
             self.module = u.module;
-            if *unknown {
+            if unknown {
                 self.error(
                     "check::box_layout_loop",
                     format!(
@@ -268,19 +285,26 @@ impl Checker<'_> {
                 ));
                 continue;
             }
-            let Some(path) = flow.cycle(*i, read, &moves, &readers) else {
+            let Some((path, boxed)) = flow.cycle(*i, &reads, &moves, &readers) else {
                 continue;
             };
-            let mut text = vec![flow.box_label(path[0].0)];
-            for (n, by) in path.iter().skip(1) {
+            // Each box on the path, named by how the next binding reads it
+            // (the last box is the first, read by `i`).
+            let label = |j: usize| {
+                let next = path.get(j + 1).map_or(path[1].1, |s| s.1);
+                let n = path[j].0;
+                if reads.get(&next).is_some_and(|r| r.boxes.contains(&n)) {
+                    flow.box_label(n)
+                } else {
+                    flow.size_label(n)
+                }
+            };
+            let mut text = vec![label(0)];
+            for (j, (_, by)) in path.iter().enumerate().skip(1) {
                 text.push(flow.use_label(*by));
-                text.push(flow.box_label(*n));
+                text.push(label(j));
             }
-            let start = flow.box_label(path[0].0);
-            let message = format!(
-                "{subject} depends on {start}, which it moves again: {}",
-                text.join(" → ")
-            );
+            let start = label(0);
             let others: Vec<(crate::source::FileId, Span)> = path
                 .iter()
                 .skip(1)
@@ -288,8 +312,33 @@ impl Checker<'_> {
                 .filter(|by| by != i)
                 .map(|by| (self.modules[flow.uses[by].module].file, flow.uses[by].span))
                 .collect();
-            let d = self.error("check::box_layout_loop", message, u.span, "a box loop");
-            d.help = Some(help.into());
+            let d = if boxed {
+                let message = format!(
+                    "{subject} depends on {start}, which it moves again: {}",
+                    text.join(" → ")
+                );
+                let d = self.error("check::box_layout_loop", message, u.span, "a box loop");
+                d.help = Some(help.into());
+                d
+            } else {
+                // Only sizes on the loop: `n.width` loaded before `.box`
+                // (spec.md 14), so it is a warning.
+                let message = format!(
+                    "{subject} depends on {start}, which it changes again: {}",
+                    text.join(" → ")
+                );
+                let d = self.warning(
+                    "check::size_loop",
+                    message,
+                    u.span,
+                    "may change a frame at a time",
+                );
+                d.help = Some(
+                    "another node's `width` and `height` arrive a frame after layout, as its `.box` does: a layout prop on one that lays it out again may settle late or keep changing; set paint props from it, or a size that moves nothing it reads"
+                        .into(),
+                );
+                d
+            };
             for (file, span) in others {
                 d.add_secondary(file, span, "the loop goes on here");
             }
@@ -772,12 +821,18 @@ impl Flow<'_> {
                     ExprKind::Local(l) if alias(c, *l).is_some() => {
                         match alias(c, *l).and_then(|a| self.members.get(&a)) {
                             Some(m) => out.extend(m.iter().map(|n| of(*n))),
-                            None => {
+                            None if name == "box" => {
                                 out.insert(Src::Unknown);
                             }
+                            None => {}
                         }
                     }
-                    _ if matches!(&base.ty, Ty::Record(r) if Some(*r) == self.node_rec) => {
+                    // A node passed as a value: its box may be any box. Its
+                    // size loaded before `.box` and is not followed (spec.md
+                    // 14).
+                    _ if name == "box"
+                        && matches!(&base.ty, Ty::Record(r) if Some(*r) == self.node_rec) =>
+                    {
                         out.insert(Src::Unknown);
                     }
                     _ => {}
@@ -1073,50 +1128,73 @@ impl Flow<'_> {
         }
     }
 
-    /// A cycle through use `i`: from one of the boxes it reads (`read`),
-    /// through `i` to a box it moves and on through other bindings back to
-    /// the first. Each step is a box and the use that moved it there (the
-    /// first box's use is `i`, unused).
+    /// A cycle through use `i`: from one of the boxes it reads, through
+    /// `i` to a box it moves and on through other bindings back to the
+    /// first. Each step is a box and the use that moved it there (the
+    /// first box's use is `i`, unused). The flag: a box read (`n.box`)
+    /// lies on it; a cycle of sizes only (`n.width`) is found only when
+    /// there is none with a box.
     fn cycle(
         &self,
         i: usize,
-        read: &BTreeSet<NodeIdx>,
+        reads: &HashMap<usize, Read>,
         moves: &HashMap<usize, BTreeSet<NodeIdx>>,
         readers: &HashMap<NodeIdx, Vec<usize>>,
-    ) -> Option<Vec<(NodeIdx, usize)>> {
+    ) -> Option<(Vec<(NodeIdx, usize)>, bool)> {
         let start = moves.get(&i)?;
-        let mut from: HashMap<NodeIdx, Option<(NodeIdx, usize)>> = HashMap::new();
+        let read = reads.get(&i)?;
+        // States: a box, and whether a box read lies on the way there
+        // (after `i`'s own edge, which is known once the loop closes).
+        type State = (NodeIdx, bool);
+        let mut from: HashMap<State, Option<(State, usize)>> = HashMap::new();
         let mut queue = VecDeque::new();
         for b in start {
-            from.insert(*b, None);
-            queue.push_back(*b);
+            from.insert((*b, false), None);
+            queue.push_back((*b, false));
         }
-        while let Some(x) = queue.pop_front() {
-            if read.contains(&x) {
-                // x ← … ← a box `i` moved, which `i` moved from x.
-                let mut steps = Vec::new();
-                let mut at = x;
-                while let Some(Some((prev, by))) = from.get(&at) {
-                    steps.push((at, *by));
-                    at = *prev;
-                }
-                steps.push((at, i));
-                steps.push((x, i));
-                steps.reverse();
-                // [x (start), first moved by i, …, x]: the last step is the
-                // box read, reached by the last use.
-                return Some(steps);
+        let path = |end: State, from: &HashMap<State, Option<(State, usize)>>| {
+            let mut steps = Vec::new();
+            let mut at = end;
+            while let Some(Some((prev, by))) = from.get(&at) {
+                steps.push((at.0, *by));
+                at = *prev;
+            }
+            steps.push((at.0, i));
+            steps.push((end.0, i));
+            steps.reverse();
+            steps
+        };
+        let mut sizes_only = None;
+        while let Some((x, boxed)) = queue.pop_front() {
+            if read.boxes.contains(&x) || (boxed && read.sizes.contains(&x)) {
+                return Some((path((x, boxed), &from), true));
+            }
+            if read.sizes.contains(&x) && sizes_only.is_none() {
+                sizes_only = Some(path((x, boxed), &from));
             }
             for v in readers.get(&x).into_iter().flatten() {
+                let via_box = reads.get(v).is_some_and(|r| r.boxes.contains(&x));
                 for m in moves.get(v).into_iter().flatten() {
-                    if !from.contains_key(m) {
-                        from.insert(*m, Some((x, *v)));
-                        queue.push_back(*m);
+                    let next = (*m, boxed || via_box);
+                    if !from.contains_key(&next) {
+                        from.insert(next, Some(((x, boxed), *v)));
+                        queue.push_back(next);
                     }
                 }
             }
         }
-        None
+        sizes_only.map(|p| (p, false))
+    }
+
+    /// How another node's size is named in a loop's path.
+    fn size_label(&self, n: NodeIdx) -> String {
+        match self.sites.get(&n) {
+            Some(Site {
+                name: Some(name), ..
+            }) => format!("`{name}`'s size"),
+            Some(s) => format!("a `{}`'s size", s.kind),
+            None => "a size".into(),
+        }
     }
 
     /// How a box is named in a loop's path.
