@@ -1946,7 +1946,9 @@ impl<'a> Checker<'a> {
             .help = Some("turn the items into text first: `.map(x => …)`".into());
         }
         let (out, ret) = self.call_args(&sig, args, &format!("`{label}`"), span);
-        let ret = if n == "map" {
+        let ret = if n == "sum" {
+            self.sum_type(&out, &t, recv.span)
+        } else if n == "map" {
             let produced = out
                 .first()
                 .and_then(|a| match &a.value.ty {
@@ -1959,6 +1961,33 @@ impl<'a> Checker<'a> {
             ret
         };
         (out, ret)
+    }
+
+    /// `xs.sum()` or `xs.sum(x => …)`: numbers of one kind, added up
+    /// (decisions.md m6-w2-language, Gaps 11).
+    fn sum_type(&mut self, out: &[CallArg], elem: &Ty, span: Span) -> Ty {
+        let added = match out.first().map(|a| &a.value.ty) {
+            Some(Ty::Fn(s)) => s.ret.clone(),
+            Some(_) => return Ty::Error,
+            None => elem.clone(),
+        };
+        if added.is_lenient() {
+            return Ty::Error;
+        }
+        match added.prim() {
+            Some(p) if p.is_numeric() => added,
+            _ => {
+                let shown = self.show(&added);
+                self.error(
+                    "check::type_mismatch",
+                    format!("`sum` adds numbers, not `{shown}`"),
+                    span,
+                    "not numbers",
+                )
+                .help = Some("give the number to add for each item: `.sum(x => x.width)`".into());
+                Ty::Error
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2231,10 +2260,19 @@ impl<'a> Checker<'a> {
     ) -> (hir::Expr, hir::Expr, Ty) {
         let l = self.expr(lhs, None);
         let r = self.expr(rhs, Some(&l.ty.clone()));
-        if self.operand_ok(&l, lhs) && self.operand_ok(&r, rhs) {
+        if self.operand_ok(&l, lhs) && self.operand_ok(&r, rhs) && !self.both_dates(&l, &r) {
             self.arith(op, &l, &r, span);
         }
         (l, r, Ty::BOOL)
+    }
+
+    /// Two builtin `Date`s order by time (spec.md 7.2; decisions.md
+    /// m6-w2-language, Gaps 16): `d.date < clock.today`.
+    fn both_dates(&self, l: &hir::Expr, r: &hir::Expr) -> bool {
+        let Some(date) = self.schema.types.find_record("Date") else {
+            return false;
+        };
+        l.ty == Ty::Record(date) && r.ty == Ty::Record(date)
     }
 
     #[inline(never)]
@@ -2263,11 +2301,16 @@ impl<'a> Checker<'a> {
         use Prim::*;
         let (a, b) = match (l.ty.prim(), r.ty.prim()) {
             _ if l.ty.is_lenient() || r.ty.is_lenient() => return Ty::Error,
+            // `a + b` joins two texts (decisions.md m6-w2-language, Gaps 11).
+            (Some(Text), Some(Text)) if op == BinaryOp::Add => return Ty::TEXT,
             (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => (a, b),
             _ => {
                 let (sa, sb) = (self.show(&l.ty), self.show(&r.ty));
-                let help = (op == BinaryOp::Add && l.ty == Ty::TEXT)
-                    .then(|| "join text with `join(\"\", a, b)`".to_string());
+                let text = |t: &Ty| *t == Ty::TEXT;
+                let help = (op == BinaryOp::Add && (text(&l.ty) || text(&r.ty))).then(|| {
+                    "`+` joins two texts; make the other one text, or use `join(\"\", a, b)`"
+                        .to_string()
+                });
                 self.error(
                     "check::type_mismatch",
                     format!("`{}` needs numbers, found `{sa}` and `{sb}`", op.as_str()),

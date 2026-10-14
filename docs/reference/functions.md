@@ -18,7 +18,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn contrast(amount: float) -> Filter` | A colour filter changing contrast. |
 | `fn crt() -> Filter` | A CRT look: a curved screen with rounded corners, scanlines, a fringe of colour and a darker rim, `filter: crt()`. No knobs. Without a GPU the node draws unfiltered. |
 | `fn dot(size: length) -> Sprite` | A round particle sprite: `sprite: dot(3)`. |
-| `fn dur(duration: duration) -> text lift` | A duration as text: `dur(battery.time_left)`. Null in, null out. |
+| `fn dur(duration: duration, clock: bool = false) -> text lift` | A duration as text: `dur(battery.time_left)` is `45 s`, `12 min` or `2 h 5 min`; with `clock: true` it is a clock reading, `m:ss` or `h:mm:ss` (`dur(media.length, clock: true)` is `3:45`). Null in, null out. |
 | `fn ease(curve: Curve, duration: duration) -> Easing` | A named curve over a duration: `~ ease(out_back, 300ms)`. |
 | `fn fade(edge: Edge, size: length) -> Mask` | A mask fading toward an edge: `mask: fade(bottom, 24)`. |
 | `fn glass(refraction: length = 12) -> Filter` | Liquid glass over what is behind it: lightly frosted, bent up to `refraction` at its rim (red and blue apart), a fresnel rim and a highlight under the pointer, `backdrop: glass()`, `backdrop: glass(20)`. Without a GPU it draws as a blur and a tint. |

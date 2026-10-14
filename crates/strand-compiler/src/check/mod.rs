@@ -180,8 +180,11 @@ pub(crate) fn is_whole_literal(e: &ast::Expr) -> bool {
 
 /// The type a whole-number value takes where nothing else fixes it: `int`
 /// for a whole-number literal, `[int]` for a list literal of them (`[1,
-/// 2]`), `[[int]]` for a list of those, and so on. `None` for anything
-/// else, an empty list included.
+/// 2]`), `[[int]]` for a list of those, and so on; through `?:` and
+/// `match` when every branch has that shape or is an empty list (`match
+/// name { "DP-8" => [1, 2], _ => [] }` is `[int]`, decisions.md
+/// m6-w2-language, Gaps 12). `None` for anything else, a lone empty list
+/// included.
 pub(crate) fn whole_shape(e: &ast::Expr) -> Option<Ty> {
     if is_whole_literal(e) {
         return Some(Ty::INT);
@@ -195,7 +198,41 @@ pub(crate) fn whole_shape(e: &ast::Expr) -> Option<Ty> {
                 .all(|t| t.as_ref() == Some(&first))
                 .then(|| Ty::list(first))
         }
+        ast::ExprKind::Ternary { then, else_, .. } => branches_shape([&**then, &**else_]),
+        ast::ExprKind::Match(m) => branches_shape(m.arms.iter().map(|a| &a.body)),
         _ => None,
+    }
+}
+
+/// The one whole-number shape every branch has, an empty list fitting
+/// any list shape; `None` when they differ or none has one.
+fn branches_shape<'e>(branches: impl IntoIterator<Item = &'e ast::Expr>) -> Option<Ty> {
+    let mut shape: Option<Ty> = None;
+    let mut empties = false;
+    for b in branches {
+        if is_empty_list(b) {
+            empties = true;
+            continue;
+        }
+        let s = whole_shape(b)?;
+        match &shape {
+            Some(prev) if *prev != s => return None,
+            _ => shape = Some(s),
+        }
+    }
+    match shape {
+        Some(Ty::List(..)) | None => shape,
+        // `c ? 1 : []` is no shape at all.
+        Some(_) if empties => None,
+        s => s,
+    }
+}
+
+fn is_empty_list(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::Paren(inner) => is_empty_list(inner),
+        ast::ExprKind::Array(items) => items.is_empty(),
+        _ => false,
     }
 }
 

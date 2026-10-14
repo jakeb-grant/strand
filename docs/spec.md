@@ -249,7 +249,11 @@ filling the monitor, the keyboard always).
   props-only block such as a `when`), and in a handler or `fn` body as
   a local binding.
 - An untyped `state i = 0` is an `int` until a fraction is written to
-  it; then it is a `float`.
+  it; then it is a `float`. The same holds for a list literal of whole
+  numbers (`[1, 2]` is an `[int]`, and a `let` or a handler's local
+  holding one is never written, so it stays one) and through `?:` and
+  `match` whose branches all have that shape, an empty list fitting any
+  list (`match name { "DP-8" => [1, 2], _ => [] }` is an `[int]`).
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
   (section 10.3). It is allowed only on a `state` holding plain data:
   not functions, `Async` values, runtime handles or live service items.
@@ -503,7 +507,7 @@ units).
 
 - Precedence and associativity are grammar.md's. `==` and `!=` compare
   values; `<`, `<=`, `>`, `>=` compare ordered values (numbers, lengths,
-  angles, durations, percentages). `&&` and `||` short-circuit.
+  angles, durations, percentages, dates). `&&` and `||` short-circuit.
 - An ordering comparison takes two plain numbers, or two values of the
   same kind (`10px < 20px`, `1s < 500ms`), or a length, angle or
   percentage beside a plain number, which is read in the other side's
@@ -512,7 +516,11 @@ units).
   as written: a comparison resolves neither a `ch` against a font nor a
   percentage against a size, so `2ch < 10px` is true. A duration
   compares only with a duration, and other units never mix (`1s < 2`,
-  `90deg < 10px`): a load error.
+  `90deg < 10px`): a load error. Two `Date`s order by time, earlier
+  first (`d.date < clock.today`); a date without a time of day comes
+  before every time on that day.
+- `+` on two `text`s joins them (`name + "…"`, and `s += "!"` in a
+  handler); `+` between a `text` and anything else is a load error.
 - `==` and `!=` take two numbers exactly when an ordering comparison
   would, and compare their numbers as written, read the same way as for
   order (`10px == 10`, `2ch == 2px` and `50% == 50px` are true;

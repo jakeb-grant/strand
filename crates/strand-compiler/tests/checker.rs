@@ -552,6 +552,37 @@ fn whole_number_lists_are_int_lists_until_a_fraction_arrives() {
     assert_eq!(def_ty(&out.program, "xs"), "[float]");
 }
 
+/// Gaps 12 (decisions.md m6-w2-language): whole numbers stay `int`s
+/// through `?:` and `match` (an empty list fits any list), so a `fn`
+/// returning workspace ids by monitor says `[int]`; a fraction written
+/// to such a declaration still makes it a `float`.
+#[test]
+fn whole_numbers_stay_ints_through_match_and_ternaries() {
+    let out = one("fn rules(name: text) -> [int] {\n\
+                     let r = match name { \"DP-8\" => [1, 2, 3, 4], \"DP-6\" => [9, 10], _ => [] }\n\
+                     r\n\
+                   }\n\
+                   state c = true\n\
+                   let ids = c ? [1, 2] : []\n\
+                   let one = match c { true => 1, false => 2 }\n\
+                   state widened = c ? [1] : [2]\n\
+                   let mixed = c ? [1] : [0.5]\n\
+                   component C {\n\
+                     grid { columns: one + ids[0] + rules(\"DP-8\")[0]\n\
+                       on click { widened = [0.5] } }\n\
+                   }\n");
+    assert_eq!(out.errors(), 0, "{:#?}", out.diagnostics);
+    let p = &out.program;
+    for (name, ty) in [
+        ("ids", "[int]"),
+        ("one", "int"),
+        ("widened", "[float]"),
+        ("mixed", "[float]"),
+    ] {
+        assert_eq!(def_ty(p, name), ty, "{name}");
+    }
+}
+
 /// An untyped `state` or `let` holding a whole number is an `int`, so it
 /// can index, count and fill `int` props; once a fraction is written to
 /// it (directly, through a `float` it is set from, or a slider's `<->`)

@@ -4,7 +4,7 @@ use super::Checker;
 use crate::hir::{self, Event, LocalKind, StmtKind, Target};
 use crate::syntax::Span;
 use crate::syntax::ast::{self, AssignOp};
-use crate::ty::{ParamSig, Ty};
+use crate::ty::{ParamSig, Prim, Ty};
 
 impl<'a> Checker<'a> {
     pub(crate) fn stmts(&mut self, items: &'a [ast::Stmt]) -> Vec<hir::Stmt> {
@@ -240,6 +240,7 @@ impl<'a> Checker<'a> {
                 let widened = self.widen(&t, &fraction);
                 let ok = match (t.ty.prim(), v.ty.prim()) {
                     _ if widened || t.ty.is_lenient() || v.ty.is_lenient() => true,
+                    (Some(Prim::Text), Some(Prim::Text)) => op == AssignOp::Add,
                     (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
                         matches!(op, AssignOp::Mul | AssignOp::Div) && b.is_scalar()
                             || self.types.assignable(&v.ty, &t.ty)
