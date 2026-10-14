@@ -1,8 +1,9 @@
 # Owner testing: issues and capability gaps
 
-**Wave 2 (2026-10-13).** The states below reflect `laptop/m6-w2`: M6
-wave 2's services and language streams and the surface stream up to
-`ea17b69` (its travelling island merges later). Each entry's
+**Wave 2 (2026-10-14).** The states below reflect `laptop/m6-w2`: M6
+wave 2's services stream (through `6103464`) and language stream
+(through `f65ec82`, the same name across files) and the surface stream
+up to `ea17b69` (its travelling island merges later). Each entry's
 **Wave 2** line gives its state with the test that proves a fix, or
 the decisions.md section that holds a proposal.
 
@@ -286,6 +287,33 @@ run on Hyprland), **in progress** (being built on a stream's branch).
     wlr-output-management (Hyprland, sway, niri and labwc implement
     it), writable with apply and test. Queued for the next wave.
     **Wave 2: open**: the monitor-config service is the next wave's.
+19. **Component names clobber across files.** Every component, type,
+    enum and `fn` is global, so two files cannot each have their own
+    `Row`. **Owner's ruling (2026-10-14):** names stay global, but a
+    file's own declaration wins inside it; a name declared in several
+    other files must be qualified (`tray.Row`), an error at the use
+    site that names the files and the fix. `strand check` and the
+    language server note every name declared in more than one file, and
+    the spec and the guide document it. Surfaces and services stay
+    unique. In wave 2's language stream.
+    **Wave 2: fixed**: a file uses its own declaration, else the single
+    one elsewhere, else a bare use is `check::ambiguous_name` offering
+    `file.Name`; `tray.Row`, `x: tray.Item`, `tray.Kind.dark` and
+    `tray.fmt(x)` name one file's; a `check::same_name` note at each
+    declaration; state survives a name becoming shared
+    (`crates/strand-compiler/tests/checker.rs::a_file_uses_its_own_declaration_of_a_shared_name`,
+    `::a_bare_use_of_a_name_two_other_files_declare_is_ambiguous`,
+    `::qualified_names_reach_one_files_declaration`,
+    `::a_shared_name_is_a_note_at_each_declaration`,
+    `::surfaces_and_services_stay_unique`,
+    `crates/strand-compiler/tests/reload.rs::same_named_components_in_two_files_stay_apart`,
+    `::a_name_becoming_shared_keeps_the_unedited_files_state`,
+    `crates/strand-dev/tests/lsp.rs::same_named_declarations_in_two_files`,
+    `::an_ambiguous_name_offers_each_file`,
+    `crates/strand-dev/tests/guide.rs::the_guide_quotes_the_same_name_error`,
+    `crates/strand-compiler/tests/instantiate.rs::a_qualified_call_takes_its_hover_popups_id`;
+    the full list is features.md's); spec.md 4.2, the guide's level 2,
+    decisions.md m6-w2-language.
 
 ## Docs and traps
 

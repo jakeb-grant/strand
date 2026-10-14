@@ -5066,3 +5066,60 @@ fn a_calls_id_and_screen_reach_its_hover_popup() {
     shell.flush();
     assert_eq!(opacity(&shell), 1.0, "and closes with it");
 }
+
+/// (M6, decisions.md m6-integration-w2, third pass) Where the language
+/// stream's `file.Name` meets the surface stream's hover popups: two
+/// files each declare a `component Island` rooted in a `trigger: hover`
+/// popup, a third calls them as `a.Island` and `b.Island` with `id:`, and
+/// `p.open` stays the popup's open state although a file `p.strand`
+/// declares a `fn open` (an id in scope is never a file qualifier,
+/// spec.md 4.2).
+#[test]
+fn a_qualified_call_takes_its_hover_popups_id() {
+    let a = "component Island(label: text) { popup { trigger: hover; text join(\" \", \"a\", label) } }\n";
+    let b = "component Island(label: text) { popup { trigger: hover; text join(\" \", \"b\", label) } }\n";
+    let p = "fn open() -> bool { false }\n";
+    let t = "bar B {\n  row {\n    \
+        box { size: 20\n      when p.open { opacity: 0.5 }\n      a.Island \"x\" { id: p } }\n    \
+        box { size: 20\n      when q.open { opacity: 0.25 }\n      b.Island \"y\" { id: q } }\n  }\n}\n";
+    let files = [
+        ("a.strand", a),
+        ("b.strand", b),
+        ("p.strand", p),
+        ("t.strand", t),
+    ];
+    let mut shell = boot(&files, |rt, host| screens(rt, host, &["DP-1"]));
+    let popups = shell.scene.of_kind(NodeKind::Popup);
+    assert_eq!(popups.len(), 2, "{}", shell.scene.render());
+    let (pa, pb) = (popups[0], popups[1]);
+    let (aa, ab) = (
+        shell.scene.parent(pa).unwrap(),
+        shell.scene.parent(pb).unwrap(),
+    );
+    let opacity = |shell: &Shell, n| match shell.scene.prop(n, Prop::Opacity) {
+        Some(PropValue::Number(v)) => *v,
+        _ => 1.0,
+    };
+    assert!(shell.scene.texts().is_empty(), "neither body mounted");
+    shell
+        .inst
+        .write(pa, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.texts(), ["a x"], "`a.Island` is a.strand's");
+    assert_eq!(opacity(&shell, aa), 0.5, "`p.open` is the popup's");
+    assert_eq!(opacity(&shell, ab), 1.0);
+    shell
+        .inst
+        .write(pb, Prop::Open, PropValue::Bool(true))
+        .unwrap();
+    shell
+        .inst
+        .write(pa, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["b y"], "`b.Island` is b.strand's");
+    assert_eq!(opacity(&shell, aa), 1.0, "and closes with it");
+    assert_eq!(opacity(&shell, ab), 0.25, "`q.open` is b's popup's");
+}
