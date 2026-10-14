@@ -4900,7 +4900,8 @@ transparent huge pages for life.
   action or write by the record's name to the member whose
   `item_records()` name it, `declare`d custom services to its
   `CustomHost` (`set_custom`; without one, under `STRAND_MOCK`, the
-  fallback answers them at their defaults), and everything else (the
+  fallback answers them at their defaults; (M6) a declared one first, so
+  a config's `service battery` shadows the builtin, spec.md 4.2), and everything else (the
   clock and calendar, services no crate serves yet) to the `SchemaHost`
   fallback;
   `next_wake` is the earliest of all, `wake` reaches all. A service

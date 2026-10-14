@@ -4784,3 +4784,34 @@ fn a_declared_action_asks_for_its_command_with_whole_arguments() {
         .collect();
     assert_eq!(held, [("hold", vec![Value::text("performance")])]);
 }
+
+/// (M6, the owner's ruling) A config's `service battery` is the one its
+/// config reads: the host is asked for the declared service's field, not
+/// the builtin's (decisions.md m6-w2-language).
+#[test]
+fn a_config_service_named_like_a_builtin_is_the_one_read() {
+    let src = "service battery from file \"/tmp/level\" { level: int }\n\
+        bar B { text join(\" \", \"level\", battery.level) }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(
+        shell.scene.find_text("level 0").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    shell
+        .host
+        .set(&shell.rt, "battery.level", Value::int(7))
+        .unwrap();
+    shell.flush();
+    assert!(
+        shell.scene.find_text("level 7").is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+}

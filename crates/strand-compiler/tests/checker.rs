@@ -1647,3 +1647,63 @@ fn palette_extras_and_identity_check_outside_templates() {
         ["check::palette_in_tokens"]
     );
 }
+
+/// (M6, the owner's ruling) A config `service` named like a builtin one
+/// shadows it within the config, with a warning, as a `let` or `state`
+/// hiding a name does: the config's own fields are the ones read, and
+/// the builtin's are not there (spec.md 4.2, decisions.md
+/// m6-w2-language).
+#[test]
+fn a_config_service_shadows_a_builtin_one() {
+    let svc = "service battery from file \"/tmp/level\" { level: int }\n";
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        format!("{svc}bar B {{ text \"{{battery.level}}\" }}\n"),
+    )]);
+    let codes: Vec<_> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        ["check::shadows_builtin"],
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert!(!out.diagnostics[0].is_error());
+    assert!(
+        out.diagnostics[0]
+            .message
+            .contains("hides the builtin service `battery`"),
+        "{}",
+        out.diagnostics[0].message
+    );
+    // The builtin's fields are hidden with it.
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        format!("{svc}bar B {{ text battery.percent }}\n"),
+    )]);
+    let c: Vec<_> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        c,
+        ["check::shadows_builtin", "check::unknown_field"],
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
+/// (M6) A literal list of whole numbers is `[int]` where it is looped
+/// over, so its items pass to an `int` parameter, as a bar's workspace
+/// buttons pass them to `workspaces.focus` (owner testing Gaps 12).
+#[test]
+fn a_looped_whole_number_list_gives_ints() {
+    let src = "fn pick(n: int) -> int { n }\n\
+        let ids = [1, 2, 3]\n\
+        bar B {\n  \
+        for w in [1, 2, 3] key w { text join(\" \", pick(w)) }\n  \
+        for w in ids key w { text join(\" \", pick(w)) }\n  \
+        row { for w in [4, 5] key w { box { on click { let k = pick(w) } } } }\n}\n";
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.is_error()),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}

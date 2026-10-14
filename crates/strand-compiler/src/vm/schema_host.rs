@@ -553,8 +553,16 @@ impl SchemaHost {
 
 impl ServiceHost for SchemaHost {
     fn declare(&self, rt: &Runtime, service: &crate::lower::CustomService, _types: &TypeTable) {
-        if !self.services.borrow().contains_key(&service.name) {
-            self.add_service(rt, &service.name, service.record);
+        let held = self.services.borrow().get(&service.name).copied();
+        match held {
+            None => self.add_service(rt, &service.name, service.record),
+            // (M6) A config's `service battery` shadows the builtin
+            // `battery` (spec.md 4.2): its own record replaces the stub.
+            Some(r) if r != service.record => {
+                self.drop_service(rt, &service.name);
+                self.add_service(rt, &service.name, service.record);
+            }
+            Some(_) => {}
         }
     }
 

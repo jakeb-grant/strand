@@ -122,7 +122,10 @@ impl<'a> Checker<'a> {
     fn stmt_for(&mut self, f: &'a ast::For<ast::Stmt>) -> StmtKind {
         {
             {
-                let iter = self.expr(&f.iter, None);
+                // A literal list of whole numbers is `[int]`, as an untyped
+                // `let`'s is (decisions.md m6-w2-language, Gaps 12).
+                let hint = super::whole_shape(&f.iter);
+                let iter = self.expr(&f.iter, hint.as_ref());
                 let elem = self.iter_elem(&iter, &f.iter);
                 self.push_scope();
                 let binding =

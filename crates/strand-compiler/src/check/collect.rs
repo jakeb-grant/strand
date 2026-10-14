@@ -273,14 +273,16 @@ impl<'a> Checker<'a> {
         lazy: LazyState<'a>,
     ) -> DefId {
         // Builtin elements are resolved before components in a tree, so a
-        // component named like one could never be placed; two services
-        // under one name would be ambiguous. Other builtin names are a
-        // prelude the declaration shadows (see `shadows_builtin`).
+        // component named like one could never be placed. Other builtin
+        // names, builtin services included, are a prelude the declaration
+        // shadows (see `shadows_builtin`): (M6, the owner's ruling) a
+        // config's `service battery` is the one its config reads, so a
+        // config keeps loading when a release adds a builtin service of
+        // its name (spec.md 4.2 and 14).
         let builtin = match &kind {
             DefKind::Component | DefKind::Surface(_) => {
                 self.schema.element(&name.name).map(|_| "a builtin element")
             }
-            DefKind::Service(_) => self.schema.service(&name.name).map(|_| "a builtin service"),
             _ => None,
         };
         match &kind {
@@ -288,10 +290,12 @@ impl<'a> Checker<'a> {
             | DefKind::Type(_)
             | DefKind::Enum(_)
             | DefKind::Component
+            | DefKind::Service(_)
             | DefKind::Action => {
                 let what = match &kind {
                     DefKind::Fn => "`fn`",
                     DefKind::Action => "action",
+                    DefKind::Service(_) => "service",
                     DefKind::Component => "component",
                     _ => "type",
                 };

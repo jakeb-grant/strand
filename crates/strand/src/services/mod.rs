@@ -2380,6 +2380,27 @@ service shelf {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// (M6, the owner's ruling) A config's `service battery` shadows
+        /// the builtin `battery` (spec.md 4.2): its reads go to the
+        /// declared service, never to the builtin one.
+        #[test]
+        fn a_config_service_shadows_the_builtin_of_its_name() {
+            let dir = temp("shadow");
+            let file = dir.join("battery.json");
+            save(&file, r#"{"level": 42}"#);
+            let src = format!(
+                "service battery from file \"{}\" {{ level: int }}\nbar B {{ text join(\" \", battery.level) }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the config's battery read", |l| {
+                l.value("battery", "level") == Value::int(42)
+            });
+            assert!(live.real.custom.client("battery").is_some());
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// A file whose directory does not exist yet (an app's cache
         /// before its first run) is waited for, not failed and retried:
         /// the directories are followed as they appear, and again after

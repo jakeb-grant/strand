@@ -86,13 +86,18 @@ impl Composite {
         }
     }
 
+    /// (M6, the owner's ruling) A declared custom service comes first: a
+    /// config's `service battery` shadows the builtin `battery` (spec.md
+    /// 4.2).
     fn route(&self, service: &str) -> &dyn ServiceHost {
+        if let Some(c) = &self.custom
+            && c.serves(service)
+        {
+            return &**c;
+        }
         match self.by_name.get(service) {
             Some(&i) => &*self.members[i],
-            None => match &self.custom {
-                Some(c) if c.serves(service) => &**c,
-                _ => &*self.fallback,
-            },
+            None => &*self.fallback,
         }
     }
 

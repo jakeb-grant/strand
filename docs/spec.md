@@ -133,16 +133,20 @@ guide's ladder test use this table as the list of constructs.
   or a service schema's record or enum, within its scope. A `state` or
   `let` that hides a builtin service, or a builtin value such as the
   time signal `t`, is a warning; so is an `fn`, `type`, `enum` or
-  component named like a builtin service.
-- **Some builtin names are taken.** Three declarations are load errors
+  component named like a builtin service. (M6, the owner's ruling) A
+  config `service` named like a builtin service shadows it within the
+  config, with the same warning: the config's own service is the one
+  its reads, writes and actions reach, and the builtin's fields are not
+  there. So a config keeps loading when a release adds a builtin
+  service of a name it uses (section 14).
+- **Some builtin names are taken.** Two declarations are load errors
   rather than shadows: a `type` or `enum` named like one of the
   language's own types (`bool`, `int`, `float`, `length`, `percent`,
   `angle`, `duration`, `color`, `paint`, `text`, `path`, `font`,
-  `shadow`, `insets`, `corners`, `any`, `unit`, `Async`); a
+  `shadow`, `insets`, `corners`, `any`, `unit`, `Async`); and a
   `component` or surface named like a builtin element (`text`, `row`,
-  `popup`, …), since an element is resolved before a component; and a
-  `service` named like a builtin service, since two services under one
-  name would be ambiguous. Palette role names, the 13 hue roles
+  `popup`, …), since an element is resolved before a component.
+  Palette role names, the 13 hue roles
   included, and the token first segment `palette` are taken too
   (section 9.3).
 - **Shadowing is loud.** A name in scope that is also a variant of the
@@ -254,7 +258,9 @@ filling the monitor, the keyboard always).
   numbers (`[1, 2]` is an `[int]`, and a `let` or a handler's local
   holding one is never written, so it stays one) and through `?:` and
   `match` whose branches all have that shape, an empty list fitting any
-  list (`match name { "DP-8" => [1, 2], _ => [] }` is an `[int]`).
+  list (`match name { "DP-8" => [1, 2], _ => [] }` is an `[int]`). A
+  `for` over such a literal loops over `int`s (`for w in [1, 2, 3] key
+  w` gives each `w` as an `int`).
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
   (section 10.3). It is allowed only on a `state` holding plain data:
   not functions, `Async` values, runtime handles or live service items.
