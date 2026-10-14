@@ -333,6 +333,12 @@ props! {
     /// the pointer leaves it and its anchor (`Duration`; none is
     /// `strand_render::HOVER_GRACE`).
     Grace = "grace": Snap,
+    /// (m6-owner-fixes) On a `trigger: hover` popup: its `open:`, as the
+    /// program writes it (`Bool`). Set by the compiler from `open:` on
+    /// such a popup, never written in source: the router opens the popup
+    /// while it is true and keeps it open, and the pointer holds it as
+    /// usual once it is false (spec.md 6.3).
+    Hold = "hold": Snap,
 }
 
 impl Prop {

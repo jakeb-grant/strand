@@ -1008,3 +1008,111 @@ fn walk(sh: &mut Shell) {
         });
     }
 }
+
+/// (m6-owner-fixes, B-d) A `trigger: hover` popup that covers its anchor
+/// (a negative margin, the owner's island) maps under a pointer that
+/// does not move: its card is hovered at once (`when hover` paints it
+/// yellow) and the anchor is not, as the pointer is on the popup.
+const COVER: &str = r#"
+bar Top {
+  edge: top; height: 36; margin: 4, 4, 0; radius: 16
+  bg: #303030
+  split { pad: 4
+    start {
+      box { id: it; size: 28; bg: #ff0000
+        when hover { bg: #0000ff }
+        popup { trigger: hover; delay: 150ms; margin: -28, 0, 0
+          box { width: 200; height: 120; bg: #00ff00
+            when hover { bg: #ffff00 }
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+
+#[test]
+fn a_hover_popup_mapped_under_a_still_pointer_is_hovered() {
+    let Some(mut sh) = start("cover", COVER) else {
+        return;
+    };
+    let it = sh.wait("the item", |one, _| one.region(ITEM_A, 400));
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    let (x, y) = centre(it, 0, 1.0);
+    pointer.motion(x, y, LW, LH);
+    // The anchor is hovered first, then the popup opens over it.
+    sh.wait("the card under the still pointer, hovered", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+    sh.keep("cover");
+    let one = sh.shot("HEADLESS-1");
+    assert!(one.region(ISLAND_A, 1).is_none(), "the card is hovered");
+    // The compositor takes over at the next motion: still hovered on the
+    // card, and the popup closes once the pointer leaves it.
+    pointer.motion(x + 60, y + 40, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    let one = sh.shot("HEADLESS-1");
+    assert!(one.region(YELLOW, 2000).is_some(), "hovered after a motion");
+    assert!(one.region(ISLAND_A, 1).is_none(), "and only hovered");
+    pointer.motion(x + 300, 400, LW, LH);
+    sh.wait("the popup closes", |one, _| {
+        (one.region(YELLOW, 1).is_none() && one.region(ISLAND_A, 1).is_none()).then_some(())
+    });
+}
+
+/// (m6-owner-fixes, G-b) A `trigger: hover` popup opened from code: its
+/// `open:` is a state the far item's click toggles. A click opens the
+/// island under `a` with the pointer on `b`, it stays open while `open:`
+/// holds (well past its grace), and the second click lets go: the
+/// pointer is away, so it closes after its grace.
+const HELD: &str = r#"
+state peek = false
+bar Top {
+  edge: top; height: 36; margin: 4, 4, 0; radius: 16
+  bg: #303030
+  split { pad: 4
+    start {
+      box { size: 28; bg: #ff0000
+        popup { trigger: hover; delay: 100ms; grace: 300ms; open: peek; margin: 8, 0, 0
+          box { width: 200; height: 120; bg: #00ff00 }
+        }
+      }
+    }
+    end {
+      box { size: 28; bg: #0000ff
+        on click { peek = !peek }
+        when peek { bg: #ffff00 }
+      }
+    }
+  }
+}
+"#;
+
+#[test]
+fn open_opens_a_hover_popup_from_code_and_holds_it() {
+    let Some(mut sh) = start("held", HELD) else {
+        return;
+    };
+    let b = sh.wait("the items", |one, _| one.region(ITEM_B, 400));
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    let (bx, by) = centre(b, 0, 1.0);
+    pointer.motion(bx, by, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click(bx, by, LW, LH);
+    sh.wait("the click sets `peek`", |one, _| one.region(YELLOW, 400));
+    sh.wait("the island, opened from code", |one, _| {
+        one.region(ISLAND_A, 2000)
+    });
+    std::thread::sleep(Duration::from_millis(900));
+    let one = sh.shot("HEADLESS-1");
+    assert!(
+        one.region(ISLAND_A, 2000).is_some(),
+        "held open past its grace"
+    );
+    sh.keep("held");
+    pointer.click(bx, by, LW, LH);
+    sh.wait("let go, it closes after its grace", |one, _| {
+        one.region(ISLAND_A, 1).is_none().then_some(())
+    });
+}

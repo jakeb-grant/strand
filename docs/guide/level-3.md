@@ -191,7 +191,9 @@ box { size: 28
 }
 ```
 
-Such a popup takes no `open:`: the pointer is what opens it. `delay:`
+The pointer is what opens such a popup. Its `open:` opens it from code
+as well, and holds it open while true (a peek handing over to it);
+once that is false, the pointer holds it as usual. `delay:`
 makes the pointer rest first, and `grace:` changes the 200 ms. Pointing
 at another `trigger: hover` element on the same bar swaps the popups at
 once. `popout.open` reads whether a popup is open, whatever opens it.

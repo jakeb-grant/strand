@@ -510,6 +510,59 @@ fn input_passes_through_outside_the_island() {
     assert_eq!(Painter::input_region(&sh.r, POP), None, "an `open:` popup");
 }
 
+/// (m6-owner-fixes, owner-testing.md bug 15) While a press that went down
+/// on a hover popup that draws nothing is held (a slider's drag), the
+/// popup takes input in its whole box, so a compositor that hands the
+/// pointer to the surface under it mid-drag (Hyprland with no keyboard
+/// focus) keeps it on the popup past the island's edge; the press asks
+/// for the frame that commits it, and the release gives the island's
+/// region back.
+#[test]
+fn a_held_press_takes_the_hover_popups_whole_box() {
+    let (mut sh, _) = island_shell(ISLAND);
+    let island = vec![LogicalRect::new(0.0, 0.0, 46.0, 40.0)];
+    assert_eq!(Painter::input_region(&sh.r, POP), Some(island.clone()));
+    let popup = sh.shown.iter().find(|s| s.0 == POP).unwrap().1;
+    sh.r.set_widget_flag(popup, strand_render::Flag::Pressed, true);
+    assert!(sh.r.wants_frame(POP), "the press asks for a frame");
+    sh.paint(500);
+    assert_eq!(Painter::input_region(&sh.r, POP), None, "its whole box");
+    sh.r.set_widget_flag(popup, strand_render::Flag::Pressed, false);
+    assert!(sh.r.wants_frame(POP), "the release asks for a frame");
+    sh.paint(501);
+    assert_eq!(Painter::input_region(&sh.r, POP), Some(island));
+}
+
+/// (m6-owner-fixes, G-c) `hit: none` on the island takes no input in its
+/// own box: the hover popup's region is its child's box instead (the
+/// gaps around it pass through), a point on the island off the child
+/// hits nothing but the popup, and the child is hit with the island
+/// above it in the chain (hovered through it).
+#[test]
+fn hit_none_takes_no_input_in_its_own_box() {
+    let src = ISLAND.replace(
+        "          bg: #ff0000\n",
+        "          bg: #ff0000\n          hit: none\n",
+    );
+    let (sh, _) = island_shell(&src);
+    let region = Painter::input_region(&sh.r, POP).expect("the region");
+    assert_eq!(region, vec![LogicalRect::new(8.0, 8.0, 12.0, 12.0)]);
+    let popup = sh.shown.iter().find(|s| s.0 == POP).unwrap().1;
+    let island = sh.r.tree().get(popup).unwrap().children[0];
+    let child = sh.r.tree().get(island).unwrap().children[0];
+    assert_eq!(sh.r.hit(POP, LogicalPoint::new(30.0, 20.0)), [popup]);
+    assert_eq!(
+        sh.r.hit(POP, LogicalPoint::new(14.0, 14.0)),
+        [child, island, popup]
+    );
+    // Without it, the island's whole box.
+    let (sh, _) = island_shell(ISLAND);
+    assert_eq!(
+        sh.r.hit(POP, LogicalPoint::new(30.0, 20.0)),
+        [island, popup]
+    );
+}
+
 /// (M6, the review of 66c2f03) A shadowed island travelling inside its
 /// popup never resizes or moves the popup: the overhang its shadow asks
 /// for does not follow where the island is drawn, so no frame of the

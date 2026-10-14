@@ -5016,6 +5016,36 @@ fn the_router_opens_a_hover_popup() {
     );
 }
 
+/// (m6-owner-fixes, G-b) `open:` on a `trigger: hover` popup is the
+/// program's hold (`Prop::Hold`), following its expression, while the
+/// popup's `open` stays the router's (closed until it writes it); on
+/// any other popup `open:` is `open`.
+#[test]
+fn open_on_a_hover_popup_is_its_hold() {
+    let src = "state peek = false\nbar Top {\n  height: 30\n  row {\n    box { size: 20\n      on click { peek = !peek }\n      popup { trigger: hover; open: peek; text \"island\" }\n    }\n    box { size: 20; popup { open: peek; text \"menu\" } }\n  }\n}\n";
+    let mut shell = boot(&[("h.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let popups = shell.scene.of_kind(NodeKind::Popup);
+    let (island, menu) = (popups[0], popups[1]);
+    let at = |shell: &Shell, n, p| shell.scene.prop(n, p).cloned();
+    assert_eq!(at(&shell, island, Prop::Hold), Some(PropValue::Bool(false)));
+    assert_eq!(at(&shell, island, Prop::Open), Some(PropValue::Bool(false)));
+    assert_eq!(at(&shell, menu, Prop::Hold), None);
+    let anchor = shell.scene.parent(island).unwrap();
+    shell.inst.event(anchor, "click", Vec::new());
+    shell.flush();
+    assert_eq!(at(&shell, island, Prop::Hold), Some(PropValue::Bool(true)));
+    assert_eq!(
+        at(&shell, island, Prop::Open),
+        Some(PropValue::Bool(false)),
+        "the router opens it"
+    );
+    assert_eq!(at(&shell, menu, Prop::Open), Some(PropValue::Bool(true)));
+}
+
 /// (M6) `p.open` reads a popup's open state, so its anchor can style
 /// itself while it shows: a `trigger: hover` popup's as the router
 /// opens and closes it, an `open:` popup's as its expression goes.

@@ -25,6 +25,36 @@ impl Renderer {
             .copied()
     }
 
+    /// (m6-owner-fixes) `at`, a point on `surface`, moved into `node`'s
+    /// laid-out box ([`Renderer::node_rect`]): the paint offsets (`x`,
+    /// `y`, a glide) and transforms (`scale`, `rotate`) the node was last
+    /// drawn with, its own and its ancestors', are undone, so a slider or
+    /// a `segmented` reads the pointer where it is drawn (spec.md 6.7:
+    /// input follows the drawn shape). `at` unchanged when the node was
+    /// not drawn there.
+    pub fn to_laid(&self, surface: SurfaceId, node: NodeId, at: LogicalPoint) -> LogicalPoint {
+        let Some(s) = self.surfaces.get(&surface) else {
+            return at;
+        };
+        let (Some(laid), Some(h)) = (
+            self.node_rect(surface, node),
+            s.hits.iter().rev().find(|h| h.node == node),
+        ) else {
+            return at;
+        };
+        let k = s.scale.as_f64();
+        let mut p = vello_cpu::kurbo::Point::new(at.x as f64 * k, at.y as f64 * k);
+        if let Some(inv) = h.inverse {
+            p = inv * p;
+        }
+        let x = laid.x as f64 + (p.x - (h.rect.x0 + h.grow)) / k;
+        let y = laid.y as f64 + (p.y - (h.rect.y0 + h.grow)) / k;
+        if !(x.is_finite() && y.is_finite()) {
+            return at;
+        }
+        LogicalPoint::new(x as f32, y as f32)
+    }
+
     /// (M4) `node` on `surface` drawn alone, at rest (not lifted, no
     /// glide), at the surface's scale and with what it inherits there:
     /// the icon that follows the pointer while the compositor carries a

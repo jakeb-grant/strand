@@ -572,7 +572,9 @@ filling the monitor, the keyboard always).
 - A node's `hover` is true while the pointer is over it or over one of
   its descendants on the same surface. A `popup` is a surface of its
   own: the pointer on a popup does not hover the element it is anchored
-  to.
+  to. A popup that opens or grows under a pointer that has not moved
+  is under the pointer at once, as if it had moved (a compositor may
+  wait for the next motion to say so; decisions.md m6-owner-fixes).
 - **`trigger: hover`** on a `popup` gives its open state to the pointer.
   It opens while the pointer is on the element it is anchored to, after
   its `delay` (none by default). It stays open while the pointer is on
@@ -583,7 +585,13 @@ filling the monitor, the keyboard always).
   `trigger: hover` popup is open from a surface at a time: when another
   opens from the same surface (the pointer went straight to the next
   bar item), the open one closes at once. Its `enter` and `exit` poses
-  play as it opens and closes. It takes no `open:`, and `trigger`,
+  play as it opens and closes. Its `open:` opens it from code: while
+  that is true it is open whatever the pointer does (opening at once,
+  without its `delay`, and closing another opened from the same
+  surface), and once it is false the pointer holds it as above, so it
+  closes after its `grace` unless the pointer is on it or its element
+  (decisions.md m6-owner-fixes). That `open:` is never two-way: what
+  shows is `p.open`. `trigger`,
   written on the popup itself, is `open` (the default: `open:` decides)
   or `hover`; anything else, and `delay` or `grace` without `trigger:
   hover`, is a load error.
@@ -773,16 +781,23 @@ filling the monitor, the keyboard always).
   lengths (`size`, `width` or `height` in px or `ch`, none a percentage)
   defaults to `shrink: 0`. An explicit `shrink:` overrides either
   default.
-- **Hit testing** follows the node's rounded shape. `hit: grow(n)`
-  enlarges it by `n` for small targets. Shadows enlarge the buffer but
-  not the input region.
+- **Hit testing** follows the node's rounded shape where it is drawn
+  (its paint offsets and transforms, and its ancestors', move it; a
+  slider or `segmented` reads the pointer there too). `hit: grow(n)`
+  enlarges it by `n` for small targets; `hit: none` takes no input in
+  the node's own box (the pointer passes through to what is below),
+  while its children take theirs and are hit with it among their
+  ancestors. Shadows enlarge the buffer but not the input region.
 - **A `trigger: hover` popup that draws nothing itself** (no `bg`,
   border, shadow, `blur` or `backdrop` of its own) takes input only in
   the boxes of its top-level elements that draw (a `blur` or `backdrop`
   counts), as they are drawn this frame: the pointer passes through the
   rest of it to what is below. A travelling island (section 6.3) moves
   inside a popup wider than it, and only the island takes the pointer.
-  Any other popup takes the pointer in its whole box, gaps included.
+  A top-level element with `hit: none` gives its children's boxes
+  instead of its own.
+  While a press that went down on it is held (a slider's drag), it
+  takes its whole box. Any other popup takes the pointer in its whole box, gaps included.
   (decisions.md m6-w2-surface, 2026-10-14)
 - **Events go to the innermost node with a handler** for them.
   `propagate()` in a handler passes the event on to the next enclosing
