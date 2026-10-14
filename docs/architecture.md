@@ -3103,11 +3103,34 @@ Public interfaces other crates and later stages build on:
   `ast::Element { qual: Option<Ident>, kind, … }` holds the file of a
   `tray.Row` call. `hir::Program::same_named(DefId)`,
   `::qualified_name(DefId)` and `::file_stem(FileId)` answer which other
-  files declare a name and how a use would write it; shared types and
-  enums are named `file.Name` in the `TypeTable`, and a shared
-  component's `lower::Component::name` (read by reload identity, state
-  paths through `lower::Program::owner_name` and the inspector) is
-  `file.Name` too.
+  files declare a name and how a use would write it. A shared type or
+  enum keeps its name in the `TypeTable` and carries `ty::Home { file,
+  shared }`: `TypeTable::show` writes it `file.Name`, `TypeTable::stable`
+  writes every config type `file.Name` (the key cells' types are kept
+  by across reloads), and `RecordDef::same_record`/`EnumDef::same_enum`
+  match a value's type by home file and name when a reload translates
+  it. A shared component's `lower::Component::name` is `file.Name` for
+  display (state paths through `lower::Program::owner_name`, the
+  inspector's scope, a token's origin `component file.Name`), and
+  `lower::Program::owner_key` (`module.Name`, always) keys its cells and
+  reload identity, so a name becoming shared re-keys nothing (a unique
+  one moved to another file is found by name: `Identity` counts each
+  component name's files, `Ctx::moved_from` gives the old file's key,
+  `reload::CellTy` compares a cell's type in its stable and shown
+  forms, and two unshared types of one name are one); a
+  persisted path that changes form moves (`instantiate::mount`'s
+  `moved_path`/`migrate_persisted` on a cold boot, `Carry::dropped`
+  removed after a reload's old instance goes). (Review of 2026-10-14)
+  The checker resolves a global through `Checker::global(name, span,
+  check::names::Want)`, rules 1 to 3 over the declarations the position
+  takes, and a component token path through
+  `Checker::component_token_path`. `check::names::{is_identifier,
+  nameable, listed, naming}` are public for the language server's hover
+  and completion, which also reads `ctx::Context::call` (an element's
+  qualifier and kind span) to take the call's component from
+  `program.refs`. The tree-sitter scanner gains the external token
+  `_qualified_dot`.
+
   `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
   Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
   `from poll` path names a program (executable, `#!` or ELF; stat before

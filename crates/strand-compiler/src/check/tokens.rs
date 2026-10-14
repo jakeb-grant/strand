@@ -338,7 +338,112 @@ impl<'a> Checker<'a> {
     /// Resolves `extends` and checks each set's entries against the sets it
     /// extends: redefining needs `override`, and an `override` must
     /// override something.
+    /// (M6, spec.md 4.2 and 9.1) `$Row.gap` where `Row` is a component
+    /// more than one file declares: the path of the `Row` token module
+    /// `module` reads, by rules 1 and 2 over the `Row`s that have
+    /// `tokens { }` (its own file's, else the only other one:
+    /// `a.Row.gap`). `Ok(None)`: not such a path, read as written.
+    /// `Err`: two or more other files' `Row`s have tokens; reported at
+    /// `key`, with `$a.Row.gap` as the fix when the key spells the path.
+    pub(super) fn component_token_path(
+        &mut self,
+        path: &str,
+        module: usize,
+        key: &ast::TokenKey,
+    ) -> Result<Option<String>, ()> {
+        let Some((head, _)) = path.split_once('.') else {
+            return Ok(None);
+        };
+        let decls: Vec<DefId> = match self.global_decls.get(head) {
+            Some(d) if d.len() > 1 => d
+                .iter()
+                .copied()
+                .filter(|d| {
+                    self.defs[d.0 as usize].kind == DefKind::Component
+                        && self.comp_tokens.contains_key(d)
+                })
+                .collect(),
+            _ => return Ok(None),
+        };
+        let file = self.modules[module].file;
+        let at = |c: &Self, d: DefId| format!("{}.{path}", c.stem_of(c.defs[d.0 as usize].file));
+        if let Some(&own) = decls.iter().find(|d| self.defs[d.0 as usize].file == file) {
+            return Ok(Some(at(self, own)));
+        }
+        let mut others: Vec<(&'a str, DefId)> = decls
+            .iter()
+            .map(|d| (self.stem_of(self.defs[d.0 as usize].file), *d))
+            .collect();
+        others.sort_by(|a, b| a.0.cmp(b.0));
+        match others.as_slice() {
+            [] => Ok(None),
+            [(_, one)] => Ok(Some(at(self, *one))),
+            _ => {
+                let stems: Vec<&str> = others.iter().map(|o| o.0).collect();
+                let dollar = if key.dollar { "$" } else { "" };
+                let (forms, help) = super::names::naming(&stems, |s| format!("{dollar}{s}.{path}"));
+                let whole = key.segments.len() == path.split('.').count();
+                let places: Vec<(&str, crate::source::FileId, Span)> = others
+                    .iter()
+                    .map(|(stem, c)| {
+                        let def = &self.defs[c.0 as usize];
+                        (*stem, def.file, def.span)
+                    })
+                    .collect();
+                let d = self.error(
+                    "check::ambiguous_name",
+                    format!(
+                        "`${path}` is a token of the component `{head}`, which {} files \
+                         declare with tokens, {}, and not this one",
+                        stems.len(),
+                        super::names::listed(&stems)
+                    ),
+                    key.span,
+                    "which one?",
+                );
+                for (stem, f, s) in places {
+                    d.add_secondary(f, s, format!("`{head}` in `{stem}.strand`"));
+                }
+
+                if whole {
+                    for f in forms {
+                        d.add_suggestion(key.span, f);
+                    }
+                }
+                d.help = Some(help);
+                Err(())
+            }
+        }
+    }
+
     pub(super) fn resolve_token_sets(&mut self) {
+        // (M6) A set's `override Row.gap` of a component whose name more
+        // than one file declares: the `Row` its file reads (rules 1 and
+        // 2), or an error and no entry.
+        for s in 0..self.tokens.sets.len() {
+            let module = self.tokens.sets[s].module;
+            self.module = module;
+            let mut keep = Vec::new();
+            for e in self.tokens.sets[s].entries.clone() {
+                let (path, key) = (
+                    self.tokens.entries[e].path.clone(),
+                    self.tokens.entries[e].key,
+                );
+                match self.component_token_path(&path, module, key) {
+                    Ok(None) => keep.push(e),
+                    Ok(Some(new)) => {
+                        if let Some(v) = self.tokens.by_path.get_mut(&path) {
+                            v.retain(|x| *x != e);
+                        }
+                        self.tokens.by_path.entry(new.clone()).or_default().push(e);
+                        self.tokens.entries[e].path = new;
+                        keep.push(e);
+                    }
+                    Err(()) => {}
+                }
+            }
+            self.tokens.sets[s].entries = keep;
+        }
         for s in 0..self.tokens.sets.len() {
             let set = &self.tokens.sets[s];
             let (module, ext) = (set.module, set.ast.extends.as_ref());
@@ -697,7 +802,13 @@ impl<'a> Checker<'a> {
 
     /// `$path`.
     pub(super) fn token_expr(&mut self, key: &ast::TokenKey) -> hir::Expr {
-        let path = key_path(key);
+        let mut path = key_path(key);
+        // (M6) `$Row.gap` of a component more than one file declares.
+        match self.component_token_path(&path, self.module, key) {
+            Ok(Some(p)) => path = p,
+            Ok(None) => {}
+            Err(()) => return hir::Expr::error(key.span),
+        }
         self.add_ref(key.span, Target::Token(path.clone()));
         let ty = self.token_ty(&path, key.span);
         hir::Expr {
@@ -886,6 +997,13 @@ impl<'a> Checker<'a> {
             match &e.body {
                 ast::TokenBody::Group(b) => self.set_entries(&b.items, &path, out),
                 ast::TokenBody::Value(v) => {
+                    // (M6) `set { $Row.gap: … }` of a shared `Row`.
+                    let path = match self.component_token_path(&path, self.module, &e.key) {
+                        Ok(Some(p)) => p,
+                        Ok(None) => path,
+                        Err(()) => continue,
+                    };
+
                     let want = if self.tokens.known(self.schema, &path) {
                         self.add_ref(e.key.span, Target::Token(path.clone()));
                         Some(self.token_ty(&path, e.key.span))

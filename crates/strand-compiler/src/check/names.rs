@@ -33,12 +33,53 @@ pub fn shareable(kind: &DefKind) -> bool {
     )
 }
 
+/// What a position accepts (spec.md 4.2): the rules choose among the
+/// declarations of these kinds only, and with none of them a name falls
+/// through to the builtins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Want {
+    /// A type annotation: a `type` or an `enum`.
+    Type,
+    /// An element: a component.
+    Component,
+    /// A call: a `fn` or a `type`'s constructor.
+    Call,
+    /// A pattern's or a value's `Kind.v`: an enum.
+    Enum,
+    /// A bare name read as a value: any kind (what is not a value is
+    /// reported as such).
+    Value,
+}
+
+impl Want {
+    fn accepts(self, kind: &DefKind) -> bool {
+        match self {
+            Want::Type => matches!(kind, DefKind::Type(_) | DefKind::Enum(_)),
+            Want::Component => *kind == DefKind::Component,
+            Want::Call => matches!(kind, DefKind::Fn | DefKind::Type(_)),
+            Want::Enum => matches!(kind, DefKind::Enum(_)),
+            Want::Value => true,
+        }
+    }
+}
+
 /// What a global name means in one file.
+#[derive(Debug)]
 pub(super) enum Global {
     Missing,
     One(DefId),
-    /// Declared in two or more other files, not in this one.
+    /// Declared in two or more other files, not in this one (as a kind
+    /// the position accepts). From [`Checker::global`], already reported.
     Ambiguous(Vec<DefId>),
+}
+
+impl Global {
+    pub(super) fn one(&self) -> Option<DefId> {
+        match self {
+            Global::One(d) => Some(*d),
+            _ => None,
+        }
+    }
 }
 
 /// What `file.Name` names.
@@ -51,44 +92,71 @@ pub(super) enum Qualified {
 }
 
 /// Whether `s` can be read as a name (`my-bar` cannot).
-fn is_identifier(s: &str) -> bool {
+pub fn is_identifier(s: &str) -> bool {
     let mut cs = s.chars();
     cs.next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// The stems `file.Name` can name among `stems`: identifiers no other
+/// of them shares (two `row.strand`s in two directories cannot be told
+/// apart).
+pub fn nameable<'s>(stems: &[&'s str]) -> Vec<&'s str> {
+    stems
+        .iter()
+        .copied()
+        .filter(|s| is_identifier(s) && stems.iter().filter(|o| *o == s).count() == 1)
+        .collect()
+}
+
 impl<'a> Checker<'a> {
-    /// What global `name` means in module `module` (rules 1 to 3).
-    pub(super) fn global_in(&self, module: usize, name: &str) -> Global {
-        if let Some(&d) = self.module_globals.get(module).and_then(|g| g.get(name)) {
-            return Global::One(d);
+    /// What global `name` means in module `module` at a position that
+    /// accepts `want` (rules 1 to 3). A name declared once means that
+    /// declaration whatever its kind, as before (the position reports a
+    /// kind it cannot use).
+    pub(super) fn global_in(&self, module: usize, name: &str, want: Want) -> Global {
+        let decls = match self.global_decls.get(name).map(Vec::as_slice) {
+            None | Some([]) => return Global::Missing,
+            Some([one]) => return Global::One(*one),
+            Some(many) => many,
+        };
+        let accepted = |d: &DefId| want.accepts(&self.defs[d.0 as usize].kind);
+        if let Some(own) = self.module_globals.get(module).and_then(|g| g.get(name))
+            && accepted(own)
+        {
+            return Global::One(*own);
         }
-        match self.global_decls.get(name).map(Vec::as_slice) {
-            None | Some([]) => Global::Missing,
-            Some([one]) => Global::One(*one),
-            Some(many) => Global::Ambiguous(many.to_vec()),
+        let file = self.modules.get(module).map(|m| m.file);
+        let others: Vec<DefId> = decls
+            .iter()
+            .filter(|d| accepted(d) && Some(self.defs[d.0 as usize].file) != file)
+            .copied()
+            .collect();
+        match others.as_slice() {
+            [] => Global::Missing,
+            [one] => Global::One(*one),
+            _ => Global::Ambiguous(others),
         }
     }
 
-    /// Global `name` used at `span` in the current file: its declaration,
-    /// or `None` when there is none. Ambiguous, the error is reported and
-    /// the first declaration stands in, so the rest still checks.
-    pub(super) fn global(&mut self, name: &str, span: Span) -> Option<DefId> {
-        match self.global_in(self.module, name) {
-            Global::Missing => None,
-            Global::One(d) => Some(d),
-            Global::Ambiguous(many) => {
-                self.ambiguous(name, span, &many);
-                many.first().copied()
-            }
+    /// Global `name` used at `span` in the current file, at a position
+    /// that accepts `want`. Ambiguous, the error is reported (once per
+    /// use, even when an overloaded call checks it again) and the caller
+    /// types the use as an error: no declaration stands in.
+    pub(super) fn global(&mut self, name: &str, span: Span, want: Want) -> Global {
+        let g = self.global_in(self.module, name, want);
+        if let Global::Ambiguous(many) = &g {
+            let many = many.clone();
+            self.ambiguous(name, span, &many);
         }
+        g
     }
 
     /// Global `name` in module `module` without reporting anything: `None`
     /// when missing or ambiguous. `written` may be qualified
     /// (`tray.Row`).
-    pub(super) fn global_named(&self, module: usize, written: &str) -> Option<DefId> {
+    pub(super) fn global_named(&self, module: usize, written: &str, want: Want) -> Option<DefId> {
         if let Some((file, name)) = written.split_once('.') {
             let m = *self.file_index.get(file)?;
             return self
@@ -98,10 +166,15 @@ impl<'a> Checker<'a> {
                 .copied()
                 .filter(|d| shareable(&self.defs[d.0 as usize].kind));
         }
-        match self.global_in(module, written) {
-            Global::One(d) => Some(d),
-            _ => None,
-        }
+        self.global_in(module, written, want).one()
+    }
+
+    /// The stem of `file` (`tray` for `tray.strand`).
+    pub(super) fn stem_of(&self, file: FileId) -> &'a str {
+        self.modules
+            .iter()
+            .find(|m| m.file == file)
+            .map_or("?", |m| m.name)
     }
 
     /// `file.Name`: the declaration of `name` in `file`, a component,
@@ -154,37 +227,27 @@ impl<'a> Checker<'a> {
     }
 
     /// `name`, used at `span`, is declared in two or more other files.
+    /// Reported once per use: the mark is in `reported`, which an
+    /// overloaded call's discarded attempts restore with their errors.
     fn ambiguous(&mut self, name: &str, span: Span, decls: &[DefId]) {
-        if !self.ambiguous_seen.insert((self.file(), span)) {
+        if !self.reported.insert((self.file(), span)) {
             return;
         }
-        let mut files: Vec<(String, FileId, Span)> = decls
+        let mut files: Vec<(&'a str, FileId, Span)> = decls
             .iter()
             .map(|d| {
                 let def = &self.defs[d.0 as usize];
-                let stem = self
-                    .modules
-                    .iter()
-                    .find(|m| m.file == def.file)
-                    .map_or("?", |m| m.name)
-                    .to_string();
-                (stem, def.file, def.span)
+                (self.stem_of(def.file), def.file, def.span)
             })
             .collect();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        let shown: Vec<String> = files
-            .iter()
-            .map(|(s, _, _)| format!("`{s}.strand`"))
-            .collect();
-        let listed = match shown.as_slice() {
-            [a, b] => format!("{a} and {b}"),
-            many => many.join(", "),
-        };
+        files.sort_by(|a, b| a.0.cmp(b.0));
+        let stems: Vec<&str> = files.iter().map(|f| f.0).collect();
         let d = self.error(
             "check::ambiguous_name",
             format!(
-                "`{name}` is declared in {} files, {listed}, and not in this one",
-                files.len()
+                "`{name}` is declared in {} files, {}, and not in this one",
+                files.len(),
+                listed(&stems)
             ),
             span,
             "which one?",
@@ -192,44 +255,55 @@ impl<'a> Checker<'a> {
         for (stem, file, at) in &files {
             d.add_secondary(*file, *at, format!("declared in `{stem}.strand`"));
         }
-        let fixes: Vec<String> = files
-            .iter()
-            .filter(|(s, _, _)| is_identifier(s))
-            .map(|(s, _, _)| format!("{s}.{name}"))
-            .collect();
-        for f in &fixes {
-            d.add_suggestion(span, f.clone());
+        let (forms, help) = naming(&stems, |s| format!("{s}.{name}"));
+        for f in forms {
+            d.add_suggestion(span, f);
         }
-        let unnamed: Vec<String> = files
-            .iter()
-            .filter(|(s, _, _)| !is_identifier(s))
-            .map(|(s, _, _)| format!("`{s}.strand`"))
-            .collect();
-        let mut help = match fixes.as_slice() {
-            [] => String::new(),
-            [one] => format!("name the file it comes from: `{one}`"),
-            many => format!(
-                "name the file it comes from: {}",
-                many.iter()
-                    .map(|f| format!("`{f}`"))
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            ),
-        };
-        if !unnamed.is_empty() {
-            if !help.is_empty() {
-                help.push_str("; ");
-            }
-            help.push_str(&format!(
-                "rename {} to an identifier to name it so",
-                unnamed.join(", ")
-            ));
+        d.help = Some(format!(
+            "{help} (or declare `{name}` in this file, which then uses its own)"
+        ));
+    }
+}
+
+/// `` `a.strand` and `b.strand` ``, or a comma list of three or more.
+pub fn listed(stems: &[&str]) -> String {
+    let shown: Vec<String> = stems.iter().map(|s| format!("`{s}.strand`")).collect();
+    match shown.as_slice() {
+        [a, b] => format!("{a} and {b}"),
+        many => many.join(", "),
+    }
+}
+
+/// How a use names one of the declarations in the files `stems`: the
+/// forms it can write (`form(stem)`, `a.Row`), and a help saying so that
+/// asks to rename each file whose name cannot be written (not an
+/// identifier, or shared with another file) instead of offering a fix
+/// that would not work.
+pub fn naming(stems: &[&str], form: impl Fn(&str) -> String) -> (Vec<String>, String) {
+    let ok = nameable(stems);
+    let forms: Vec<String> = ok.iter().map(|s| form(s)).collect();
+    let mut bad: Vec<&str> = stems.iter().copied().filter(|s| !ok.contains(s)).collect();
+    bad.sort_unstable();
+    bad.dedup();
+    let quoted = |v: &[String]| v.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>();
+    let mut help = match forms.as_slice() {
+        [] => String::new(),
+        many => format!("name the file it comes from: {}", quoted(many).join(" or ")),
+    };
+    if !bad.is_empty() {
+        if !help.is_empty() {
+            help.push_str("; ");
         }
         help.push_str(&format!(
-            " (or declare `{name}` in this file, which then uses its own)"
+            "rename {} to an identifier no other file has, to name {} so",
+            bad.iter()
+                .map(|s| format!("`{s}.strand`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if bad.len() == 1 { "it" } else { "them" }
         ));
-        d.help = Some(help);
     }
+    (forms, help)
 }
 
 /// The `check::same_name` note at each declaration of a component, type,
@@ -264,14 +338,9 @@ pub fn notes(program: &hir::Program) -> Vec<Diagnostic> {
                 .map(|f| stem(*f))
                 .collect();
             others.sort_unstable();
-            let listed = others
-                .iter()
-                .map(|s| format!("`{s}.strand`"))
-                .collect::<Vec<_>>()
-                .join(", ");
             let mut n = Diagnostic::note(
                 "check::same_name",
-                format!("`{name}` is also declared in {listed}"),
+                format!("`{name}` is also declared in {}", listed(&others)),
             )
             .with_label_in(
                 d.file,
@@ -281,16 +350,15 @@ pub fn notes(program: &hir::Program) -> Vec<Diagnostic> {
             for o in defs.iter().filter(|o| o.file != d.file) {
                 n.add_secondary(o.file, o.span, format!("in `{}.strand`", stem(o.file)));
             }
-            let qualified = files
-                .iter()
-                .map(|f| format!("`{}.{name}`", stem(*f)))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let mut stems: Vec<&str> = files.iter().map(|f| stem(*f)).collect();
+            stems.sort_unstable();
+            let (_, how) = naming(&stems, |s| format!("{s}.{name}"));
             n.help = Some(format!(
                 "not a problem: a file that declares `{name}` uses its own; a file \
                  without one uses the only declaration elsewhere, and where two or more \
-                 other files declare it, it must name one: {qualified}"
+                 other files declare it, a bare `{name}` is an error there: {how}"
             ));
+
             out.push(n);
         }
     }

@@ -2339,7 +2339,7 @@ fn same_named_declarations_in_two_files() {
     assert!(
         msg.starts_with("`Row` is also declared in `a.strand`")
             && msg.contains("a file that declares `Row` uses its own")
-            && msg.contains("`a.Row`, `b.Row`"),
+            && msg.contains("`a.Row` or `b.Row`"),
         "{msg}"
     );
     assert_eq!(
@@ -2364,14 +2364,77 @@ fn same_named_declarations_in_two_files() {
     // Hover names the file.
     let h = cl.hover("c.strand", Client::pos(c, "Row", 0, 1));
     assert!(
-        h.contains("From `a.strand` (`a.Row`); also declared in `b.strand`."),
+        h.contains("From `a.strand` (`a.Row` from other files); also declared in `b.strand`."),
         "{h}"
     );
     let h = cl.hover("b.strand", Client::pos(b, "Row }", 0, 1));
     assert!(
-        h.contains("From `b.strand` (`b.Row`); also declared in `a.strand`."),
+        h.contains("From `b.strand` (`b.Row` from other files); also declared in `a.strand`."),
         "{h}"
     );
+}
+
+/// (Review minor 8) A file whose name is no identifier is never offered
+/// as `my-row.Row`: hover says to rename it.
+#[test]
+fn hover_never_offers_an_unusable_qualified_name() {
+    let a = "component Row { text \"a\" }\nbar A { Row }\n";
+    let mut cl = Client::start(&[
+        ("my-row.strand", a.to_string()),
+        ("b.strand", "component Row { text \"b\" }\n".to_string()),
+    ]);
+    cl.open_text("my-row.strand", a);
+    let h = cl.hover("my-row.strand", Client::pos(a, "Row }", 0, 1));
+    assert!(
+        h.contains(
+            "From `my-row.strand` (rename `my-row.strand` to an identifier no other file has \
+             to name it from other files); also declared in `b.strand`."
+        ),
+        "{h}"
+    );
+    assert!(!h.contains("my-row.Row"), "{h}");
+}
+
+/// (Review major 6) Completion follows the rules: inside `a.Row { }`
+/// it offers `a`'s parameters (and children, `a`'s having a `slot`),
+/// inside a bare `Row { }` the file's own; and where a bare `Row` would
+/// be ambiguous, the element list offers `a.Row` and `b.Row`, never a
+/// bare `Row`.
+#[test]
+fn completion_follows_the_same_name_rules() {
+    let a = "component Row(wa: int = 1) {\n  row { slot }\n}\n";
+    let b = "component Row(wb: int = 2) {\n  text \"b\"\n}\nbar B {\n  Row {  }\n  \n}\n";
+    let c = "bar C {\n  a.Row {  }\n  \n}\n";
+    let mut cl = Client::start(&[
+        ("a.strand", a.to_string()),
+        ("b.strand", b.to_string()),
+        ("c.strand", c.to_string()),
+    ]);
+    cl.open_text("c.strand", c);
+    let labels = cl.completion("c.strand", Client::pos(c, "  \n}", 0, 2));
+    assert!(
+        labels.iter().any(|l| l == "a.Row") && labels.iter().any(|l| l == "b.Row"),
+        "{labels:?}"
+    );
+    assert!(!labels.iter().any(|l| l == "Row"), "{labels:?}");
+    let labels = cl.completion("c.strand", Client::pos(c, "{  }", 0, 2));
+    assert!(labels.iter().any(|l| l == "wa"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "wb"), "{labels:?}");
+    assert!(labels.iter().any(|l| l == "text"), "a slot: {labels:?}");
+    // In `b`, a bare `Row` is its own: one `Row`, and `a`'s as `a.Row`.
+    cl.open_text("b.strand", b);
+    let labels = cl.completion("b.strand", Client::pos(b, "{  }", 0, 2));
+    assert!(labels.iter().any(|l| l == "wb"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "wa"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "text"), "no slot: {labels:?}");
+    let labels = cl.completion("b.strand", Client::pos(b, "  \n}", 0, 2));
+    assert_eq!(
+        labels.iter().filter(|l| *l == "Row").count(),
+        1,
+        "{labels:?}"
+    );
+    assert!(labels.iter().any(|l| l == "a.Row"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "b.Row"), "{labels:?}");
 }
 
 /// (M6) A bare use of a name two other files declare is the

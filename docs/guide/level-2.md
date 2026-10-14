@@ -147,12 +147,20 @@ and offers both fixes:
 
 ```text
 × `Item` is declared in 2 files, `dot.strand` and `tray.strand`, and not in this one
-help: name the file it comes from: `dot.Item` or `tray.Item`
+help: name the file it comes from: `dot.Item` or `tray.Item` (or declare `Item` in this file, which then uses its own)
 ```
 
-`strand check` also puts a note, not an error, on each declaration of a
-shared name, listing the other files. A name only one file declares, like
-`Dot`, is used by its bare name everywhere.
+Tokens follow the same rules: inside `dot.strand`, `$Item.gap` is the
+dot's `Item`'s token; in `bar.strand` it is `$dot.Item.gap`. A name only
+one file declares, like `Dot`, is used by its bare name everywhere.
+
+Adding the second `component Item` is what makes a bare `Item` in
+`bar.strand` an error. While `strand` is running, the reload holds the
+new file back and the bar keeps running the last version that loaded;
+the error in `bar.strand` says what to write, and once it is fixed both
+files load together, each `Item` keeping its state. `strand check` and
+the editor also put a note, not an error, on each declaration of a
+shared name, listing the other files.
 
 ## The tray
 

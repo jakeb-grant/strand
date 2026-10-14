@@ -494,7 +494,9 @@ type is `IDENT ( '.' IDENT )*` (`x: tray.Item?`), a pattern is
 `IDENT ( '.' IDENT )*` (`tray.Kind.dark =>`), and `tray.fmt(x)`,
 `tray.Item(a: 1)` and `tray.Kind.dark` are member expressions the
 checker reads as the file's declaration when `tray` names a file of the
-config and nothing in scope.
+config and nothing in scope, no service and no builtin type or enum.
+The tree-sitter grammar's scanner takes the element's `.` by the same
+rule (`src/scanner.c`).
 
 `kind [positional] { props; children }` for built-in elements and components
 alike: `text clock.format("%H:%M")`, `Dot ws`, `Toast n { dense: true }`,

@@ -517,6 +517,18 @@ impl Program {
         }
     }
 
+    /// (M6) What a reload matches a component or surface by: a
+    /// component by its file and name (`tray.Row`), shared or not, so a
+    /// name becoming shared (or unique again) keeps its state; a surface
+    /// by its name, which is the config's alone.
+    pub fn owner_key(&self, id: DefId) -> String {
+        let d = self.def(id);
+        match d.kind {
+            DefKind::Component => format!("{}.{}", d.module, d.name),
+            _ => d.name.clone(),
+        }
+    }
+
     /// The read set of `chunk` (empty for an unknown chunk).
     pub fn reads(&self, chunk: ChunkId) -> &Reads {
         static EMPTY: std::sync::LazyLock<Reads> = std::sync::LazyLock::new(Reads::default);

@@ -412,7 +412,8 @@ impl Instance {
             .get(&ident)
             .and_then(Weak::upgrade)
             .and_then(|env| env.component)
-            .map(|c| prog.def(c).name.clone())
+            // (M6) `tray.Row` when another file has a `Row`.
+            .map(|c| prog.owner_name(c))
             .unwrap_or_else(|| self.ctx.module_of(e.file));
         Some(Identity {
             instance_path: instances.iter().map(|(_, i)| format!("[{i}]")).collect(),

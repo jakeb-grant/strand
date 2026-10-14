@@ -823,4 +823,32 @@ fn a_qualified_component_call_is_one_element() {
     let bad = "component A {\n  n.expire()\n}\n";
     assert!(!syntax_errors(bad).is_empty());
     assert!(first_error(&ts_parse(bad)).is_some());
+    // (Review minor 12) The touch rules agree: what follows the name
+    // decides, in both parsers alike.
+    for (line, ok) in [
+        ("n.expire(1)", false),
+        ("n.items[0]", false),
+        ("a.b.c 1", false),
+        ("a.b?.c", false),
+        ("a.b = 1", false),
+        ("a.b += 1", false),
+        ("a.b=1", false),
+        ("a. Row", false),
+        ("a .Row", false),
+        ("tray.Row (1)", true),
+        ("tray.Row [1]", true),
+        ("tray.Row \"x\" == \"y\"", true),
+        ("tray.Row -1", true),
+    ] {
+        let src = format!("bar Top {{\n  {line}\n}}\n");
+        let compiler = syntax_errors(&src).is_empty();
+        let ts = ts_parse(&src);
+        let ts_ok = first_error(&ts).is_none();
+        assert_eq!(
+            (compiler, ts_ok),
+            (ok, ok),
+            "{line}: {}",
+            ts.root_node().to_sexp()
+        );
+    }
 }

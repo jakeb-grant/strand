@@ -418,8 +418,6 @@ pub(crate) struct Checker<'a> {
     /// (M6) Every declaration of each global name, one per file: more
     /// than one only for components, types, enums and `fn`s.
     pub global_decls: HashMap<String, Vec<DefId>>,
-    /// (M6) The uses already reported ambiguous, each once.
-    pub ambiguous_seen: HashSet<(FileId, Span)>,
     /// Each file's top-level `state`/`let`.
     pub file_scopes: Vec<HashMap<String, DefId>>,
     /// File stems, for `file.name`.
@@ -570,7 +568,6 @@ impl<'a> Checker<'a> {
             globals: HashMap::new(),
             module_globals: vec![HashMap::new(); modules.len()],
             global_decls: HashMap::new(),
-            ambiguous_seen: HashSet::new(),
             file_scopes: vec![HashMap::new(); modules.len()],
             file_index: HashMap::new(),
             comp_sigs: HashMap::new(),
@@ -1469,7 +1466,11 @@ impl<'a> Checker<'a> {
                     if let Some(t) = own {
                         return t;
                     }
-                    if let Some(id) = self.global(one, path[0].span) {
+                    let user = match self.global(one, path[0].span, names::Want::Type) {
+                        names::Global::Ambiguous(_) => return Ty::Error,
+                        g => g.one(),
+                    };
+                    if let Some(id) = user {
                         match self.defs[id.0 as usize].kind {
                             DefKind::Enum(e) => {
                                 self.add_ref(path[0].span, Target::Def(id));
@@ -1489,9 +1490,7 @@ impl<'a> Checker<'a> {
                 // (M6) `tray.Item`: the type or enum file `tray` declares
                 // (spec.md 4.2).
                 if let [f, n] = path.as_slice()
-                    && self.lookup_scope(&f.name).is_none()
-                    && !self.globals.contains_key(&f.name)
-                    && let Some(&m) = self.file_index.get(&f.name)
+                    && let Some(m) = self.names_only_a_file(&f.name)
                     && self.module_globals[m].contains_key(&n.name)
                 {
                     match self.qualified(f, n) {

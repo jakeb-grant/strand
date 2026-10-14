@@ -1345,3 +1345,93 @@ fn same_named_components_in_two_files_stay_apart() {
         "{report:?}"
     );
 }
+
+/// (Review major 2) A name that becomes shared (another file declares a
+/// `Row` and an `Item` in a reload) costs the file nobody edited
+/// nothing: `a`'s `Row` keeps its persisted `open` (moved on disk from
+/// `Row.open` to `a.Row.open`) and its plain `hits`, and `a`'s
+/// `state sel: Item?` its value; deleting the other file again moves the
+/// path back. A cold boot reads either path.
+#[test]
+fn a_name_becoming_shared_keeps_the_unedited_files_state() {
+    let dir = std::env::temp_dir().join(format!("strand-reload-shared-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let a = "type Item { n: int }\nstate sel: Item? = null\n\
+component Row {\n  state open = false persist\n  state hits = 0\n  \
+text join(\"\", open ? \"a open \" : \"a shut \", hits) {\n    \
+on click { open = !open; hits = hits + 1; sel = Item(n: 7) }\n  }\n}\n\
+bar A { Row; text sel == null ? \"none\" : join(\"\", \"sel \", sel?.n) }\n";
+    let b = "type Item { m: text }\ncomponent Row {\n  state open = true persist\n  \
+text open ? \"b open\" : \"b shut\"\n}\nbar B { Row }\n";
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let store = storage.persist.clone().unwrap();
+    let on_disk = |path: &str| {
+        assert!(store.sync(Duration::from_secs(5)));
+        store.load(path).unwrap().is_some()
+    };
+    let mut shell = boot_with(&[("a.strand", a)], storage.clone(), &["DP-1"]);
+    let t = shell.scene.find_text("a shut 0").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    shell.at(1.0);
+    assert!(on_disk("Row.open"));
+    let shown = |shell: &Shell| {
+        assert!(shell.scene.find_text("a open 1").is_some(), "Row's cells");
+        assert!(shell.scene.find_text("sel 7").is_some(), "sel");
+    };
+    shown(&shell);
+    // `b.strand` arrives with its own `Row` and `Item`.
+    let (report, _) = shell.reload(&[("a.strand", a), ("b.strand", b)]);
+    shown(&shell);
+    assert!(shell.scene.find_text("b open").is_some());
+    assert!(report.reset.is_empty(), "{report:?}");
+    shell.at(2.0);
+    assert!(on_disk("a.Row.open") && !on_disk("Row.open"));
+    // And goes again.
+    let (report, _) = shell.reload(&[("a.strand", a)]);
+    shown(&shell);
+    assert!(report.reset.is_empty(), "{report:?}");
+    shell.at(3.0);
+    assert!(on_disk("Row.open") && !on_disk("a.Row.open"));
+    drop(shell);
+    // Cold boots: shared, the bare path is read (and moved) when no other
+    // `Row` has an `open`; unique again, the qualified one.
+    let b2 = b
+        .replace("state open = true persist", "state lit = true persist")
+        .replace("open ?", "lit ?");
+    let shell = boot_with(
+        &[("a.strand", a), ("b.strand", &b2)],
+        storage.clone(),
+        &["DP-1"],
+    );
+    assert!(shell.scene.find_text("a open 0").is_some());
+    assert!(on_disk("a.Row.open") && !on_disk("Row.open"));
+    drop(shell);
+    let shell = boot_with(&[("a.strand", a)], storage, &["DP-1"]);
+    assert!(shell.scene.find_text("a open 0").is_some());
+    assert!(on_disk("Row.open") && !on_disk("a.Row.open"));
+    drop(shell);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (Review major 2, the other way) A component or type whose name is
+/// unique, moved to another file, keeps its state as before the same-name
+/// rules: its cells, and values of the type, wherever they are held.
+#[test]
+fn a_unique_component_or_type_moved_to_another_file_keeps_its_state() {
+    let row = "type Item { n: int }\ncomponent Row {\n  state hits = 0\n  \
+text join(\"\", \"hits \", hits) { on click { hits = hits + 1 } }\n}\n";
+    let bar = "state sel: Item? = null\n\
+bar A {\n  Row\n  text sel == null ? \"none\" : join(\"\", \"sel \", sel?.n) { on click { sel = Item(n: 7) } }\n}\n";
+    let mut shell = boot(&[("a.strand", row), ("c.strand", bar)]);
+    for t in ["hits 0", "none"] {
+        let t = shell.scene.find_text(t).unwrap();
+        shell.inst.event(t, "click", Vec::new());
+        shell.flush();
+    }
+
+    let (report, _) = shell.reload(&[("b.strand", row), ("c.strand", bar)]);
+    assert!(shell.scene.find_text("hits 1").is_some(), "{report:?}");
+    assert!(shell.scene.find_text("sel 7").is_some(), "{report:?}");
+    assert!(report.reset.is_empty(), "{report:?}");
+}

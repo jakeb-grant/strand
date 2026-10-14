@@ -38,6 +38,12 @@
 //   elsewhere (after a statement block's `}`) it starts one (`-1 => …`).
 // - Any other operator, `;` or `}` continues the item or separates it
 //   already.
+//
+// It also lexes the `.` of a qualified element (`tray.Row`, grammar.md
+// "Qualified names") where one is valid, as the compiler's parser takes
+// it: touching the word before it and the name after it, and the name
+// not followed by a touching `(`, `[`, `.` or `?.` or by an assignment,
+// which make the line a handler statement (`n.expire()`, `a.b = 1`).
 
 #include "tree_sitter/parser.h"
 
@@ -54,6 +60,7 @@ enum TokenType {
   GROUP_TERM,
   INFIX_MINUS,
   POSTFIX,
+  QUALIFIED_DOT,
 };
 
 // The column just after the last `}` the scanner lexed, plus one (0: none
@@ -244,7 +251,31 @@ bool tree_sitter_strand_external_scanner_scan(void *payload, TSLexer *lexer,
     s->brace_end = 0;
     return !continues(lexer);
   }
+  if (valid_symbols[QUALIFIED_DOT] && !spaced && lexer->lookahead == '.') {
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    if (!is_ident_start(lexer->lookahead)) return false;
+    while (is_ident_char(lexer->lookahead)) lexer->advance(lexer, false);
+    int32_t c = lexer->lookahead;
+    if (c == '(' || c == '[' || c == '.') return false;
+    if (c == '?') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead == '.') return false;
+    } else {
+      while (is_space(lexer->lookahead) || lexer->lookahead == '\n') lexer->advance(lexer, false);
+      c = lexer->lookahead;
+      if (c == '=' || c == '+' || c == '-' || c == '*' || c == '/') {
+        lexer->advance(lexer, false);
+        int32_t d = lexer->lookahead;
+        if (c == '=' ? d != '=' && d != '>' : d == '=') return false;
+      }
+    }
+    lexer->result_symbol = QUALIFIED_DOT;
+    s->brace_end = 0;
+    return true;
+  }
   if (valid_symbols[RBRACE]) {
+
     while (is_space(lexer->lookahead) || lexer->lookahead == '\n') lexer->advance(lexer, true);
     if (lexer->lookahead == '}') {
       lexer->advance(lexer, false);

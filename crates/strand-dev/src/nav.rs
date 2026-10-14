@@ -208,18 +208,25 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
             let others = p.same_named(*d);
             if !others.is_empty() {
                 let stem = |f| p.file_stem(f).unwrap_or("?");
-                let mut also: Vec<String> = others
-                    .iter()
-                    .map(|o| format!("`{}.strand`", stem(p.def(*o).file)))
-                    .collect();
-                also.sort();
+                let mut also: Vec<&str> = others.iter().map(|o| stem(p.def(*o).file)).collect();
+                also.sort_unstable();
                 also.dedup();
+                let mut all = also.clone();
+                all.push(stem(def.file));
+                let own = stem(def.file);
+                // `a.Row`, unless the file's name cannot be written.
+                let named = if strand_compiler::check::names::nameable(&all).contains(&own) {
+                    format!(" (`{own}.{}` from other files)", def.name)
+                } else {
+                    format!(
+                        " (rename `{own}.strand` to an identifier no other file has to name it from other files)"
+                    )
+                };
                 let from = format!(
-                    "From `{}.strand` (`{}`); also declared in {}.",
-                    stem(def.file),
-                    p.qualified_name(*d),
-                    also.join(", ")
+                    "From `{own}.strand`{named}; also declared in {}.",
+                    strand_compiler::check::names::listed(&also)
                 );
+
                 doc = Some(match doc {
                     Some(d) => format!("{from}\n\n{d}"),
                     None => from,

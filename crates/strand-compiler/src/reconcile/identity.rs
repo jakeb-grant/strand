@@ -187,6 +187,10 @@ pub struct Identity {
     by_span: HashMap<(FileId, u32, u32), Sid>,
     next: Sid,
     warnings: Vec<String>,
+    /// (M6) How many files declare each component name: a component
+    /// whose name is unique on both sides keeps its body's identity when
+    /// it moves to another file.
+    components: HashMap<String, usize>,
 }
 
 impl Identity {
@@ -262,7 +266,13 @@ impl Identity {
             self.walk(prog, &f.items, &g);
         }
         for c in prog.components.values() {
-            let g = Group::Component(c.name.clone());
+            // (M6) By file and name: a name becoming shared keeps it
+            // (and a unique one moving to another file, in `inherit`).
+            let g = Group::Component(prog.owner_key(c.def));
+            *self
+                .components
+                .entry(prog.def(c.def).name.clone())
+                .or_default() += 1;
             self.walk(prog, &c.body.nodes, &g);
         }
     }
@@ -388,10 +398,11 @@ impl Identity {
             Some(l) => l.to_string(),
             None => match &e.kind {
                 ElementKind::Builtin(k) => k.name().to_string(),
-                ElementKind::Component(d) => prog
-                    .components
-                    .get(d)
-                    .map_or_else(|| prog.def(*d).name.clone(), |c| c.name.clone()),
+                // The name as written: which file's it is shows in the
+                // component's own group, so a call keeps its identity
+                // when its component moves or its name becomes shared.
+                ElementKind::Component(d) => prog.def(*d).name.clone(),
+
                 ElementKind::Unknown(n) => format!("?{n}"),
                 ElementKind::File(_) => "file".to_string(),
             },
@@ -497,9 +508,35 @@ impl Identity {
                 Group::Child(p, a) => matched[*p].map(|q| Group::Child(q, *a)),
             };
             let Some(cg) = counterpart else { continue };
-            let Some(olds) = old_groups.get(&cg) else {
-                continue;
+            let olds = match old_groups.get(&cg) {
+                Some(o) => o,
+                // A component moved to another file, its name unique
+                // before and after: the old file's body.
+                None => match &cg {
+                    Group::Component(k) => {
+                        let name = k.rsplit_once('.').map_or(k.as_str(), |(_, n)| n);
+                        let unique = |m: &HashMap<String, usize>| m.get(name) == Some(&1);
+                        let moved = (unique(&self.components) && unique(&prev.components))
+                            .then(|| {
+                                old_groups.iter().find_map(|(g, o)| match g {
+                                    Group::Component(ok)
+                                        if ok.rsplit_once('.').map(|(_, n)| n) == Some(name) =>
+                                    {
+                                        Some(o)
+                                    }
+                                    _ => None,
+                                })
+                            })
+                            .flatten();
+                        match moved {
+                            Some(o) => o,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                },
             };
+
             let news = new_groups[k].1.clone();
             // By `id:` name.
             for &i2 in &news {

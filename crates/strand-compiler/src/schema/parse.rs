@@ -952,6 +952,7 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                     name: name.clone(),
                     variants: variants.clone(),
                     origin: Origin::Schema,
+                    home: None,
                 });
             }
             RawItem::Opaque(names) => {

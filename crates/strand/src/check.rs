@@ -195,7 +195,17 @@ fn check_config(
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call
         // site of a parameter whose callers disagree.
-        diags.retain(|d| d.labels.iter().any(|l| Some(l.file) == focus_id));
+        // (M6) A same-name note, and an ambiguous use, are the file's only
+        // where they point: each declaration has its own note, and the
+        // use is fixed where it is written, not where its labels show the
+        // declarations.
+        diags.retain(|d| {
+            if d.severity == strand_compiler::Severity::Note || d.code == "check::ambiguous_name" {
+                d.primary().is_some_and(|l| Some(l.file) == focus_id)
+            } else {
+                d.labels.iter().any(|l| Some(l.file) == focus_id)
+            }
+        });
     }
     // The install's, not a file's: reported whichever file is checked.
     diags.extend(lock_helper(&compiled.parses, helper));
@@ -482,6 +492,24 @@ mod tests {
             ) && r
                 .text
                 .contains("name the file it comes from: `a.Row` or `b.Row`"),
+            "{}",
+            r.text
+        );
+        // (Review minor 14) `strand check a.strand` counts `a`'s own note
+        // only, not `b`'s, which names `a.strand` in a secondary label,
+        // nor `c`'s ambiguous use, which shows `a`'s declaration.
+
+        let r = check_file(
+            &d.0.join("a.strand"),
+            None,
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
+        assert_eq!((r.errors, r.warnings, r.notes), (0, 0, 1), "{}", r.text);
+        assert!(
+            r.text.contains("`Row` is also declared in `b.strand`")
+                && !r.text.contains("`Row` is also declared in `a.strand`"),
             "{}",
             r.text
         );

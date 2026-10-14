@@ -784,18 +784,19 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
         Value::Enum(e, i) => {
             let def = from.enums.get(e.0 as usize)?;
             let variant = def.variants.get(*i as usize)?;
-            let ne = to.find_enum(&def.name)?;
+            let ne = to.same_enum(def)?;
             let ni = to.enum_(ne).variants.iter().position(|x| x == variant)? as u32;
             (Value::Enum(ne, ni), ne != *e || ni != *i)
         }
         Value::EnumType(e) => {
             let def = from.enums.get(e.0 as usize)?;
-            let ne = to.find_enum(&def.name)?;
+            let ne = to.same_enum(def)?;
             (Value::EnumType(ne), ne != *e)
         }
         Value::Record(r) => {
             let def = from.records.get(r.ty.0 as usize)?;
-            let nr = to.find_record(&def.name)?;
+            let nr = to.same_record(def)?;
+
             let ndef = to.record(nr);
             let mut changed = nr != r.ty || ndef.fields.len() != def.fields.len();
             let mut fields = Vec::with_capacity(ndef.fields.len());

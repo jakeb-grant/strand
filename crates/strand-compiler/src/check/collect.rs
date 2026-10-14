@@ -25,6 +25,8 @@ impl<'a> Checker<'a> {
             }
         }
         self.qualify_shared_types();
+        self.same_stem_declarations();
+
         for (id, m, t) in std::mem::take(&mut self.token_blocks) {
             let name = self.defs[id.0 as usize].name.clone();
             let shared = self.global_decls.get(&name).is_some_and(|d| d.len() > 1);
@@ -37,27 +39,72 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// (M6) A type or enum whose name more than one file declares is
-    /// named after its file in the type table (`tray.Item`), as a use
-    /// writes it: messages tell the two apart, and a reload carries a
-    /// value over to the type of the same file and name.
+    /// (M6) Every config `type` and `enum` knows its file and whether
+    /// another file declares its name (`ty::Home`): a shared one is
+    /// shown as `tray.Item`, and a reload matches types by file and name.
     fn qualify_shared_types(&mut self) {
         for (name, decls) in &self.global_decls {
-            if decls.len() < 2 {
-                continue;
-            }
             for d in decls {
                 let def = &self.defs[d.0 as usize];
-                let Some(m) = self.modules.iter().find(|m| m.file == def.file) else {
-                    continue;
-                };
-                let qualified = format!("{}.{name}", m.name);
+                let home = Some(crate::ty::Home {
+                    file: self.stem_of(def.file).to_string(),
+                    shared: decls.len() > 1,
+                });
+                debug_assert_eq!(&def.name, name);
                 match def.kind {
-                    DefKind::Type(r) => self.types.records[r.0 as usize].name = qualified,
-                    DefKind::Enum(e) => self.types.enums[e.0 as usize].name = qualified,
+                    DefKind::Type(r) => self.types.records[r.0 as usize].home = home,
+                    DefKind::Enum(e) => self.types.enums[e.0 as usize].home = home,
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// (M6) Two files of one stem in two directories (`bar/row.strand`,
+    /// `menu/row.strand`) that both declare a shared name: `row.Row`
+    /// could not say which, so that is a load error asking to rename
+    /// one (as two such files exporting is).
+    fn same_stem_declarations(&mut self) {
+        let mut names: Vec<&String> = self.global_decls.keys().collect();
+        names.sort();
+        let mut found = Vec::new();
+        for name in names {
+            let decls = &self.global_decls[name];
+            if decls.len() < 2 {
+                continue;
+            }
+            let mut seen: HashMap<&str, DefId> = HashMap::new();
+            for d in decls {
+                let stem = self.stem_of(self.defs[d.0 as usize].file);
+                match seen.get(stem) {
+                    Some(prev) => found.push((name.clone(), stem, *prev, *d)),
+                    None => {
+                        seen.insert(stem, *d);
+                    }
+                }
+            }
+        }
+        for (name, stem, prev, d) in found {
+            let (pf, ps) = (
+                self.defs[prev.0 as usize].file,
+                self.defs[prev.0 as usize].span,
+            );
+            let (file, span) = (self.defs[d.0 as usize].file, self.defs[d.0 as usize].span);
+            let Some(m) = self.modules.iter().position(|m| m.file == file) else {
+                continue;
+            };
+            let saved = std::mem::replace(&mut self.module, m);
+            self.error(
+                "check::file_name",
+                format!("two files named `{stem}.strand` both declare `{name}`"),
+                span,
+                "declared again in a file of the same name",
+            )
+            .add_secondary(pf, ps, "the other file's")
+            .help = Some(format!(
+                "rename one of the files: `{stem}.{name}` cannot say which one a use means"
+            ));
+            self.module = saved;
         }
     }
 
@@ -146,6 +193,7 @@ impl<'a> Checker<'a> {
                     name: e.name.name.clone(),
                     variants: e.variants.iter().map(|v| v.name.clone()).collect(),
                     origin: user(e.name.span),
+                    home: None,
                 });
                 self.declare_global(
                     &e.name,
@@ -884,7 +932,7 @@ impl<'a> Checker<'a> {
             // Each name as the component's own file reads it (`names.rs`).
             let mut out: Vec<usize> = used
                 .iter()
-                .filter_map(|name| self.global_named(d.module, name))
+                .filter_map(|name| self.global_named(d.module, name, super::names::Want::Component))
                 .filter_map(|def| index.get(&def).copied())
                 .filter(|&i| i != j)
                 .collect();

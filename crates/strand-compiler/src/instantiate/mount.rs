@@ -612,6 +612,12 @@ impl Ctx {
             None => info.module.clone(),
         };
         let path = format!("{owner}{}.{}", env.instance_path(), info.name);
+        // (M6) A reload matches cells by the owner's file and name, which
+        // a component's name becoming shared does not change.
+        let owner_key = match info.owner {
+            Some(o) => prog.owner_key(o),
+            None => info.module.clone(),
+        };
         // The cell a reload keeps: same place in the instance tree, same
         // owner and name. A surface's scope is its own identity already,
         // and its name is its namespace (`strand-<Name>`): renaming it
@@ -623,7 +629,7 @@ impl Ctx {
             .is_some_and(|o| matches!(prog.def(o).kind, crate::hir::DefKind::Surface(_)));
         let key: Rc<str> = match surface_owned {
             true => format!("{scope_key}#.{}", info.name).into(),
-            false => format!("{scope_key}#{owner}.{}", info.name).into(),
+            false => format!("{scope_key}#{owner_key}.{}", info.name).into(),
         };
         // A closed popup's content opening again: its cell, as it was.
         if self.closed.borrow_mut().remove(&key) && self.reopen_cell(rt, s, &key, env, &path) {
@@ -633,10 +639,19 @@ impl Ctx {
         // program, or an older one for a bar parked across reloads).
         let carried = self
             .take_cell(&key)
-            .or_else(|| self.pending.borrow_mut().remove(&key));
+            .or_else(|| self.pending.borrow_mut().remove(&key))
+            .or_else(|| {
+                // (M6) Its component moved here from another file.
+                let o = info.owner.filter(|_| !surface_owned)?;
+                let m = self.moved_from(&prog, o)?;
+                let name = &prog.def(o).name;
+                self.take_cell(&format!("{scope_key}#{m}.{name}.{}", info.name))
+            });
+
         let from = carried.as_ref().map(|c| c.1.clone());
         let carried = carried.map(|c| c.0);
-        let ty = prog.types.show(&info.ty).to_string();
+        // As a reload compares it (`CellTy`).
+        let ty = super::reload::CellTy::of(&prog.types, &info.ty);
         if let StateInit::Settings {
             path: file,
             record,
@@ -674,18 +689,21 @@ impl Ctx {
             None => self.fresh_cell(scope_key.clone(), info.name.clone()),
             Some(rec) => {
                 let (old_ty, why) = match &rec {
-                    CellRec::Plain { ty, .. } | CellRec::Keyed { ty, .. } => (ty.clone(), None),
-                    CellRec::Settings { .. } => (String::new(), Some("now a plain state")),
+                    CellRec::Plain { ty, .. } | CellRec::Keyed { ty, .. } => {
+                        (Some(ty.clone()), None)
+                    }
+                    CellRec::Settings { .. } => (None, Some("now a plain state")),
                 };
                 let why = if s.reset {
                     Some("@reset".to_string())
                 } else if let Some(w) = why {
                     Some(w.to_string())
-                } else if old_ty != ty {
-                    Some(format!("type changed ({old_ty} → {ty})"))
                 } else {
-                    None
+                    old_ty
+                        .filter(|o| !o.same(&ty))
+                        .map(|old_ty| format!("type changed ({old_ty} → {ty})"))
                 };
+
                 match why {
                     Some(why) => {
                         self.report(|r| {
@@ -849,10 +867,22 @@ impl Ctx {
                 // The new cell takes the path over when the old one goes
                 // (core's handover: it continues from the old value).
                 self.handover_path(path.clone());
+                // (M6) Its path changed (its component's name became
+                // shared, or unique again): the old path is forgotten
+                // once the old cell has gone (its last write with it).
+                if let Some(old) = persisted.as_ref().map(|p| p.path().to_string())
+                    && old != path
+                {
+                    self.drop_persisted(old);
+                }
             }
         }
         let (holder, (sig, persisted)) = rt.scope(|rt| match (&self.storage.persist, s.persist) {
             (Some(store), true) => {
+                if let Some((alt, prefer)) = moved_path(&prog, s.def, &env.instance_path()) {
+                    let d = crate::vm::persist::encode_bytes(&prog.types, &info.ty, &default);
+                    migrate_persisted(store, &path, &alt, &d, prefer);
+                }
                 let (pe, pd) = (prog.clone(), prog.clone());
                 let (te, td) = (info.ty.clone(), info.ty.clone());
                 let cell = Rc::new(rt.persisted(
@@ -878,6 +908,7 @@ impl Ctx {
                 {
                     let _ = cell.signal.set(rt, v.clone());
                 }
+
                 let sig = cell.signal;
                 // Kept for `@reset` (and the reconciler's `redeclare`).
                 self.persisted
@@ -1081,7 +1112,7 @@ impl Ctx {
                 .map(|(name, ty, default)| {
                     let (pd, pe) = (prog.clone(), prog.clone());
                     let (td, te) = (ty.clone(), ty.clone());
-                    let shown = prog.types.show(&ty).to_string();
+                    let shown = prog.types.stable(&ty).to_string();
                     strand_core::FieldSpec::new(
                         name,
                         default,
@@ -1350,7 +1381,7 @@ impl Ctx {
         };
         let what = match (&e.kind, env.component) {
             (ElementKind::Component(_), _) | (_, None) => what,
-            (_, Some(c)) => format!("{what} in component `{}`", self.vm.prog.def(c).name),
+            (_, Some(c)) => format!("{what} in component `{}`", self.vm.prog.owner_name(c)),
         };
         if let Some(d) = runaway {
             self.runaway.borrow_mut().insert(d);
@@ -3905,6 +3936,67 @@ impl super::Instance {
         });
         if copy { at.saturating_sub(1) } else { at }
     }
+}
+
+/// (M6, spec.md 4.2) The other path a component's persisted `state`
+/// `def` may be stored under: while the component's name is shared it
+/// is stored as `a.Row.open`, and the bare `Row.open` it had while
+/// unique is read once (when no other file's `Row` has a `state open`,
+/// which could own it); while unique it is stored as `Row.open`, and
+/// `a.Row.open`, from a time it was shared, wins (it is the newer).
+/// The `bool` is whether the other path wins over a value already
+/// stored. `None` for a state outside a component.
+fn moved_path(prog: &crate::lower::Program, def: DefId, inst: &str) -> Option<(String, bool)> {
+    let info = prog.def(def);
+    let o = info.owner?;
+    let comp = prog.def(o);
+    if comp.kind != crate::hir::DefKind::Component {
+        return None;
+    }
+    if prog.owner_name(o) == comp.name {
+        return Some((
+            format!("{}.{}{inst}.{}", comp.module, comp.name, info.name),
+            true,
+        ));
+    }
+    let others = prog.defs.iter().any(|x| {
+        x.name == info.name
+            && x.owner.is_some_and(|xo| {
+                xo != o
+                    && prog.def(xo).kind == crate::hir::DefKind::Component
+                    && prog.def(xo).name == comp.name
+            })
+    });
+    (!others).then(|| (format!("{}{inst}.{}", comp.name, info.name), false))
+}
+
+/// Moves a persisted value from `alt` to `path` (see [`moved_path`]):
+/// when nothing is stored at `path`, or `prefer`. A value equal to the
+/// default it was saved under is not carried (a new default would be
+/// adopted for it); one that differs is kept, stamped with today's
+/// `default`. `alt` is forgotten either way, so a stale copy never comes
+/// back. Best effort: a store that cannot be read or written keeps both.
+fn migrate_persisted(
+    store: &strand_core::persist::PersistStore,
+    path: &str,
+    alt: &str,
+    default: &[u8],
+    prefer: bool,
+) {
+    if store.is_read_only() || path == alt {
+        return;
+    }
+    let Ok(Some(old)) = store.load(alt) else {
+        return;
+    };
+    let here = matches!(store.load(path), Ok(Some(_)));
+    if (prefer || !here)
+        && strand_core::persist::value_hash(&old.value) != old.default_hash
+        && store.save(path, default, &old.value).is_err()
+    {
+        return;
+    }
+    let _ = store.remove(alt);
 }
 
 /// A type's name as drag and drop matches it: the checker's display

@@ -10,7 +10,7 @@ use lsp_types::{
     MarkupKind, Range, TextEdit,
 };
 use strand_compiler::FileId;
-use strand_compiler::hir::{Callee, DefKind, ExprKind, Program, Target};
+use strand_compiler::hir::{Callee, DefId, DefKind, ExprKind, Program, Target};
 use strand_compiler::schema::{self, DocKey, MemberKind, Schema};
 use strand_compiler::ty::{Ty, TypeTable};
 
@@ -455,15 +455,18 @@ impl<'a> Completer<'a> {
                 props_only,
                 sub_of,
             } => {
+                let called = element
+                    .as_deref()
+                    .and_then(|el| self.call_def(el, cx.call.as_ref()));
                 if let Some(el) = element {
-                    self.props(el, sub_of.as_deref(), range);
+                    self.props(el, called, sub_of.as_deref(), range);
                 }
                 if *props_only {
                     return;
                 }
                 // A component call's block holds its parameters, and
                 // children only if the component has a `slot`.
-                let call = element.as_deref().and_then(|el| self.call_slot(el));
+                let call = element.as_deref().and_then(|el| self.call_slot(el, called));
                 if call == Some(false) {
                     return;
                 }
@@ -498,41 +501,121 @@ impl<'a> Completer<'a> {
                         "1",
                     );
                 }
+                // (M6) Each component as this file names it (spec.md
+                // 4.2): bare when the file has its own or it is the only
+                // one, else `tray.Row` for each file's.
                 let p = self.program();
-                for d in &p.defs {
-                    if d.kind == DefKind::Component {
-                        let detail = describe::def(self.an, d);
-                        let doc = describe::def_doc(self.an, d.file, d.span);
-                        self.push(
-                            d.name.clone(),
-                            CompletionItemKind::MODULE,
-                            Some(detail),
-                            doc.as_deref(),
-                            edit(&d.name),
-                            "1",
-                        );
+                for (i, d) in p.defs.iter().enumerate() {
+                    if d.kind != DefKind::Component || d.owner.is_some() {
+                        continue;
                     }
+                    let Some(written) = self.as_written(DefId(i as u32)) else {
+                        continue;
+                    };
+                    let detail = describe::def(self.an, d);
+                    let doc = describe::def_doc(self.an, d.file, d.span);
+                    self.push(
+                        written.clone(),
+                        CompletionItemKind::MODULE,
+                        Some(detail),
+                        doc.as_deref(),
+                        edit(&written),
+                        "1",
+                    );
                 }
             }
         }
     }
 
-    /// For a component's name (not a schema element), whether the
-    /// component has a `slot`.
-    fn call_slot(&self, name: &str) -> Option<bool> {
+    /// (M6) How this file writes a call of component `d` (spec.md 4.2):
+    /// `Row` when the file declares its own `Row` and `d` is it, or `d`
+    /// is the only `Row`; `tray.Row` when a bare `Row` here means another
+    /// (or none); `None` when its file's name cannot be written.
+    fn as_written(&self, d: DefId) -> Option<String> {
+        let p = self.program();
+        let def = p.def(d);
+        let same: Vec<DefId> = p
+            .defs
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| {
+                o.kind == DefKind::Component && o.owner.is_none() && o.name == def.name
+            })
+            .map(|(i, _)| DefId(i as u32))
+            .collect();
+        let own = same.iter().copied().find(|o| p.def(*o).file == self.file);
+        let bare = match own {
+            Some(o) => o == d,
+            None => same.len() == 1,
+        };
+        if bare {
+            return Some(def.name.clone());
+        }
+        let stems: Vec<&str> = same
+            .iter()
+            .map(|o| p.file_stem(p.def(*o).file).unwrap_or("?"))
+            .collect();
+        let stem = p.file_stem(def.file)?;
+        strand_compiler::check::names::nameable(&stems)
+            .contains(&stem)
+            .then(|| format!("{stem}.{}", def.name))
+    }
+
+    /// (M6) The component an element of kind `name` in this file calls:
+    /// what the checker resolved at the call (`call`, its kind's span),
+    /// else, for text that did not check, by the same rules: `tray.Row`
+    /// is `tray`'s, a bare `Row` this file's own or the only one.
+    fn call_def(&self, name: &str, call: Option<&ctx::Call>) -> Option<DefId> {
         if self.schema.element(name).is_some() {
             return None;
         }
         let p = self.program();
-        let id = p
+        if let Some(c) = call
+            && let Some(d) = p.refs.iter().find_map(|r| match r.target {
+                Target::Def(d)
+                    if r.file == self.file
+                        && r.span == c.span
+                        && p.def(d).kind == DefKind::Component =>
+                {
+                    Some(d)
+                }
+                _ => None,
+            })
+        {
+            return Some(d);
+        }
+        let same: Vec<DefId> = p
             .defs
             .iter()
-            .position(|d| d.kind == DefKind::Component && d.name == name)?;
-        walk::component(p, strand_compiler::hir::DefId(id as u32)).map(|c| c.has_slot)
+            .enumerate()
+            .filter(|(_, o)| o.kind == DefKind::Component && o.owner.is_none() && o.name == name)
+            .map(|(i, _)| DefId(i as u32))
+            .collect();
+        if let Some(q) = call.and_then(|c| c.qual.as_deref()) {
+            return same
+                .into_iter()
+                .find(|o| p.file_stem(p.def(*o).file) == Some(q));
+        }
+        if let Some(own) = same.iter().copied().find(|o| p.def(*o).file == self.file) {
+            return Some(own);
+        }
+        match same.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
     }
 
-    /// Props an element (or a component call) takes.
-    fn props(&mut self, element: &str, sub_of: Option<&str>, range: Range) {
+    /// For a component call (`called`, not a schema element), whether the
+    /// component has a `slot`.
+    fn call_slot(&self, name: &str, called: Option<DefId>) -> Option<bool> {
+        if self.schema.element(name).is_some() {
+            return None;
+        }
+        walk::component(self.program(), called?).map(|c| c.has_slot)
+    }
+
+    /// Props an element (or a component call, `called`) takes.
+    fn props(&mut self, element: &str, called: Option<DefId>, sub_of: Option<&str>, range: Range) {
         let types = self.types();
         if let Some(el) = self.schema.element(element) {
             let props = match sub_of {
@@ -563,14 +646,10 @@ impl<'a> Completer<'a> {
             return;
         }
         let p = self.program();
-        let Some(id) = p
-            .defs
-            .iter()
-            .position(|d| d.kind == DefKind::Component && d.name == element)
-        else {
+        let Some(id) = called else {
             return;
         };
-        if let Some(c) = walk::component(p, strand_compiler::hir::DefId(id as u32)) {
+        if let Some(c) = walk::component(p, id) {
             for q in &c.params {
                 let l = p.local(q.local);
                 let detail = format!("{}: {}", l.name, describe::ty(types, &l.ty));

@@ -40,6 +40,36 @@ use crate::syntax::Span;
 use crate::vm::value::{NodeState, Value};
 use crate::vm::{Env, SettingsSlot};
 
+/// (M6) A cell's type as a reload compares it: kept when either form
+/// is unchanged. `stable` names every config type with its file, so a
+/// name becoming shared (or unique again) changes nothing; `shown` names
+/// a unique one bare, so a type moved to another file with its name
+/// unique on both sides changes nothing either.
+#[derive(Clone, Debug)]
+pub(crate) struct CellTy {
+    stable: String,
+    shown: String,
+}
+
+impl CellTy {
+    pub(crate) fn of(types: &crate::ty::TypeTable, ty: &crate::ty::Ty) -> Self {
+        Self {
+            stable: types.stable(ty).to_string(),
+            shown: types.show(ty).to_string(),
+        }
+    }
+
+    pub(crate) fn same(&self, other: &CellTy) -> bool {
+        self.stable == other.stable || self.shown == other.shown
+    }
+}
+
+impl std::fmt::Display for CellTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.shown)
+    }
+}
+
 /// A state cell as a reload finds it.
 pub(crate) enum CellRec {
     /// A `state` (persisted or not): its holder scope owns the cell.
@@ -48,7 +78,7 @@ pub(crate) enum CellRec {
         sig: strand_core::Signal<Value>,
         persisted: Option<Rc<strand_core::Persisted<Value>>>,
         default: Value,
-        ty: String,
+        ty: CellTy,
         path: String,
     },
     /// A keyed list `state`: the items carry over (into a new
@@ -58,7 +88,7 @@ pub(crate) enum CellRec {
         keyed: strand_core::KeyedSignal<crate::vm::value::ValueKey, Value>,
         list: strand_core::Memo<Value>,
         default: Value,
-        ty: String,
+        ty: CellTy,
         path: String,
     },
     /// A settings file: the handle is kept and redeclared.
@@ -149,6 +179,10 @@ pub(crate) struct Carry {
     /// Persisted paths handed from an old cell to a new one: their
     /// "path in use" diagnostic is the handover, not a mistake.
     pub handover: Vec<String>,
+    /// (M6) Persisted paths a kept cell left for a new one (its
+    /// component's name became shared, or unique again): removed after
+    /// the old instance goes.
+    pub dropped: Vec<String>,
     /// Surfaces the new instance mounted: their scope ident (a bar's:
     /// the prefix of its per-monitor idents) and whether it is a bar.
     pub surfaces: Vec<(Rc<str>, bool)>,
@@ -307,6 +341,27 @@ impl Ctx {
         Some((rec, c.old_prog.clone()))
     }
 
+    /// (M6) The file component `c` of `prog` was declared in by the old
+    /// program, when it moved there from another file with its name
+    /// unique before and after: its cells are found under that file's
+    /// key.
+    pub(crate) fn moved_from(&self, prog: &Program, c: crate::hir::DefId) -> Option<String> {
+        let carry = self.carry.borrow();
+        let old = &carry.as_ref()?.old_prog;
+        let def = prog.def(c);
+        let one = |p: &Program| {
+            let mut it = p.defs.iter().filter(|d| {
+                d.kind == crate::hir::DefKind::Component && d.owner.is_none() && d.name == def.name
+            });
+            let first = it.next();
+            first
+                .filter(|_| it.next().is_none())
+                .map(|d| d.module.clone())
+        };
+        one(prog)?;
+        one(old).filter(|m| *m != def.module)
+    }
+
     /// A bar under `ident` mounts `n` instances in this reload (its
     /// monitor list as first computed).
     pub(crate) fn bar_instances(&self, ident: &str, n: usize) {
@@ -405,6 +460,12 @@ impl Ctx {
     pub(crate) fn handover_path(&self, path: String) {
         if let Some(c) = self.carry.borrow_mut().as_mut() {
             c.handover.push(path);
+        }
+    }
+
+    pub(crate) fn drop_persisted(&self, path: String) {
+        if let Some(c) = self.carry.borrow_mut().as_mut() {
+            c.dropped.push(path);
         }
     }
 

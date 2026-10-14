@@ -801,6 +801,22 @@ impl<'a> Checker<'a> {
         let kind = el.kind.name.as_str();
         // (M6) `tray.Row e { … }`: the component file `tray` declares.
         if let Some(q) = &el.qual {
+            // `n.expire 3`, `svc.x 1`: a name in scope, a service or a
+            // value before the `.` is a statement in the wrong place, as
+            // the parser says of `n.expire()`.
+            if self.names_only_a_file(&q.name).is_none()
+                && (self.file_index.contains_key(&q.name) || self.names_something(&q.name))
+            {
+                let dot = Span::new(q.span.end, q.span.end + 1);
+                self.error(
+                    "syntax::expected",
+                    "expected `;` or a line break after this element, found `.`",
+                    dot,
+                    "expected `;` or a line break after this element",
+                )
+                .help = Some("statements go inside a handler: `on click { … }`".into());
+                return None;
+            }
             return match self.qualified(q, &el.kind) {
                 super::names::Qualified::Found(d)
                     if self.defs[d.0 as usize].kind == DefKind::Component =>
@@ -844,7 +860,11 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn other_element(&mut self, el: &'a ast::Element, span: Span) -> Option<Node> {
         let kind = el.kind.name.as_str();
-        if let Some(d) = self.global(kind, el.kind.span) {
+        let user = match self.global(kind, el.kind.span, super::names::Want::Component) {
+            super::names::Global::Ambiguous(_) => return None,
+            g => g.one(),
+        };
+        if let Some(d) = user {
             match self.defs[d.0 as usize].kind {
                 DefKind::Component => return Some(self.component_call(d, el, span)),
                 DefKind::Surface(_) => {
@@ -1308,7 +1328,7 @@ impl<'a> Checker<'a> {
                 .modules
                 .iter()
                 .position(|m| m.file == self.defs[def.0 as usize].file)?;
-            def = match self.global_named(module, &root) {
+            def = match self.global_named(module, &root, super::names::Want::Component) {
                 Some(g) if matches!(self.defs[g.0 as usize].kind, hir::DefKind::Component) => g,
                 _ => return None,
             };

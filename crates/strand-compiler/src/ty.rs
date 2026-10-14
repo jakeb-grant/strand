@@ -402,6 +402,32 @@ pub struct RecordDef {
     pub handle: bool,
     pub origin: Origin,
     pub doc: Option<String>,
+    /// (M6) A config `type`'s file (spec.md 4.2).
+    pub home: Option<Home>,
+}
+
+fn home_file(h: &Option<Home>) -> Option<&str> {
+    h.as_ref().map(|h| h.file.as_str())
+}
+
+/// (M6) Two types of one name are one across a reload when declared in
+/// the same file, or when neither is shared: a type moved to another
+/// file with its name unique keeps its values, as before.
+fn same_home(a: &Option<Home>, b: &Option<Home>) -> bool {
+    let shared = |h: &Option<Home>| h.as_ref().is_some_and(|h| h.shared);
+    home_file(a) == home_file(b) || !shared(a) && !shared(b)
+}
+
+/// (M6, spec.md 4.2) The file a config `type` or `enum` is declared in,
+/// and whether another file declares one of the same name: a shared
+/// one is shown as `file.Name`, and a reload matches old and new types
+/// by file and name, so a type becoming shared (or unique again) keeps
+/// its values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Home {
+    /// The file's stem.
+    pub file: String,
+    pub shared: bool,
 }
 
 impl RecordDef {
@@ -415,6 +441,7 @@ impl RecordDef {
             handle: false,
             origin,
             doc: None,
+            home: None,
         }
     }
 
@@ -444,6 +471,8 @@ pub struct EnumDef {
     pub name: String,
     pub variants: Vec<String>,
     pub origin: Origin,
+    /// (M6) A config `enum`'s file (spec.md 4.2).
+    pub home: Option<Home>,
 }
 
 impl EnumDef {
@@ -507,6 +536,23 @@ impl TypeTable {
         self.enums
             .iter()
             .rposition(|e| e.name == name)
+            .map(|i| EnumId(i as u32))
+    }
+
+    /// (M6) The record of this table that is `def` of another table: a
+    /// config `type` by its file and name, a schema record by its name.
+    pub fn same_record(&self, def: &RecordDef) -> Option<RecordId> {
+        self.records
+            .iter()
+            .rposition(|r| r.name == def.name && same_home(&r.home, &def.home))
+            .map(|i| RecordId(i as u32))
+    }
+
+    /// (M6) [`TypeTable::same_record`] for enums.
+    pub fn same_enum(&self, def: &EnumDef) -> Option<EnumId> {
+        self.enums
+            .iter()
+            .rposition(|e| e.name == def.name && same_home(&e.home, &def.home))
             .map(|i| EnumId(i as u32))
     }
 
@@ -582,7 +628,22 @@ impl TypeTable {
 
     /// Displays a type with record and enum names.
     pub fn show<'a>(&'a self, ty: &'a Ty) -> ShowTy<'a> {
-        ShowTy { table: self, ty }
+        ShowTy {
+            table: self,
+            ty,
+            stable: false,
+        }
+    }
+
+    /// (M6) A type as a reload compares it: every config `type` and
+    /// `enum` named with its file (`tray.Item`), shared or not, so a
+    /// name becoming shared changes nothing.
+    pub fn stable<'a>(&'a self, ty: &'a Ty) -> ShowTy<'a> {
+        ShowTy {
+            table: self,
+            ty,
+            stable: true,
+        }
     }
 
     /// The type of the field path `path` inside record `rec`, if every
@@ -604,11 +665,22 @@ impl TypeTable {
 pub struct ShowTy<'a> {
     table: &'a TypeTable,
     ty: &'a Ty,
+    stable: bool,
 }
 
 impl fmt::Display for ShowTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let show = |ty| self.table.show(ty);
+        let stable = self.stable;
+        let show = |ty| ShowTy {
+            table: self.table,
+            ty,
+            stable,
+        };
+        // (M6) A config type another file declares too: `tray.Item`.
+        let homed = |f: &mut fmt::Formatter<'_>, name: &str, home: &Option<Home>| match home {
+            Some(h) if h.shared || stable => write!(f, "{}.{name}", h.file),
+            _ => Ok(()),
+        };
         // A schema type the config hides with its own `type`/`enum` of
         // the same name: `builtin Align`, so "expects `builtin Align`,
         // found `Align`" never reads as a contradiction.
@@ -629,17 +701,27 @@ impl fmt::Display for ShowTy<'_> {
             Ty::Opaque(n) => named(f, n, true),
             Ty::Enum(e) => {
                 let e = self.table.enum_(*e);
+                if e.home.as_ref().is_some_and(|h| h.shared || stable) {
+                    return homed(f, &e.name, &e.home);
+                }
                 named(f, &e.name, schema(&e.origin))
             }
             Ty::EnumType(e) => {
                 let e = self.table.enum_(*e);
                 f.write_str("enum ")?;
+                if e.home.as_ref().is_some_and(|h| h.shared || stable) {
+                    return homed(f, &e.name, &e.home);
+                }
                 named(f, &e.name, schema(&e.origin))
             }
             Ty::Record(r) => {
                 let r = self.table.record(*r);
+                if r.home.as_ref().is_some_and(|h| h.shared || stable) {
+                    return homed(f, &r.name, &r.home);
+                }
                 named(f, &r.name, schema(&r.origin))
             }
+
             Ty::List(t, _) => write!(f, "[{}]", show(t)),
             Ty::Optional(t) => match &**t {
                 Ty::Fn(_) | Ty::Union(_) => write!(f, "({})?", show(t)),

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use super::names::{Global, Want};
 use super::{Binding, Checker, NODE_BOOLS};
 use crate::diagnostic::suggest;
 use crate::hir::{self, CallArg, Callee, DefId, DefKind, ExprKind, LocalKind, Target};
@@ -422,18 +423,27 @@ impl<'a> Checker<'a> {
     }
 
     /// (M6) Whether `name`, read as `name.x`, can only be a file: no
-    /// binding, global, builtin service or value has that name
-    /// (spec.md 4.2).
-    fn names_only_a_file(&self, name: &str) -> Option<usize> {
+    /// binding, global, builtin service, value or type has that name
+    /// (spec.md 4.2), so a file `Edge.strand` never changes `Edge.top`.
+    pub(super) fn names_only_a_file(&self, name: &str) -> Option<usize> {
         if self.lookup_scope(name).is_some()
             || self.file_scopes[self.module].contains_key(name)
             || self.globals.contains_key(name)
             || self.schema.services.contains_key(name)
             || self.schema.values.contains_key(name)
+            || self.schema.named_type(name).is_some()
         {
             return None;
         }
         self.file_index.get(name).copied()
+    }
+
+    /// Whether a declaration of the config claims `name` at a position
+    /// that accepts `want`, hiding a builtin of that name: a name
+    /// declared once always does, as before; a name declared in several
+    /// files only through a declaration of an accepted kind.
+    pub(super) fn claims(&self, name: &str, want: Want) -> bool {
+        !matches!(self.global_in(self.module, name, want), Global::Missing)
     }
 
     /// (M6) `tray.Name` where file `tray` declares a component, type,
@@ -495,8 +505,10 @@ impl<'a> Checker<'a> {
         if let Some(&d) = self.file_scopes[self.module].get(name) {
             return self.binding_expr(Binding::Def(d), span);
         }
-        if let Some(d) = self.global(name, span) {
-            return self.global_value(d, name, span);
+        match self.global(name, span, Want::Value) {
+            Global::One(d) => return self.global_value(d, name, span),
+            Global::Ambiguous(_) => return hir::Expr::error(span),
+            Global::Missing => {}
         }
         if let Some(&rec) = self.schema.services.get(name) {
             self.add_ref(span, Target::Service(name.to_string()));
@@ -831,14 +843,18 @@ impl<'a> Checker<'a> {
                 };
             }
             // `Look.dark`.
-            if let Some(d) = self.global(&b.name, b.span)
-                && let DefKind::Enum(e) = self.defs[d.0 as usize].kind
-            {
-                self.add_ref(b.span, Target::Def(d));
-                return self.variant_of(e, name, span);
+            match self.global(&b.name, b.span, Want::Enum) {
+                Global::One(d) => {
+                    if let DefKind::Enum(e) = self.defs[d.0 as usize].kind {
+                        self.add_ref(b.span, Target::Def(d));
+                        return self.variant_of(e, name, span);
+                    }
+                }
+                Global::Ambiguous(_) => return hir::Expr::error(span),
+                Global::Missing => {}
             }
             if let Some(e) = self.schema.types.find_enum(&b.name)
-                && !self.globals.contains_key(&b.name)
+                && !self.claims(&b.name, Want::Enum)
             {
                 return self.variant_of(e, name, span);
             }
@@ -1372,10 +1388,19 @@ impl<'a> Checker<'a> {
             }
             return self.call_value(f, args, span);
         }
-        if let Some(d) = self.global(name, id.span)
-            && let Some(e) = self.call_def(d, id, args, span)
-        {
-            return e;
+        match self.global(name, id.span, Want::Call) {
+            Global::One(d) => {
+                if let Some(e) = self.call_def(d, id, args, span) {
+                    return e;
+                }
+            }
+            Global::Ambiguous(_) => {
+                for a in args {
+                    self.expr(&a.value, None);
+                }
+                return hir::Expr::error(span);
+            }
+            Global::Missing => {}
         }
         if let Some(sigs) = self.schema.functions.get(name) {
             self.add_ref(id.span, Target::Builtin(name.to_string()));
@@ -2764,13 +2789,17 @@ impl<'a> Checker<'a> {
                         (e, v)
                     }
                     [en, v] => {
-                        let e = self
-                            .global(&en.name, en.span)
+                        let user = match self.global(&en.name, en.span, Want::Enum) {
+                            Global::Ambiguous(_) => return hir::Pattern::Error,
+                            g => g.one(),
+                        };
+                        let e = user
                             .and_then(|d| match self.defs[d.0 as usize].kind {
                                 DefKind::Enum(e) => Some(e),
                                 _ => None,
                             })
                             .or_else(|| self.schema.types.find_enum(&en.name));
+
                         if e.is_none() {
                             self.error(
                                 "check::unknown_type",

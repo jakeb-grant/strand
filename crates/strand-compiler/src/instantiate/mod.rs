@@ -1148,6 +1148,7 @@ impl Instance {
             scopes: Default::default(),
             fresh: Vec::new(),
             handover: Vec::new(),
+            dropped: Vec::new(),
             surfaces: Vec::new(),
             single_bars: Default::default(),
         });
@@ -1273,6 +1274,14 @@ impl Instance {
             rt.dispose(p.id());
         }
         old.em.borrow_mut().ops.clear();
+        // Removing replaces the old cells' last writes, queued above.
+        if let Some(store) = &ctx.storage.persist
+            && !store.is_read_only()
+        {
+            for path in carry.dropped.drain(..) {
+                let _ = store.remove(&path);
+            }
+        }
         for w in build.identity.warnings() {
             report.notices.push(w.clone());
             report.ambiguous.push(w.clone());

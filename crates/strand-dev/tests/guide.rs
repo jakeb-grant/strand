@@ -870,3 +870,33 @@ fn the_guide_states_the_pairs_rule() {
         assert!(page.contains(said), "level-5.md no longer says: {said}");
     }
 }
+
+/// (Review minor 13) Level 2's "same name in two files" paragraph quotes
+/// the compiler's error and help as they are, and its token path reads
+/// as it says.
+#[test]
+fn the_guide_quotes_the_same_name_error() {
+    let item = |s: &str| {
+        format!("component Item tokens {{ gap: 4 }} {{ text \"{s}\" {{ margin: $Item.gap }} }}\n")
+    };
+    let mut map = SourceMap::new();
+    map.add("dot.strand", item("d"));
+    map.add("tray.strand", item("t"));
+    map.add(
+        "bar.strand",
+        "bar B { Item; text \"x\" { margin: $dot.Item.gap } }\n",
+    );
+    let out = strand_compiler::compile(&map);
+    let d: Vec<_> = out.diagnostics.iter().collect();
+    assert_eq!(
+        d.len(),
+        1,
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    let page = std::fs::read_to_string(guide::root().join("docs/guide/level-2.md")).unwrap();
+    let error = format!("× {}", d[0].message);
+    let help = format!("help: {}", d[0].help.as_deref().unwrap());
+    assert!(page.contains(&error), "level-2.md does not quote: {error}");
+    assert!(page.contains(&help), "level-2.md does not quote: {help}");
+}
