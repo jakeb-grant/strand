@@ -132,27 +132,42 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    `crates/strand/tests/hover_popups.rs::the_travelling_island_stays_on_its_output_at_the_right_edge`
    on 1920- and 2560-wide outputs); decisions.md m6-owner-fixes. The
    config is right.
-7. **Moving quickly between tray items, the old island flickers.**
-   (2026-10-14, Hyprland) "When I move quickly the new tray opens and
-   then the old one flickers just a bit", e.g. Slack to Spotify; each
-   tray icon has its own `popup { trigger: hover; delay: 100ms; enter
-   { opacity: 0; scale: 0.9 } … }`.
-   **Diagnosed; a remedy proposed.** On headless sway the old island
-   draws nothing new and never reopens: it plays its exit (its
-   `enter` mirrored, about 250 ms) while the new one enters, a
-   cross-fade with a frame or two where both are faint
-   (`crates/strand/tests/hover_popups.rs::a_hover_hand_off_draws_nothing_new_on_the_old_island`).
-   Hyprland adds its own popup fades on top: the new popup fades in
-   and a snapshot of the old one fades out after it unmaps, each with
-   `fadePopupsIn`/`fadePopupsOut`, which inherit the owner's `fade`
-   (about 300 ms). Remedies: turn off Hyprland's `fadePopups` (the
-   owner's `hyprland.lua`), or draw the tray as one travelling island
-   (one popup over the tray that never unmaps), as Quickshell does.
-   **Proposed, for the owner's ruling:** a hand-off between `trigger:
-   hover` popups of one surface swaps them without the old one's
-   `exit` or the new one's `enter` (as tooltips stay warm), which
-   changes spec.md 6.3's "its `enter` and `exit` poses play as it
-   opens and closes"; decisions.md m6-owner-fixes.
+7. **A tray menu flickers back after it has gone.** (2026-10-14,
+   Hyprland) First "when I move quickly the new tray opens and then the
+   old one flickers just a bit"; then precisely: "I swap hover from
+   slack to calendar, but while the calendar is up and the slack has
+   disappeared, the slack popup just flickers in and out once
+   briefly". The Slack menu is a tray icon's own `popup { trigger:
+   hover; delay: 100ms; enter { opacity: 0; scale: 0.9 } … }`, the
+   calendar the status group's travelling island.
+   **Fixed, pending the owner's verification on Hyprland.** Strand's:
+   the closing popup's exit is handed to Hyprland as an alpha
+   multiplier (the alpha modifier). The frame that ended the exit
+   also dropped the content kept for it, and that cleared the
+   renderer's cached frame, whose pose the surface manager reads
+   right after the paint (`commit.rs`). It then found no pose and sent
+   the rest pose (multiplier 1) with that frame's commit, the last
+   the popup got before it was destroyed. Hyprland applied it (a
+   commit applies the multiplier) and, unmapping the popup, faded a
+   snapshot of it out at full opacity with `fadePopupsOut` (the
+   owner's `fade`, about 300 ms; `src/desktop/view/Popup.cpp:270-278`,
+   `src/render/Renderer.cpp:3171`): the whole menu back, fading out.
+   Now the pose sent is the one the painted frame took, kept apart
+   from the cache, so the last commit carries the exit's last pose
+   (faded out)
+   (`crates/strand-render/tests/surface_poses.rs::a_closing_popups_last_frame_keeps_its_exit_pose`,
+   which failed before: its last frame reported no pose). Every
+   delegated closing pose whose content unmounts on close had it, so
+   any hover or click popup, and a panel, closing on Hyprland. Sway
+   1.9 has no alpha modifier: the exit is painted there and it never
+   showed. On headless sway, the other suspects are ruled out: the
+   menu is not opened again, its surface is made once and goes once,
+   and it draws nothing after its exit
+   (`crates/strand/tests/hover_popups.rs::a_tray_menu_left_for_the_island_goes_once`,
+   `::a_hover_hand_off_draws_nothing_new_on_the_old_island`). The
+   first reading, the islands' cross-fade under Hyprland's popup
+   fades, was not it; that proposal is withdrawn. decisions.md
+   m6-owner-fixes. The config is right.
 
 ## Capability gaps
 

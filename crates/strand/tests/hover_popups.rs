@@ -68,6 +68,7 @@ const ITEM_A: [u8; 3] = [0xff, 0x00, 0x00];
 const ITEM_B: [u8; 3] = [0x00, 0x00, 0xff];
 const ISLAND_A: [u8; 3] = [0x00, 0xff, 0x00];
 const ISLAND_B: [u8; 3] = [0x00, 0xff, 0xff];
+const YELLOW: [u8; 3] = [0xff, 0xff, 0x00];
 
 /// The owner's pattern (target/try/qs/strand/shell.strand): one island
 /// at a time, chosen by which item is hovered, closing 200 ms after the
@@ -798,6 +799,125 @@ fn a_hover_hand_off_draws_nothing_new_on_the_old_island() {
     let gone = log.lines().filter(|l| l.contains(" detached")).count();
     assert_eq!(made.len(), 3, "the bar, a's island, b's island: {made:?}");
     assert_eq!(gone, 1, "a's island went once\n{log}");
+}
+
+/// (owner-testing.md bug 7) A tray item's menu (its own `trigger:
+/// hover` popup, yellow) beside the status group's travelling island
+/// (`TRAVEL`'s, its card green), each with the test config's `enter`
+/// pose: the pointer goes from the tray item to the clock (`a`).
+const TRAY_TO_ISLAND: &str = r#"
+bar Top {
+  edge: top; height: 36; margin: 4, 4, 0; radius: 16
+  bg: #303030; shadow: 0 6px 24px #000000
+  split { pad: 4
+    end { gap: 4
+      Tray
+      Status
+    }
+  }
+}
+
+component Tray {
+  box { size: 28; bg: #0000ff
+    popup { id: menu; trigger: hover; delay: 100ms; margin: 8, 0, 0
+      enter { opacity: 0; scale: 0.9 }
+      box { width: 200; height: 120; radius: 20; bg: #ffff00; shadow: 0 6px 24px #000000 }
+    }
+  }
+}
+
+component Status {
+  state at = "a"
+  let over = a.hover ? "a" : c.hover ? "c" : ""
+  on change over { if over != "" { at = over } }
+  let wide = at == "c" ? 232 : 304
+  row { id: group; gap: 4; align: center
+    box { id: a; size: 28; bg: #ff0000
+      when at == "a" { id: it }
+    }
+    box { id: c; size: 28; bg: #ff00ff
+      when at == "c" { id: it }
+    }
+    popup { id: island; trigger: hover; grace: 250ms; margin: 8, 0, 0
+      enter { opacity: 0; scale: 0.9 }
+      width: group.box.width + 320; height: 200
+      box { place: absolute; height: 120; radius: 20; bg: #00ff00; shadow: 0 6px 24px #000000
+            width: wide ~ spring(3000, 0.75)
+            x: clamp(it.box.x + it.box.width / 2 - wide / 2 - island.box.x, 0, island.box.width - wide) ~ spring(3000, 0.75) }
+    }
+  }
+}
+"#;
+
+/// (owner-testing.md bug 7) From a tray item to the clock: the tray's
+/// menu plays its exit and goes, once, while the island opens, and
+/// never shows again. Sampled through the exit and well after it. On
+/// sway 1.9 (no alpha modifier) the exit is painted; the delegated
+/// case, where the bug was, is `surface_poses.rs`'s
+/// `a_closing_popups_last_frame_keeps_its_exit_pose`. This one rules
+/// out the other suspects: the menu is not opened again (one surface,
+/// made once and gone once) and draws nothing after its exit.
+#[test]
+fn a_tray_menu_left_for_the_island_goes_once() {
+    let Some(mut sh) = start("tray-island", TRAY_TO_ISLAND) else {
+        return;
+    };
+    let (t, a) = sh.wait("the items", |one, _| {
+        Some((one.region(ITEM_B, 400)?, one.region(ITEM_A, 400)?))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    let (tx, ty) = centre(t, 0, 1.0);
+    let (ax, ay) = centre(a, 0, 1.0);
+    pointer.motion(tx, ty, LW, LH);
+    sh.wait("the tray menu", |one, _| one.region(YELLOW, 2000));
+    std::thread::sleep(Duration::from_millis(400));
+    pointer.motion(ax, ay, LW, LH);
+    // Below the bar: the menu's yellow, faded or not, and the island's
+    // green.
+    let classify = |img: &Img| {
+        let (mut y, mut g) = (0, 0);
+        for py in 50..img.h {
+            for px in 0..img.w {
+                let i = (py * img.w + px) * 3;
+                let (r, gg, b) = (
+                    img.rgb[i] as i32,
+                    img.rgb[i + 1] as i32,
+                    img.rgb[i + 2] as i32,
+                );
+                if r > 30 && gg > 30 && (r - gg).abs() < 20 && b * 3 < r {
+                    y += 1;
+                } else if gg > 30 && r * 3 < gg && b * 3 < gg {
+                    g += 1;
+                }
+            }
+        }
+        (y, g)
+    };
+    let t0 = Instant::now();
+    let mut shots = Vec::new();
+    while t0.elapsed() < Duration::from_millis(900) {
+        let (y, g) = classify(&sh.shot("HEADLESS-1"));
+        shots.push((t0.elapsed().as_millis(), y, g));
+    }
+    // Once the yellow is gone it stays gone, and the island came.
+    let gone = shots.iter().position(|s| s.1 == 0);
+    assert!(gone.is_some(), "the menu never went: {shots:?}");
+    assert!(
+        shots[gone.unwrap_or(0)..].iter().all(|s| s.1 == 0),
+        "the menu showed again after its exit: {shots:?}"
+    );
+    assert!(
+        shots.last().is_some_and(|s| s.2 > 0),
+        "no island: {shots:?}"
+    );
+    let log = sh.log_text();
+    let made: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("surface ") && l.contains(" on HEADLESS-1"))
+        .collect();
+    let detached = log.lines().filter(|l| l.contains(" detached")).count();
+    assert_eq!(made.len(), 3, "the bar, the menu, the island: {made:?}");
+    assert_eq!(detached, 1, "the menu went once\n{log}");
 }
 
 /// Walks the pointer over each item, into its island and away.

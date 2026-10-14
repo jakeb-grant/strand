@@ -2284,8 +2284,12 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     applies opacity with `wp_alpha_modifier_v1`, scale with the
     viewporter's destination size and x/y with layer-shell margins. A
     frame whose pose changed while `paint` returned no damage is a
-    pose-only commit: no buffer is attached and `age` does not advance. A
-    popup's x/y always repaints. Without the protocols, render repaints.
+    pose-only commit: no buffer is attached and `age` does not advance.
+    The pose reported is the one the frame just painted took, even when
+    that frame's end (a closing pose finishing) makes the next frame
+    flatten anew, so a closing surface's last commit keeps its exit's
+    last pose (m6-owner-fixes, owner-testing.md bug 7). A popup's x/y
+    always repaints. Without the protocols, render repaints.
   - **Compositor capabilities.** `CompositorCaps { alpha_modifier,
     viewporter, single_pixel_buffer, background_effect, session_lock,
     data_device, hyprland }` (all `bool`; `delegates_poses()` needs the

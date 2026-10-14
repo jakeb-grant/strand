@@ -217,6 +217,66 @@ fn a_corner_panel_enters_and_exits_by_the_compositor() {
     );
 }
 
+/// (owner-testing.md bug 7) A closing popup's content is unmounted as
+/// it closes and kept, drawn at rest, until its exit ends: the frame
+/// that ends it still reports the exit's last pose (faded out), never
+/// the rest pose. That frame's commit is the last the surface gets
+/// before it goes; a compositor that fades a popup out itself
+/// (Hyprland's `fadePopupsOut`) snapshots what it shows, and the rest
+/// pose would show the whole popup again for its fade.
+#[test]
+fn a_closing_popups_last_frame_keeps_its_exit_pose() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Anchor, kw("top_right")),
+            (Prop::Open, PropValue::Bool(false)),
+            (
+                Prop::Enter,
+                PropValue::Pose(vec![(Prop::Opacity, num(0.0)), (Prop::Scale, num(0.9))]),
+            ),
+        ],
+    );
+    let child = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(20.0)),
+            (Prop::Bg, color("#00ff00")),
+        ],
+    );
+    let diff = b.diff;
+    let mut h = Host::new(true, diff, root);
+    h.open(true);
+    let _ = h.run();
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    d.remove(child);
+    h.apply(d);
+    let seen = h.run();
+    assert!(h.surface.is_none(), "closed once the exit settled");
+    assert!(seen.len() >= 4, "exit plays over several frames: {seen:?}");
+    let last = seen.last().unwrap().pose;
+    assert!(
+        last.is_some_and(|p| p.opacity < 0.05),
+        "the last frame before it goes is faded out: {seen:?}"
+    );
+    let opacities: Vec<f32> = seen
+        .iter()
+        .map(|s| s.pose.map_or(1.0, |p| p.opacity))
+        .collect();
+    assert!(
+        opacities.windows(2).all(|w| w[1] <= w[0]),
+        "never back towards rest: {opacities:?}"
+    );
+}
+
 /// The frame a delegated enter paints is the panel at rest, pixel for
 /// pixel the frame it settles on without delegation (PNG
 /// `surface_pose_at_rest.png`).
