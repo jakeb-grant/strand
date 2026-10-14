@@ -1658,7 +1658,14 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `TokenTable` sent by `SetTokens` holds plain values (palette roots,
   scales, fonts, `PropValue::Transition` springs for `$motion.*`) and
   derived tokens as expressions; render evaluates references at flatten
-  time, every frame, so only palette roots need to spring. Derived
+  time, every frame, so only palette roots need to spring. (M6,
+  decisions.md m6-w2-language) Each palette extra the program reads
+  outside templates (`lower::Program::palette_reads`) is also a plain
+  colour at `palette.<name>`, so it springs as a root does; logic reads
+  the palette for `$palette.<name>` through `VmHooks::palette(rt, name)`
+  (`Op::Palette`), over the instance's palette memo, which the token
+  table's memo is made over. `strand export json` leaves those paths out
+  of `tokens` (they are under `extras`). Derived
   colours are gamut-mapped (`Color::gamut_mapped`, CSS Color 4). The
   table also carries the contrast guard's declared pairs
   (`TokenTable::contrast`: a text token and its background tokens, the

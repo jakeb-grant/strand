@@ -202,7 +202,9 @@ Templates can read a little more than props can:
   1) take a colour apart, for formats that want numbers.
 - `$palette.name` is the scheme's name, and `$palette.mauve`,
   `$palette.base0d` and so on are the source's own colours by their own
-  names.
+  names. They work in props too: a config ported from a Catppuccin
+  shell can say `bg: $palette.mantle ?? $surface`, the fallback for a
+  palette that has no `mantle`.
 
 **`file "path" { … }`** keeps one file in step. It may stand at the top
 level of any `.strand` file, as here and in `theme.strand`, since it

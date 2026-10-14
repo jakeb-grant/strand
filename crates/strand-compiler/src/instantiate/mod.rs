@@ -279,6 +279,10 @@ pub(crate) struct Ctx {
     pub(crate) releases: Cell<usize>,
     /// (M5) The token table memo, once `boot` made it.
     pub(crate) tokens_memo: Cell<Option<Memo<TokenTable>>>,
+    /// (M6) The palette the token table is made over
+    /// ([`Ctx::current_palette`]), which `$palette.<name>` outside
+    /// templates reads too.
+    pub(crate) palette_memo: Cell<Option<Memo<Rc<strand_theme::Palette>>>>,
 }
 
 impl VmHooks for Ctx {
@@ -307,6 +311,21 @@ impl VmHooks for Ctx {
         if let Some(p) = parent {
             self.route(rt, p, &ctx.event, ctx.args.clone(), ctx.input);
         }
+    }
+
+    fn palette(&self, rt: &Runtime, name: &str) -> Result<Option<strand_scene::PropValue>, Error> {
+        use strand_scene::PropValue;
+        let Some(m) = self.palette_memo.get() else {
+            return Ok(None);
+        };
+        let p = m.get(rt)?;
+        // The names `Palette::insert_into` gives the table's entries.
+        Ok(match name {
+            "name" => p.name().map(|n| PropValue::Text(n.to_string())),
+            "source" => p.source().map(|s| PropValue::Text(s.to_string())),
+            "dark" => Some(PropValue::Bool(p.is_dark())),
+            _ => p.extra(name).map(PropValue::Color),
+        })
     }
 }
 
@@ -491,13 +510,25 @@ impl Ctx {
     }
 
     fn token_table(self: &Rc<Self>, rt: &Runtime) -> Result<TokenTable, Error> {
+        let palette = match self.palette_memo.get() {
+            Some(m) => m.get(rt)?,
+            None => self.current_palette(rt)?,
+        };
+        self.table_with(rt, &palette)
+    }
+
+    /// The palette the token table is made over: `use palette`'s, else
+    /// the last good one, else the built-in one. (M6) Its own memo, made
+    /// before the program mounts, since `$palette.<name>` outside
+    /// templates reads it ([`VmHooks::palette`]).
+    fn current_palette(self: &Rc<Self>, rt: &Runtime) -> Result<Rc<strand_theme::Palette>, Error> {
         let prog = self.vm.prog.clone();
         let root = self.vm.root.clone();
         let theme = self.vm.theme();
         // (M5) The offline mount pins the palette root to the persisted
         // palette (decisions.md m5-tools, "the CLI", step 2).
         if let Some(p) = theme.as_ref().and_then(|t| t.pinned().cloned()) {
-            return self.table_with(rt, &p);
+            return Ok(Rc::new(p));
         }
         let palette = match prog.use_palette {
             // A palette that fails (an imported file with a syntax error)
@@ -512,19 +543,19 @@ impl Ctx {
             Value::Async(a) => a.usable().cloned().unwrap_or(Value::Null),
             v => v,
         };
-        match &palette {
+        match palette {
             Value::Palette(p) => {
                 if let Some(theme) = &theme {
-                    theme.remember_palette(p);
+                    theme.remember_palette(&p);
                 }
-                self.table_with(rt, p)
+                Ok(p)
             }
             // Failed, or still loading with no fallback: the last good
             // palette (this run's, or persisted by the last), else the
             // built-in one, rather than no colours at all.
             _ => match theme.and_then(|t| t.last_palette()) {
-                Some(p) => self.table_with(rt, &p),
-                None => self.table_with(rt, &self.default_palette(rt)?),
+                Some(p) => Ok(Rc::new(p)),
+                None => Ok(Rc::new(self.default_palette(rt)?)),
             },
         }
     }
@@ -547,6 +578,19 @@ impl Ctx {
         // defines only some base tokens keeps the rest.
         let mut t = strand_theme::defaults::base_tokens();
         palette.insert_into(&mut t);
+        // (M6) Each extra the program reads outside templates is a token
+        // too, `palette.<name>`, so it springs with a swap as the roles do
+        // (decisions.md m6-w2-language).
+        let origin = t.origin("accent").map(str::to_string);
+        for name in &prog.palette_reads {
+            if let Some(v @ strand_scene::PropValue::Color(_)) = t.palette_value(name).cloned() {
+                let path = format!("palette.{name}");
+                if let Some(o) = &origin {
+                    t.set_origin(path.clone(), o.clone());
+                }
+                t.insert(path, v);
+            }
+        }
         // Component token defaults (`$Toast.radius`) before the sets, so
         // a set's `override Toast.radius` replaces them.
         for c in prog.components.values() {
@@ -655,6 +699,7 @@ impl Ctx {
             palette_ok: Cell::new(None),
             releases: Cell::new(0),
             tokens_memo: Cell::new(None),
+            palette_memo: Cell::new(None),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -943,6 +988,12 @@ impl Instance {
         let ctx = self.ctx.clone();
         let prog = ctx.vm.prog.clone();
         let root_env = ctx.vm.root.clone();
+        // (M6) The palette, before the program mounts: its bindings read
+        // `$palette.<name>` from it, and the token table is made over it.
+        let c = ctx.clone();
+        let palette = rt.memo(move |rt| c.current_palette(rt));
+        rt.set_name(palette.id(), "palette");
+        ctx.palette_memo.set(Some(palette));
         let (scope, ()) = rt.scope(|rt| {
             root_env.set_owner(rt.current_owner());
             ctx.note_env(&root_env);
@@ -1213,6 +1264,9 @@ impl Instance {
         if let Some(t) = old_tokens {
             rt.dispose(t.id());
         }
+        if let Some(p) = old.palette_memo.take() {
+            rt.dispose(p.id());
+        }
         old.em.borrow_mut().ops.clear();
         for w in build.identity.warnings() {
             report.notices.push(w.clone());
@@ -1263,6 +1317,9 @@ impl Instance {
         }
         if let Some(t) = self.tokens.take() {
             self.rt.dispose(t.id());
+        }
+        if let Some(p) = self.ctx.palette_memo.take() {
+            self.rt.dispose(p.id());
         }
         // Wait (bounded) for the persisted writes the unmount queued, so
         // the new cells read them.
@@ -2228,6 +2285,9 @@ impl Instance {
         }
         if let Some(t) = self.tokens.take() {
             self.rt.dispose(t.id());
+        }
+        if let Some(p) = self.ctx.palette_memo.take() {
+            self.rt.dispose(p.id());
         }
         let lock = self.ctx.lock.borrow_mut().take();
         if let Some(l) = lock {

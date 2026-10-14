@@ -206,7 +206,9 @@ pub fn json(palette: &Palette, table: &TokenTable) -> String {
             (Some(_), None) => plain.next(),
             (None, None) => break,
         };
-        if let Some(p) = path {
+        // (M6) An extra a config reads in a prop is also the token
+        // `palette.<name>`; it is written once, under `extras`.
+        if let Some(p) = path.filter(|p| !strand_scene::tokens::is_palette_path(p)) {
             w.value(Some(p), scope.lookup(p).as_ref());
         }
     }

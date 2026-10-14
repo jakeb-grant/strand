@@ -756,7 +756,7 @@ units).
 
 | Tier | What it holds | Example |
 | --- | --- | --- |
-| Palette | A typed schema of colour roles: Material 3's system roles one to one, plus 13 hue roles; its source's own colours and its identity ride along for templates | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve`, `$palette.name` |
+| Palette | A typed schema of colour roles: Material 3's system roles one to one, plus 13 hue roles; its source's own colours and its identity ride along | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; `$palette.mauve`, `$palette.name` |
 | Base tokens | Scales and derived roles, written as expressions over the palette | `$space.2`, `$radius.lg`, `$font.ui`, `$motion.spatial`, `$surface.hi` |
 | Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius` |
 
@@ -861,9 +861,17 @@ units).
   to the same name are an import error naming both. A role's own colour
   is kept as an extra too (matugen's `primary` is both `$accent` and
   `$palette.primary`). `material()` and the built-in palette keep one
-  extra, `source_color`, the seed. Extras and identity are read only in
-  the template scope (section 9.8), never in a prop; a missing extra
-  without `??` is an error.
+  extra, `source_color`, the seed. Extras and identity are read in
+  the template scope (section 9.8) and (M6) anywhere else an
+  expression reads tokens: a prop, a binding, a handler. There an extra
+  is a `color` (which extras a palette has is known only when it is
+  made), `$palette.name` and `$palette.source` are `text` and
+  `$palette.dark` a `bool`; an extra is read as a token, so a swap
+  springs it as it springs a role. A missing extra without `??` is an
+  error where it is read (in a prop, a runtime error naming it; the
+  prop keeps its last value), and `$palette.<name> ?? fallback` gives
+  the fallback. A token's own value and a `use` clause make the palette
+  and cannot read it (a load error).
 - `system.dark`, `system.accent` and `system.contrast` follow the
   desktop's portal settings live.
 - The last palette is persisted, so boot never shows default colours

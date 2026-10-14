@@ -142,6 +142,14 @@ pub enum Op {
     Node(NodeIdx),
     /// Push `$path` (a name index).
     Token(u32),
+    /// (M6) Push `$palette.<name>` (a name index, without `palette.`):
+    /// an extra as the token `palette.<name>`, the identity as its
+    /// value. A palette without it is an error, or null when `soft` (the
+    /// left side of `??`).
+    Palette {
+        name: u32,
+        soft: bool,
+    },
     Variant(EnumId, u32),
     EnumType(EnumId),
     /// Pop a value, push its field (a name index).
@@ -359,6 +367,7 @@ impl Chunk {
                     | Op::CallFn { .. }
                     | Op::CallValue { .. }
                     | Op::Exec { .. }
+                    | Op::Palette { .. }
                     | Op::Await
                     | Op::Keyed { .. }
                     | Op::AsyncSite(_)

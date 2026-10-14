@@ -55,6 +55,16 @@ pub trait VmHooks {
     /// `propagate()` in a handler of `ctx`: deliver the event to the next
     /// ancestor that handles it.
     fn propagate(&self, rt: &Runtime, ctx: &EventCtx);
+    /// (M6) The current palette's entry `name` (`mauve`, `name`, `dark`),
+    /// tracked: `$palette.<name>` outside a template. `None` when the
+    /// palette has no such entry (or there is no palette).
+    fn palette(
+        &self,
+        _rt: &Runtime,
+        _name: &str,
+    ) -> Result<Option<strand_scene::PropValue>, Error> {
+        Ok(None)
+    }
 }
 
 /// A scope of names: a component, surface or `for` item instance (or the

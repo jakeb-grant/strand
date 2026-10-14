@@ -248,6 +248,28 @@ impl Machine {
                 Op::Token(n) => self.stack.push(Value::token(TokenExpr::path(
                     chunk.names[*n as usize].as_str(),
                 ))),
+                Op::Palette { name, soft } => {
+                    let name = chunk.names[*name as usize].as_str();
+                    let found = match vm.hooks() {
+                        Some(h) => h.palette(rt, name)?,
+                        None => None,
+                    };
+                    let v = match found {
+                        Some(strand_scene::PropValue::Text(t)) => Value::text(t),
+                        Some(strand_scene::PropValue::Bool(b)) => Value::Bool(b),
+                        // An extra: the token the table holds for it, so
+                        // a swap springs it.
+                        Some(_) => Value::token(TokenExpr::path(format!("palette.{name}"))),
+                        None if *soft => Value::Null,
+                        None => {
+                            return Err(Error::failed(format!(
+                                "this palette has no `$palette.{name}`; extras depend on the \
+                                 palette, and `??` gives a fallback: `$palette.{name} ?? $accent`"
+                            )));
+                        }
+                    };
+                    self.stack.push(v);
+                }
                 Op::Variant(e, v) => self.stack.push(Value::Enum(*e, *v)),
                 Op::EnumType(e) => self.stack.push(Value::EnumType(*e)),
                 Op::Field(n) => {

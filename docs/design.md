@@ -355,7 +355,7 @@ Tokens are live values in the reactive graph, not constants. Swapping a theme, a
 
 | Tier | What it holds | Example |
 | --- | --- | --- |
-| Palette | A typed schema of colour roles: Material 3's system roles 1:1, plus 13 hue roles; its source's own colours ride along for templates | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve` |
+| Palette | A typed schema of colour roles: Material 3's system roles 1:1, plus 13 hue roles; its source's own colours ride along (`$palette.mauve`) | `$surface`, `$fg`, `$accent`, `$on_accent`, `$error`, `$outline`, `$green`, `$bright_blue`; in templates `$palette.mauve` |
 | Base tokens | Scales and derived roles, written as expressions over the palette | `$space.2`, `$radius.lg`, `$font.ui`, `$motion.spatial`, `$surface.hi: $surface.mix($fg, 8%)` |
 | Component tokens | Knobs a component exposes for overriding | `component Toast(n) tokens { radius: $radius.lg }` exposes `$Toast.radius` |
 
@@ -363,7 +363,7 @@ Tokens are live values in the reactive graph, not constants. Swapping a theme, a
 - **Methods are calls.** A `$` path segment followed by `(` is a method (`alpha`, `mix`, `lighten`, `darken`), so adding methods later never breaks token names. Templates and a `file`'s `text:` also have `.light()` and `.dark()` (the token in that mode), `.red()`, `.green()` and `.blue()` (0–255) and `.opacity()` (0–1), and the format functions `hex()` and `argb()`; in a prop these are a load error.
 - **Importers** for Material seed or image, base16/base24, Catppuccin, matugen output and W3C design-token JSON must fill the whole palette schema. One table derives any role they lack.
 - **Hue roles.** `$red`, `$orange`, `$yellow`, `$green`, `$cyan`, `$blue`, `$magenta` and `$bright_red`, `$bright_yellow`, `$bright_green`, `$bright_cyan`, `$bright_blue`, `$bright_magenta` are palette roles for what has to stay recognisably coloured (terminal colours, success and warning). A source with hues fills them as given (base16 `08`–`0E`, base24 `12`–`17`, Catppuccin's own red, peach, yellow, green, teal, blue and pink); a source without them (a seed or a wallpaper) gets each canonical hue harmonised toward the accent (at most 15°), at Material tone 80 in dark and 40 in light, brights a step lighter in dark and darker in light. They are fills, not text/background pairs. Their names are palette roots, so a user token named `red` needs `override` like any role.
-- **Nothing is lost.** An importer also keeps every colour of its source, under the source's own name and in its order (`$palette.mauve`, `$palette.base0d`), with the palette's name, source and dark flag (`$palette.name`). For now these are read only in templates and `file` text, never in props.
+- **Nothing is lost.** An importer also keeps every colour of its source, under the source's own name and in its order (`$palette.mauve`, `$palette.base0d`), with the palette's name, source and dark flag (`$palette.name`). They are read in templates and `file` text and (M6, decisions.md m6-w2-language) in props, bindings and handlers too: `bg: $palette.mantle ?? $surface` springs with a swap as a role does, and an extra the palette lacks gives `??`'s fallback.
 - **Loud overrides.** Redefining a token needs `override`. A misspelt override is an unknown-name error, not a new token. A raw hex colour in a prop is a lint; defaults in settings are exempt.
 
 ### Theme file

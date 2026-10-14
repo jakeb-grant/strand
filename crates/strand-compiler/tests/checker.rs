@@ -1620,3 +1620,30 @@ fn dbus_actions_are_checked_against_introspection() {
     let d = run("  action release(c: float) = ReleaseProfile");
     assert_eq!(d[0].code, "check::dbus_type", "{d:?}");
 }
+
+/// (M6) `$palette.<name>` outside templates (owner testing Gaps 10): an
+/// extra is a `color` (which ones a palette has is known only when it
+/// is made), `name` and `source` are `text`, `dark` a `bool`; the bare
+/// group is an error, and so is reading the palette where it is made (a
+/// token's value, a `use` clause).
+#[test]
+fn palette_extras_and_identity_check_outside_templates() {
+    let bar = |body: &str| codes(&format!("bar B {{ {body} }}\n"));
+    assert!(bar("box { bg: $palette.mantle }").is_empty());
+    assert!(bar("box { bg: $palette.mantle ?? $accent }").is_empty());
+    assert!(bar("box { bg: $palette.crust.alpha(0.5) }").is_empty());
+    assert!(bar("box { bg: $palette.color.brand_primary }").is_empty());
+    assert!(bar("text $palette.name").is_empty());
+    assert!(bar("text $palette.dark ? \"dark\" : \"light\"").is_empty());
+    assert_eq!(bar("text $palette.mantle"), ["check::type_mismatch"]);
+    assert_eq!(bar("box { bg: $palette.name }"), ["check::type_mismatch"]);
+    assert_eq!(bar("box { bg: $palette }"), ["check::unknown_token"]);
+    assert_eq!(
+        codes("tokens t { panel: $palette.mantle }\nbar B { text \"x\" }\n"),
+        ["check::palette_in_tokens"]
+    );
+    assert_eq!(
+        codes("use palette material(seed: $palette.mauve)\nbar B { text \"x\" }\n"),
+        ["check::palette_in_tokens"]
+    );
+}

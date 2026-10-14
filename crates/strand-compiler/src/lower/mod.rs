@@ -49,6 +49,10 @@ pub struct Program {
     /// (M6) Declared actions' commands (`action dispatch(ws: int)
     /// ["hyprctl", "dispatch", "workspace", ws]`), by declaration.
     pub execs: BTreeMap<DefId, ExecAction>,
+    /// (M6) The palette extras the program reads outside templates
+    /// (`$palette.mauve` in a prop): the token table holds each as the
+    /// token `palette.<name>`.
+    pub palette_reads: BTreeSet<String>,
     /// Keyframes by declaration.
     pub keyframes: BTreeMap<DefId, KeyframesProgram>,
     /// The `key` of keyed `state` collections (`state pins: [Pin] key

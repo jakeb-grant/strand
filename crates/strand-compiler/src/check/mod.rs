@@ -309,6 +309,9 @@ pub(crate) struct Ctx {
     /// In a lambda a binding makes (not a handler's, not a `fn`'s): an
     /// async service call there never gets its answer.
     pub binding_lambda: bool,
+    /// (M6) In a `use tokens …, palette …` clause: the palette is being
+    /// chosen, so `$palette.<name>` cannot be read there.
+    pub in_use: bool,
 }
 
 /// An element being checked.

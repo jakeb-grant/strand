@@ -653,3 +653,58 @@ fn the_schema_palette_block_is_the_role_list() {
     roles.sort_unstable();
     assert_eq!(schema, roles);
 }
+
+/// (M6) The palette's extras and identity in props (decisions.md
+/// m6-w2-language, owner testing Gaps 10): `$palette.mantle` is the token
+/// `palette.<name>`, which the table holds for each extra the config
+/// reads (so a swap springs it as it springs a role), and
+/// `$palette.name` is the palette's name. A palette without the extra
+/// gives `??`'s fallback, and without `??` it is an error naming it.
+#[test]
+fn palette_extras_are_read_in_props() {
+    use strand_compiler::instantiate::show;
+    use strand_scene::{NodeKind, Prop};
+    let src = "export state cat = true\n\
+        use palette cat ? import(\"catppuccin:mocha\") : material(seed: #7aa2f7)\n\
+        bar B {\n  row {\n    box { bg: $palette.mantle ?? $accent }\n    \
+        box { bg: $palette.crust.alpha(0.5) }\n    text $palette.name\n  }\n}\n";
+    let mut shell = boot(&[("pal.strand", src.to_string())], Storage::none());
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let bg = |s: &Shell, i: usize| s.scene.prop(boxes[i], Prop::Bg).map(show);
+    assert_eq!(bg(&shell, 0).as_deref(), Some("$palette.mantle"));
+    assert_eq!(bg(&shell, 1).as_deref(), Some("$palette.crust.alpha(0.5)"));
+    assert_eq!(shell.color("palette.mantle"), hex("#181825"));
+    assert_eq!(shell.color("palette.crust"), hex("#11111b"));
+    // Only the extras the config reads are tokens.
+    assert!(shell.tokens().get("palette.mauve").is_none());
+    let name = match shell.tokens().palette_value("name") {
+        Some(PropValue::Text(t)) => t.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        shell.scene.find_text(&name).is_some(),
+        "{:?}",
+        shell.scene.texts()
+    );
+    // A palette with no `mantle`: the fallback, and an error for the
+    // read without one.
+    shell.inst.set("pal.cat", Value::Bool(false)).unwrap();
+    let errors = shell.flush_errors();
+    assert!(
+        errors.iter().any(|e| e.contains("has no `$palette.crust`")),
+        "{errors:?}"
+    );
+    assert!(
+        !errors.iter().any(|e| e.contains("mantle")),
+        "`??` gives the fallback: {errors:?}"
+    );
+    assert_eq!(bg(&shell, 0).as_deref(), Some("$accent"));
+    // The failing prop keeps its last value.
+    assert_eq!(bg(&shell, 1).as_deref(), Some("$palette.crust.alpha(0.5)"));
+    assert!(shell.tokens().get("palette.mantle").is_none());
+    // And back: the extra is a token again.
+    shell.inst.set("pal.cat", Value::Bool(true)).unwrap();
+    assert!(shell.flush_errors().is_empty());
+    assert_eq!(bg(&shell, 0).as_deref(), Some("$palette.mantle"));
+    assert_eq!(shell.color("palette.mantle"), hex("#181825"));
+}

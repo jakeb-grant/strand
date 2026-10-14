@@ -451,6 +451,7 @@ impl Lowerer<'_> {
             ExprKind::EnumType(en) => {
                 c.emit(Op::EnumType(*en), span);
             }
+            ExprKind::Token(p) if palette_name(p).is_some() => self.palette(c, p, false, span),
             ExprKind::Token(p) => {
                 let n = c.name(p);
                 c.emit(Op::Token(n), span);
@@ -530,7 +531,16 @@ impl Lowerer<'_> {
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                self.expr(c, lhs);
+                match &lhs.kind {
+                    // `$palette.mauve ?? $accent`: a palette without it
+                    // gives the fallback.
+                    ExprKind::Token(p)
+                        if *op == BinaryOp::Coalesce && palette_name(p).is_some() =>
+                    {
+                        self.palette(c, p, true, lhs.span)
+                    }
+                    _ => self.expr(c, lhs),
+                }
                 let jump = match op {
                     BinaryOp::And => Some(Op::AndJump(0)),
                     BinaryOp::Or => Some(Op::OrJump(0)),
@@ -938,4 +948,25 @@ struct PlaceParts<'e> {
     indices: Vec<&'e hir::Expr>,
     /// The item expression of a [`PlaceRoot::Item`] place.
     item: Option<&'e hir::Expr>,
+}
+
+/// (M6) `$palette.<name>`'s name, if `path` is one.
+fn palette_name(path: &str) -> Option<&str> {
+    path.strip_prefix(strand_scene::tokens::PALETTE_SEGMENT)?
+        .strip_prefix('.')
+}
+
+impl Lowerer<'_> {
+    /// (M6) `$palette.<name>` (decisions.md m6-w2-language): an extra is
+    /// read as the token `palette.<name>`, which the token table holds
+    /// for each extra the program reads, so it springs with a swap as a
+    /// palette root does.
+    fn palette(&mut self, c: &mut Chunk, path: &str, soft: bool, span: Span) {
+        let name = palette_name(path).unwrap_or_default();
+        if !matches!(name, "name" | "source" | "dark") {
+            self.out.palette_reads.insert(name.to_string());
+        }
+        let name = c.name(name);
+        c.emit(Op::Palette { name, soft }, span);
+    }
 }
