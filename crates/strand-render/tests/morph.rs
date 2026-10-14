@@ -42,14 +42,11 @@ struct Shell {
     /// Each shown surface: its id, node and buffer.
     shown: Vec<(SurfaceId, NodeId, Buffer)>,
     next: u32,
-    /// Configures after the first, per surface node.
+    /// Popup sizes changed after the first configure.
     reconfigured: u32,
     k: u32,
-    /// Frames between a surface change and the configure that answers
-    /// it (a compositor's round trip); 0 answers at once.
-    lag: u32,
-    /// Configures not answered yet: due frame, surface, size.
-    pending: Vec<(u32, SurfaceId, Size)>,
+    /// A popup's surface is made again at a new size, not configured.
+    remake: bool,
     /// After each frame, the text it asked to have shaped is delivered
     /// before the next (a text worker that keeps up).
     settle_text: bool,
@@ -112,8 +109,7 @@ impl Shell {
             next: 2,
             reconfigured: 0,
             k: 0,
-            lag: 0,
-            pending: Vec::new(),
+            remake: false,
             settle_text: false,
         };
         sh.sync();
@@ -123,7 +119,9 @@ impl Shell {
 
     /// The surface manager's side: popups opened are attached and
     /// configured at their spec's size (with its overhang), configured
-    /// again when that changes, detached when they close.
+    /// again when that changes (or, with `remake`, made again, as on an
+    /// `xdg_wm_base` older than version 3: sway 1.9), detached when they
+    /// close.
     fn sync(&mut self) {
         while self.r.has_surface_changes() {
             for (node, change) in self.r.take_surface_changes() {
@@ -139,57 +137,49 @@ impl Shell {
                 {
                     continue;
                 }
-                let at = self.shown.iter().position(|s| s.1 == node);
-                match spec.filter(|s| s.open) {
-                    Some(s) => {
-                        let o = s.overhang;
-                        let f = self.scale.as_f64();
-                        let px = |v: f32| (f64::from(v) * f).ceil() as u32;
-                        let w = s.width.unwrap_or(1.0) + o.left + o.right;
-                        let h = s.height.unwrap_or(1.0) + o.top + o.bottom;
-                        let size = Size::new(px(w), px(h));
-                        let id = match at {
-                            Some(i) => {
-                                let (id, _, buf) = &self.shown[i];
-                                let last =
-                                    self.pending.iter().rev().find(|p| p.1 == *id).map(|p| p.2);
-                                if last.unwrap_or(buf.size) == size {
-                                    continue;
-                                }
-                                self.reconfigured += 1;
-                                if self.lag > 0 {
-                                    self.pending.push((self.k + self.lag, *id, size));
-                                    continue;
-                                }
-                                *id
-                            }
-                            None => {
-                                let id = SurfaceId(self.next);
-                                self.next += 1;
-                                self.r.attach_surface(id, node);
-                                let r = s.anchor_rect.unwrap_or_default();
-                                self.r.set_surface_origin(
-                                    id,
-                                    Some((
-                                        None,
-                                        LogicalPoint::new(r.x - o.left, r.y + r.h - o.top),
-                                    )),
-                                );
-                                self.shown.push((id, node, Buffer::new(1, 1, self.scale)));
-                                id
-                            }
-                        };
-                        let i = self.shown.iter().position(|s| s.0 == id).unwrap();
-                        self.shown[i].2 = Buffer::new(size.w, size.h, self.scale);
-                        self.r.configure_surface(id, size, self.scale);
+                let mut at = self.shown.iter().position(|s| s.1 == node);
+                let Some(s) = spec.filter(|s| s.open) else {
+                    if let Some(i) = at {
+                        let (id, ..) = self.shown.remove(i);
+                        self.r.detach_surface(id);
                     }
-                    None => {
-                        if let Some(i) = at {
-                            let (id, ..) = self.shown.remove(i);
-                            self.r.detach_surface(id);
-                        }
+                    continue;
+                };
+                let o = s.overhang;
+                let f = self.scale.as_f64();
+                let px = |v: f32| (f64::from(v) * f).ceil() as u32;
+                let w = s.width.unwrap_or(1.0) + o.left + o.right;
+                let h = s.height.unwrap_or(1.0) + o.top + o.bottom;
+                let size = Size::new(px(w), px(h));
+                if let Some(i) = at {
+                    if self.shown[i].2.size == size {
+                        continue;
+                    }
+                    self.reconfigured += 1;
+                    if self.remake {
+                        let (id, ..) = self.shown.remove(i);
+                        self.r.detach_surface(id);
+                        at = None;
                     }
                 }
+                let id = match at {
+                    Some(i) => self.shown[i].0,
+                    None => {
+                        let id = SurfaceId(self.next);
+                        self.next += 1;
+                        self.r.attach_surface(id, node);
+                        let r = s.anchor_rect.unwrap_or_default();
+                        self.r.set_surface_origin(
+                            id,
+                            Some((None, LogicalPoint::new(r.x - o.left, r.y + r.h - o.top))),
+                        );
+                        self.shown.push((id, node, Buffer::new(1, 1, self.scale)));
+                        id
+                    }
+                };
+                let i = self.shown.iter().position(|s| s.0 == id).unwrap();
+                self.shown[i].2 = Buffer::new(size.w, size.h, self.scale);
+                self.r.configure_surface(id, size, self.scale);
             }
         }
     }
@@ -199,14 +189,6 @@ impl Shell {
     fn paint(&mut self) {
         let k = self.k;
         self.k += 1;
-        let due: Vec<_> = self.pending.iter().filter(|p| p.0 <= k).copied().collect();
-        self.pending.retain(|p| p.0 > k);
-        for (_, id, size) in due {
-            if let Some(i) = self.shown.iter().position(|s| s.0 == id) {
-                self.shown[i].2 = Buffer::new(size.w, size.h, self.scale);
-                self.r.configure_surface(id, size, self.scale);
-            }
-        }
         for _ in 0..8 {
             for (id, _, buf) in &mut self.shown {
                 if k == 0 || self.r.wants_frame(*id) {
@@ -240,7 +222,7 @@ impl Shell {
     }
 
     fn wants(&self) -> bool {
-        !self.pending.is_empty() || self.shown.iter().any(|(id, ..)| self.r.wants_frame(*id))
+        self.shown.iter().any(|(id, ..)| self.r.wants_frame(*id))
     }
 
     /// Sets state `name` and applies what logic sends.
@@ -382,5 +364,69 @@ fn cut_text_stays_cut_while_its_box_springs() {
             }
             assert!(frames > 10, "it sprang: {frames} frames");
         }
+    }
+}
+
+/// The owner's status row, reduced (owner-testing.md bug 10): the
+/// music bars (red) at the start of a row at the bar's end, and a
+/// reading mounted after them. Its text is far narrower than its length
+/// says (an icon font's ligature, `battery_5_bar`, draws one glyph);
+/// here a run of narrow letters.
+const READING: &str = "
+state big = false
+bar Top {
+  height: 30
+  row { width: 100%; height: 30; justify: end; align: center
+    row { gap: 6; align: center
+      box { width: 12; height: 12; bg: #ff0000 }
+      if big { text \"iiiiiiiiiiiiiiiiiiii\" { color: #ffffff } }
+    }
+  }
+}
+";
+
+/// Where the red box starts on row `y` of `buf`, in physical pixels.
+fn red_from(buf: &Buffer, y: u32) -> Option<u32> {
+    (0..buf.size.w).find(|x| {
+        let p = buf.px(*x, y);
+        p[2] > 200 && p[1] < 80
+    })
+}
+
+/// The red box's place on each frame from `big` turning true until
+/// nothing moves, on `r`.
+fn bars_track(r: Renderer, settle_text: bool, scale: f32) -> Vec<u32> {
+    let mut sh = Shell::boot_with(r, READING, scale, 400);
+    sh.settle_text = settle_text;
+    run(&mut sh, NodeId::new(0, 0));
+    let y = (15.0 * scale) as u32;
+    assert_eq!(
+        red_from(sh.buf(BAR), y),
+        Some(((400.0 - 12.0) * scale) as u32)
+    );
+    sh.set("big", Value::Bool(true));
+    let mut seen = Vec::new();
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        seen.extend(red_from(sh.buf(BAR), y));
+        n += 1;
+        assert!(n < 600, "never settled");
+    }
+    seen
+}
+
+/// (owner-testing.md bug 10) A text mounted beside siblings moves them
+/// on the text worker as it does when shaped at once: no frame lays it
+/// out by an estimate of its width (its length in ems) and then moves
+/// everything again when its shaped size arrives. The music bars of the
+/// owner's crown slid away and back as the readings after them mounted.
+#[test]
+fn a_mounted_text_moves_its_siblings_once() {
+    for scale in [1.0, 1.5] {
+        let inline = bars_track(renderer(), false, scale);
+        let worker = bars_track(worker_renderer(), true, scale);
+        assert!(inline.len() > 5, "the bars glide: {inline:?}");
+        assert_eq!(worker, inline, "scale {scale}");
     }
 }

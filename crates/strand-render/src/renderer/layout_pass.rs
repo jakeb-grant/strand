@@ -85,7 +85,9 @@ impl Renderer {
         let mut stable = None;
         for _ in 0..6 {
             let flat = self.flatten_now(id);
-            let text = self.request_text(&flat.text);
+            // New text the worker has not shaped yet was laid out by an
+            // estimate: wait briefly for it and lay out again.
+            let text = self.request_text(&flat.text) | self.await_unmeasured(&flat.text);
             // Decoded inline (offline): draw them at once too.
             // While a size springs here, images at a new size draw their
             // last decode scaled and are decoded once it rests.

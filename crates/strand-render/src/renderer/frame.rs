@@ -23,6 +23,15 @@ impl Renderer {
         self.new_text_wait = wait;
     }
 
+    /// How long laying out waits for the text worker to shape new text
+    /// ([`ESTIMATE_WAIT`] by default; zero: never, it is laid out by an
+    /// estimate until it arrives).
+    ///
+    /// [`ESTIMATE_WAIT`]: super::ESTIMATE_WAIT
+    pub fn set_estimate_wait(&mut self, wait: Duration) {
+        self.estimate_wait = wait;
+    }
+
     /// How recently a surface must have painted to count as in motion,
     /// so that it holds no frame for new text ([`BUSY_WINDOW`] by
     /// default; tests set it so they do not depend on the clock).

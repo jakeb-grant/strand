@@ -218,6 +218,33 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    Text whose box keeps its width draws as before. decisions.md
    m6-owner-fixes. The config is right.
 
+10. **The music bars move ungracefully while the island morphs.**
+   (2026-10-14, Hyprland, the notch config) "Certain elements … move
+   around ungracefully when the island morphs between open / compact":
+   the green music level bars (`Bars`, three boxes at the start of the
+   crown's status row, `crown.strand:184`).
+   **Fixed** (Strand's part). Growing, the crown mounts the readings
+   after the bars: glyphs in Material Symbols, whose names
+   (`battery_5_bar`) are one ligature glyph about 16 px wide. Text the
+   worker has not shaped yet was laid out by an estimate of its width
+   (0.55 em a character, about 110 px for that name), and the shaped
+   size arrived a frame later, so the row was laid out twice: the bars
+   jumped left by the estimate, then back and on with the readings'
+   glide (on headless sway too: they were drawn 39 px left of where
+   they slid from, then back). Now laying out waits up to 5 ms for the
+   worker to shape a text that has no layout yet, so the frame is laid
+   out with its real size
+   (`crates/strand-render/tests/morph.rs::a_mounted_text_moves_its_siblings_once`,
+   which failed before: on the worker the bars took a frame at the
+   estimate first). What is left is as specified: the bars sit at the
+   end of the split, whose width springs with the card (overshoot
+   included), and the readings entering beside them (`enter { width:
+   0 }` on their text) push them along as they grow; the gap changes
+   from 6 to 10 at once (layout lengths snap). At scale 1.5 each 3 px
+   bar is 4 or 5 device pixels by turns as it moves (edges snap to
+   pixels one by one, so fills stay crisp); an even logical width (2 or
+   4) keeps every bar's width. decisions.md m6-owner-fixes.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,
