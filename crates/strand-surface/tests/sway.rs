@@ -3338,3 +3338,156 @@ fn a_popup_grabs_only_for_the_press_that_opened_it() {
     drop(input);
     drop(pointer);
 }
+
+/// (owner-testing.md bug 6) A popup wider than the room its anchor
+/// leaves at an output's edge is moved inside the output by the manager
+/// itself, so the compositor never has to slide it (Hyprland 0.56
+/// slides a repositioned popup with a shadow overhang past the edge). On
+/// outputs of different widths and places: HEADLESS-1 is 2560 logical
+/// pixels wide at 1920 (3840×2160 at 1.5), HEADLESS-2 1920 wide at 0.
+/// A 400-wide popup under the bar's last 20 pixels, then its first,
+/// each grown while open (`xdg_popup.reposition`, or made again where
+/// the compositor's `xdg_wm_base` is older than version 3), lands whole
+/// inside its output, where its positioner asked (`Stats::popups_moved`).
+#[test]
+fn a_popup_at_an_outputs_edge_is_placed_inside_it() {
+    let Some(sway) = Sway::start("a_popup_at_an_outputs_edge_is_placed_inside_it") else {
+        return;
+    };
+    sway.msg(&[
+        "output",
+        "HEADLESS-1",
+        "resolution",
+        "3840x2160@60Hz",
+        "position",
+        "1920",
+        "0",
+        "scale",
+        "1.5",
+    ]);
+    let second = sway.create_output();
+    sway.msg(&["output", &second, "position", "0", "0"]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    wait_for_bars(&mut mgr, 2);
+    // Both bars placed, on outputs whose place is known.
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.monitors()
+                .iter()
+                .all(|m| m.position.is_some() && m.logical_size.is_some())
+                && s.surfaces_of(BAR)
+                    .iter()
+                    .all(|b| s.host().placed.iter().any(|(id, _)| id == b))
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().monitors());
+    // The popup nests in the bar's first surface.
+    let parent = *mgr.state().surfaces_of(BAR).iter().min().unwrap();
+    let monitor = mgr.state().surface(parent).unwrap().monitor.unwrap();
+    let monitor = mgr
+        .state()
+        .monitors()
+        .into_iter()
+        .find(|m| m.id == monitor)
+        .unwrap();
+    let (mx, _) = monitor.position.unwrap();
+    let (mw, _) = monitor.logical_size.unwrap();
+    assert_eq!(
+        (mx, mw),
+        (1920, 2560),
+        "the first bar is on HEADLESS-1: {monitor:?}"
+    );
+
+    let popup =
+        |anchor_x: f32, width: f32| {
+            let mut spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| {
+                None::<&strand_scene::PropValue>
+            });
+            spec.name = Some("edge".into());
+            spec.parent = Some(BAR);
+            spec.anchor_rect = Some(LogicalRect::new(anchor_x, 8.0, 20.0, 20.0));
+            spec.width = Some(width);
+            spec.height = Some(120.0);
+            spec
+        };
+    // Waits for `node`'s popup to be configured `width` wide and placed
+    // since `since` placements; returns its box's left and right edges
+    // in the layout.
+    let placed = |mgr: &mut strand_surface::SurfaceManager<TestHost>,
+                  node: NodeId,
+                  width: u32,
+                  since: usize| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces_of(node).first().is_some_and(|id| {
+                    s.surface(*id)
+                        .is_some_and(|i| i.configured && i.logical_size.0 == width)
+                        && s.host().placed[since..].iter().any(|(p, _)| p == id)
+                })
+            })
+            .unwrap();
+        assert!(ok, "{node:?} configured {width} wide");
+        let id = mgr.state().surfaces_of(node)[0];
+        let (x, _) = mgr
+            .state()
+            .host()
+            .placed
+            .iter()
+            .rev()
+            .find(|(p, _)| *p == id)
+            .unwrap()
+            .1;
+        (x, x + width as i32)
+    };
+    let cases = [
+        ("the right end", NodeId::new(20, 0), (mw - 20) as f32),
+        ("the left end", NodeId::new(21, 0), 0.0),
+    ];
+    for (what, node, at) in cases {
+        let moved = mgr.state().stats().popups_moved;
+        let since = mgr.state().host().placed.len();
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(popup(at, 400.0)));
+        let (x0, x1) = placed(&mut mgr, node, 400, since);
+        assert!(
+            mx <= x0 && x1 <= mx + mw,
+            "{what}: the popup's box {x0}..{x1} is not inside {mx}..{}",
+            mx + mw
+        );
+        assert_eq!(
+            mgr.state().stats().popups_moved,
+            moved,
+            "{what}: the compositor had to move it"
+        );
+        // Grown while open: still inside, where it asked.
+        let since = mgr.state().host().placed.len();
+        mgr.state_mut().apply_surface_change(
+            node,
+            SurfaceChange::Updated {
+                spec: popup(at, 480.0),
+                recreate: false,
+            },
+        );
+        let (x0, x1) = placed(&mut mgr, node, 480, since);
+        assert!(
+            mx <= x0 && x1 <= mx + mw,
+            "{what}, grown: the popup's box {x0}..{x1} is not inside {mx}..{}",
+            mx + mw
+        );
+        assert_eq!(
+            mgr.state().stats().popups_moved,
+            moved,
+            "{what}, grown: the compositor had to move it"
+        );
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
+        pump(&mut mgr, Duration::from_millis(50));
+    }
+}

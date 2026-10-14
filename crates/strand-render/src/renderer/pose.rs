@@ -41,9 +41,10 @@ impl Renderer {
     }
 
     /// (M4) The pose the compositor should apply to `surface` with its
-    /// next commit: the one its last flattened frame took out of the
-    /// root ([`crate::pose::delegate`]); `None` when nothing is
-    /// delegated.
+    /// next commit: the one its last painted frame took out of the root
+    /// ([`crate::pose::delegate`]), even when what ended that frame
+    /// (a closing pose finishing) has the next frame flatten anew;
+    /// `None` when nothing is delegated.
     pub fn delegated_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
         // (M4) A surface the GPU thread presents paints its poses.
         #[cfg(feature = "gpu")]
@@ -54,7 +55,7 @@ impl Renderer {
         if !self.extras.compositor_poses {
             return None;
         }
-        s.cache.as_ref().and_then(|f| f.pose)
+        s.posed
     }
 
     /// Ghosts under surface node `root` still play their exit.

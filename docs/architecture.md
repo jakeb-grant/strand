@@ -2284,8 +2284,12 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     applies opacity with `wp_alpha_modifier_v1`, scale with the
     viewporter's destination size and x/y with layer-shell margins. A
     frame whose pose changed while `paint` returned no damage is a
-    pose-only commit: no buffer is attached and `age` does not advance. A
-    popup's x/y always repaints. Without the protocols, render repaints.
+    pose-only commit: no buffer is attached and `age` does not advance.
+    The pose reported is the one the frame just painted took, even when
+    that frame's end (a closing pose finishing) makes the next frame
+    flatten anew, so a closing surface's last commit keeps its exit's
+    last pose (m6-owner-fixes, owner-testing.md bug 7). A popup's x/y
+    always repaints. Without the protocols, render repaints.
   - **Compositor capabilities.** `CompositorCaps { alpha_modifier,
     viewporter, single_pixel_buffer, background_effect, session_lock,
     data_device, hyprland }` (all `bool`; `delegates_poses()` needs the
@@ -4058,7 +4062,15 @@ and the connection):
   overhang, anchor rect in the parent's window geometry, side and gap)
   with slide and flip; its window geometry is its box, its buffer the
   box plus the overhang. Size or anchor changes reposition it
-  (`xdg_popup.reposition`). (M6, m6-w2-surface) It grabs by its cause:
+  (`xdg_popup.reposition`; made again below `xdg_wm_base` version 3).
+  (m6-owner-fixes, owner-testing.md bug 6) The manager moves the box
+  inside its parent's output along its anchor's edge itself
+  (`placement::popup_shift`, through the positioner's offset), from
+  where it placed the parent (`origin.rs`) and the output's logical
+  place, so the compositor need not slide it; slide stays asked for.
+  A configure that puts the box elsewhere than the positioner asked
+  (`placement::popup_request`) counts in `Stats::popups_moved`.
+  (M6, m6-w2-surface) It grabs by its cause:
   only when the press that opened it (`State::set_popup_cause(node,
   Option<u32>)`, from `SceneDiff::press`) is the seat's last button or
   key press and came within `GRAB_WINDOW` (500 ms), so a popup a hover,

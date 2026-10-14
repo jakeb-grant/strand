@@ -84,14 +84,22 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.destroy_surface(id);
                 continue;
             };
-            let factor = self.parent_factor(id);
-            let Some(positioner) = self.positioner(&new, factor) else {
+            let Some((positioner, ask)) = self
+                .popup_parent_of(id)
+                .and_then(|parent| self.positioner(&new, parent))
+            else {
                 continue;
             };
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
-            let Role::Popup { popup, config, .. } = &mut s.role else {
+            let Role::Popup {
+                popup,
+                config,
+                asked,
+                ..
+            } = &mut s.role
+            else {
                 continue;
             };
             if *config == new {
@@ -102,8 +110,21 @@ impl<H: SurfaceHost + 'static> State<H> {
                 continue;
             }
             if popup.xdg_popup().version() >= 3 {
+                log::debug!(
+                    "{}: popup repositioned: {}×{} at {:?} (was {}×{} at {:?}, overhang {:?} was {:?})",
+                    new.namespace,
+                    new.width,
+                    new.height,
+                    new.anchor_rect,
+                    config.width,
+                    config.height,
+                    config.anchor_rect,
+                    new.overhang,
+                    config.overhang
+                );
                 popup.reposition(&positioner, 0);
                 *config = new.clone();
+                *asked = Some(ask);
                 s.config = new.as_layer();
                 s.geometry_dirty = true;
                 if !self.gpu.has(id) {
@@ -112,6 +133,11 @@ impl<H: SurfaceHost + 'static> State<H> {
                     self.stats.bare_commits += 1;
                 }
             } else {
+                log::debug!(
+                    "{}: popup made again (xdg_wm_base version {})",
+                    new.namespace,
+                    popup.xdg_popup().version()
+                );
                 self.destroy_surface(id);
             }
         }
@@ -121,24 +147,47 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.reconcile(node);
     }
 
-    /// The pose factor ([`Surface::pose_factor`]) of popup `id`'s
-    /// parent: its anchor rect is in the parent's surface-local
-    /// coordinates, which a delegated scale shrinks.
-    fn parent_factor(&self, id: SurfaceId) -> (f64, f64) {
-        match self.surfaces.get(&id).map(|s| &s.role) {
-            Some(Role::Popup { parent, .. }) => self
-                .surfaces
-                .get(parent)
-                .map_or((1.0, 1.0), |p| p.pose_factor()),
-            _ => (1.0, 1.0),
-        }
+    /// The parent surface of popup `id`.
+    fn popup_parent_of(&self, id: SurfaceId) -> Option<SurfaceId> {
+        self.surfaces.get(&id).and_then(|s| s.role.popup_parent())
     }
 
-    /// A positioner for `c` in a parent whose coordinates its pose scales
-    /// by `factor`: the anchor rect is where the parent's content at rest
-    /// is drawn now (a popup opened from a panel held at a static
-    /// `scale`).
-    pub(super) fn positioner(&self, c: &PopupConfig, factor: (f64, f64)) -> Option<XdgPositioner> {
+    /// (owner-testing.md bug 6) Surface `parent`'s output, relative to its
+    /// window geometry (a layer surface's is its buffer, a popup's its
+    /// box), from where the manager placed it (`origin.rs`) and the
+    /// output's logical place; `None` while either is unknown.
+    fn output_in_parent(&self, parent: SurfaceId) -> Option<(i32, i32, i32, i32)> {
+        let p = self.surfaces.get(&parent)?;
+        let (ox, oy) = p.origin?;
+        let (gx, gy) = match &p.role {
+            Role::Popup { config, .. } => (config.overhang[3], config.overhang[0]),
+            _ => (0, 0),
+        };
+        let root = self.surfaces.get(&self.root_layer(parent)?)?;
+        let m = root.monitor.as_ref().and_then(|m| self.monitors.get(m))?;
+        let (mx, my) = m.position?;
+        let (mw, mh) = m.logical_size.filter(|(w, h)| *w > 0 && *h > 0)?;
+        Some((mx - ox - gx, my - oy - gy, mw, mh))
+    }
+
+    /// A positioner for `c` in surface `parent`, and the box position it
+    /// asks for (relative to the parent's window geometry). The anchor
+    /// rect is where the parent's content at rest is drawn now: a pose
+    /// scales its coordinates (a popup opened from a panel held at a
+    /// static `scale`). (owner-testing.md bug 6) The box is moved inside
+    /// the parent's output along its anchor's edge first
+    /// ([`popup_shift`]), so the compositor need not slide it; slide
+    /// stays asked for, for what the manager cannot know (another
+    /// client's exclusive zone, a posed parent).
+    pub(super) fn positioner(
+        &self,
+        c: &PopupConfig,
+        parent: SurfaceId,
+    ) -> Option<(XdgPositioner, (i32, i32))> {
+        let factor = self
+            .surfaces
+            .get(&parent)
+            .map_or((1.0, 1.0), |p| p.pose_factor());
         let shell = self.xdg_shell.as_ref()?;
         let p = XdgPositioner::new(shell).ok()?;
         p.set_size(c.width.max(1) as i32, c.height.max(1) as i32);
@@ -153,7 +202,13 @@ impl<H: SurfaceHost + 'static> State<H> {
             let at = |v: i32, f: f64| (f64::from(v) * f).round() as i32;
             (at(x, factor.0), at(y, factor.1), 1, 1)
         });
-        p.set_anchor_rect(x, y, w.max(1), h.max(1));
+        let rect = (x, y, w.max(1), h.max(1));
+        p.set_anchor_rect(rect.0, rect.1, rect.2, rect.3);
+        let shift = match self.output_in_parent(parent) {
+            Some(within) if factor == (1.0, 1.0) => popup_shift(c, rect, within),
+            _ => (0, 0),
+        };
+        let (ax, ay, _, _) = popup_request(c, rect, shift);
         use xdg_positioner::{Anchor, ConstraintAdjustment as Adj, Gravity};
         let (anchor, gravity, offset, flip) = match (c.side, c.aligned) {
             (PopupSide::Below, _) => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
@@ -174,11 +229,12 @@ impl<H: SurfaceHost + 'static> State<H> {
                 Adj::FlipX,
             ),
         };
+        let offset = (offset.0 + shift.0, offset.1 + shift.1);
         p.set_anchor(anchor);
         p.set_gravity(gravity);
         p.set_offset(offset.0, offset.1);
         p.set_constraint_adjustment(Adj::SlideX | Adj::SlideY | flip);
-        Some(p)
+        Some((p, (ax, ay)))
     }
 
     /// Creates `node`'s popup in surface `parent`, grabbing with the
@@ -197,11 +253,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());
             return;
         }
-        let factor = self
-            .surfaces
-            .get(&parent)
-            .map_or((1.0, 1.0), |p| p.pose_factor());
-        let Some(positioner) = self.positioner(&config, factor) else {
+        let Some((positioner, ask)) = self.positioner(&config, parent) else {
             return;
         };
         // It grabs only with the serial of the press that opened it, and
@@ -326,6 +378,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 config,
                 grabbed: grab.is_some(),
                 at: None,
+                asked: Some(ask),
             },
             config: layer_like,
             viewport,
@@ -544,9 +597,18 @@ impl<H: SurfaceHost + 'static> PopupHandler for State<H> {
         let Some(id) = self.surface_for(popup.wl_surface()) else {
             return;
         };
-        let Some(Role::Popup { config: c, .. }) = self.surfaces.get(&id).map(|s| &s.role) else {
+        let Some(Role::Popup {
+            config: c, asked, ..
+        }) = self.surfaces.get(&id).map(|s| &s.role)
+        else {
             return;
         };
+        // (owner-testing.md bug 6) The compositor put it elsewhere than
+        // the positioner asked (it slid or flipped it): a pixel of
+        // rounding aside, something the manager did not know.
+        let moved = asked.is_some_and(|(x, y)| {
+            (config.position.0 - x).abs() > 1 || (config.position.1 - y).abs() > 1
+        });
         // The compositor sizes the box (the window geometry); the buffer
         // adds the shadow overhang.
         let [t, r, b, l] = c.overhang;
@@ -562,6 +624,16 @@ impl<H: SurfaceHost + 'static> PopupHandler for State<H> {
         };
         let w = w.saturating_add((l + r).max(0) as u32);
         let h = h.saturating_add((t + b).max(0) as u32);
+        log::debug!(
+            "{}: popup configured at {:?}, {}×{}",
+            c.namespace,
+            config.position,
+            config.width,
+            config.height
+        );
+        if moved {
+            self.stats.popups_moved += 1;
+        }
         self.configured(id, (w, h));
         self.place_popup(id, config.position);
         // sctk acked it already; the next commit makes it take effect.

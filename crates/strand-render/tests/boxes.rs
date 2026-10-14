@@ -544,6 +544,58 @@ fn a_shadowed_island_keeps_its_popup_still() {
     }
 }
 
+/// (owner-testing.md bug 6) An island on an underdamped spring
+/// (`spring(3000, 0.75)`, the owner's `$motion.spatial`) overshoots as
+/// it reaches the popup's left or right edge, drawn for a few frames
+/// past the box. The popup still never resizes or moves: its overhang
+/// is the shadow's reach at the edge, and what overshoots further is
+/// clipped. A changed overhang repositions the popup
+/// (`xdg_popup.reposition`), which Hyprland 0.56 places past the
+/// output's edge.
+#[test]
+fn an_island_overshooting_the_popups_edge_keeps_it_still() {
+    let src = ISLAND
+        .replace(
+            "          bg: #ff0000\n",
+            "          bg: #ff0000; shadow: 0 6px 24px\n",
+        )
+        .replace(
+            "x: it.box.x - pop.box.x - 8 ~ spring(300, 1)",
+            "x: clamp(it.box.x + it.box.width / 2 - (hovered == 3 ? 72 : 46) / 2 - pop.box.x, 0, \
+             pop.box.width - (hovered == 3 ? 72 : 46)) ~ spring(3000, 0.75)",
+        )
+        .replace(
+            "width: it.box.width + 16 ~ spring(300, 1)",
+            "width: (hovered == 3 ? 72 : 46) ~ spring(3000, 0.75)",
+        );
+    assert_eq!(src.matches("spring(3000, 0.75)").count(), 2);
+    let (mut sh, spec) = island_shell(&src);
+    let o = spec.overhang;
+    assert_eq!((o.top, o.right, o.bottom, o.left), (31.0, 37.0, 43.0, 37.0));
+    sh.r.take_surface_changes();
+    let (_, items) = pill(&sh);
+    for target in [2, 0, 2, 1] {
+        sh.inst.event(items[target], "click", Vec::new());
+        sh.flush();
+        let mut k = 600;
+        let mut past = 0;
+        while sh.answer() || sh.r.wants_frame(POP) || sh.r.wants_frame(BAR) {
+            sh.paint(k);
+            // The overshoot is drawn past the box, into the overhang.
+            if let Some((a, b)) = red_run(sh.buf(POP), 20 + 31) {
+                past += usize::from(a < 37 || b > 37 + 186);
+            }
+            let changes = sh.r.take_surface_changes();
+            assert!(changes.is_empty(), "frame {k} to {target}: {changes:?}");
+            k += 1;
+            assert!(k < 3000, "never settled");
+        }
+        if target != 1 {
+            assert!(past > 0, "to {target}: it overshot the edge");
+        }
+    }
+}
+
 /// (M6, spec.md 14) Only a `trigger: hover` popup reserves its moving
 /// island's shadow reach at every edge: an `open:` popup's buffer is
 /// main's, the shadow's reach from where the island is (x: 0, 46 wide,

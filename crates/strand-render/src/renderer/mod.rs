@@ -134,6 +134,14 @@ struct SurfaceState {
     /// The flattened scene for the current state, reused by `paint` after
     /// `update`; `None` once anything it depends on changes.
     cache: Option<Flattened>,
+    /// (M4) The pose the last painted frame took out of the root
+    /// (`Flattened::pose`), which the surface manager sets with that
+    /// frame's commit ([`Renderer::delegated_pose`]). Kept apart from
+    /// `cache`: what a frame's end invalidates for the next frame (a
+    /// closing surface's exit ending drops its kept content) does not
+    /// change the pose of the frame just painted (owner-testing.md
+    /// bug 7).
+    posed: Option<strand_scene::SurfacePose>,
     /// The text slots the last flatten wanted.
     wanted: Vec<TextSlot>,
     /// The last layout pass, reused until something layout reads changes.

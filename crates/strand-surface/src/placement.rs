@@ -651,6 +651,64 @@ pub fn popup_config(
     })
 }
 
+/// The box (`x, y, w, h`, relative to the parent's window geometry) an
+/// `xdg_positioner` for `c` asks for before the compositor constrains
+/// it, with the anchor rect `rect` (`c.anchor_rect`, posed) and the
+/// positioner's offset moved by `shift`: xdg-shell's anchor point and
+/// gravity, with integer halves as wlroots takes them.
+pub fn popup_request(
+    c: &PopupConfig,
+    rect: (i32, i32, i32, i32),
+    shift: (i32, i32),
+) -> (i32, i32, i32, i32) {
+    let (ax, ay, aw, ah) = rect;
+    let (w, h) = (c.width.max(1) as i32, c.height.max(1) as i32);
+    let (x, y) = match (c.side, c.aligned) {
+        (PopupSide::Below, _) => (ax + aw / 2 - w / 2, ay + ah + c.gap),
+        (PopupSide::Above, _) => (ax + aw / 2 - w / 2, ay - h - c.gap),
+        (PopupSide::Right, false) => (ax + aw + c.gap, ay + ah / 2 - h / 2),
+        (PopupSide::Left, false) => (ax - w - c.gap, ay + ah / 2 - h / 2),
+        (PopupSide::Right, true) => (ax + aw + c.gap, ay),
+        (PopupSide::Left, true) => (ax - w - c.gap, ay),
+    };
+    (x + shift.0, y + shift.1, w, h)
+}
+
+/// (owner-testing.md bug 6) How far to move the positioner's offset so
+/// the box `c` asks for (anchor rect `rect`) lies inside `within` (its
+/// output, relative to the parent's window geometry) along its anchor's
+/// edge: across for a popup below or above its anchor, up or down for
+/// one beside it, as `slide_x`/`slide_y` would (a box wider than the
+/// output starts at its start). The side the popup opens on is left to
+/// the compositor's flip. The compositor need not slide it, which
+/// Hyprland 0.56 gets wrong for a popup with a window geometry offset
+/// (a shadow's overhang).
+pub fn popup_shift(
+    c: &PopupConfig,
+    rect: (i32, i32, i32, i32),
+    within: (i32, i32, i32, i32),
+) -> (i32, i32) {
+    let (x, y, w, h) = popup_request(c, rect, (0, 0));
+    let (wx, wy, ww, wh) = within;
+    let slide = |v: i32, len: i32, lo: i32, room: i32| -> i32 {
+        if room <= 0 {
+            return 0;
+        }
+        let mut d = 0;
+        if v + len > lo + room {
+            d = lo + room - (v + len);
+        }
+        if v + d < lo {
+            d = lo - v;
+        }
+        d
+    };
+    match c.side {
+        PopupSide::Below | PopupSide::Above => (slide(x, w, wx, ww), 0),
+        PopupSide::Right | PopupSide::Left => (0, slide(y, h, wy, wh)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1086,6 +1144,47 @@ mod tests {
         let e = layer_config(&spec(NodeKind::Popup, &[])).unwrap_err();
         assert_eq!(e, PlacementError::NotLayerSurface(NodeKind::Popup));
         assert!(e.to_string().contains("popup"));
+    }
+
+    /// (owner-testing.md bug 6) The box a positioner asks for, and the
+    /// shift that keeps it inside its output along its anchor's edge: a
+    /// popup under a top bar's last item moves left by what passes the
+    /// output's right edge, one under its first item right; one that fits
+    /// stays; one wider than the output starts at its start; one beside
+    /// its anchor moves up or down only.
+    #[test]
+    fn a_popup_is_shifted_inside_its_output() {
+        let c = PopupConfig {
+            namespace: "p".into(),
+            width: 400,
+            height: 120,
+            overhang: [31, 37, 43, 37],
+            anchor_rect: (0, 0, 1, 1),
+            side: PopupSide::Below,
+            aligned: false,
+            gap: 8,
+            grab: false,
+        };
+        let out = (0, 0, 1920, 1080);
+        let right = (1880, 4, 20, 36);
+        assert_eq!(popup_request(&c, right, (0, 0)), (1690, 48, 400, 120));
+        assert_eq!(popup_shift(&c, right, out), (-170, 0));
+        assert_eq!(popup_request(&c, right, (-170, 0)), (1520, 48, 400, 120));
+        assert_eq!(popup_shift(&c, (0, 4, 20, 36), out), (190, 0));
+        assert_eq!(popup_shift(&c, (900, 4, 20, 36), out), (0, 0));
+        // An output to the left of the parent's origin (its layer surface
+        // on the next output), and one narrower than the popup.
+        assert_eq!(popup_shift(&c, right, (-640, 0, 2880, 1440)), (0, 0));
+        assert_eq!(popup_shift(&c, right, (1700, 0, 300, 1080)), (10, 0));
+        let beside = PopupConfig {
+            side: PopupSide::Right,
+            ..c
+        };
+        assert_eq!(
+            popup_request(&beside, (0, 1060, 36, 20), (0, 0)),
+            (44, 1010, 400, 120)
+        );
+        assert_eq!(popup_shift(&beside, (0, 1060, 36, 20), out), (0, -50));
     }
 
     /// A popup in a top bar opens below the bar (its anchor spans the

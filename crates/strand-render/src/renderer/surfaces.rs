@@ -140,6 +140,7 @@ impl Renderer {
                 time: Duration::ZERO,
                 drawn: HashSet::new(),
                 cache: None,
+                posed: None,
                 wanted: Vec::new(),
                 boxes: None,
                 layout_dirty: true,
