@@ -3223,3 +3223,25 @@ fn a_missing_literal_file_is_a_warning() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// (M6, the owner's ruling of 2026-10-14) An icon name is looked up in
+/// the config's `icons/` folder at run time, then the theme: the check
+/// never looks one up, so a name only the folder has (or nothing has)
+/// is not warned about, through `icon` or `image`, while a path into the
+/// folder is a file like any other.
+#[test]
+fn icon_names_of_the_config_icons_folder_are_not_warned() {
+    let dir = std::env::temp_dir().join(format!("strand-cfgicons-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("icons")).unwrap();
+    std::fs::write(dir.join("icons/strand-own.svg"), "<svg/>").unwrap();
+    let src = "bar B {\n  height: 30\n  icon \"strand-own\"\n  icon \"strand-own-symbolic\"\n  \
+        image \"strand-own\"\n  icon \"strand-nowhere\"\n  image \"icons/strand-own.svg\"\n}\n";
+    let out = one(src);
+    let w = strand_compiler::check::assets::check(&out.program, Some(&dir));
+    assert!(w.is_empty(), "{w:?}");
+    let out = one("bar B {\n  height: 30\n  image \"icons/strand-gone.svg\"\n}\n");
+    let w = strand_compiler::check::assets::check(&out.program, Some(&dir));
+    assert_eq!(w.len(), 1, "{w:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

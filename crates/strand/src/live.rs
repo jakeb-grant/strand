@@ -175,6 +175,21 @@ pub fn cache_sources() -> Vec<CacheSource> {
     out
 }
 
+/// (M6, the owner's ruling of 2026-10-14) The config's `icons/` folder,
+/// where icon names are looked up before the icon theme
+/// (`strand_icons::set_config_icons`).
+pub fn config_icons_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("icons")
+}
+
+/// The watch on [`config_icons_dir`]: the folder alone (it is flat),
+/// reported as [`CacheKind::Icons`], so a file added, removed or edited
+/// there redraws the icons as an icon theme change does. The folder need
+/// not exist yet.
+pub fn config_icons_source(config_dir: &Path) -> CacheSource {
+    CacheSource::Tree(config_icons_dir(config_dir), 0, CacheKind::Icons)
+}
+
 /// The worker thread and its watcher.
 #[derive(Debug)]
 pub struct Worker {
@@ -885,6 +900,65 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(kinds.try_recv().is_err(), "once per change");
         assert!(rx.try_recv().is_err(), "no reload for a cache change");
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (M6, the owner's ruling of 2026-10-14) The config's `icons/`
+    /// folder is watched as an icon cache: created after the watch, a
+    /// file added to it, edited and removed each report
+    /// `CacheKind::Icons` (what `strand run` turns into
+    /// `strand_icons::invalidate` and the renderer's `icons_changed`),
+    /// and none of them reloads the config.
+    #[test]
+    fn the_config_icons_folder_is_an_icon_cache() {
+        let dir = std::env::temp_dir().join(format!("strand-live-cfgicons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("shell.strand"), "").unwrap();
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&config, None, out).unwrap();
+        let (tx, kinds) = std::sync::mpsc::channel::<CacheKind>();
+        let tx = std::sync::Mutex::new(tx);
+        assert_eq!(
+            config_icons_source(&config),
+            CacheSource::Tree(config.join("icons"), 0, CacheKind::Icons)
+        );
+        worker
+            .jobs()
+            .send(Job::Caches {
+                sources: vec![config_icons_source(&config)],
+                changed: CacheSink(Box::new(move |k| {
+                    let _ = tx.lock().map(|t| t.send(k));
+                })),
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let next = || {
+            kinds
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("no cache change reported")
+        };
+        let drain = || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            while kinds.try_recv().is_ok() {}
+        };
+        // The folder made while running, then a file in it.
+        std::fs::create_dir_all(config.join("icons")).unwrap();
+        drain();
+        // A new directory in the config may list the module set again.
+        while rx.try_recv().is_ok() {}
+        std::fs::write(config.join("icons/wifi.svg"), "<svg/>").unwrap();
+        assert_eq!(next(), CacheKind::Icons, "added");
+        drain();
+        std::fs::write(config.join("icons/wifi.svg"), "<svg></svg>").unwrap();
+        assert_eq!(next(), CacheKind::Icons, "edited");
+        drain();
+        std::fs::remove_file(config.join("icons/wifi.svg")).unwrap();
+        assert_eq!(next(), CacheKind::Icons, "removed");
+        drain();
+        assert!(rx.try_recv().is_err(), "no reload for an icon file");
         assert!(worker.join().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }

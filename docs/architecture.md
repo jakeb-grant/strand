@@ -576,7 +576,20 @@ fallbacks; `exists` follows the same chain; `system_theme`, `base_dirs`, `theme_
 `generation`, and `set_desktop_theme(Option<String>) -> bool`, the
 portal's theme name, preferred to GTK's settings files and invalidating
 when it changes); the renderer and the `apps` service both look icons up
-through it. `strand_services::icon_theme::spawn(&Services, switched)`
+through it. (M6, the owner's ruling of 2026-10-14)
+`set_config_icons(Option<PathBuf>)` (and `config_icons()`) names the
+config's flat `icons/` folder, which `resolve` (so `exists`) tries
+before the theme for each pair of candidates, a name and its
+`-symbolic` variant (`<name>.svg`, else `<name>.png`; listed once per
+`generation`); the crate has no dependencies, so it does not find the
+config itself: `strand run` sets it first thing (`live::config_icons_dir`)
+and hands the watcher `live::config_icons_source(dir)`, a depth-0
+`CacheSource::Tree` of `CacheKind::Icons`, so a file added, edited or
+removed there goes the `index.theme` way (`invalidate`, the renderer's
+`icons_changed`, the apps service). Render recolours a folder file only
+when its own name ends in `-symbolic`, and `Renderer::icons_changed`
+paints the surfaces drawing icons whole (a new decode may reuse the old
+pixmap's address, which the frame records hash). `strand_services::icon_theme::spawn(&Services, switched)`
 follows the settings portal's `org.gnome.desktop.interface` `icon-theme`
 as a task of the shared services runtime, on its shared session
 connection (`Services::spawn_task`, crate-private), and feeds

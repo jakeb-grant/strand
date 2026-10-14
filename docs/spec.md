@@ -518,6 +518,22 @@ filling the monitor, the keyboard always).
   an icon name. `strand check` warns (`check::missing_file`) when a
   literal path names no file; an icon name and a computed source are
   not checked.
+- **Icon names.** An icon name (an `icon`'s source, an `image` source
+  that is not a path, and so every app, window and tray item icon a
+  config draws by name) is looked up first in the config directory's
+  `icons/` folder, then in the icon theme (the Icon Theme
+  Specification). The folder is flat: `<name>.svg`, else `<name>.png`;
+  its subdirectories are not looked in, and an SVG is drawn at any size
+  and a PNG scaled. A name's candidates are the name, its other
+  `-symbolic` variant, then the same for each generic fallback (a
+  trailing `-segment` removed); for each name and its variant the
+  folder comes before the theme, so `icon "wifi"` draws
+  `icons/wifi.svg`, else `icons/wifi-symbolic.svg`, else the theme's
+  `wifi` or `wifi-symbolic`, and only then a fallback. A folder file
+  whose name ends in `-symbolic` is recoloured by `color` (by default
+  the scope's `$fg`) as a theme's symbolic icon is; any other is drawn
+  as authored. Adding, editing or removing a file there redraws every
+  icon while the shell runs.
 
 ### 6.2 Props and inherited props
 

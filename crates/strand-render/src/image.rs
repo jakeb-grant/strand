@@ -3,8 +3,10 @@
 //! when a worker runs.
 //!
 //! An `icon` names an icon of the freedesktop icon theme
-//! (`window-close-symbolic`); a symbolic icon draws as a mask in the
-//! node's `color`. An `image` takes a file path (PNG, JPEG, SVG, GIF or
+//! (`window-close-symbolic`), looked up first in the config's `icons/`
+//! folder ([`strand_icons::set_config_icons`]); a symbolic icon draws as
+//! a mask in the node's `color` (a config file only when its own name
+//! ends in `-symbolic`). An `image` takes a file path (PNG, JPEG, SVG, GIF or
 //! WebP; `~/` and `file://` work) or, when its source has no path, an
 //! icon name as well (`image h.app.icon`, `image item.icon`). A relative
 //! path in a config is under the config directory: the compiler makes it
@@ -351,7 +353,12 @@ pub fn load_with(
 ) -> Result<Decoded, ImageError> {
     let (w, h) = (key.w.clamp(1, MAX_SIDE), key.h.clamp(1, MAX_SIDE));
     let path = resolve(key, theme)?;
-    let symbolic = key.source.ends_with("-symbolic")
+    // A file of the config's `icons/` folder is recoloured by its own
+    // name alone (the owner's ruling of 2026-10-14: `wifi-symbolic.svg`
+    // is, `wifi.svg` is drawn as authored whatever name found it).
+    let own = is_icon(key)
+        && strand_icons::config_icons().is_some_and(|d| path.parent() == Some(d.as_path()));
+    let symbolic = (!own && key.source.ends_with("-symbolic"))
         || path
             .file_stem()
             .and_then(|s| s.to_str())

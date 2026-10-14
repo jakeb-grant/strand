@@ -295,7 +295,9 @@ Also every prop and event of [`node`](#node).
 element icon(text -> source): node
 ```
 
-An icon by name from the icon theme: `icon "window-close-symbolic"`.
+An icon by name: `icon "wifi"` looks in the config's `icons/` folder
+(`wifi.svg` or `.png`, then `wifi-symbolic`), then the icon theme. A
+`-symbolic` icon is drawn in `color`.
 
 It takes no children.
 
@@ -307,7 +309,9 @@ Also every prop and event of [`node`](#node).
 element image(text? -> source): node
 ```
 
-A null source shows nothing.
+A picture by file path (`image "art.png"`, relative to the config
+directory) or by icon name, as `icon` finds it. A null source shows
+nothing.
 
 It takes no children.
 

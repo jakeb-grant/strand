@@ -286,6 +286,11 @@ struct State {
     system: Option<String>,
     /// The portal's theme ([`set_desktop_theme`]); kept by [`invalidate`].
     desktop: Option<String>,
+    /// The config's `icons/` folder ([`set_config_icons`]); kept by
+    /// [`invalidate`].
+    config: Option<PathBuf>,
+    /// Its files by icon name, listed once per [`generation`].
+    config_files: Option<Arc<HashMap<String, PathBuf>>>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
@@ -304,7 +309,75 @@ pub fn invalidate() {
     s.themes.clear();
     s.found.clear();
     s.system = None;
+    s.config_files = None;
     GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// (M6, the owner's ruling of 2026-10-14) Look icon names up in `dir`
+/// first (the config's `icons/` folder; `None`: no folder). This crate
+/// does not know where the config is: `strand run` sets it at boot, and
+/// watches the folder so that a change there calls [`invalidate`].
+/// Invalidates when it changes.
+///
+/// The folder is flat: `<name>.svg`, else `<name>.png`, nothing in its
+/// subdirectories. [`resolve`] tries it before the theme for the name and
+/// its `-symbolic` variant, then the same for each generic fallback, so
+/// a file there wins over the theme for the name asked for, and a theme
+/// icon of a more specific name wins over a config file of a generic one.
+pub fn set_config_icons(dir: Option<PathBuf>) {
+    let changed = {
+        let mut s = state();
+        let changed = s.config != dir;
+        s.config = dir;
+        changed
+    };
+    if changed {
+        invalidate();
+    }
+}
+
+/// The folder [`set_config_icons`] set.
+pub fn config_icons() -> Option<PathBuf> {
+    state().config.clone()
+}
+
+/// The config folder's icons by name (`wifi` for `wifi.svg`, an SVG
+/// before a PNG of the same name), listed without the lock held and
+/// remembered for this [`generation`].
+fn config_files() -> Option<Arc<HashMap<String, PathBuf>>> {
+    let (dir, epoch) = {
+        let s = state();
+        if let Some(f) = &s.config_files {
+            return Some(f.clone());
+        }
+        (s.config.clone()?, generation())
+    };
+    let mut files: HashMap<String, PathBuf> = HashMap::new();
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        let (Some(stem), Some(ext)) = (
+            path.file_stem().and_then(|s| s.to_str()),
+            path.extension().and_then(|s| s.to_str()),
+        ) else {
+            continue;
+        };
+        if stem.is_empty() || stem.starts_with('.') || !EXTENSIONS.contains(&ext) {
+            continue;
+        }
+        // A link is followed; a directory or a FIFO is no icon.
+        if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        if ext == "svg" || !files.contains_key(stem) {
+            files.insert(stem.to_string(), path);
+        }
+    }
+    let files = Arc::new(files);
+    let mut s = state();
+    if generation() == epoch && s.config.as_ref() == Some(&dir) {
+        s.config_files = Some(files.clone());
+    }
+    Some(files)
 }
 
 /// How many times [`invalidate`] ran: a holder of lookups made earlier
@@ -506,15 +579,24 @@ pub fn candidates(name: &str) -> Vec<String> {
 }
 
 /// The file icon `name` draws from: the first of its [`candidates`] the
-/// theme has ([`lookup`]). What the renderer draws, and what the `apps`
-/// service checks an app's icon against: both agree on which names draw.
+/// config's `icons/` folder ([`set_config_icons`]) or the theme
+/// ([`lookup`]) has. [`candidates`] come in pairs, a name and its other
+/// `-symbolic` variant, from the name asked for to its most generic
+/// fallback; for each pair the folder is tried before the theme, so
+/// `wifi` finds `icons/wifi.svg`, then `icons/wifi-symbolic.svg`, then
+/// the theme's `wifi` and `wifi-symbolic`, and only then `wifi`'s
+/// fallbacks. What the renderer draws, and what the `apps` service checks
+/// an app's icon against: both agree on which names draw.
 pub fn resolve(name: &str, size: u16, scale: u16, theme: Option<&str>) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') {
         return None;
     }
-    candidates(name)
-        .into_iter()
-        .find_map(|n| lookup(&n, size, scale, theme))
+    let own = config_files();
+    candidates(name).chunks(2).find_map(|pair| {
+        own.as_ref()
+            .and_then(|own| pair.iter().find_map(|n| own.get(n).cloned()))
+            .or_else(|| pair.iter().find_map(|n| lookup(n, size, scale, theme)))
+    })
 }
 
 /// Whether `name` draws from the desktop's theme (or its parents, or
@@ -749,5 +831,74 @@ mod tests {
         }
         assert_eq!(dirs[0].distance(48, 2), u32::MAX - 96);
         assert!(dirs[2].matches(4294967295, 3));
+    }
+
+    /// (M6, the owner's ruling of 2026-10-14) The config's `icons/`
+    /// folder comes before the theme for each pair of candidates: the
+    /// name and its `-symbolic` variant there beat the theme's name, a
+    /// theme icon of a more specific name beats a generic file there, an
+    /// SVG beats a PNG of the same name, its subdirectories are not
+    /// looked in, and a file added is found after [`invalidate`].
+    #[test]
+    fn the_config_folder_comes_first_for_each_name_and_its_variant() {
+        let _serial = serial();
+        let base = std::env::temp_dir().join(format!("strand-icons-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let icons = base.join("icons");
+        write(&icons.join("T/index.theme"), INDEX);
+        for n in ["wifi", "network-wireless", "both", "theme-only"] {
+            write(&icons.join(format!("T/scalable/apps/{n}.svg")), "svg");
+        }
+        let own = base.join("config/icons");
+        write(&own.join("wifi-symbolic.svg"), "svg");
+        write(&own.join("network.svg"), "svg");
+        write(&own.join("both.png"), "png");
+        write(&own.join("both.svg"), "svg");
+        write(&own.join("raster.png"), "png");
+        write(&own.join("sub/nested.svg"), "svg");
+        write(&own.join("notes.txt"), "txt");
+        set_base_dirs(Some(vec![icons.clone()]));
+        let t = Some("T");
+        assert_eq!(
+            resolve("wifi", 48, 1, t),
+            Some(icons.join("T/scalable/apps/wifi.svg"))
+        );
+        set_config_icons(Some(own.clone()));
+        assert_eq!(config_icons(), Some(own.clone()));
+        let r = |n: &str| resolve(n, 48, 1, t);
+        assert_eq!(
+            r("wifi"),
+            Some(own.join("wifi-symbolic.svg")),
+            "the variant first"
+        );
+        assert_eq!(r("wifi-symbolic"), Some(own.join("wifi-symbolic.svg")));
+        assert_eq!(
+            r("network-wireless"),
+            Some(icons.join("T/scalable/apps/network-wireless.svg")),
+            "the theme's specific name over the folder's generic one"
+        );
+        assert_eq!(
+            r("network-wired"),
+            Some(own.join("network.svg")),
+            "a generic file"
+        );
+        assert_eq!(r("both"), Some(own.join("both.svg")), "SVG before PNG");
+        assert_eq!(r("raster"), Some(own.join("raster.png")));
+        assert_eq!(
+            r("theme-only"),
+            Some(icons.join("T/scalable/apps/theme-only.svg"))
+        );
+        assert_eq!(r("nested"), None, "flat");
+        assert_eq!(r("notes"), None, "SVG and PNG only");
+        assert!(exists("raster"), "the apps service's question too");
+        // Listed once per generation: a file added is found after an
+        // invalidation, as the watcher's report gives.
+        write(&own.join("theme-only.svg"), "svg");
+        invalidate();
+        assert_eq!(r("theme-only"), Some(own.join("theme-only.svg")));
+        set_config_icons(None);
+        assert_eq!(r("wifi"), Some(icons.join("T/scalable/apps/wifi.svg")));
+        set_base_dirs(None);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

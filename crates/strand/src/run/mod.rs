@@ -571,6 +571,10 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     }
     // Before any thread starts, so every thread has the signals blocked.
     let signals = signal_fd()?;
+    // (M6, the owner's ruling of 2026-10-14) Icon names are looked up in
+    // the config's `icons/` folder before the icon theme, by the renderer
+    // and the `apps` service alike: set before either looks one up.
+    strand_icons::set_config_icons(Some(live::config_icons_dir(dir)));
     // (M4) A tray action sends the press's point only when an input
     // event's handler calls it; a timer's or IPC's sends (0,0).
     strand_services::tray::set_input_probe(strand_compiler::vm::in_input_handler);
@@ -613,8 +617,14 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // this thread, the apps service is told directly.
     let (caches_tx, caches_rx) = calloop::channel::channel::<CacheKind>();
     let icons_tx = caches_tx.clone();
+    // The config's `icons/` folder (set at the start of `run`): a file
+    // added, removed or edited there invalidates the icons like a theme
+    // change.
     let _ = compiler.jobs().send(Job::Caches {
-        sources: live::cache_sources(),
+        sources: live::cache_sources()
+            .into_iter()
+            .chain([live::config_icons_source(dir)])
+            .collect(),
         changed: live::CacheSink(Box::new(move |kind| {
             let _ = caches_tx.send(cache_changed(kind));
         })),

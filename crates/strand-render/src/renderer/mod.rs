@@ -497,6 +497,11 @@ impl Renderer {
         strand_icons::invalidate();
         for id in self.extras.images.invalidate_icons() {
             if let Some(s) = self.surfaces.get_mut(&id) {
+                // Painted whole: the frame's records hash a decode by its
+                // pixmap's address, which the new decode of the same name
+                // may reuse once the old one is dropped (a config icon
+                // replacing a theme icon drew no damage).
+                s.valid = false;
                 s.mark_dirty();
             }
         }

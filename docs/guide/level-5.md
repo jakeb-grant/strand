@@ -579,7 +579,18 @@ steps.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge
-  in an editor, name the needle, and it turns with your data.
+  in an editor, name the needle, and it turns with your data. Its path,
+  like an `image`'s, is relative to your config directory:
+  `svg "icons/gauge.svg"` is in the `icons` folder beside your files.
+- **Your own icons.** Put SVG or PNG files in an `icons/` folder beside
+  your config and name them as an icon theme would: `icon "wifi"` draws
+  `icons/wifi.svg` (or `wifi-symbolic.svg`, or a `.png`), and on a
+  machine without the file it falls back to the icon theme. A file
+  whose name ends in `-symbolic` is drawn in `color`, like a theme's
+  symbolic icon; any other is drawn as you made it. Every icon name is
+  looked up there first, so `icons/firefox.svg` also replaces Firefox's
+  icon wherever an app's or tray item's icon is shown. Adding, editing
+  or removing a file there redraws the icons at once.
 
 ## 7. Plugins
 
