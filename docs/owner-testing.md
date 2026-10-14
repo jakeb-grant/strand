@@ -725,7 +725,7 @@ findings only.
     `slots[(slots.index_of(w => w.focused) ?? -1) + 1]?.focus()`
     (`crates/strand-compiler/tests/vm.rs::index_of_finds_the_first_position`).
 24. **A popup's gap side: a negative `margin` and a `margin` of 0.**
-    (diagnosed, 2026-10-14; found by the island test bar
+    (fixed, 2026-10-14; found by the island test bar
     (`target/try/island`), headless sway; not yet reproduced minimally)
     `margin: -h, 0, 0` on a bar's popup (the island's popups covering
     the bar to grow out of the screen's edge) works on sway but is
@@ -734,11 +734,14 @@ findings only.
     `crates/strand-surface/src/placement.rs`), so a popup cannot sit
     flush against its anchor without `attach:`. Likely direction:
     document the gap side's meaning and give "no gap" a spelling.
-    **Specified** (G-e): spec.md 5.1 now says a popup's `margin` on the
-    side facing its anchor is the gap, 6 px only while unset, `0`
-    touching and a negative one overlapping the anchor (the island's
-    covering popups). Placement still takes 0 as unset; the fix is
-    strand-surface's (`SurfaceSpec` must tell an unset margin from 0).
+    **Fixed; pending the owner's check on Hyprland** (G-e): spec.md 5.1
+    now says a popup's `margin` on the side facing its anchor is the
+    gap, 6 px only while unset, `0` touching and a negative one
+    overlapping the anchor (the island's covering popups); and
+    `SurfaceSpec::margin_set` tells an unset margin from `0`, so
+    placement gives the default 6 only while `margin` is unset
+    (`crates/strand-surface/tests/sway.rs::a_popups_margin_on_its_anchors_side_is_its_gap`,
+    which failed before with the `margin: 0` popup 6 px below the bar).
     decisions.md m6-owner-fixes.
 25. **`graph` keeps its history only while mounted.** (open, 2026-10-14;
     found by the island test bar (`target/try/island`), headless sway;
