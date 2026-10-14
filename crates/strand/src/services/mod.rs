@@ -539,6 +539,44 @@ mod tests {
 
     use super::*;
 
+    /// (M6, review r2 major 1) The composite host remembers the press of
+    /// the last action a handler ran with one, and when, whatever the
+    /// action's fate: the step that hands over the service's answer (the
+    /// tray's `opened`) carries it (`run::PressCause`). An action with no
+    /// press leaves it.
+    #[test]
+    fn a_pressed_action_is_remembered_for_its_answer() {
+        use strand_compiler::vm::{ActionCtx, ActionTarget, InputCtx};
+        let shell = Shell::boot("bar Top { height: 10 }\n");
+        let host = shell.real.host.clone();
+        let act = |input| {
+            let ctx = ActionCtx {
+                input,
+                invocation: 1,
+            };
+            let _ = host.action(
+                &shell.rt,
+                ActionTarget::Service("notifications"),
+                "clear",
+                &[],
+                ctx,
+            );
+        };
+        assert_eq!(host.action_press(), None);
+        act(None);
+        assert_eq!(host.action_press(), None, "no press");
+        let before = Instant::now();
+        act(Some(InputCtx {
+            surface: 1,
+            serial: 9,
+        }));
+        let (serial, at) = host.action_press().unwrap();
+        assert_eq!(serial, 9);
+        assert!(at >= before);
+        act(None);
+        assert_eq!(host.action_press().map(|(s, _)| s), Some(9), "kept");
+    }
+
     /// `strand set` on a service field: absolute and relative values by
     /// the field's type, read-only fields and unknown names refused.
     #[test]

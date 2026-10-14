@@ -45,12 +45,17 @@ so container queries settle inside the frame. `SceneDiff::reduced_motion`
 carries a change of the desktop's reduced-motion preference
 (`system.reduced_motion`) to render (sent even with no ops).
 `SceneDiff::press: Option<u32>` (M6, m6-w2-surface) is the compositor
-serial of the last press whose event or two-way write logic handled
-(`ToLogic::Event`'s and `ToLogic::Write`'s `input`), kept on every diff
-until a hover change is handled; the host marks each popup a diff
-creates or opens with it (`demo::popup_causes`,
-`State::set_popup_cause`) before applying it, so the surface grabs
-only for the press that opened it. No locks are shared across
+serial of the press that caused the diff (`run::PressCause`): the last
+press among the events and two-way writes logic handled since the last
+step (`ToLogic::Event`'s and `ToLogic::Write`'s `input`; a hover change
+or an input-less write handled after it does not take it away), else,
+on the step after the services reported a change, the press of the
+last action a handler ran with one (`Composite::action_press`, from
+`ActionCtx::input`), up to `GRAB_WINDOW` after it: the tray's `opened`
+answering `item.menu.open()`. The host marks each popup a diff creates
+or opens with it (`demo::popup_causes`, `State::set_popup_cause`)
+before applying it, so the surface grabs only for the press that
+opened it. No locks are shared across
 threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run/`) is this wiring: the main
@@ -2346,7 +2351,17 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     left press that went down there is held, and closes it
     `Prop::Grace` (default `strand_render::HOVER_GRACE`, 200 ms) after,
     the popups opened from it first. Pick mode opens nothing and ends
-    the graces. `Router::next_wake() -> Option<Instant>` is the earliest
+    the graces; leaving it hit-tests the pointer again, so the hover
+    (and the popup under it) comes back at once. The router's open
+    popups follow logic: `Router::observe` matches each `SetProp { Open
+    }` on a popup against the values it wrote and not yet saw, in
+    order, and takes any other value as logic's own (a reload
+    remounting one open or closed); only live `trigger: hover` popups
+    stay its own (a reload that drops `trigger` hands one back to the
+    program). A `ClickAway` on such a popup's surface (`popup_done`)
+    closes it in logic too, and it opens again only once the pointer
+    has left its anchor. A `delay` or `grace` too long for the clock
+    never comes due. `Router::next_wake() -> Option<Instant>` is the earliest
     delay or grace to end and `Router::tick(&mut dyn InputScene) ->
     Vec<Intent>` runs them. The host hands `next_wake` to
     `Renderer::set_input_wake(Option<Instant>)` after each routed event
@@ -3911,8 +3926,9 @@ and the connection):
   its own; when the keys move on, the old target gets `KeyboardLeave`
   unless the new one is nested in it, and when the grab ends the surface
   with focus gets `KeyboardEnter` again). A popup opened with no grab
-  (later than `GRAB_WINDOW` after a press) takes no keyboard and leaves
-  other popups open.
+  takes no keyboard and leaves
+  other popups open: one no press opened, or opened more than
+  `GRAB_WINDOW` after it.
   `popup_done` is sent as `InputEvent::ClickAway { surface }` (before the
   surface goes), then the popup and the popups nested in it are destroyed
   (innermost first, as any surface's are), and it is not shown again until

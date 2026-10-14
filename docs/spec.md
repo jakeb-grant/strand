@@ -186,10 +186,12 @@ filling the monitor, the keyboard always).
   (a popup may hold popups), and has `on dismiss` (Escape or a click
   away closed it). `trigger: hover` lets the pointer open and close it
   (section 6.3). A popup takes the keyboard (an `xdg_popup` grab) only
-  when a press opened it: a handler or two-way write running for a
-  click or a key set its `open`; one a hover, a timer or IPC opens
-  does not, nor does a `trigger: hover` popup or one opened from inside
-  a popup without a grab.
+  when a press opened it, while that press is still the seat's last
+  and at most 500 ms old: a handler or two-way write running for a
+  click or a key set its `open`, or a service answered an action such
+  a handler ran (a tray menu's `opened`). One a hover, a timer or IPC
+  opens does not, nor does a `trigger: hover` popup or one opened from
+  inside a popup without a grab.
 - **`keyboard: none | on_demand | exclusive`** sets how the surface
   takes keyboard focus.
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.

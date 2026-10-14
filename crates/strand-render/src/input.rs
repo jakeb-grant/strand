@@ -11,7 +11,7 @@
 //! it is tested on its own, and the inspector (M5), popup grabs and drag
 //! and drop (M4) reach the same state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use strand_scene::input::button;
@@ -443,12 +443,20 @@ pub const HOVER_GRACE: Duration = Duration::from_millis(200);
 /// writes their `open` as the pointer comes and goes.
 #[derive(Debug, Default)]
 struct HoverPopups {
-    /// Each open one, and when it closes unless the pointer comes back
-    /// (`None` while the pointer is on it or its anchor).
-    open: HashMap<NodeId, Option<Instant>>,
+    /// Each open one, and its grace: `None` while the pointer is on it
+    /// or its anchor, else when it closes unless the pointer comes back
+    /// (`Some(None)`: a grace too long to end).
+    open: HashMap<NodeId, Option<Option<Instant>>>,
     /// Each waiting for its `delay` while the pointer rests on its
-    /// anchor, and when it opens.
-    pending: HashMap<NodeId, Instant>,
+    /// anchor, and when it opens (`None`: a delay too long to end).
+    pending: HashMap<NodeId, Option<Instant>>,
+    /// The values of `open` written to each and not yet seen in logic's
+    /// diffs ([`Router::observe`]), oldest first.
+    written: HashMap<NodeId, VecDeque<bool>>,
+    /// Closed by the compositor (`popup_done`) or a click away while the
+    /// pointer was on its anchor: it opens again only once the pointer
+    /// has left that anchor.
+    dismissed: HashSet<NodeId>,
 }
 
 /// (M6) Whether `node` is a `trigger: hover` popup (never a tooltip's).
@@ -505,6 +513,41 @@ impl Router {
     /// global index, and is selected again when the window brings it
     /// back.
     pub fn observe(&mut self, diff: &SceneDiff) {
+        // (M6) `open` on a `trigger: hover` popup: the router's own
+        // writes coming back, in order, or logic's own value (a reload
+        // remounted it open or closed), which the router takes on.
+        for op in &diff.ops {
+            let SceneOp::SetProp {
+                id,
+                prop: Prop::Open,
+                value: PropValue::Bool(on),
+                ..
+            } = op
+            else {
+                continue;
+            };
+            let h = &mut self.hover_popups;
+            let answer = h
+                .written
+                .get(id)
+                .and_then(|w| w.iter().position(|v| v == on));
+            match (answer, h.written.get_mut(id)) {
+                (Some(i), Some(w)) => {
+                    w.drain(..=i);
+                    if w.is_empty() {
+                        h.written.remove(id);
+                    }
+                }
+                _ => {
+                    h.written.remove(id);
+                    if *on {
+                        h.open.entry(*id).or_insert(None);
+                    } else {
+                        h.open.remove(id);
+                    }
+                }
+            }
+        }
         for op in &diff.ops {
             if let SceneOp::Remove { id, window: true } = op
                 && let Some(list) = self
@@ -640,8 +683,9 @@ impl Router {
     /// [`Renderer::pick_input`] instead; the keyboard routes as before
     /// and no surface's keyboard interactivity changes. Turning it on
     /// ends every hover and press (their flags go off), a slider drag, a
-    /// selection by pointer and a drag in flight; turning it off leaves
-    /// the next pointer event to rebuild the hover. Returns what logic
+    /// selection by pointer and a drag in flight; turning it off
+    /// rebuilds the hover from where the pointer is (a hit test), so a
+    /// `trigger: hover` popup under it stays open. Returns what logic
     /// hears of it.
     pub fn set_picking(&mut self, on: bool, scene: &mut dyn InputScene) -> Vec<Intent> {
         if self.picking != on {
@@ -660,6 +704,19 @@ impl Router {
                 // target while picking (inspect-r2-4).
                 if let Some(o) = &mut self.offer {
                     o.target = None;
+                }
+            } else {
+                // (M6) The pointer's hover comes back at once, so a
+                // `trigger: hover` popup under it is not closed by the
+                // flush below as if the pointer had gone.
+                let at: Vec<(SurfaceId, LogicalPoint)> =
+                    self.pointer.iter().map(|(s, p)| (*s, *p)).collect();
+                for (s, p) in at {
+                    let Some(&root) = self.surfaces.get(&s) else {
+                        continue;
+                    };
+                    let c = scene.hit(s, p);
+                    self.hover(s, if c.is_empty() { vec![root] } else { c });
                 }
             }
         }
@@ -682,6 +739,7 @@ impl Router {
             .values()
             .flatten()
             .chain(h.pending.values())
+            .flatten()
             .min()
             .copied()
     }
@@ -699,9 +757,14 @@ impl Router {
         let Some(tree) = tree else {
             return;
         };
-        let live = |n: &NodeId| tree.contains_live(*n);
-        self.hover_popups.open.retain(|n, _| live(n));
-        self.hover_popups.pending.retain(|n, _| live(n));
+        // Only live `trigger: hover` popups are the router's (a reload
+        // may have made one the program's).
+        let ours = |n: &NodeId| tree.contains_live(*n) && is_hover_popup(tree, *n);
+        let h = &mut self.hover_popups;
+        h.open.retain(|n, _| ours(n));
+        h.pending.retain(|n, _| ours(n));
+        h.written.retain(|n, _| tree.contains_live(*n));
+        h.dismissed.retain(|n| ours(n));
         if self.picking {
             let graced: Vec<NodeId> = self
                 .hover_popups
@@ -716,10 +779,11 @@ impl Router {
             self.hover_popups.pending.clear();
             return;
         }
-        // Where the pointer is: each hovered (or pressed) chain, and from
-        // a popup's root on up through the element it is anchored to.
+        // Where the pointer is: each hovered chain (a held press keeps
+        // its chain hovered), and from a popup's root on up through the
+        // element it is anchored to.
         let mut under: HashSet<NodeId> = HashSet::new();
-        for chain in self.hovered.values().chain(self.pressed.values()) {
+        for chain in self.hovered.values() {
             under.extend(chain.iter().copied());
             if let Some(&root) = chain.last() {
                 under.extend(ancestors(tree, root));
@@ -742,12 +806,12 @@ impl Router {
                 }
             }
         }
-        self.hover_popups
-            .pending
-            .retain(|p, _| want.values().any(|w| w == p));
+        let wanted = |p: &NodeId| want.values().any(|w| w == p);
+        self.hover_popups.pending.retain(|p, _| wanted(p));
+        self.hover_popups.dismissed.retain(|p| wanted(p));
         let mut opening = Vec::new();
         for (&from, &p) in &want {
-            if self.hover_popups.open.contains_key(&p) {
+            if self.hover_popups.open.contains_key(&p) || self.hover_popups.dismissed.contains(&p) {
                 continue;
             }
             let delay = match tree.get(p).and_then(|n| n.get(Prop::Delay)) {
@@ -755,8 +819,12 @@ impl Router {
                 _ => Duration::ZERO,
             };
             if !delay.is_zero() {
-                let due = *self.hover_popups.pending.entry(p).or_insert(now + delay);
-                if due > now {
+                let due = *self
+                    .hover_popups
+                    .pending
+                    .entry(p)
+                    .or_insert(now.checked_add(delay));
+                if due.is_none_or(|d| d > now) {
                     continue;
                 }
             }
@@ -775,11 +843,7 @@ impl Router {
                 self.close_hover_popup(tree, q);
             }
             self.hover_popups.open.insert(p, None);
-            self.out.push(Intent::Write {
-                node: p,
-                prop: Prop::Open,
-                value: PropValue::Bool(true),
-            });
+            self.write_open(p, true);
         }
         let open: Vec<NodeId> = self.hover_popups.open.keys().copied().collect();
         for p in open {
@@ -795,7 +859,10 @@ impl Router {
                 Some(PropValue::Duration(d)) => *d,
                 _ => HOVER_GRACE,
             };
-            if *due.get_or_insert(now + grace) <= now {
+            if due
+                .get_or_insert(now.checked_add(grace))
+                .is_some_and(|d| d <= now)
+            {
                 self.close_hover_popup(tree, p);
             }
         }
@@ -817,12 +884,40 @@ impl Router {
         inner.sort_by_key(|q| std::cmp::Reverse(q.0));
         for p in inner.into_iter().map(|(_, q)| q).chain([popup]) {
             self.hover_popups.open.remove(&p);
-            self.out.push(Intent::Write {
-                node: p,
-                prop: Prop::Open,
-                value: PropValue::Bool(false),
-            });
+            self.write_open(p, false);
         }
+    }
+
+    /// (M6) Writes `open` of a `trigger: hover` popup, remembering it
+    /// until logic's diff shows it ([`Router::observe`]).
+    fn write_open(&mut self, popup: NodeId, on: bool) {
+        let w = self.hover_popups.written.entry(popup).or_default();
+        w.push_back(on);
+        // Logic answers every write; a bound keeps a stalled logic thread
+        // from growing it.
+        if w.len() > 64 {
+            w.pop_front();
+        }
+        self.out.push(Intent::Write {
+            node: popup,
+            prop: Prop::Open,
+            value: PropValue::Bool(on),
+        });
+    }
+
+    /// (M6) The compositor closed `popup`'s surface (`popup_done`), or a
+    /// click went past it: a `trigger: hover` popup the router opened
+    /// closes (with those opened from it), and opens again only once the
+    /// pointer has left its anchor.
+    fn hover_popup_dismissed(&mut self, tree: Option<&SceneTree>, popup: NodeId) {
+        let Some(tree) = tree else {
+            return;
+        };
+        if !self.hover_popups.open.contains_key(&popup) {
+            return;
+        }
+        self.close_hover_popup(tree, popup);
+        self.hover_popups.dismissed.insert(popup);
     }
 
     /// (M5) Whether pick mode is on ([`Router::set_picking`]).
@@ -1227,6 +1322,7 @@ impl Router {
                 if open_two_way(scene.tree(), root) {
                     self.close(scene, root);
                 }
+                self.hover_popup_dismissed(scene.tree(), root);
             }
             InputEvent::Key { key, .. } => {
                 if key.state == ButtonState::Pressed {

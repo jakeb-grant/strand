@@ -3336,6 +3336,106 @@ fn a_drop_reaches_its_handler_with_the_hidden_rows_judged() {
 /// is caused by the press (`demo::popup_causes`), as is a submenu Right
 /// opens by a two-way write; the diff a hover change produces carries
 /// none, so the island it opens is caused by nothing and never grabs.
+/// (M6, review r2 major 1) A press keeps its cause through messages that
+/// carry none: a hover change or an input-less write handled after it in
+/// the same drain leaves the step its press, and a service's answer to a
+/// pressed action (the tray's `opened`) carries that action's press up to
+/// `GRAB_WINDOW` after it, whatever was handled in between.
+#[test]
+fn a_press_keeps_its_cause_through_input_less_messages() {
+    use super::shell::PressCause;
+    use strand_compiler::vm::InputCtx;
+    let input = |serial| Some(InputCtx { surface: 1, serial });
+    let now = Instant::now();
+    let mut p = PressCause::default();
+    // A click, then a hover change and an input-less write, one drain.
+    p.handled(input(42));
+    p.handled(None);
+    p.handled(None);
+    assert_eq!(p.take(None, now), Some(42), "the click's step");
+    assert_eq!(p.take(None, now), None, "stamped on one step");
+    // The services answer a pressed action later, a hover change handled
+    // since: that action's press.
+    p.handled(None);
+    let action = Some((43, now));
+    let soon = now + Duration::from_millis(100);
+    assert_eq!(p.take(action, soon), Some(43), "the answer's step");
+    assert_eq!(
+        p.take(action, now + strand_surface::GRAB_WINDOW),
+        None,
+        "too late an answer"
+    );
+    // A press handled since is newer: its own step carries it.
+    p.handled(input(44));
+    assert_eq!(p.take(action, soon), Some(44));
+}
+
+/// (M6, review r2 major 1) A click's handler opens a menu while a hover
+/// change and an input-less write follow it at once (in its drain, or
+/// the next): the diff that opens the menu carries the click's press.
+#[test]
+fn a_hover_between_a_click_and_its_menu_keeps_the_press() {
+    use strand_compiler::vm::InputCtx;
+    let dir = temp_dir("press-hover");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  height: 30\n  state menu = false\n  state n = 0\n  row {\n    box { id: item; size: 20\n      on click { menu = true }\n      popup { open: menu; box { size: 40 } }\n    }\n    box { id: other; size: 20; opacity: other.hover ? 1 : 0.5 }\n    slider { value: <-> n }\n  }\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::none();
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, Live::default()));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| {
+        s.of_kind(strand_scene::NodeKind::Slider).len() == 1
+    });
+    let menu = m.scene.of_kind(strand_scene::NodeKind::Popup)[0];
+    let item = m.scene.parent(menu).unwrap();
+    let slider = m.scene.of_kind(strand_scene::NodeKind::Slider)[0];
+    let other = m.scene.children(m.scene.parent(item).unwrap())[1];
+    for msg in [
+        ToLogic::Event {
+            node: item,
+            event: NodeEvent::Click,
+            input: Some(InputCtx {
+                surface: 1,
+                serial: 42,
+            }),
+        },
+        ToLogic::Flag {
+            node: other,
+            flag: NodeFlag::Hover,
+            on: true,
+        },
+        ToLogic::Write {
+            node: slider,
+            prop: Prop::Value,
+            value: PropValue::Number(0.5),
+            input: None,
+        },
+    ] {
+        to_logic.send(msg).unwrap();
+    }
+    let press = loop {
+        let diff = m
+            .inbox
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a diff opening the menu");
+        m.apply("open", &diff);
+        if m.scene.prop(menu, Prop::Open) == Some(&PropValue::Bool(true)) {
+            break diff.press;
+        }
+    };
+    assert_eq!(press, Some(42));
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+}
+
 #[test]
 fn a_diff_carries_the_press_whose_handlers_made_it() {
     use strand_compiler::vm::InputCtx;

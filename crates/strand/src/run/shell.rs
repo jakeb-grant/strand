@@ -116,13 +116,11 @@ pub(super) struct Shell {
     pub(super) settings_reread: Vec<String>,
     /// The last layout fact batch taken in since the last diff went out.
     pub(super) layout_seen: Option<u64>,
-    /// (M6) The serial of the last press whose event or write logic
-    /// handled, until a hover change (or input with no press) is handled
-    /// after it: every diff carries it (`SceneDiff::press`), so popups it
-    /// opens, at once or once a service answers the handler's action (a
-    /// tray menu's `opened`), were opened by that press; one a hover
-    /// opens has none and never grabs.
-    pub(super) press: Option<u32>,
+    /// (M6) Which press the next diff's popups were opened by
+    /// (`SceneDiff::press`, see [`PressCause`]).
+    pub(super) press: PressCause,
+    /// (M6) The services reported a change since the last step.
+    pub(super) pumped: bool,
     /// (M4) The GPU status render last reported.
     pub(super) gpu: strand_scene::GpuStatus,
     /// The password inputs' values, redacted from fault messages
@@ -143,6 +141,46 @@ pub(super) struct Shell {
     /// (M5, S-inspect) Pick mode's, the outline's and the flash's
     /// clients, and `inspect.node`s waiting for layouts.
     pub(super) inspector: super::request::Inspector,
+}
+
+/// (M6) Which press a diff's popups were opened by, stamped on it as
+/// `SceneDiff::press` (the host grabs for a popup only when that press is
+/// the seat's last, within `GRAB_WINDOW`). Two causes, each kept apart
+/// from messages that carry no press:
+///
+/// - the last press among the messages handled since the last step (an
+///   event or a two-way write with an `input`): the handlers it ran
+///   changed what that step sends. A hover change or an input-less write
+///   handled after it in the same drain does not take it away;
+/// - a service's answer to a handler's action that carried a press (`on
+///   secondary { item.menu.open() }`, answered by the tray's `opened`):
+///   the step after the services reported a change carries the press of
+///   the last such action ([`crate::services::Composite::action_press`]),
+///   up to `GRAB_WINDOW` after it, however the pointer moved meanwhile.
+#[derive(Debug, Default)]
+pub(crate) struct PressCause {
+    drained: Option<u32>,
+}
+
+impl PressCause {
+    /// A message with `input` was handled.
+    pub(crate) fn handled(&mut self, input: Option<strand_compiler::vm::InputCtx>) {
+        if let Some(i) = input {
+            self.drained = Some(i.serial);
+        }
+    }
+
+    /// The press the step about to go out carries: the drained one, else
+    /// `answered` (the press of the last action that carried one, and
+    /// when it ran) if the services reported a change since the last step
+    /// and it is no older than `GRAB_WINDOW` at `now`. Forgets the drained
+    /// one.
+    pub(crate) fn take(&mut self, answered: Option<(u32, Instant)>, now: Instant) -> Option<u32> {
+        let recent = |(serial, at): (u32, Instant)| {
+            (now.saturating_duration_since(at) < strand_surface::GRAB_WINDOW).then_some(serial)
+        };
+        self.drained.take().or_else(|| answered.and_then(recent))
+    }
 }
 
 /// A surface's `blur` nodes as `ToLogic::BlurFallback` carries them.
@@ -188,7 +226,7 @@ impl Shell {
                     }
                     return;
                 }
-                self.press = input.map(|i| i.serial);
+                self.press.handled(input);
                 inst.event_with(node, event.name(), event.args_with(&self.host), input);
             }
             ToLogic::Layout { seq, sizes } => {
@@ -203,17 +241,13 @@ impl Shell {
                 value,
                 input,
             } => {
-                self.press = input.map(|i| i.serial);
+                self.press.handled(input);
                 self.secrets.see_write(node, prop, &value);
                 if let Err(e) = inst.write(node, prop, value) {
                     log::debug!("write to {prop}: {}", self.secrets.redact_error(&e));
                 }
             }
             ToLogic::Flag { node, flag, on } => {
-                // A hover change opens popups no press opened.
-                if flag == NodeFlag::Hover {
-                    self.press = None;
-                }
                 inst.set_flag(node, flag, on);
             }
             ToLogic::Size {

@@ -625,5 +625,36 @@ fn tray_menus_nest_walk_and_choose() {
         assert!(Instant::now() < deadline, "{:?}", calls);
         std::thread::sleep(Duration::from_millis(20));
     }
+
+    // (M6) The pointer leaves the icon right after the right click, its
+    // hover change reaching logic before (or with) the app's answer that
+    // opens the menu: the menu is still the click's, so it grabs and
+    // takes the keys (decisions.md m6-w2-surface, review r2 major 1).
+    let opened = count(&calls, "Event 0 opened");
+    let closed = count(&calls, "Event 0 closed");
+    pointer.right_click(cx, cy, w, h);
+    pointer.motion((icon.x1 + 300) as u32, cy, w, h);
+    let third = sh.wait("the menu opened after the pointer left", |img| {
+        img.region(MENU, 2000)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while count(&calls, "Event 0 opened") == opened {
+        assert!(Instant::now() < deadline, "{:?}", calls);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    sh.keep("left");
+    let selected = |img: &Img| img.region_in(SELECTED, third.x0..third.x1, 500);
+    let before = selected(&sh.shot());
+    keys.press("Down");
+    sh.wait("the keys walk the menu the pointer left", |img| {
+        img.region(MENU, 2000)?;
+        let now = selected(img)?;
+        (Some(now) != before).then_some(())
+    });
+    assert_eq!(count(&calls, "Event 0 closed"), closed, "{calls:?}");
+    keys.press("Escape");
+    sh.wait("the menu closed by Escape again", |img| {
+        img.region(MENU, 1).is_none().then_some(())
+    });
     drop(item);
 }

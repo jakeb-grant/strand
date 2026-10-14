@@ -280,7 +280,8 @@ pub fn logic(
         blur_notices: Vec::new(),
         settings_reread: Vec::new(),
         layout_seen: None,
-        press: None,
+        press: Default::default(),
+        pumped: false,
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
         exports: Vec::new(),
@@ -326,7 +327,12 @@ pub fn logic(
         let mut diff = std::mem::take(&mut update.diff);
         shell.secrets.see_diff(&diff);
         diff.layout_seen = shell.layout_seen.take();
-        diff.press = shell.press;
+        // The services' answer to a pressed action (a tray menu's
+        // `opened`) is that press's, whatever was handled since.
+        let answered = std::mem::take(&mut shell.pumped)
+            .then(|| shell.real.as_ref().and_then(|r| r.host.action_press()))
+            .flatten();
+        diff.press = shell.press.take(answered, Instant::now());
         // `system.reduced_motion` (the portal's, or its last value) goes
         // to render, which snaps every spring while it is on.
         let reduced = {
@@ -409,6 +415,7 @@ pub fn logic(
         if let Some(r) = &shell.real
             && r.services.pump(shell.inst.runtime())
         {
+            shell.pumped = true;
             keep_system(shell.inst.runtime(), r, &mut last, &saved);
         }
         let failed = shell
