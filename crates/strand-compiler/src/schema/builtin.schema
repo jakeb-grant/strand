@@ -175,6 +175,10 @@ provisional record Window key id {
   fullscreen: bool
   /// It asks for attention.
   urgent: bool
+  /// The installed app it belongs to, found from its app id (the desktop
+  /// entry's id, `StartupWMClass`, a reverse-DNS id's last part, its
+  /// name): `win.app?.categories`. Null when no entry matches.
+  app: App?
   /// Raises and focuses it.
   action focus()
   /// Asks it to close.

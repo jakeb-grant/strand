@@ -623,6 +623,20 @@ pub(crate) async fn drive<S>(
         let mut proto_ready = protocol.is_none();
         let mut requests_open = true;
         let mut first = true;
+        // (Bugs 3, gaps 9) The desktop entries windows are linked to, read
+        // off the runtime thread at the start and again when the apps
+        // service's sources change; the state waits for the first read.
+        let apps_config = crate::apps::Config::current();
+        let read_apps = |c: crate::apps::Config| {
+            tokio::task::spawn_blocking(move || crate::apps::AppIndex::load(&c))
+        };
+        let mut apps_reading = Some(read_apps(apps_config.clone()));
+        let mut apps_changes = crate::apps::changes();
+        let mut apps_open = true;
+        let mut apps: Option<crate::apps::AppIndex> = None;
+        // Each app id's icon and app, while the index stands.
+        let mut linked: std::collections::HashMap<String, (String, Option<crate::apps::App>)> =
+            std::collections::HashMap::new();
         loop {
             let mut changes = Vec::new();
             let mut reloads = Vec::new();
@@ -672,6 +686,23 @@ pub(crate) async fn drive<S>(
                         proto_ready = true;
                     }
                     () = taps_changed.notified() => {}
+                    read = async {
+                        match apps_reading.as_mut() {
+                            Some(r) => r.await,
+                            None => std::future::pending().await,
+                        }
+                    }, if apps_reading.is_some() => {
+                        apps_reading = None;
+                        apps = Some(read.unwrap_or_else(|e| {
+                            log::warn!("reading desktop entries for windows: {e}");
+                            crate::apps::AppIndex::default()
+                        }));
+                        linked.clear();
+                    }
+                    r = apps_changes.changed(), if apps_open => match r {
+                        Ok(()) => apps_reading = Some(read_apps(apps_config.clone())),
+                        Err(_) => apps_open = false,
+                    },
                     req = requests.recv(), if requests_open => match req {
                         Some(req) => route(req, kind.is_some(), ipc.as_ref(), &proto, &ctx, protocol.as_ref()),
                         None => requests_open = false,
@@ -681,10 +712,11 @@ pub(crate) async fn drive<S>(
                     else => std::future::pending::<()>().await,
                 }
             }
-            let ready = match kind {
-                None => proto_ready,
-                Some(_) => ipc.is_some() || (proto_ready && adapter_failed),
-            };
+            let ready = apps.is_some()
+                && match kind {
+                    None => proto_ready,
+                    Some(_) => ipc.is_some() || (proto_ready && adapter_failed),
+                };
             if ready {
                 let mut state = merge_with(
                     ipc.as_ref().map(|i| &i.state),
@@ -696,6 +728,14 @@ pub(crate) async fn drive<S>(
                     Some(k) => k.name().to_string(),
                     None => desktop.clone().unwrap_or_default(),
                 };
+                if let Some(index) = &apps {
+                    state.link_apps(|app_id| {
+                        linked
+                            .entry(app_id.to_string())
+                            .or_insert_with(|| index.window(app_id))
+                            .clone()
+                    });
+                }
                 // The adapter came up after the protocols' state went out:
                 // equal ids may name different workspaces, so the lists
                 // start over (a `Reset`) instead of updating in place.

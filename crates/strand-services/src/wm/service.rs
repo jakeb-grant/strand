@@ -76,6 +76,7 @@ pub struct WindowItem {
     pub maximized: bool,
     pub fullscreen: bool,
     pub urgent: bool,
+    pub app: Option<crate::apps::App>,
 }
 
 impl From<model::Window> for WindowItem {
@@ -91,6 +92,7 @@ impl From<model::Window> for WindowItem {
             maximized: w.maximized,
             fullscreen: w.fullscreen,
             urgent: w.urgent,
+            app: w.app,
         }
     }
 }

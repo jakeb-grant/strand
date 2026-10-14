@@ -348,13 +348,14 @@ Keyed by `id`.
 | `id` | `text` | Its identity: the compositor's id when its IPC is used, else the protocol's identifier. |
 | `title` | `text` | Its title: `windows.focused?.title`. |
 | `app_id` | `text` | The app's id, such as `firefox`. |
-| `icon` | `text` | An icon name for its app. |
+| `icon` | `text` | An icon name for its app: its desktop entry's icon, else its app id (lowercased when only that is in the icon theme). |
 | `workspace` | `int?` | The workspace it is on, when known. |
 | `focused` | `bool` | It has focus. |
 | `minimized` | `bool` | It is minimised. |
 | `maximized` | `bool` | It is maximised. |
 | `fullscreen` | `bool` | It is fullscreen.  `win.fullscreen()` makes it fullscreen, or restores it when it is fullscreen. |
 | `urgent` | `bool` | It asks for attention. |
+| `app` | `App?` | The installed app it belongs to, found from its app id (the desktop entry's id, `StartupWMClass`, a reverse-DNS id's last part, its name): `win.app?.categories`. Null when no entry matches. |
 
 | Method | |
 | --- | --- |

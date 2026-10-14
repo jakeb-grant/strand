@@ -432,6 +432,8 @@ impl State {
                     maximized: c.is_maximized(),
                     fullscreen: c.is_fullscreen(),
                     urgent: self.urgent.contains(&c.address),
+                    // Set by the service from the desktop entries.
+                    app: None,
                     // Set by `merge` from `toplevel_ids`.
                     toplevel: None,
                 }

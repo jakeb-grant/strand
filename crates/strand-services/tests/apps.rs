@@ -327,3 +327,123 @@ fn a_launch_carries_the_token_and_not_an_inherited_one() {
     unsafe { std::env::remove_var("XDG_ACTIVATION_TOKEN") };
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Bugs 3 and gaps 9 (m6-w2-services): a window finds its desktop entry
+/// by its app id (the entry's id, ignoring case, `StartupWMClass`, a
+/// reverse-DNS id's last part, the name, a dash-separated head), and
+/// draws the entry's icon, else its app id's (lowercased when only that
+/// is in the theme). The owner's Spotify (`Spotify`, XWayland) and
+/// Chromium (`Chromium-browser`) are among them.
+#[test]
+fn windows_find_their_desktop_entries() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join(format!("strand-apps-win-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    let icons = root.join("icons");
+    write(
+        &icons.join("hicolor/index.theme"),
+        "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
+    );
+    for icon in [
+        "spotify-client",
+        "chromium",
+        "org.gnome.Nautilus",
+        "google-chrome",
+        "spotify",
+    ] {
+        write(&icons.join(format!("hicolor/48x48/apps/{icon}.png")), "png");
+    }
+    strand_icons::set_base_dirs(Some(vec![icons.clone()]));
+    write(
+        &dir.join("spotify.desktop"),
+        &desktop(
+            "Spotify",
+            "spotify %U",
+            "Icon=spotify-client\nCategories=Audio;Music;Player;AudioVideo;\n",
+        ),
+    );
+    write(
+        &dir.join("chromium.desktop"),
+        &desktop(
+            "Chromium",
+            "chromium %U",
+            "Icon=chromium\nStartupWMClass=chromium\nCategories=Network;WebBrowser;\n",
+        ),
+    );
+    write(
+        &dir.join("org.gnome.Nautilus.desktop"),
+        &desktop(
+            "Files",
+            "nautilus --new-window %U",
+            "Icon=org.gnome.Nautilus\nCategories=GNOME;Utility;FileManager;\n",
+        ),
+    );
+    write(
+        &dir.join("google-chrome.desktop"),
+        &desktop(
+            "Google Chrome",
+            "google-chrome %U",
+            "Icon=google-chrome\nStartupWMClass=Google-chrome-stable\n",
+        ),
+    );
+    write(
+        &dir.join("vlc.desktop"),
+        &desktop("VLC media player", "vlc", "Icon=vlc\n"),
+    );
+    let index = apps::AppIndex::load(&Config {
+        dirs: vec![dir.clone()],
+        ..Config::default()
+    });
+    let found = |app_id: &str| index.find(app_id).map(|e| e.app.id.clone());
+    assert_eq!(found("spotify").as_deref(), Some("spotify"), "its id");
+    assert_eq!(
+        found("Spotify").as_deref(),
+        Some("spotify"),
+        "ignoring case"
+    );
+    assert_eq!(
+        found("Google-chrome-stable").as_deref(),
+        Some("google-chrome"),
+        "StartupWMClass"
+    );
+    assert_eq!(
+        found("nautilus").as_deref(),
+        Some("org.gnome.Nautilus"),
+        "a reverse-DNS id's last part"
+    );
+    assert_eq!(
+        found("org.chromium.Chromium").as_deref(),
+        Some("chromium"),
+        "the app id's last part"
+    );
+    assert_eq!(
+        found("vlc media player").as_deref(),
+        Some("vlc"),
+        "the name"
+    );
+    assert_eq!(
+        found("Chromium-browser").as_deref(),
+        Some("chromium"),
+        "a dash-separated head"
+    );
+    assert_eq!(found("foot"), None);
+    assert_eq!(found(""), None);
+
+    // The icon a window draws, and the app it links to.
+    let (icon, app) = index.window("Spotify");
+    assert_eq!(icon, "spotify-client");
+    let app = app.unwrap();
+    assert_eq!(app.id, "spotify");
+    assert!(app.categories.contains(&"Music".to_string()));
+    assert_eq!(index.window("Chromium-browser").0, "chromium");
+    // An entry whose icon the theme lacks: the fallback, as `apps.all`.
+    assert_eq!(index.window("vlc").0, apps::FALLBACK_ICON);
+    // No entry: the app id lowercased when only that is in the theme,
+    // else the app id as it is.
+    let bare = apps::AppIndex::default();
+    assert_eq!(bare.window("Spotify"), ("spotify".to_string(), None));
+    assert_eq!(bare.window("foot"), ("foot".to_string(), None));
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}

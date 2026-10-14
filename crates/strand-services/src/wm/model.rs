@@ -19,8 +19,9 @@ pub struct Window {
     pub title: String,
     /// The app's id, such as `firefox` (Hyprland's `class`).
     pub app_id: String,
-    /// An icon name for its app: the app id until the apps service
-    /// resolves desktop entries.
+    /// An icon name for its app: its desktop entry's icon when the app id
+    /// finds one (`apps::AppIndex::find`) and the theme has it, else the
+    /// app id (lowercased when only that is in the theme).
     pub icon: String,
     /// The workspace it is on, when known.
     pub workspace: Option<i64>,
@@ -37,6 +38,9 @@ pub struct Window {
     pub fullscreen: bool,
     /// It asks for attention.
     pub urgent: bool,
+    /// The installed app its app id finds (its desktop entry), if any:
+    /// `win.app?.categories`.
+    pub app: Option<crate::apps::App>,
     /// Its `ext-foreign-toplevel-list-v1` identifier, when known: the one
     /// the adapter reports (sway 1.10+, Hyprland's `stableId`), or `id`
     /// itself with the protocols alone. Not a schema field: it is how M4's
@@ -105,6 +109,21 @@ impl WmState {
     /// The workspaces on screen `name`: `workspaces.on(screen)`.
     pub fn on_screen<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Workspace> + 'a {
         self.workspaces.iter().filter(move |w| w.screen == name)
+    }
+
+    /// Sets each window's `icon` and `app` from `find` (by its app id), in
+    /// `windows` and in the workspaces' copies alike.
+    pub(crate) fn link_apps(
+        &mut self,
+        mut find: impl FnMut(&str) -> (String, Option<crate::apps::App>),
+    ) {
+        let copies = self
+            .workspaces
+            .iter_mut()
+            .flat_map(|ws| ws.windows.iter_mut());
+        for w in self.windows.iter_mut().chain(copies) {
+            (w.icon, w.app) = find(&w.app_id);
+        }
     }
 
     /// The workspace with `id`.

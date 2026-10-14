@@ -4982,6 +4982,15 @@ transparent huge pages for life.
   niri's `{"Name": …}` reference (a number not named: `{"Index": n}`) and
   `ext-workspace-v1`'s activation of a listed workspace, else
   `WmError::UnknownWorkspaceName`.
+  (M6 wave 2, m6-w2-services) A window carries `app: Option<apps::App>`
+  (`Window.app: App?`), and its `icon` is its desktop entry's: `wm::run`
+  reads `apps::AppIndex::load(&apps::Config::current())` on the blocking
+  pool at its start and again when `apps::changed()` is called (the
+  watcher's `CacheKind::Apps` and `CacheKind::Icons`), publishes no state
+  before the first read, and sets each window's `icon` and `app` from
+  `AppIndex::window(app_id)` (`AppIndex::find`, then
+  `apps::window_icon`), cached per app id until the next read. `apps::Entry`
+  gains `wm_class` (`StartupWMClass`); `App` is `Eq`.
   `wm::live_runs()` counts live `run`s (tests). `screens.focused` is the
   `screens` service's, which no crate serves yet; when one does it takes
   `FocusedScreen` from the same hub, with a store's lifecycle (it drops

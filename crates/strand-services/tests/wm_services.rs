@@ -617,3 +617,113 @@ fn a_hyprland_the_adapter_cannot_read_falls_back_to_the_protocols_with_a_diagnos
     s.shutdown();
     wm::configure(None);
 }
+
+/// Bugs 3 and gaps 9 (m6-w2-services): a window is linked to its desktop
+/// entry, `win.app`, and draws the entry's icon: the owner's Chromium
+/// (`Chromium-browser`) and Spotify (`Spotify`, XWayland) on Hyprland,
+/// in `windows.all` and in their workspaces' copies. An app installed
+/// while the shell runs is linked once the entries are read again.
+#[test]
+fn windows_are_linked_to_their_apps() {
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let root = std::env::temp_dir().join(format!("strand-wm-apps-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    let icons = root.join("icons/hicolor");
+    let write = |p: &std::path::Path, text: &str| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    write(
+        &icons.join("index.theme"),
+        "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
+    );
+    write(&icons.join("48x48/apps/chromium.png"), "png");
+    write(&icons.join("48x48/apps/spotify-client.png"), "png");
+    write(
+        &dir.join("chromium.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Chromium\nExec=chromium %U\n\
+         Icon=chromium\nStartupWMClass=chromium\nCategories=Network;WebBrowser;\n",
+    );
+    strand_icons::set_base_dirs(Some(vec![root.join("icons")]));
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![dir.clone()],
+        ..Default::default()
+    }));
+    let fake = common::hyprland::FakeHyprland::start();
+    let client = |address: &str, ws: i64, class: &str, xwayland: bool| {
+        serde_json::json!({
+            "address": address, "mapped": true, "hidden": false,
+            "workspace": {"id": ws, "name": ws.to_string()},
+            "class": class, "title": class, "xwayland": xwayland,
+            "fullscreen": 0, "stableId": address.trim_start_matches("0x"),
+        })
+    };
+    let clients = serde_json::json!([
+        client("0xa1", 1, "Chromium-browser", false),
+        client("0xb2", 2, "Spotify", true),
+    ]);
+    fake.set_reply("j/clients", clients.to_string().as_bytes());
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    b.workspaces.acquire(&rt);
+    let window = |class: &str| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()?
+            .all
+            .into_iter()
+            .find(|w| w.app_id == class)
+    };
+    until(&rt, &s, "the windows", || {
+        window("Chromium-browser").is_some() && window("Spotify").is_some()
+    });
+    let chromium = window("Chromium-browser").unwrap();
+    assert_eq!(chromium.icon, "chromium");
+    let app = chromium.app.clone().unwrap();
+    assert_eq!(app.id, "chromium");
+    assert!(app.categories.contains(&"WebBrowser".to_string()));
+    // Not installed: the app id as it is, no app.
+    let spotify = window("Spotify").unwrap();
+    assert_eq!(
+        (spotify.icon.as_str(), spotify.app.as_ref()),
+        ("Spotify", None)
+    );
+    // The workspace's copy says the same.
+    until(&rt, &s, "workspace 1's copy", || {
+        workspace(&b, &rt, "1").is_some_and(|w| w.windows.first() == Some(&chromium))
+    });
+
+    // Spotify is installed while the shell runs: its window is linked.
+    std::fs::write(
+        dir.join("spotify.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Spotify\nExec=spotify %U\n\
+         Icon=spotify-client\nCategories=Audio;Music;Player;AudioVideo;\n",
+    )
+    .unwrap();
+    strand_services::apps::changed();
+    until(&rt, &s, "Spotify linked", || {
+        window("Spotify").is_some_and(|w| {
+            w.icon == "spotify-client" && w.app.as_ref().is_some_and(|a| a.id == "spotify")
+        })
+    });
+    s.shutdown();
+    wm::configure(None);
+    strand_services::apps::set_config(None);
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}
