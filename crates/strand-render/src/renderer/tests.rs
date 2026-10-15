@@ -434,6 +434,10 @@ fn crashing_requests_are_not_retried() {
 #[test]
 fn a_poisoned_slot_keeps_no_stand_ins() {
     let mut r = Renderer::new(worker());
+    // Flattening waits for no new text here (`ESTIMATE_WAIT`): the wide
+    // request must stay in flight for the test to crash it, and an
+    // optimised worker answers within the wait.
+    r.set_estimate_wait(Duration::ZERO);
     let (mut d, root, txt) = aligned_text(
         "a window title much too long to fit on either of the two bars",
         "center",
