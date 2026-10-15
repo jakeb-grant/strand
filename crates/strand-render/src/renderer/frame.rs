@@ -196,6 +196,7 @@ impl Painter for Renderer {
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.posed = s.cache.as_ref().and_then(|f| f.pose);
         }
+        self.pause_holds(surface, started);
         // (M5) `strand report`'s frame timing (`summary.rs`). A frame
         // sent to the GPU is timed when the GPU thread's reply comes.
         #[cfg(feature = "gpu")]
@@ -526,6 +527,36 @@ impl Renderer {
         #[cfg(feature = "gpu")]
         self.gpu_frame_stats(surface, stats.0, stats.1);
         total
+    }
+
+    /// Other surfaces' first-frame and size holds wait for the text
+    /// worker and for the compositor's configure, which the loop cannot
+    /// take while it paints: a hold still running when this paint of
+    /// `painted` started is moved on by the time it took. Under load a
+    /// first frame painting another surface for longer than the hold
+    /// (half a second for a debug build's launcher beside a bar) showed
+    /// at its estimated size, with the configure at its real one already
+    /// on its way.
+    pub(super) fn pause_holds(&mut self, painted: SurfaceId, started: Instant) {
+        let spent = started.elapsed();
+        let on = |t: &mut Instant| {
+            if *t > started {
+                *t += spent;
+            }
+        };
+        for (id, s) in &mut self.surfaces {
+            if *id == painted {
+                continue;
+            }
+            if !s.painted
+                && let Some(t) = &mut s.wait_until
+            {
+                on(t);
+            }
+            if let Some((_, t)) = &mut s.size_hold {
+                on(t);
+            }
+        }
     }
 
     pub(super) fn wants(&self, surface: SurfaceId) -> bool {

@@ -1978,7 +1978,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   alone (a conic turning with `t`) damages only the ring; a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
-  uncached. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
+  uncached. Painting a surface moves every other surface's
+  first-frame and size hold still running by the time it took
+  (`Renderer::pause_holds`): they wait for the text worker and the
+  compositor, not for the loop's own painting. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
   compiler's scene conversion turns a `Range` record into that pair. A `popup`'s spec gets `parent` and `anchor_rect` (its
   element's laid-out box in the parent surface); `tooltip: expr` makes a
   render-owned popup (`SceneTree::add_overlay`, ids from `OVERLAY_INDEX`)
