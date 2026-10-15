@@ -98,6 +98,11 @@ impl Raster {
         &self.offscreen
     }
 
+    /// (m6-owner-fixes, bug 17) Turns fade layers on or off (tests).
+    pub fn set_fade_layers(&mut self, on: bool) {
+        self.offscreen.set_fade_layers(on);
+    }
+
     /// Frees the paint cache's and offscreen groups' idle entries without
     /// painting.
     pub fn trim_idle(&mut self, now: std::time::Instant) {
@@ -210,6 +215,8 @@ impl Raster {
         self.cache.trim_idle(now);
         self.offscreen
             .prepare(items, &damage, surface, atlas, &self.cache, scale);
+        self.offscreen
+            .prepare_fades(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen.trim_idle(now);
         crate::hugepage::trim_idle(now, self.cache.idle_free());
         // Pixel-aligned rect clips leave coverage inside them untouched; a
@@ -255,6 +262,7 @@ impl Raster {
                         base,
                         Affine::IDENTITY,
                         self.offscreen.current(),
+                        self.offscreen.fades(),
                     );
                     ctx.pop_clip();
                 }

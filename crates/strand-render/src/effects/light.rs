@@ -127,7 +127,7 @@ pub(crate) fn under_content(
         .iter()
         .fold(Rect::default(), |acc, d| match d.item {
             Item::PushClip(_)
-            | Item::PushOpacity(_)
+            | Item::PushOpacity(..)
             | Item::PushTransform(_)
             | Item::PushLayer(_)
             | Item::PopClip

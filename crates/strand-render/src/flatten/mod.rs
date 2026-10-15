@@ -28,7 +28,7 @@ mod paint;
 mod text;
 mod widget;
 
-pub(crate) use hash::hash_item;
+pub(crate) use hash::{Shift, hash_item, hash_item_from};
 
 pub use paint::BLUR_TINT;
 use paint::{cover, kurbo_rect};
@@ -55,7 +55,9 @@ const MAX_BLUR: f32 = 1000.0;
 pub enum Item {
     PushClip(BezPath),
     PopClip,
-    PushOpacity(f32),
+    /// Draws the group at an opacity; the node it fades, when the raster
+    /// may draw the group once into a fade layer ([`Fade`]).
+    PushOpacity(f32, Option<Fade>),
     PopOpacity,
     /// Draws the group under this transform (physical pixels, from the
     /// surface's origin): `scale` and `rotate` about the node's centre.
@@ -121,6 +123,20 @@ pub enum Item {
         dest: kurbo::Rect,
         tint: Option<Color>,
     },
+}
+
+/// (m6-owner-fixes, owner-testing.md bug 17) The node an opacity group
+/// fades, for the raster's fade layers ([`crate::offscreen`]): a group
+/// whose content is unchanged but for where it is drawn is rastered once
+/// into an offscreen layer and composited at its opacity on each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fade {
+    pub node: NodeId,
+    /// Its opacity or paint offset is in flight (an `enter` or `exit`
+    /// pose, a transition, a `play`): the group is likely drawn again
+    /// with the same content on the next frames, so a layer is worth
+    /// building on its first frame.
+    pub moving: bool,
 }
 
 /// (M4) `fill: linear(…)` on text (S-effects): the glyphs' coverage

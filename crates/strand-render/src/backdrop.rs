@@ -180,7 +180,7 @@ pub(crate) fn behind(items: &[DisplayItem], end: usize, region: Rect) -> Vec<Dis
     for (i, d) in items[..end].iter().enumerate() {
         match d.item {
             Item::PushClip(_)
-            | Item::PushOpacity(_)
+            | Item::PushOpacity(..)
             | Item::PushTransform(_)
             | Item::PushLayer(_) => open.push(i),
             Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer
@@ -206,7 +206,7 @@ fn is_marker(i: &Item) -> bool {
     matches!(
         i,
         Item::PushClip(_)
-            | Item::PushOpacity(_)
+            | Item::PushOpacity(..)
             | Item::PushTransform(_)
             | Item::PushLayer(_)
             | Item::PopClip
@@ -303,6 +303,7 @@ pub(crate) fn render(
         base,
         Affine::IDENTITY,
         groups,
+        &HashMap::new(),
     );
     ctx.flush();
     let mut small = Pixmap::new(sw16, sh16);
@@ -478,14 +479,14 @@ mod tests {
         let path = vello_cpu::kurbo::BezPath::new();
         let items = vec![
             d(Item::PushClip(path.clone())),
-            d(Item::PushOpacity(0.5)),
+            d(Item::PushOpacity(0.5, None)),
             d(Item::PopOpacity),
             d(Item::PushClip(path)),
         ];
         let got = behind(&items, 4, Rect::new(0, 0, 10, 10));
         // The first and last clips are open at the end: dropped.
         assert_eq!(got.len(), 2);
-        assert!(matches!(got[0].item, Item::PushOpacity(_)));
+        assert!(matches!(got[0].item, Item::PushOpacity(..)));
     }
 
     #[test]

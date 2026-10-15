@@ -634,10 +634,16 @@ fn random_edits(seed: u64, scale: Scale, frames: usize) {
     );
     let size = scale.physical_size(LogicalSize::new(200.0, 24.0));
     let (w, h) = (size.w, size.h);
+    // Bit for bit: a fade layer's pixels are stored as 8-bit before they
+    // are composited, so a group drawn from one differs from it rastered
+    // by a level or two, and which frames draw one depends on what came
+    // before (tests/fade_layers.rs holds that to the PNG tolerance).
     let mut reference = renderer();
+    reference.set_fade_layers(false);
     assert!(reference.apply(b.diff.clone()).is_empty());
     reference.attach_surface(BAR, root);
     let (mut r, first) = fresh(b.diff, w, h, scale);
+    r.set_fade_layers(false);
     let mut bufs = [first, Buffer::new(w, h, scale), Buffer::new(w, h, scale)];
     // Commit number each buffer was last committed at.
     let mut commits = 1usize;

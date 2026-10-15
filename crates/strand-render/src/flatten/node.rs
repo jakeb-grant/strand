@@ -197,9 +197,21 @@ impl<'a> Flattener<'a> {
             (of(Prop::X, parent.w), of(Prop::Y, parent.h))
         };
         let written = offsets(&props);
+        let opacity_of = |props: &[(Prop, Cow<'a, PropValue>)]| {
+            number(
+                props
+                    .iter()
+                    .find(|(q, _)| *q == Prop::Opacity)
+                    .map(|(_, v)| v.as_ref()),
+            )
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0)
+        };
+        let written_opacity = opacity_of(&props);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
         let sprung = offsets(&props);
+        let sprung_opacity = opacity_of(&props);
         let play = self
             .anim
             .keyframes(node, &mut props, inherited, Some(laid), parent);
@@ -517,7 +529,22 @@ impl<'a> Flattener<'a> {
         }
         let mut ink = Rect::default();
 
-        let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
+        // (m6-owner-fixes, bug 17) Its opacity or paint offset in flight:
+        // the raster may draw the group once into a fade layer from its
+        // first frame (`crate::offscreen`).
+        let moving = sprung_opacity != written_opacity
+            || plays(Prop::Opacity)
+            || sprung != written
+            || glide != (0.0, 0.0);
+        let opacity_group = (opacity < 1.0).then(|| {
+            self.marker(Item::PushOpacity(
+                opacity,
+                Some(super::Fade {
+                    node: node.id,
+                    moving,
+                }),
+            ))
+        });
         // (M4) Group effects: a layer around the node and its subtree,
         // whose damage grows by their reach.
         let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32());

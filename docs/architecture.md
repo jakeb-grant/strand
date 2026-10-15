@@ -702,7 +702,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 - Top-level files beside the directories, among them: `cache.rs`
   (dithered gradients and blurred shadows drawn once into pixmaps),
   `layers.rs` (M4: effect layers as `PushLayer`/`PopLayer`),
-  `offscreen.rs` (M4: cached offscreen groups and CPU raster nodes),
+  `offscreen.rs` (M4: cached offscreen groups and CPU raster nodes;
+  m6-owner-fixes: `offscreen/fade.rs`, fade layers),
   `clock.rs` (M4: per-node clocks with frame caps), `time.rs` (M4: `t`,
   `wave`, `noise` evaluated per node), `lock_fallback.rs` (the built-in
   fallback lock, drawn with no text worker; (M6, m6-integration-w1)
@@ -2178,6 +2179,24 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
       `lottie`, `thumbnail`) get their sources from render itself when
       logic creates them. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
+    - (m6-owner-fixes, owner-testing.md bug 17) **Fade layers**
+      (`offscreen/fade.rs`): an opacity group whose content only moves
+      or fades (an `enter`/`exit` pose, a `when` fade) is drawn once into
+      a cached offscreen group and, on the frames after, as that image at
+      the group's opacity. The flattener tags the group's marker with its
+      node: `Item::PushOpacity(f32, Option<Fade>)`, `Fade { node: NodeId,
+      moving: bool }` (`moving`: its opacity or paint offset is in
+      flight). The key hashes the group's items from the top-left pixel
+      of what they draw (`flatten::Shift`, quantised to 1/4096 px), so
+      content moved by whole pixels reuses its layer. Only groups outside
+      every transform and offscreen group, with no offscreen group inside
+      and with a shadow, gradient or paint-filled text in them, are
+      layered. Damage is unchanged. The layers share `OFFSCREEN_BYTES`.
+      `Renderer::set_fade_layers(bool)` (on by default) and
+      `Renderer::fade_layers() -> (built, drawn)` are for tests and
+      benches. Pixels match a re-raster within the PNG tolerance (2 per
+      channel; up to 8 on a clip's antialiased edge crossing the group),
+      not bit for bit.
   - **SVG parts.** An `svg "icon.svg" { #needle { rotate: … } }` selector
     block is a child node of kind `NodeKind::SvgPart` (`svg_part`, the
     one kind with no schema element) carrying the id it

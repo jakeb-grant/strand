@@ -1265,3 +1265,179 @@ fn a_saved_svg_beside_cut_text_redraws_while_it_springs() {
     assert!(n > 8, "it sprang meanwhile: {n} frames");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The owner's dashboard panels, reduced (owner-testing.md bug 17,
+/// target/try/island/strand/dash.strand): three panels mounted with
+/// `enter { opacity: 0; y: -12 }` into a card that does not move, a
+/// calendar's grid of days, a list of translucent notification rows and a
+/// column of sliders in them. `PANEL`, `ROW` and `DAY` are the panels',
+/// rows' and days' paint.
+const DASH: &str = "
+state shown = false
+bar Top {
+  height: 30
+  box { width: 420; height: 30
+    popup { id: big; open: true; width: 980; height: 472; margin: 0; align: start
+      col { clip: true; bg: #11111b; width: 880; height: 444; x: 50; pad: 22
+            radius: 0, 0, 30, 30
+        if shown {
+          row { gap: 16; height: 400
+            col { width: 252; shrink: 0; pad: 14; gap: 6; radius: 18; PANEL
+                  enter { opacity: 0; y: -12 }
+              text \"October\" { color: #cdd6f4 }
+              for w in [\"a\", \"b\", \"c\", \"d\", \"e\", \"f\"] key w {
+                row { gap: 6; height: 26
+                  for d in [1, 2, 3, 4, 5, 6, 7] key d {
+                    box { width: 26; height: 26; radius: full; DAY }
+                  }
+                }
+              }
+            }
+            col { grow: 1; min_width: 0; gap: 10
+                  enter { opacity: 0; y: -12 }
+              for n in [\"Mail\", \"Calendar\", \"Updates\", \"Music\", \"Chat\", \"Files\"] key n {
+                row { height: 50; shrink: 0; pad: 0, 8, 0, 10; gap: 10; radius: 14
+                      align: center; ROW
+                  box { width: 30; height: 30; radius: 9; bg: #45475a }
+                  col { gap: 2
+                    text n { color: #cdd6f4 }
+                    text \"Something happened a minute ago\" { color: #a6adc8 }
+                  }
+                }
+              }
+            }
+            col { width: 228; shrink: 0; pad: 14; gap: 14; radius: 18; PANEL
+                  enter { opacity: 0; y: -12 }
+              for s in [\"Volume\", \"Brightness\", \"Mic\"] key s {
+                col { gap: 6
+                  text s { color: #cdd6f4 }
+                  box { height: 8; radius: full; bg: #313244
+                    box { width: 120; height: 8; radius: full; bg: #89b4fa }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+";
+
+/// The dashboard's panels fading in three times (once in a debug build),
+/// on a shell with fade layers and one without
+/// (`Renderer::set_fade_layers`) in step: on every frame their pixels
+/// match within the pixel tolerance, and at rest exactly. Returns each
+/// shell's frames and the layers built and drawn.
+fn fade_dash(src: &str) -> ([Vec<Painted>; 2], (u64, u64)) {
+    let boot = |layers: bool| {
+        // Text shaped inline: both shells draw the same text on every
+        // frame (the worker's timing would differ between them).
+        let mut r = renderer();
+        r.set_fade_layers(layers);
+        let mut sh = Shell::boot_with(r, src, 1.5, 2560);
+        run(&mut sh, NodeId::new(0, 0));
+        sh
+    };
+    let mut on = boot(true);
+    let mut off = boot(false);
+    let pop = on.popup().expect("the popup is shown");
+    let mut times: [Vec<Painted>; 2] = [Vec::new(), Vec::new()];
+    let rounds = if cfg!(debug_assertions) { 1 } else { 3 };
+    for round in 0..rounds {
+        for sh in [&mut on, &mut off] {
+            sh.times.clear();
+            sh.set("shown", Value::Bool(true));
+        }
+        let mut n = 0;
+        while on.wants() || off.wants() {
+            on.paint();
+            off.paint();
+            let (a, b) = (on.buf(pop), off.buf(pop));
+            let d = a
+                .pixels
+                .iter()
+                .zip(&b.pixels)
+                .map(|(x, y)| x.abs_diff(*y))
+                .max()
+                .unwrap_or(0);
+            assert!(d <= 2, "round {round} frame {n}: off by {d}");
+            n += 1;
+            assert!(n < 600, "never settled");
+        }
+        assert!(n > 10, "round {round}: the panels fade in over frames: {n}");
+        assert_eq!(
+            on.buf(pop).pixels,
+            off.buf(pop).pixels,
+            "round {round}: at rest"
+        );
+        for (i, sh) in [&mut on, &mut off].into_iter().enumerate() {
+            times[i].extend(std::mem::take(&mut sh.times));
+            sh.set("shown", Value::Bool(false));
+            run(sh, NodeId::new(0, 0));
+            sh.times.clear();
+        }
+    }
+    assert_eq!(off.r.fade_layers(), (0, 0));
+    (times, on.r.fade_layers())
+}
+
+/// (owner-testing.md bug 17) The dashboard's panels fading in: flat (the
+/// owner's: solid fills, text) they are rastered on every frame as before,
+/// a layer costing vello_cpu's fine stage about what their content does;
+/// with shadows and gradients each is drawn from a layer rastered once
+/// for each of its offsets' phases, matching a shell that rasters them on
+/// every frame. Reports both shells' times (a mounting frame's flatten
+/// shapes its text inline); `--profile timing` for the numbers
+/// owner-testing.md cites. No gate: the island card's bench gates the
+/// frame.
+#[test]
+fn a_fading_dashboard_draws_its_panels_from_layers() {
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    let flat = DASH
+        .replace("PANEL", "bg: #1e1e2e")
+        .replace("ROW", "bg: #1e1e2e99")
+        .replace("DAY", "bg: #313244");
+    let rich = DASH
+        .replace(
+            "PANEL",
+            "bg: linear(45deg, #1e1e2e, #313244); shadow: 0 10px 28px #00000080",
+        )
+        .replace(
+            "ROW",
+            "bg: linear(90deg, #1e1e2e99, #45475a99); shadow: 0 4px 12px #00000060",
+        )
+        .replace(
+            "DAY",
+            "bg: linear(45deg, #313244, #585b70); shadow: 0 2px 4px #00000060",
+        );
+    for (name, src) in [("flat", flat), ("rich", rich)] {
+        let (times, (built, drawn)) = fade_dash(&src);
+        if name == "flat" {
+            assert_eq!(built, 0, "flat panels are rastered as before");
+        } else {
+            assert!(
+                built > 0 && drawn > built * 4,
+                "{built} built, {drawn} drawn"
+            );
+        }
+        for (shell, frames) in ["layers", "rastered"].iter().zip(&times) {
+            let mut work: Vec<Duration> = frames.iter().map(|p| p.work).collect();
+            work.sort();
+            let mean = |f: &dyn Fn(&Painted) -> f64| {
+                frames.iter().map(f).sum::<f64>() / frames.len() as f64
+            };
+            eprintln!(
+                "dash {name}, {shell}: {} frames, median {:.2} ms, worst {:.2} ms (mean flatten {:.2} ms, raster {:.2} ms, {:.0} px)",
+                frames.len(),
+                ms(work[work.len() / 2]),
+                ms(*work.last().unwrap()),
+                mean(&|p| ms(p.flatten)),
+                mean(&|p| ms(p.raster)),
+                mean(&|p| p.damage as f64),
+            );
+        }
+        eprintln!("dash {name}: {built} layers built, {drawn} drawn");
+    }
+}
