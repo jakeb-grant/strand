@@ -3491,3 +3491,68 @@ fn a_popup_at_an_outputs_edge_is_placed_inside_it() {
         pump(&mut mgr, Duration::from_millis(50));
     }
 }
+
+/// (m6-owner-fixes, owner-testing.md gap 24) A popup's `margin` on the
+/// side facing its anchor is the gap between them (spec.md 5.1): 6 px
+/// only while `margin` is unset, `margin: 0` touches the anchor, and a
+/// negative margin overlaps it. Under a 36 px top bar, as sway places
+/// them: below 42, at 36, and 10 px over the bar at 26.
+#[test]
+fn a_popups_margin_on_its_anchors_side_is_its_gap() {
+    use std::collections::HashMap;
+    use strand_scene::{Prop, PropValue, SurfaceSpec};
+    let Some((_sway, mut mgr)) = start(
+        "a_popups_margin_on_its_anchors_side_is_its_gap",
+        Config::default(),
+    ) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let popup = |name: &str, x: f32, margin: Option<PropValue>| {
+        let props: HashMap<Prop, PropValue> =
+            margin.map(|m| (Prop::Margin, m)).into_iter().collect();
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |p| props.get(&p));
+        spec.name = Some(name.into());
+        spec.parent = Some(BAR);
+        spec.anchor_rect = Some(LogicalRect::new(x, 8.0, 60.0, 20.0));
+        spec.width = Some(100.0);
+        spec.height = Some(50.0);
+        spec
+    };
+    // `margin: n, 0, 0`: only its top faces a top bar's items.
+    let three = |n: f32| {
+        PropValue::List(vec![
+            PropValue::Number(n),
+            PropValue::Number(0.0),
+            PropValue::Number(0.0),
+        ])
+    };
+    for (i, (name, x, margin, y)) in [
+        ("Unset", 100.0, None, 42),
+        ("Zero", 400.0, Some(PropValue::Number(0.0)), 36),
+        ("Over", 700.0, Some(three(-10.0)), 26),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let node = NodeId::new(10 + i as u32, 0);
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(popup(name, x, margin)));
+        let placed = |s: &strand_surface::State<TestHost>| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .filter(|i| i.stats.commits > 0)
+                .and_then(|i| i.origin)
+        };
+        let ok = mgr.dispatch_until(WAIT, |s| placed(s).is_some()).unwrap();
+        assert!(ok, "{name} maps: {:?}", mgr.state().surfaces());
+        // Centred under its 60 px anchor: x + 30 - 50.
+        assert_eq!(
+            placed(mgr.state()),
+            Some((x as i32 - 20, y)),
+            "{name}: {:?}",
+            mgr.state().host().placed
+        );
+    }
+}
