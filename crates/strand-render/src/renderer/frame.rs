@@ -38,6 +38,12 @@ impl Renderer {
         self.estimate_waits
     }
 
+    /// How long laying out has waited for the worker so far (at most
+    /// the estimate wait a frame).
+    pub fn estimate_waited(&self) -> Duration {
+        self.estimate_waited
+    }
+
     /// How recently a surface must have painted to count as in motion,
     /// so that it holds no frame for new text ([`BUSY_WINDOW`] by
     /// default; tests set it so they do not depend on the clock).

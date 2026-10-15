@@ -2,7 +2,7 @@
 //! springs and FLIP glides, layout facts for logic, and flattening.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_scene::Curve;
 use strand_scene::{NodeId, Prop, Scale, SurfaceId, TokenScope};
@@ -83,11 +83,17 @@ impl Renderer {
     /// again until text is stable.
     pub(super) fn flatten_surface(&mut self, id: SurfaceId) -> Flattened {
         let mut stable = None;
+        // One wait a frame, however many passes it takes: text mounted by
+        // a pass (uncovered as a card grows) waits only for what is left
+        // of it, so a slow worker costs a frame the wait once, not once
+        // a pass. (A first frame is held for all of its text anyway, see
+        // `frame_deadline`.)
+        let deadline = Instant::now() + self.estimate_wait;
         for _ in 0..6 {
             let flat = self.flatten_now(id);
             // New text the worker has not shaped yet was laid out by an
             // estimate: wait briefly for it and lay out again.
-            let text = self.request_text(&flat.text) | self.await_unmeasured(&flat.text);
+            let text = self.request_text(&flat.text) | self.await_unmeasured(&flat.text, deadline);
             // Decoded inline (offline): draw them at once too.
             // While a size springs here, images at a new size draw their
             // last decode scaled and are decoded once it rests.

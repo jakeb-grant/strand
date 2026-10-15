@@ -400,10 +400,11 @@ impl Renderer {
         out
     }
 
-    /// Waits up to the estimate wait for the text worker to deliver the
-    /// unbounded layouts of `needs` whose nodes have none at any scale
-    /// (layout measured them by an estimate). Returns true if any of them
-    /// arrived (lay out again).
+    /// Waits until `deadline` (the frame's estimate wait, shared by its
+    /// layout passes) for the text worker to deliver the unbounded
+    /// layouts of `needs` whose nodes have none at any scale (layout
+    /// measured them by an estimate). Returns true if any of them arrived
+    /// (lay out again).
     ///
     /// Text in a `list`'s rows is not waited for: rows mount as a list
     /// scrolls, every frame of a scroll would pay for the wait and a
@@ -411,7 +412,11 @@ impl Renderer {
     /// frames under load), and a row takes its own width from the list,
     /// so a sibling of the text in it moves at most inside a row
     /// scrolling in at the list's edge.
-    pub(super) fn await_unmeasured(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
+    pub(super) fn await_unmeasured(
+        &mut self,
+        needs: &[(NodeId, TextSpec)],
+        deadline: Instant,
+    ) -> bool {
         if self.estimate_wait.is_zero() || !matches!(self.text, TextBackend::Worker(_)) {
             return false;
         }
@@ -471,10 +476,10 @@ impl Renderer {
                 .iter()
                 .any(|slot| texts.get(slot).is_some_and(|t| t.layout.is_some()))
         };
-        let deadline = Instant::now() + self.estimate_wait;
         if waiting(&self.texts) {
             self.estimate_waits += unmeasured.len() as u64;
         }
+        let started = Instant::now();
         while waiting(&self.texts) {
             let left = deadline.saturating_duration_since(Instant::now());
             let TextBackend::Worker(w) = &self.text else {
@@ -492,6 +497,7 @@ impl Renderer {
                 }
             }
         }
+        self.estimate_waited += started.elapsed();
         // Other layouts delivered meanwhile are drawn from the next frame,
         // as when they arrive between frames.
         arrived(&self.texts)

@@ -479,6 +479,60 @@ fn rows_mounting_in_a_list_do_not_wait_for_their_text() {
     assert!(sh.r.estimate_waits() > 0, "the reading is waited for");
 }
 
+/// Twelve texts mounting in one frame.
+const MANY: &str = "
+state more = false
+bar Top {
+  height: 30
+  row { gap: 4
+    if more {
+      for n in [\"alpha\", \"bravo\", \"charlie\", \"delta\", \"echo\", \"foxtrot\", \"golf\", \"hotel\", \"india\", \"juliett\", \"kilo\", \"lima\"] key n {
+        text n { color: #ffffff }
+      }
+    }
+  }
+}
+";
+
+/// (owner-testing.md bug 14) A frame waits for its new text once, however
+/// many layout passes it takes: on a worker that shapes a text every
+/// 3 ms, twelve texts mounting together cost laying the bar out at most
+/// the estimate wait. Before, each pass that received one of them waited
+/// the whole estimate wait again for the rest (up to six passes: 31 ms
+/// here), as the owner's card did when its dashboard mounted.
+#[test]
+fn a_frame_waits_for_its_new_text_once() {
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let slow: strand_text::Waker = Box::new(|| std::thread::sleep(Duration::from_millis(3)));
+    let worker =
+        TextWorker::spawn_with_waker(FontConfig::isolated(vec![Arc::new(data)]), Some(slow))
+            .unwrap();
+    let mut r = Renderer::new(strand_render::TextBackend::Worker(worker));
+    r.set_first_frame_wait(Duration::ZERO);
+    r.set_new_text_wait(Duration::ZERO);
+    let mut sh = Shell::boot_with(r, MANY, 1.0, 800);
+    run(&mut sh, NodeId::new(0, 0));
+    let (waits, waited) = (sh.r.estimate_waits(), sh.r.estimate_waited());
+    // The texts mount, and the bar is laid out once (`update`).
+    sh.inst
+        .set_value("shell", "more", Value::Bool(true))
+        .unwrap();
+    assert!(sh.r.apply(sh.inst.flush().diff).is_empty());
+    sh.r.update();
+    let waited = sh.r.estimate_waited() - waited;
+    assert!(
+        sh.r.estimate_waits() > waits,
+        "the new texts are waited for"
+    );
+    // The wait, and taking in what arrived meanwhile (a debug build's
+    // glyphs): well under the six waits of before.
+    assert!(
+        waited < strand_render::ESTIMATE_WAIT * 2,
+        "the frame waited {waited:?} for its text"
+    );
+}
+
 /// The owner's card, reduced (owner-testing.md bug 11, B-a): one popup
 /// holding a card whose `x`, `width` and `height` spring between an
 /// island (100 × 30) and a dashboard (400 × 200), with a constant drop

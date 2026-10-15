@@ -1978,7 +1978,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   alone (a conic turning with `t`) damages only the ring; a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
-  uncached. Painting a surface moves every other surface's
+  uncached. A
+  frame waits for new text (`ESTIMATE_WAIT`) once, however many layout
+  passes it takes. Painting a surface moves every other surface's
   first-frame and size hold still running by the time it took
   (`Renderer::pause_holds`): they wait for the text worker and the
   compositor, not for the loop's own painting. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
