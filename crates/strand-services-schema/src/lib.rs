@@ -6,7 +6,8 @@
 //! Each service module of `strand-services` uses its constant here as
 //! its `SCHEMA` (architecture.md, "strand-services-schema").
 
-/// `system`: the portal's appearance settings and the host name.
+/// `system`: the portal's appearance settings, the host name, kernel and
+/// uptime.
 pub const SYSTEM: &str = include_str!("system.schema");
 /// `cpu`: processor load (procfs).
 pub const CPU: &str = include_str!("cpu.schema");

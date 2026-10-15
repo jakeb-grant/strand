@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
 use strand_services::testing::{DbusMock, PrivateBus};
-use strand_services::{Builtin, Buses, Rgba, Services, cpu, memory};
+use strand_services::{Builtin, Buses, Rgba, Services, Store, cpu, memory, system};
 use zbus::zvariant::{OwnedValue, Value};
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -475,4 +475,73 @@ fn the_portal_icon_theme_is_followed_live() {
     builtin.system.release(&rt);
     services.shutdown();
     strand_icons::set_desktop_theme(None);
+}
+
+/// (gap 34, m6-service-gaps) `system` reads the kernel's release once and
+/// counts the uptime in whole minutes, read only while a visible reader
+/// shows it, and never more than once a minute: nothing ticks per second,
+/// and nothing at all once the reader is gone.
+#[test]
+fn system_reads_the_kernel_and_counts_uptime_by_the_minute() {
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, Buses::none());
+    let uptime = system::System::FIELDS
+        .iter()
+        .position(|f| f.name == "uptime")
+        .unwrap();
+    b.system.acquire(&rt);
+    b.system.acquire_field(uptime);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.system.cells();
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    assert_eq!(
+        cells.kernel.get_untracked(&rt),
+        Ok(release.trim().to_string())
+    );
+    until(&rt, &s, "the uptime", || {
+        cells
+            .uptime
+            .get_untracked(&rt)
+            .is_ok_and(|u| u > Duration::ZERO)
+    });
+    let up = cells.uptime.get_untracked(&rt).unwrap();
+    assert_eq!(up.as_secs() % 60, 0, "whole minutes: {up:?}");
+    assert_eq!(up.subsec_nanos(), 0, "whole minutes: {up:?}");
+    let booted = std::fs::read_to_string("/proc/uptime").unwrap();
+    let secs: f64 = booted.split_whitespace().next().unwrap().parse().unwrap();
+    assert!(
+        up.as_secs_f64() <= secs && secs - up.as_secs_f64() < 61.0,
+        "{up:?} of {secs} s"
+    );
+    // Shown: at most one wake (a minute turning) in 3 s, and at most one
+    // report to the logic thread.
+    let (ticks, reports) = (system::uptime_ticks(), b.system.reports());
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        system::uptime_ticks() <= ticks + 1,
+        "{} wakes in 3 s",
+        system::uptime_ticks() - ticks
+    );
+    assert!(
+        b.system.reports() <= reports + 1,
+        "{} reports in 3 s",
+        b.system.reports() - reports
+    );
+    // Nobody shows it: the timer is off, though `system` still runs.
+    b.system.release_field(uptime);
+    s.pump(&rt);
+    std::thread::sleep(Duration::from_millis(100));
+    let ticks = system::uptime_ticks();
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(2) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(system::uptime_ticks(), ticks, "no wakes while unread");
+    assert!(b.system.running());
+    s.shutdown();
 }

@@ -1,5 +1,5 @@
 /// The desktop's appearance settings, from the XDG desktop portal and
-/// followed live, and the machine's host name.
+/// followed live, and the machine's host name, kernel and uptime.
 service system {
   /// The desktop prefers a dark style.
   dark: bool
@@ -13,4 +13,11 @@ service system {
   reduced_motion: bool
   /// The machine's host name.
   hostname: text
+  /// The running kernel's release, as `uname -r` gives it:
+  /// `6.11.2-arch1-1`.
+  kernel: text
+  /// Time since boot (suspend included), to the minute:
+  /// `dur(system.uptime)` reads `3 h 12 min`. It changes once a minute,
+  /// and only while a visible reader shows it.
+  uptime: duration
 }

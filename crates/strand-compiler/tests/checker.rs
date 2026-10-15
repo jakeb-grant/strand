@@ -1329,6 +1329,20 @@ fn media_buttons_dim_by_what_the_player_can_do() {
     );
 }
 
+/// (M6, owner-testing gap 34) A dashboard shows the uptime and the
+/// kernel: `system.uptime` is a `duration` for `dur`, `system.kernel` a
+/// text.
+#[test]
+fn system_shows_uptime_and_kernel() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    text dur(system.uptime)\n    text system.kernel\n    \
+             text join(\" \", system.hostname, system.kernel)\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

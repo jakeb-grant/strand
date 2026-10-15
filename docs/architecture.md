@@ -5004,7 +5004,11 @@ transparent huge pages for life.
   still hearing the failure event (review of the integration).
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
-  `hostname`), `cpu` and `memory` (procfs, sampled once a second only
+  `hostname`; M6, gap 34: `kernel` from `/proc/sys/kernel/osrelease`,
+  read once, and `uptime`, a stream field from `/proc/uptime` floored
+  to minutes, read again at each whole minute of uptime only while a
+  visible reader shows it, `system::uptime_ticks()` counting the wakes
+  for tests), `cpu` and `memory` (procfs, sampled once a second only
   while a reader is visible), and the D-Bus services (wave 4, a2):
   `battery` (UPower's display device and devices), `brightness`
   (`/sys/class/backlight` watched with inotify, writes through logind's

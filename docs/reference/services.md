@@ -267,7 +267,7 @@ that fails (polkit refused it, no login session, no logind) is
 ## `system`
 
 The desktop's appearance settings, from the XDG desktop portal and
-followed live, and the machine's host name.
+followed live, and the machine's host name, kernel and uptime.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -276,6 +276,8 @@ followed live, and the machine's host name.
 | `contrast` | `float` | The contrast preference, as `material(contrast:)` takes it: 0 for normal, 1 for high. |
 | `reduced_motion` | `bool` | Motion should be reduced: springs snap, and loops, time signals and effects stop. |
 | `hostname` | `text` | The machine's host name. |
+| `kernel` | `text` | The running kernel's release, as `uname -r` gives it: `6.11.2-arch1-1`. |
+| `uptime` | `duration` | Time since boot (suspend included), to the minute: `dur(system.uptime)` reads `3 h 12 min`. It changes once a minute, and only while a visible reader shows it. |
 
 ## `tray`
 

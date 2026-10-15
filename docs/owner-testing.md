@@ -898,6 +898,21 @@ findings only.
     `::an_invalidated_capability_is_read_again`,
     `crates/strand-compiler/tests/checker.rs::media_buttons_dim_by_what_the_player_can_do`).
     decisions.md m6-service-gaps.
+34. **No uptime or kernel release.** (fixed, 2026-10-15; found
+    2026-10-15 by surveying the owner's quickshell config) The owner's
+    dashboard shows how long the machine has been up and the running
+    kernel; Strand had neither, short of a polled command.
+    **Fixed; pending the owner's check on Hyprland**: `system.kernel`
+    is the running kernel's release (`/proc/sys/kernel/osrelease`, read
+    once), and `system.uptime` the time since boot to the minute
+    (`/proc/uptime`, suspend included), a stream field read only while
+    a visible reader shows it and then once a minute, so nothing wakes
+    every second and nothing at all while nobody shows it
+    (`crates/strand-services/tests/builtin.rs::system_reads_the_kernel_and_counts_uptime_by_the_minute`,
+    `crates/strand-services/src/procfs.rs::tests::uptime_is_read_and_floored_to_minutes`,
+    `crates/strand-services/src/system.rs::tests::the_uptime_timer_waits_for_the_next_whole_minute`,
+    `crates/strand-compiler/tests/checker.rs::system_shows_uptime_and_kernel`).
+    decisions.md m6-service-gaps.
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

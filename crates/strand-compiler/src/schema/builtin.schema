@@ -644,6 +644,10 @@ provisional service system {
   reduced_motion: bool
   /// The machine's host name.
   hostname: text
+  /// The running kernel's release.
+  kernel: text
+  /// Time since boot, to the minute.
+  uptime: duration
 }
 
 /// Processor load.

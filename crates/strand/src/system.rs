@@ -153,6 +153,7 @@ mod tests {
             contrast: 1.0,
             reduced_motion: true,
             hostname: "box".into(),
+            ..System::default()
         };
         let last = Last::of(&state);
         last.save(&path).unwrap();
