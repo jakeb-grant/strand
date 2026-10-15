@@ -569,12 +569,12 @@ fn the_real_services_sleep_when_nothing_changes() {
     let after: Vec<u64> = threads.iter().map(|t| switches_of(pid, t)).collect();
     assert_eq!(before, after, "{threads:?} woke while idle");
     let pss = pss_kb(pid);
-    // The debug ceiling is the design bar's in demo.rs (80 MiB since M4
-    // wave 2's merge: the debug binary's code is 63 MB, much of it
-    // resident; decisions.md, m4-integration-w2). The release gate below
-    // is the design's budget.
+    // The debug ceiling is the design bar's in demo.rs (92 MiB since the
+    // m6-service-gaps merge: the debug binary's code, much of it
+    // resident; decisions.md, m4-integration-w2 and m6-service-gaps).
+    // The release gate below is the design's budget.
     let (limit, what) = if cfg!(debug_assertions) {
-        (80 * 1024, "debug ceiling")
+        (92 * 1024, "debug ceiling")
     } else {
         // design.md: aims at 42 MB, fails above 48 (decisions.md m5-open-budgets).
         (48 * 1024, "48 MB ceiling")

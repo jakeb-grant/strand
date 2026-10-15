@@ -786,10 +786,12 @@ fn the_design_bar_keeps_the_m0_budget() {
     // wave 2 merged (the GPU backend, media decoders, the lock) the debug
     // binary's code is 63 MB, of which a large-folio page cache keeps
     // about 41 MB resident at idle, so the design bar measures 68–70 MB
-    // in debug: the ceiling is 80 MiB (decisions.md, m4-integration-w2).
+    // in debug: the ceiling was 80 MiB (decisions.md, m4-integration-w2).
+    // Gaps 28 to 35 took the debug `.text` from 74.3 to 77.2 MB and
+    // GitHub's runner to 82.3 MB: 92 MiB (decisions.md, m6-service-gaps).
     // The release gate below is the design's budget.
     let (limit, what) = if cfg!(debug_assertions) {
-        (80 * 1024, "debug ceiling")
+        (92 * 1024, "debug ceiling")
     } else {
         pss_limit()
     };

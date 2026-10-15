@@ -490,6 +490,16 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     the folded card out over the bar's island, nine frames whose pixels
     differ in alpha only. Without `opacity: 0` there the popup goes in
     one frame. decisions.md m6-owner-fixes.
+18. **A test of the tray menu handing over to the island is flaky
+    under load.** (open, 2026-10-15; found in a cold `run.sh ci`, not
+    by hand.) `crates/strand/tests/hover_popups.rs::a_tray_menu_left_for_the_island_goes_once`
+    sometimes sees the tray menu go but no island within its 900 ms
+    window: 2 of 53 runs of `85f4058` failed, `main` at `ab83c73`
+    passed 36 of 36, too few to say the m6-service-gaps merge caused
+    it. Likely direction: whether the hover that opens the island is
+    lost while the menu's exit holds the pointer (`Host::rebase_pointer`,
+    `Router::held`), or the test's window is short for a loaded run.
+    decisions.md m6-service-gaps.
 
 ## Capability gaps
 
@@ -965,7 +975,7 @@ findings only.
     Ctrl+C/X/V (and Ctrl+Insert, Shift+Delete, Shift+Insert) through the
     compositor's clipboard; a builtin `clipboard` service (over
     `ext-data-control-v1`, else `wlr-data-control`) gives the selection's
-    `text` and `image`, `clipboard.copy(value)` and `clear()`, and
+    `text` and `holds_image`, `clipboard.copy(value)` and `clear()`, and
     `history` (texts and images, `e.copy()`, `e.remove()`), kept across
     restarts and recorded while the config reads it anywhere, a password
     manager's secret never read; after review: the selection found when
