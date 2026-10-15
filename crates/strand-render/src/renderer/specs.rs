@@ -214,6 +214,7 @@ impl Renderer {
                     self.resize_wait.max(self.first_frame_wait)
                 };
                 s.size_hold = Some((target, now + wait));
+                s.size_paused = Duration::ZERO;
             }
         }
     }

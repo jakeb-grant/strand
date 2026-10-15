@@ -162,6 +162,7 @@ impl Renderer {
                 valid: false,
                 painted: false,
                 wait_until: None,
+                wait_paused: Duration::ZERO,
                 awaiting_text: false,
                 new_text_until: None,
                 painted_at: None,
@@ -178,6 +179,7 @@ impl Renderer {
                 query_hold: None,
                 query_held: false,
                 size_hold: None,
+                size_paused: Duration::ZERO,
                 animating: false,
                 anim_layout: false,
                 flip: HashSet::new(),
@@ -220,6 +222,7 @@ impl Renderer {
             s.resize(size, scale);
             if !s.painted && s.wait_until.is_none() && size != Size::default() {
                 s.wait_until = Some(Instant::now() + wait);
+                s.wait_paused = Duration::ZERO;
             }
         }
         self.prune_scales();

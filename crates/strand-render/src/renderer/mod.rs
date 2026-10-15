@@ -102,6 +102,12 @@ pub const QUERY_WAIT: Duration = Duration::from_millis(30);
 /// at the old size, then the new one (a one-frame size pop).
 pub const RESIZE_WAIT: Duration = Duration::from_millis(50);
 
+/// How far other surfaces' paints may move a first-frame or size hold
+/// on in all (`Renderer::pause_holds`): a hold whose configure never
+/// matches (a compositor clamping the size) still runs out while
+/// another surface animates back to back.
+pub(crate) const MAX_HOLD_PAUSE: Duration = Duration::from_secs(1);
+
 /// How long an exit pose waits for frames: an exit older than this on a
 /// surface that painted nothing for as long (its output asleep or
 /// covered, so no frame callback comes) ends at once, so removed subtrees
@@ -132,6 +138,9 @@ struct SurfaceState {
     /// Until when the first frame waits for text being shaped (set when
     /// the surface is first configured).
     wait_until: Option<Instant>,
+    /// How far other surfaces' paints have moved `wait_until` on (at
+    /// most [`MAX_HOLD_PAUSE`]).
+    wait_paused: Duration,
     /// Some text on the surface is being shaped and has no layout for
     /// the surface's own scale and width yet.
     awaiting_text: bool,
@@ -178,6 +187,9 @@ struct SurfaceState {
     /// A content-sized surface whose spec asks for another size than it
     /// is configured at: the buffer size it waits for, and until when.
     size_hold: Option<(LogicalSize, Instant)>,
+    /// How far other surfaces' paints have moved `size_hold` on (at most
+    /// [`MAX_HOLD_PAUSE`]).
+    size_paused: Duration,
     /// Something on it is moving (a spring, a pose, a glide): it wants
     /// frames until everything settles.
     animating: bool,

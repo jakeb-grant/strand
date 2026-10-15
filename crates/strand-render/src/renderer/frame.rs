@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
 
-use super::{DAMAGE_HISTORY, Renderer};
+use super::{DAMAGE_HISTORY, MAX_HOLD_PAUSE, Renderer};
 use crate::flatten::{NodeRecord, RoundBox};
 
 impl Renderer {
@@ -648,12 +648,16 @@ impl Renderer {
     /// first frame painting another surface for longer than the hold
     /// (half a second for a debug build's launcher beside a bar) showed
     /// at its estimated size, with the configure at its real one already
-    /// on its way.
+    /// on its way. A hold is moved on by at most [`MAX_HOLD_PAUSE`] in
+    /// all: one whose configure never matches (a compositor clamping the
+    /// size) still runs out while other surfaces paint back to back.
     pub(super) fn pause_holds(&mut self, painted: SurfaceId, started: Instant) {
         let spent = started.elapsed();
-        let on = |t: &mut Instant| {
+        let on = |t: &mut Instant, paused: &mut Duration| {
             if *t > started {
-                *t += spent;
+                let by = spent.min(MAX_HOLD_PAUSE.saturating_sub(*paused));
+                *t += by;
+                *paused += by;
             }
         };
         for (id, s) in &mut self.surfaces {
@@ -663,10 +667,10 @@ impl Renderer {
             if !s.painted
                 && let Some(t) = &mut s.wait_until
             {
-                on(t);
+                on(t, &mut s.wait_paused);
             }
             if let Some((_, t)) = &mut s.size_hold {
-                on(t);
+                on(t, &mut s.size_paused);
             }
         }
     }

@@ -338,6 +338,48 @@ fn painting_another_surface_does_not_run_out_a_hold() {
     assert!(after.1 > moved.1);
 }
 
+/// (m6-owner-fixes review) Other surfaces painting back to back move a
+/// hold on by at most `MAX_HOLD_PAUSE` in all: a size hold whose
+/// configure never matches (a compositor clamping the size) runs out
+/// while another surface animates, rather than holding the panel blank
+/// until the animation stops.
+#[test]
+fn back_to_back_paints_move_a_hold_on_at_most_max_hold_pause() {
+    let mut r = renderer();
+    let (a, b) = (NodeId::new(0, 0), NodeId::new(1, 0));
+    let mut d = SceneDiff::new();
+    for id in [a, b] {
+        d.create(id, NodeKind::Panel, None, 0);
+    }
+    assert!(r.apply(d).is_empty());
+    for (i, root) in [a, b].into_iter().enumerate() {
+        r.attach_surface(SurfaceId(i as u32 + 1), root);
+    }
+    let size = LogicalSize::new(10.0, 10.0);
+    let until = Instant::now() + Duration::from_millis(50);
+    let first = until;
+    {
+        let s = r.surfaces.get_mut(&SurfaceId(2)).unwrap();
+        s.wait_until = Some(until);
+        s.size_hold = Some((size, until));
+    }
+    // Surface 1 paints for 100 ms at a time, one paint after another,
+    // each starting before the hold (as moved) runs out.
+    let spent = Duration::from_millis(100);
+    for _ in 0..40 {
+        r.pause_holds(SurfaceId(1), Instant::now() - spent);
+    }
+    let s = &r.surfaces[&SurfaceId(2)];
+    let (wait, held) = (s.wait_until.unwrap(), s.size_hold.unwrap().1);
+    assert!(
+        held <= first + MAX_HOLD_PAUSE && wait <= first + MAX_HOLD_PAUSE,
+        "moved on by {:?} and {:?}",
+        held - first,
+        wait - first
+    );
+    assert!(held >= first + MAX_HOLD_PAUSE - spent, "paused at all");
+}
+
 /// A request that crashes the worker's engine every time is not asked
 /// for again after the reset, so the worker does not restart its
 /// engine (and every text reshape) in a loop.

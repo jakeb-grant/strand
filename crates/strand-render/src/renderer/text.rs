@@ -370,6 +370,7 @@ impl Renderer {
             s.valid = false;
             s.painted = false;
             s.wait_until = Some(until);
+            s.wait_paused = Duration::ZERO;
             s.mark_layout();
         }
     }
