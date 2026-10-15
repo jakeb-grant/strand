@@ -2828,6 +2828,40 @@ mod tests {
         assert!(!flags.contains(&(k.a, true)), "a is not hovered: {flags:?}");
     }
 
+    /// (m6-owner-fixes review, spec.md 6.3) Only a pointer on a surface
+    /// the popup opens from is taken onto it: `b`'s popup painting over
+    /// `a`'s, its sibling, where the pointer rests leaves the pointer
+    /// where the compositor has it (a sibling's stacking is the
+    /// compositor's).
+    #[test]
+    fn a_popup_over_its_sibling_leaves_the_pointer_where_it_is() {
+        let mut k = Kept::new();
+        let mut d = SceneDiff::new();
+        d.set(
+            NodeId::new(11, 0),
+            Prop::Bg,
+            strand_scene::PropValue::Color(strand_scene::Color::from_hex("#00ff00").unwrap()),
+        );
+        assert!(k.host.renderer.apply(d).is_empty());
+        let (sa, sb) = (SurfaceId(2), SurfaceId(3));
+        k.show(2, k.pop_a);
+        k.host.surface_placed(sa, (0, 30));
+        k.host.input(&InputEvent::PointerLeave { surface: k.bar_s });
+        k.host.input(&InputEvent::PointerEnter {
+            surface: sa,
+            position: LogicalPoint::new(10.0, 10.0),
+        });
+        k.show(3, k.pop_b);
+        k.host.surface_placed(sb, (0, 30));
+        let _ = k.told();
+        let mut px = vec![0u8; 40 * 40 * 4];
+        let t = PaintTarget::new(&mut px, Size::new(40, 40), 160, Scale::ONE, 0).unwrap();
+        k.host
+            .paint(sb, &mut t.at(std::time::Duration::from_secs(1)));
+        assert!(k.host.rebase.is_none());
+        assert_eq!(k.hover_flags(), [], "no hover moves");
+    }
+
     /// (M6, decisions.md m6-w2-surface) A graced hover popup logic
     /// removes (with its anchor) takes its grace with it when the host
     /// settles the router on the new scene, and the renderer's input

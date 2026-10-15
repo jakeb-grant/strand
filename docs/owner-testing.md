@@ -318,7 +318,10 @@ here is a proposal.
     pointer itself
     (`crates/strand/tests/hover_popups.rs::a_hover_popup_mapped_under_a_still_pointer_is_hovered`,
     which failed before). decisions.md m6-owner-fixes. The config's
-    `touched` latch is no longer needed.
+    `touched` latch is no longer needed. Only a pointer on a surface
+    the popup opens from is taken (spec.md 6.3): `big` opening over
+    `peek`, its sibling, under a still pointer is hovered from the
+    pointer's next motion.
 
 Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
 (`target/try/island`, 2026-10-14).
