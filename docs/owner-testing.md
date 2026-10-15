@@ -491,14 +491,21 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     differ in alpha only. Without `opacity: 0` there the popup goes in
     one frame. decisions.md m6-owner-fixes.
 18. **A test of the tray menu handing over to the island is flaky
-    under load.** (open, 2026-10-15; found in a cold `run.sh ci`, not
-    by hand.) `crates/strand/tests/hover_popups.rs::a_tray_menu_left_for_the_island_goes_once`
+    under load.** (fixed, 2026-10-15; found in a cold `run.sh ci`, not
+    by hand: debug builds now optimise dependencies, see the end of this
+    entry.) `crates/strand/tests/hover_popups.rs::a_tray_menu_left_for_the_island_goes_once`
     sometimes sees the tray menu go but no island within its 900 ms
     window: 2 of 53 runs of `85f4058` failed, `main` at `ab83c73`
     passed 36 of 36, too few to say the m6-service-gaps merge caused
     it. Likely direction: whether the hover that opens the island is
     lost while the menu's exit holds the pointer (`Host::rebase_pointer`,
     `Router::held`), or the test's window is short for a loaded run.
+    Cause: neither. `main` fails it too, and the damage log shows the
+    debug build rasterising each animated frame of the menu and the
+    island (a box with a 24 px shadow, scaled by `enter`) in 100 to
+    380 ms, so the hand-over overran the 900 ms window on a slower run.
+    Dependencies are now optimised in debug builds (opt-level 2, the
+    workspace's crates at 0): the same frames take 1 to 11 ms.
     decisions.md m6-service-gaps.
 
 ## Capability gaps
