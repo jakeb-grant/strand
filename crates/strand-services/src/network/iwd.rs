@@ -221,6 +221,8 @@ impl Iwd {
             strength,
             wifi,
             access_points,
+            // This body runs only while iwd owns its name.
+            available: true,
             failed: Event::default(),
         }
     }

@@ -430,7 +430,9 @@ pub fn logic(
         if !failed.is_empty() {
             shell.service_diagnostics(failed);
         }
-        if shell.inst.take_theme_files_changed() {
+        // Both taken: a drawn file's source changing (or its node
+        // unmounting) is a change of the watched set too.
+        if shell.inst.take_theme_files_changed() | shell.inst.take_assets_changed() {
             shell.watch_settings();
         }
         let ready = std::mem::take(&mut inbox.ipc);

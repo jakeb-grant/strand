@@ -23,8 +23,11 @@ service bluetooth {
   powered: bool rw
   /// Paired devices, keyed by `address`.
   devices: [BluetoothDevice]
+  /// BlueZ answers and has an adapter: false without them (or without a
+  /// system bus), so a menu can hide what cannot work.
+  available: bool
   /// Connecting or disconnecting a device failed (out of range, turned
-  /// off, timed out after 30 s): `on bluetooth.failed(address, error)
-  /// { … }`.
+  /// off, timed out after 30 s, or the service not running): `on
+  /// bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
 }

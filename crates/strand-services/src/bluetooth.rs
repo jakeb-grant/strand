@@ -46,7 +46,7 @@ pub enum BluetoothAction {
 }
 
 /// See the module docs.
-#[service(name = "bluetooth", action = BluetoothAction)]
+#[service(name = "bluetooth", action = BluetoothAction, refused = refused)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Bluetooth {
     /// The adapter is on. Writable.
@@ -55,10 +55,24 @@ pub struct Bluetooth {
     /// Paired devices, keyed by `address`.
     #[store(keyed)]
     pub devices: Vec<BluetoothDevice>,
+    /// BlueZ answers and has an adapter: false without them (or without a
+    /// system bus), so a menu can hide what cannot work.
+    pub available: bool,
     /// Connecting or disconnecting a device failed (out of range, turned
-    /// off, timed out after 30 s): `on bluetooth.failed(address, error)
-    /// { … }`.
+    /// off, timed out after 30 s, or the service not running): `on
+    /// bluetooth.failed(address, error) { … }`.
     pub failed: Event<(String, String)>,
+}
+
+/// A connect or disconnect the service could not take (no system bus,
+/// its run backing off): `failed(address, error)`, as BlueZ refusing it
+/// is.
+fn refused(action: &BluetoothAction, error: &str) -> Option<BluetoothEvent> {
+    let (BluetoothAction::Connect { item } | BluetoothAction::Disconnect { item }) = action;
+    Some(BluetoothEvent::Failed((
+        item.address.clone(),
+        error.to_string(),
+    )))
 }
 
 /// BlueZ's objects: path, then interface, then properties.
@@ -110,6 +124,7 @@ impl Bluetooth {
         Bluetooth {
             powered: dbus::boolean(adapter, "Powered").unwrap_or(false),
             devices,
+            available: true,
             failed: Event::default(),
         }
     }

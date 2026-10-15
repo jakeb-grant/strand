@@ -629,6 +629,14 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             let _ = caches_tx.send(cache_changed(kind));
         })),
     });
+    // (M6) A local file an `image`, `svg` or `lottie` draws, saved: render
+    // reads it again (`Renderer::assets_changed`), with no reload.
+    let (assets_tx, assets_rx) = calloop::channel::channel::<Vec<PathBuf>>();
+    let _ = compiler
+        .jobs()
+        .send(Job::Assets(live::AssetSink(Box::new(move |paths| {
+            let _ = assets_tx.send(paths);
+        }))));
     // The portal's icon theme switching (followed by the logic thread's
     // services) invalidates like an `index.theme` change.
     live.icon_theme_switched = Some(Switched(Box::new(move || {
@@ -672,6 +680,14 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .insert_source(caches_rx, |event, _, state| {
             if let Event::Msg(kind) = event {
                 caches_changed(state, kind);
+            }
+        })
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(assets_rx, |event, _, state| {
+            if let Event::Msg(paths) = event {
+                state.host_mut().renderer.assets_changed(&paths);
+                crate::demo::text_ready(state);
             }
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;

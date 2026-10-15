@@ -523,7 +523,12 @@ filling the monitor, the keyboard always).
   `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp` or `.apng`; anything else is
   an icon name. `strand check` warns (`check::missing_file`) when a
   literal path names no file; an icon name and a computed source are
-  not checked.
+  not checked. While the shell runs, saving a file a mounted `image`,
+  `svg` or `lottie` draws (by its source's current value, a computed one
+  too) draws it again within a frame or two: the config is not
+  reloaded and no state changes, and the old drawing stays until the
+  new one is read. A file a Lottie names beside it is read again only
+  with the Lottie file (decisions.md m6-owner-fixes).
 - **Icon names.** An icon name (an `icon`'s source, an `image` source
   that is not a path, and so every app, window and tray item icon a
   config draws by name) is looked up first in the config directory's
@@ -846,6 +851,13 @@ filling the monitor, the keyboard always).
   `T` is expected; using it directly is a load error.
 - Using an `Async<T>` where a `T` is expected is a load error, except
   for the reads through an `Async` list that section 8.6 lists.
+- A list's members (`len`, `filter`, `find`, `push`, …) are listed in
+  docs/reference/functions.md under `[T]`. `xs[i]` counts from 0 and
+  reads `null` past the end. `xs.index_of(test)` is the index of the
+  first item `test` is true for, as an `int?` (`null` when there is
+  none). It is `find`'s position, so
+  `xs[(xs.index_of(x => x.active) ?? -1) + 1]` is the item after the
+  active one (decisions.md m6-owner-fixes, gap 23).
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a
@@ -1419,7 +1431,15 @@ people can edit by hand.
   the `lock` shows the built-in password field (section 5.1).
 - **Service failures** reach the program as values (an action's error,
   an `Async`'s `.error`) and as service diagnostics; they never stop the
-  shell.
+  shell. An action of a builtin service that cannot run (its daemon or
+  bus missing) is never a runtime fault: it is logged and arrives as
+  that service's failure event where it has one (`session.failed`,
+  `network.failed`, `bluetooth.failed`), as the daemon refusing it
+  would; a write to such a service is dropped and logged, the field
+  keeping the service's last value. Where a daemon may be missing,
+  `available` says whether it answers (`network`, `bluetooth`,
+  `session`, `brightness`), so a config can hide what cannot work
+  (decisions.md m6-owner-fixes, gap 20).
 
 ## 13. The command line and IPC
 

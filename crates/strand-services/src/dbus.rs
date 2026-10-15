@@ -465,7 +465,17 @@ pub(crate) async fn idle_without_bus<S: crate::Service>(
     };
     if disabled {
         log::debug!("{}: no {which} bus: {e}", cx.name());
-        while cx.recv().await.is_some() {}
+        // (M6, owner-testing gap 20) An action is refused as the service
+        // reports the action failing, never swallowed.
+        let why = format!("no {which} bus");
+        while let Some(m) = cx.recv().await {
+            if let crate::Msg::Action(a) = m
+                && let Some(event) = S::refused(&a, &why)
+                && !cx.emit(event)
+            {
+                return Ok(());
+            }
+        }
         return Ok(());
     }
     Err(crate::ServiceError(format!("no {which} bus: {e}")))

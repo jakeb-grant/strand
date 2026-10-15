@@ -535,6 +535,28 @@ fn text_plus_distinct_and_sum() {
     assert_eq!(get(&inst, "joined"), Value::text("Str!and"));
 }
 
+/// (M6, owner-testing gap 23) `index_of(test)` is the index of the first
+/// item `test` is true for, or null, and follows the list it reads.
+#[test]
+fn index_of_finds_the_first_position() {
+    let src = "state xs = [3, 1, 4, 1]\nlet one = xs.index_of(x => x == 1)\nlet first = xs.index_of(x => x > 2)\nlet none = xs.index_of(x => x > 9)\nlet after = xs[(xs.index_of(x => x == 4) ?? -1) + 1]\nbar B { box { on click { xs = [1, 4] } } }\n";
+    let (rt, host, inst) = run(src);
+    assert_eq!(get(&inst, "one"), Value::int(1));
+    assert_eq!(get(&inst, "first"), Value::int(0));
+    assert_eq!(get(&inst, "none"), Value::Null);
+    assert_eq!(get(&inst, "after"), Value::int(1));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    inst.event(boxes[0], "click", Vec::new());
+    inst.flush();
+    assert_eq!(get(&inst, "one"), Value::int(0));
+    assert_eq!(get(&inst, "first"), Value::int(1));
+    assert_eq!(get(&inst, "after"), Value::Null, "past the end");
+}
+
 /// Gaps 14 (decisions.md m6-w2-language): `dur(d, clock: true)` reads as
 /// a player's clock.
 #[test]

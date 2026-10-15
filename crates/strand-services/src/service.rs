@@ -47,6 +47,17 @@ pub trait Service: Store {
     ) -> Option<Result<Data, Error>> {
         None
     }
+    /// (M6, owner-testing gap 20) The event that reports `action` as
+    /// failed with `error` when the service cannot take it at all (its
+    /// body failed and backs off, its bus is missing): the event the
+    /// action's own failures are (`session.failed`, `network.failed`),
+    /// so a program hears it the same way, never as a fault (spec.md 12).
+    /// `None` (the default): the refusal is only logged.
+    /// `#[service(refused = path)]` names a
+    /// `fn(&Action, &str) -> Option<Event>`.
+    fn refused(_action: &Self::Action, _error: &str) -> Option<Self::Event> {
+        None
+    }
     /// Its body, given its context.
     fn start(cx: Cx<Self>) -> Start;
 }

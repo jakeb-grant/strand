@@ -5,6 +5,7 @@
 //! (start on the first reader, refcount, stop 5 s after the last on the
 //! logic clock, visibility).
 
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -127,7 +128,14 @@ impl Script {
 }
 
 /// A probe: one field of each kind, events of each arity.
-#[service(name = "probe", schema = SCHEMA, action = ProbeAction, call = ProbeCall, fns = probe_fns)]
+#[service(
+    name = "probe",
+    schema = SCHEMA,
+    action = ProbeAction,
+    call = ProbeCall,
+    fns = probe_fns,
+    refused = probe_refused
+)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Probe {
     /// A writable level.
@@ -152,6 +160,12 @@ pub struct Probe {
     pub pinged: Event<()>,
     /// Two arguments.
     pub pair: Event<(i64, String)>,
+}
+
+/// An action the probe cannot take: `pair(0, why)`, as a service's own
+/// failure event would carry it.
+fn probe_refused(_action: &ProbeAction, error: &str) -> Option<ProbeEvent> {
+    Some(ProbeEvent::Pair((0, error.to_string())))
 }
 
 fn probe_fns(
@@ -998,13 +1012,35 @@ fn errors_from_a_body_end_the_run_and_a_reader_restarts_it() {
     assert!(!probe.running(), "an ended body is not running");
     // Still read: started again after 1 s, then 2 s (backoff).
     assert_eq!(rt.next_deadline(), Some(now.get() + Duration::from_secs(1)));
-    // A write while it backs off is refused with that reason (it does not
-    // restart a failing body early).
-    let err = probe
+    // (M6, owner-testing gap 20) A write while it backs off is dropped
+    // (it does not restart a failing body early) and the field keeps the
+    // service's value; an action is its refusal event with the reason.
+    // Neither is the caller's error: a handler never faults on them
+    // (spec.md 12).
+    let heard = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let h = heard.clone();
+    probe.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a {
+            h.borrow_mut().push(args.clone());
+        }
+    }));
+    probe
         .dynamic()
         .write(&rt, 0, &[], Data::Float(0.1))
-        .unwrap_err();
-    assert!(err.to_string().contains("backoff"), "{err}");
+        .unwrap();
+    assert_eq!(probe.cells().level.get_untracked(&rt), Ok(0.0));
+    probe
+        .dynamic()
+        .action(&rt, "bump", None, &[], Default::default())
+        .unwrap();
+    {
+        let heard = heard.borrow();
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        assert_eq!(heard[0][0], Data::Int(0));
+        let why = format!("{:?}", heard[0][1]);
+        assert!(why.contains("backoff"), "{why}");
+    }
+    assert_eq!(probe.starts(), 1, "nothing restarted it early");
     at(Duration::from_secs(1));
     assert_eq!(probe.starts(), 2);
     until(&rt, &s, "the second failure", || {

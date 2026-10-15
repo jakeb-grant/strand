@@ -617,10 +617,12 @@ impl Shell {
     }
 
     /// Give the worker the files the program now reads: its settings
-    /// files, and the wallpapers and palette files its theme read (a
-    /// wallpaper's link target is watched too).
+    /// files, the wallpapers and palette files its theme read (a
+    /// wallpaper's link target is watched too), and (M6) the local files
+    /// its `image`s, `svg`s and `lottie`s draw.
     pub(super) fn watch_settings(&mut self) {
         let (images, imports) = self.inst.theme_files();
+        let assets = self.inst.asset_files();
         let files: Vec<(PathBuf, Role)> = self
             .inst
             .settings_files()
@@ -628,6 +630,7 @@ impl Shell {
             .map(|f| (f, Role::Settings))
             .chain(images.into_iter().map(|f| (f, Role::Wallpaper)))
             .chain(imports.into_iter().map(|f| (f, Role::Other)))
+            .chain(assets.into_iter().map(|f| (f, Role::Asset)))
             .collect();
         if files != self.watched {
             self.watched = files.clone();

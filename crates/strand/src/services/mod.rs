@@ -949,6 +949,11 @@ mod tests {
 
     impl Shell {
         fn boot(src: &str) -> Shell {
+            Shell::boot_on(src, Buses::none())
+        }
+
+        /// [`Shell::boot`] with the services on `buses`.
+        fn boot_on(src: &str, buses: Buses) -> Shell {
             let mut map = SourceMap::new();
             map.add("svc.strand", src.to_string());
             let compiled = strand_compiler::compile_with(&map, schema());
@@ -966,7 +971,7 @@ mod tests {
             fallback
                 .set(&rt, "screens.all", Value::list(vec![screen]))
                 .unwrap();
-            let real = Real::start(&rt, &program.types, Buses::none(), fallback, || {});
+            let real = Real::start(&rt, &program.types, buses, fallback, || {});
             let inst = Instance::new(&rt, program, real.host.clone(), Storage::none());
             let mut shell = Shell {
                 rt,
@@ -1011,6 +1016,52 @@ mod tests {
             self.inst.shutdown();
             self.real.shutdown(&self.rt);
         }
+    }
+
+    /// (M6, owner-testing gap 20) A builtin service that cannot run (its
+    /// system bus does not answer: each body fails and backs off) is no
+    /// runtime fault (spec.md 12): `session.lock()`, `network.wifi =
+    /// true` in a click handler leave the component running (`tick`
+    /// asserts no fault), the action comes back as `session.failed`, the
+    /// write is dropped, and `available` says so first. Before, the
+    /// action faulted the bar (`on click: 'session' is not running`).
+    #[test]
+    fn a_service_that_cannot_run_fails_as_values_not_faults() {
+        let gone = strand_services::Bus::Address("unix:path=/nonexistent/strand-test-bus".into());
+        let src = "state heard = \"\"\n\
+                   bar B {\n\
+                   \x20 on session.failed(a, e) { heard = heard + a + \";\" }\n\
+                   \x20 text (session.available || network.available || bluetooth.available) ? \"up\" : \"down\"\n\
+                   \x20 text heard\n\
+                   \x20 text network.wifi ? \"on\" : \"off\"\n\
+                   \x20 box {\n\
+                   \x20   on click {\n\
+                   \x20     session.lock()\n\
+                   \x20     network.wifi = true\n\
+                   \x20   }\n\
+                   \x20 }\n\
+                   }\n";
+        let mut shell = Shell::boot_on(
+            src,
+            Buses {
+                session: gone.clone(),
+                system: gone,
+            },
+        );
+        shell.until("the services' failed first runs", |s| {
+            let b = &s.real.builtin;
+            b.session.starts() > 0
+                && b.network.starts() > 0
+                && !b.session.running()
+                && !b.network.running()
+        });
+        assert_eq!(shell.scene.texts(), ["down", "", "off"]);
+        let boxes = shell.inst.nodes_handling("click");
+        assert_eq!(boxes.len(), 1);
+        shell.inst.event(boxes[0], "click", Vec::new());
+        shell.tick(Duration::ZERO);
+        shell.until("the refusal heard", |s| s.scene.texts()[1] == "lock;");
+        assert_eq!(shell.scene.texts(), ["down", "lock;", "off"]);
     }
 
     /// Only the services a config reads start (the compiler collects the

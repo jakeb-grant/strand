@@ -77,6 +77,7 @@ fn bluetooth_follows_bluez() {
     b.bluetooth.acquire(&rt);
     assert!(s.wait_ready(&rt, Duration::from_secs(10)));
     assert_eq!(cells.powered.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.available.get_untracked(&rt), Ok(true));
     let d = devices(&b, &rt);
     assert_eq!(d.len(), 1, "only the paired device: {d:?}");
     assert_eq!(d[0].address, ADDRESS);
@@ -239,12 +240,17 @@ fn bluetooth_follows_bluez() {
     // BlueZ goes and comes back: read afresh, no service restart.
     drop(mock1);
     until(&rt, &s, "no adapter", || devices(&b, &rt).is_empty());
+    // (M6, owner-testing gap 20) Without BlueZ it is unavailable.
+    until(&rt, &s, "unavailable", || {
+        cells.available.get_untracked(&rt) == Ok(false)
+    });
     let Some((_mock2, _)) = bluez(&tokio, &bus, &conn) else {
         return;
     };
     until(&rt, &s, "BlueZ back", || {
         devices(&b, &rt).len() == 1 && cells.powered.get_untracked(&rt) == Ok(true)
     });
+    assert_eq!(cells.available.get_untracked(&rt), Ok(true));
     assert_eq!(b.bluetooth.starts(), 1);
     s.shutdown();
 }

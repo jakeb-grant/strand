@@ -233,16 +233,7 @@ pub fn is_icon(key: &ImageKey) -> bool {
 fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
     let src = key.source.trim();
     if !is_icon(key) {
-        let p = if let Some(rest) = src.strip_prefix("file://") {
-            PathBuf::from(percent_decode(rest))
-        } else if let Some(rest) = src.strip_prefix("~/") {
-            match std::env::var_os("HOME") {
-                Some(h) => PathBuf::from(h).join(rest),
-                None => PathBuf::from(src),
-            }
-        } else {
-            PathBuf::from(src)
-        };
+        let p = local_path(src);
         return if p.is_file() {
             Ok(p)
         } else {
@@ -258,11 +249,14 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
         .ok_or_else(|| ImageError::NotFound(src.into()))
 }
 
-/// (M4) A local file's bytes, for an `svg`'s or `lottie`'s source: a
-/// path, a `file://` URL or a `~/` path, at most `max` bytes.
-pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
+/// The file a local source names, as [`resolve`] and [`read_local`] read
+/// it: a `file://` URL decoded, `~/` under the home directory, anything
+/// else as written (the compiler made a config's relative path absolute).
+/// What an edited file the watcher reports is matched against
+/// ([`ImageStore::invalidate_files`]).
+pub(crate) fn local_path(src: &str) -> PathBuf {
     let src = src.trim();
-    let path = if let Some(rest) = src.strip_prefix("file://") {
+    if let Some(rest) = src.strip_prefix("file://") {
         PathBuf::from(percent_decode(rest))
     } else if let Some(rest) = src.strip_prefix("~/") {
         match std::env::var_os("HOME") {
@@ -271,7 +265,14 @@ pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
         }
     } else {
         PathBuf::from(src)
-    };
+    }
+}
+
+/// (M4) A local file's bytes, for an `svg`'s or `lottie`'s source: a
+/// path, a `file://` URL or a `~/` path, at most `max` bytes.
+pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
+    let src = src.trim();
+    let path = local_path(src);
     if !path.is_file() {
         return Err(ImageError::NotFound(src.into()));
     }
@@ -866,6 +867,9 @@ pub(crate) struct FileJob {
 enum Job {
     Image(ImageKey),
     File(FileJob),
+    /// (M6) These sources' files changed: their players (decoders
+    /// holding the old bytes) go ([`ImageStore::invalidate_files`]).
+    Forget(Vec<String>),
 }
 
 impl std::fmt::Debug for Job {
@@ -873,6 +877,7 @@ impl std::fmt::Debug for Job {
         match self {
             Job::Image(k) => f.debug_tuple("Image").field(k).finish(),
             Job::File(j) => f.debug_tuple("File").field(&j.key).finish(),
+            Job::Forget(s) => f.debug_tuple("Forget").field(s).finish(),
         }
     }
 }
@@ -900,6 +905,10 @@ struct FileLoads {
     done: HashMap<String, (Loaded, Instant)>,
     /// A job finished since the render loop last looked.
     arrived: bool,
+    /// (M6) Jobs in flight whose file changed after they were sent: their
+    /// result is dropped on arrival, so the source asks again
+    /// ([`ImageStore::invalidate_files`]).
+    stale: HashSet<String>,
 }
 
 impl std::fmt::Debug for FileLoads {
@@ -995,12 +1004,20 @@ impl ImageWorker {
                             if let Ok(mut f) = loads.lock() {
                                 make_room(&mut f.done, Instant::now());
                                 f.pending.remove(&key);
-                                f.done.insert(key, (r, Instant::now()));
+                                // Read before its file changed: dropped,
+                                // and the wake makes its source ask again.
+                                if !f.stale.remove(&key) {
+                                    f.done.insert(key, (r, Instant::now()));
+                                }
                                 f.arrived = true;
                             }
                             if let Some(w) = &waker {
                                 w();
                             }
+                            continue;
+                        }
+                        Job::Forget(sources) => {
+                            players.retain(|k| !sources.contains(&k.source));
                             continue;
                         }
                     };
@@ -1099,6 +1116,11 @@ pub struct ImageStore {
     players: Players,
     /// (M4) The timelines of the animated sources decoded, by source.
     timelines: HashMap<String, Arc<Timeline>>,
+    /// (M6) Decodes of a file that changed on disk which a live frame
+    /// still draws: kept and drawn until their new decode replaces them
+    /// (no blank frame), and asked for again as if missing
+    /// ([`ImageStore::invalidate_files`]).
+    outdated: HashSet<ImageKey>,
 }
 
 impl Default for ImageStore {
@@ -1122,6 +1144,7 @@ impl ImageStore {
             // the others at each change): all live.
             players: Players::with_live(|_| true),
             timelines: HashMap::new(),
+            outdated: HashSet::new(),
         }
     }
 
@@ -1220,6 +1243,72 @@ impl ImageStore {
             .collect()
     }
 
+    /// (M6) Local files changed on disk (an `image`'s file saved while
+    /// the shell runs: the watcher's `Role::Asset`): every decode of a
+    /// path among `paths` is read again. One a live frame draws is kept
+    /// and drawn until its new decode replaces it (no blank frame); the
+    /// others are forgotten; decodes and file reads (an `svg`'s, a
+    /// `lottie`'s) in flight are dropped on arrival and asked for again;
+    /// an animated image's timeline and players go with its old bytes.
+    /// Returns the surfaces whose last frame drew one (to repaint).
+    /// Icon names are never paths: an edited `icons/` file is
+    /// [`ImageStore::invalidate_icons`]'.
+    pub fn invalidate_files(&mut self, paths: &[PathBuf]) -> Vec<SurfaceId> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let hit = |k: &ImageKey| !is_icon(k) && paths.contains(&local_path(&k.source));
+        let mut sources: HashSet<String> = HashSet::new();
+        let found: Vec<ImageKey> = self.entries.keys().filter(|k| hit(k)).cloned().collect();
+        for k in found {
+            sources.insert(k.source.clone());
+            if self.frames.values().any(|f| f.contains(&k)) {
+                self.outdated.insert(k);
+                continue;
+            }
+            if let Some(e) = self.entries.remove(&k) {
+                self.bytes -= e.bytes;
+            }
+            let sk = source_key(&k);
+            if self.latest.get(&sk) == Some(&k) {
+                self.latest.remove(&sk);
+            }
+        }
+        let flying: Vec<ImageKey> = self.pending.iter().filter(|k| hit(k)).cloned().collect();
+        sources.extend(flying.iter().map(|k| k.source.clone()));
+        self.stale.extend(flying);
+        // The outdated set names only decodes still held.
+        let entries = &self.entries;
+        self.outdated.retain(|k| entries.contains_key(k));
+        for s in &sources {
+            self.timelines.remove(s);
+        }
+        self.players.retain(|k| !sources.contains(&k.source));
+        if let ImageBackend::Worker(w) = &self.backend {
+            // A file job's key is `svg:<source>` or `lottie:<source>`.
+            let file_hit = |key: &String| {
+                key.split_once(':')
+                    .is_some_and(|(_, src)| paths.contains(&local_path(src)))
+            };
+            if let Ok(mut f) = w.files.lock() {
+                f.done.retain(|key, _| !file_hit(key));
+                let flying: Vec<String> =
+                    f.pending.iter().filter(|k| file_hit(k)).cloned().collect();
+                f.stale.extend(flying);
+            }
+            if !sources.is_empty()
+                && let Some(tx) = &w.requests
+            {
+                let _ = tx.send(Job::Forget(sources.into_iter().collect()));
+            }
+        }
+        self.frames
+            .iter()
+            .filter(|(_, f)| f.iter().any(hit))
+            .map(|(s, _)| *s)
+            .collect()
+    }
+
     pub fn set_backend(&mut self, backend: ImageBackend) {
         self.backend = backend;
         self.pending.clear();
@@ -1284,7 +1373,9 @@ impl ImageStore {
             self.tick += 1;
             if let Some(e) = self.entries.get_mut(k) {
                 e.used = self.tick;
-                continue;
+                if !self.outdated.contains(k) {
+                    continue;
+                }
             }
             if self.pending.contains(k) || (defer && self.stand_in(k).is_some()) {
                 continue;
@@ -1429,6 +1520,7 @@ impl ImageStore {
             Err(_) => 0,
         };
         self.tick += 1;
+        self.outdated.remove(&key);
         if let Ok(d) = &result {
             self.latest.insert(source_key(&key), key.clone());
             if let Some(tl) = &d.anim
