@@ -331,7 +331,17 @@ fn the_file_is_read_on_the_image_worker() {
         r.update();
     }
     assert!(r.wants_frame(S), "its arrival repaints");
-    assert!(woken.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    // The worker sends its result before it wakes the loop, so the
+    // result can be seen first.
+    while woken.load(std::sync::atomic::Ordering::SeqCst) == 0
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        woken.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "its arrival wakes the loop"
+    );
     buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
     assert!(red(&buf, 20, 50), "drawn once read");
 }
