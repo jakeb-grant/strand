@@ -4369,10 +4369,13 @@ and the connection):
   compiled with xkbcommon 0.8, the release SCTK links, without default
   includes or environment names) and its locked or held `Lock` and
   `Mod2`; it reports them when they change while one of ours has the
-  keys (`enter`, `update_modifiers`, `update_keymap`), and `None` on
-  `leave`, when that surface goes (`layer.rs`'s destroy, the lock's
-  refocus) or the seat loses its keyboard. The binary's host forwards it
-  to `strand_services::keyboard::focused`.
+  keys (`update_modifiers`, `update_keymap`; an `enter` drops the
+  keyboard's lock keys, stale from its last focus, and reports with the
+  `modifiers` the compositor sends after it), and `None` on `leave`
+  (a held one when it resolves as real), when that surface goes
+  (`layer.rs`'s destroy, the lock's refocus) or the seat loses its
+  keyboard. The binary's host forwards it to
+  `strand_services::keyboard::focused`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
@@ -5023,7 +5026,7 @@ transparent huge pages for life.
   for tests), `cpu` and `memory` (procfs, sampled once a second only
   while a reader is visible), `disk` (M6, gap 33: the mounted
   filesystems of `/proc/self/mountinfo` selected by `disk::select`,
-  measured with rustix's `statvfs` on the blocking pool one sample at a
+  none at or under an `autofs` point, measured with rustix's `statvfs` on the blocking pool one sample at a
   time, every 10 s only while a reader is visible;
   `disk::configure(Option<disk::Config { mountinfo, period }>)` points
   it at a fixture and a short period in tests, `disk::samples()` counts
@@ -5062,7 +5065,8 @@ transparent huge pages for life.
   `services:notifications.all` (JSON, `{"version":1,"notifications":[…]}`,
   the newest `KEPT`, `transient` ones and our runtime-dir pictures left
   out) and `services:notifications.remember` (`0` or `1`), saved 1 s
-  after the last change on the blocking pool (latest generation wins,
+  after the last change (`SAVE_AFTER`) but at most `SAVE_WITHIN` (5 s)
+  after the first unsaved one, on the blocking pool (latest generation wins,
   a `SaveOnStop` finalizer making the last save) and restored, renumbered
   1..=n without actions, before the name is asked for;
   `notifications::set_config(Option<notifications::Config { state }>)`

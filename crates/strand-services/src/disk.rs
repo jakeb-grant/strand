@@ -9,9 +9,11 @@
 //! or a ZFS dataset, without read-only images (`squashfs` snaps,
 //! `iso9660`, `udf`), network or FUSE filesystems (whose `statvfs` can
 //! hang on a server that went away), mount points that are not
-//! directories (a container's bound `/etc/hosts`), and a second mount of
-//! the same device and root (a bind). Each is measured with `statvfs`
-//! and counted as `df` does ([`usage`]).
+//! directories (a container's bound `/etc/hosts`), mounts at or under an
+//! automount point (`autofs`: every look at one counts as using it, so
+//! sampling would keep a mount meant to expire when idle mounted), and a
+//! second mount of the same device and root (a bind). Each is measured
+//! with `statvfs` and counted as `df` does ([`usage`]).
 //!
 //! It samples every [`PERIOD`] (10 s), only while a reader is visible,
 //! at start and at once when one becomes visible again. A sample runs on
@@ -203,6 +205,22 @@ fn network_or_fuse(fstype: &str) -> bool {
 /// The mounts `disk.all` lists, `/` first: see the module docs.
 /// `is_dir` says whether a mount point is a directory.
 pub fn select(mounts: Vec<Mount>, is_dir: impl Fn(&str) -> bool) -> Vec<Mount> {
+    // Automount points (a systemd `x-systemd.automount`, the automounter's
+    // maps), hidden or not by what they mounted: the kernel takes every
+    // path walk through one as use, which resets its idle timeout.
+    let automounts: Vec<String> = mounts
+        .iter()
+        .filter(|m| m.fstype == "autofs")
+        .map(|m| m.point.clone())
+        .collect();
+    let automounted = |point: &str| {
+        automounts.iter().any(|a| {
+            point == a
+                || point
+                    .strip_prefix(a.as_str())
+                    .is_some_and(|rest| rest.starts_with('/') || a.ends_with('/'))
+        })
+    };
     // A later mount at the same point hides the earlier one.
     let mut top: Vec<Mount> = Vec::new();
     for m in mounts {
@@ -218,6 +236,7 @@ pub fn select(mounts: Vec<Mount>, is_dir: impl Fn(&str) -> bool) -> Vec<Mount> {
         (m.source.starts_with("/dev/") || m.fstype == "zfs")
             && !IMAGES.contains(&m.fstype.as_str())
             && !network_or_fuse(&m.fstype)
+            && !automounted(&m.point)
             && is_dir(&m.point)
     };
     ordered.extend(top.into_iter().filter(listed));
@@ -454,6 +473,35 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].source, "/dev/sda2");
         assert!(select(Vec::new(), |_| true).is_empty());
+    }
+
+    /// (gap 33, review round 1) A mount an automount made (an ESP behind
+    /// `x-systemd.automount`, an automounter map's `/misc/usb`) is not
+    /// listed and its point is never looked at: every path walk through
+    /// an autofs point counts as use, so sampling it every 10 s would keep
+    /// a mount meant to expire when idle mounted. A mount beside one
+    /// (`/bootstrap` beside `/boot`) is listed.
+    #[test]
+    fn automounted_filesystems_are_left_untouched() {
+        let text = "20 1 259:2 / / rw - ext4 /dev/nvme0n1p2 rw
+40 20 0:45 / /boot rw - autofs systemd-1 rw,fd=50,pgrp=1,direct
+41 40 259:1 / /boot rw - vfat /dev/nvme0n1p1 rw
+42 41 259:3 / /boot/efi rw - vfat /dev/nvme0n1p3 rw
+43 20 0:46 / /misc rw - autofs /etc/auto.misc rw,fd=7,pgrp=900,indirect
+44 43 8:33 / /misc/usb rw - ext4 /dev/sdc1 rw
+45 20 8:17 / /bootstrap rw - ext4 /dev/sdb1 rw
+46 20 0:47 / /mnt/later rw - autofs systemd-1 rw,fd=51,pgrp=1,direct
+";
+        let looked = std::cell::RefCell::new(Vec::new());
+        let points: Vec<String> = select(parse_mountinfo(text), |p| {
+            looked.borrow_mut().push(p.to_string());
+            true
+        })
+        .into_iter()
+        .map(|m| m.point)
+        .collect();
+        assert_eq!(points, ["/", "/bootstrap"]);
+        assert_eq!(*looked.borrow(), ["/bootstrap"], "only the listed one");
     }
 
     #[test]

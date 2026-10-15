@@ -900,6 +900,8 @@ findings only.
     lock VM only,
     `crates/strand/tests/demo.rs::a_focused_surface_shows_caps_lock`,
     `crates/strand-surface/tests/sway.rs::a_focused_surface_reports_its_lock_keys_and_layout`,
+    `crates/strand-surface/tests/fake.rs::an_enter_reports_the_lock_keys_of_now_not_of_the_last_focus`,
+    `::a_grabbing_popup_loses_the_keyboard_after_an_earlier_release`,
     `crates/strand-services/tests/keyboard.rs::the_lock_keys_follow_the_keyboard_lights_while_read`,
     `::a_focused_surfaces_keyboard_state_wins`,
     `::the_layout_comes_from_the_compositor`,
@@ -932,11 +934,13 @@ findings only.
     check on Hyprland**: a builtin `disk` gives the root filesystem's
     `usage`, `used`, `total` and `free` (as `df` counts them) and `all`,
     every mounted filesystem on a local disk keyed by `path`, `/` first
-    (no snaps, network or FUSE filesystems, binds or container file
-    mounts), measured with `statvfs` off the shared runtime every 10 s
+    (no snaps, network or FUSE filesystems, binds, container file
+    mounts or automounted filesystems, which sampling would keep from
+    expiring), measured with `statvfs` off the shared runtime every 10 s
     and only while a reader is visible
     (`crates/strand-services/tests/builtin.rs::disk_reads_the_root_filesystem_only_while_visible`,
     `crates/strand-services/src/disk.rs::tests::local_disks_are_listed_root_first`,
+    `::automounted_filesystems_are_left_untouched`,
     `::mountinfo_is_read_with_its_escapes`, `::usage_is_counted_as_df_does`,
     `crates/strand-compiler/tests/checker.rs::disk_shows_root_and_every_filesystem`).
     GPU statistics stay a config's own command (`service gpu from poll`),
@@ -968,7 +972,10 @@ findings only.
     pictures never written) and comes back after a restart, renumbered
     below every new id, without buttons (their senders cannot hear an
     answer), never as popups and without `received`; closing one tells
-    no sender, and `clear()` and `dismiss()` forget them on disk too
+    no sender, and `clear()` and `dismiss()` forget them on disk too;
+    a change is saved 1 s after the last one and at most 5 s after the
+    first unsaved one, so a notification updated without pause is not
+    left unsaved
     (`crates/strand-services/tests/notifications.rs::remembered_notifications_come_back_after_a_restart`,
     `::forgetting_erases_the_history_and_stays_off`,
     `::clear_forgets_every_remembered_notification`,
@@ -976,6 +983,7 @@ findings only.
     `::the_history_keeps_the_newest_and_never_a_transient_one`,
     `::only_a_senders_existing_picture_is_remembered`,
     `::a_history_that_does_not_read_is_refused`, `::the_transient_hint_is_read`,
+    `::a_history_changing_without_pause_is_saved_within_its_bound`,
     `crates/strand-compiler/tests/checker.rs::notification_history_can_be_forgotten`).
     decisions.md m6-service-gaps.
 

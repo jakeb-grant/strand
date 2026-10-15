@@ -95,6 +95,10 @@ pub const HISTORY_PATH: &str = "services:notifications.all";
 pub const REMEMBER_PATH: &str = "services:notifications.remember";
 /// How long after the last change to `all` it is saved.
 pub const SAVE_AFTER: Duration = Duration::from_millis(1000);
+/// The longest a change to `all` waits to be saved: a sender replacing a
+/// notification more often than [`SAVE_AFTER`] (a progress bar) does not
+/// keep postponing the save, which a crash would then lose.
+pub const SAVE_WITHIN: Duration = Duration::from_secs(5);
 /// The remembered notifications' format.
 const HISTORY_VERSION: u32 = 1;
 
@@ -1231,6 +1235,9 @@ struct History {
     shared: Arc<HistoryShared>,
     due: std::pin::Pin<Box<tokio::time::Sleep>>,
     armed: bool,
+    /// While `armed`: when the save must be made at the latest
+    /// ([`SAVE_WITHIN`] after the first change it holds).
+    latest: tokio::time::Instant,
 }
 
 impl History {
@@ -1242,6 +1249,7 @@ impl History {
             }),
             due: Box::pin(tokio::time::sleep(Duration::ZERO)),
             armed: false,
+            latest: tokio::time::Instant::now(),
         }
     }
 
@@ -1306,16 +1314,19 @@ impl History {
         });
     }
 
-    /// `all` changed: saved [`SAVE_AFTER`] after the last change, while
+    /// `all` changed: saved [`SAVE_AFTER`] after the last change, but
+    /// no later than [`SAVE_WITHIN`] after the first unsaved one, while
     /// `remember` is on.
     fn changed(&mut self, state: &Notifications, kept: &Kept) {
         if !state.remember || self.shared.dir.is_none() {
             return;
         }
         self.set(true, Some(History::snapshot(state, kept)));
-        self.due
-            .as_mut()
-            .reset(tokio::time::Instant::now() + SAVE_AFTER);
+        let now = tokio::time::Instant::now();
+        if !self.armed {
+            self.latest = now + SAVE_WITHIN;
+        }
+        self.due.as_mut().reset((now + SAVE_AFTER).min(self.latest));
         self.armed = true;
     }
 
@@ -1652,6 +1663,51 @@ mod tests {
             restore(r#"{"version":1,"notifications":[]}"#, |_| true),
             Ok(Vec::new())
         );
+    }
+
+    /// (gap 35, review round 1) The save waits [`SAVE_AFTER`] after the
+    /// last change, but a sender replacing a notification every half
+    /// second (a progress bar) does not postpone it past [`SAVE_WITHIN`]
+    /// after the first unsaved change; after a save the bound starts
+    /// again.
+    #[tokio::test(start_paused = true)]
+    async fn a_history_changing_without_pause_is_saved_within_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = History::new(Some(dir.path().to_path_buf()));
+        let state = Notifications {
+            remember: true,
+            ..Notifications::default()
+        };
+        let kept = Kept::default();
+        // When each save fell due, from `start`, while `all` changes every
+        // half second for 20 s.
+        let start = tokio::time::Instant::now();
+        let mut saves = Vec::new();
+        history.changed(&state, &kept);
+        while start.elapsed() < Duration::from_secs(20) {
+            tokio::select! {
+                () = &mut history.due, if history.armed => {
+                    history.armed = false;
+                    saves.push(start.elapsed());
+                }
+                () = tokio::time::sleep(SAVE_AFTER / 2) => history.changed(&state, &kept),
+            }
+        }
+        assert!(saves.len() >= 3, "{saves:?}");
+        assert!(saves[0] <= SAVE_WITHIN, "{saves:?}");
+        for w in saves.windows(2) {
+            assert!(w[1] - w[0] <= SAVE_WITHIN + SAVE_AFTER, "{saves:?}");
+        }
+
+        // One change alone is still saved SAVE_AFTER after it.
+        if history.armed {
+            (&mut history.due).await;
+            history.armed = false;
+        }
+        let at = tokio::time::Instant::now();
+        history.changed(&state, &kept);
+        (&mut history.due).await;
+        assert_eq!(at.elapsed(), SAVE_AFTER);
     }
 
     /// The `transient` hint, a boolean by the spec or an integer.

@@ -448,6 +448,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         {
             self.send_input(InputEvent::KeyboardLeave { surface: p });
         }
+        // (gap 31) No Strand surface has the keys now: the leave's own
+        // report still counted the grabbing popup as focused.
+        self.report_keyboard();
     }
 }
 
@@ -471,12 +474,17 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
                 // the keys.
                 self.held_leave = None;
             }
+            // (gap 31) The lock keys this keyboard reported are from the
+            // last time Strand had it (wl_keyboard.modifiers goes only to
+            // the focused client): stale, so they are dropped, and the
+            // modifiers the compositor must send after an enter report
+            // its state. Until then what was reported stands: none, or
+            // this same keyboard's still current state when the enter
+            // ends a leave held or sent in the same dispatch.
+            self.lock_keys.remove(&keyboard.id());
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
-            // Its modifiers follow the enter; a keyboard that reported
-            // them before is told at once.
-            self.report_keyboard();
         }
     }
 
