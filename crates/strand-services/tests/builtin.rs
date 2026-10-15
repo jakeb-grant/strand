@@ -1,5 +1,6 @@
 //! The builtin services on the contract: `system` against a mock portal
-//! on a private bus, `cpu` and `memory` from procfs (sampled only while a
+//! on a private bus, `cpu` and `memory` from procfs and `disk` from
+//! `statvfs` (sampled only while a
 //! reader is visible), and the test harness itself (private bus,
 //! python-dbusmock).
 
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
 use strand_services::testing::{DbusMock, PrivateBus};
-use strand_services::{Builtin, Buses, Rgba, Services, Store, cpu, memory, system};
+use strand_services::{Builtin, Buses, Rgba, Services, Store, cpu, disk, memory, system};
 use zbus::zvariant::{OwnedValue, Value};
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -543,5 +544,58 @@ fn system_reads_the_kernel_and_counts_uptime_by_the_minute() {
     }
     assert_eq!(system::uptime_ticks(), ticks, "no wakes while unread");
     assert!(b.system.running());
+    s.shutdown();
+}
+
+/// (gap 33, m6-service-gaps) `disk` measures the real root filesystem
+/// before its first frame, lists it first in `all`, and samples only
+/// while a reader is visible: none once the reader is gone, though the
+/// service runs on through its grace.
+#[test]
+fn disk_reads_the_root_filesystem_only_while_visible() {
+    disk::configure(Some(disk::Config {
+        period: Duration::from_millis(100),
+        ..disk::Config::default()
+    }));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, Buses::none());
+    b.disk.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.disk.cells();
+    let total = cells.total.get_untracked(&rt).unwrap();
+    let used = cells.used.get_untracked(&rt).unwrap();
+    let free = cells.free.get_untracked(&rt).unwrap();
+    let usage = cells.usage.get_untracked(&rt).unwrap();
+    assert!(total > 0.0, "{total}");
+    assert!(used <= total && free <= total, "{used} {free} of {total}");
+    assert!((0.0..=1.0).contains(&usage), "{usage}");
+    let all: Vec<disk::Filesystem> = cells
+        .all
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, f)| f.clone())
+        .collect();
+    assert_eq!(all.first().map(|f| f.path.as_str()), Some("/"), "{all:?}");
+    assert!(all.iter().all(|f| f.total > 0.0), "{all:?}");
+    assert_eq!(all[0].total, total);
+    // Visible: sampled every period.
+    let start = disk::samples();
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(disk::samples() >= start + 3, "sampled while visible");
+    // Released: no more samples, though the service runs on (5 s grace).
+    b.disk.release(&rt);
+    s.pump(&rt);
+    std::thread::sleep(Duration::from_millis(300));
+    let hidden = disk::samples();
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(disk::samples(), hidden, "no samples while hidden");
+    assert!(b.disk.running());
+    // Shown again: sampled at once, and on.
+    b.disk.acquire(&rt);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(disk::samples() > hidden, "sampling resumes");
+    disk::configure(None);
     s.shutdown();
 }

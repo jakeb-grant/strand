@@ -124,6 +124,19 @@ Processor load, sampled once a second while a reader is visible.
 | `cores` | `[float]` | The load of each core, 0 to 1. |
 | `temperature` | `float?` | The processor's temperature in degrees Celsius, when a sensor reports one. |
 
+## `disk`
+
+Disk usage of the mounted filesystems (`statvfs`), read every 10 s
+while a reader is visible.
+
+| Field | Type | |
+| --- | --- | --- |
+| `usage` | `float` | The root filesystem's fraction in use, 0 to 1: `pct(disk.usage)`. |
+| `used` | `float` | The root filesystem's bytes in use. |
+| `total` | `float` | The root filesystem's size in bytes. |
+| `free` | `float` | The root filesystem's bytes free to a user. |
+| `all` | `[Filesystem]` | Every mounted filesystem on a local disk, `/` first, keyed by `path`. |
+
 ## `media`
 
 The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`

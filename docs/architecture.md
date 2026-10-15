@@ -5009,7 +5009,13 @@ transparent huge pages for life.
   to minutes, read again at each whole minute of uptime only while a
   visible reader shows it, `system::uptime_ticks()` counting the wakes
   for tests), `cpu` and `memory` (procfs, sampled once a second only
-  while a reader is visible), and the D-Bus services (wave 4, a2):
+  while a reader is visible), `disk` (M6, gap 33: the mounted
+  filesystems of `/proc/self/mountinfo` selected by `disk::select`,
+  measured with rustix's `statvfs` on the blocking pool one sample at a
+  time, every 10 s only while a reader is visible;
+  `disk::configure(Option<disk::Config { mountinfo, period }>)` points
+  it at a fixture and a short period in tests, `disk::samples()` counts
+  its samples), and the D-Bus services (wave 4, a2):
   `battery` (UPower's display device and devices), `brightness`
   (`/sys/class/backlight` watched with inotify, writes through logind's
   `SetBrightness`; `brightness::set_backlight_root` /

@@ -847,6 +847,36 @@ provisional service outputs {
   event failed(action: text, error: text)
 }
 
+/// A mounted filesystem, keyed by `path`.
+provisional record Filesystem key path {
+  /// Where it is mounted.
+  path: text
+  /// The device it is on.
+  device: text
+  /// The fraction in use, 0 to 1.
+  usage: float
+  /// Bytes in use.
+  used: float
+  /// Bytes in all.
+  total: float
+  /// Bytes free to a user.
+  free: float
+}
+
+/// Disk usage of the mounted filesystems.
+provisional service disk {
+  /// The root filesystem's fraction in use, 0 to 1.
+  usage: float
+  /// The root filesystem's bytes in use.
+  used: float
+  /// The root filesystem's size in bytes.
+  total: float
+  /// The root filesystem's bytes free to a user.
+  free: float
+  /// Every mounted filesystem on a local disk, keyed by `path`.
+  all: [Filesystem]
+}
+
 // ---------------------------------------------------------------------------
 // Functions. Overloads are tried in order; the first overload's doc
 // documents the name.

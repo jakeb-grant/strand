@@ -898,6 +898,22 @@ findings only.
     `::an_invalidated_capability_is_read_again`,
     `crates/strand-compiler/tests/checker.rs::media_buttons_dim_by_what_the_player_can_do`).
     decisions.md m6-service-gaps.
+33. **No disk usage.** (fixed, 2026-10-15; found 2026-10-15 by
+    surveying the owner's quickshell config) The owner's dashboard shows
+    how full the disks are; Strand had `cpu` and `memory` but nothing
+    for storage, short of a polled `df`. **Fixed; pending the owner's
+    check on Hyprland**: a builtin `disk` gives the root filesystem's
+    `usage`, `used`, `total` and `free` (as `df` counts them) and `all`,
+    every mounted filesystem on a local disk keyed by `path`, `/` first
+    (no snaps, network or FUSE filesystems, binds or container file
+    mounts), measured with `statvfs` off the shared runtime every 10 s
+    and only while a reader is visible
+    (`crates/strand-services/tests/builtin.rs::disk_reads_the_root_filesystem_only_while_visible`,
+    `crates/strand-services/src/disk.rs::tests::local_disks_are_listed_root_first`,
+    `::mountinfo_is_read_with_its_escapes`, `::usage_is_counted_as_df_does`,
+    `crates/strand-compiler/tests/checker.rs::disk_shows_root_and_every_filesystem`).
+    GPU statistics stay a config's own command (`service gpu from poll`),
+    as planned. decisions.md m6-service-gaps.
 34. **No uptime or kernel release.** (fixed, 2026-10-15; found
     2026-10-15 by surveying the owner's quickshell config) The owner's
     dashboard shows how long the machine has been up and the running

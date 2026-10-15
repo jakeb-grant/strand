@@ -45,6 +45,8 @@ pub const AUTH: &str = include_str!("auth.schema");
 pub const SESSION: &str = include_str!("session.schema");
 /// `outputs`: the monitors' configuration (wlr-output-management).
 pub const OUTPUTS: &str = include_str!("outputs.schema");
+/// `disk`: the mounted filesystems' usage (`statvfs`).
+pub const DISK: &str = include_str!("disk.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -67,5 +69,6 @@ pub fn schemas() -> Vec<&'static str> {
         AUTH,
         SESSION,
         OUTPUTS,
+        DISK,
     ]
 }

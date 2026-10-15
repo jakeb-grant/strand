@@ -1343,6 +1343,21 @@ fn system_shows_uptime_and_kernel() {
     );
 }
 
+/// (M6, owner-testing gap 33) A dashboard shows how full the root
+/// filesystem is, and a page every mounted filesystem keyed by its path.
+#[test]
+fn disk_shows_root_and_every_filesystem() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    text pct(disk.usage)\n    meter disk.usage\n    \
+             text join(\" / \", disk.used, disk.total, disk.free)\n    \
+             for f in disk.all {\n      text f.path\n      text pct(f.usage)\n      \
+             text join(\" \", f.device, f.used, f.total, f.free)\n    }\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the
