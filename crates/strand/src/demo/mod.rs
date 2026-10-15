@@ -190,6 +190,8 @@ pub fn run(log: &LogConfig) -> Result<(), DemoError> {
             }
             Err(e) => return Err(e.into()),
         }
+        // (m6-owner-fixes, B-d) The batch's events are in.
+        mgr.state_mut().host_mut().settle_rebase();
     }
     // The thread is past its last send: joining does not block for long.
     match logic.join() {

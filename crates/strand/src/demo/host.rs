@@ -77,6 +77,11 @@ struct Rebase {
     d: (f32, f32),
     /// The pointer on `from`, as last heard.
     at: strand_scene::LogicalPoint,
+    /// The compositor sent `from` a leave: an enter of `to` in the same
+    /// batch of events ends the rebase where the compositor took over;
+    /// none by the batch's end ([`Host::settle_rebase`]), and the pointer
+    /// went to another client's surface.
+    left: bool,
 }
 
 /// What the latency benchmark watches on the main thread.
@@ -787,17 +792,32 @@ impl Host {
             from.0,
             popup.0
         );
-        self.rebase = Some(Rebase {
-            from,
-            to: popup,
-            d,
-            at,
-        });
+        // Heard as the compositor's own would be, before the rebase
+        // starts: `rebase_event` would take them for the compositor's.
         self.input(&InputEvent::PointerLeave { surface: from });
         self.input(&InputEvent::PointerEnter {
             surface: popup,
             position: q,
         });
+        self.rebase = Some(Rebase {
+            from,
+            to: popup,
+            d,
+            at,
+            left: false,
+        });
+    }
+
+    /// (m6-owner-fixes, B-d) The end of a batch of compositor events
+    /// (the main loop calls it after each dispatch): a rebase whose
+    /// `from` the compositor left with no enter of the popup in the same
+    /// batch ends, as the pointer went to another client's surface; the
+    /// popup hears the leave.
+    pub(crate) fn settle_rebase(&mut self) {
+        if let Some(r) = self.rebase.filter(|r| r.left) {
+            self.rebase = None;
+            self.input(&InputEvent::PointerLeave { surface: r.to });
+        }
     }
 
     /// (m6-owner-fixes, B-d) What `event` becomes while the pointer is
@@ -805,16 +825,22 @@ impl Host {
     /// compositor's events for the surface it still has the pointer on go
     /// to the popup, moved, while the pointer is over the popup (or a
     /// button went down there); its leave of that surface is the one
-    /// already heard. Its own enter of the popup ends the rebase, and so
-    /// does any other enter or leave, or a motion off the popup: the
-    /// popup hears a leave first.
+    /// already heard, kept until the batch's end
+    /// ([`Host::settle_rebase`]). Its own enter of the popup ends the
+    /// rebase, and so does any other enter or leave, or a motion off the
+    /// popup: the popup hears a leave first.
     fn rebase_event(&mut self, event: &InputEvent) -> Option<Vec<InputEvent>> {
         use strand_scene::LogicalPoint;
         let r = self.rebase?;
         let moved = |p: &LogicalPoint| LogicalPoint::new(p.x + r.d.0, p.y + r.d.1);
         let leave = InputEvent::PointerLeave { surface: r.to };
         match event {
-            InputEvent::PointerLeave { surface } if *surface == r.from => Some(Vec::new()),
+            InputEvent::PointerLeave { surface } if *surface == r.from => {
+                if let Some(r) = &mut self.rebase {
+                    r.left = true;
+                }
+                Some(Vec::new())
+            }
             InputEvent::PointerEnter { surface, position } if *surface == r.to => {
                 self.rebase = None;
                 Some(vec![InputEvent::PointerMotion {
@@ -1121,10 +1147,11 @@ impl SurfaceHost for Host {
             f.detached(surface);
         }
         // (m6-owner-fixes, B-d) A popup the pointer was taken onto went:
-        // the pointer is back on the surface the compositor has it on.
+        // the pointer is back on the surface the compositor has it on,
+        // unless the compositor left that surface.
         if let Some(r) = self.rebase.filter(|r| r.to == surface || r.from == surface) {
             self.rebase = None;
-            if r.to == surface {
+            if r.to == surface && !r.left {
                 self.input(&InputEvent::PointerEnter {
                     surface: r.from,
                     position: r.at,
@@ -2697,6 +2724,108 @@ mod tests {
             [(k.pop_a, false, false), (k.pop_b, true, false)]
         );
         assert_eq!(k.host.renderer.next_wake(), None, "no grace left");
+    }
+
+    impl Kept {
+        /// `a`'s popup shows on surface 2 with its card drawn, placed
+        /// over the pointer resting on `a`, and paints: the pointer is
+        /// taken onto it (`Host::rebase_pointer`).
+        fn cover_a(&mut self) -> (SurfaceId, NodeId, LogicalPoint) {
+            let card = NodeId::new(10, 0);
+            let mut d = SceneDiff::new();
+            d.set(
+                card,
+                Prop::Bg,
+                strand_scene::PropValue::Color(strand_scene::Color::from_hex("#00ff00").unwrap()),
+            );
+            assert!(self.host.renderer.apply(d).is_empty());
+            let s = SurfaceId(2);
+            self.show(2, self.pop_a);
+            // The popup's top-left 10 px left of the pointer, on the
+            // bar's row.
+            let left = self.a_at as i32 - 10;
+            self.host.surface_placed(self.bar_s, (0, 0));
+            self.host.surface_placed(s, (left, 0));
+            let _ = self.told();
+            let mut px = vec![0u8; 40 * 40 * 4];
+            let t = PaintTarget::new(&mut px, Size::new(40, 40), 160, Scale::ONE, 0).unwrap();
+            self.host
+                .paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+            let at = LogicalPoint::new(self.a_at - left as f32, 10.0);
+            (s, card, at)
+        }
+    }
+
+    /// (m6-owner-fixes review, B-d) A popup mapped under the still
+    /// pointer takes it: the bar hears its leave (its item is no longer
+    /// hovered, spec.md 6.3) and the popup its enter, and the rebase
+    /// lasts past the events that start it, so a click without moving
+    /// goes to the popup. Before, the rebase took its own leave and
+    /// enter for the compositor's: the bar heard no leave and the rebase
+    /// ended at once.
+    #[test]
+    fn a_popup_mapped_under_a_still_pointer_takes_it_from_the_bar() {
+        let mut k = Kept::new();
+        let (s, card, at) = k.cover_a();
+        let flags = k.hover_flags();
+        assert!(flags.contains(&(k.a, false)), "a is left: {flags:?}");
+        assert!(flags.contains(&(card, true)), "the card is hovered: {flags:?}");
+        assert!(k.host.rebase.is_some(), "the rebase holds");
+        // A click where the pointer rests (the compositor still sends
+        // it to the bar) is the card's.
+        let press = |state| InputEvent::PointerButton {
+            surface: k.bar_s,
+            position: LogicalPoint::new(k.a_at, 10.0),
+            button: button::LEFT,
+            state,
+            time: 1,
+        };
+        k.host.input(&press(ButtonState::Pressed));
+        k.host.input(&press(ButtonState::Released));
+        let pressed: Vec<NodeId> = k
+            .told()
+            .into_iter()
+            .filter_map(|m| match m {
+                ToLogic::Flag {
+                    node,
+                    flag: NodeFlag::Pressed,
+                    on: true,
+                } => Some(node),
+                _ => None,
+            })
+            .collect();
+        assert!(pressed.contains(&card), "{pressed:?}");
+        assert!(!pressed.contains(&k.a), "{pressed:?}");
+        // The compositor takes over at the next motion: leave and enter
+        // in one batch, and the card stays hovered.
+        k.host.input(&InputEvent::PointerLeave { surface: k.bar_s });
+        k.host.input(&InputEvent::PointerEnter {
+            surface: s,
+            position: at,
+        });
+        k.host.settle_rebase();
+        assert!(k.host.rebase.is_none());
+        let flags = k.hover_flags();
+        assert!(!flags.contains(&(card, false)), "{flags:?}");
+    }
+
+    /// (m6-owner-fixes review, B-d) The compositor taking the pointer
+    /// from the bar to another client's surface ends a rebase at the end
+    /// of its batch of events: the card is left, and the popup going
+    /// later does not hover the bar under a pointer that is elsewhere.
+    #[test]
+    fn a_rebase_ends_when_the_compositor_takes_the_pointer_elsewhere() {
+        let mut k = Kept::new();
+        let (s, card, _) = k.cover_a();
+        let _ = k.told();
+        k.host.input(&InputEvent::PointerLeave { surface: k.bar_s });
+        k.host.settle_rebase();
+        assert!(k.host.rebase.is_none(), "the rebase ends");
+        let flags = k.hover_flags();
+        assert!(flags.contains(&(card, false)), "the card is left: {flags:?}");
+        k.host.surface_detached(s);
+        let flags = k.hover_flags();
+        assert!(!flags.contains(&(k.a, true)), "a is not hovered: {flags:?}");
     }
 
     /// (M6, decisions.md m6-w2-surface) A graced hover popup logic

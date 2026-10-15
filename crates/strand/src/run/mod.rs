@@ -814,6 +814,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             }
             Err(e) => break End::Failed(e.into()),
         }
+        // (m6-owner-fixes, B-d) The batch's events are in.
+        mgr.state_mut().host_mut().settle_rebase();
         #[cfg(feature = "gpu")]
         gpu.pump(mgr.state_mut());
         gpu_status.send(&mgr.state().host().renderer, &to_logic);
