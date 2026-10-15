@@ -353,7 +353,7 @@ impl Drop for ProtocolClient {
 
 /// The socket `WAYLAND_DISPLAY` names: a path, or a name under the
 /// runtime directory.
-fn display_socket(
+pub(crate) fn display_socket(
     display: Option<std::ffi::OsString>,
     runtime_dir: Option<std::ffi::OsString>,
 ) -> io::Result<PathBuf> {

@@ -39,6 +39,11 @@ enum DropKind { files, app, text }
 enum InputKind { text, password }
 enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }
 enum PopupTrigger { open, hover }
+/// An output's rotation and flip, as `wl_output` (and niri) name them:
+/// counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`;
+/// `flipped_90` is flipped about the vertical axis, then rotated 90
+/// degrees.
+enum OutputTransform { normal, rotate_90, rotate_180, rotate_270, flipped, flipped_90, flipped_180, flipped_270 }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -746,6 +751,89 @@ provisional service session {
   /// logind asks this session's locker to lock it.
   event lock_requested
   /// An action failed: `on session.failed(action, error) { … }`.
+  event failed(action: text, error: text)
+}
+
+/// A mode an output can show.
+provisional record OutputMode {
+  /// Its width in hardware pixels.
+  width: int
+  /// Its height in hardware pixels.
+  height: int
+  /// Its refresh rate in Hz, or 0.
+  refresh: float
+}
+
+/// A monitor as the compositor's output configuration sees it, keyed by
+/// `name`.
+provisional record Output key name {
+  /// Its connector name.
+  name: text
+  /// A readable description of it.
+  description: text
+  /// Its maker.
+  make: text
+  /// Its model.
+  model: text
+  /// Its serial number.
+  serial: text
+  /// It is on.
+  enabled: bool
+  /// The mode it shows, null while off.
+  mode: OutputMode?
+  /// The mode the monitor prefers.
+  preferred: OutputMode?
+  /// Every mode it can show.
+  modes: [OutputMode]
+  /// Its left edge in the layout.
+  x: int
+  /// Its top edge in the layout.
+  y: int
+  /// Its scale factor.
+  scale: float
+  /// Its rotation and flip.
+  transform: OutputTransform
+  /// Adaptive sync is on.
+  adaptive_sync: bool
+  /// Its physical width in millimetres.
+  physical_width: int
+  /// Its physical height in millimetres.
+  physical_height: int
+}
+
+/// One output's part of a configuration; a null field keeps its value.
+provisional record OutputChange {
+  /// The output it changes.
+  name: text
+  /// Turns it on or off.
+  enabled: bool?
+  /// The mode to show.
+  mode: OutputMode?
+  /// Its left edge in the layout.
+  x: int?
+  /// Its top edge in the layout.
+  y: int?
+  /// Its scale factor.
+  scale: float?
+  /// Its rotation and flip.
+  transform: OutputTransform?
+  /// Adaptive sync on or off.
+  adaptive_sync: bool?
+}
+
+/// The monitors' configuration, from wlr-output-management.
+provisional service outputs {
+  /// Every output, on or off, keyed by `name`.
+  all: [Output]
+  /// The compositor offers output configuration.
+  available: bool
+  /// Applies `changes` together, as one configuration.
+  action apply(changes: [OutputChange])
+  /// Asks whether `changes` would apply, changing nothing.
+  action test(changes: [OutputChange])
+  /// The compositor took a configuration: `on outputs.succeeded(action) { … }`.
+  event succeeded(action: text)
+  /// A configuration failed: `on outputs.failed(action, error) { … }`.
   event failed(action: text, error: text)
 }
 

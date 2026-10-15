@@ -1,0 +1,108 @@
+/// A mode an output can show: its size in hardware pixels and its
+/// refresh rate. An output's `modes` list them; `OutputMode(width: 2560,
+/// height: 1440, refresh: 144)` names one for `OutputChange.mode`.
+record OutputMode {
+  /// Its width in hardware pixels (before scale and rotation).
+  width: int
+  /// Its height in hardware pixels.
+  height: int
+  /// Its refresh rate in Hz (`59.951`), or 0 when it has no fixed rate.
+  refresh: float
+}
+
+/// A monitor as the compositor's output configuration sees it, on or
+/// off, keyed by `name`: what a display settings page shows and changes
+/// with `outputs.apply`.
+record Output key name {
+  /// Its connector name, such as `DP-1`: the same as `Screen.name` while
+  /// it is on.
+  name: text
+  /// A readable description of it.
+  description: text
+  /// Its maker, or "" when the compositor does not say.
+  make: text
+  /// Its model, or "" when the compositor does not say.
+  model: text
+  /// Its serial number, or "" when the compositor does not say.
+  serial: text
+  /// It is on: shown, and part of the layout.
+  enabled: bool
+  /// The mode it shows, or null while it is off.
+  mode: OutputMode?
+  /// The mode the monitor prefers, if it names one.
+  preferred: OutputMode?
+  /// Every mode it can show, each once, in the compositor's order (plain
+  /// data: `for m in o.modes key join("x", m.width, m.height, m.refresh)`).
+  modes: [OutputMode]
+  /// Its left edge in the layout, in logical pixels (its last place while
+  /// it is off).
+  x: int
+  /// Its top edge in the layout, in logical pixels.
+  y: int
+  /// Its scale factor (`1.5`).
+  scale: float
+  /// Its rotation (counter-clockwise, as `wl_output` counts) and flip.
+  transform: OutputTransform
+  /// Adaptive sync (variable refresh rate) is on.
+  adaptive_sync: bool
+  /// Its physical width in millimetres, or 0 when unknown.
+  physical_width: int
+  /// Its physical height in millimetres, or 0 when unknown.
+  physical_height: int
+}
+
+/// One output's part of a configuration for `outputs.apply` and
+/// `outputs.test`, named by `name`: a null field keeps what the output
+/// has, so `OutputChange(name: o.name, scale: 1.5)` changes only its
+/// scale.
+record OutputChange {
+  /// The output it changes (`Output.name`).
+  name: text
+  /// Turns it on or off.
+  enabled: bool?
+  /// The mode to show: one of its `modes`, or a size and rate (the listed
+  /// mode of that size nearest the rate within 0.5 Hz, else a custom mode;
+  /// a rate of 0 takes the fastest listed one).
+  mode: OutputMode?
+  /// Its left edge in the layout, in logical pixels.
+  x: int?
+  /// Its top edge in the layout, in logical pixels.
+  y: int?
+  /// Its scale factor, from 1/256 (the protocol's step) up.
+  scale: float?
+  /// Its rotation and flip.
+  transform: OutputTransform?
+  /// Adaptive sync on or off.
+  adaptive_sync: bool?
+}
+
+/// The monitors' configuration, from the compositor's
+/// `zwlr_output_manager_v1` (wlr-output-management: sway, Hyprland, niri,
+/// labwc): every output, on or off, with its modes, place, scale and
+/// rotation, changed together with `outputs.apply` and checked first with
+/// `outputs.test`.
+service outputs {
+  /// Every output, on or off, keyed by `name`.
+  all: [Output]
+  /// The compositor offers output configuration: false without it, when
+  /// `apply` and `test` fail with `outputs.failed`.
+  available: bool
+  /// Applies `changes` together, as one configuration: each names an
+  /// output and what to change on it, and outputs not named keep theirs
+  /// (`on click { outputs.apply([OutputChange(name: "DP-1", scale: 1.5)]) }`).
+  /// `outputs.succeeded("apply")` or `outputs.failed("apply", error)`
+  /// follows.
+  action apply(changes: [OutputChange])
+  /// Asks the compositor whether `changes` would apply, changing nothing:
+  /// `outputs.succeeded("test")` or `outputs.failed("test", error)`
+  /// follows. A tested configuration may still fail to apply.
+  action test(changes: [OutputChange])
+  /// The compositor took a configuration: `on outputs.succeeded(action)
+  /// { … }`, `action` as written (`"apply"` or `"test"`).
+  event succeeded(action: text)
+  /// A configuration failed: the compositor refused it (a mode the
+  /// monitor cannot show), it named no output or an impossible value, or
+  /// the compositor offers no output configuration: `on
+  /// outputs.failed(action, error) { … }`.
+  event failed(action: text, error: text)
+}
