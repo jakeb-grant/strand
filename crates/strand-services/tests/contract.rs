@@ -1040,6 +1040,18 @@ fn errors_from_a_body_end_the_run_and_a_reader_restarts_it() {
         let why = format!("{:?}", heard[0][1]);
         assert!(why.contains("backoff"), "{why}");
     }
+    // (m6-owner-fixes review) A caller outside the program (`strand
+    // call`) hears the refusal: only actions no run took are caught.
+    let ((), caught) = strand_services::catch_refusals(|| {
+        probe
+            .dynamic()
+            .action(&rt, "bump", None, &[], Default::default())
+            .unwrap();
+    });
+    assert_eq!(caught.len(), 1, "{caught:?}");
+    assert!(caught[0].starts_with("`bump`: "), "{caught:?}");
+    assert!(caught[0].contains("backoff"), "{caught:?}");
+    assert_eq!(heard.borrow().len(), 2, "the program heard it too");
     assert_eq!(probe.starts(), 1, "nothing restarted it early");
     at(Duration::from_secs(1));
     assert_eq!(probe.starts(), 2);

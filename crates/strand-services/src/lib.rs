@@ -72,7 +72,9 @@ pub mod tray;
 pub mod wm;
 
 pub use bus::{Bus, Buses};
-pub use client::{Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, Services};
+pub use client::{
+    Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, Services, catch_refusals,
+};
 pub use cx::{Cx, Envelope, Msg, Reply, Write};
 pub use data::{Data, DataError, FromData, Name, Rgba, SchemaType, Step, ToData, record_field};
 pub use service::{CallSig, FromCall, LocalFuture, NoCall, Service, ServiceError, Start};

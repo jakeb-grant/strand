@@ -19,9 +19,16 @@ impl Shell {
         let prog = self.inst.vm().prog.clone();
         let ans =
             match crate::ipc::resolve_call(crate::services::schema(), Some(&prog), target, args) {
-                Ok(call) => match self.run_action(&call.service, &call.action, &call.args) {
-                    Ok(()) => json!({"ok": true}),
-                    Err(e) => proto::refused(format!("{target}: {e}")),
+                // An action the service could not take is the program's
+                // failure event and only that inside a handler, but this
+                // caller hears it too (m6-owner-fixes, review of the
+                // integration).
+                Ok(call) => match strand_services::catch_refusals(|| {
+                    self.run_action(&call.service, &call.action, &call.args)
+                }) {
+                    (Ok(()), refused) if refused.is_empty() => json!({"ok": true}),
+                    (Ok(()), refused) => proto::refused(format!("{target}: {}", refused.join("; "))),
+                    (Err(e), _) => proto::refused(format!("{target}: {e}")),
                 },
                 Err(e) => proto::refused(e),
             };

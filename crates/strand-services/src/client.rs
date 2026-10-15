@@ -72,6 +72,27 @@ pub const JOIN_LIMIT: Duration = Duration::from_secs(2);
 pub const FINALIZE_LIMIT: Duration = Duration::from_millis(500);
 
 thread_local! {
+    /// The refusals [`catch_refusals`] is collecting on this thread
+    /// (`None`: outside it).
+    static CAUGHT: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` on the logic thread and return, with its result, every action
+/// [`DynService::action`] could not hand to a run inside it (its body
+/// failed and backs off, its bus is missing), each as `` `name`: why ``.
+/// A handler hears such an action as the service's failure event and
+/// never as an error (spec.md 12); a caller outside the program (`strand
+/// call`, its D-Bus front end) is answered with the refusal instead of
+/// "ok" (m6-owner-fixes, review of the integration). Nested calls each
+/// see only their own refusals.
+pub fn catch_refusals<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    let outer = CAUGHT.with(|c| c.replace(Some(Vec::new())));
+    let r = f();
+    let caught = CAUGHT.with(|c| c.replace(outer)).unwrap_or_default();
+    (r, caught)
+}
+
+thread_local! {
     /// What dropped bodies left to finish on this thread's runtime
     /// ([`finalize`]).
     static FINALIZERS: std::cell::RefCell<Vec<tokio::task::JoinHandle<()>>> =
@@ -1919,6 +1940,11 @@ impl<S: Service> DynService for Client<S> {
         // (spec.md 12; owner-testing gap 20).
         if let Err((e, a)) = self.act_inner(rt, a, ctx, S::ACTIVATION.contains(&name)) {
             self.0.refuse(rt, name, a.as_ref(), &e);
+            CAUGHT.with(|c| {
+                if let Some(v) = c.borrow_mut().as_mut() {
+                    v.push(format!("`{name}`: {e}"));
+                }
+            });
         }
         Ok(())
     }

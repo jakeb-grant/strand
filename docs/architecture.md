@@ -4968,7 +4968,13 @@ transparent huge pages for life.
   service reports the action failing with (`session.failed`,
   `network.failed`, `bluetooth.failed`). A body idling without its bus
   (`dbus::idle_without_bus`) emits the same event for each action.
-  `Client::act` still returns the refusal to Rust callers.
+  `Client::act` still returns the refusal to Rust callers. A caller
+  outside the program wraps its call in
+  `strand_services::catch_refusals(f) -> (R, Vec<String>)`, which
+  returns each action `DynService::action` could not hand to a run
+  inside `f` (`` `name`: why ``): `strand call` (and its D-Bus front
+  end) answers those as a refusal, not `{"ok": true}`, the program
+  still hearing the failure event (review of the integration).
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
   `hostname`), `cpu` and `memory` (procfs, sampled once a second only

@@ -1364,6 +1364,52 @@ fn spawn_live_quiet(
     (compiler, to_logic, t, Mirror::new(rx))
 }
 
+/// (m6-owner-fixes, review of the integration) `strand call` (and its
+/// D-Bus front end) answers a refusal for an action the service could
+/// not take, here `session.lock` while the system bus is unreachable
+/// and `session` backs off; the program still hears it as
+/// `session.failed`, as a handler's would be.
+#[test]
+fn strand_call_hears_an_action_the_service_could_not_take() {
+    let dir = temp_dir("call-refused");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "state heard = \"\"\nbar Top {\n  on session.failed(a, e) { heard = heard + a + \";\" }\n  text session.available ? \"up\" : \"down\"\n  text heard\n}\n",
+    )
+    .unwrap();
+    let gone = strand_services::Bus::Address("unix:path=/nonexistent/strand-test-bus".into());
+    let socket = dir.join("ipc.sock");
+    let (compiler, to_logic, t, mut m) = spawn_live_with(
+        &dir,
+        Some(socket.clone()),
+        Some(strand_services::Buses {
+            session: gone.clone(),
+            system: gone,
+        }),
+        Storage::none(),
+    );
+    m.until("the bar", |s| s.texts() == ["down", ""]);
+    let mut client =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ans = ipc::request(
+        &mut client,
+        &ipc::Request::Call {
+            target: "session.lock".into(),
+            args: vec![],
+        },
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(ans["ok"], false, "{ans}");
+    let said = ans["error"].as_str().unwrap_or_default();
+    assert!(said.starts_with("session.lock: `lock`: "), "{said}");
+    m.until("the program heard it", |s| s.texts() == ["down", "lock;"]);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A first config with a typo and no last good version: nothing runs
 /// but the overlay; the fix mounts the per-monitor bar with `screen`
 /// in scope (the builtin services are there from the start).
