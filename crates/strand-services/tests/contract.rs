@@ -1347,6 +1347,78 @@ fn a_failed_run_is_not_available_while_it_backs_off() {
     s.shutdown();
 }
 
+/// What lets a `deaf` run's connect fail.
+static DEAF: Mutex<Option<tokio::sync::oneshot::Receiver<()>>> = Mutex::new(None);
+
+/// A service whose body is still connecting (a system bus that does not
+/// answer) and fails before it reads a message.
+#[service(
+    name = "deaf",
+    schema = "service deaf { n: int }",
+    action = OtherAction,
+    refused = deaf_refused
+)]
+#[derive(Store, Clone, Debug, Default, PartialEq)]
+pub struct Deaf {
+    pub n: i64,
+    /// An action failed, with why.
+    pub failed: Event<String>,
+}
+
+fn deaf_refused(_action: &OtherAction, error: &str) -> Option<DeafEvent> {
+    Some(DeafEvent::Failed(error.to_string()))
+}
+
+impl Deaf {
+    async fn run(cx: Cx<Self>) -> Result<(), ServiceError> {
+        let rx = DEAF.lock().unwrap().take();
+        if let Some(rx) = rx {
+            let _ = rx.await;
+        }
+        drop(cx);
+        Err("the system bus did not answer".into())
+    }
+}
+
+/// (m6-owner-fixes review, gap 20) An action sent to a run that is up
+/// but fails before reading it (still connecting to a bus that does not
+/// answer) is refused as the run ends, its failure event heard, not lost
+/// with the run's channel.
+#[test]
+fn an_action_a_failing_run_never_read_is_refused() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (fail, rx) = tokio::sync::oneshot::channel();
+    *DEAF.lock().unwrap() = Some(rx);
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let deaf = s.register::<Deaf>(&rt);
+    let heard = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let h = heard.clone();
+    deaf.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a {
+            h.borrow_mut().push(args.clone());
+        }
+    }));
+    deaf.acquire(&rt);
+    assert!(deaf.running());
+    // Taken by the run: nothing refused yet.
+    let ((), caught) = strand_services::catch_refusals(|| {
+        deaf.dynamic()
+            .action(&rt, "pause", None, &[], Default::default())
+            .unwrap();
+    });
+    assert!(caught.is_empty(), "{caught:?}");
+    assert!(heard.borrow().is_empty());
+    let _ = fail.send(());
+    until(&rt, &s, "the run fails", || !deaf.running());
+    let heard = heard.borrow();
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    let why = format!("{:?}", heard[0][0]);
+    assert!(why.contains("did not answer"), "{why}");
+    drop(heard);
+    s.shutdown();
+}
+
 /// A service that says it is ready and fails at once.
 #[service(name = "flaky", schema = "service flaky { n: int }")]
 #[derive(Store, Clone, Debug, Default, PartialEq)]

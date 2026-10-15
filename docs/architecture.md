@@ -4967,7 +4967,10 @@ transparent huge pages for life.
   (`#[service(refused = path)]`; `None` by default), the event the
   service reports the action failing with (`session.failed`,
   `network.failed`, `bluetooth.failed`). A body idling without its bus
-  (`dbus::idle_without_bus`) emits the same event for each action.
+  (`dbus::idle_without_bus`) emits the same event for each action, and
+  a body that ends without reading its queue (failing to connect
+  before its first `recv`) leaves the actions still queued as its `Cx`
+  drops, refused the same way as the run ends.
   `Client::act` still returns the refusal to Rust callers. A caller
   outside the program wraps its call in
   `strand_services::catch_refusals(f) -> (R, Vec<String>)`, which

@@ -232,6 +232,36 @@ pub struct Cx<S: Service> {
     ready: bool,
     buses: Buses,
     notify: Notify,
+    /// Where the actions still queued when the body lets its context go
+    /// are left, for the logic thread to refuse as the run ends
+    /// ([`Cx`]'s `Drop`).
+    unread: Unread<S>,
+}
+
+/// The actions a run's body never read (see [`Cx`]'s `Drop`).
+pub(crate) type Unread<S> = Arc<Mutex<Vec<<S as Service>::Action>>>;
+
+/// (m6-owner-fixes, review of the integration) A body that ends without
+/// reading its queue (it failed connecting before its first `recv`, or
+/// returned) leaves its queued actions here, so the client refuses them
+/// as the run ends ([`Service::refused`]) instead of dropping them with
+/// the channel.
+impl<S: Service> Drop for Cx<S> {
+    fn drop(&mut self) {
+        self.msgs.close();
+        let mut left = Vec::new();
+        while let Ok((m, _)) = self.msgs.try_recv() {
+            if let Msg::Action(a) = m {
+                left.push(a);
+            }
+        }
+        if !left.is_empty() {
+            self.unread
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(left);
+        }
+    }
 }
 
 impl<S: Service> fmt::Debug for Cx<S> {
@@ -252,6 +282,7 @@ impl<S: Service> Cx<S> {
         buses: Buses,
         notify: Notify,
         watched: Vec<bool>,
+        unread: Unread<S>,
     ) -> Cx<S> {
         Cx {
             state,
@@ -263,6 +294,7 @@ impl<S: Service> Cx<S> {
             ready: false,
             buses,
             notify,
+            unread,
         }
     }
 

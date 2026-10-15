@@ -602,6 +602,9 @@ struct Run<S: Service> {
     /// ([`Registry::bounced`]) instead of sent to a body that is
     /// going away.
     stopped: Arc<Mutex<bool>>,
+    /// The actions its body never read, left as its context went
+    /// ([`Cx`]'s `Drop`): refused as the run ends.
+    unread: crate::cx::Unread<S>,
 }
 
 impl<S: Service> Run<S> {
@@ -832,7 +835,16 @@ impl<S: Service> ClientInner<S> {
             .zip(&self.field_refs)
             .map(|(f, n)| f.stream && n.get() > 0)
             .collect();
-        let cx = Cx::new(state, out, msgs, reg.buses.clone(), notify.clone(), watched);
+        let unread: crate::cx::Unread<S> = Arc::default();
+        let cx = Cx::new(
+            state,
+            out,
+            msgs,
+            reg.buses.clone(),
+            notify.clone(),
+            watched,
+            unread.clone(),
+        );
         let mut stop = None;
         let mut thread = None;
         let started = match S::start(cx) {
@@ -910,6 +922,7 @@ impl<S: Service> ClientInner<S> {
             ended: false,
             started: rt.now(),
             stopped: Arc::default(),
+            unread,
         });
     }
 
@@ -1032,12 +1045,12 @@ impl<S: Service> ClientInner<S> {
 
     /// The run ended (an `Ended` envelope, or its channel closed).
     fn ended(&self, rt: &Runtime, failed: bool) {
-        let (was, started) = match self.run.borrow_mut().as_mut() {
+        let (was, started, unread) = match self.run.borrow_mut().as_mut() {
             Some(run) => {
                 let was = run.ended;
                 run.ended = true;
                 run.ready = true;
-                (was, run.started)
+                (was, run.started, run.unread.clone())
             }
             None => return,
         };
@@ -1046,6 +1059,20 @@ impl<S: Service> ClientInner<S> {
         }
         // Writes it never answered never will be.
         self.cells.forget_echoes(rt);
+        // (m6-owner-fixes, review of the integration) Nor will the
+        // actions it never read (a body failing to connect before its
+        // first `recv`): refused, as an action reaching no run is.
+        let unread = std::mem::take(&mut *lock(&unread));
+        if !unread.is_empty() {
+            let why = match self.last_error.borrow().as_deref() {
+                Some(e) if failed => format!("`{}` ended before taking it: {e}", self.name),
+                _ => format!("`{}` ended before taking it", self.name),
+            };
+            let error = Error::failed(why);
+            for a in &unread {
+                self.refuse(rt, "a queued action", Some(a), &error);
+            }
+        }
         if failed {
             self.unavailable(rt);
         }
