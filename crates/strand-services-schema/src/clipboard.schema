@@ -1,0 +1,47 @@
+/// One entry of the clipboard's history: a text or an image copied,
+/// newest first, keyed by `id`.
+record ClipboardEntry key id {
+  /// Its identity, kept while it is in the history (across restarts).
+  id: int
+  /// Its text, or "" for an image.
+  text: text
+  /// An image's file, which `image` draws (`image e.image ?? ""`), or
+  /// null for a text.
+  image: text?
+  /// Its size in bytes, as copied.
+  size: int
+  /// When it was last copied.
+  time: Date
+  /// Makes it the selection again; it moves to the front of the history:
+  /// `on click { e.copy() }`.
+  action copy()
+  /// Removes it from the history, its image file with it.
+  action remove()
+}
+
+/// The clipboard, from the compositor's data control
+/// (`ext-data-control-v1`, else `wlr-data-control`: Hyprland, sway, niri,
+/// labwc): the selection, a value copied from a handler, and the history.
+service clipboard {
+  /// The compositor offers data control: false without it, when `history`
+  /// stays as it was and `copy` fails with `clipboard.failed` (an `input`
+  /// still copies and pastes).
+  available: bool
+  /// The selection's text, or "" when it holds none (empty, an image, or a
+  /// password manager's secret, which is never read).
+  text: text
+  /// The selection is an image.
+  image: bool
+  /// What was copied, newest first, each once: texts and images, the newest
+  /// 100 within 64 MiB, kept across restarts. Recorded while a program
+  /// reads it anywhere (see spec.md 8.1); a secret never enters it.
+  history: [ClipboardEntry]
+  /// Copies `value` as text: it becomes the selection, which other
+  /// programs paste (`on click { clipboard.copy(ip) }`).
+  action copy(value: text)
+  /// Empties the history and deletes its file; the selection stays.
+  action clear()
+  /// An action failed (no data control, an image file gone):
+  /// `on clipboard.failed(action, error) { … }`.
+  event failed(action: text, error: text)
+}

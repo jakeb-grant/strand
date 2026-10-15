@@ -30,7 +30,9 @@
 //! [`apps`] (desktop entries, fuzzy search, frecency, launching); and
 //! [`auth`] (the lock screen's password check, through `strand-auth`);
 //! and [`session`] (logind: suspend, reboot, power off, lock, log out);
-//! and [`outputs`] (the monitors' configuration, wlr-output-management).
+//! and [`outputs`] (the monitors' configuration, wlr-output-management);
+//! and [`clipboard`] (the selection, copies and their history, over data
+//! control).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -51,6 +53,7 @@ pub mod brightness;
 pub mod bus;
 pub mod child;
 mod client;
+pub mod clipboard;
 pub mod cpu;
 pub mod custom;
 mod cx;
@@ -110,6 +113,7 @@ pub struct Builtin {
     pub auth: Client<auth::Auth>,
     pub session: Client<session::Session>,
     pub outputs: Client<outputs::Outputs>,
+    pub clipboard: Client<clipboard::Clipboard>,
 }
 
 impl Builtin {
@@ -135,6 +139,7 @@ impl Builtin {
             auth: services.register(rt),
             session: services.register(rt),
             outputs: services.register(rt),
+            clipboard: services.register(rt),
         }
     }
 
@@ -160,6 +165,7 @@ impl Builtin {
             self.auth.dynamic(),
             self.session.dynamic(),
             self.outputs.dynamic(),
+            self.clipboard.dynamic(),
         ]
     }
 }

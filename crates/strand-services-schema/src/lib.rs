@@ -44,6 +44,9 @@ pub const AUTH: &str = include_str!("auth.schema");
 pub const SESSION: &str = include_str!("session.schema");
 /// `outputs`: the monitors' configuration (wlr-output-management).
 pub const OUTPUTS: &str = include_str!("outputs.schema");
+/// `clipboard`: the selection, copies from handlers and the history
+/// (`ext-data-control-v1`, else `wlr-data-control`).
+pub const CLIPBOARD: &str = include_str!("clipboard.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -66,5 +69,6 @@ pub fn schemas() -> Vec<&'static str> {
         AUTH,
         SESSION,
         OUTPUTS,
+        CLIPBOARD,
     ]
 }

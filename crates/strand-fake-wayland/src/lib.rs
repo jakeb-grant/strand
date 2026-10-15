@@ -18,17 +18,24 @@
 //!
 //! - `strand-services`' thumbnails: the image capture source and copy
 //!   capture managers ([`FakeBuilder::capture`]; `capture.rs`).
+//! - `strand-services`' clipboard: `ext-data-control-v1` and
+//!   `wlr-data-control` ([`FakeBuilder::data_control`]; `data_control.rs`),
+//!   with a selection the fake can set itself ([`Cmd::SetSelection`],
+//!   [`Fake::selection`]).
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
 mod activation;
 mod capture;
+mod data_control;
 mod surfaces;
 mod xdg;
 
 pub use activation::ActivationRequest;
 
 pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
+
+pub use data_control::{DataControl, Selection};
 
 pub use surfaces::{BufferKind, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
 
@@ -126,6 +133,10 @@ pub enum Cmd {
     /// Answered once every command sent before it is applied
     /// ([`Fake::sync`]).
     Sync(mpsc::Sender<()>),
+    /// (m6-service-gaps) The fake sets the selection, as another program
+    /// copying: each type with its bytes, which it writes to readers
+    /// itself ([`FakeBuilder::data_control`]).
+    SetSelection(Vec<(String, Vec<u8>)>),
 }
 
 struct Toplevel {
@@ -229,6 +240,8 @@ struct Server {
     activation_log: Arc<Mutex<Vec<ActivationRequest>>>,
     /// (M5) Tokens are not answered ([`Cmd::HoldTokens`]).
     hold_tokens: bool,
+    /// (m6-service-gaps) The data-control side.
+    dc: data_control::State,
 }
 
 impl Server {
@@ -459,6 +472,7 @@ impl Server {
             Cmd::Sync(done) => {
                 let _ = done.send(());
             }
+            Cmd::SetSelection(offers) => self.dc.set_own(dh, offers),
             Cmd::Key(key, pressed) => {
                 self.serial += 1;
                 let state = if pressed {
@@ -942,6 +956,8 @@ pub struct Fake {
     pub captures: Arc<Mutex<Vec<String>>>,
     /// (M5) Every xdg-activation token asked for, in order.
     activation_log: Arc<Mutex<Vec<ActivationRequest>>>,
+    /// (m6-service-gaps) The selection now.
+    selection: Arc<Mutex<Option<Selection>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -963,6 +979,7 @@ pub struct FakeBuilder {
     surfaces: Option<SurfaceGlobals>,
     toplevel_list: bool,
     capture: bool,
+    data_control: DataControl,
 }
 
 impl FakeBuilder {
@@ -1009,6 +1026,13 @@ impl FakeBuilder {
         self
     }
 
+    /// (m6-service-gaps) The data-control managers (with
+    /// [`FakeBuilder::seats`] for their devices).
+    pub fn data_control(mut self, which: DataControl) -> Self {
+        self.data_control = which;
+        self
+    }
+
     pub fn start(self) -> Fake {
         Fake::start_built(self)
     }
@@ -1026,6 +1050,7 @@ impl Fake {
             surfaces: None,
             toplevel_list: true,
             capture: false,
+            data_control: DataControl::None,
         }
     }
 
@@ -1086,6 +1111,8 @@ impl Fake {
         let thread_captures = captures.clone();
         let activation_log = Arc::new(Mutex::new(Vec::new()));
         let thread_activation_log = activation_log.clone();
+        let selection = Arc::new(Mutex::new(None));
+        let thread_selection = selection.clone();
         let FakeBuilder {
             workspaces: with_workspaces,
             wlr,
@@ -1094,6 +1121,7 @@ impl Fake {
             surfaces: surface_globals,
             toplevel_list,
             capture,
+            data_control,
         } = b;
         let thread = std::thread::spawn(move || {
             let mut display = Display::<Server>::new().expect("a wayland-server display");
@@ -1113,6 +1141,7 @@ impl Fake {
             if capture {
                 capture::create_globals(&dh, surface_globals.is_none());
             }
+            data_control::create_globals(&dh, data_control);
             let seat_globals = (0..seats)
                 .map(|n| Some(dh.create_global::<Server, wl_seat::WlSeat, usize>(1, n)))
                 .collect();
@@ -1134,6 +1163,7 @@ impl Fake {
             state.surf.globals = surface_globals;
             state.surf.records = thread_surfaces;
             state.capture.log = thread_captures;
+            state.dc.log = thread_selection;
             while !thread_stop.load(Ordering::SeqCst) {
                 while let Ok(cmd) = rx.try_recv() {
                     state.apply(&dh, cmd);
@@ -1182,8 +1212,16 @@ impl Fake {
             surfaces,
             captures,
             activation_log,
+            selection,
             thread: Some(thread),
         }
+    }
+
+    /// (m6-service-gaps) What the selection offers and which protocol set
+    /// it (`ext`, `wlr`, or `fake` for [`Cmd::SetSelection`]); `None`
+    /// when empty.
+    pub fn selection(&self) -> Option<Selection> {
+        self.selection.lock().ok().and_then(|s| s.clone())
     }
 
     /// (M5) Every xdg-activation token asked for so far, in order.
