@@ -66,7 +66,8 @@ Keyed by `id`.
 
 ### `BluetoothDevice`
 
-A paired Bluetooth device, keyed by `address`.
+A Bluetooth device: one paired with the adapter (`bluetooth.devices`)
+or one in range (`bluetooth.nearby`), keyed by `address`.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -75,11 +76,15 @@ A paired Bluetooth device, keyed by `address`.
 | `connected` | `bool` | It is connected. |
 | `battery` | `float?` | Its battery, 0 to 1, when it reports one. |
 | `icon` | `text` | An icon name for its kind. |
+| `connecting` | `bool` | A `connect()` or `pair()` of it runs (pairing, trusting, connecting), until it ends. |
+| `disconnecting` | `bool` | A `disconnect()` of it runs, until it ends. |
 
 | Method | |
 | --- | --- |
 | `action connect()` | Connects to it; a failure is `bluetooth.failed`. |
 | `action disconnect()` | Disconnects from it; a failure is `bluetooth.failed`. |
+| `action pair()` | Pairs with it, trusts it (so it may reconnect on its own) and connects to it: how a `nearby` device is added. One already paired is trusted and connected. Strand asks for no PIN or passkey: BlueZ pairs through the system's pairing agent if one runs, else without one (most headphones, mice, keyboards and phones). A device that insists on a PIN fails. A failure is `bluetooth.failed`. |
+| `action forget()` | Forgets it: unpaired and removed from the adapter, so it leaves `devices`. A failure is `bluetooth.failed`. |
 
 ### `Canvas`
 
@@ -488,6 +493,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `SwapKind` | `none`, `disc`, `dissolve`, `pixelate` |
 | `Urgency` | `low`, `normal`, `critical` |
 | `Variant` | `tonal_spot`, `vibrant`, `expressive`, `neutral`, `monochrome`, `fidelity`, `content`, `rainbow`, `fruit_salad` |
+| `WifiSecurity` | `open`, `enhanced_open`, `wep`, `wpa`, `wpa2`, `wpa3`, `enterprise`. How a Wi-Fi network is secured. `enhanced_open` is OWE (open, but encrypted); `enterprise` is 802.1X. |
 
 ## Aliases
 

@@ -882,6 +882,54 @@ findings only.
     `place: absolute`; no per-child `align_self` is added
     (`crates/strand-render/tests/layout.rs::a_stacks_align_places_every_child_on_both_axes`).
     decisions.md m6-owner-fixes.
+28. **The network service cannot disconnect, rescan on demand, or tell
+    the joined network's details.** (open, 2026-10-15; found by surveying
+    the owner's quickshell config for capabilities) A Wi-Fi menu cannot
+    leave the joined network, cannot show that a network is being joined
+    or left (and which), cannot show the joined network's IP address,
+    frequency or band, or security, and cannot rescan on demand with a
+    flag while the scan runs; the scan made when a list opens is all
+    there is. The owner's laptop runs iwd with systemd-networkd, where
+    iwd does not know the address.
+    **Fixed; pending the owner's check on Hyprland** (m6-service-gaps,
+    decisions.md): `network.disconnect()` (NetworkManager's
+    `Device.Disconnect`, iwd's `Station.Disconnect`; it stops a join in
+    progress too), `network.connecting` and `network.disconnecting`
+    (the network's name), `network.frequency` (MHz; the reference gives
+    the bands), `network.security` (the new `WifiSecurity` enum),
+    `network.address` (from the kernel over rtnetlink, read only while
+    shown, so it works under systemd-networkd), `network.scan()` and
+    `network.scanning`; failures of the service's own actions are
+    `network.failed("", error)`. Over NetworkManager an activating
+    network no longer shows as joined
+    (`crates/strand-services/tests/network.rs::network_tells_the_joined_networks_details`,
+    `::network_says_what_it_is_joining_and_leaving`,
+    `::disconnect_leaves_the_joined_network`,
+    `::an_explicit_scan_raises_scanning_until_it_ends`;
+    `crates/strand-services/tests/network_iwd.rs::iwd_tells_the_joined_networks_details`,
+    `::iwd_says_what_it_is_joining_and_leaving_and_disconnects`,
+    `::an_explicit_scan_on_iwd_raises_scanning`;
+    `crates/strand-services/src/network/address.rs::tests::the_kernel_gives_lo_its_address`;
+    `crates/strand-compiler/tests/checker.rs::network_is_a_wifi_page`).
+29. **Bluetooth cannot find or pair new devices, forget one, or show a
+    device connecting.** (open, 2026-10-15; found by surveying the
+    owner's quickshell config for capabilities) `bluetooth` lists only
+    paired devices: a menu cannot search for devices in range, pair one
+    (pair, trust, connect), forget a paired one, or show that a device
+    is connecting or disconnecting.
+    **Fixed; pending the owner's check on Hyprland** (m6-service-gaps,
+    decisions.md): `bluetooth.nearby` (unpaired devices in range with a
+    name, found by a discovery that runs only while the list is shown),
+    `bluetooth.scanning`, `d.pair()` (pair, trust, connect),
+    `d.forget()`, and each device's `connecting` and `disconnecting`;
+    failures stay `bluetooth.failed(address, error)`. No pairing agent
+    is registered: the system's agent answers a PIN if one runs (the
+    owner may overrule this, decisions.md)
+    (`crates/strand-services/tests/bluetooth.rs::bluetooth_finds_nearby_devices_only_while_read`,
+    `::pairing_a_nearby_device_pairs_trusts_and_connects_it`,
+    `::disconnecting_and_forgetting_a_paired_device`,
+    `::without_bluez_pair_and_forget_fail_as_events`;
+    `crates/strand-compiler/tests/checker.rs::bluetooth_is_a_pairing_page`).
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

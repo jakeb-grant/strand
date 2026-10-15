@@ -5023,7 +5023,31 @@ transparent huge pages for life.
   again; `dbus::Daemon::watch` follows a name without D-Bus activation,
   and every call to iwd goes through `iwd::call` with `NO_AUTO_START`,
   so iwd is never started for us; both agents answer only iwd's current
-  unique name), `bluetooth` (BlueZ's object manager),
+  unique name; m6-service-gaps, gap 28: `disconnect()` (NetworkManager's
+  `Device.Disconnect` on the Wi-Fi device, iwd's `Station.Disconnect`,
+  each a task; joins it stops are cancelled, not reported),
+  `connecting`/`disconnecting` from the daemon (NetworkManager's
+  ACTIVATING/DEACTIVATING active connections, which no longer count as
+  joined; iwd's Station `State`) merged with the shell's own requests
+  by `network::Pending` and `overlay`, which both backends share, as
+  are `address` and `scanning`'s request; `frequency` and `security`
+  (`WifiSecurity`) from the joined access point's flags or iwd's
+  `StationDiagnostic.GetDiagnostics`, read on each join or roam;
+  `scan()`/`scanning`: NetworkManager's accepted `RequestScan` until its
+  `LastScan` changes or `SCAN_LIMIT` (15 s), iwd's `Scanning`; `address`
+  (a `#[store(stream)]` field) from `network::address::Follower`, an
+  rtnetlink socket on rustix's `net` (RTM_GETADDR dump, then the IPv4
+  and IPv6 address groups; no polling) opened only while `address` is
+  watched and the backend names an interface (NetworkManager's
+  default-route device, iwd's Wi-Fi interface)), `bluetooth` (BlueZ's
+  object manager; m6-service-gaps, gap 29: `nearby` is a stream field,
+  discovery (`SetDiscoveryFilter`, `StartDiscovery`) running only while
+  it is watched, `StopDiscovery` only for the body's own session (BlueZ
+  keeps one per client) and when the body ends; signals that change
+  only advertisement data are dropped; `pair()` (pair, trust, connect)
+  and `forget()` (`Adapter1.RemoveDevice`) are tasks, and a device's
+  `connecting`/`disconnecting` are the body's tasks in flight by
+  address; no pairing agent is registered),
   `notifications` (our own `org.freedesktop.Notifications` server;
   `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
@@ -5106,7 +5130,7 @@ transparent huge pages for life.
   (`client::finalize`): a task on the runtime that the shared thread,
   ending, waits for up to `FINALIZE_LIMIT` (500 ms) before dropping the
   runtime. Calls that may wait on an app (tray items, players,
-  BlueZ connects) run as tasks in a `JoinSet` owned by the body, so they
+  BlueZ connects, pairs and forgets) run as tasks in a `JoinSet` owned by the body, so they
   hold up nothing and are cancelled when it stops; what they find (a
   player read, a tray item read, a failed connect for
   `bluetooth.failed`) comes back to the loop as the task's result. Pixels from D-Bus
