@@ -71,7 +71,7 @@ use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
 use crate::placement::{
     LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config_with, popup_config,
-    popup_request, popup_scrim_layer, popup_shift,
+    popup_request, popup_scrim_layer, popup_shift, popup_slides,
 };
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 use strand_scene::{KeyInput, Modifiers};

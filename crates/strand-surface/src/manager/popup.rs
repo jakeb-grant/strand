@@ -176,9 +176,10 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// scales its coordinates (a popup opened from a panel held at a
     /// static `scale`). (owner-testing.md bug 6) The box is moved inside
     /// the parent's output along its anchor's edge first
-    /// ([`popup_shift`]), so the compositor need not slide it; slide
-    /// stays asked for, for what the manager cannot know (another
-    /// client's exclusive zone, a posed parent).
+    /// ([`popup_shift`]), so the compositor need not slide it; a slide
+    /// is asked for only on an axis where the box does not fit its
+    /// output, or while the manager cannot know (a posed parent, an
+    /// output not yet described) ([`popup_slides`]).
     pub(super) fn positioner(
         &self,
         c: &PopupConfig,
@@ -204,10 +205,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         });
         let rect = (x, y, w.max(1), h.max(1));
         p.set_anchor_rect(rect.0, rect.1, rect.2, rect.3);
-        let shift = match self.output_in_parent(parent) {
-            Some(within) if factor == (1.0, 1.0) => popup_shift(c, rect, within),
-            _ => (0, 0),
-        };
+        let within = self
+            .output_in_parent(parent)
+            .filter(|_| factor == (1.0, 1.0));
+        let shift = within.map_or((0, 0), |within| popup_shift(c, rect, within));
+        let (slide_x, slide_y) = popup_slides(c, rect, shift, within);
         let (ax, ay, _, _) = popup_request(c, rect, shift);
         use xdg_positioner::{Anchor, ConstraintAdjustment as Adj, Gravity};
         let (anchor, gravity, offset, flip) = match (c.side, c.aligned) {
@@ -233,7 +235,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         p.set_anchor(anchor);
         p.set_gravity(gravity);
         p.set_offset(offset.0, offset.1);
-        p.set_constraint_adjustment(Adj::SlideX | Adj::SlideY | flip);
+        let mut adj = flip;
+        if slide_x {
+            adj |= Adj::SlideX;
+        }
+        if slide_y {
+            adj |= Adj::SlideY;
+        }
+        p.set_constraint_adjustment(adj);
         Some((p, (ax, ay)))
     }
 

@@ -714,6 +714,32 @@ pub fn popup_shift(
     }
 }
 
+/// Whether the positioner for `c` (anchor rect `rect`, offset moved by
+/// `shift`) asks the compositor to slide it across and down: on an axis
+/// only where its box does not lie wholly inside `within` (its output,
+/// relative to the parent's window geometry, as for [`popup_shift`]),
+/// and on both while the output is not known. A box that fits is where
+/// it asked to be: Hyprland 0.56 slides into its output less 4 px on
+/// every side (`CXDGPositionerRules::getPosition`), so a slide asked
+/// for anyway moved a card lifted over its top bar to the screen's edge
+/// 4 px down, a sliver of wallpaper above it.
+pub fn popup_slides(
+    c: &PopupConfig,
+    rect: (i32, i32, i32, i32),
+    shift: (i32, i32),
+    within: Option<(i32, i32, i32, i32)>,
+) -> (bool, bool) {
+    let Some((wx, wy, ww, wh)) = within else {
+        return (true, true);
+    };
+    let (x, y, w, h) = popup_request(c, rect, shift);
+    let inside = |v: i32, len: i32, lo: i32, room: i32| {
+        let (v, len, lo, room) = (i64::from(v), i64::from(len), i64::from(lo), i64::from(room));
+        v >= lo && v + len <= lo + room
+    };
+    (!inside(x, w, wx, ww), !inside(y, h, wy, wh))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1190,6 +1216,55 @@ mod tests {
             (44, 1010, 400, 120)
         );
         assert_eq!(popup_shift(&beside, (0, 1060, 36, 20), out), (0, -50));
+    }
+
+    /// A popup whose box lies inside its output asks for no slide, so a
+    /// compositor that slides into a padded output (Hyprland, 4 px)
+    /// leaves it where it asked: a card lifted over its top bar to the
+    /// screen's edge (a gap of minus the bar's thickness) stays at y 0.
+    /// It asks for one on each axis it passes, and on both while its
+    /// output is not known.
+    #[test]
+    fn a_popup_that_fits_its_output_asks_for_no_slide() {
+        let c = PopupConfig {
+            namespace: "p".into(),
+            width: 852,
+            height: 300,
+            overhang: [0; 4],
+            anchor_rect: (0, 0, 1, 1),
+            side: PopupSide::Below,
+            aligned: false,
+            gap: -32,
+            grab: false,
+        };
+        // The island's bar: 440 px wide, centred on a 1920 px output.
+        let bar = (0, 0, 440, 32);
+        let out = (-740, 0, 1920, 1200);
+        assert_eq!(popup_request(&c, bar, (0, 0)), (-206, 0, 852, 300));
+        assert_eq!(popup_slides(&c, bar, (0, 0), Some(out)), (false, false));
+        assert_eq!(popup_slides(&c, bar, (0, 0), None), (true, true));
+        // Past the top, the bottom, and either side.
+        let low = PopupConfig {
+            gap: -33,
+            ..c.clone()
+        };
+        assert_eq!(popup_slides(&low, bar, (0, 0), Some(out)), (false, true));
+        let tall = PopupConfig {
+            height: 1201,
+            gap: 0,
+            ..c.clone()
+        };
+        assert_eq!(
+            popup_slides(&tall, (0, -32, 440, 32), (0, 0), Some(out)),
+            (false, true)
+        );
+        assert_eq!(popup_slides(&c, bar, (-535, 0), Some(out)), (true, false));
+        assert_eq!(popup_slides(&c, bar, (-534, 0), Some(out)), (false, false));
+        assert_eq!(popup_slides(&c, bar, (1603, 0), Some(out)), (true, false));
+        // The box popup_shift moved inside the output asks for none.
+        let right = (1100, 0, 20, 32);
+        let shift = popup_shift(&c, right, out);
+        assert_eq!(popup_slides(&c, right, shift, Some(out)), (false, false));
     }
 
     /// A popup in a top bar opens below the bar (its anchor spans the

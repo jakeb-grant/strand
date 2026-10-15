@@ -508,6 +508,23 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     workspace's crates at 0): the same frames take 1 to 11 ms.
     decisions.md m6-service-gaps.
 
+19. **The island's card opens a sliver below the screen's edge on
+    Hyprland.** (fixed, 2026-10-15; found 2026-10-15 by the owner on
+    Hyprland 0.56.2 with the island config and no other bar.) The bar
+    sits flush with the top edge; the card it grows into (a popup lifted
+    over the bar with `margin: -rest_h`) shows wallpaper above it. Under
+    another program's top bar the island sits lower and the gap was
+    there but hidden. Cause: every popup asked the compositor to slide
+    it on both axes, and Hyprland slides a popup into its output less
+    4 px on every side (`CXDGPositionerRules::getPosition`), so a card
+    asking for y 0 was moved to y 4. sway does not pad, which is why the
+    headless screenshots were flush. A popup now asks for a slide only
+    on an axis where its box does not fit its output (Strand already
+    moves it inside, bug 6), or while the output is not known
+    (`crates/strand-surface/src/placement.rs::tests::a_popup_that_fits_its_output_asks_for_no_slide`).
+    decisions.md popup-slide. Check on Hyprland: the card meets the top
+    edge.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,
