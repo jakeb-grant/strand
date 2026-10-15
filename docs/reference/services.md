@@ -203,9 +203,10 @@ name, and says so clearly if another daemon (dunst, mako) has it.
 | Field | Type | |
 | --- | --- | --- |
 | `popups` | `[Notification]` | The notifications to show now; each leaves when it expires or is dismissed. |
-| `all` | `[Notification]` | Every notification kept, popups included: the newest 1,000 (older ones close as expired). |
+| `all` | `[Notification]` | Every notification kept, popups included: the newest 1,000 (older ones close as expired), remembered across restarts while `remember` is on. |
 | `count` | `int` | How many notifications are kept. |
 | `dnd` | `bool rw` | Do not disturb: new notifications that are not critical skip the popups (they are kept in `all`, and `received` still fires). Writable. |
+| `remember` | `bool rw` | Notifications kept in `all` are remembered across restarts (under `$XDG_STATE_HOME/strand`, readable only by you); on by default. Those from an earlier run come back in `all` (never as popups, and without `received`) with no buttons, and `activate()` only dismisses them, since their senders cannot hear it. A sender's `transient` notifications are never remembered. Writable: false forgets every remembered notification at once, and stays false across restarts. |
 
 | Method | |
 | --- | --- |

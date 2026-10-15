@@ -5035,7 +5035,17 @@ transparent huge pages for life.
   so iwd is never started for us; both agents answer only iwd's current
   unique name), `bluetooth` (BlueZ's object manager),
   `notifications` (our own `org.freedesktop.Notifications` server;
-  `Notification.time` is a `Date` with the hour and minute since M6),
+  `Notification.time` is a `Date` with the hour and minute since M6;
+  M6, gap 35: the history is kept in the persist store's
+  `services:notifications.all` (JSON, `{"version":1,"notifications":[…]}`,
+  the newest `KEPT`, `transient` ones and our runtime-dir pictures left
+  out) and `services:notifications.remember` (`0` or `1`), saved 1 s
+  after the last change on the blocking pool (latest generation wins,
+  a `SaveOnStop` finalizer making the last save) and restored, renumbered
+  1..=n without actions, before the name is asked for;
+  `notifications::set_config(Option<notifications::Config { state }>)`
+  points it at a test's directory, or `state: None` for none, as
+  `apps::set_config` does),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
   while watched; M6, gap 32: `can_next`, `can_previous` and `can_seek`
   from the active player's `CanGoNext`, `CanGoPrevious` and `CanSeek`,

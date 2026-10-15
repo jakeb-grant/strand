@@ -1358,6 +1358,23 @@ fn disk_shows_root_and_every_filesystem() {
     );
 }
 
+/// (M6, owner-testing gap 35) A notification centre's "remember" switch
+/// binds `notifications.remember` both ways (there is no `toggle`
+/// element: a `segmented` over `[true, false]`), and a button forgets.
+#[test]
+fn notification_history_can_be_forgotten() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    segmented { options: [true, false]; value: <-> notifications.remember }\n    \
+             text \"Remember\" { on click { notifications.remember = !notifications.remember } }\n    \
+             text \"Forget\" { on click { notifications.remember = false } }\n    \
+             for n in notifications.all {\n      text n.summary\n      \
+             if n.actions.len == 0 { text \"from before\" }\n    }\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

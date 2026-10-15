@@ -929,6 +929,28 @@ findings only.
     `crates/strand-services/src/system.rs::tests::the_uptime_timer_waits_for_the_next_whole_minute`,
     `crates/strand-compiler/tests/checker.rs::system_shows_uptime_and_kernel`).
     decisions.md m6-service-gaps.
+35. **The notification history is lost on every restart.** (fixed,
+    2026-10-15; found 2026-10-15 by surveying the owner's quickshell
+    config) The owner's notification centre keeps its history across
+    restarts; `notifications.all` lived in memory only, so a reload of
+    strand or a log-in emptied it. **Fixed; pending the owner's check on
+    Hyprland**: while `notifications.remember` is on (the default; one
+    write of false erases the history at once and stays off) `all` is
+    kept under `$XDG_STATE_HOME/strand/persist` (readable only by you;
+    the newest 1,000; a sender's `transient` notifications and this run's
+    pictures never written) and comes back after a restart, renumbered
+    below every new id, without buttons (their senders cannot hear an
+    answer), never as popups and without `received`; closing one tells
+    no sender, and `clear()` and `dismiss()` forget them on disk too
+    (`crates/strand-services/tests/notifications.rs::remembered_notifications_come_back_after_a_restart`,
+    `::forgetting_erases_the_history_and_stays_off`,
+    `::clear_forgets_every_remembered_notification`,
+    `crates/strand-services/src/notifications.rs::tests::the_history_round_trips_without_actions`,
+    `::the_history_keeps_the_newest_and_never_a_transient_one`,
+    `::only_a_senders_existing_picture_is_remembered`,
+    `::a_history_that_does_not_read_is_refused`, `::the_transient_hint_is_read`,
+    `crates/strand-compiler/tests/checker.rs::notification_history_can_be_forgotten`).
+    decisions.md m6-service-gaps.
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

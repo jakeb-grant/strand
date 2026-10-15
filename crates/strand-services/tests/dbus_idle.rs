@@ -62,6 +62,11 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     let Some(bus) = PrivateBus::start() else {
         return;
     };
+    // The notification server remembers nothing here (never into the
+    // real `$XDG_STATE_HOME`).
+    strand_services::notifications::set_config(Some(strand_services::notifications::Config {
+        state: None,
+    }));
     let tokio = tokio();
     let conn = connect(&tokio, &bus.address);
     let Some(_upower) = DbusMock::start(&bus, "upower", true, None, "org.freedesktop.UPower")

@@ -218,7 +218,7 @@ A desktop notification, keyed by `id`.
 | `timeout` | `duration?` | How long the sender asked it to show; null leaves it to the shell: `after n.timeout ?? 6s { n.expire() }`. |
 | `persistent` | `bool` | The sender asked it never to expire (an `expire_timeout` of 0): a shell keeps its popup with `after n.timeout ?? 6s while !n.persistent { n.expire() }`. |
 | `time` | `Date` | When it arrived. |
-| `actions` | `[NotificationAction]` | The buttons it offers. |
+| `actions` | `[NotificationAction]` | The buttons it offers; none on one remembered from an earlier run (`notifications.remember`), whose sender cannot hear them. |
 
 | Method | |
 | --- | --- |
