@@ -638,6 +638,7 @@ impl Shell {
                 let _ = j.send(Job::Referenced {
                     files,
                     settings: self.inst.settings_sources(),
+                    at: std::time::SystemTime::now(),
                 });
             }
         }

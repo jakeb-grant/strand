@@ -354,6 +354,12 @@ pub fn logic(
             break;
         }
         shell.after_step(&update);
+        // (M6) A drawn file's source the step switched is watched now,
+        // not when something next wakes the loop: render reads it from
+        // this diff (m6-owner-fixes review).
+        if shell.inst.take_theme_files_changed() | shell.inst.take_assets_changed() {
+            shell.watch_settings();
+        }
         // (M5) The theming hub's work after the diff: `file` outputs and
         // waiting `export` requests (`outputs.rs`).
         shell.after_diff();

@@ -5682,9 +5682,11 @@ It does not depend on `strand-compiler` or `strand-core`.
   `lottie` draws: `Instance::asset_files()` (each bound `source`'s
   current value made a path, `check::assets::file_of`; kept per binding
   and dropped by its cleanup; `take_assets_changed()` says when it
-  moved) joins the logic thread's `Job::Referenced` list
-  (`Shell::watch_settings`). The worker hands the asset files a batch
-  changed to `live::Job::Assets(AssetSink)`'s sink, which `strand run`
+  moved, checked right after each step) joins the logic thread's
+  `Job::Referenced` list (`Shell::watch_settings`; its `at` is when the
+  set was taken, and an asset file newly registered and modified since
+  then, less `ASSET_CATCH_UP`, is reported at once). The worker hands
+  the asset files a batch changed to `live::Job::Assets(AssetSink)`'s sink, which `strand run`
   forwards to the main thread's `Renderer::assets_changed(&paths)`: no
   reload. There `ImageStore::invalidate_files` keeps a drawn decode of
   such a path as outdated (drawn until its re-decode replaces it,

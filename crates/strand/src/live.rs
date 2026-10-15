@@ -89,10 +89,13 @@ pub enum Job {
     /// Watch these referenced files (settings files the program mounts,
     /// wallpapers and imported palette files the theme reads, the local
     /// files its `image`s, `svg`s and `lottie`s draw); `settings` reads
-    /// the settings files when they change.
+    /// the settings files when they change. `at`: when the program took
+    /// the set (a drawn file newly registered and written since was
+    /// perhaps read by render before the save: it is reported).
     Referenced {
         files: Vec<(PathBuf, Role)>,
         settings: Vec<strand_core::SettingsSources>,
+        at: std::time::SystemTime,
     },
     /// Watch these cache sources ([`cache_sources`]) and tell `changed`
     /// which cache a change under them invalidates.
@@ -407,6 +410,19 @@ fn notice_text(n: &Notice) -> String {
     }
 }
 
+/// How long before the program took its set of drawn files a newly
+/// registered one may have been written and still be reported (`Job::
+/// Referenced`): file times as coarse as two seconds (FAT) still tell.
+const ASSET_CATCH_UP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `path` was modified at or after `since` (false when it is not
+/// there or has no time).
+fn written_since(path: &Path, since: std::time::SystemTime) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t >= since)
+}
+
 fn run(
     mut loader: Loader,
     watcher: Option<Arc<Watcher>>,
@@ -441,7 +457,7 @@ fn run(
         let mut batches: Vec<FileBatch> = Vec::new();
         let mut reload: Option<bool> = None;
         let mut clients: Vec<u64> = Vec::new();
-        let mut referenced: Option<Vec<(PathBuf, Role)>> = None;
+        let mut referenced: Option<(Vec<(PathBuf, Role)>, std::time::SystemTime)> = None;
         let mut recheck = false;
         for j in queue {
             match j {
@@ -466,12 +482,16 @@ fn run(
                     reload = Some(reload.unwrap_or(false) || hard);
                     clients.extend(client);
                 }
-                Job::Referenced { files, settings } => {
+                Job::Referenced {
+                    files,
+                    settings,
+                    at,
+                } => {
                     sources = settings
                         .into_iter()
                         .map(|s| (s.path().to_path_buf(), s))
                         .collect();
-                    referenced = Some(files);
+                    referenced = Some((files, at));
                 }
                 Job::Stop => return,
             }
@@ -486,15 +506,23 @@ fn run(
         }
         let mut settings: Vec<PathBuf> = Vec::new();
         let mut theme: Vec<PathBuf> = Vec::new();
-        if let (Some(r), Some(w)) = (referenced, &watcher) {
+        let mut drawn: Vec<PathBuf> = Vec::new();
+        if let (Some((r, at)), Some(w)) = (referenced, &watcher) {
             given = r.clone();
             match w.set_referenced(with_shaders(&r, &shaders)) {
                 // A file edited after the program read it and before the
                 // watcher had it (a save right after boot or a reload)
                 // was not seen: each newly registered file is read again
                 // now that later edits are (unchanged content changes
-                // nothing; a wallpaper's stamp tells it).
+                // nothing; a wallpaper's stamp tells it). A drawn file is
+                // read by render after the program took the set: one
+                // written since then (`ASSET_CATCH_UP` earlier, for coarse
+                // file times) is reported, as its save may have landed
+                // after render read it (m6-owner-fixes review); the rest
+                // are not, so a popup opening does not read its files
+                // twice.
                 Ok(()) => {
+                    let since = at.checked_sub(ASSET_CATCH_UP).unwrap_or(at);
                     for (path, role) in &r {
                         if registered.contains(path) {
                             continue;
@@ -502,6 +530,7 @@ fn run(
                         match role {
                             Role::Settings => settings.push(path.clone()),
                             Role::Wallpaper | Role::Other => theme.push(path.clone()),
+                            Role::Asset if written_since(path, since) => drawn.push(path.clone()),
                             _ => {}
                         }
                     }
@@ -516,7 +545,6 @@ fn run(
         let mut saved: Option<Instant> = None;
         let mut notices = Vec::new();
         let mut invalid: std::collections::BTreeSet<CacheKind> = std::collections::BTreeSet::new();
-        let mut drawn: Vec<PathBuf> = Vec::new();
         for b in &batches {
             rescan |= b.rescan.is_some();
             if b.rescan == Some(strand_watch::RescanReason::Overflow) {
@@ -724,6 +752,7 @@ mod tests {
             .send(Job::Referenced {
                 files: vec![(dir.join("config/prefs.toml"), Role::Settings)],
                 settings: Vec::new(),
+                at: std::time::SystemTime::now(),
             })
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -840,6 +869,7 @@ mod tests {
         let job = |files: &Vec<(PathBuf, Role)>| Job::Referenced {
             files: files.clone(),
             settings: Vec::new(),
+            at: std::time::SystemTime::now(),
         };
         worker.jobs().send(job(&refs)).unwrap();
         let mut got = Vec::new();
@@ -1007,6 +1037,10 @@ mod tests {
         let art = dir.join("art/a.png");
         std::fs::write(&dot, "<svg/>").unwrap();
         std::fs::write(&art, b"png").unwrap();
+        // Written long before the program took them: not read again as
+        // they are registered.
+        backdate(&dot);
+        backdate(&art);
         let (out, rx) = calloop::channel::channel::<FromWorker>();
         let (worker, _boot) = Worker::spawn(&config, None, out).unwrap();
         let (tx, saved) = std::sync::mpsc::channel::<Vec<PathBuf>>();
@@ -1020,6 +1054,7 @@ mod tests {
         let refer = |files: Vec<PathBuf>| Job::Referenced {
             files: files.into_iter().map(|f| (f, Role::Asset)).collect(),
             settings: Vec::new(),
+            at: std::time::SystemTime::now(),
         };
         worker
             .jobs()
@@ -1049,6 +1084,68 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(saved.try_recv().is_err(), "{dot:?} is not watched");
         assert!(rx.try_recv().is_err(), "no reload, settings or theme read");
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sets `path`'s modified time an hour back.
+    fn backdate(path: &Path) {
+        let hour = std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - hour)
+            .unwrap();
+    }
+
+    /// (m6-owner-fixes review) A drawn file written after the program
+    /// took the set that names it, before the watcher had it (a click
+    /// shows a screenshot a command is still writing), is reported as
+    /// it is registered, as render may have read it before the save;
+    /// one written long before is not read again.
+    #[test]
+    fn a_drawn_file_written_before_its_watch_is_reported() {
+        let dir = std::env::temp_dir().join(format!(
+            "strand-live-asset-catch-up-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("shell.strand"), "").unwrap();
+        let old = dir.join("old.png");
+        let shot = dir.join("shot.png");
+        std::fs::write(&old, b"png").unwrap();
+        backdate(&old);
+        let (out, _rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&config, None, out).unwrap();
+        let (tx, saved) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+        let tx = std::sync::Mutex::new(tx);
+        worker
+            .jobs()
+            .send(Job::Assets(AssetSink(Box::new(move |p| {
+                let _ = tx.lock().map(|t| t.send(p));
+            }))))
+            .unwrap();
+        // The program takes the set; the screenshot lands before the
+        // worker registers it.
+        let at = std::time::SystemTime::now();
+        std::fs::write(&shot, b"png").unwrap();
+        worker
+            .jobs()
+            .send(Job::Referenced {
+                files: vec![(old.clone(), Role::Asset), (shot.clone(), Role::Asset)],
+                settings: Vec::new(),
+                at,
+            })
+            .unwrap();
+        let got = saved
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the screenshot is reported");
+        assert_eq!(got, vec![shot.clone()]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(saved.try_recv().is_err(), "the old file is not read again");
         assert!(worker.join().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
