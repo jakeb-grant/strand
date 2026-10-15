@@ -2005,10 +2005,12 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   repaints its last digit), and a node's border along its box keeps
   its ring's strips (`NodeRecord::ring`), so a change of the border
   alone (a conic turning with `t`) damages only the ring; a box drawing
-  only solid fills, borders and rims, untransformed and without effects,
-  and every node under a clipping box keep their geometry
+  only solid fills, borders and rims, untransformed and without effects
+  or an inner shadow, and every node under a clipping box keep their
+  geometry
   (`NodeRecord::geom`: the rounded boxes of the node and of the clips it
-  is drawn through, the rest hashed apart), so a box or clip that only
+  is drawn through, the rest hashed apart; a mask's frame is hashed into
+  its children's, as the mask is drawn across it), so a box or clip that only
   moves, resizes or rounds its corners damages along its edges and
   corners (`RoundBox::changed`), not its whole area and its content's
   (a card swelling under its content); a gradient is cached

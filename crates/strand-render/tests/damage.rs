@@ -419,6 +419,134 @@ fn a_swelling_clip_repaints_only_its_edges() {
     }
 }
 
+/// A box `card` (the bar's only child, given `props`) painted into one
+/// buffer through each of `steps` (props set on it), every partial
+/// repaint equal to a full one; a child box of `child` (width, height)
+/// in it stays put.
+fn card_steps_match_full_repaint(
+    props: Vec<(Prop, PropValue)>,
+    child: (f32, f32),
+    steps: &[Vec<(Prop, PropValue)>],
+    what: &str,
+) {
+    let scene = |over: &[(Prop, PropValue)]| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut card = props.clone();
+        for (p, v) in over {
+            card.retain(|(q, _)| q != p);
+            card.push((*p, v.clone()));
+        }
+        let card = b.node(NodeKind::Box, Some(root), card);
+        b.node(
+            NodeKind::Box,
+            Some(card),
+            vec![
+                (Prop::X, num(20.0)),
+                (Prop::Y, num(10.0)),
+                (Prop::Width, num(child.0)),
+                (Prop::Height, num(child.1)),
+                (Prop::Bg, color("#89b4fa")),
+            ],
+        );
+        b.diff
+    };
+    let (mut r, mut buf) = fresh(scene(&[]), 300, 130, Scale::ONE);
+    let card = r.tree().roots()[0];
+    let card = r.tree().get(card).unwrap().children[0];
+    let mut now: Vec<(Prop, PropValue)> = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let mut d = SceneDiff::new();
+        for (p, v) in step {
+            d.set(card, *p, v.clone());
+            now.retain(|(q, _)| q != p);
+            now.push((*p, v.clone()));
+        }
+        r.apply(d);
+        buf.paint(&mut r, BAR, 1);
+        let (_, full) = fresh(scene(&now), 300, 130, Scale::ONE);
+        assert!(
+            buf.pixels == full.pixels,
+            "{what} step {i}: partial differs from full"
+        );
+    }
+}
+
+fn inset(x: f32, y: f32, spread: f32, c: &str) -> PropValue {
+    PropValue::Shadow(vec![Shadow {
+        x,
+        y,
+        blur: 0.0,
+        spread,
+        color: hex(c),
+    }])
+}
+
+/// (m6-owner-fixes review) A box with a hard `inner_shadow` (blur 0) is
+/// not a plain box for damage (`NodeRecord::geom`): its ring sits inside
+/// the box, past the edge band a moving edge repaints, and its offset
+/// and spread are not its box's geometry. Resizing it, or changing only
+/// the shadow, repaints as a full repaint draws.
+#[test]
+fn a_hard_inner_shadow_repaints_with_its_box() {
+    let base = vec![
+        (Prop::Width, num(120.0)),
+        (Prop::Height, num(60.0)),
+        (Prop::Bg, color("#333333")),
+        (Prop::InnerShadow, inset(0.0, 0.0, 3.0, "#ffffff")),
+    ];
+    card_steps_match_full_repaint(
+        base.clone(),
+        (30.0, 20.0),
+        &[
+            vec![(Prop::Width, num(160.0))],
+            vec![(Prop::Width, num(200.0))],
+            vec![(Prop::Width, num(140.0))],
+        ],
+        "resized",
+    );
+    card_steps_match_full_repaint(
+        base,
+        (30.0, 20.0),
+        &[
+            vec![(Prop::InnerShadow, inset(0.0, 2.0, 0.0, "#ffffff"))],
+            vec![(Prop::InnerShadow, inset(4.0, 0.0, 6.0, "#ffffff"))],
+        ],
+        "reshadowed",
+    );
+}
+
+/// (m6-owner-fixes review) A clipping box with a `mask:` draws its mask
+/// across its own frame, so its children are repainted where the mask
+/// moved when it resizes, not only along the clip's edges.
+#[test]
+fn a_masked_clip_repaints_its_mask_when_it_resizes() {
+    let fade = PropValue::Call {
+        name: "fade".into(),
+        args: vec![PropValue::Keyword("bottom".into()), num(30.0)],
+    };
+    for clip in [true, false] {
+        let mut base = vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Mask, fade.clone()),
+        ];
+        if clip {
+            base.push((Prop::Clip, PropValue::Bool(true)));
+        }
+        card_steps_match_full_repaint(
+            base,
+            (240.0, 110.0),
+            &[
+                vec![(Prop::Height, num(80.0))],
+                vec![(Prop::Height, num(60.0))],
+                vec![(Prop::Height, num(100.0))],
+            ],
+            if clip { "clipped" } else { "unclipped" },
+        );
+    }
+}
+
 /// Random edits to a small scene, painted incrementally into rotating
 /// buffers, always match a from-scratch render.
 #[test]

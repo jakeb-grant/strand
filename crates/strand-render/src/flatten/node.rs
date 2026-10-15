@@ -1363,6 +1363,10 @@ impl<'a> Flattener<'a> {
             && transition_mask.is_none()
             && layer_group.is_none()
             && get(Prop::Stroke).is_none()
+            // An inner shadow's ring lies inside the box, past the edge
+            // band a moving edge repaints, and its offset and spread are
+            // not the box's geometry (m6-owner-fixes review).
+            && get(Prop::InnerShadow).is_none()
             && self.fillet.is_none_or(|f| f.node != node.id)
         {
             let mut h = DefaultHasher::new();
@@ -1499,6 +1503,20 @@ impl<'a> Flattener<'a> {
             crate::layers::hash_effects(&mut ctx, &l.effects);
         }
         mask_hash.hash(&mut ctx);
+        // A mask (`mask:`, or a transition's) is drawn across the node's
+        // frame, so where it lies is part of how every child draws: a
+        // resized masked box repaints its children whole, not only along
+        // a clip's edges (m6-owner-fixes review).
+        let masked = mask_group.is_some()
+            || layer_group.is_some_and(|i| {
+                matches!(&self.out.items[i].item, Item::PushLayer(l)
+                    if l.effects.iter().any(|e| matches!(e, strand_scene::Effect::Mask(_))))
+            });
+        if masked {
+            [frame.x0, frame.y0, frame.x1, frame.y1]
+                .map(f64::to_bits)
+                .hash(&mut ctx);
+        }
         let mut child_clip = inh.clip;
         let mut clip_group = None;
         let mut child_clips = inh.clips.clone();
