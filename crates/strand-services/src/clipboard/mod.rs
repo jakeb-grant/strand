@@ -134,19 +134,22 @@ impl ClipboardAction {
 #[service(name = "clipboard", action = ClipboardAction, refused = refused, thread)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Clipboard {
-    /// The compositor offers data control: false without it, when
-    /// `history` stays as it was and `copy` fails with `clipboard.failed`.
+    /// The compositor offers data control: false without it, when `history`
+    /// stays as it was and `copy` fails with `clipboard.failed` (an `input`
+    /// still copies and pastes).
     pub available: bool,
-    /// The selection's text, or "" when it holds none (empty, an image, or
-    /// a password manager's secret, which is never read).
+    /// The selection's text, or "" when it holds none (empty, an image, or a
+    /// password manager's secret, which is never read).
     pub text: String,
     /// The selection is an image.
     pub image: bool,
-    /// What was copied, newest first, each once, keyed by `id`. Recorded
-    /// while a reader reads it.
+    /// What was copied, newest first, each once: texts and images, the newest
+    /// 100 within 64 MiB, kept across restarts. Recorded while a program
+    /// reads it anywhere (see spec.md 8.1); a secret never enters it.
     #[store(keyed, stream)]
     pub history: Vec<ClipboardEntry>,
-    /// An action failed: `on clipboard.failed(action, error) { … }`.
+    /// An action failed (no data control, an image file gone):
+    /// `on clipboard.failed(action, error) { … }`.
     pub failed: Event<(String, String)>,
 }
 

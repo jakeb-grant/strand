@@ -837,6 +837,43 @@ provisional service outputs {
   event failed(action: text, error: text)
 }
 
+/// One entry of the clipboard's history, keyed by `id`.
+provisional record ClipboardEntry key id {
+  /// Its identity, kept while it is in the history.
+  id: int
+  /// Its text, or "" for an image.
+  text: text
+  /// An image's file, or null for a text.
+  image: text?
+  /// Its size in bytes.
+  size: int
+  /// When it was last copied.
+  time: Date
+  /// Makes it the selection again.
+  action copy()
+  /// Removes it from the history.
+  action remove()
+}
+
+/// The clipboard: the selection, copies and their history, from data
+/// control.
+provisional service clipboard {
+  /// The compositor offers data control.
+  available: bool
+  /// The selection's text, or "".
+  text: text
+  /// The selection is an image.
+  image: bool
+  /// What was copied, newest first.
+  history: [ClipboardEntry]
+  /// Copies `value` as text.
+  action copy(value: text)
+  /// Empties the history.
+  action clear()
+  /// An action failed: `on clipboard.failed(action, error) { … }`.
+  event failed(action: text, error: text)
+}
+
 // ---------------------------------------------------------------------------
 // Functions. Overloads are tried in order; the first overload's doc
 // documents the name.
@@ -1320,7 +1357,11 @@ element slider: node {
   track: paint
   flags leaf
 }
-/// A text field: `input { text: <-> query }`.
+/// A text field: `input { text: <-> query }`. Focused, it copies its
+/// selection with Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or
+/// Shift+Delete and pastes at the caret with Ctrl+V or Shift+Insert,
+/// through the compositor's clipboard (a `password` copies nothing; a
+/// paste becomes one line).
 element input: node {
   /// Its text, bound two-way.
   text: text <->

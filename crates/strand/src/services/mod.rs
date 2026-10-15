@@ -1064,6 +1064,61 @@ mod tests {
         assert_eq!(shell.scene.texts(), ["down", "lock;", "off"]);
     }
 
+    /// (m6-service-gaps, spec.md 8.1) A program that reads
+    /// `clipboard.history` anywhere, here only in a closed popup (through
+    /// a `let`), holds the service and the field from its top level, so
+    /// copies made while the popup is closed are recorded; one reading
+    /// only `clipboard.text` in a closed popup holds nothing, and a
+    /// config's own `service clipboard` shadows the rule.
+    #[test]
+    fn a_closed_popup_reading_clipboard_history_holds_it_from_the_top_level() {
+        let dir = tempfile::tempdir().unwrap();
+        strand_services::clipboard::configure(Some(strand_services::clipboard::Config {
+            target: strand_services::wm::WaylandTarget::Socket(dir.path().join("no-display")),
+            state_dir: dir.path().to_path_buf(),
+        }));
+        let history = <strand_services::clipboard::Clipboard as strand_services::Store>::FIELDS
+            .iter()
+            .position(|f| f.name == "history")
+            .unwrap();
+        let shell = Shell::boot(
+            "export state open = false\n\
+             let recent = clipboard.history\n\
+             bar B {\n\
+             \x20 text \"x\"\n\
+             \x20 popup { open: <-> open; for e in recent { text e.text } }\n\
+             }\n",
+        );
+        let b = shell.real.builtin.clone();
+        assert_eq!(b.clipboard.readers(), 1, "held while the popup is closed");
+        assert_eq!(b.clipboard.field_readers(history), 1);
+        drop(shell);
+        let shell = Shell::boot(
+            "export state open = false\n\
+             bar B {\n\
+             \x20 text \"x\"\n\
+             \x20 popup { open: <-> open; text clipboard.text }\n\
+             }\n",
+        );
+        let b = shell.real.builtin.clone();
+        assert_eq!(b.clipboard.readers(), 0, "the text is read only when shown");
+        assert_eq!(b.clipboard.field_readers(history), 0);
+        drop(shell);
+        let shell = Shell::boot(
+            "service clipboard from file \"/nonexistent/c.json\" { history: int }\n\
+             export state open = false\n\
+             bar B {\n\
+             \x20 text \"x\"\n\
+             \x20 popup { open: <-> open; text join(\" \", clipboard.history) }\n\
+             }\n",
+        );
+        let b = shell.real.builtin.clone();
+        assert_eq!(b.clipboard.readers(), 0, "a config's service shadows it");
+        assert_eq!(b.clipboard.field_readers(history), 0);
+        drop(shell);
+        strand_services::clipboard::configure(None);
+    }
+
     /// Only the services a config reads start (the compiler collects the
     /// service paths each scope reads; a scope acquires those): a config
     /// that reads `cpu` starts it and nothing else, and its binding shows

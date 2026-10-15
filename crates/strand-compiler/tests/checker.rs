@@ -1312,6 +1312,41 @@ fn outputs_is_a_display_settings_page() {
     );
 }
 
+/// (m6-service-gaps, owner-testing gap 30) A clipboard history popup:
+/// its entries drawn as text or image, copied again and removed by item
+/// actions, the service's own `copy` and `clear` from handlers, its
+/// failure as an event, and `image` as a condition.
+#[test]
+fn clipboard_is_a_history_popup() {
+    assert_eq!(
+        codes(
+            "bar B {\n  state ip = \"10.0.0.1\"\n  state why = \"\"\n  \
+             on clipboard.failed(action, error) { why = join(\" \", action, error) }\n  \
+             text why\n  \
+             text \"Copy\" { on click { clipboard.copy(ip) } }\n  \
+             if clipboard.available { text clipboard.text }\n  \
+             if clipboard.image { icon \"image\" }\n  \
+             popup {\n    \
+             text \"Clear\" { on click { clipboard.clear() } }\n    \
+             for e in clipboard.history {\n      \
+             row {\n        \
+             image e.image ?? \"\"\n        \
+             text e.text\n        \
+             text join(\" \", e.size, e.time.hour, e.id)\n        \
+             on click { e.copy() }\n        \
+             on secondary { e.remove() }\n      \
+             }\n    \
+             }\n  \
+             }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { text \"x\" { opacity: clipboard.copy(\"x\") } }\n"),
+        ["check::action_in_binding"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the
