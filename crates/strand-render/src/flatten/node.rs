@@ -23,9 +23,9 @@ use super::text::{
 };
 use super::widget::{CaretAt, WidgetCtx, caret_x};
 use super::{
-    DisplayItem, FillShape, Flattener, GlyphCells, HitBox, Inherited, Item, MAX_BLUR, NodeRecord,
-    RingCells, TOLERANCE, angle, default_color, default_font, finite, finite_or_zero, length,
-    map_rect, number,
+    DisplayItem, FillShape, Flattener, Geometry, GlyphCells, HitBox, Inherited, Item, MAX_BLUR,
+    NodeRecord, RingCells, RoundBox, TOLERANCE, angle, default_color, default_font, finite,
+    finite_or_zero, length, map_rect, number,
 };
 use crate::tree::Node;
 
@@ -185,8 +185,21 @@ impl<'a> Flattener<'a> {
         // it needs is kept (`crate::effects::transition`).
         let transition_mask = self.anim.reveal(self.tree, node, &scope);
         self.anim.stagger(self.tree, node, &scope);
+        // The paint offsets as written, and as their springs have them.
+        let offsets = |props: &[(Prop, Cow<'a, PropValue>)]| {
+            let of = |p: Prop, along: f32| {
+                length(
+                    props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref()),
+                    along,
+                )
+                .unwrap_or(0.0)
+            };
+            (of(Prop::X, parent.w), of(Prop::Y, parent.h))
+        };
+        let written = offsets(&props);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
+        let sprung = offsets(&props);
         let play = self
             .anim
             .keyframes(node, &mut props, inherited, Some(laid), parent);
@@ -274,10 +287,27 @@ impl<'a> Flattener<'a> {
         // Geometry: the laid-out box, moved by the paint offsets (`x`,
         // `y`, and a FLIP glide) of this node and its ancestors. A
         // percentage is of the parent's box, as CSS insets are.
+        // A paint offset in flight is drawn whole logical pixels from
+        // where it rests, as layout places boxes: a box whose offset
+        // springs with its size (centred as it grows) keeps its content
+        // still, its content moves as one, and a spring's tail between
+        // pixels draws its rest (never a pixel off for a frame as it
+        // settles). A drag follows the pointer as it is.
+        let whole = |d: f32| d.round() - d;
         let glide = self.anim.offset(node.id);
+        let glide = if self.anim.lifted(node.id) {
+            glide
+        } else {
+            (glide.0 + whole(glide.0), glide.1 + whole(glide.1))
+        };
+        let settle = |p: Prop, d: f32| if get(p).is_some() { whole(d) } else { 0.0 };
         let mut own = (
-            length(get(Prop::X), parent.w).unwrap_or(0.0) + glide.0,
-            length(get(Prop::Y), parent.h).unwrap_or(0.0) + glide.1,
+            length(get(Prop::X), parent.w).unwrap_or(0.0)
+                + settle(Prop::X, sprung.0 - written.0)
+                + glide.0,
+            length(get(Prop::Y), parent.h).unwrap_or(0.0)
+                + settle(Prop::Y, sprung.1 - written.1)
+                + glide.1,
         );
         if let Some(m) = shared {
             own = (own.0 + m[0], own.1 + m[1]);
@@ -401,7 +431,9 @@ impl<'a> Flattener<'a> {
                     });
                 (None, placed)
             } else {
-                place_text(shaped, self.scale, content, align)
+                let (fit, placed, clip) = place_text(shaped, self.scale, content, align);
+                clip_text = clip;
+                (fit, placed)
             };
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
@@ -535,6 +567,8 @@ impl<'a> Flattener<'a> {
             (self.marker(push), pop)
         });
         let mask_hash = transition_mask.map(|m| format!("{m:?}"));
+        // What the node itself draws starts here (`NodeRecord::geom`).
+        let own_start = self.out.items.len();
         // Widgets' default radius: `$radius.md` for buttons and segmented
         // controls, a pill for meters.
         let default_radius = match node.kind {
@@ -1314,6 +1348,64 @@ impl<'a> Flattener<'a> {
         let input_done = inh.input_done || !root;
         // The border, hashed apart, still counts in the whole and in what
         // the glyphs leave out.
+        // A box that draws only itself (a solid fill, border and rim,
+        // untransformed, no effects): its geometry apart from the rest.
+        let own = if has_area
+            && !themed
+            && reach == 0
+            && self.xform == kurbo::Affine::IDENTITY
+            && outline.is_none()
+            && !squircle
+            && transition_mask.is_none()
+            && layer_group.is_none()
+            && get(Prop::Stroke).is_none()
+            && self.fillet.is_none_or(|f| f.node != node.id)
+        {
+            let mut h = DefaultHasher::new();
+            (inh.ctx, node.kind, node.epoch).hash(&mut h);
+            hash_f32(&mut h, opacity);
+            format!("{:?}{:?}", get(Prop::Border), get(Prop::Rim)).hash(&mut h);
+            let plain = self.out.items[own_start..].iter().all(|i| {
+                let (tag, paint) = match &i.item {
+                    Item::Fill { paint, .. } => (0u8, Some(paint)),
+                    Item::Border { paint, .. } => (1, Some(paint)),
+                    Item::PushClip(_) => (2, None),
+                    Item::PopClip => (3, None),
+                    _ => return false,
+                };
+                tag.hash(&mut h);
+                match paint {
+                    Some(Paint::Solid(c)) => hash_color(&mut h, c),
+                    Some(_) => return false,
+                    None => {}
+                }
+                true
+            });
+            let border = match get(Prop::Border) {
+                Some(PropValue::Border(Border { width, .. })) => finite(*width)
+                    .filter(|w| *w > 0.0)
+                    .map_or(0.0, |w| (w as f64 * s).round().max(1.0)),
+                _ => 0.0,
+            };
+            let rim = if get(Prop::Rim).is_some() {
+                s.round().max(1.0)
+            } else {
+                0.0
+            };
+            plain.then(|| {
+                let edge = border.max(rim).ceil() as u32 + 1;
+                (round_box(phys, &r, edge), h.finish())
+            })
+        } else {
+            None
+        };
+        // Clips whose geometry decides damage (`NodeRecord::geom`) cannot
+        // be told apart under effects that spread pixels.
+        if reach > 0 {
+            for c in inh.clips.iter() {
+                (c.rect, c.radii).hash(&mut sig);
+            }
+        }
         let rest = sig.finish();
         let whole = match ring {
             Some((r, _)) => {
@@ -1338,6 +1430,12 @@ impl<'a> Flattener<'a> {
                     })
                 }),
                 ring: ring.map(|(_, cells)| Arc::new(RingCells { rest, cells })),
+                geom: Some(Arc::new(Geometry {
+                    rest: own.map_or(whole, |(_, h)| h),
+                    ink,
+                    own: own.map(|(b, _)| b),
+                    clips: inh.clips.clone(),
+                })),
             },
         );
 
@@ -1398,8 +1496,19 @@ impl<'a> Flattener<'a> {
         mask_hash.hash(&mut ctx);
         let mut child_clip = inh.clip;
         let mut clip_group = None;
+        let mut child_clips = inh.clips.clone();
         if clips {
-            hash_path(&mut ctx, &box_path);
+            // An untransformed rounded clip's geometry goes in the records
+            // below (`NodeRecord::geom`), so its moving edge damages only
+            // what it uncovers or covers.
+            if self.xform == kurbo::Affine::IDENTITY && outline.is_none() && !squircle {
+                (2u8, node.id).hash(&mut ctx);
+                let mut all = inh.clips.to_vec();
+                all.push(round_box(phys, &r, 1));
+                child_clips = Arc::from(all);
+            } else {
+                hash_path(&mut ctx, &box_path);
+            }
             child_clip = map_rect(self.xform, phys)
                 .intersect(inh.clip)
                 .unwrap_or_default();
@@ -1439,6 +1548,7 @@ impl<'a> Flattener<'a> {
             timed: timed_scope,
             reach,
             input_done,
+            clips: child_clips,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
@@ -1574,6 +1684,7 @@ impl<'a> Flattener<'a> {
             (rec.sig, key).hash(&mut h);
             rec.sig = h.finish();
             rec.bounds = rec.bounds.union(bounds.intersect(clip).unwrap_or_default());
+            rec.drop_geometry();
         }
     }
 
@@ -1711,5 +1822,15 @@ impl<'a> Flattener<'a> {
             ));
         }
         parts
+    }
+}
+
+/// `phys` with the corners `r` (buffer pixels) and `edge`, as damage
+/// diffing compares boxes (`NodeRecord::geom`).
+fn round_box(phys: Rect, r: &RoundedRectRadii, edge: u32) -> RoundBox {
+    RoundBox {
+        rect: phys,
+        radii: [r.top_left, r.top_right, r.bottom_right, r.bottom_left].map(f64::to_bits),
+        edge,
     }
 }

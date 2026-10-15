@@ -24,12 +24,14 @@ use crate::vm::value::NodeState;
 /// A fragment id.
 pub type FragId = usize;
 
-/// What a watched prop memo produces: the value and which source (base
-/// or a `when`, by index) gave it, for its `~` transition.
+/// What a watched prop memo produces: the value, which source (base
+/// or a `when`, by index) gave it, and that source's `~` transition as
+/// evaluated with the value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropOut {
     pub value: PropValue,
     pub source: usize,
+    pub transition: Transition,
 }
 
 /// A watched binding.
@@ -37,7 +39,6 @@ pub(crate) struct Binding {
     pub scene: NodeId,
     pub prop: Prop,
     pub memo: Memo<PropOut>,
-    pub transitions: Rc<Vec<Transition>>,
     pub site: Rc<super::Site>,
     /// (M6) Whether its value read a `box` render had not reported yet.
     pub boot: Rc<BootRead>,

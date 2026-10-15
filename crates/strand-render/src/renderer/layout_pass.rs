@@ -2,7 +2,7 @@
 //! springs and FLIP glides, layout facts for logic, and flattening.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_scene::Curve;
 use strand_scene::{NodeId, Prop, Scale, SurfaceId, TokenScope};
@@ -83,9 +83,17 @@ impl Renderer {
     /// again until text is stable.
     pub(super) fn flatten_surface(&mut self, id: SurfaceId) -> Flattened {
         let mut stable = None;
+        // One wait a frame, however many passes it takes: text mounted by
+        // a pass (uncovered as a card grows) waits only for what is left
+        // of it, so a slow worker costs a frame the wait once, not once
+        // a pass. (A first frame is held for all of its text anyway, see
+        // `frame_deadline`.)
+        let deadline = Instant::now() + self.estimate_wait;
         for _ in 0..6 {
             let flat = self.flatten_now(id);
-            let text = self.request_text(&flat.text);
+            // New text the worker has not shaped yet was laid out by an
+            // estimate: wait briefly for it and lay out again.
+            let text = self.request_text(&flat.text) | self.await_unmeasured(&flat.text, deadline);
             // Decoded inline (offline): draw them at once too.
             // While a size springs here, images at a new size draw their
             // last decode scaled and are decoded once it rests.
@@ -243,6 +251,8 @@ impl Renderer {
         }
         let sized = self.anim.size_work(&self.tree, root);
         let mut sizes = rest.clone();
+        // The shadows' reach where size springs that start here land.
+        let mut rest_reach = None;
         let mut boxes = if sized && !full && !self.anim.size_pending(&self.tree, root) {
             // Only springs moved: their targets are the ones learnt when
             // they started (nothing layout reads changed since), so one
@@ -251,6 +261,12 @@ impl Renderer {
             self.run_layout(root, RootSize::Fixed(frame), &info, &sizes)
         } else if sized {
             let at_rest = self.run_layout(root, RootSize::Fixed(frame), &info, &rest);
+            rest_reach = Some(crate::fillet::grow(
+                &self.tree,
+                &at_rest,
+                root,
+                at_rest.overhang,
+            ));
             let old_rects = old.as_ref().map(|b| &b.rects);
             self.anim
                 .start_sizes(&self.tree, root, &at_rest.rects, old_rects, false);
@@ -267,7 +283,22 @@ impl Renderer {
             && let Some(mut spec) = self.specs.get(&root).cloned()
             && spec.open
         {
-            let grown = crate::fillet::grow(&self.tree, &boxes, root, boxes.overhang);
+            let mut grown = crate::fillet::grow(&self.tree, &boxes, root, boxes.overhang);
+            // (owner-testing.md bug 9) While a size springs here, the
+            // reach is the larger of where it started and where it lands,
+            // taken as it starts and kept until it settles: following the
+            // spring would resize the buffer (and reconfigure or remake a
+            // popup) every frame. What an overshoot carries past it is
+            // clipped.
+            if self.anim.sizes_moving(&self.tree, root) {
+                let held = self.held_reach.entry(root).or_insert(grown);
+                if let Some(r) = rest_reach {
+                    *held = max_insets(*held, r);
+                }
+                grown = *held;
+            } else {
+                self.held_reach.remove(&root);
+            }
             let o = crate::fillet::flush(
                 &self.tree,
                 root,
@@ -310,7 +341,10 @@ impl Renderer {
                 );
             }
         }
-        let moving = self.anim.sizes_moving(&self.tree, root);
+        // Springs a clockless preview left to start lay out again on the
+        // first frame painted.
+        let moving =
+            self.anim.sizes_moving(&self.tree, root) || self.anim.size_pending(&self.tree, root);
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.boxes = Some(boxes);
             s.layout_dirty = false;
@@ -420,5 +454,15 @@ pub(super) fn glide_moved(
             }
             stack.push((*c, acc_c));
         }
+    }
+}
+
+/// The larger of `a` and `b` on each side.
+fn max_insets(a: strand_scene::Insets, b: strand_scene::Insets) -> strand_scene::Insets {
+    strand_scene::Insets {
+        top: a.top.max(b.top),
+        right: a.right.max(b.right),
+        bottom: a.bottom.max(b.bottom),
+        left: a.left.max(b.left),
     }
 }

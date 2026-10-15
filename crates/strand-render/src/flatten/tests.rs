@@ -83,7 +83,7 @@ fn text_is_aligned_in_its_box() {
         (TextAlign::Center, (100.0 - w) / 2.0),
         (TextAlign::End, 100.0 - w),
     ] {
-        let (fit, placed) = place_text(&shaped, Scale::ONE, rect, align);
+        let (fit, placed, _) = place_text(&shaped, Scale::ONE, rect, align);
         let (_, dx, dy) = placed.unwrap();
         assert_eq!(fit, None);
         assert!((dx - want).abs() < 1e-3, "{align:?}: {dx} vs {want}");
@@ -91,9 +91,10 @@ fn text_is_aligned_in_its_box() {
         assert!((dy - want_dy).abs() < 1e-3);
     }
     let narrow = LogicalRect::new(0.0, 0.0, (w / 2.0).round(), l.size.h);
-    let (fit, placed) = place_text(&shaped, Scale::ONE, narrow, TextAlign::End);
+    let (fit, placed, clip) = place_text(&shaped, Scale::ONE, narrow, TextAlign::End);
     assert_eq!(fit, Some((w / 2.0).round()));
     assert_eq!(placed.unwrap().1, 0.0, "the stand-in is not aligned");
+    assert!(clip, "the unbounded stand-in is clipped to the box");
 }
 
 #[test]

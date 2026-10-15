@@ -70,6 +70,17 @@ impl Animator {
         partial: bool,
     ) {
         let snapping = self.snapping();
+        if snapping && !self.commit && !self.reduced {
+            // A preview with no clock yet (a surface just attached, laid
+            // out by `configure_surface` before its first frame) is laid
+            // out at rest: size springs in flight, and those waiting to
+            // start (a size set, an `enter` pose), are left for the first
+            // frame painted. Dropping them here snapped a card's size to
+            // its target when its popup was made again mid-spring
+            // (owner-testing.md bug 9), and lost an `enter` size of
+            // content mounted as its popup opened (bug 11).
+            return;
+        }
         let ids: Vec<NodeId> = self
             .nodes
             .iter()

@@ -5,10 +5,10 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use strand_scene::{Damage, NodeId, PaintTarget, Painter, SurfaceId};
+use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
 
 use super::{DAMAGE_HISTORY, Renderer};
-use crate::flatten::NodeRecord;
+use crate::flatten::{NodeRecord, RoundBox};
 
 impl Renderer {
     /// How long a newly configured surface holds its first frame for text
@@ -21,6 +21,27 @@ impl Renderer {
     /// glyphs to show yet ([`NEW_TEXT_WAIT`] by default; zero: never).
     pub fn set_new_text_wait(&mut self, wait: Duration) {
         self.new_text_wait = wait;
+    }
+
+    /// How long laying out waits for the text worker to shape new text
+    /// ([`ESTIMATE_WAIT`] by default; zero: never, it is laid out by an
+    /// estimate until it arrives).
+    ///
+    /// [`ESTIMATE_WAIT`]: super::ESTIMATE_WAIT
+    pub fn set_estimate_wait(&mut self, wait: Duration) {
+        self.estimate_wait = wait;
+    }
+
+    /// Texts laying out has waited for the worker to shape so far (see
+    /// [`Renderer::set_estimate_wait`]).
+    pub fn estimate_waits(&self) -> u64 {
+        self.estimate_waits
+    }
+
+    /// How long laying out has waited for the worker so far (at most
+    /// the estimate wait a frame).
+    pub fn estimate_waited(&self) -> Duration {
+        self.estimate_waited
     }
 
     /// How recently a surface must have painted to count as in motion,
@@ -72,6 +93,11 @@ impl Renderer {
     /// buffer size).
     pub fn last_raster_pixels(&self) -> u64 {
         self.raster.rasterised()
+    }
+
+    /// Where the last `paint` spent its time.
+    pub fn last_paint_times(&self) -> PaintTimes {
+        self.paint_times
     }
 
     /// The damage the last `paint` returned for `surface`.
@@ -147,23 +173,34 @@ pub(super) fn diff_records(
     for (id, n) in new {
         match old.get(id) {
             Some(o) if o == n => {}
-            // Only its glyphs changed: the glyphs that differ, where
-            // they were and where they are.
-            Some(o) => match (&o.glyphs, &n.glyphs, &o.ring, &n.ring) {
-                (Some(a), Some(b), ..) if a.rest == b.rest => glyph_damage(&a.cells, &b.cells, d),
-                // Only its border changed, in the same place: its ring.
-                (_, _, Some(a), Some(b))
-                    if a.rest == b.rest && a.cells == b.cells && o.bounds == n.bounds =>
-                {
-                    for c in b.cells {
-                        d.add(c);
+            Some(o) => {
+                // Glyphs and rings are compared under the same clips.
+                let clipped_alike =
+                    o.geom.as_ref().map(|g| &g.clips) == n.geom.as_ref().map(|g| &g.clips);
+                match (&o.glyphs, &n.glyphs, &o.ring, &n.ring) {
+                    // Only its glyphs changed: the glyphs that differ, where
+                    // they were and where they are.
+                    (Some(a), Some(b), ..) if clipped_alike && a.rest == b.rest => {
+                        glyph_damage(&a.cells, &b.cells, d)
+                    }
+                    // Only its border changed, in the same place: its ring.
+                    (_, _, Some(a), Some(b))
+                        if clipped_alike
+                            && a.rest == b.rest
+                            && a.cells == b.cells
+                            && o.bounds == n.bounds =>
+                    {
+                        for c in b.cells {
+                            d.add(c);
+                        }
+                    }
+                    _ if geometry_damage(o, n, d) => {}
+                    _ => {
+                        d.add(o.bounds);
+                        d.add(n.bounds);
                     }
                 }
-                _ => {
-                    d.add(o.bounds);
-                    d.add(n.bounds);
-                }
-            },
+            }
             None => d.add(n.bounds),
         }
     }
@@ -174,6 +211,52 @@ pub(super) fn diff_records(
     }
 }
 
+/// Where a CPU paint spent its time ([`Renderer::last_paint_times`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintTimes {
+    /// Laying out and flattening (zero when it reused the scene
+    /// flattened before), waiting for the text worker included.
+    pub flatten: Duration,
+    /// Of that, waiting for the text worker to shape new text.
+    pub text_wait: Duration,
+    /// Drawing.
+    pub raster: Duration,
+}
+
+/// Only where it is changed (`NodeRecord::geom`): its own box moved or
+/// resized, or a clip above it did, and it draws the same. The pixels
+/// along the boxes' edges and corners that changed, where it was and
+/// where it is. False if more changed.
+fn geometry_damage(o: &NodeRecord, n: &NodeRecord, d: &mut Damage) -> bool {
+    let (Some(a), Some(b)) = (&o.geom, &n.geom) else {
+        return false;
+    };
+    if a.rest != b.rest || a.clips.len() != b.clips.len() {
+        return false;
+    }
+    let mut changed = Vec::new();
+    let mut add = |r: Rect| changed.push(r);
+    match (a.own, b.own) {
+        (Some(x), Some(y)) if x != y => RoundBox::changed(x, y, &mut add),
+        (Some(_), Some(_)) => {}
+        (None, None) if a.ink == b.ink => {}
+        _ => return false,
+    }
+    for (x, y) in a.clips.iter().zip(b.clips.iter()) {
+        if x != y {
+            RoundBox::changed(*x, *y, &mut add);
+        }
+    }
+    for r in changed {
+        for at in [o.bounds, n.bounds] {
+            if let Some(c) = r.intersect(at) {
+                d.add(c);
+            }
+        }
+    }
+    true
+}
+
 impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let started = Instant::now();
@@ -181,6 +264,7 @@ impl Painter for Renderer {
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.posed = s.cache.as_ref().and_then(|f| f.pose);
         }
+        self.pause_holds(surface, started);
         // (M5) `strand report`'s frame timing (`summary.rs`). A frame
         // sent to the GPU is timed when the GPU thread's reply comes.
         #[cfg(feature = "gpu")]
@@ -318,9 +402,16 @@ impl Renderer {
             self.sample_tokens(target.time, true);
         }
         self.anim.begin(target.time, prev, true);
+        let flatten_start = Instant::now();
+        let waited = self.estimate_waited;
         let mut f = match cached {
             Some(f) => f,
             None => self.flatten_surface(surface),
+        };
+        self.paint_times = PaintTimes {
+            flatten: flatten_start.elapsed(),
+            text_wait: self.estimate_waited.saturating_sub(waited),
+            raster: Duration::ZERO,
         };
         // (M4) Its passes (drawn with what they have).
         #[cfg(feature = "gpu")]
@@ -490,10 +581,12 @@ impl Renderer {
         };
         #[cfg(not(feature = "gpu"))]
         let (drawn, lowered) = (false, false);
+        let raster_start = Instant::now();
         if !drawn {
             self.raster
                 .paint(&f.items, &total, &self.atlas, scale, target);
         }
+        self.paint_times.raster = raster_start.elapsed();
         if let super::swap::FadeFrame::Blend(w) = fade
             && !lowered
         {
@@ -511,6 +604,36 @@ impl Renderer {
         #[cfg(feature = "gpu")]
         self.gpu_frame_stats(surface, stats.0, stats.1);
         total
+    }
+
+    /// Other surfaces' first-frame and size holds wait for the text
+    /// worker and for the compositor's configure, which the loop cannot
+    /// take while it paints: a hold still running when this paint of
+    /// `painted` started is moved on by the time it took. Under load a
+    /// first frame painting another surface for longer than the hold
+    /// (half a second for a debug build's launcher beside a bar) showed
+    /// at its estimated size, with the configure at its real one already
+    /// on its way.
+    pub(super) fn pause_holds(&mut self, painted: SurfaceId, started: Instant) {
+        let spent = started.elapsed();
+        let on = |t: &mut Instant| {
+            if *t > started {
+                *t += spent;
+            }
+        };
+        for (id, s) in &mut self.surfaces {
+            if *id == painted {
+                continue;
+            }
+            if !s.painted
+                && let Some(t) = &mut s.wait_until
+            {
+                on(t);
+            }
+            if let Some((_, t)) = &mut s.size_hold {
+                on(t);
+            }
+        }
     }
 
     pub(super) fn wants(&self, surface: SurfaceId) -> bool {

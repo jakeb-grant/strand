@@ -39,6 +39,7 @@ mod wake;
 pub use backend::GPU_WAIT;
 
 pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
+pub use frame::PaintTimes;
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use summary::FrameSummary;
 pub use text::TextBackend;
@@ -62,10 +63,24 @@ pub const FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(50);
 /// [`Renderer::frame_deadline`]).
 pub const NEW_TEXT_WAIT: Duration = Duration::from_millis(16);
 
+/// How long laying out a frame waits for the text worker to shape a
+/// text that has no layout at any scale or width yet (a node just
+/// added), before laying it out by an estimate of its width (its length
+/// in ems) instead: about a third of a refresh at 60 Hz. Shaping a label
+/// takes well under a millisecond, so the frame is laid out with its
+/// shaped size, and nothing beside it moves once to the estimate and
+/// again to the real size a frame later (an icon font's ligature,
+/// `battery_5_bar`, is one glyph but thirteen characters;
+/// owner-testing.md bug 14). Only the worker is waited for, never
+/// logic; a worker slower than this (a font family's first load) costs
+/// the frame no more.
+pub const ESTIMATE_WAIT: Duration = Duration::from_millis(5);
+
 /// A surface that painted a frame this recently is in motion (an
 /// animation, a stream of changes: two refreshes at 60 Hz). It never
-/// holds a frame for new text: it paints at once and the glyphs follow a
-/// frame later, so nothing else on it stalls (design.md: the renderer
+/// holds a frame for new text: it paints at once (after laying out waits
+/// up to [`ESTIMATE_WAIT`] for the worker) and glyphs the worker has not
+/// shaped by then follow a frame later, so nothing else on it stalls (design.md: the renderer
 /// never waits). The springs that land in M2 replace this with their own
 /// in-flight state (decisions.md, wave2-exit).
 pub const BUSY_WINDOW: Duration = Duration::from_millis(34);
@@ -249,7 +264,13 @@ pub struct Renderer {
     surface_changes: Vec<(NodeId, SurfaceChange)>,
     first_frame_wait: Duration,
     new_text_wait: Duration,
+    estimate_wait: Duration,
+    estimate_waits: u64,
+    estimate_waited: Duration,
     busy_window: Duration,
+    /// (owner-testing.md bug 9) Per surface node whose sizes spring:
+    /// the shadows' reach its overhang keeps until they settle.
+    held_reach: HashMap<NodeId, strand_scene::Insets>,
     /// Scroll offsets and list row heights, by `scroll`/`list` node.
     scrolls: HashMap<NodeId, ScrollState>,
     /// (M4) List windows asked of logic, touchpad scrolls, gap stats
@@ -257,6 +278,8 @@ pub struct Renderer {
     lists: lists::Lists,
     /// Layout passes run (tests: paint-only changes run none).
     layout_passes: u64,
+    /// Where the last paint spent its time.
+    paint_times: PaintTimes,
     /// Laid-out sizes not yet handed to logic (`self.width`), and the
     /// last size each surface laid a watched node out at (a node shown on
     /// two surfaces of different sizes reports a change of either, never
@@ -420,10 +443,15 @@ impl Renderer {
             surface_changes: Vec::new(),
             first_frame_wait: FIRST_FRAME_TEXT_WAIT,
             new_text_wait: NEW_TEXT_WAIT,
+            estimate_wait: ESTIMATE_WAIT,
+            estimate_waited: Duration::ZERO,
+            estimate_waits: 0,
             busy_window: BUSY_WINDOW,
+            held_reach: HashMap::new(),
             scrolls: HashMap::new(),
             lists: lists::Lists::default(),
             layout_passes: 0,
+            paint_times: PaintTimes::default(),
             facts: Vec::new(),
             facts_sent: HashMap::new(),
             placed_dirty: false,

@@ -1784,7 +1784,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   laid out: `Renderer::last_layout_nodes`). Other
   layout lengths snap and the boxes they move glide (FLIP), as do the
   siblings of created, removed and moved nodes and every box after a
-  `SetTokens`; text changes never glide. A target changed by tokens or
+  `SetTokens`; text changes never glide. A paint offset in flight (an
+  `x`/`y` spring, a glide) is drawn whole logical pixels from its rest,
+  as layout places boxes, so content moves as one and a spring's tail
+  draws its rest; a lifted node's held offset (a drag) is drawn as it
+  is. A target changed by tokens or
   inheritance snaps at rest and steers a motion in flight. `scale` and
   `rotate` (a `PropValue::Angle` in degrees, as the compiler sends it
   and every rotate sample is; a bare number reads as degrees) draw the
@@ -1998,10 +2002,24 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   change that only swaps glyphs damages those glyphs (a clock tick
   repaints its last digit), and a node's border along its box keeps
   its ring's strips (`NodeRecord::ring`), so a change of the border
-  alone (a conic turning with `t`) damages only the ring; a gradient is cached
+  alone (a conic turning with `t`) damages only the ring; a box drawing
+  only solid fills, borders and rims, untransformed and without effects,
+  and every node under a clipping box keep their geometry
+  (`NodeRecord::geom`: the rounded boxes of the node and of the clips it
+  is drawn through, the rest hashed apart), so a box or clip that only
+  moves, resizes or rounds its corners damages along its edges and
+  corners (`RoundBox::changed`), not its whole area and its content's
+  (a card swelling under its content); a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
-  uncached. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
+  uncached. `Renderer::last_paint_times` (`PaintTimes`) says where the
+  last CPU paint spent its time (laying out and flattening, of that
+  waiting for text, drawing); `strand run`'s damage log prints it. A
+  frame waits for new text (`ESTIMATE_WAIT`) once, however many layout
+  passes it takes. Painting a surface moves every other surface's
+  first-frame and size hold still running by the time it took
+  (`Renderer::pause_holds`): they wait for the text worker and the
+  compositor, not for the loop's own painting. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
   compiler's scene conversion turns a `Range` record into that pair. A `popup`'s spec gets `parent` and `anchor_rect` (its
   element's laid-out box in the parent surface); `tooltip: expr` makes a
   render-owned popup (`SceneTree::add_overlay`, ids from `OVERLAY_INDEX`)

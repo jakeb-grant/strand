@@ -284,12 +284,69 @@ fn text_collected_while_painting_holds_a_resized_surface() {
     assert!(!r.take_surface_changes().is_empty());
 }
 
+/// (owner-testing.md bug 17) A surface's first-frame and size holds wait
+/// for the text worker and the compositor's configure, which the loop
+/// cannot take while it paints another surface: a paint moves on every
+/// other surface's hold still running when it started by the time it
+/// took, and leaves its own and one already over alone. Before, under
+/// load, a toast panel's first frame was held 500 ms for its configure
+/// at the size its shaped text gave it, the loop spent those painting
+/// the bar and the launcher, and it showed one frame at the size its
+/// estimated text had given it
+/// (crates/strand/tests/demo.rs::the_design_launcher_is_centred_and_closes_on_click_away).
+#[test]
+fn painting_another_surface_does_not_run_out_a_hold() {
+    let mut r = renderer();
+    let (a, b, c) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+    let mut d = SceneDiff::new();
+    for id in [a, b, c] {
+        d.create(id, NodeKind::Panel, None, 0);
+    }
+    assert!(r.apply(d).is_empty());
+    for (i, root) in [a, b, c].into_iter().enumerate() {
+        r.attach_surface(SurfaceId(i as u32 + 1), root);
+    }
+    let now = Instant::now();
+    let (wait, spent) = (Duration::from_millis(40), Duration::from_millis(100));
+    let size = LogicalSize::new(10.0, 10.0);
+    for (id, until) in [(1, now + wait), (2, now + wait), (3, now - spent * 2)] {
+        let s = r.surfaces.get_mut(&SurfaceId(id)).unwrap();
+        s.wait_until = Some(until);
+        s.size_hold = Some((size, until));
+    }
+    // Surface 1 painted for 100 ms, started before both holds ran out.
+    let started = now - spent;
+    r.pause_holds(SurfaceId(1), started);
+    let hold = |r: &Renderer, id| {
+        let s = &r.surfaces[&SurfaceId(id)];
+        (s.wait_until.unwrap(), s.size_hold.unwrap().1)
+    };
+    let moved = hold(&r, 2);
+    assert!(moved.0 >= now + wait + spent && moved.1 >= now + wait + spent);
+    assert!(
+        moved.0 < now + wait + spent * 2,
+        "moved by the paint's time"
+    );
+    assert_eq!(hold(&r, 1), (now + wait, now + wait), "its own hold");
+    assert_eq!(hold(&r, 3), (now - spent * 2, now - spent * 2), "one over");
+    // A painted surface's first-frame wait is over: only its size hold
+    // waits for a configure.
+    r.surfaces.get_mut(&SurfaceId(2)).unwrap().painted = true;
+    r.pause_holds(SurfaceId(1), Instant::now() - spent);
+    let after = hold(&r, 2);
+    assert_eq!(after.0, moved.0);
+    assert!(after.1 > moved.1);
+}
+
 /// A request that crashes the worker's engine every time is not asked
 /// for again after the reset, so the worker does not restart its
 /// engine (and every text reshape) in a loop.
 #[test]
 fn crashing_requests_are_not_retried() {
     let mut r = Renderer::new(worker());
+    // Flattening waits for no new text here (`ESTIMATE_WAIT`): the
+    // requests must stay in flight for the test to answer them.
+    r.set_estimate_wait(Duration::ZERO);
     let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
     let (d, root) = texts_diff(&[(1, "crash"), (2, "fine")]);
     assert!(r.apply(d).is_empty());

@@ -276,6 +276,12 @@ filling the monitor, the keyboard always).
   a handler ran (a tray menu's `opened`). One a hover, a timer or IPC
   opens does not, nor does a `trigger: hover` popup or one opened from
   inside a popup without a grab.
+- **A popup opens away from a `bar`'s edge**, across the bar, below
+  its anchor otherwise, and beside its row for a popup in a popup.
+  Its `margin` on the side that faces its anchor is the gap between
+  them: 6 px unless it is set, `0` touching, negative overlapping the
+  anchor (`margin: -30, 0, 0` on a popup of a 30 px top bar covers the
+  bar). Its other sides are not used, and `attach:` makes the gap 0.
 - **`keyboard: none | on_demand | exclusive`** sets how the surface
   takes keyboard focus.
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.
@@ -722,7 +728,11 @@ filling the monitor, the keyboard always).
 - **`~` overrides the transition** for one prop:
   `width: 24 ~ $motion.bouncy`, `~ 200ms`, `~ instant`,
   `~ ease(out_back, 300ms)`, `~ bezier(0.05, 0.9, 0.1, 1.05)`. In a
-  `when`, the override applies while that `when` wins.
+  `when`, the override applies while that `when` wins. A change takes
+  the transition in effect after it: the `~` expression is evaluated
+  with the value, so `opacity: open ? 1 : 0 ~ (open ? 160ms : 1s)`
+  fades in over 160 ms and out over 1 s, as the `when` form does.
+  A change of the transition alone moves nothing.
 - **What cannot interpolate snaps**: fonts snap, shadow lists are padded
   to equal length and spring, layout lengths (`pad`) snap while paint
   offsets spring. With the desktop's reduced-motion setting on, every
@@ -746,6 +756,15 @@ filling the monitor, the keyboard always).
   `list`, `split` and `spacer` are containers; flex props and
   `min_*`/`max_*` apply. `place: absolute` takes a node out of the flow,
   placed by `x` and `y`.
+- **A stack puts its children over each other** in one cell its size:
+  a `stack`, a `box` and a surface (a `popup` included) lay out their
+  children so. Its `align` places every child on both axes (`start`,
+  `center`, `end`, or `stretch` to fill); by default a child fills the
+  cell on an axis where it has no size and sits at the start of one
+  where it has. There is no alignment per child: a child placed apart
+  from its siblings goes in a `row` or `col` that fills the cell and
+  places it (`row { justify: end; … }`), or is `place: absolute` at
+  its `x` and `y`.
 - **`split`** has three parts, `start`, `center` and `end`; `center` is
   centred on the split whatever the other two hold. `start`, `center`
   and `end` are only valid in a `split`.

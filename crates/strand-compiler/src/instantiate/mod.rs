@@ -1588,24 +1588,16 @@ impl Instance {
     }
 
     fn emit_binding(&self, id: CoreId) {
-        let (memo, scene, prop, transitions, site, boot) = {
+        let (memo, scene, prop, site, boot) = {
             let em = self.ctx.em.borrow();
             let Some(b) = em.bindings.get(&id) else {
                 return;
             };
-            (
-                b.memo,
-                b.scene,
-                b.prop,
-                b.transitions.clone(),
-                b.site.clone(),
-                b.boot.clone(),
-            )
+            (b.memo, b.scene, b.prop, b.site.clone(), b.boot.clone())
         };
         match memo.get_untracked(&self.rt) {
             Ok(out) => {
-                let t = transitions.get(out.source).cloned().unwrap_or_default();
-                let t = boot.transition(t);
+                let t = boot.transition(out.transition);
                 self.ctx.em.borrow_mut().set(scene, prop, out.value, t);
             }
             // Errors are values: the prop keeps its last good value.
