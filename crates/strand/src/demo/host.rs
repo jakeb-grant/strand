@@ -718,10 +718,15 @@ impl Host {
             // while the scroll went on; `top=`: the first row (global
             // index) a list showed in the last such frame; `pending=1`:
             // text or images were still on their workers (the arrival
-            // paints another frame).
+            // paints another frame); `flatten=`, `wait=` and `raster=`:
+            // the last CPU paint's milliseconds laying out and flattening
+            // (0 when it reused its scene), of that waiting for the text
+            // worker, and drawing.
             let lists = self.renderer.list_frames();
+            let times = self.renderer.last_paint_times();
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
             eprintln!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={}",
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={} flatten={:.2} wait={:.2} raster={:.2}",
                 surface.0,
                 size.w,
                 size.h,
@@ -733,6 +738,9 @@ impl Host {
                 lists.stalls,
                 lists.top_row,
                 u8::from(self.renderer.work_pending()),
+                ms(times.flatten),
+                ms(times.text_wait),
+                ms(times.raster),
             );
         }
     }

@@ -65,5 +65,7 @@ pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, ESTIMATE_WAIT, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT,
     QUERY_WAIT, RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,
 };
-pub use renderer::{FeedDemand, FeedKind, ListFrames, ScrollInput, ScrollKind, THUMBNAIL_STEP};
+pub use renderer::{
+    FeedDemand, FeedKind, ListFrames, PaintTimes, ScrollInput, ScrollKind, THUMBNAIL_STEP,
+};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

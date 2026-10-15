@@ -95,6 +95,11 @@ impl Renderer {
         self.raster.rasterised()
     }
 
+    /// Where the last `paint` spent its time.
+    pub fn last_paint_times(&self) -> PaintTimes {
+        self.paint_times
+    }
+
     /// The damage the last `paint` returned for `surface`.
     pub fn last_damage(&self, surface: SurfaceId) -> Option<Damage> {
         self.last_damage.get(&surface).copied()
@@ -193,6 +198,18 @@ pub(super) fn diff_records(
             d.add(o.bounds);
         }
     }
+}
+
+/// Where a CPU paint spent its time ([`Renderer::last_paint_times`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintTimes {
+    /// Laying out and flattening (zero when it reused the scene
+    /// flattened before), waiting for the text worker included.
+    pub flatten: Duration,
+    /// Of that, waiting for the text worker to shape new text.
+    pub text_wait: Duration,
+    /// Drawing.
+    pub raster: Duration,
 }
 
 impl Painter for Renderer {
@@ -340,9 +357,16 @@ impl Renderer {
             self.sample_tokens(target.time, true);
         }
         self.anim.begin(target.time, prev, true);
+        let flatten_start = Instant::now();
+        let waited = self.estimate_waited;
         let mut f = match cached {
             Some(f) => f,
             None => self.flatten_surface(surface),
+        };
+        self.paint_times = PaintTimes {
+            flatten: flatten_start.elapsed(),
+            text_wait: self.estimate_waited.saturating_sub(waited),
+            raster: Duration::ZERO,
         };
         // (M4) Its passes (drawn with what they have).
         #[cfg(feature = "gpu")]
@@ -512,10 +536,12 @@ impl Renderer {
         };
         #[cfg(not(feature = "gpu"))]
         let (drawn, lowered) = (false, false);
+        let raster_start = Instant::now();
         if !drawn {
             self.raster
                 .paint(&f.items, &total, &self.atlas, scale, target);
         }
+        self.paint_times.raster = raster_start.elapsed();
         if let super::swap::FadeFrame::Blend(w) = fade
             && !lowered
         {

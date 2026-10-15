@@ -1978,7 +1978,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   alone (a conic turning with `t`) damages only the ring; a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
-  uncached. A
+  uncached. `Renderer::last_paint_times` (`PaintTimes`) says where the
+  last CPU paint spent its time (laying out and flattening, of that
+  waiting for text, drawing); `strand run`'s damage log prints it. A
   frame waits for new text (`ESTIMATE_WAIT`) once, however many layout
   passes it takes. Painting a surface moves every other surface's
   first-frame and size hold still running by the time it took

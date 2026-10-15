@@ -13,7 +13,7 @@ mod common;
 
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use strand_compiler::instantiate::{Instance, Storage};
@@ -33,6 +33,18 @@ fn frame(k: u32) -> Duration {
 
 const BAR: SurfaceId = SurfaceId(1);
 
+/// One popup frame painted (`Shell::times`).
+#[derive(Clone, Copy, Debug)]
+struct Painted {
+    k: u32,
+    work: Duration,
+    flatten: Duration,
+    text_wait: Duration,
+    raster: Duration,
+    damage: u64,
+    pixels: u64,
+}
+
 /// A compiled shell on one screen, its bar `BAR` and its popups shown as
 /// the surface manager would show them.
 struct Shell {
@@ -50,6 +62,11 @@ struct Shell {
     /// After each frame, the text it asked to have shaped is delivered
     /// before the next (a text worker that keeps up).
     settle_text: bool,
+    /// Each popup paint: its frame, the render thread's time painting
+    /// it (all of it, laying out and flattening, of that waiting for
+    /// text, drawing), the pixels it damaged and a hash of the buffer
+    /// after it.
+    times: Vec<Painted>,
 }
 
 impl Shell {
@@ -111,6 +128,7 @@ impl Shell {
             k: 0,
             remake: false,
             settle_text: false,
+            times: Vec::new(),
         };
         sh.sync();
         sh.paint();
@@ -192,7 +210,23 @@ impl Shell {
         for _ in 0..8 {
             for (id, _, buf) in &mut self.shown {
                 if k == 0 || self.r.wants_frame(*id) {
-                    buf.paint_at(&mut self.r, *id, 1, frame(k));
+                    let t = Instant::now();
+                    let d = buf.paint_at(&mut self.r, *id, 1, frame(k));
+                    let work = t.elapsed();
+                    if *id != BAR {
+                        let times = self.r.last_paint_times();
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        std::hash::Hash::hash(&buf.pixels, &mut h);
+                        self.times.push(Painted {
+                            k,
+                            work,
+                            flatten: times.flatten,
+                            text_wait: times.text_wait,
+                            raster: times.raster,
+                            damage: d.area(),
+                            pixels: std::hash::Hasher::finish(&h),
+                        });
+                    }
                 }
             }
             self.sync();

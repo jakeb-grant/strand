@@ -39,6 +39,7 @@ mod wake;
 pub use backend::GPU_WAIT;
 
 pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
+pub use frame::PaintTimes;
 pub use lists::{ListFrames, ScrollInput, ScrollKind};
 pub use summary::FrameSummary;
 pub use text::TextBackend;
@@ -277,6 +278,8 @@ pub struct Renderer {
     lists: lists::Lists,
     /// Layout passes run (tests: paint-only changes run none).
     layout_passes: u64,
+    /// Where the last paint spent its time.
+    paint_times: PaintTimes,
     /// Laid-out sizes not yet handed to logic (`self.width`), and the
     /// last size each surface laid a watched node out at (a node shown on
     /// two surfaces of different sizes reports a change of either, never
@@ -448,6 +451,7 @@ impl Renderer {
             scrolls: HashMap::new(),
             lists: lists::Lists::default(),
             layout_passes: 0,
+            paint_times: PaintTimes::default(),
             facts: Vec::new(),
             facts_sent: HashMap::new(),
             placed_dirty: false,
