@@ -3556,3 +3556,106 @@ fn a_popups_margin_on_its_anchors_side_is_its_gap() {
         );
     }
 }
+
+/// (m6-owner-fixes, owner-testing.md gap 26) `attach:` keeps a set
+/// margin on its side (spec.md 5.1): 0 while unset, so an attached
+/// popup touches its bar and an attached panel is flush past the bar's
+/// exclusive zone, and a negative one overlaps, so `margin: -36, 0, 0`
+/// takes either over a 36 px top bar to the screen's edge. As sway
+/// places them, with render's 14 px fillet overhang on both sides of
+/// the box along the edge: the popups' boxes at y 36 and 0, the panels'
+/// at 36 and 0 (before, `attach:` made both 36).
+#[test]
+fn an_attached_surface_keeps_its_margin_on_its_attached_side() {
+    use std::collections::HashMap;
+    use strand_scene::{Prop, PropValue, SurfaceSpec};
+    let Some((_sway, mut mgr)) = start(
+        "an_attached_surface_keeps_its_margin_on_its_attached_side",
+        Config::default(),
+    ) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let fillets = Insets {
+        top: 0.0,
+        right: 14.0,
+        bottom: 0.0,
+        left: 14.0,
+    };
+    let over = PropValue::List(vec![
+        PropValue::Number(-36.0),
+        PropValue::Number(0.0),
+        PropValue::Number(0.0),
+    ]);
+    let props = |name: &str, margin: Option<&PropValue>| -> HashMap<Prop, PropValue> {
+        [
+            Some((Prop::Name, PropValue::Text(name.into()))),
+            Some((Prop::Attach, PropValue::Keyword("top".into()))),
+            margin.map(|m| (Prop::Margin, m.clone())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    };
+    let popup = |name: &str, x: f32, margin: Option<&PropValue>| {
+        let props = props(name, margin);
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |p| props.get(&p));
+        spec.parent = Some(BAR);
+        spec.anchor_rect = Some(LogicalRect::new(x, 8.0, 60.0, 20.0));
+        spec.width = Some(200.0);
+        spec.height = Some(80.0);
+        spec.overhang = fillets;
+        spec
+    };
+    let panel = |name: &str, margin: Option<&PropValue>| {
+        let mut props = props(name, margin);
+        props.insert(Prop::Anchor, PropValue::Keyword("top".into()));
+        props.insert(Prop::Layer, PropValue::Keyword("overlay".into()));
+        props.insert(Prop::Width, PropValue::Number(200.0));
+        props.insert(Prop::Height, PropValue::Number(80.0));
+        let mut spec = SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p));
+        spec.overhang = fillets;
+        spec
+    };
+    // Each box's top-left corner on the output: the buffer's origin
+    // plus the overhang.
+    for (i, (name, spec, x, y)) in [
+        (
+            "Touching",
+            popup("Touching", 100.0, None),
+            100 + 30 - 100,
+            36,
+        ),
+        ("Over", popup("Over", 700.0, Some(&over)), 700 + 30 - 100, 0),
+        ("Flush", panel("Flush", None), 960 - 100, 36),
+        ("Covering", panel("Covering", Some(&over)), 960 - 100, 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let node = NodeId::new(10 + i as u32, 0);
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(spec));
+        let placed = |s: &strand_surface::State<TestHost>| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .filter(|i| i.stats.commits > 0)
+                .and_then(|i| i.origin)
+        };
+        let ok = mgr.dispatch_until(WAIT, |s| placed(s).is_some()).unwrap();
+        assert!(ok, "{name} maps: {:?}", mgr.state().surfaces());
+        assert_eq!(
+            placed(mgr.state()),
+            Some((x - 14, y)),
+            "{name}: {:?}",
+            mgr.state().host().placed
+        );
+        if name == "Flush" {
+            // Removed, so the next panel's place is not shared.
+            mgr.state_mut()
+                .apply_surface_change(node, SurfaceChange::Removed);
+            pump(&mut mgr, Duration::from_millis(50));
+        }
+    }
+}

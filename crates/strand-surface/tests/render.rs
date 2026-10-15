@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use common::{Sway, WAIT};
 use strand_render::{Renderer, TextBackend};
 use strand_scene::{
-    Color, Damage, Font, NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Scale, SceneDiff,
-    SceneOp, Size, SurfaceId, Transition,
+    Color, Damage, Font, Insets, NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Scale,
+    SceneDiff, SceneOp, Size, SurfaceId, Transition,
 };
 use strand_surface::{Config, Monitor, SurfaceHost, SurfaceManager};
 use strand_text::{FontConfig, TEST_FONT_FAMILY, TextEngine, TextWorker, test_font_path};
@@ -770,4 +770,125 @@ fn shadowed_layer_surfaces_stay_inside_their_anchored_edges() {
     // The centred panel, anchored nowhere, keeps all of its shadow.
     let c = strand_surface::layer_config(&specs[&n(4, 0)]).unwrap();
     assert!(c.overhang.iter().all(|o| *o > 0), "{:?}", c.overhang);
+}
+
+const ISLE_BAR: NodeId = NodeId::new(40, 0);
+const ISLE_ANCHOR: NodeId = NodeId::new(41, 0);
+const ISLE_POPUP: NodeId = NodeId::new(42, 0);
+const ISLE_CARD: NodeId = NodeId::new(43, 0);
+const ISLE_PANEL: NodeId = NodeId::new(44, 0);
+const ISLE_PANEL_CARD: NodeId = NodeId::new(45, 0);
+
+/// (m6-owner-fixes, owner-testing.md gap 26) `attach: top` keeps a set
+/// margin, so a negative one takes an attached surface over its bar to
+/// the screen's edge, where its fillets meet: on headless sway, under a
+/// 36 px top bar, a popup of the bar with `attach: top; margin: -36, 0,
+/// 0` and an overlay panel with the same are drawn from y 0, over the
+/// bar, their corners on the edge square and a concave fillet of their
+/// radius beside each (filled along the edge, the bar showing through by
+/// the box's side). Before, `attach:` made the gap 0 whatever the
+/// margin, so both opened below the bar at y 36.
+#[test]
+fn attached_surfaces_with_a_negative_margin_grow_out_of_the_screens_edge() {
+    let Some(sway) =
+        Sway::start("attached_surfaces_with_a_negative_margin_grow_out_of_the_screens_edge")
+    else {
+        return;
+    };
+    let font = std::fs::read(test_font_path()).unwrap();
+    let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
+    let host = Host::new(Renderer::new(TextBackend::Inline(Box::new(engine))));
+    let mut mgr = SurfaceManager::with_connection(sway.connect(), host, Config::default()).unwrap();
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let num = PropValue::Number;
+    let over = || PropValue::List(vec![num(-36.0), num(0.0), num(0.0)]);
+    let bg = |c: &str| PropValue::Color(Color::from_hex(c).unwrap());
+    let mut d = SceneDiff::default();
+    d.create(ISLE_BAR, NodeKind::Bar, None, 0)
+        .set(ISLE_BAR, Prop::Name, PropValue::Text("Top".into()))
+        .set(ISLE_BAR, Prop::Edge, kw("top"))
+        .set(ISLE_BAR, Prop::Height, num(36.0))
+        .set(ISLE_BAR, Prop::Bg, bg("#1e1e2e"))
+        .set(
+            ISLE_BAR,
+            Prop::Pad,
+            PropValue::Insets(Insets {
+                left: 400.0,
+                ..Insets::default()
+            }),
+        )
+        // The popup's anchor: 100 wide at x 400, so the popup's box is
+        // centred at 450.
+        .create(ISLE_ANCHOR, NodeKind::Box, Some(ISLE_BAR), 0)
+        .set(ISLE_ANCHOR, Prop::Width, num(100.0))
+        .set(ISLE_ANCHOR, Prop::Height, num(20.0))
+        .create(ISLE_POPUP, NodeKind::Popup, Some(ISLE_ANCHOR), 0)
+        .set(ISLE_POPUP, Prop::Open, PropValue::Bool(true))
+        .set(ISLE_POPUP, Prop::Attach, kw("top"))
+        .set(ISLE_POPUP, Prop::Margin, over())
+        .set(ISLE_POPUP, Prop::Width, num(200.0))
+        .set(ISLE_POPUP, Prop::Height, num(80.0))
+        .create(ISLE_CARD, NodeKind::Box, Some(ISLE_POPUP), 0)
+        .set(ISLE_CARD, Prop::Width, num(200.0))
+        .set(ISLE_CARD, Prop::Height, num(80.0))
+        .set(ISLE_CARD, Prop::Bg, bg("#f38ba8"))
+        .set(ISLE_CARD, Prop::Radius, num(14.0))
+        // A panel above the bar (`overlay`), centred at the top: past
+        // the bar's exclusive zone unless its margin takes it over.
+        .create(ISLE_PANEL, NodeKind::Panel, None, 1)
+        .set(ISLE_PANEL, Prop::Name, PropValue::Text("Isle".into()))
+        .set(ISLE_PANEL, Prop::Layer, kw("overlay"))
+        .set(ISLE_PANEL, Prop::Anchor, kw("top"))
+        .set(ISLE_PANEL, Prop::Attach, kw("top"))
+        .set(ISLE_PANEL, Prop::Margin, over())
+        .set(ISLE_PANEL, Prop::Width, num(200.0))
+        .set(ISLE_PANEL, Prop::Height, num(80.0))
+        .create(ISLE_PANEL_CARD, NodeKind::Box, Some(ISLE_PANEL), 0)
+        .set(ISLE_PANEL_CARD, Prop::Width, num(200.0))
+        .set(ISLE_PANEL_CARD, Prop::Height, num(80.0))
+        .set(ISLE_PANEL_CARD, Prop::Bg, bg("#a6e3a1"))
+        .set(ISLE_PANEL_CARD, Prop::Radius, num(14.0));
+    apply(&mut mgr, d);
+    let ok = run_until(&mut mgr, WAIT, |s| {
+        let shown = |node| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        };
+        shown(ISLE_BAR)
+            && shown(ISLE_POPUP)
+            && shown(ISLE_PANEL)
+            && s.stats().presented >= s.stats().commits
+    });
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    std::thread::sleep(Duration::from_millis(50));
+    mgr.dispatch(Some(Duration::from_millis(20))).unwrap();
+    let shot = sway.grim("HEADLESS-1");
+    let bar = rgb("#1e1e2e");
+    assert_eq!(shot.rgb(1500, 18), bar, "the bar");
+    for (what, colour, x0) in [
+        ("the popup", rgb("#f38ba8"), 350u32),
+        ("the panel", rgb("#a6e3a1"), 860),
+    ] {
+        let (mid, x1) = (x0 + 100, x0 + 200);
+        assert_eq!(shot.rgb(mid, 0), colour, "{what} reaches the screen's edge");
+        assert_eq!(shot.rgb(mid, 18), colour, "{what} covers the bar");
+        assert_eq!(shot.rgb(mid, 79), colour, "{what} is 80 tall");
+        assert_ne!(shot.rgb(mid, 81), colour, "{what} ends at 80");
+        assert_eq!(shot.rgb(x0, 0), colour, "{what}: square on the edge");
+        assert_eq!(shot.rgb(x1 - 1, 0), colour, "{what}: square on the edge");
+        assert_ne!(shot.rgb(x0, 79), colour, "{what}: round away from it");
+        // The fillets: filled along the edge past the box's sides, the
+        // bar showing through by them (concave), nothing below them.
+        assert_eq!(shot.rgb(x0 - 4, 0), colour, "{what}: the left fillet");
+        assert_eq!(shot.rgb(x1 + 3, 0), colour, "{what}: the right fillet");
+        assert_eq!(shot.rgb(x0 - 12, 10), bar, "{what}: concave on the left");
+        assert_eq!(shot.rgb(x1 + 11, 10), bar, "{what}: concave on the right");
+        assert_eq!(
+            shot.rgb(x0 - 4, 20),
+            bar,
+            "{what}: nothing below the fillet"
+        );
+    }
 }

@@ -2,8 +2,9 @@
 //! panel grows out of the bar or screen edge", `attach:` on a popup or
 //! panel).
 //!
-//! A surface with `attach: <edge>` sits flush against that edge (the
-//! surface manager's placement puts its box at gap 0). Its fillet target
+//! A surface with `attach: <edge>` sits against that edge (the
+//! surface manager's placement puts its box at its margin on that side,
+//! 0 while unset, or over it when negative). Its fillet target
 //! is the outermost box with a background touching that edge (the root
 //! itself when it paints one): that box's corners on the attached side
 //! are drawn square, and beside each of them, outside the box, a concave
