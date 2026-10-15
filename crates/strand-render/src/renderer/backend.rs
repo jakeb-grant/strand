@@ -1728,7 +1728,7 @@ impl Lowering<'_> {
             i += 1;
             match &d.item {
                 Item::PushClip(_)
-                | Item::PushOpacity(_)
+                | Item::PushOpacity(..)
                 | Item::PushTransform(_)
                 | Item::PushLayer(_)
                     if d.bounds.intersect(self.surface).is_none() =>
@@ -1746,7 +1746,7 @@ impl Lowering<'_> {
                 }
                 Item::PushClip(p) => self.ops.push(Op::PushClip(p.clone())),
                 Item::PopClip => self.ops.push(Op::PopClip),
-                Item::PushOpacity(o) => self.ops.push(Op::PushLayer(strand_gpu::Layer {
+                Item::PushOpacity(o, _) => self.ops.push(Op::PushLayer(strand_gpu::Layer {
                     opacity: Some(*o),
                     ..Default::default()
                 })),
@@ -1991,6 +1991,7 @@ impl Lowering<'_> {
             base,
             cur,
             self.groups,
+            &std::collections::HashMap::new(),
         );
         ctx.flush();
         let mut pm = Pixmap::new(w, h);

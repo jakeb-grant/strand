@@ -503,6 +503,22 @@ impl Renderer {
         (o.bytes(), o.builds(), o.len())
     }
 
+    /// (m6-owner-fixes, owner-testing.md bug 17) Turns the CPU raster's
+    /// fade layers on (the default) or off: an opacity group whose content
+    /// only moves is rastered once and composited at its opacity
+    /// (`crate::offscreen`'s `fade`). Off, every frame rasters it whole
+    /// (tests compare the two).
+    pub fn set_fade_layers(&mut self, on: bool) {
+        self.raster.set_fade_layers(on);
+    }
+
+    /// (m6-owner-fixes, bug 17) Fade layers built so far, and groups
+    /// drawn from one (built or reused).
+    pub fn fade_layers(&self) -> (u64, u64) {
+        let o = self.raster.offscreen();
+        (o.fade_builds(), o.fade_draws())
+    }
+
     /// (M4) Notices for CPU fallbacks drawn in place of GPU effects (a
     /// still aurora, particles capped at 1,000), each once a run: the host
     /// logs them and sends them to `strand watch`.

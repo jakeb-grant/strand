@@ -37,6 +37,9 @@ use crate::clock::Rate;
 use crate::flatten::{DisplayItem, Item};
 use crate::raster::AtlasMirror;
 
+mod fade;
+pub(crate) use fade::item_key as fade_key;
+
 /// Bytes of offscreen group pixmaps kept (design.md: "about 32 MB"): a
 /// blurred or filtered group of a 2× launcher or a 1440p overlay
 /// (decisions.md, m5-speed-caches: over the old 4 MB such a group was
@@ -77,6 +80,8 @@ pub struct Offscreen {
     idle: Option<Duration>,
     /// This frame's groups, by their layer (its `Arc`'s address).
     current: HashMap<usize, Drawn>,
+    /// (m6-owner-fixes, bug 17) Fade layers ([`fade`]).
+    fades: fade::Fades,
 }
 
 /// The key of a layer in [`Offscreen::current`].
@@ -103,6 +108,29 @@ impl Offscreen {
     /// This frame's group pixmaps by layer.
     pub fn current(&self) -> &HashMap<usize, Drawn> {
         &self.current
+    }
+
+    /// (m6-owner-fixes, bug 17) This frame's fade layers, by their
+    /// opacity group's push item ([`fade_key`]).
+    pub fn fades(&self) -> &HashMap<usize, Drawn> {
+        &self.fades.current
+    }
+
+    /// Turns fade layers on (the default) or off (tests: the frame they
+    /// replace).
+    pub fn set_fade_layers(&mut self, on: bool) {
+        self.fades.enabled = on;
+    }
+
+    /// Fade layers built so far.
+    pub fn fade_builds(&self) -> u64 {
+        self.fades.builds
+    }
+
+    /// Fade layers drawn so far, built or reused (a frame drawing a
+    /// group from its layer counts one).
+    pub fn fade_draws(&self) -> u64 {
+        self.fades.draws
     }
 
     /// Shortens (tests) how long an unused group lives.
@@ -403,7 +431,16 @@ pub(crate) fn rasterise(
     let base = Affine::translate((-(region.x as f64), -(region.y as f64)));
     ctx.set_transform(base * xform);
     crate::raster::draw_group(
-        &mut ctx, items, region, atlas, cache, scale, base, xform, groups,
+        &mut ctx,
+        items,
+        region,
+        atlas,
+        cache,
+        scale,
+        base,
+        xform,
+        groups,
+        &HashMap::new(),
     );
     ctx.flush();
     // Drawn straight into the pixmap that is kept, and filtered there:

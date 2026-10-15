@@ -458,7 +458,27 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     age, 14 to 17 ms of drawing on the CPU. A fade has to repaint what
     it fades, so the remaining lever is drawing a fading subtree once
     and blending it (a layer), not damage. Smaller or shorter entering
-    panels cost less meanwhile. Most gaps in the log are frames with
+    panels cost less meanwhile.
+    (2026-10-15) That lever is built (fade layers, decisions.md
+    m6-owner-fixes) and measured. It does not help these panels.
+    Rastering costs about the same per pixel whatever the panels draw,
+    and for flat fills and text a layer's image costs as much as the
+    content it replaces. So only fades of shadows, gradients or
+    paint-filled text are layered; offline those draw in 5.2 ms instead
+    of 6.9 ms
+    (`crates/strand-render/tests/morph.rs::a_fading_dashboard_draws_its_panels_from_layers`,
+    `crates/strand-render/tests/fade_layers.rs`). The owner's config
+    draws as before. On headless sway the grow ran at 50 to 53 fps
+    before and after, with 5.8 to 6.8 ms of drawing a frame on average
+    and 8 to 10 ms on its 0.5 Mpx frames. The levers left are
+    per-pixel: vello_cpu's faster 8-bit pipeline (about three times
+    faster here, but incremental frames then stop matching full
+    repaints along clip edges) or several drawing threads (design.md
+    keeps vello_cpu single-threaded); both are the owner's call. The 9
+    to 11 ms mounting frames are layout: three full layout passes (at
+    rest, with the sizes in flight, again when the text arrives) of
+    about 2 ms each, and 2 to 3 ms on every frame of the grow.
+    Most gaps in the log are frames with
     nothing to draw, which are not committed or logged; `strand run`'s
     damage log now prints each paint's `flatten=`, `wait=` and `raster=`
     milliseconds.

@@ -70,7 +70,7 @@ pub(crate) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
     for (j, d) in items.iter().enumerate().skip(i) {
         match d.item {
             Item::PushClip(_)
-            | Item::PushOpacity(_)
+            | Item::PushOpacity(..)
             | Item::PushTransform(_)
             | Item::PushLayer(_) => depth += 1,
             Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
@@ -88,7 +88,8 @@ pub(crate) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
 /// Encodes the display items that touch `clip`. `base` maps surface
 /// coordinates to the cell being rasterised, and `start` is the
 /// transform in force before the first item (an offscreen group's).
-/// `groups` holds this frame's offscreen groups.
+/// `groups` holds this frame's offscreen groups, and `fades` its fade
+/// layers ([`crate::offscreen::Offscreen::fades`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw(
     ctx: &mut RenderContext,
@@ -100,6 +101,7 @@ pub(crate) fn draw(
     base: Affine,
     start: Affine,
     groups: &HashMap<usize, Drawn>,
+    fades: &HashMap<usize, Drawn>,
 ) {
     let touches = |b: &Rect| clip.intersects(*b);
     // The cell in item coordinates under transform `cur`.
@@ -122,7 +124,7 @@ pub(crate) fn draw(
         i += 1;
         match &d.item {
             Item::PushClip(_)
-            | Item::PushOpacity(_)
+            | Item::PushOpacity(..)
             | Item::PushTransform(_)
             | Item::PushLayer(_)
                 if !touches(&d.bounds) =>
@@ -140,7 +142,32 @@ pub(crate) fn draw(
             }
             Item::PushClip(p) => ctx.push_clip_path(p),
             Item::PopClip => ctx.pop_clip(),
-            Item::PushOpacity(o) => ctx.push_opacity_layer(*o),
+            Item::PushOpacity(o, _) => {
+                // (m6-owner-fixes, bug 17) A fade layer: its content's
+                // pixels, drawn once, as an image in surface pixels in
+                // place of its items, at the group's opacity (the image's
+                // alpha: no group to composite).
+                if let Some(g) = fades.get(&crate::offscreen::fade_key(d)) {
+                    ctx.set_transform(base);
+                    let (mut p, t) = image_paint(&g.pixmap, g.x as f64, g.y as f64, false);
+                    if let PaintType::Image(img) = &mut p {
+                        img.sampler.alpha = *o;
+                    }
+                    ctx.set_paint(p);
+                    ctx.set_paint_transform(t);
+                    ctx.fill_rect(&kurbo::Rect::new(
+                        g.x as f64,
+                        g.y as f64,
+                        g.x as f64 + g.pixmap.width() as f64,
+                        g.y as f64 + g.pixmap.height() as f64,
+                    ));
+                    ctx.reset_paint_transform();
+                    ctx.set_transform(cur);
+                    i = skip_group(items, i - 1);
+                } else {
+                    ctx.push_opacity_layer(*o);
+                }
+            }
             Item::PopOpacity => ctx.pop_layer(),
             Item::PushLayer(l) => {
                 crate::layers::push(ctx, l, cur);
